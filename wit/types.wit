@@ -78,6 +78,9 @@ interface types {
         %type: type-name,
         default: option<access>,
         fields: list<field-access>,
+        /// Only the records whose fields hold these values are the
+        /// principal's to read; it writes nothing that reaches the type.
+        only: list<field-value>,
     }
 
     record grants {
@@ -844,6 +847,9 @@ interface types {
         retire: bool,
         /// The relations whose links the principal may write.
         link: list<relation-name>,
+        /// The values the principal's grant admits records by; empty
+        /// where it admits every record.
+        only: list<field-value>,
     }
 
     record type-access {
@@ -886,12 +892,14 @@ interface types {
     /// cannot be kept (the reason, to a principal shown the view as
     /// declared); its records are not whole (the groups that are not
     /// exact for this reader); or its records are not kept at this
-    /// position, or by this lake.
+    /// position, or by this lake; or its reader is admitted only some
+    /// records of it or of a type it reads.
     variant not-kept {
         not-asked,
         cannot-be-kept(option<string>),
         not-whole(u64),
         not-kept-here,
+        only-some,
     }
 
     record field-description {

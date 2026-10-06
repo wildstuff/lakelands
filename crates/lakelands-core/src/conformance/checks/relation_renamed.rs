@@ -145,9 +145,14 @@ fn granted(
         default: lake,
         ..Grants::default()
     };
-    grants
-        .types
-        .insert(ty.into(), TypeGrants { default, fields });
+    grants.types.insert(
+        ty.into(),
+        TypeGrants {
+            default,
+            fields,
+            ..Default::default()
+        },
+    );
     principal(store, PrincipalKind::Agent, id, grants)
 }
 
@@ -201,6 +206,7 @@ async fn a_grant_on_a_link_type_follows_its_relations_rename(
     let of_owner = TypeGrants {
         default: None,
         fields: amount,
+        ..Default::default()
     };
     permitted.grants.types.insert("invoice".into(), of_owner);
     let mut red = Vec::new();

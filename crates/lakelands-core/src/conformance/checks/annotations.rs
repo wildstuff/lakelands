@@ -250,6 +250,7 @@ async fn a_masked_field_is_described_without_its_annotations(
     let note = lakelands_api::principal::TypeGrants {
         default: None,
         fields: [("note".into(), Access::Masked)].into(),
+        ..Default::default()
     };
     clerk
         .grants

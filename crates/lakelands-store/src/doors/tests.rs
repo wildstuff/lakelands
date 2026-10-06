@@ -62,6 +62,7 @@ async fn a_write_that_waited_behind_a_rename_is_sent_again() {
     let held = TypeGrants {
         default: None,
         fields: [("holder".into(), Access::Read)].into(),
+        ..Default::default()
     };
     grants.types.insert(ty.clone(), held);
     let narrow = principal("narrow", grants);

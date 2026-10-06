@@ -27,7 +27,7 @@ use lakelands_api::{
     VerbName, Verification,
 };
 
-use lakelands_core::{invalid, unavailable};
+use lakelands_core::{invalid, rights, unavailable};
 
 use crate::exec;
 use crate::ingest;
@@ -85,8 +85,12 @@ impl Doors {
             // is in its shape and in its grants, or in neither.
             let view = lake.engine.view(at.as_of)?;
             let head = at.as_of.is_none().then_some(view.as_ref());
+            // A holder's search as of a position judges at the head too.
+            let to_head = at.as_of.is_some() && rights::holds_only(&who);
+            let head_who = to_head.then(|| lake.followed(who.clone(), None, None));
             let (who, _) = lake.followed(who, at.as_of, head)?;
-            let r = Reader::open(&lake, &who, at, view)?;
+            let mut r = Reader::open(&lake, &who, at, view)?;
+            r.head_who = head_who.transpose()?.map(|f| f.0);
             let data = f(&r)?;
             Ok(Reply {
                 position: r.position,
@@ -507,7 +511,7 @@ impl Catalog for Doors {
         to: ValueTypeDecl,
     ) -> Result<Reply<ValueTypeReport>> {
         self.write(who, move |c| {
-            crate::writes::granted(c.who.grants.schema)?;
+            crate::writes::granted(c.who.grants.schema && !rights::holds_only(c.who))?;
             let w = c.writer()?;
             let view = c.lake.engine.view(None)?;
             Ok(Reply {

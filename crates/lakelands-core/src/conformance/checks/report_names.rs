@@ -128,6 +128,7 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(
     let unseen = || TypeGrants {
         default: Some(Access::None),
         fields: [].into(),
+        ..Default::default()
     };
     hid.grants
         .types

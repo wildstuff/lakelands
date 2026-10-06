@@ -170,6 +170,7 @@ async fn a_migration_names_a_view_only_to_an_author_who_is_shown_it(
     let none = TypeGrants {
         default: Some(Access::None),
         fields: Default::default(),
+        ..Default::default()
     };
     blind.grants.types.insert("by_team".into(), none);
     let partial = field_access(

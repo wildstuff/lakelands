@@ -3,6 +3,8 @@
 //! rights, actions, lineage and lifecycle — as one principal may see it.
 //! The tool catalog is generated from this answer and nothing else.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::expr::Condition;
@@ -223,6 +225,12 @@ pub struct TypeRights {
     /// links the principal may write through those doors.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub link: Vec<RelationName>,
+    /// The principal's grant admits only the records whose fields hold
+    /// these values; every other record of the type is, to it, a record
+    /// that does not exist, and it writes nothing that reaches the type.
+    /// Left out where it admits every record.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub only: BTreeMap<FieldName, crate::Value>,
 }
 
 /// Where a type's records come from.
@@ -299,6 +307,11 @@ pub enum NotKept {
     },
     /// Its records are not kept at this position, or by this lake.
     NotKeptHere,
+    /// Its reader is admitted only some records of the view, or of a type
+    /// it reads: its records are computed from those alone. A read may
+    /// still be served from kept records where the groups carry the
+    /// grant's fields; that is a speed, not something this promises.
+    OnlySome,
 }
 
 impl Kept {

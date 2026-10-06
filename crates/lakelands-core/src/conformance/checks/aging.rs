@@ -551,6 +551,7 @@ fn clerk(store: &dyn LakeStore, id: &str, invoice: &[(&str, lakelands_api::Acces
     let rules = TypeGrants {
         default: Some(lakelands_api::Access::Write),
         fields: Default::default(),
+        ..Default::default()
     };
     clerk.grants.types.insert(AGING_RULE_TYPE.into(), rules);
     clerk
@@ -750,6 +751,7 @@ async fn a_rule_reads_the_setting_at_its_run_and_a_replay_reads_its_moves(
         TypeGrants {
             default: Some(Access::None),
             fields: Default::default(),
+            ..Default::default()
         },
     );
     rule_as(

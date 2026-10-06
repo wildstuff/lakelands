@@ -345,6 +345,7 @@ pub fn field_access(
         TypeGrants {
             default: None,
             fields: fields.collect(),
+            ..Default::default()
         },
     );
     principal(store, PrincipalKind::Agent, id, grants)

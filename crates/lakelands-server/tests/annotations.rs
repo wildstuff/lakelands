@@ -47,6 +47,7 @@ fn masker_grants() -> Grants {
     let masked = |field: &str| TypeGrants {
         default: None,
         fields: [(field.into(), Access::Masked)].into(),
+        ..Default::default()
     };
     Grants {
         default: Access::Read,

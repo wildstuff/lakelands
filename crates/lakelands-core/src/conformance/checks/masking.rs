@@ -206,6 +206,7 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
         lakelands_api::principal::TypeGrants {
             default: None,
             fields: [("memo".into(), Access::None)].into(),
+            ..Default::default()
         },
     );
     let staff = TypeName::from("staff");
@@ -311,6 +312,7 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
         lakelands_api::principal::TypeGrants {
             default: Some(Access::None),
             fields: [("name".into(), Access::Read)].into(),
+            ..Default::default()
         },
     );
     let got = read(cat.as_ref(), &by_default, "staff", "s1").await?;
@@ -331,6 +333,7 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
     let none = lakelands_api::principal::TypeGrants {
         default: Some(Access::None),
         fields: Default::default(),
+        ..Default::default()
     };
     kept.grants.types.insert(staff.clone(), none);
     for who in [&kept, &nobody(store.as_ref())] {

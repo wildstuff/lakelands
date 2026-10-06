@@ -37,6 +37,7 @@ fn principal(default: Access, fields: &[(&str, Access)]) -> Principal {
         TypeGrants {
             default: None,
             fields: fields.collect(),
+            ..Default::default()
         },
     );
     Principal {
@@ -245,4 +246,56 @@ fn system_types_are_recognised_by_prefix_alone() {
     assert!(is_system(&"sys.anything_new".into()));
     assert!(!is_system(&"system_note".into()));
     assert!(!is_system(&"a.sys.b".into()));
+}
+
+#[test]
+fn a_view_carries_its_source_only_where_it_groups_by_the_owner() {
+    let decl = |v: serde_json::Value| -> TypeDecl { serde_json::from_value(v).expect("a type") };
+    let view = |name: &str, by: &[&str], merge: bool| {
+        let merge = if merge {
+            json!([{"source": "claim", "measures": []}])
+        } else {
+            json!([])
+        };
+        decl(
+            json!({"name": name, "view": {"source": "claim", "group_by": by, "merge": merge,
+                    "measures": [{"name": "n", "expr": "count()"}]}}),
+        )
+    };
+    let types = [
+        decl(json!({"name": "claim", "fields": [{"name": "owner", "type": {"kind": "text"}}]})),
+        view("by_owner", &["owner"], false),
+        view("all", &[], false),
+        view("merged", &["owner"], true),
+    ];
+    let find = |t: &TypeName| types.iter().find(|d| &d.name == t);
+    let mut who = principal(Access::Read, &[]);
+    let alice = TypeGrants {
+        only: [("owner".into(), json!("alice"))].into(),
+        ..TypeGrants::default()
+    };
+    who.grants.types.insert("claim".into(), alice);
+    let pairs = vec![(FieldName::from("owner"), json!("alice"))];
+    let only = |ty: &str| only(&who, &ty.into(), &find);
+    assert_eq!(
+        only("by_owner"),
+        Effective::Pairs(pairs.clone()),
+        "rule 16 maps the pairs"
+    );
+    assert_eq!(
+        only("sys:kept.by_owner"),
+        Effective::Pairs(pairs),
+        "a kept name is its view"
+    );
+    assert_eq!(
+        only("all"),
+        Effective::ComputeOnly(vec![]),
+        "no group holds the owner"
+    );
+    assert_eq!(
+        only("merged"),
+        Effective::ComputeOnly(vec![]),
+        "a merge computes"
+    );
+    assert!(only("invoice").whole());
 }

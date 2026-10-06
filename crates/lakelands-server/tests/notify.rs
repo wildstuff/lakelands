@@ -48,6 +48,7 @@ fn watcher() -> Principal {
                             ("note".into(), Access::Masked),
                         ]
                         .into(),
+                        ..Default::default()
                     },
                 ),
                 (
@@ -55,6 +56,7 @@ fn watcher() -> Principal {
                     TypeGrants {
                         default: Some(Access::None),
                         fields: Default::default(),
+                        ..Default::default()
                     },
                 ),
             ]
@@ -836,6 +838,7 @@ async fn a_create_is_told_as_a_change_of_each_field_it_filled() {
                     TypeGrants {
                         default: None,
                         fields: [("state".into(), access)].into(),
+                        ..Default::default()
                     },
                 )]
                 .into(),

@@ -12,6 +12,7 @@ fn a_field_grant_beats_the_type_default_which_beats_the_lake_default() {
         TypeGrants {
             default: Some(Access::Masked),
             fields: [(FieldName::from("verdict"), Access::Write)].into(),
+            ..TypeGrants::default()
         },
     );
     assert_eq!(g.access(&invoice, &"verdict".into()), Access::Write);
@@ -38,6 +39,7 @@ fn reading_everything_needs_every_grant_to_read_and_restricted() {
             TypeGrants {
                 default,
                 fields: field.map(|a| ("amount".into(), a)).into_iter().collect(),
+                ..TypeGrants::default()
             },
         );
         g
@@ -57,11 +59,72 @@ fn reading_everything_needs_every_grant_to_read_and_restricted() {
     assert!(
         !Grants {
             default: Access::Masked,
-            ..reader
+            ..reader.clone()
         }
         .reads_everything()
     );
     assert!(!Grants::default().reads_everything());
+    let mut only = reader.clone();
+    let owner = TypeGrants {
+        only: [("owner".into(), "alice".into())].into(),
+        ..TypeGrants::default()
+    };
+    only.types.insert("claim".into(), owner);
+    assert!(
+        !only.reads_everything(),
+        "the feed is every owner's records"
+    );
+}
+
+#[test]
+fn only_follows_renames_and_two_names_that_differ_admit_nothing() {
+    let entry = |at, ty: &str, renames: &[(&str, &str)], to: Option<&str>| Renamed {
+        at: Position(at),
+        ty: ty.into(),
+        renames: renames
+            .iter()
+            .map(|(a, b)| ((*a).into(), (*b).into()))
+            .collect(),
+        to: to.map(Into::into),
+    };
+    let only = |pairs: &[(&str, &str)]| TypeGrants {
+        only: pairs
+            .iter()
+            .map(|(f, v)| ((*f).into(), (*v).into()))
+            .collect(),
+        ..TypeGrants::default()
+    };
+    let mut g = Grants::default();
+    g.types.insert("claim".into(), only(&[("holder", "alice")]));
+    g.types.insert("expense".into(), only(&[("owner", "bob")]));
+    let list = [
+        entry(3, "claim", &[("owner", "holder")], None),
+        entry(5, "expense", &[], Some("claim")),
+    ];
+    let at = |p| {
+        let mut g = g.clone();
+        g.follow(&list, p);
+        g.types
+            .get(&TypeName::from("claim"))
+            .map(|t| t.only.clone())
+    };
+    let said = |pairs: &[(&str, crate::Value)]| {
+        Some(
+            pairs
+                .iter()
+                .map(|(f, v)| ((*f).into(), v.clone()))
+                .collect(),
+        )
+    };
+    assert_eq!(at(Some(Position(2))), said(&[("owner", "alice".into())]));
+    assert_eq!(at(Some(Position(4))), said(&[("holder", "alice".into())]));
+    // The expense type became `claim`: its grant and claim's unite, and
+    // `owner` is still a name of the same field, so two values meet on it.
+    let mut both = at(None).expect("claim");
+    assert_eq!(
+        both.remove(&FieldName::from("holder")),
+        Some(crate::Value::Null)
+    );
 }
 
 #[test]

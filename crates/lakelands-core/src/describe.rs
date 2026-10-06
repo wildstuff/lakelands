@@ -25,7 +25,7 @@ use lakelands_api::ontology::{Authority, RelationDecl, TypeDecl, VerbDecl, VerbE
 use lakelands_api::write::{Declaration, FunctionDecl};
 use lakelands_api::{Access, FieldName, LakeId, Principal, TypeName};
 
-use crate::rights::{field_access, granted_access, type_access};
+use crate::rights::{field_access, granted_access, only_holder, type_access};
 
 /// The lake as `who` may see it.
 pub fn lake(lake: &LakeId, declared: &[Declared], who: &Principal) -> LakeDescription {
@@ -490,11 +490,16 @@ fn type_description(
     // A link type's records are written through its relation's link
     // doors, never through `upsert` or `retire`.
     let is_link = crate::links::is_link_type(&t.name);
+    // A holder of `only` writes nothing that reaches the type (051).
+    let held = only_holder(who, t);
     let may = TypeRights {
         find: true,
         get: true,
-        upsert: !is_view && !is_link && fields.iter().any(FieldDescription::authored_writable),
-        retire: !is_link && crate::rights::may_retire(who, t),
+        upsert: !held
+            && !is_view
+            && !is_link
+            && fields.iter().any(FieldDescription::authored_writable),
+        retire: !held && !is_link && crate::rights::may_retire(who, t),
         link: t
             .relations
             .iter()
@@ -502,6 +507,7 @@ fn type_description(
                 crate::links::carried_by_links(r)
                     && r.authority == Authority::Authored
                     && find_type(declared, &r.target).is_some()
+                    && !only_holder(who, &crate::links::link_type(&t.name, r))
             })
             .filter(|r| {
                 let lt = crate::links::link_type(&t.name, r);
@@ -514,9 +520,17 @@ fn type_description(
             })
             .map(|r| r.name.clone())
             .collect(),
+        // Told only where it applies, so it names no field its reader may
+        // not read (024).
+        only: match crate::rights::check_only(who, t) {
+            Ok(()) => crate::rights::own_only(who, &t.name).into_iter().collect(),
+            Err(_) => Default::default(),
+        },
     };
     let verbs = each(declared, |d| match &d.declaration {
-        Declaration::Verb(v) if v.on == t.name && verb_callable(v, t, who) => Some(v.name.clone()),
+        Declaration::Verb(v) if v.on == t.name && verb_callable(v, t, who) && !held => {
+            Some(v.name.clone())
+        }
         _ => None,
     });
     Some(TypeDescription {
@@ -602,7 +616,7 @@ fn verb_description(
     who: &Principal,
 ) -> Option<VerbDescription> {
     let t = find_type(declared, &v.on)?;
-    if !verb_callable(v, t, who) {
+    if !verb_callable(v, t, who) || only_holder(who, t) {
         return None;
     }
     Some(VerbDescription {

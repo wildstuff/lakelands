@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use lakelands_api::describe::{
-    ExecutorDescription, FieldDescription, Kept, LakeDescription, LakeRights, TypeAccess,
+    ExecutorDescription, FieldDescription, Kept, LakeDescription, LakeRights, NotKept, TypeAccess,
     TypeDescription, TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
 };
 use lakelands_api::error::{Error, Missing, Refusal, Result};
@@ -36,7 +36,10 @@ use crate::expr::{self, Scope};
 
 mod measures;
 use crate::links;
-use crate::state::{DeclaredType, State, access, door_writes, field};
+use crate::state::{
+    DeclaredType, State, access, admits, door_writes, field, holds_only, only_applies, only_holder,
+    own_only,
+};
 use crate::{Batch, Draft, Log, Shared, refused, stream, value};
 
 pub(crate) struct MockCatalog {
@@ -1019,7 +1022,11 @@ fn may_retire(who: &Principal, t: &DeclaredType) -> bool {
 }
 
 fn callable(st: &State, who: &Principal, v: &VerbDecl) -> bool {
-    let Some(t) = st.visible(who, &v.on) else {
+    // A holder of `only` writes nothing that reaches the type (051).
+    let Some(t) = st
+        .visible(who, &v.on)
+        .filter(|t| !only_holder(who, &t.decl))
+    else {
         return false;
     };
     match &v.effect {
@@ -1040,6 +1047,8 @@ fn callable(st: &State, who: &Principal, v: &VerbDecl) -> bool {
 
 fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescription {
     let d = &t.decl;
+    // A holder of `only` writes nothing that reaches the type (051).
+    let held = only_holder(who, d);
     let fields: Vec<FieldDescription> = d
         .fields
         .iter()
@@ -1059,6 +1068,13 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
     // The mock keeps no view: one that is asked for and could be kept is
     // not kept here.
     let kept = d.view.as_deref().map(|v| {
+        // As the store: to a holder of `only` a view is its own records,
+        // never every owner's groups (051).
+        if st.only_some(who, d, &mut Vec::new()) {
+            return Kept::Computed {
+                why: NotKept::OnlySome,
+            };
+        }
         let key = RecordKey::from(format!("{VIEW_KEPT_SETTING}{}", d.name));
         let setting = st.live(&TypeName::from(SETTING_TYPE), &key);
         let (value, shown) = (
@@ -1107,8 +1123,8 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
         may: TypeRights {
             find: true,
             get: true,
-            upsert: !links::is_link_type(&d.name) && authored_writable(who, t),
-            retire: !links::is_link_type(&d.name) && may_retire(who, t),
+            upsert: !held && !links::is_link_type(&d.name) && authored_writable(who, t),
+            retire: !held && !links::is_link_type(&d.name) && may_retire(who, t),
             link: d
                 .relations
                 .iter()
@@ -1120,10 +1136,18 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
                 })
                 .filter(|r| {
                     let lt = links::link_type(&d.name, r);
-                    lt.fields[..2].iter().all(|f| access(who, &lt, f).writes())
+                    !only_holder(who, &lt)
+                        && lt.fields[..2].iter().all(|f| access(who, &lt, f).writes())
                 })
                 .map(|r| r.name.clone())
                 .collect(),
+            // Told only where it applies, so it names no field its reader
+            // may not read.
+            only: if only_applies(who, d) {
+                own_only(who, &d.name).clone()
+            } else {
+                Default::default()
+            },
         },
         verbs: st
             .verbs
@@ -1408,6 +1432,18 @@ fn readable(_: &State, who: &Principal, t: &DeclaredType, name: &FieldName) -> R
     }
 }
 
+/// As the store (051): refuse a read that names `t` where `who`'s `only`
+/// on it cannot be applied, naming the type and never the field.
+fn check_only(who: &Principal, t: &DeclaredType) -> Result<()> {
+    if only_applies(who, &t.decl) {
+        return Ok(());
+    }
+    Err(invalid(format!(
+        "the grant's `only` on `{}` cannot be applied here; the host's grants need fixing",
+        t.decl.name
+    )))
+}
+
 /// The answer for a field the type does not declare, which is also the
 /// answer for one the principal may not know of.
 fn no_field(ty: &TypeName, name: &FieldName) -> Error {
@@ -1451,8 +1487,8 @@ fn valid_at(t: &DeclaredType, r: &StoredRecord, at: Option<lakelands_api::Timest
     starts && !ends
 }
 
-/// The live records of a type a principal may read, valid at `at`,
-/// matching a filter.
+/// The live records of a type a principal may read, its grant's `only`
+/// admitting them (051), valid at `at`, matching a filter.
 fn candidates<'a>(
     st: &'a State,
     who: &Principal,
@@ -1466,7 +1502,7 @@ fn candidates<'a>(
         if r.ty != t.decl.name || r.retired || (r.restricted && !who.grants.restricted) {
             continue;
         }
-        if !valid_at(t, r, at.valid_at) {
+        if !valid_at(t, r, at.valid_at) || !st.admitted(who, r) {
             continue;
         }
         if let Some(e) = filter {
@@ -1543,9 +1579,11 @@ fn canonical_patch(t: &DeclaredType, patch: Patch) -> Patch {
 }
 
 /// Refuse a reference that names no live record of its target type, nor
-/// one written earlier in the same ingest window.
+/// one written earlier in the same ingest window. A record its writer's
+/// `only` does not admit is, to it, not there (051).
 fn check_references(
     st: &State,
+    who: &Principal,
     t: &DeclaredType,
     patch: &Patch,
     earlier: &BTreeMap<(TypeName, RecordKey), Version>,
@@ -1556,7 +1594,8 @@ fn check_references(
         };
         let Some(key) = v.as_str() else { continue };
         let slot = (target.clone(), RecordKey::from(key));
-        if st.live(&slot.0, &slot.1).is_none() && !earlier.contains_key(&slot) {
+        let live = (st.live(&slot.0, &slot.1)).filter(|r| admits(who, target, &r.fields));
+        if live.is_none() && !earlier.contains_key(&slot) {
             return Err(on(
                 name,
                 Refusal::Constraint {
@@ -1767,6 +1806,11 @@ fn check_rule(st: &State, who: &Principal, key: &RecordKey, patch: &Patch) -> Re
     }
     let rule = crate::aging::check(st, &fields)
         .map_err(|(field, message)| on(&field, Refusal::Invalid { message }))?;
+    // A rule moves every owner's records: never one a holder of `only`
+    // on its type writes (051).
+    if (st.types.get(&rule.on)).is_some_and(|t| only_holder(who, &t.decl)) {
+        return Err(refused(Refusal::NotGranted));
+    }
     // As the store: the author holds write on the field the rule moves,
     // and read on every field its condition probes.
     check_patch(
@@ -1874,8 +1918,12 @@ fn plan_upsert(
 ) -> Result<Version> {
     let By { st, who, cause } = *by;
     // The type first, as the store's record plan asks it: one not shown
-    // it is told nothing of the write.
-    st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+    // it is told nothing of the write. A holder of `only` writes nothing
+    // that reaches the type, before any record is read (051).
+    let shown = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+    if only_holder(who, &shown.decl) {
+        return Err(refused(Refusal::NotGranted));
+    }
     if patch.is_empty() {
         return Err(invalid("nothing to write: the patch carries no field"));
     }
@@ -1900,7 +1948,7 @@ fn plan_upsert(
         Origin::Authored,
     )?;
     // After the key fields are filled: a key field may be a reference too.
-    check_references(st, t, &patch, &BTreeMap::new())?;
+    check_references(st, who, t, &patch, &BTreeMap::new())?;
     check_required(t, st.live(ty, key).map(|r| &r.fields), &patch)?;
     let version = Version(actual.0 + 1);
     let mut d = Draft::new(
@@ -1930,7 +1978,7 @@ fn plan_retire(
     let By { st, who, cause } = *by;
     let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
     not_a_view(&t.decl)?;
-    if !may_retire(who, t) {
+    if !may_retire(who, t) || only_holder(who, &t.decl) {
         return Err(refused(Refusal::NotGranted));
     }
     st.live(ty, key).ok_or_else(|| no_record(ty, key))?;
@@ -2880,17 +2928,28 @@ fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite, since: &[
     let read = |ty: &TypeName, f: &FieldName| {
         (st.visible(who, ty)).is_some_and(|t| readable(st, who, t, f).is_ok())
     };
+    // As the store (051): a record its `only` does not admit, retired or
+    // not, or after a proposed patch, is not answered.
+    let stored = |ty: &TypeName, key: &RecordKey| st.records.get(&(ty.clone(), key.clone()));
+    let answered = |ty: &TypeName, key: &RecordKey| {
+        seen(ty) && stored(ty, key).is_none_or(|r| admits(who, ty, &r.fields))
+    };
     match write {
         // A field the reader may not know of and a masked one both leave
         // the patch: it holds values, and no place for a name.
-        ProposedWrite::Upsert { ty, patch, .. } => {
+        ProposedWrite::Upsert { ty, key, patch, .. } => {
+            let live = stored(ty, key).filter(|r| !r.retired);
+            let mut after = live.map(|r| r.fields.clone()).unwrap_or_default();
+            after.extend(patch.clone());
             patch.retain(|f, _| read(ty, f));
-            seen(ty)
+            answered(ty, key) && admits(who, ty, &after)
         }
-        ProposedWrite::Retire { ty, .. } => seen(ty),
+        ProposedWrite::Retire { ty, key, .. } => answered(ty, key),
         // A payload is what the verb's fields become: whole to a reader who
         // may read each field the verb sets, and empty otherwise.
-        ProposedWrite::Call { verb, payload, .. } => {
+        ProposedWrite::Call {
+            verb, key, payload, ..
+        } => {
             let Some(v) = st.verbs.get(verb) else {
                 return false;
             };
@@ -2899,7 +2958,7 @@ fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite, since: &[
             {
                 payload.clear();
             }
-            seen(&v.on)
+            key.as_ref().map_or(seen(&v.on), |k| answered(&v.on, k))
         }
         // The report names what the migration does to the type as it
         // stands; its totals, hashes and id stay whole.
@@ -3373,6 +3432,7 @@ impl Catalog for MockCatalog {
         };
         let (position, st) = self.state_at(&self.log(), pinned)?;
         let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+        check_only(who, t)?;
         bound(&t.decl, &find.params)?;
         view_readable(&st, who, t)?;
         let after = find
@@ -3480,13 +3540,14 @@ impl Catalog for MockCatalog {
         let who = &self.followed(who, get.at.as_of);
         let (position, st) = self.state_at(&self.log(), get.at.as_of)?;
         let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+        check_only(who, t)?;
         bound(&t.decl, &get.params)?;
         view_readable(&st, who, t)?;
         valid_time_readable(&st, who, t, get.at)?;
         let r = st
             .live(ty, &get.key)
             .filter(|r| !r.restricted || who.grants.restricted)
-            .filter(|r| valid_at(t, r, get.at.valid_at))
+            .filter(|r| valid_at(t, r, get.at.valid_at) && st.admitted(who, r))
             .ok_or_else(|| no_record(ty, &get.key))?;
         Ok(Reply {
             position,
@@ -3762,6 +3823,7 @@ impl Catalog for MockCatalog {
         let t = st
             .visible(who, &start.ty)
             .ok_or_else(|| no_type(&start.ty))?;
+        check_only(who, t)?;
         bound(&t.decl, &start.params)?;
         view_readable(&st, who, t)?;
         let measure = matches!(pattern.project, Projection::Degree | Projection::Components);
@@ -3903,10 +3965,11 @@ impl Catalog for MockCatalog {
                     "the in-memory mock walks one hop, in one direction, per step",
                 ));
             }
-            // A relation without `via` is walked over its live link records.
+            // A relation without `via` is walked over its live link records
+            // its walker's grants admit (051).
             let linked_by = |from: &RecordKey, to: &RecordKey| {
                 st.live(&link_type, &lakelands_api::key::link_key(from, to))
-                    .is_some()
+                    .is_some_and(|l| st.admitted(who, l))
             };
             let next = st.visible(who, &target).ok_or_else(|| no_type(&target))?;
             view_readable(&st, who, next)?;
@@ -3991,6 +4054,7 @@ impl Catalog for MockCatalog {
 
     async fn search(&self, who: &Principal, search: Search) -> Result<Reply<Hits>> {
         self.admit(who)?;
+        let given = who;
         let who = &self.followed(who, search.at.as_of);
         let of = read_of(serde_json::to_string(&(
             &search.mode,
@@ -4008,6 +4072,7 @@ impl Catalog for MockCatalog {
         let t = st
             .visible(who, &search.ty)
             .ok_or_else(|| no_type(&search.ty))?;
+        check_only(who, t)?;
         if t.decl.view.is_some() {
             return Err(invalid(format!(
                 "`{}` is a view, and a view is not searched",
@@ -4065,7 +4130,27 @@ impl Catalog for MockCatalog {
             readable(&st, who, t, name)?;
         }
         let e = filter(&st, who, t, search.filter.as_ref())?;
-        let rows = candidates(&st, who, t, search.at, e.as_ref())?;
+        let mut rows = candidates(&st, who, t, search.at, e.as_ref())?;
+        // As the store (051): a holder's search before the head keeps a
+        // candidate only where the head admits it too, a link by its ends,
+        // under the grant followed there and by the name its type bears
+        // there, so that a ranking by the head's text and vectors finds no
+        // other's record.
+        if pinned.is_some() && only_holder(who, &t.decl) {
+            // One lock at a time: `followed` reads the log too.
+            let head = self.state_at(&self.log(), None)?.1;
+            let now = self.followed(given, None);
+            let mut name = t.decl.name.clone();
+            for r in self.renames() {
+                if let Some(to) = r.to.filter(|_| r.at > position && r.ty == name) {
+                    name = to;
+                }
+            }
+            rows.retain(|r| {
+                let at_head = head.records.get(&(name.clone(), r.key.clone()));
+                at_head.is_some_and(|h| !h.retired && head.admitted(&now, h))
+            });
+        }
         // A field the lake asks an index for at the head answers the
         // index's set, and says so; the mock's set is the exact ranking.
         let by_text = matches!(
@@ -4211,6 +4296,9 @@ impl Catalog for MockCatalog {
         };
         if let Some(o) = remembered(&st, who, &opts) {
             return Ok(o);
+        }
+        if reaches_held(&st, who, &write)? {
+            return Err(refused(Refusal::NotGranted));
         }
         let key = opts.idempotency_key;
         let mut batch = Batch::at(&log);
@@ -4453,6 +4541,9 @@ impl Catalog for MockCatalog {
             .values()
             .filter(|p| who.grants.review || p.proposer == writer)
             .filter(|p| filter.state.is_none_or(|s| p.state == s))
+            // A migration's report counts every owner's records: a holder
+            // of `only` is listed none (051).
+            .filter(|p| !holds_only(who) || !p.write.as_ref().is_some_and(migrates))
             .cloned()
             .collect();
         // Proposals are made in log order, so `proposed_at` and
@@ -4494,7 +4585,7 @@ impl Catalog for MockCatalog {
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome> {
         self.admit_write(who)?;
         let who = &self.followed(who, None);
-        if !who.grants.schema {
+        if !who.grants.schema || holds_only(who) {
             return Err(refused(Refusal::NotGranted));
         }
         let mut log = self.log();
@@ -4514,7 +4605,7 @@ impl Catalog for MockCatalog {
     async fn apply(&self, who: &Principal, declarations: Vec<Declaration>) -> Result<Outcome> {
         self.admit_write(who)?;
         let who = &self.followed(who, None);
-        if !who.grants.schema {
+        if !who.grants.schema || holds_only(who) {
             return Err(refused(Refusal::NotGranted));
         }
         let mut log = self.log();
@@ -4547,7 +4638,7 @@ impl Catalog for MockCatalog {
     async fn recompute(&self, who: &Principal, what: Recompute) -> Result<Outcome> {
         self.admit_write(who)?;
         let who = &self.followed(who, None);
-        if !who.grants.schema {
+        if !who.grants.schema || holds_only(who) {
             return Err(refused(Refusal::NotGranted));
         }
         let mut log = self.log();
@@ -4592,7 +4683,7 @@ impl Catalog for MockCatalog {
     async fn add_field(&self, who: &Principal, ty: &TypeName, f: FieldDecl) -> Result<Outcome> {
         self.admit_write(who)?;
         let who = &self.followed(who, None);
-        if !who.grants.schema {
+        if !who.grants.schema || holds_only(who) {
             return Err(refused(Refusal::NotGranted));
         }
         let mut log = self.log();
@@ -4652,7 +4743,7 @@ impl Catalog for MockCatalog {
     ) -> Result<Reply<MigrationReport>> {
         self.admit(who)?;
         let who = &self.followed(who, None);
-        if !who.grants.schema {
+        if !who.grants.schema || holds_only(who) {
             return Err(refused(Refusal::NotGranted));
         }
         let log = self.log();
@@ -4671,7 +4762,7 @@ impl Catalog for MockCatalog {
     ) -> Result<Reply<lakelands_api::write::ValueTypeReport>> {
         self.admit_write(who)?;
         let who = &self.followed(who, None);
-        if !who.grants.schema {
+        if !who.grants.schema || holds_only(who) {
             return Err(refused(Refusal::NotGranted));
         }
         let log = self.log();
@@ -4699,7 +4790,7 @@ impl Catalog for MockCatalog {
     ) -> Result<Outcome> {
         self.admit_write(who)?;
         let who = &self.followed(who, None);
-        if !who.grants.schema {
+        if !who.grants.schema || holds_only(who) {
             return Err(refused(Refusal::NotGranted));
         }
         let mut log = self.log();
@@ -4748,7 +4839,7 @@ impl Catalog for MockCatalog {
     ) -> Result<Outcome> {
         self.admit_write(who)?;
         let who = &self.followed(who, None);
-        if !who.grants.schema {
+        if !who.grants.schema || holds_only(who) {
             return Err(refused(Refusal::NotGranted));
         }
         let mut log = self.log();
@@ -4911,7 +5002,11 @@ fn plan_window(
         duplicates: 0,
     };
     for r in chunk {
-        st.visible(who, &r.ty).ok_or_else(|| no_type(&r.ty))?;
+        let shown = st.visible(who, &r.ty).ok_or_else(|| no_type(&r.ty))?;
+        // Before the duplicate test, which would tell what the log holds.
+        if only_holder(who, &shown.decl) {
+            return Err(refused(Refusal::NotGranted));
+        }
         if r.fields.is_empty() {
             return Err(invalid("nothing to write: the patch carries no field"));
         }
@@ -5011,7 +5106,7 @@ fn plan_window(
             }
         }
         // A record earlier in this window counts as there.
-        check_references(st, t, &fields, &w.versions)?;
+        check_references(st, who, t, &fields, &w.versions)?;
         check_required(t, now.as_ref(), &fields)?;
         // As the store: a record this window made is there for its next one.
         let made = now.is_none();
@@ -5053,6 +5148,36 @@ fn remembered(st: &State, who: &Principal, opts: &WriteOpts) -> Option<Outcome> 
     st.idempotent.get(&(who.writer(), key.clone())).cloned()
 }
 
+/// As the store (051): whether a proposed write reaches a type `who`
+/// holds `only` on, or a shape, which a holder of `only` on any type never
+/// changes. A type it is not shown is answered as not there.
+fn reaches_held(st: &State, who: &Principal, write: &ProposedWrite) -> Result<bool> {
+    if !holds_only(who) {
+        return Ok(false);
+    }
+    let ty = match write {
+        ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => ty,
+        ProposedWrite::Call { verb, .. } => {
+            let shown = (st.verbs.get(verb)).filter(|v| st.visible(who, &v.on).is_some());
+            let missing = || Error::NotFound {
+                missing: Missing::Verb { name: verb.clone() },
+            };
+            &shown.ok_or_else(missing)?.on
+        }
+        _ => return Ok(true),
+    };
+    let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+    Ok(only_holder(who, &t.decl))
+}
+
+/// Whether a proposed write is a migration, of a type or a value type.
+fn migrates(w: &ProposedWrite) -> bool {
+    matches!(
+        w,
+        ProposedWrite::Migrate { .. } | ProposedWrite::MigrateValueType { .. }
+    )
+}
+
 /// A pending proposal a reviewer may decide.
 fn decidable<'a>(st: &'a State, who: &Principal, id: &ProposalId) -> Result<&'a Proposal> {
     if !who.grants.review {
@@ -5061,6 +5186,13 @@ fn decidable<'a>(st: &'a State, who: &Principal, id: &ProposalId) -> Result<&'a 
     let p = st.proposals.get(id).ok_or_else(|| Error::NotFound {
         missing: Missing::Proposal { id: id.clone() },
     })?;
+    // Before it is told decided: a holder of `only` decides nothing that
+    // reaches the type (051).
+    if let Some(write) = &p.write
+        && reaches_held(st, who, write)?
+    {
+        return Err(refused(Refusal::NotGranted));
+    }
     if p.state != ProposalState::Pending {
         return Err(refused(Refusal::Decided));
     }

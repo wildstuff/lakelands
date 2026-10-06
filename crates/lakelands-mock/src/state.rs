@@ -14,7 +14,7 @@ use lakelands_api::ontology::{
     Authority, FieldDecl, OnInputChange, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl,
 };
 use lakelands_api::principal::{Access, Principal};
-use lakelands_api::record::{FieldMeta, Origin, Record, StoredRecord};
+use lakelands_api::record::{FieldMeta, Origin, Record, StoredRecord, Value};
 use lakelands_api::write::{
     Declaration, FunctionDecl, ObjectSetDecl, Outcome, Proposal, ProposalState,
 };
@@ -425,6 +425,43 @@ impl State {
         Some(shown)
     }
 
+    /// As the store (051): whether `who`'s grants admit a stored record:
+    /// it holds every pair of the grant's `only` on its type, a grant that
+    /// cannot be applied there admitting nothing, and a link's end whose
+    /// type the grant holds `only` on is admitted by its pairs too. The
+    /// mock computes no view, so a view's `only` never reaches a record.
+    pub fn admitted(&self, who: &Principal, r: &StoredRecord) -> bool {
+        let Some(t) = self.types.get(&r.ty) else {
+            return true;
+        };
+        let pairs = |d: &TypeDecl, fields: &BTreeMap<FieldName, Value>| {
+            only_applies(who, d) && admits(who, &d.name, fields)
+        };
+        pairs(&t.decl, &r.fields)
+            && held_ends(who, &t.decl).into_iter().all(|(f, end)| {
+                let at = r.fields.get(f).and_then(Value::as_str);
+                let e = at.and_then(|k| self.records.get(&(end.clone(), RecordKey::from(k))));
+                e.zip(self.types.get(end))
+                    .is_some_and(|(e, d)| pairs(&d.decl, &e.fields))
+            })
+    }
+
+    /// Whether a view is answered to `who` from only some records (051):
+    /// the grant holds `only` on it, or on what it reads, a link type's end
+    /// type included.
+    pub fn only_some(&self, who: &Principal, v: &TypeDecl, seen: &mut Vec<TypeName>) -> bool {
+        let Some(view) = v.view.as_deref().filter(|_| !seen.contains(&v.name)) else {
+            return only_holder(who, v);
+        };
+        seen.push(v.name.clone());
+        let sources = std::iter::once(&view.source).chain(view.merge.iter().map(|m| &m.source));
+        let mut sources = sources.filter_map(|s| self.types.get(s));
+        let held = !own_only(who, &v.name).is_empty()
+            || sources.any(|s| self.only_some(who, &s.decl, seen));
+        seen.pop();
+        held
+    }
+
     /// A record as one principal may read it.
     pub fn read(&self, who: &Principal, rec: &StoredRecord, with_meta: bool) -> Record {
         let decl = self.types.get(&rec.ty).map(|t| &t.decl);
@@ -540,6 +577,56 @@ fn built_from<'d>(
     }
     seen.pop();
     (a, from_source)
+}
+
+/// The pairs `who`'s grant on `ty` admits records by: its `only`, empty
+/// where it admits every record (051).
+pub(crate) fn own_only<'a>(who: &'a Principal, ty: &TypeName) -> &'a BTreeMap<FieldName, Value> {
+    static EVERY: BTreeMap<FieldName, Value> = BTreeMap::new();
+    who.grants.types.get(ty).map_or(&EVERY, |t| &t.only)
+}
+
+/// Whether `fields` hold every pair of `who`'s `only` on `ty`.
+pub(crate) fn admits(who: &Principal, ty: &TypeName, fields: &BTreeMap<FieldName, Value>) -> bool {
+    (own_only(who, ty).iter()).all(|(f, v)| fields.get(f) == Some(v))
+}
+
+/// Whether `who`'s `only` on `decl` can be applied: each pair a text
+/// value of a `text` or `reference` field the type declares and `who`
+/// may read.
+pub(crate) fn only_applies(who: &Principal, decl: &TypeDecl) -> bool {
+    use lakelands_api::ontology::StorageKind;
+    own_only(who, &decl.name).iter().all(|(f, v)| {
+        field(decl, f).is_some_and(|d| {
+            matches!(d.ty.kind, StorageKind::Text | StorageKind::Reference)
+                && v.is_string()
+                && access(who, decl, d).reads()
+        })
+    })
+}
+
+/// The ends of a link type `decl` whose type `who` holds `only` on, with
+/// the link field that names each.
+fn held_ends<'d>(who: &Principal, decl: &'d TypeDecl) -> Vec<(&'d FieldName, &'d TypeName)> {
+    if !crate::links::is_link_type(&decl.name) {
+        return Vec::new();
+    }
+    let ends = (decl.fields.iter())
+        .filter(|f| [crate::links::FROM, crate::links::TO].contains(&f.name.as_str()));
+    let ends = ends.filter_map(|f| Some((&f.name, f.ty.target.as_ref()?)));
+    ends.filter(|(_, t)| !own_only(who, t).is_empty()).collect()
+}
+
+/// Whether every write that reaches `decl`'s records is refused to `who`:
+/// its grant holds `only` on the type, or on an end type of a link type.
+pub(crate) fn only_holder(who: &Principal, decl: &TypeDecl) -> bool {
+    !own_only(who, &decl.name).is_empty() || !held_ends(who, decl).is_empty()
+}
+
+/// Whether `who`'s grant holds `only` on any type: such a principal
+/// changes no shape.
+pub(crate) fn holds_only(who: &Principal) -> bool {
+    who.grants.types.values().any(|t| !t.only.is_empty())
 }
 
 /// The access a principal has to a type as a whole.

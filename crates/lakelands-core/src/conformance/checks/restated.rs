@@ -452,7 +452,11 @@ async fn what_a_migration_restates_is_shown_as_its_fields_are_and_holds_at_the_a
         let mut who = field_access(s, &id, "person", &fields);
         (who.grants.review, who.grants.schema) = (true, true);
         let (default, fields) = (None, [("seen".into(), access)].into());
-        let seen = TypeGrants { default, fields };
+        let seen = TypeGrants {
+            default,
+            fields,
+            ..Default::default()
+        };
         who.grants.types.insert(link.clone(), seen);
         let own = json!(preview(&l, &who, own.clone()).await?).to_string();
         reports.push(("the preview of one who does not read `secret`", own));
