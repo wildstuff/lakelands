@@ -91,7 +91,7 @@ use lakelands_api::id::{IdempotencyKey, LakeId, Position, ProposalId, SourceId};
 use lakelands_api::location::{Limits, Location};
 use lakelands_api::principal::{Principal, WriteContext};
 use lakelands_api::record::Origin;
-use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter};
+use lakelands_api::seam::{ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter};
 use lakelands_api::time::Timestamp;
 use lakelands_api::{Catalog, LakeStore, Verification};
 
@@ -495,7 +495,9 @@ impl ChangeFeed for Feed {
         let head = Shared::head(&log);
         let mut events = Vec::new();
         let mut next = from;
-        for e in log.events.iter().skip(from.0 as usize) {
+        // As the store: at most `FEED_EXAMINED` events examined a poll.
+        let examined = log.events.iter().skip(from.0 as usize);
+        for e in examined.take(FEED_EXAMINED as usize) {
             if events.len() >= limit as usize {
                 break;
             }

@@ -402,8 +402,8 @@ impl Deliverer {
 
     /// One round: read the feed from the position and deliver or refuse
     /// every matching event, in order, retrying transient failures until
-    /// they pass. Answers whether the round read a full batch, so more
-    /// may be waiting.
+    /// they pass. Answers whether the round stopped short of the head,
+    /// so more may be waiting.
     pub async fn round(&mut self, store: &dyn LakeStore) -> Result<bool, String> {
         let feed = store.feed();
         let filter = FeedFilter {
@@ -430,7 +430,8 @@ impl Deliverer {
             .poll(from, &filter, self.batch)
             .await
             .map_err(|e| format!("the feed failed: {e}"))?;
-        let full = batch.events.len() >= self.batch as usize;
+        // A poll may stop short of the head with no events: read on.
+        let more = batch.next <= batch.head;
         for event in &batch.events {
             if self.wanted(event) {
                 self.deliver(event).await;
@@ -440,7 +441,7 @@ impl Deliverer {
         if batch.next > from {
             self.keep(batch.next)?;
         }
-        Ok(full)
+        Ok(more)
     }
 
     /// Whether the endpoint receives an event: its kind, and the trigger

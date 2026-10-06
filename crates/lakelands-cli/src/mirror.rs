@@ -968,7 +968,8 @@ impl Mirror {
             .poll(Position(from), &filter, self.batch)
             .await
             .map_err(|e| format!("the source's feed failed: {e}"))?;
-        let full = batch.events.len() >= self.batch as usize;
+        // A poll may stop short of the head with no events: read on.
+        let more = batch.next <= batch.head;
         let mut run = Run::default();
         for e in &batch.events {
             let Some(ty) = type_of(&e.body) else {
@@ -1002,7 +1003,7 @@ impl Mirror {
         }
         // The store's own feed keeps no consumer state; a relay may.
         let _ = feed.ack(&format!("mirror:{}", self.name), batch.next).await;
-        Ok(full)
+        Ok(more)
     }
 
     /// Copy the named types whole, as the source holds them at its head,

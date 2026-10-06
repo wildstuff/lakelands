@@ -79,7 +79,7 @@ async fn changes(store: &dyn LakeStore, from: Position) -> usize {
     let (mut next, mut n) = (from, 0);
     loop {
         let b = store.feed().poll(next, &only, 10_000).await.unwrap();
-        if b.events.is_empty() {
+        if b.events.is_empty() && b.next > b.head {
             return n;
         }
         n += b.events.len();

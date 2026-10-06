@@ -264,3 +264,25 @@ refused.
   was in force there.
 
 A declaration that names a set is written in log format 11.
+
+## Extended: a poll examines a bounded part of the log (lakelands#558)
+
+A poll stopped at `limit` matches or at the head. A filter that matched
+nothing therefore read and verified the whole log in one call: 2.4 s at
+100 000 events on SQLite, where a poll that matched answered in 5 ms.
+A consumer that starts at position 0 with a narrow filter paid that in
+one call, and a `limit` without a filter held every event it asked for.
+
+- **A poll also stops after `FEED_EXAMINED` events examined,** matched
+  or not (4 096, about 0.1 s on SQLite), and answers `next` there. A
+  `limit` above it answers at most that many events.
+- **Caught up is `next` past `head`.** An empty batch may stop short of
+  the head, so a consumer reads on while `next` is at or below `head`.
+  The store's own consumers (the MCP pump, the deliverer, the mirror)
+  follow that rule.
+- **It is a constant, not a lake's setting:** a remote consumer must be
+  able to know it, and no door reads it from the caller.
+- **What it leaves:** a consumer that starts at 0 with a narrow filter
+  still reads the log once, now a bounded poll at a time. An index of the
+  log by kind, type or key would take that away; it changes every
+  engine's log, and is lakelands#678.

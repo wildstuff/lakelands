@@ -159,6 +159,10 @@ pub struct FeedBatch {
     pub head: Position,
 }
 
+/// The most events one feed poll examines, matched or not, whatever its
+/// `limit`; a consumer is caught up when a batch's `next` passes `head`.
+pub const FEED_EXAMINED: u32 = 4096;
+
 /// The change feed: the log filtered by kind, read from a position
 /// (`docs/decisions/004-the-change-feed-is-the-log.md`). The consumer
 /// keeps the position it has read up to; the dedup key of a change is its
@@ -166,9 +170,9 @@ pub struct FeedBatch {
 /// list-shaped read; see `docs/glossary.md`.)
 #[async_trait]
 pub trait ChangeFeed: Send + Sync {
-    /// Events from `from` on that match `filter`, at most `limit`.
-    /// Answers at once, possibly empty; a consumer that wants to wait
-    /// polls again.
+    /// Events from `from` on that match `filter`, at most `limit`, of at
+    /// most [`FEED_EXAMINED`] examined. Answers at once, possibly empty; a
+    /// consumer that wants to wait polls again.
     async fn poll(&self, from: Position, filter: &FeedFilter, limit: u32) -> Result<FeedBatch>;
 
     /// Tell the feed a consumer has handled everything before `through`.

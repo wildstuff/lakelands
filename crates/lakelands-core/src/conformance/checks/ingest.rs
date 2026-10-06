@@ -16,8 +16,9 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, committed, delivered, field, get_at, head_unmoved, log_events, refused_on,
-    refused_unmoved, source_record, sourced, try_upsert, type_decl, value, windows_reach_head,
+    Lake, Must, committed, delivered, events_from, field, get_at, head_unmoved, log_events,
+    refused_on, refused_unmoved, source_record, sourced, try_upsert, type_decl, value,
+    windows_reach_head,
 };
 
 check!(
@@ -325,7 +326,6 @@ async fn a_record_delivered_twice_in_two_windows_is_written_once(
 ) -> Result<(), Failure> {
     use crate::conformance::fixture::limits;
     use lakelands_api::event::EventBody;
-    use lakelands_api::seam::FeedFilter;
     let l = Lake::of(store.as_ref());
     l.declare(feed()).await?;
     let from = store.head().await.must("reading the head")?.next();
@@ -352,12 +352,7 @@ async fn a_record_delivered_twice_in_two_windows_is_written_once(
         windows.len(),
         committed(&windows)
     );
-    let events = store
-        .feed()
-        .poll(from, &FeedFilter::default(), u32::MAX)
-        .await
-        .must("reading the feed")?
-        .events;
+    let events = events_from(store.as_ref(), from).await?;
     let twice = events
         .iter()
         .filter(
