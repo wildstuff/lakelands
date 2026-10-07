@@ -430,22 +430,31 @@ impl Read<'_> {
     /// trip: none unless the index is kept through the head. At an earlier
     /// position it is read with the keys changed since ([`Read::changed`]).
     fn sorted_fields(&mut self, ty: &TypeName, decl: Option<&TypeDecl>) -> Result<Vec<FieldName>> {
-        let Some(decl) = decl.filter(|_| self.folded.is_some()) else {
+        if self.folded.is_none() {
             return Ok(Vec::new());
-        };
+        }
+        // A kept name is ordered as its view at the head declares it.
+        let view = engines::kept_view(ty).map(|v| format!("type {v}"));
         let row = self.db.query_one(
             &format!(
                 "SELECT (SELECT n FROM {m} WHERE k = $1), \
-                 (SELECT state FROM {r} WHERE ty = $2 AND key = $3 AND until IS NULL)",
+                 (SELECT state FROM {r} WHERE ty = $2 AND key = $3 AND until IS NULL), \
+                 (SELECT state FROM {d} WHERE ident = $4 AND until IS NULL)",
                 m = self.names.t("meta"),
                 r = self.names.t("records"),
+                d = self.names.t("declarations"),
             ),
             &[
                 &engines::sorted_mark(ty),
                 &lakelands_api::seam::SETTING_TYPE,
                 &engines::sort_index_key(ty),
+                &view,
             ],
         )?;
+        let view = projection::declared_type(row.get(2))?;
+        let Some(decl) = view.as_ref().or(decl) else {
+            return Ok(Vec::new());
+        };
         if row.get::<_, Option<i64>>(0) != self.folded {
             return Ok(Vec::new());
         }
@@ -454,6 +463,7 @@ impl Read<'_> {
             .map(|state| decode_record(&state))
             .transpose()?;
         Ok(engines::sorted_fields(
+            ty,
             decl,
             setting.as_ref().and_then(engines::setting_value),
         ))
@@ -714,7 +724,7 @@ impl ProjectionView for PgView<'_> {
                 });
             }
             let sorted = r.sorted_fields(ty, decl.as_ref())?;
-            let records = match engines::by_order_index(decl.as_ref(), &sorted, scan) {
+            let records = match engines::by_order_index(&sorted, scan) {
                 // Ordered by a field the lake indexes, the page is read in
                 // the order index's order and stops when it is full: at the
                 // head, with a text the scan must hold, of the records

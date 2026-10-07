@@ -200,7 +200,7 @@ impl Projection {
                     records.insert((r.ty.clone(), r.key.clone()));
                     // The setting's write rebuilds the index it asks for.
                     if let Some(ty) = lakelands_core::engines::sort_index_type(r) {
-                        types.insert(ty);
+                        types.extend(lakelands_core::engines::ordered_names(&ty));
                     }
                 }
                 Put::Declaration(d) => {
@@ -213,8 +213,9 @@ impl Projection {
             self.apply(put);
         }
         // The order index follows the head: every record whose latest
-        // state the transaction put, and every record of a type it
-        // declared again or whose `sort_index.<type>` setting it put.
+        // state the transaction put, every record of a type it declared
+        // again, and of a type and its kept name whose `sort_index.<type>`
+        // setting it put.
         for (ty, key) in records {
             if !types.contains(&ty) {
                 self.index(&ty, &key);
@@ -283,9 +284,11 @@ impl Projection {
 
     /// The fields of `ty` whose order index the lake keeps: those its
     /// `sort_index.<type>` setting at the head names that its declaration
-    /// at the head declares with a kind the index keeps.
+    /// at the head (a kept name's view's) declares with a kind the index
+    /// keeps.
     pub(crate) fn sorted_fields(&self, ty: &TypeName) -> Vec<FieldName> {
-        let Some(decl) = self.type_at(ty, Some(Position(u64::MAX))) else {
+        let declared = lakelands_core::engines::kept_view(ty).unwrap_or_else(|| ty.clone());
+        let Some(decl) = self.type_at(&declared, Some(Position(u64::MAX))) else {
             return Vec::new();
         };
         let setting = self
@@ -296,6 +299,7 @@ impl Projection {
             ))
             .and_then(History::latest);
         lakelands_core::engines::sorted_fields(
+            ty,
             decl,
             setting.and_then(lakelands_core::engines::setting_value),
         )

@@ -8256,8 +8256,9 @@ pub async fn a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight(
 }
 
 /// A `sort_index.<type>` setting asks for the order index on fields its
-/// type declares with a scalar kind, and is refused naming anything else;
-/// `describe_type` names the fields indexed, of those the principal sees
+/// type declares with a scalar kind, a view's of its kept records, and is
+/// refused naming anything else; `describe_type` names the fields
+/// indexed, of those the principal sees
 /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`).
 pub async fn a_sort_index_setting_names_declared_scalar_fields_and_describe_shows_them(
     store: Arc<dyn LakeStore>,
@@ -8367,6 +8368,42 @@ pub async fn a_sort_index_setting_names_declared_scalar_fields_and_describe_show
     assert!(
         sorted(owner).await.is_empty(),
         "the setting retired, nothing indexed"
+    );
+    // A view's order index is kept of its kept records (lakelands#668).
+    let totals = by_status("totals", &[("total", StorageKind::Decimal, "sum(amount)")]);
+    f.catalog
+        .declare(owner, totals)
+        .await
+        .expect("the owner declares `totals`");
+    for (k, value, at_fault) in [
+        ("sort_index.totals", json!(["amount"]), "amount"),
+        ("vector_index.totals", json!(["total"]), "key"),
+    ] {
+        let e = set(k, value.clone())
+            .await
+            .expect_err("a setting naming what the view's index does not keep is refused");
+        let (field, reason) = refusal(&e);
+        assert!(
+            matches!(reason, Refusal::Invalid { .. })
+                && field.as_ref().map(FieldName::as_str) == Some(at_fault),
+            "`{k}` = {value}: expected invalid naming `{at_fault}`, got {reason:?} naming {field:?}"
+        );
+    }
+    set("sort_index.totals", json!(["total", "status"]))
+        .await
+        .expect("a setting naming a view's declared scalar fields applies");
+    let described = f
+        .catalog
+        .describe_type(owner, &ty("totals"), ReadAt::default())
+        .await;
+    assert_eq!(
+        described
+            .expect("the view is described")
+            .data
+            .lifecycle
+            .sorted,
+        vec![FieldName::from("total"), FieldName::from("status")],
+        "`describe_type` names a view's indexed fields"
     );
 }
 

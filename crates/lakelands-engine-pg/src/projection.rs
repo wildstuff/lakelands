@@ -393,8 +393,10 @@ impl HeadTypes {
 
 /// `ty`'s declaration at the head and the fields its order index keeps:
 /// those its `sort_index.<type>` setting at the head names that the
-/// declaration declares with a kind the index keeps. One round trip.
+/// declaration (a kept name's view's) declares with a kind the index
+/// keeps. A kept name has no declaration. One round trip.
 pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<HeadType> {
+    let view = engines::kept_view(ty);
     let row = db.query_one(
         &format!(
             "SELECT (SELECT state FROM {d} WHERE ident = $1 AND until IS NULL), \
@@ -403,20 +405,21 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
             r = names.t("records"),
         ),
         &[
-            &format!("type {ty}"),
+            &format!("type {}", view.as_ref().unwrap_or(ty)),
             &SETTING_TYPE,
             &engines::sort_index_key(ty),
         ],
     )?;
-    let decl = declared_type(row.get(0))?;
+    let declared = declared_type(row.get(0))?;
     let setting = row
         .get::<_, Option<String>>(1)
         .map(|state| decode::<StoredRecord>(&state, "a record"))
         .transpose()?;
-    let sorted = match &decl {
-        Some(d) => engines::sorted_fields(d, setting.as_ref().and_then(engines::setting_value)),
+    let sorted = match &declared {
+        Some(d) => engines::sorted_fields(ty, d, setting.as_ref().and_then(engines::setting_value)),
         None => Vec::new(),
     };
+    let decl = declared.filter(|_| view.is_none());
     Ok(HeadType { decl, sorted })
 }
 
@@ -529,28 +532,50 @@ fn set_sorted(db: &mut Db, names: &Names, ty: &TypeName, through: Option<Positio
 /// At a writer's open: rebuild, in one transaction, every order index
 /// that does not describe the head, because a writer that does not keep
 /// it (a binary before it) folded past its mark or wrote its setting, and
-/// drop the index of a type whose setting such a writer removed.
+/// drop the index of a type whose setting such a writer removed. A
+/// setting asks for the indexes of [`engines::ordered_names`]; one of
+/// those that keeps no field has no mark and is not behind.
 pub(crate) fn catch_up_sorted(db: &mut Db, names: &Names) -> Result<()> {
     db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
         let Some(folded) = folded(db, names)? else {
             return Ok(());
         };
-        let behind: Vec<String> = db.column(
+        let asked: Vec<String> = db.column(
             &format!(
-                "SELECT substr(r.key, $1) FROM {r} r WHERE r.ty = $2 AND left(r.key, $1 - 1) = $3 \
-                   AND r.until IS NULL AND NOT EXISTS (SELECT 1 FROM {m} m \
-                   WHERE m.k = 'sorted.' || substr(r.key, $1) AND m.n = $4) \
-                 UNION SELECT substr(k, 8) FROM {m} WHERE k LIKE 'sorted.%' AND n <> $4",
-                r = names.t("records"),
-                m = names.t("meta"),
+                "SELECT substr(key, $1) FROM {} WHERE ty = $2 AND left(key, $1 - 1) = $3 \
+                   AND until IS NULL",
+                names.t("records"),
             ),
             &[
                 &(SORT_INDEX_SETTING.len() as i32 + 1),
                 &SETTING_TYPE,
                 &SORT_INDEX_SETTING,
-                &(folded.0 as i64),
             ],
         )?;
+        let (marked, mut behind): (BTreeSet<String>, BTreeSet<String>) = (
+            db.column(
+                &format!(
+                    "SELECT substr(k, 8) FROM {} WHERE k LIKE 'sorted.%'",
+                    names.t("meta")
+                ),
+                &[],
+            )?,
+            db.column(
+                &format!(
+                    "SELECT substr(k, 8) FROM {} WHERE k LIKE 'sorted.%' AND n <> $1",
+                    names.t("meta")
+                ),
+                &[&(folded.0 as i64)],
+            )?,
+        );
+        for ty in asked
+            .iter()
+            .flat_map(|t| engines::ordered_names(&t.as_str().into()))
+        {
+            if !marked.contains(ty.as_str()) && !head_type(db, names, &ty)?.sorted.is_empty() {
+                behind.insert(ty.to_string());
+            }
+        }
         for ty in behind {
             rebuild_sorted(db, names, &TypeName::from(ty), folded)?;
         }
@@ -599,6 +624,8 @@ pub(crate) fn declared_type(state: Option<String>) -> Result<Option<TypeDecl>> {
 
 /// At most `n` latest states of one type's records, in key order after
 /// `after`: a page of the type, so a pass over it holds a page at a time.
+/// A kept name's are read through `records_head`, whose condition the
+/// statement repeats.
 pub(crate) fn head_records_after(
     db: &mut Db,
     names: &Names,
@@ -606,9 +633,13 @@ pub(crate) fn head_records_after(
     after: &str,
     n: i64,
 ) -> Result<Vec<StoredRecord>> {
+    let kept = match lakelands_api::seam::is_kept_name(ty) {
+        true => format!("AND {} ", kept_range()),
+        false => String::new(),
+    };
     db.records(
         &format!(
-            "SELECT state FROM {} WHERE ty = $1 AND until IS NULL AND key COLLATE \"C\" > $2 \
+            "SELECT state FROM {} WHERE ty = $1 AND until IS NULL {kept}AND key COLLATE \"C\" > $2 \
              ORDER BY key COLLATE \"C\" LIMIT $3",
             names.t("records")
         ),
@@ -939,8 +970,10 @@ impl Buffer {
             // A `sort_index.<type>` setting whose head state the buffer holds
             // changes which fields of its type are indexed: read again.
             if let Some(ty) = engines::sort_index_type(r) {
-                types.0.remove(&ty);
-                settings.push((ty, r.position));
+                for ty in engines::ordered_names(&ty) {
+                    types.0.remove(&ty);
+                    settings.push((ty, r.position));
+                }
             }
             // A `vector_index.<type>` setting whose head state the buffer
             // holds has its type's vector indexes built again at the commit:

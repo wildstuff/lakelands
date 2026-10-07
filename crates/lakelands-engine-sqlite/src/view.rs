@@ -642,7 +642,7 @@ impl ProjectionView for SqliteView<'_> {
                 });
             }
             let sorted = r.sorted_fields(ty, decl.as_ref())?;
-            let records = match engines::by_order_index(decl.as_ref(), &sorted, scan) {
+            let records = match engines::by_order_index(&sorted, scan) {
                 // Ordered by a field the lake indexes, at the head, the page
                 // is read in the order index's order and stops when it is
                 // full: with a text the scan must hold, of the records

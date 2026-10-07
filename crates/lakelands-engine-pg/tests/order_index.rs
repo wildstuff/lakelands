@@ -83,6 +83,59 @@ fn a_stale_order_index_is_not_read_and_a_writers_open_rebuilds_it() {
     }
 }
 
+/// A view's setting asks for its kept name's index, and the view's own
+/// name keeps no field. A writer's open rebuilds nothing while the kept
+/// name's index is kept through the fold, and rebuilds it when its mark is
+/// gone.
+#[test]
+fn a_writers_open_catches_up_a_kept_names_index_and_not_its_views_name() {
+    let Some(url) = common::url_or_skip("the pg order-index test") else {
+        return;
+    };
+    let schema = common::fresh_schema();
+    let location = common::location(&url, "sorted", &schema);
+    let kept = fill_view(PgOpener.open(&location, OpenMode::Create).unwrap().as_ref());
+    let held = || -> (Option<i64>, i64, i64) {
+        let row = exec(
+            &url,
+            format!(
+                "SELECT (SELECT n FROM \"{schema}\".meta WHERE k = 'sorted.{kept}'), \
+                 (SELECT count(*) FROM \"{schema}\".sort_index WHERE ty = '{kept}'), \
+                 (SELECT count(*) FROM \"{schema}\".sort_index WHERE ty = 'w')"
+            ),
+        );
+        (row[0].get(0), row[0].get(1), row[0].get(2))
+    };
+    // A row under the view's own name, which a rebuild of that name drops.
+    exec(
+        &url,
+        format!(
+            "INSERT INTO \"{schema}\".sort_index (ty, field, key, sort_key) \
+             VALUES ('w', 'v', 'k0', '\\x00')"
+        ),
+    );
+    drop(PgOpener.open(&location, OpenMode::Write).unwrap());
+    assert_eq!(
+        held(),
+        (Some(1), 3, 1),
+        "an open after the index is built rebuilds nothing"
+    );
+    exec(
+        &url,
+        format!(
+            "WITH gone AS (DELETE FROM \"{schema}\".sort_index WHERE ty = '{kept}') \
+             DELETE FROM \"{schema}\".meta WHERE k = 'sorted.{kept}'"
+        ),
+    );
+    drop(PgOpener.open(&location, OpenMode::Write).unwrap());
+    assert_eq!(
+        held(),
+        (Some(1), 3, 1),
+        "an open with the kept name's mark gone rebuilds its index"
+    );
+    common::drop_schema(&url, &schema);
+}
+
 #[test]
 fn the_setting_keeps_the_rows_of_the_fields_it_names_and_no_others() {
     let Some(url) = common::url_or_skip("the pg order-index test") else {
@@ -283,6 +336,50 @@ fn fill(engine: &dyn LakeEngine) {
     }
     p.put_record(&setting(json!(["v", "w"]), 1)).unwrap();
     p.commit(Position(1)).unwrap();
+}
+
+/// Fold a view `w` of `t`, three records its fold keeps under its kept
+/// name, and the setting `sort_index.w` on `v`; answers the kept name.
+fn fill_view(engine: &dyn LakeEngine) -> TypeName {
+    let view: Declaration = serde_json::from_value(json!({
+        "declare": "type", "name": "w",
+        "fields": [{"name": "v", "type": {"kind": "text"}}],
+        "view": {"source": "t", "group_by": ["v"], "measures": []}
+    }))
+    .unwrap();
+    let kept = lakelands_api::seam::kept_name(&TypeName::from("w"));
+    let record = |ty: &TypeName, key: &str, fields: Value| StoredRecord {
+        ty: ty.clone(),
+        key: RecordKey::from(key),
+        version: Version(1),
+        fields: serde_json::from_value(fields).unwrap(),
+        meta: Default::default(),
+        position: Position(1),
+        retired: false,
+        restricted: false,
+    };
+    let p = engine.projection();
+    p.begin().unwrap();
+    p.put_declaration(&declaration(), 1, None, Position(0))
+        .unwrap();
+    p.put_declaration(&view, 1, None, Position(0)).unwrap();
+    for i in 0..3 {
+        p.put_record(&record(
+            &kept,
+            &format!("k{i}"),
+            json!({"v": format!("v{i}")}),
+        ))
+        .unwrap();
+    }
+    let setting = TypeName::from(lakelands_api::seam::SETTING_TYPE);
+    p.put_record(&record(
+        &setting,
+        "sort_index.w",
+        json!({"key": "sort_index.w", "value": ["v"]}),
+    ))
+    .unwrap();
+    p.commit(Position(1)).unwrap();
+    kept
 }
 
 /// The state of the setting `sort_index.t` asking for `fields`, at `at`.
