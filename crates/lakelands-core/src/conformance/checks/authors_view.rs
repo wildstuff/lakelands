@@ -28,7 +28,7 @@ check!(
 check!(
     /// No refusal of a change of shape names a hidden field.
     HIDDEN_NAME_NOT_LEARNED = a_change_of_shape_never_names_a_field_its_author_may_not_know_of,
-    "027 and 024, extended: a type declared again from its author's view is taken, keeping the fields and the link fields hidden from the author, and the relations it is not shown, its reference to a type it is not shown as declared (lakelands#662); a shape that names a hidden field is refused as a field declared twice; one that removes a field a hidden field or relation reads is refused on that field and names no other part; a rename from a hidden field is a rename from no field, and one from a hidden relation from no relation"
+    "027 and 024, extended: a type declared again from its author's view is taken, keeping the fields and the link fields hidden from the author, and the relations it is not shown, its reference to a type it is not shown as declared (lakelands#662), where it may know of the field: one held from it names its target in vain, the target answered as one no type is (lakelands#716); a shape that names a hidden field is refused as a field declared twice; one that removes a field a hidden field or relation reads is refused on that field and names no other part; a rename from a hidden field is a rename from no field, and one from a hidden relation from no relation"
 );
 
 fn invoice(fields: &[&str]) -> TypeDecl {
@@ -270,6 +270,33 @@ async fn a_change_of_shape_never_names_a_field_its_author_may_not_know_of(
              naming none of {hidden:?}; it answered {answer:?}"
         );
     }
+    // An author held from `payee` learns nothing of its target by naming
+    // it: `payroll`, another hidden type and no type answer alike, never as
+    // a field declared twice (lakelands#716).
+    l.declare(type_of("ledger", &[("code", StorageKind::Text)]))
+        .await?;
+    let mut blind = who.clone();
+    blind.id = "blind".into();
+    (blind.grants.types).insert("ledger".into(), who.grants.types["payroll"].clone());
+    let held = blind.grants.types.entry("invoice".into()).or_default();
+    held.fields.insert("payee".into(), Access::None);
+    let mut said = Vec::new();
+    for target in ["payroll", "ledger", "ghost"] {
+        let mut t = seen(&["no", "gross", "ref", "memo"]);
+        t.fields.retain(|f| f.name.as_str() != "payee");
+        t.fields.push(reference("payee", target));
+        let answer = cat.declare(&blind, Declaration::Type(t)).await;
+        said.push(
+            answer
+                .map_or_else(|e| e.to_string(), |_| "taken".into())
+                .replace(target, "T"),
+        );
+    }
+    ensure!(
+        said.iter().all(|s| s == &said[2] && !s.contains("twice")),
+        "an author held from `payee` must be answered alike for `payroll`, another hidden type and \
+         no type, never as a field declared twice; it was answered {said:?}"
+    );
     let _ = own;
     Ok(())
 }

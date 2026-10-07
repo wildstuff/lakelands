@@ -273,9 +273,13 @@ saying only that another part of the type reads it. A relation its
 author is not shown is kept the same way (lakelands#662): put back as
 declared, a field its `via` or its match reads refused on that field
 alone, a rename from it a rename from no relation. An unchanged
-reference field to a type its author is not shown stands as declared;
-a new or changed one names a type the author is not shown, and is
-refused as one that is not declared. A masked or a write-only field
+reference field to a type its author is not shown stands as declared,
+where the author may know of the field; a new or changed one names a
+type the author is not shown, and is refused as one that is not
+declared. So is one the author is held from (lakelands#716): it is not
+taken for unchanged, so naming its target in force answers as naming
+any other hidden type or no type, never as a field declared twice, and
+the author learns nothing of the target. A masked or a write-only field
 is shown to the principal, and stays its to remove.
 
 ## Extended: a proposed migration is listed as its reader may know it (lakelands#499)

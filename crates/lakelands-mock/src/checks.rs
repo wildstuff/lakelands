@@ -222,7 +222,9 @@ macro_rules! door_checks {
             a_search_limited_to_named_fields_matches_and_probes_only_those,
             a_hybrid_search_fuses_its_text_and_vector_ranks,
             #[own_principals]
-            a_grant_admits_only_the_records_whose_fields_hold_its_values);
+            a_grant_admits_only_the_records_whose_fields_hold_its_values,
+            #[own_principals]
+            a_hidden_target_is_not_learned_by_declaring_its_field);
     };
     (@each $at:ident, $new:expr, $block_on:path;
         $($(#[$mark:ident])? $name:ident),* $(,)?) => {
@@ -10726,6 +10728,53 @@ pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
         wrong.is_empty(),
         "alice is admitted her own claims alone: {}",
         wrong.join("; ")
+    );
+}
+
+/// An author held at `none` on a reference field learns nothing of its
+/// target by declaring the type again with that field: the target in
+/// force, another type it is not shown and no type are answered alike,
+/// never as a field declared twice (lakelands#716).
+pub async fn a_hidden_target_is_not_learned_by_declaring_its_field(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    let typed = |name: &str, fields: Value| {
+        let d = json!({"declare": "type", "name": name, "fields": fields});
+        serde_json::from_value::<Declaration>(d).expect("a declaration reads")
+    };
+    let code = json!([{"name": "code", "type": {"kind": "text"}}]);
+    let loose = |target: &str| {
+        let payee = json!({"kind": "reference", "target": target});
+        typed(
+            "loose",
+            json!([{"name": "note", "type": {"kind": "text"}},
+                              {"name": "payee", "type": payee}]),
+        )
+    };
+    for d in [
+        typed("payroll", code.clone()),
+        typed("ledger", code),
+        loose("payroll"),
+    ] {
+        c.declare(own, d).await.expect("the owner declares");
+    }
+    let grants = json!({"default": "write", "schema": true, "types": {
+        "payroll": {"default": "none"}, "ledger": {"default": "none"},
+        "loose": {"fields": {"payee": "none"}}}});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let author = &principal(store.lake(), PrincipalKind::Agent, "author", grants);
+    let mut said = Vec::new();
+    for target in ["payroll", "ledger", "ghost"] {
+        let answer = c.declare(author, loose(target)).await;
+        said.push(
+            answer
+                .map_or_else(|e| e.to_string(), |_| "taken".into())
+                .replace(target, "T"),
+        );
+    }
+    assert!(
+        said.iter().all(|s| s == &said[2] && !s.contains("twice")),
+        "an author held from `payee` is answered alike for each target: {said:?}"
     );
 }
 

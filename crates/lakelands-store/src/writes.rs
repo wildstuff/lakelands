@@ -2175,12 +2175,16 @@ impl Call<'_> {
             let Declaration::Type(t) = d else { continue };
             // An unchanged reference to a type its author is not shown
             // stands as declared: left out of both sides, it is checked
-            // whole at apply.
+            // whole at apply. Only a field the author may know of is so:
+            // one it is held from answers as a field the type does not
+            // have, whatever it names (027, extended).
             let hides = |x: &TypeName| o.types.contains_key(x) && !seen.types.contains_key(x);
             let hidden = |f: &FieldDecl| f.ty.target.as_ref().is_some_and(hides);
             let was = o.ty(&t.name).map(|w| &w.fields[..]).unwrap_or_default();
+            let known = seen.types.get(&t.name).map(|e| &e.decl.fields[..]);
+            let known = |f: &FieldDecl| known.unwrap_or_default().iter().any(|k| k.name == f.name);
             let unchanged: Vec<FieldDecl> = (t.fields.iter())
-                .filter(|f| hidden(f) && was.contains(f))
+                .filter(|f| hidden(f) && was.contains(f) && known(f))
                 .cloned()
                 .collect();
             let Some(e) = seen.types.get_mut(&t.name).map(Arc::make_mut) else {
