@@ -8891,7 +8891,9 @@ pub async fn a_retry_is_answered_before_its_writer_is_asked_what_it_is_shown(
 /// index, `index` or `hybrid (index)`, at the head and at an earlier
 /// position alike, since the index is the head's; every other field is
 /// ranked by `vector`
-/// (`docs/decisions/043-an-index-asked-for-answers-its-set.md`).
+/// (`docs/decisions/043-an-index-asked-for-answers-its-set.md`). A hybrid
+/// search lists its axes, each counted, a text that matches nothing at 0,
+/// and a search of one axis lists its own without a count (lakelands#560).
 pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranked_by_the_index(
     store: Arc<dyn LakeStore>,
 ) {
@@ -9049,6 +9051,46 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
     };
     assert!(indexed().await.is_empty(), "no setting, nothing indexed");
     assert_eq!(ranked_by(by_vector("v"), None).await, "vector");
+    let axes = |mode: SearchMode| {
+        let (catalog, ty) = (f.catalog.clone(), ty("doc"));
+        async move {
+            let s = Search {
+                k: 5,
+                cursor: None,
+                filter: None,
+                with_meta: false,
+                at: ReadAt::default(),
+                ty,
+                mode,
+            };
+            let hits = catalog.search(owner, s).await.expect("the search answers");
+            let said = hits.data.axes.into_iter();
+            said.map(|a| (a.axis, a.field.map(|f| f.to_string()), a.candidates))
+                .collect::<Vec<_>>()
+        }
+    };
+    let quiet = SearchMode::Hybrid {
+        text: "zzz".into(),
+        field: "v".into(),
+        vector: Some(vec![1.0, 0.0]),
+        fields: None,
+        weight: None,
+        text_weight: None,
+    };
+    let (lexical, v) = (String::from("lexical"), Some(String::from("v")));
+    let vector = || (String::from("vector"), v.clone());
+    let fused = |text| {
+        vec![
+            (lexical.clone(), None, Some(text)),
+            (vector().0, vector().1, Some(1)),
+        ]
+    };
+    assert_eq!(axes(hybrid()).await, fused(1), "the text matches `a`");
+    assert_eq!(axes(quiet).await, fused(0), "the text matches nothing");
+    assert_eq!(
+        axes(by_vector("v")).await,
+        vec![(vector().0, vector().1, None)]
+    );
     set(json!(["v"]))
         .await
         .expect("a setting naming a declared vector field applies");

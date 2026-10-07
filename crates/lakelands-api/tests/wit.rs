@@ -34,8 +34,8 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{
-    Depth, Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Start, Step,
-    VectorTerm, Walk,
+    Axis, Depth, Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Start,
+    Step, VectorTerm, Walk,
 };
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy};
 use lakelands_api::seam::{FeedBatch, FeedFilter};
@@ -937,6 +937,15 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 hits: vec![],
                 next_cursor: Some(Cursor("c".into())),
                 ranked_by: "lexical".into(),
+                axes: vec![],
+            }),
+        ),
+        (
+            "axis",
+            members(&Axis {
+                axis: "vector".into(),
+                field: Some("v".into()),
+                candidates: Some(5),
             }),
         ),
         (

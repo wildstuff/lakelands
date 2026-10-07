@@ -1067,7 +1067,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             input_schema: obj(p, &["type", "mode"]),
             output_schema: reply_schema(json!({"type": "object", "properties": {
                 "hits": {"type": "array"}, "ranked_by": {"type": "string"},
-                "next_cursor": {"type": "string"}}})),
+                "axes": {"type": "array"}, "next_cursor": {"type": "string"}}})),
             door: Door::Search,
         });
     }

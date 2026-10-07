@@ -50,7 +50,7 @@ check!(
 /// A lake of `doc`s: each a key, a text, a unit vector that many degrees
 /// from the query's `(1, 0)`, and a number `n`. A second vector field,
 /// `w`, is left empty.
-async fn docs(
+pub(super) async fn docs(
     store: &dyn LakeStore,
     rows: impl IntoIterator<Item = (String, &str, u32, u32)>,
 ) -> Result<Lake, Failure> {

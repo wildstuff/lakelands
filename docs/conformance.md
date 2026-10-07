@@ -768,6 +768,12 @@ belongs in the suite, not beside one engine:
 - `a_search_fuses_its_rankings_each_by_its_weight` — 046, extended, and 024: a vector search that names further fields in `also` ranks each field among the hits the read may see and fuses the rankings by weighted reciprocal rank, each adding `weight / (60 + rank)` in the order named, an absent weight being 1; it answers the keys and the scores' bits of that rule on every engine, a record without a vector in a field gains nothing from it, and a restricted record first in every ranking moves no score; a hybrid search weighs its text (`text_weight`) and its vector (`weight`) by the same rule, and weights of 1 answer what no weights answer
 - `a_weight_that_cannot_weigh_or_a_field_named_twice_is_refused_naming_it` — 046, extended: a weight of 0, below 0 or above 1 000 000, a `weight` on a vector search that names no other field, and a vector field named twice are each refused as invalid, naming the field or `text_weight`, before the principal's rights to the field are looked at
 
+**search axes**
+
+- `a_search_lists_its_axes_and_counts_them_where_it_fuses` — 046, extended (lakelands#560): every search answers `axes`, one entry for each axis that ranked in the order the fusion sums them, a vector axis naming its field; a hybrid search and a vector search with `also` count each axis's candidates, so a text that matches nothing answers 0 beside the vector's count; a search of one axis lists it without a count; a page continued by a cursor answers the first page's axes
+- `an_axis_counts_only_what_its_reader_is_shown` — 046 and 024, extended (lakelands#560): an axis's count is of the candidates its reader may be answered, after the search's `where` and the rights that decide a hit, so a reader kept from a record the text matches by `restricted`, and one kept from it by its `where`, are each answered the count of what it is shown, and the two differ
+- `a_fused_axis_is_counted_to_its_window_on_every_page` — 046, extended (lakelands#560): a fused list is read to the lake's `max_limit` of what its reader may see, or to its end, before a page is answered, so an axis's count is the same on every page, also where hidden candidates leave a list short of its window when the first page could already be ranked
+
 **vocabulary**
 
 - `a_host_type_is_declared_when_a_writer_opens_the_lake` — 003 and seams, SystemVocabulary: each writer open declares the host's sys. types the lake may hold and does not hold yet; a type added later reaches the existing lake, and a withheld one never does

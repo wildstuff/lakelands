@@ -65,6 +65,7 @@ mod retire;
 mod schema;
 mod schema_proposals;
 mod search;
+mod search_axes;
 mod search_fields;
 mod set_declared;
 mod set_migrated;
@@ -464,6 +465,9 @@ pub const ALL: &[Check] = &[
     fusion::SAME_LIST_UNREAD,
     fusion::FUSED_BY_WEIGHT,
     fusion::WEIGHTS_REFUSED,
+    search_axes::AXES_SAID,
+    search_axes::AXES_READER,
+    search_axes::AXES_WINDOW,
     vocabulary::HOST_TYPES_AT_OPEN,
     vocabulary::RESERVED_NAME_REFUSES_OPEN,
     backings::FAILURE_RETRIED,

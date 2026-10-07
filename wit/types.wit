@@ -829,6 +829,16 @@ interface types {
         hits: list<hit>,
         next-cursor: option<cursor>,
         ranked-by: string,
+        axes: list<axis>,
+    }
+
+    /// One axis a search ranked by: `lexical` or `vector`, a vector
+    /// axis's field, and, where the search fuses, the candidates it handed
+    /// the fusion for this reader, up to the lake's `max_limit`.
+    record axis {
+        axis: string,
+        field: option<field-name>,
+        candidates: option<u64>,
     }
 
     // ------------------------------------------------------------------

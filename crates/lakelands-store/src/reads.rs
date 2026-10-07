@@ -56,7 +56,7 @@ use lakelands_api::ontology::{
     FieldType, MatchPair, RelationDecl, StorageKind, TypeDecl, VerbEffect,
 };
 use lakelands_api::query::{
-    Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Step, Walk,
+    Axis, Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Step, Walk,
 };
 use lakelands_api::read::{
     After as ReadAfter, AggFunc, Aggregate, Find, Found, Get, Group, Order, OrderBy, Params, ReadAt,
@@ -1975,6 +1975,12 @@ impl<'a> Reader<'a> {
         // they are summed (046): a hybrid search's text, then each vector
         // field. A search of one ranking fuses nothing.
         let mut lists: Vec<(f64, Ranking<'_>)> = Vec::new();
+        let axis = |field: Option<&FieldName>| Axis {
+            axis: (if field.is_some() { "vector" } else { "lexical" }).into(),
+            field: field.cloned(),
+            candidates: None,
+        };
+        let mut axes = Vec::new();
         if let (
             SearchMode::Hybrid {
                 text, text_weight, ..
@@ -1986,16 +1992,23 @@ impl<'a> Reader<'a> {
                 text_weight.unwrap_or(1.0),
                 Box::new(move |pull| lexical(text, pull)),
             ));
+            axes.push(axis(None));
         }
         for (field, v, weight) in vectors.iter().filter(|_| !by_text) {
             lists.push((
                 weight.unwrap_or(1.0),
                 Box::new(move |pull| vector(field, v, pull)),
             ));
+            axes.push(axis(Some(field)));
         }
         let hits = match &s.mode {
             _ if lists.len() > 1 => {
-                self.fused(&decl, filter.as_ref(), &lists, want, s.with_meta)?
+                let (hits, counts) =
+                    self.fused(&decl, filter.as_ref(), &lists, want, s.with_meta)?;
+                for (a, n) in axes.iter_mut().zip(counts) {
+                    a.candidates = Some(n);
+                }
+                hits
             }
             mode => {
                 // Candidates are pulled in growing batches until the page and
@@ -2033,10 +2046,16 @@ impl<'a> Reader<'a> {
                 of: search_read,
             })
         });
+        // A search of one axis lists it without a count: it reads no
+        // further than its page (lakelands#560).
+        if axes.is_empty() {
+            axes.push(axis(vectors.first().map(|v| v.0).filter(|_| !by_text)));
+        }
         Ok(Hits {
             hits: page,
             ranked_by,
             next_cursor,
+            axes,
         })
     }
 
@@ -2045,7 +2064,9 @@ impl<'a> Reader<'a> {
     /// lake's `max_limit` of them, so a record the read may not see moves
     /// no score and every page reads one ranking (046). The lists
     /// are pulled in growing batches until the first `want` fused hits and
-    /// their scores can no longer change.
+    /// their scores can no longer change, and each list is whole or holds
+    /// its window, so that its count, answered beside the hits, is the
+    /// same on every page.
     fn fused(
         &self,
         decl: &TypeDecl,
@@ -2053,7 +2074,7 @@ impl<'a> Reader<'a> {
         lists: &[(f64, Ranking<'_>)],
         want: usize,
         with_meta: bool,
-    ) -> Result<Vec<Hit>> {
+    ) -> Result<(Vec<Hit>, Vec<u64>)> {
         let window = self.lake.limits.max_limit as usize;
         // A list read is a scan of its index whatever it is asked for, so
         // the first asks for the whole window at once.
@@ -2075,7 +2096,7 @@ impl<'a> Reader<'a> {
             // Each list's visible candidates to the window, and what a
             // record it has not ranked yet could still gain from it:
             // nothing once the list is whole or its window full.
-            let (mut keyed, mut gain) = (Vec::new(), Vec::new());
+            let (mut keyed, mut gain, mut counted) = (Vec::new(), Vec::new(), true);
             for (weight, list) in lists {
                 let candidates = list(pull)?;
                 let whole = candidates.len() < pull as usize;
@@ -2088,6 +2109,7 @@ impl<'a> Reader<'a> {
                         .collect()
                 };
                 let done = whole || seen.len() >= window || pull == u32::MAX;
+                counted &= done;
                 seen.truncate(window);
                 gain.push(if done {
                     0.0
@@ -2121,9 +2143,10 @@ impl<'a> Reader<'a> {
                         })
                 }
             };
-            if settled {
+            if settled && counted {
+                let counts = keyed.iter().map(|(_, l)| l.len() as u64).collect();
                 let first = fused.into_iter().take(want).collect();
-                return self.visible_hits(decl, filter, first, with_meta);
+                return Ok((self.visible_hits(decl, filter, first, with_meta)?, counts));
             }
             pull = pull.saturating_mul(4);
         }
