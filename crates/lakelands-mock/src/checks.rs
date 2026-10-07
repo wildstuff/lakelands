@@ -112,6 +112,7 @@ macro_rules! door_checks {
             a_verb_tool_says_what_its_risk_does,
             a_step_to_an_unbound_view_is_refused,
             a_view_reads_only_what_its_source_has,
+            a_view_is_declared_only_as_the_store_declares_it,
             a_migration_keeps_what_a_view_reads,
             a_declaration_reads_only_what_its_type_has,
             a_function_over_null_is_null_on_every_lake,
@@ -2585,6 +2586,250 @@ pub async fn a_view_reads_only_what_its_source_has(store: Arc<dyn LakeStore>) {
         );
     }
     assert_eq!(f.head().await, head, "nothing is appended");
+}
+
+/// A view is declared only where the store would compute it: its sources
+/// declared, read once, never itself through other views and never a
+/// view with a parameter; its grouping on fields of its sources, of one
+/// kind; each merged measure an aggregate, every measure named once; a
+/// declared field for each value it computes and none that nothing
+/// fills; each parameter declared once and read. Each fault is refused
+/// as invalid in the store's words, on the field where it names one, and
+/// nothing is appended; on the mock as on the store (018, 028).
+pub async fn a_view_is_declared_only_as_the_store_declares_it(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let (c, owner) = (&f.catalog, &f.cast.owner);
+    let decl = |v: Value| serde_json::from_value::<Declaration>(v).expect("a declaration");
+    let count = |n: &str| json!([{"name": n, "expr": "count()"}]);
+    for d in [
+        json!({"declare": "type", "name": "credit", "key": ["status"], "fields": [
+            {"name": "status", "type": {"kind": "text"}}, {"name": "x", "type": {"kind": "number"}}]}),
+        json!({"declare": "type", "name": "pview", "key": ["status"], "fields": [
+            {"name": "status", "type": {"kind": "text"}}, {"name": "k", "type": {"kind": "number"}}],
+            "view": {"source": "credit", "group_by": ["status"], "params": [{"name": "p", "kind": "text"}],
+                     "where": "status = param('p')", "measures": count("k")}}),
+    ] {
+        c.declare(owner, decl(d))
+            .await
+            .expect("the owner declares it");
+    }
+    // A view `v` over `source` by `group_by`, counting into `n`, its
+    // fields `status`, `n` and `extra`, and `view` merged into its own.
+    let view = |v: &str, source: &str, group_by: &str, extra: &[&str], view: Value| {
+        let mut fields = vec![
+            json!({"name": group_by, "type": {"kind": "text"}}),
+            json!({"name": "n", "type": {"kind": "number"}}),
+        ];
+        fields.extend(
+            extra
+                .iter()
+                .map(|e| json!({"name": e, "type": {"kind": "number"}})),
+        );
+        let mut d = json!({"declare": "type", "name": v, "key": [group_by], "fields": fields,
+            "view": {"source": source, "group_by": [group_by], "measures": count("n")}});
+        d["view"]
+            .as_object_mut()
+            .unwrap()
+            .extend(view.as_object().unwrap().clone());
+        d
+    };
+    let merged = |source: &str, group_by: Value, measures: Value| json!({"merge": [{"source": source, "group_by": group_by, "measures": measures}]});
+    let m = || count("m");
+    let status = || json!(["status"]);
+    let rows = [
+        (
+            view(
+                "v1",
+                INVOICE,
+                "status",
+                &["m"],
+                merged(INVOICE, status(), m()),
+            ),
+            None,
+            "type `v1`, merged source `invoice`: a view reads each source once, and `invoice` is read already",
+        ),
+        (
+            view(
+                "v2",
+                INVOICE,
+                "status",
+                &["m", "o"],
+                json!({"merge": [
+            {"source": "credit", "group_by": ["status"], "measures": count("m")},
+            {"source": "credit", "group_by": ["status"], "measures": count("o")}]}),
+            ),
+            None,
+            "type `v2`, merged source `credit`: a view reads each source once, and `credit` is read already",
+        ),
+        (
+            view(
+                "v3",
+                INVOICE,
+                "status",
+                &["m"],
+                merged("ghost", status(), m()),
+            ),
+            None,
+            "type `v3`, merged source `ghost`: `ghost` is not declared",
+        ),
+        (
+            view(
+                "v4",
+                INVOICE,
+                "status",
+                &["m"],
+                merged("pview", status(), m()),
+            ),
+            None,
+            "type `v4`: its view reads `pview`, a view with the parameter `p`; only a read that names a view binds its parameters, so no view reads one",
+        ),
+        (
+            view(
+                "v5",
+                INVOICE,
+                "status",
+                &["m"],
+                merged("credit", json!(["status", "x"]), m()),
+            ),
+            None,
+            "type `v5`, merged source `credit`: it groups by 2 field(s), and the view by 1; each lines up with one of the view's, in order",
+        ),
+        (
+            view(
+                "v6",
+                INVOICE,
+                "status",
+                &["m"],
+                merged("credit", json!(["nope"]), m()),
+            ),
+            None,
+            "type `v6`, merged source `credit` groups by `nope`, which `credit` does not have",
+        ),
+        (
+            view(
+                "v7",
+                INVOICE,
+                "status",
+                &["m"],
+                merged("credit", json!(["x"]), m()),
+            ),
+            None,
+            "type `v7`, merged source `credit`: its `x` lines up with the view's `status`, of another kind, so no group would meet",
+        ),
+        (
+            view(
+                "v8",
+                INVOICE,
+                "status",
+                &["m"],
+                merged("credit", status(), json!([{"name": "m", "expr": "1"}])),
+            ),
+            None,
+            "type `v8`, merged source `credit`, measure `m`: it calls no aggregate, so it measures nothing of `credit`",
+        ),
+        (
+            view(
+                "v9",
+                INVOICE,
+                "status",
+                &[],
+                merged("credit", status(), count("n")),
+            ),
+            None,
+            "type `v9`: its view names the measure `n` twice; a view's measures and its merged sources' share one set of names",
+        ),
+        (
+            view(
+                "v10",
+                INVOICE,
+                "status",
+                &["m"],
+                json!({"merge": [{"source": "credit",
+            "group_by": ["status"], "where": "status = ", "measures": count("m")}]}),
+            ),
+            None,
+            "type `v10`, merged source `credit`, `where`: `status = ` does not parse: the expression ends too early (at character 9)",
+        ),
+        (
+            view("v11", "ghost", "status", &[], json!({})),
+            None,
+            "type `v11`: its view reads `ghost`, which is not declared",
+        ),
+        (
+            view("v12", "pview", "status", &[], json!({})),
+            None,
+            "type `v12`: its view reads `pview`, a view with the parameter `p`; only a read that names a view binds its parameters, so no view reads one",
+        ),
+        (
+            view("v13", INVOICE, "nope", &[], json!({})),
+            None,
+            "type `v13`: its view groups by `nope`, which `invoice` does not have",
+        ),
+        (
+            view("v14", "v14", "status", &[], json!({})),
+            None,
+            "type `v14`: its view closes a cycle, `v14` reads `v14`; a view may not read itself, through other views or directly",
+        ),
+        (
+            view("v15", INVOICE, "status", &["extra"], json!({})),
+            Some("extra"),
+            "type `v15`: its field `extra` is neither a `group_by` field nor a measure of its view, so nothing would fill it",
+        ),
+        (
+            view(
+                "v16",
+                INVOICE,
+                "status",
+                &[],
+                json!({"measures": count("total")}),
+            ),
+            Some("total"),
+            "type `v16`: its view's measure `total` has no declared field to land in; a view declares a field for each value it computes, of the kind it holds",
+        ),
+        (
+            view(
+                "v17",
+                INVOICE,
+                "status",
+                &[],
+                json!({"params": [{"name": "p", "kind": "text"}]}),
+            ),
+            None,
+            "type `v17`: its view declares the parameter `p`, which neither its `where` nor its measures read, so a reader would bind a value that changes nothing",
+        ),
+        (
+            view(
+                "v18",
+                INVOICE,
+                "status",
+                &[],
+                json!({"where": "status = param('p')",
+            "params": [{"name": "p", "kind": "text"}, {"name": "p", "kind": "text"}]}),
+            ),
+            None,
+            "type `v18`: its view declares the parameter `p` twice",
+        ),
+    ];
+    let head = f.head().await;
+    for (d, field, want) in rows {
+        let e = c.declare(owner, decl(d)).await.expect_err(want);
+        assert!(
+            matches!(&e, Error::Refused { field: at, reason: Refusal::Invalid { message } }
+                if message == want && at.as_ref().map(FieldName::as_str) == field),
+            "want {want:?} on {field:?}, got {e:?}"
+        );
+    }
+    assert_eq!(f.head().await, head, "nothing is appended");
+    let valid = view(
+        "v19",
+        INVOICE,
+        "status",
+        &["m"],
+        merged("credit", status(), m()),
+    );
+    c.declare(owner, decl(valid))
+        .await
+        .expect("a view merging another source is declared");
 }
 
 /// An invalid refusal whose text names each of `names`.
