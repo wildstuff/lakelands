@@ -1046,7 +1046,8 @@ fn callable(st: &State, who: &Principal, v: &VerbDecl) -> bool {
 }
 
 /// As the store: whether `who` is shown relation `r` of `owner`: both ends
-/// shown, and of a derived relation every matched field known on its side.
+/// shown, the reference field that carries it known, and of a derived
+/// relation every matched field known on its side.
 pub(crate) fn relation_shown(
     st: &State,
     who: &Principal,
@@ -1061,6 +1062,7 @@ pub(crate) fn relation_shown(
     };
     let mut pairs = r.derived.iter().flat_map(|d| &d.pairs);
     st.visible(who, &owner.name).is_some()
+        && r.via.iter().all(|v| known(owner, v))
         && pairs.all(|p| known(owner, &p.from) && known(&target.decl, &p.to))
 }
 
@@ -2754,6 +2756,12 @@ fn as_author(
         .enumerate()
         .filter(|(_, r)| unshown(r))
     {
+        if to.relations.iter().any(|t| t.name == r.name) {
+            return Err(invalid(format!(
+                "type `{}` declares the relation `{}` twice",
+                to.name, r.name
+            )));
+        }
         to.relations.insert(i.min(to.relations.len()), r.clone());
     }
     // What a relation it is not shown reads: its `via`, its match's own side.
@@ -4257,14 +4265,17 @@ impl Catalog for MockCatalog {
                     step.relation
                 )));
             }
-            // A derived relation probes its matched fields on both sides
-            // (024, 044).
+            // A relation probes the reference field that carries it, and a
+            // derived one its matched fields on both sides (024, 044).
+            let (owner, target) = if forward {
+                (scope_ty, next)
+            } else {
+                (next, scope_ty)
+            };
+            if let (Some(v), _) = &via {
+                readable(&st, who, owner, v)?;
+            }
             if let (_, Some(d)) = &via {
-                let (owner, target) = if forward {
-                    (scope_ty, next)
-                } else {
-                    (next, scope_ty)
-                };
                 for p in &d.pairs {
                     readable(&st, who, owner, &p.from)?;
                     readable(&st, who, target, &p.to)?;

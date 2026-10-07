@@ -92,6 +92,22 @@ impl<'a> Seen<'a> {
         for (owner, r) in decls {
             let out = matches!(walk, Walk::Out | Walk::Both) && owner == near.0;
             let inn = matches!(walk, Walk::In | Walk::Both) && r.target == near.0;
+            if !(out || inn) {
+                continue;
+            }
+            // As the store: every hop probes the field that carries the
+            // relation, and a derived one's matched fields on both sides
+            // (024, 044).
+            let (o, t) = (&self.st.types[&owner], self.st.types.get(&r.target));
+            if let Some(v) = &r.via {
+                super::readable(self.st, self.who, o, v)?;
+            }
+            if let (Some(d), Some(t)) = (&r.derived, t) {
+                for p in &d.pairs {
+                    super::readable(self.st, self.who, o, &p.from)?;
+                    super::readable(self.st, self.who, t, &p.to)?;
+                }
+            }
             if let Some(d) = &r.derived {
                 let Some(here) = self.st.live(&near.0, &near.1) else {
                     continue;

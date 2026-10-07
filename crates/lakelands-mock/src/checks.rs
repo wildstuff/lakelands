@@ -227,7 +227,9 @@ macro_rules! door_checks {
             #[own_principals]
             a_grant_admits_only_the_records_whose_fields_hold_its_values,
             #[own_principals]
-            a_hidden_target_is_not_learned_by_declaring_its_field);
+            a_hidden_target_is_not_learned_by_declaring_its_field,
+            #[own_principals]
+            a_relation_carried_by_a_hidden_field_answers_nothing_of_it);
     };
     (@each $at:ident, $new:expr, $block_on:path;
         $($(#[$mark:ident])? $name:ident),* $(,)?) => {
@@ -11021,4 +11023,133 @@ fn vector(name: &str) -> FieldDecl {
         },
         ..text(name)
     }
+}
+
+/// A relation carried by a reference field answers nothing of the field to
+/// a reader held from it (024, extended): one who may not know of `tgt`
+/// is not shown `r`, and a walk over it either way answers as over a
+/// relation that is not there; one who sees `tgt` masked is shown `r`,
+/// and a walk over it is refused as not granted, naming `tgt`. An author
+/// held from `tgt` who sends `r` again declares it twice.
+pub async fn a_relation_carried_by_a_hidden_field_answers_nothing_of_it(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    let tgt = json!({"name": "tgt", "type": {"kind": "reference", "target": "other"}});
+    for d in [
+        json!({"declare": "type", "name": "other", "fields": [{"name": "n", "type": {"kind": "text"}}]}),
+        json!({"declare": "type", "name": "wk", "fields": [{"name": "no", "type": {"kind": "text"}}, tgt],
+               "relations": [{"name": "r", "target": "other", "via": "tgt"}]}),
+    ] {
+        let d = serde_json::from_value::<Declaration>(d).expect("a declaration reads");
+        c.declare(own, d).await.expect("the owner declares");
+    }
+    for (t, k, p) in [("other", "o1", ("n", "o")), ("wk", "w1", ("tgt", "o1"))] {
+        let p = patch(&[(p.0, json!(p.1))]);
+        c.upsert(own, &ty(t), &key(k), p, WriteOpts::default())
+            .await
+            .expect("the owner writes");
+    }
+    let step = |walk| Step {
+        relation: "r".into(),
+        walk,
+        ty: None,
+        filter: None,
+        depth: Default::default(),
+    };
+    let mut wrong = Vec::new();
+    for access in ["none", "masked"] {
+        let grants = json!({"default": "read", "types": {"wk": {"fields": {"tgt": access}}}});
+        let grants = serde_json::from_value(grants).expect("grants read");
+        let who = &principal(store.lake(), PrincipalKind::Agent, "held", grants);
+        for (from, k, walk) in [("wk", "w1", Walk::Out), ("other", "o1", Walk::In)] {
+            let walked = Pattern::traverse(ty(from), key(k), vec![step(walk)]);
+            let answer = c.query(who, walked).await;
+            let right = match (&answer, access) {
+                (
+                    Err(Error::Refused {
+                        field: None,
+                        reason: Refusal::Invalid { message },
+                    }),
+                    "none",
+                ) => !message.contains("tgt"),
+                (
+                    Err(Error::Refused {
+                        field: Some(f),
+                        reason: Refusal::NotGranted,
+                    }),
+                    _,
+                ) => access == "masked" && f.as_str() == "tgt",
+                _ => false,
+            };
+            if !right {
+                wrong.push(format!("a walk from `{k}`, `tgt` {access}: {answer:?}"));
+            }
+        }
+        let told = c.describe_type(who, &ty("wk"), ReadAt::default()).await;
+        let told = told.expect("`wk` is described").data;
+        if told.relations.iter().any(|r| r.name.as_str() == "r") != (access == "masked") {
+            wrong.push(format!(
+                "`describe_type` of `wk`, `tgt` {access}: {:?}",
+                told.relations
+            ));
+        }
+    }
+    // An author held from `tgt` who sends `r` again declares it twice.
+    let grants =
+        json!({"default": "read", "schema": true, "types": {"wk": {"fields": {"tgt": "none"}}}});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let author = &principal(store.lake(), PrincipalKind::Agent, "author", grants);
+    let sent = json!({"declare": "type", "name": "wk", "fields": [{"name": "no", "type": {"kind": "text"}}],
+                      "relations": [{"name": "r", "target": "other"}]});
+    let sent = serde_json::from_value::<Declaration>(sent).expect("a declaration reads");
+    let sent = c.declare(author, sent).await;
+    if !matches!(&sent, Err(e) if e.to_string().contains("declares the relation `r` twice")) {
+        wrong.push(format!("`r` sent again by its author: {sent:?}"));
+    }
+    // The owner who sends `wk` with two `r` is refused in the same words.
+    let r = json!({"name": "r", "target": "other", "via": "tgt"});
+    let sent = json!({"declare": "type", "name": "wk", "fields": [{"name": "no", "type": {"kind": "text"}},
+                      {"name": "tgt", "type": {"kind": "reference", "target": "other"}}],
+                      "relations": [r, {"name": "r", "target": "other"}]});
+    let sent = serde_json::from_value::<Declaration>(sent).expect("a declaration reads");
+    let sent = c.declare(own, sent).await;
+    if !matches!(&sent, Err(e) if e.to_string().contains("type `wk` declares the relation `r` twice"))
+    {
+        wrong.push(format!("`r` sent twice by the owner: {sent:?}"));
+    }
+    // From `s1`, `wk`'s `r` comes up only around `o1`, past the first hop.
+    let side = json!({"declare": "type", "name": "side", "fields": [{"name": "pt", "type": {"kind": "reference", "target": "other"}}],
+                      "relations": [{"name": "r", "target": "other", "via": "pt"}]});
+    let side = serde_json::from_value::<Declaration>(side).expect("a declaration reads");
+    c.declare(own, side).await.expect("the owner declares");
+    let p = patch(&[("pt", json!("o1"))]);
+    c.upsert(own, &ty("side"), &key("s1"), p, WriteOpts::default())
+        .await
+        .expect("the owner writes");
+    for access in ["none", "masked"] {
+        let grants = json!({"default": "read", "types": {"wk": {"fields": {"tgt": access}}}});
+        let grants = serde_json::from_value(grants).expect("grants read");
+        let who = &principal(store.lake(), PrincipalKind::Agent, "held", grants);
+        let mut p = Pattern::traverse(ty("side"), key("s1"), vec![step(Walk::Both)]);
+        p.project = lakelands_api::query::Projection::Components;
+        let answer = c.query(who, p).await;
+        let right = match &answer {
+            Ok(r) => access == "none" && !format!("{:?}", r.data).contains("w1"),
+            Err(Error::Refused {
+                field: Some(f),
+                reason: Refusal::NotGranted,
+            }) => access == "masked" && f.as_str() == "tgt",
+            Err(_) => false,
+        };
+        if !right {
+            wrong.push(format!(
+                "the components from `s1`, `tgt` {access}: {answer:?}"
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "`r` answers nothing of `tgt`: {}",
+        wrong.join("; ")
+    );
 }

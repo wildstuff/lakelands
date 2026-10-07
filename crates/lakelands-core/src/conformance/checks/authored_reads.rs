@@ -194,9 +194,10 @@ async fn a_declaration_reads_only_what_its_author_may_read(
     );
     // What a type's shape names stands as declared: an author kept from
     // its valid time or a relation's `via` field declares the type again
-    // from its view, with one more field, and migrates it. One kept from
-    // its key field is not shown the type (lakelands#715): its declaration
-    // is not granted and its migration finds no type.
+    // from its view, with one more field, and migrates it; the relation it
+    // is not shown is not in its view, and is kept (lakelands#727). One
+    // kept from its key field is not shown the type (lakelands#715): its
+    // declaration is not granted and its migration finds no type.
     let reference = json!({"kind": "reference", "target": "account"});
     let owner = json!({"name": "owner", "target": "account", "via": "to"});
     let shapes = [
@@ -224,13 +225,20 @@ async fn a_declaration_reads_only_what_its_author_may_read(
         let name = shape["name"].as_str().unwrap_or_default().to_owned();
         let mut author = field_access(store.as_ref(), "author", &name, &[(hidden, Access::None)]);
         author.grants.schema = true;
-        let view = |a: &str| over(shape.clone(), json!({"fields": [text(a), text("more")]}));
+        let mut seen = shape.clone();
+        seen.as_object_mut().map(|s| s.remove("relations"));
+        let view = |a: &str| over(seen.clone(), json!({"fields": [text(a), text("more")]}));
         let again = decl(over(view("a"), json!({"declare": "type"})));
         let mut to = migration(serde_json::from_value(view("a2")).expect("a type"));
         to.renames = vec![("a".into(), "a2".into())];
         let again = why(c.declare(&author, again).await);
         kept.push((name, again, why(c.migrate(&author, to).await)));
     }
+    let doc = l.describe_type("doc").await?.relations.len();
+    ensure!(
+        doc == 1,
+        "`doc` keeps its relation `owner`; it holds {doc} relations"
+    );
     let hidden = (
         Some("refused: you hold no grant for this".to_owned()),
         Some("there is no type `keyed`".to_owned()),

@@ -42,7 +42,7 @@ check!(
 check!(
     /// A walk probes the matched fields on both sides.
     PROBES_BOTH_SIDES = a_principal_without_read_on_a_matched_field_is_refused_naming_it,
-    "024, 044 and 006: a walk over a derived relation, a step either way, a graph and a measure alike, is answered as for a relation the type does not declare, naming only the relation, when the principal may not know of a matched field on either side; over a matched field it sees masked it is refused as not granted, naming the field"
+    "024, 044 and 006: a walk over a derived relation, a step either way, a graph and a measure alike, past its first hop too, is answered as for a relation the type does not declare, naming only the relation, when the principal may not know of a matched field on either side; over a matched field it sees masked it is refused as not granted, naming the field"
 );
 
 check!(
@@ -323,6 +323,30 @@ async fn a_principal_without_read_on_a_matched_field_is_refused_naming_it(
         matches!(refused_on(&r), Some(("customer_no", Refusal::NotGranted))),
         "a walk over `customer` by a principal who sees `customer_no` masked is refused as not \
          granted, naming it; it answered {r:?}"
+    );
+    // From `m1`, whose own `customer` reaches `10`, the invoices'
+    // `customer` comes up only at the second hop, around `10`.
+    let l = Lake::of(store.as_ref());
+    let about = json!({"name": "about", "type": {"kind": "reference", "target": "customer"}});
+    l.declare_json(json!({"declare": "type", "name": "memo", "fields": [about],
+        "relations": [{"name": "customer", "target": "customer", "via": "about"}]}))
+        .await?;
+    l.upsert("memo", "m1", json!({"about": "10"})).await?;
+    let depth = lakelands_api::query::Depth { min: 1, max: 2 };
+    let steps = vec![lakelands_api::query::Step {
+        depth,
+        ..step("customer", Walk::Both)
+    }];
+    let r = (cat.query(
+        &masked,
+        pattern("memo", Some("m1"), steps, Projection::Graph),
+    ))
+    .await;
+    ensure!(
+        matches!(refused_on(&r), Some(("customer_no", Refusal::NotGranted))),
+        "a graph two hops over `customer` from `m1` by a principal who sees `customer_no` \
+         masked is refused as not granted, naming it, where the second hop walks the \
+         invoices' `customer`; it answered {r:?}"
     );
     Ok(())
 }

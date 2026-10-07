@@ -16,7 +16,7 @@ use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
     Lake, Must, agg, aggregate, all_found, derived, describe_type, embedding, field, field_access,
     field_writer, find_where, get_at, ingest, no_such_field, nobody, order, pattern, read,
-    reads_all, refused_on, searchable, source_record, sourced, try_upsert, type_decl,
+    reads_all, refused_on, searchable, source_record, sourced, step, try_upsert, type_decl,
 };
 
 check!(
@@ -31,6 +31,135 @@ check!(
     "024 and 006: a derived field, one derived from it in turn, and a vector embedded from a field are read as the field they are built from: absent where it is absent and masked where it is masked, on get, find, a pattern's rows and describe, which shows a definition only where every field it names is read; a filter, an order or an aggregate over them is refused naming them, as not granted where they are masked and as for an undeclared field where they are hidden",
     embedding
 );
+
+check!(
+    /// A relation carried by a field its reader may not read answers nothing of it.
+    VIA_HIDDEN = a_relation_carried_by_a_hidden_field_is_walked_by_no_one_held_from_it,
+    "024, extended (lakelands#727): a relation carried by a reference field is not shown to a reader who may not know of the field: `describe_type` does not list it, a walk out over it is answered as over a relation the type does not declare, and so is a graph from its type, while a walk in and a graph from its target reach only another type's relation of the same name; to a reader who sees the field masked it is shown, and a walk over it, out, in or as a graph, is refused as not granted, naming the field, and so is a walk of two hops, a graph or `components` that meets it past its first hop; an author held from the field who sends a relation of its name is refused, word for word, as the owner is for a type that declares a relation twice, and the type stays as it is"
+);
+
+/// What a pattern answered, short: the keys it reached, or the refusal.
+fn walked(answer: lakelands_api::Result<lakelands_api::Reply<QueryResult>>) -> String {
+    if let Some((f, Refusal::NotGranted)) = refused_on(&answer) {
+        return format!("not granted {f}");
+    }
+    let mut keys: Vec<String> = match answer.map(|r| r.data) {
+        Ok(QueryResult::Rows { rows, .. }) => (rows.iter().flatten())
+            .filter(|(k, _)| k.ends_with(".key") || *k == "key")
+            .map(|(_, v)| v.as_str().unwrap_or_default().to_owned())
+            .collect(),
+        Ok(QueryResult::Graph { nodes, .. }) => nodes.iter().map(|n| n.key.to_string()).collect(),
+        Ok(other) => return format!("{other:?}"),
+        Err(e) if e.to_string().contains("has no relation `r`") => return "no relation".into(),
+        Err(e) => return e.to_string(),
+    };
+    keys.sort();
+    keys.dedup();
+    keys.join(" ")
+}
+
+async fn a_relation_carried_by_a_hidden_field_is_walked_by_no_one_held_from_it(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::query::Walk;
+    let l = Lake::of(store.as_ref());
+    let cat = l.cat.as_ref();
+    // `wk` and `side` each carry a relation `r` to `other` by a field.
+    l.declare(type_decl("other", vec![field("n", StorageKind::Text)]))
+        .await?;
+    let to_other = json!({"kind": "reference", "target": "other"});
+    for (name, via) in [("wk", "tgt"), ("side", "pt")] {
+        l.declare_json(json!({"declare": "type", "name": name, "fields": [
+            {"name": "no", "type": {"kind": "text"}}, {"name": via, "type": to_other}],
+            "relations": [{"name": "r", "target": "other", "via": via}]}))
+            .await?;
+    }
+    l.upsert("other", "o1", json!({"n": "o"})).await?;
+    l.upsert("wk", "w1", json!({"no": "1", "tgt": "o1"}))
+        .await?;
+    l.upsert("side", "s1", json!({"no": "1", "pt": "o1"}))
+        .await?;
+    let rows = || Projection::Rows { fields: vec![] };
+    let walk = |ty: &str, key: &str, w| pattern(ty, Some(key), vec![step("r", w)], rows());
+    let both = || vec![step("r", Walk::Both)];
+    let graph = |ty: &str, key: &str| pattern(ty, Some(key), both(), Projection::Graph);
+    // From `s1`, `wk`'s `r` comes up only at the second hop, around `o1`.
+    let far = |project| {
+        let depth = lakelands_api::query::Depth { min: 1, max: 2 };
+        let steps = vec![lakelands_api::query::Step {
+            depth,
+            ..step("r", Walk::Both)
+        }];
+        pattern("side", Some("s1"), steps, project)
+    };
+    let components = || pattern("side", Some("s1"), both(), Projection::Components);
+    let (mut wrong, ng) = (Vec::new(), "not granted tgt");
+    for (access, out, inn, from_wk, from_other) in [
+        (Access::None, "no relation", "o1 s1", "no relation", "o1 s1"),
+        (Access::Masked, ng, ng, ng, ng),
+    ] {
+        let who = field_access(store.as_ref(), "held", "wk", &[("tgt", access)]);
+        for (what, p, want) in [
+            ("a walk out of `w1`", walk("wk", "w1", Walk::Out), out),
+            ("a walk in to `o1`", walk("other", "o1", Walk::In), inn),
+            ("a graph from `w1`", graph("wk", "w1"), from_wk),
+            ("a graph from `o1`", graph("other", "o1"), from_other),
+        ] {
+            let said = walked(cat.query(&who, p).await);
+            if said != want {
+                wrong.push(format!("{what}, `tgt` {access:?}: `{said}`, not `{want}`"));
+            }
+        }
+        let want = if access == Access::None { "o1 s1" } else { ng };
+        for (what, p) in [
+            ("a graph from `s1`, two hops", far(Projection::Graph)),
+            ("rows from `s1`, two hops", far(rows())),
+            ("the components from `s1`", components()),
+        ] {
+            let said = walked(cat.query(&who, p).await);
+            if said != want {
+                wrong.push(format!("{what}, `tgt` {access:?}: `{said}`, not `{want}`"));
+            }
+        }
+        let told = describe_type(cat, &who, "wk").await?;
+        let shown = told.relations.iter().any(|r| r.name.as_str() == "r");
+        if shown != (access == Access::Masked) {
+            wrong.push(format!("`describe_type`, `tgt` {access:?}: `r` {shown}"));
+        }
+    }
+    // An author held from `tgt` sends `r` again: it is refused as the
+    // owner is for a type that declares `r` twice, and `wk` stays as it is.
+    let mut author = field_access(store.as_ref(), "author", "wk", &[("tgt", Access::None)]);
+    author.grants.schema = true;
+    let kind = |f: &str| match f {
+        "tgt" => to_other.clone(),
+        _ => json!({"kind": "text"}),
+    };
+    let wk = |fields: &[&str], rs: serde_json::Value| {
+        let fields: Vec<serde_json::Value> =
+            (fields.iter().map(|f| json!({"name": f, "type": kind(f)}))).collect();
+        let d = json!({"declare": "type", "name": "wk", "fields": fields, "relations": rs});
+        serde_json::from_value(d).expect("a declaration reads")
+    };
+    let via = json!({"name": "r", "target": "other", "via": "tgt"});
+    let linked = json!({"name": "r", "target": "other"});
+    let owners = cat
+        .declare(&l.own, wk(&["no", "tgt"], json!([via, linked])))
+        .await;
+    let authors = cat.declare(&author, wk(&["no"], json!([linked]))).await;
+    let (owners, authors) = (format!("{owners:?}"), format!("{authors:?}"));
+    let relations = l.describe_type("wk").await?.relations.len();
+    if authors != owners || !authors.contains("twice") || relations != 1 {
+        wrong.push(format!(
+            "`r` sent again: {authors}, the owner's: {owners}; {relations}"
+        ));
+    }
+    ensure!(
+        wrong.is_empty(),
+        "a relation carried by `tgt` answers nothing of it to a reader held from it: {wrong:?}"
+    );
+    Ok(())
+}
 
 async fn a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field(
     store: Arc<dyn LakeStore>,
