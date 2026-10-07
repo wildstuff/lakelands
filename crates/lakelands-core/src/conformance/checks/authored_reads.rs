@@ -20,7 +20,7 @@ use crate::conformance::fixture::{
 check!(
     /// A declaration reads only what its author may read.
     AUTHOR_READS = a_declaration_reads_only_what_its_author_may_read,
-    "024 and 028, extended (lakelands#538): a declaration whose author may not know of a field it reads is answered as one that reads a field the type does not have, whatever reads it: a set's `where`, a trigger's `when`, a verb's `requires`, what it sets a field from and the field it sets, a derived field, a field computed by a function, an embedding, a view's `where`, grouping and measure, and a derived relation's pair; by `declare`, `apply`, `add_field`, a migration and a proposal alike; a field the author knows of and may not read is refused as not granted on it, and a verb may set it; a field the type's shape names, as a key, a valid time or a relation's `via`, stands as declared for an author who may not know of it; `add_field` adds to its author's view of the type; a write's answer names a trigger or an object set only to one who reads every field its condition names, shown the definition or not, and still says `through`",
+    "024 and 028, extended (lakelands#538): a declaration whose author may not know of a field it reads is answered as one that reads a field the type does not have, whatever reads it: a set's `where`, a trigger's `when`, a verb's `requires`, what it sets a field from and the field it sets, a derived field, a field computed by a function, an embedding, a view's `where`, grouping and measure, and a derived relation's pair; by `declare`, `apply`, `add_field`, a migration and a proposal alike; a field the author knows of and may not read is refused as not granted on it, and a verb may set it; a field the type's shape names, as a valid time or a relation's `via`, stands as declared for an author who may not know of it, and a key field it may not know of hides the type from it (lakelands#715); `add_field` adds to its author's view of the type; a write's answer names a trigger or an object set only to one who reads every field its condition names, shown the definition or not, and still says `through`",
     embedding
 );
 
@@ -193,8 +193,10 @@ async fn a_declaration_reads_only_what_its_author_may_read(
         said[1]
     );
     // What a type's shape names stands as declared: an author kept from
-    // its key field, its valid time or a relation's `via` field declares
-    // the type again from its view, with one more field, and migrates it.
+    // its valid time or a relation's `via` field declares the type again
+    // from its view, with one more field, and migrates it. One kept from
+    // its key field is not shown the type (lakelands#715): its declaration
+    // is not granted and its migration finds no type.
     let reference = json!({"kind": "reference", "target": "account"});
     let owner = json!({"name": "owner", "target": "account", "via": "to"});
     let shapes = [
@@ -229,10 +231,18 @@ async fn a_declaration_reads_only_what_its_author_may_read(
         let again = why(c.declare(&author, again).await);
         kept.push((name, again, why(c.migrate(&author, to).await)));
     }
+    let hidden = (
+        Some("refused: you hold no grant for this".to_owned()),
+        Some("there is no type `keyed`".to_owned()),
+    );
     ensure!(
-        kept.iter().all(|k| k.1.is_none() && k.2.is_none()),
-        "an author kept from a field its type's shape names declares the type again from its \
-         view and migrates it; refused, by type, at `declare` and at `migrate`: {kept:?}"
+        kept.iter().all(|k| match k.0.as_str() {
+            "keyed" => (&k.1, &k.2) == (&hidden.0, &hidden.1),
+            _ => k.1.is_none() && k.2.is_none(),
+        }),
+        "an author kept from a valid time or a `via` field declares the type again from its \
+         view and migrates it, and one kept from a key field is answered as for a type it is \
+         not shown; by type, at `declare` and at `migrate`: {kept:?}"
     );
     // A verb may set a field its author knows of and may not read, and
     // `add_field` adds to its author's view of the type.

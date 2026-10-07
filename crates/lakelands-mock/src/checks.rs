@@ -154,6 +154,8 @@ macro_rules! door_checks {
             #[own_principals]
             a_type_its_principal_is_shown_is_one_it_may_find_and_get,
             #[own_principals]
+            a_type_keyed_by_a_field_its_principal_may_not_know_of_is_not_shown,
+            #[own_principals]
             a_retry_is_answered_before_its_writer_is_asked_what_it_is_shown,
             a_record_event_says_whether_it_made_the_record,
             a_required_field_is_judged_over_the_record_whole,
@@ -8908,6 +8910,81 @@ pub async fn a_type_its_principal_is_shown_is_one_it_may_find_and_get(store: Arc
          its record with the masked fields in the declaration's order, and is offered the \
          reads; these rows differ:\n{}",
         differ.join("\n")
+    );
+}
+
+/// A type keyed by a field its principal may not know of is not shown
+/// (lakelands#715): every record key would hand out the field's value. To
+/// one held at `none` on `ledger`'s key field, `describe_type`, `get` and
+/// `find` answer as on `ghost`, which is not declared, and `describe`
+/// names no `ledger`; to one who reads the key field masked, the type is
+/// shown.
+pub async fn a_type_keyed_by_a_field_its_principal_may_not_know_of_is_not_shown(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let (owner, c, ledger) = (&f.cast.owner, &f.catalog, ty("ledger"));
+    let decl = json!({"declare": "type", "name": "ledger", "key": ["code"],
+        "fields": [{"name": "code", "type": {"kind": "text"}}]});
+    let decl = serde_json::from_value(decl).expect("a declaration reads");
+    c.declare(owner, decl)
+        .await
+        .expect("the owner declares `ledger`");
+    let code = patch(&[("code", json!("l1"))]);
+    let l1 = key("l1");
+    let written = c.upsert(owner, &ledger, &l1, code, WriteOpts::default());
+    written.await.expect("the owner writes `l1`");
+    let mut differ = Vec::new();
+    for (id, access, shown) in [
+        ("hidden", Access::None, false),
+        ("masked", Access::Masked, true),
+    ] {
+        let held = TypeGrants {
+            default: None,
+            fields: [("code".into(), access)].into(),
+            ..Default::default()
+        };
+        let grants = Grants {
+            default: Access::Read,
+            types: [(ledger.clone(), held)].into(),
+            ..Grants::default()
+        };
+        let who = &principal(f.store.lake(), PrincipalKind::Agent, id, grants);
+        for t in ["ledger", "ghost"].map(ty) {
+            let said = [
+                format!(
+                    "{:?}",
+                    c.describe_type(who, &t, ReadAt::default()).await.map(drop)
+                ),
+                format!("{:?}", c.get(who, &t, get("l1")).await.map(drop)),
+                format!("{:?}", c.find(who, &t, Find::default()).await.map(drop)),
+            ]
+            .map(|a| a.replace("ghost", "ledger"));
+            differ.push((id, t, said));
+        }
+        let lake = c.describe(who, ReadAt::default()).await;
+        let named =
+            (lake.expect("the lake is described").data.types.iter()).any(|t| t.name == ledger);
+        if named != shown {
+            differ.push((
+                id,
+                ty("describe"),
+                [format!("{named}"), String::new(), String::new()],
+            ));
+        }
+    }
+    let as_ghost = |id: &str| {
+        differ
+            .iter()
+            .filter(|d| d.0 == id)
+            .map(|d| &d.2)
+            .collect::<Vec<_>>()
+    };
+    let (hidden, masked) = (as_ghost("hidden"), as_ghost("masked"));
+    assert!(
+        hidden.len() == 2 && hidden[0] == hidden[1] && masked.len() == 2 && masked[0] != masked[1],
+        "`ledger` keyed by `code` answers one held at `none` on `code` as `ghost`, which is not \
+         declared, and one who reads `code` masked as declared: {differ:?}"
     );
 }
 

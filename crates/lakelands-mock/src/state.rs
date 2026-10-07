@@ -403,10 +403,14 @@ impl State {
     /// relation and that relation's target, and a view with each of its
     /// sources, whatever a grant on its own name says.
     pub fn visible(&self, who: &Principal, ty: &TypeName) -> Option<&DeclaredType> {
+        // As the store: a type keyed by a field its principal may not know
+        // of is not shown.
         let own = |t: &&DeclaredType| {
             let d = &t.decl;
             let given = |f| built_from(who, d, f, &mut Vec::new()).0 != Access::None;
-            type_default(who, &d.name) != Access::None || d.fields.iter().any(given)
+            let mut key = d.fields.iter().filter(|f| d.key.contains(&f.name));
+            key.all(|f| access(who, d, f) != Access::None)
+                && (type_default(who, &d.name) != Access::None || d.fields.iter().any(given))
         };
         let shown = self.types.get(ty).filter(own)?;
         let (mut asked, mut next) = (vec![ty.clone()], vec![shown]);

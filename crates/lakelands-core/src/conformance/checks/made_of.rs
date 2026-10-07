@@ -17,8 +17,8 @@ use serde_json::json;
 use super::links::{SEPT, lake, link_ok};
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, agg, aggregate, field, get_at, object_set_on, order, patch, pattern, principal,
-    step, trigger_on, view_of,
+    Lake, Must, agg, aggregate, field, field_access, get_at, object_set_on, order, patch, pattern,
+    principal, step, trigger_on, view_of,
 };
 
 const LINKS: &str = "sys.link.invoice.approved_by";
@@ -39,6 +39,12 @@ check!(
     /// A pattern names no type its reader is not shown.
     NAMES_NO_TYPE_NOT_SHOWN = a_pattern_names_no_type_its_reader_is_not_shown,
     "006, extended, and 024 (lakelands#653, lakelands#654): to one who reads the whole lake but a type, a pattern's order, sum and grouping over a path on that type answer value for value as over a type that is not declared, and a step from a type it is shown, in, either way or measured, over a relation the kept type derives under the name of one the reader is shown answers as before the kept type was declared, as does a step out of a type over its own relation, or either way (lakelands#662), where a type the reader is shown derives one of that name into it from a field the reader may not read"
+);
+
+check!(
+    /// A type keyed by a field its reader may not know of is not shown.
+    KEYED_BY_HIDDEN = a_type_keyed_by_a_field_its_reader_may_not_know_of_is_not_shown,
+    "006 and 024, extended (lakelands#715): a type whose key names a field its principal may not know of is not shown to it, since every record key would hand out that field's value: to one who reads the whole lake but a key field held at `none`, the type, the link type of its relation and a view over it answer `describe_type`, `get`, `find`, `search`, a pattern, `upsert`, `retire` and `link` value for value as a name that is not declared, `describe` names none of them, and nothing is written; one who reads the key field masked is shown them all"
 );
 
 /// A principal who writes the lake but for these grants by type.
@@ -528,6 +534,78 @@ async fn a_pattern_names_no_type_its_reader_is_not_shown(
     ensure!(
         apart.is_empty(),
         "a pattern names no type its reader is not shown; apart:\n{}",
+        apart.join("\n")
+    );
+    Ok(())
+}
+
+async fn a_type_keyed_by_a_field_its_reader_may_not_know_of_is_not_shown(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let f = |name: &str, kind: &str| json!({"name": name, "type": {"kind": kind}});
+    let count = json!([{"name": "n", "expr": "count()"}]);
+    for mut d in [
+        json!({"name": "ledger", "key": ["code"], "fields": [f("code", "text"), f("cat", "text")],
+            "relations": [{"name": "cites", "target": "ledger"}]}),
+        json!({"name": "ledger_count", "fields": [f("n", "decimal")],
+            "view": {"source": "ledger", "measures": count}}),
+    ] {
+        d["declare"] = json!("type");
+        l.declare_json(d).await?;
+    }
+    for k in ["l1", "l2"] {
+        l.upsert("ledger", k, json!({"code": k, "cat": "a"}))
+            .await?;
+    }
+    let (l1, l2, opts) = (&"l1".into(), &"l2".into(), WriteOpts::default());
+    let (ledger, cites) = (&"ledger".into(), &"cites".into());
+    let linked = (l.cat).link(&l.own, ledger, l1, cites, l2, Default::default(), opts);
+    linked.await.must("linking two ledger records")?;
+    let link = link_key(l1, l2);
+    let kept = [
+        ("ledger", "l1"),
+        ("sys.link.ledger.cites", link.as_str()),
+        ("ledger_count", UNGROUPED),
+    ];
+    let keyed = |id: &str, access| field_access(store.as_ref(), id, "ledger", &[("code", access)]);
+    let (hidden, masked) = (
+        keyed("hidden", Access::None),
+        keyed("masked", Access::Masked),
+    );
+    let (head, mut apart) = (store.head().await.must("the head")?, Vec::new());
+    for (ty, key) in kept {
+        let ghost = ty.replace("ledger", "ghost");
+        let there = doors(l.cat.as_ref(), &hidden, ty, key).await;
+        let none = doors(l.cat.as_ref(), &hidden, &ghost, key).await;
+        for (n, (a, b)) in there.iter().zip(none).enumerate() {
+            if *a != b.replace(&ghost, ty) {
+                apart.push(format!("on `{ty}`, door {n}: {a}; on `{ghost}`: {b}"));
+            }
+        }
+    }
+    for who in [&hidden, &masked] {
+        let d = l.cat.describe(who, Default::default()).await;
+        let names: Vec<_> = d
+            .must("describing the lake")?
+            .data
+            .types
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        let shown = kept
+            .iter()
+            .filter(|k| names.iter().any(|n| n.as_str() == k.0))
+            .count();
+        if shown != if who.id == hidden.id { 0 } else { kept.len() } {
+            apart.push(format!("{} is described {names:?}", who.id));
+        }
+    }
+    ensure!(
+        apart.is_empty() && store.head().await.must("the head")? == head,
+        "a type keyed by a field its reader may not know of, its link type and a view over it \
+         answer as a name that is not declared, and to one who reads the key masked as \
+         declared; nothing is written; apart:\n{}",
         apart.join("\n")
     );
     Ok(())
