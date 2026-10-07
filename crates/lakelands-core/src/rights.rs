@@ -585,6 +585,12 @@ pub fn described_fields<'a>(who: &Principal, t: &mut TypeDecl, find: Find<'_, 'a
     for r in &mut t.relations {
         shown(&crate::links::link_type(&whole.name, r), &mut r.fields);
     }
+    // A valid time over a field it may not know of is not named.
+    let held = |v: &FieldName| t.fields.iter().any(|f| &f.name == v);
+    (t.valid_from, t.valid_to) = (
+        t.valid_from.take().filter(held),
+        t.valid_to.take().filter(held),
+    );
 }
 
 /// Whether `t` declares `name`, a field or a link field
@@ -716,10 +722,15 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
         let had = m.renames.iter().find(|(_, new)| new == f);
         !unread(who, &m.to, f) && !unread(who, stands, had.map_or(f, |(old, _)| old))
     };
+    // A valid time over a field the reader may not know of is not named
+    // (024, extended).
+    let named =
+        |v: &serde_json::Value, t: &TypeDecl| v.as_str().is_none_or(|f| holds(t, &f.into()));
     report.restated.retain(|r| {
         let shape = !FieldDecl::UNREAD.contains(&r.member.as_str());
         let shown = |f| holds(&to, f) && sourced(f) && (shape || read(f));
-        r.field.as_ref().is_none_or(shown)
+        let timed = r.field.is_none() && matches!(r.member.as_str(), "valid_from" | "valid_to");
+        r.field.as_ref().is_none_or(shown) && (!timed || named(&r.was, &was) && named(&r.to, &to))
     });
     report.dropped.retain(|(f, _)| holds(&was, f));
     // A renamed relation is shown as a dropped one is: by the name it had.

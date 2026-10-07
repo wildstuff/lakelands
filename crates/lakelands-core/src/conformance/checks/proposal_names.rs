@@ -22,7 +22,7 @@ use crate::conformance::fixture::{
 check!(
     /// A proposed shape names only what its reader may know of.
     NAMES_AS_THE_READERS_VIEW = a_proposed_shape_names_only_what_its_reader_may_know_of,
-    "013, 024 and 027, extended (lakelands#499): `proposals` shows of a proposed migration the renames, the dropped fields and link fields, the re-keyed types and the rewritten references only where its reader may see the type and know of the field, the totals whole; of a proposed bundle each declaration `describe` would show its reader once in force, a verb by the fields it names; an entry that holds more says `more` and names nothing else, and a bundle with nothing left shows no write"
+    "013, 024 and 027, extended (lakelands#499): `proposals` shows of a proposed migration the renames, the dropped fields and link fields, the re-keyed types and the rewritten references only where its reader may see the type and know of the field, the totals whole; of a proposed bundle each declaration `describe` would show its reader once in force, a verb by the fields it names; an entry that holds more says `more` and names nothing else, and a bundle with nothing left shows no write; a valid time over a field its reader may not know of is named neither in a listed declaration nor in a migration's `to` and report (lakelands#726)"
 );
 
 check!(
@@ -95,7 +95,18 @@ async fn proposed(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let mut renamed = doc(&["title", "hidden", "added"], &[]);
     renamed["fields"][1]["type"]["kind"] = json!("number");
     let renamed = migrate(renamed, &[("secret", "hidden")]);
+    // `doc` valid from `signed_on`, which `hid` may not know of.
+    let mut timed = doc(&["title", "secret"], &["ok"]);
+    let signed_on = json!({"name": "signed_on", "type": {"kind": "date_time"}});
+    timed["fields"]
+        .as_array_mut()
+        .expect("fields")
+        .push(signed_on);
+    timed["valid_from"] = json!("signed_on");
+    let timed_bundle = vec![serde_json::from_value(timed.clone()).expect("a type")];
     for (why, write) in [
+        ("timed", migrate(timed, &[])),
+        ("timed bundle", declare(timed_bundle)),
         ("rekey", migrate(json!(to_iban().to), &[])),
         ("rename", renamed),
         ("drop", migrate(doc(&["title"], &["ok"]), &[])),
@@ -131,7 +142,12 @@ fn readers(store: &dyn LakeStore) -> [Principal; 3] {
     let link = ("sys.link.doc.signed_by", &["ok"][..]);
     let mut hid = reviewer(
         "hid",
-        &[("payment", &[]), ("entry", &[]), ("doc", &["secret"]), link],
+        &[
+            ("payment", &[]),
+            ("entry", &[]),
+            ("doc", &["secret", "signed_on"]),
+            link,
+        ],
     );
     hid.grants.schema = true;
     [
@@ -180,7 +196,7 @@ async fn a_proposed_shape_names_only_what_its_reader_may_know_of(
     let all = all.map(|n| format!("\"name\":\"{n}\""));
     let all: Vec<&str> = all.iter().map(String::as_str).collect();
     let gone = [all[0], all[2], all[3], all[4], "holder"];
-    let rows: [Row; 8] = [
+    let rows: [Row; 10] = [
         (&reads, "rekey", &rekey, &[], false),
         (&hid, "rekey", &["\"sys.link.account.owner\""], &rekey, true),
         (&reads, "rename", &rename, &[], false),
@@ -189,6 +205,22 @@ async fn a_proposed_shape_names_only_what_its_reader_may_know_of(
         (&hid, "bundle", &all, &[], false),
         (&plain, "bundle", &[all[1], all[5]], &gone, true),
         (&unseeing, "bundle", &[all[5]], &["account"], true),
+        // A valid time over a field its reader may not know of is not
+        // named (lakelands#726).
+        (
+            &hid,
+            "timed",
+            &["\"title\""],
+            &["valid_from", "signed_on"],
+            true,
+        ),
+        (
+            &hid,
+            "timed bundle",
+            &["\"title\""],
+            &["valid_from", "signed_on"],
+            true,
+        ),
     ];
     let mut red = Vec::new();
     for (who, why, shows, hides, more) in rows {
@@ -254,9 +286,9 @@ async fn a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_fi
         counts.push(listed(&l, who, filter).await?.len());
     }
     ensure!(
-        counts == [0, 0, 0, 8, 6, 2],
+        counts == [0, 0, 0, 10, 6, 2],
         "`type` and `kind` are answered on what the reader is shown: one who may not see \
-         `account` must list nothing by it, as by an undeclared type, no upsert, and all eight \
+         `account` must list nothing by it, as by an undeclared type, no upsert, and all ten \
          by state, and the owner six by the type and two upserts; they list {counts:?}"
     );
     // The accept: a trigger declared since reads the field the migration drops.

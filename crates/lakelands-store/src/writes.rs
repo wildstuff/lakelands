@@ -2188,8 +2188,14 @@ impl Call<'_> {
     /// author is shown it, so a field the author may not know of answers as
     /// one the type does not have, whatever reads it. Then a field it knows
     /// of and may not read is refused as not granted, where what its author
-    /// adds or changes reads its value.
-    fn reads_as_author(&self, o: &Ontology, sent: &[Declaration], reshapes: bool) -> Result<()> {
+    /// adds or changes reads its value. A migration's set is its `to`,
+    /// with the relations it renames.
+    fn reads_as_author(
+        &self,
+        o: &Ontology,
+        sent: &[Declaration],
+        migration: Option<&[(RelationName, RelationName)]>,
+    ) -> Result<()> {
         // A type its author is not shown is a type that is not declared,
         // for whatever names it; to declare it is not granted, and names
         // nothing of it.
@@ -2205,8 +2211,7 @@ impl Call<'_> {
             rights::known_fields(self.who, &mut e.decl, &|n| o.ty(n).ok());
         }
         // What a type's shape names stands as declared, known to its author
-        // or not: a key field, a valid time, a relation's `via`. Both sides
-        // hold it, at its declared place.
+        // or not: a key field, a valid time, a relation's `via`.
         let mut shaped = sent.to_vec();
         for d in &mut shaped {
             let Declaration::Type(t) = d else { continue };
@@ -2230,15 +2235,47 @@ impl Call<'_> {
             for fields in [&mut t.fields, &mut e.decl.fields] {
                 fields.retain(|f| !unchanged.contains(f));
             }
-            let via = t.relations.iter().filter_map(|r| r.via.as_ref());
-            let named = t
-                .key
-                .iter()
-                .chain(&t.valid_from)
-                .chain(&t.valid_to)
-                .chain(via);
-            let named: Vec<FieldName> = named.cloned().collect();
-            let was = o.ty(&t.name)?.fields.iter().enumerate();
+            // A valid time, or a relation its author is shown, as it stands,
+            // whole but for a rename, and naming a field outside its
+            // author's view, is left out of both sides and checked whole at
+            // apply. One its author gives
+            // anew is read against its view, where such a field is no field
+            // (027, extended, lakelands#726).
+            let held = o.ty(&t.name)?;
+            let view: Vec<FieldName> = e.decl.fields.iter().map(|f| f.name.clone()).collect();
+            let unseen = |f: &Option<FieldName>| f.as_ref().is_some_and(|f| !view.contains(f));
+            for (sent, kept, was) in [
+                (&mut t.valid_from, &mut e.decl.valid_from, &held.valid_from),
+                (&mut t.valid_to, &mut e.decl.valid_to, &held.valid_to),
+            ] {
+                if (sent == was || sent.is_none()) && unseen(was) {
+                    (*sent, *kept) = (None, None);
+                }
+            }
+            let renamed = migration.unwrap_or_default();
+            let standing = |r: &RelationDecl| {
+                let old = renamed.iter().find(|(_, new)| new == &r.name);
+                let old = old.map_or(&r.name, |(old, _)| old).clone();
+                let h = e.decl.relations.iter().find(|h| h.name == old)?;
+                let whole = *h
+                    == RelationDecl {
+                        name: old.clone(),
+                        ..r.clone()
+                    };
+                (whole && unseen(&r.via)).then_some((r.name.clone(), old))
+            };
+            let gone: Vec<_> = t.relations.iter().filter_map(standing).collect();
+            t.relations
+                .retain(|r| !gone.iter().any(|(new, _)| new == &r.name));
+            (e.decl.relations).retain(|r| !gone.iter().any(|(_, old)| old == &r.name));
+            // The key names no field its author may not know of (006), and
+            // keeps its fields at their declared place.
+            let named = if t.key == held.key {
+                t.key.clone()
+            } else {
+                Vec::new()
+            };
+            let was = held.fields.iter().enumerate();
             for (i, f) in was.filter(|(_, f)| named.contains(&f.name)) {
                 for fields in [&mut t.fields, &mut e.decl.fields] {
                     if !fields.iter().any(|x| x.name == f.name) {
@@ -2249,7 +2286,7 @@ impl Call<'_> {
         }
         // A migration's shape is refused as a declaration; its preflight is next.
         match self.check_bundle(&seen, &shaped) {
-            Err(e) if reshapes => declare::unless_a_migration(e)?,
+            Err(e) if migration.is_some() => declare::unless_a_migration(e)?,
             checked => checked?,
         }
         let (before, mut after) = (o.declared(), o.clone());
@@ -2312,7 +2349,8 @@ impl Call<'_> {
         if o.types.contains_key(&m.to.name) {
             shown_type(o, &m.to.name, self.who)?;
         }
-        self.reads_as_author(o, &[Declaration::Type(m.to.clone())], true)?;
+        let renames = Some(&m.relation_renames[..]);
+        self.reads_as_author(o, &[Declaration::Type(m.to.clone())], renames)?;
         initials(o, &mut m.to);
         match o.types.get(&m.to.name) {
             Some(before) => {
@@ -2327,7 +2365,7 @@ impl Call<'_> {
     /// Reads each type of `declarations` that is declared already as its
     /// author's view of it ([`as_author`]).
     fn redeclared(&self, o: &Ontology, declarations: &mut [Declaration]) -> Result<()> {
-        self.reads_as_author(o, declarations, false)?;
+        self.reads_as_author(o, declarations, None)?;
         // An `initial` is read against the value types the set declares.
         let mut after = o.clone();
         let types = declarations
@@ -3673,6 +3711,20 @@ fn as_author<'a>(
         ));
     }
     put_back(&before.fields, |f| hidden(before, f), &mut to.fields);
+    // A valid time over a field it may not know of is not named to it, so
+    // left out it stands as declared (024 and 027, extended).
+    let unseen = |v: &Option<FieldName>| {
+        v.as_ref()
+            .is_some_and(|v| unknown.iter().any(|f| &f.name == v))
+    };
+    for (sent, held) in [
+        (&mut to.valid_from, &before.valid_from),
+        (&mut to.valid_to, &before.valid_to),
+    ] {
+        if sent.is_none() && unseen(held) {
+            sent.clone_from(held);
+        }
+    }
     for r in &mut to.relations {
         // A renamed relation is the one it was, under its old name.
         let was = relations.iter().find(|(_, new)| new == &r.name);

@@ -504,7 +504,7 @@ check!(
 check!(
     /// A valid-time read probes the valid-time fields.
     VALID_AT_PROBES = a_read_at_a_valid_time_probes_the_types_valid_time_fields,
-    "024 and 006: a read at `valid_at` filters on the type's `valid_from` and `valid_to`, so `find`, `get` and a pattern started on the type probe them as a filter would: refused not_granted naming the field where it is masked, answered as an undeclared field where it is hidden; without `valid_at` the same reads are answered"
+    "024 and 006: a read at `valid_at` filters on the type's `valid_from` and `valid_to`, so `find`, `get` and a pattern started on the type probe them as a filter would: refused not_granted naming the field where it is masked; where it is hidden the type is described with no valid time, and the reads are answered as on a type with none (lakelands#726); without `valid_at` the same reads are answered"
 );
 
 async fn a_read_at_a_valid_time_probes_the_types_valid_time_fields(
@@ -553,8 +553,7 @@ async fn a_read_at_a_valid_time_probes_the_types_valid_time_fields(
             ];
             for (door, r) in answers {
                 let answered = match (at.valid_at, access) {
-                    (None, _) => r.is_ok(),
-                    (Some(_), Access::None) => no_such_field(&r, timed),
+                    (None, _) | (Some(_), Access::None) => r.is_ok(),
                     (Some(_), _) => {
                         matches!(refused_on(&r), Some((f, Refusal::NotGranted)) if f == timed)
                     }
@@ -562,8 +561,8 @@ async fn a_read_at_a_valid_time_probes_the_types_valid_time_fields(
                 ensure!(
                     answered,
                     "`{door}` by a clerk with `{timed}` {access:?} at valid time {:?} is \
-                     answered only without a valid time, and refused naming `{timed}` with \
-                     one; it answered {r:?}",
+                     answered without a valid time and where it is hidden, and refused \
+                     naming `{timed}` where it is masked; it answered {r:?}",
                     at.valid_at
                 );
             }

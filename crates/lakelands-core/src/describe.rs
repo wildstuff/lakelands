@@ -591,8 +591,10 @@ fn type_description(
             .collect(),
         access: TypeAccess {
             key: t.key.clone(),
-            valid_from: t.valid_from.clone(),
-            valid_to: t.valid_to.clone(),
+            // A valid time over a field its reader may not know of is not
+            // named (024, extended).
+            valid_from: (t.valid_from.clone()).filter(|v| fields.iter().any(|f| &f.name == v)),
+            valid_to: (t.valid_to.clone()).filter(|v| fields.iter().any(|f| &f.name == v)),
             // Over the fields as shown: a masked field is not searchable
             // to its reader, nor is one it may not know of sourced (024).
             searchable: fields.iter().any(|f| f.searchable),
