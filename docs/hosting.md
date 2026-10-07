@@ -513,6 +513,25 @@ A host that already has a store of its own moves in four steps.
   for each record: 41 s with one set and 74 to 79 s with three on
   PostgreSQL, 9 to 15 s on SQLite. Bringing the migration's own cost
   down further is lakelands#480.
+- **A value is renamed by its value type's migration (lakelands#553).**
+  `migrate_value_type` takes a `ValueTypeMigration`: the new declaration
+  and `renames`, old and new text values (a bare declaration converts with
+  `.into()` and renames nothing). One `value_type_migrated` renames the
+  value in every record of every type that uses the value type, retired
+  and restricted ones included, with no record event, no new version and
+  no trigger: a host that kept its own copy of the values reads the feed's
+  `value_type_migrated` (it is about each type it rewrites), and a mirror
+  copies those types again. The preflight lists what may still name an
+  old value (`conditions`): the host changes those, and the filters it
+  holds itself, which the lake cannot see. A key field that holds the old
+  value refuses it; re-key the type through its migration first. A field
+  computed by a function with a backing keeps what its backing answered:
+  widen the value type, change the function so that it answers the new
+  value, and rename then. Renaming one value of 50 000 of 100 000 records holds the writer
+  2.1 s on SQLite and 8.2 s on PostgreSQL, at a peak of 3 MB and 6 MB
+  (`tests/value_renamed.rs` in both engines, by hand); widening, writing
+  the 50 000 records again and tightening took 17.1 s and 49.1 s, at
+  39 MB.
 - **A host may state its declarations at every start.** A declaration
   that is the one in force is answered `applied` at the head and appends
   nothing, by `declare` and by `apply`: a type, a value type, a function,

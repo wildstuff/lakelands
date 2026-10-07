@@ -1102,16 +1102,20 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                  &["declarations"]),
             kind("migrate", json!({"migration": {"type": "object"}}), &["migration"]),
             kind("migrate_value_type", json!({"to": {"type": "object",
-                 "description": "The value type's new, narrower declaration."}}), &["to"]),
+                 "description": "The value type's new declaration."},
+                 "renames": {"type": "array", "description": "Old value to new value.",
+                             "items": {"type": "array", "items": {"type": "string"},
+                                       "minItems": 2, "maxItems": 2}}}), &["to"]),
         ]});
         out.push(ToolSpec {
             name: PROPOSE.into(),
             description: "Record a write as a proposal for review instead of applying it: a \
                 record write, a verb call, declarations (as apply takes them) or a migration \
-                (as migrate takes it), of a type or of a value type that is to accept less. A \
-                record write or a verb call needs the grants it would need applied: a proposal \
-                waits for review, it does not lift a grant. Declarations and a migration need \
-                no `schema` grant to propose; a reviewer holding it accepts them."
+                (as migrate takes it), of a type or of a value type that is to accept less or \
+                rename values. A record write or a verb call needs the grants it would need \
+                applied: a proposal waits for review, it does not lift a grant. Declarations \
+                and a migration need no `schema` grant to propose; a reviewer holding it \
+                accepts them."
                 .into(),
             input_schema: obj(
                 props([("write", write), ("why", json!({"type": "string"}))]),
@@ -1214,7 +1218,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             "type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2}});
         out.push(ToolSpec {
             name: MIGRATE.into(),
-            description: "Change a type's shape (`to`) or tighten a value type (`value_type`), one of the two. Without `report_id` it only reports what would convert, what would no longer fit and what it drops (`dropped`, each with the records that hold a value); with the id of that report it applies the migration, which discards the values `dropped` counts. `lossless` speaks of what the migration keeps, not of what it drops: sum `dropped`'s counts to know what goes.".into(),
+            description: "Change a type's shape (`to`) or a value type (`value_type`), one of the two. `renames` pairs old with new: a type's field names, or a text value type's values, which every stored record holding the old value takes, retired ones included; a condition that names an old value is yours to change, and the report lists those it can read (`conditions`). Without `report_id` it only reports what would convert, what would no longer fit and what it drops (`dropped`, each with the records that hold a value); with the id of that report it applies the migration, which discards the values `dropped` counts. `lossless` speaks of what the migration keeps, not of what it drops: sum `dropped`'s counts to know what goes.".into(),
             input_schema: obj(
                 props([
                     ("to", json!({"type": "object"})),

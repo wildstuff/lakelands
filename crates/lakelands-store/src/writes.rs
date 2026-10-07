@@ -48,8 +48,8 @@ use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::seam::VerbExecutor;
 use lakelands_api::write::{
     Carried, Carrier, Declaration, Migration, MigrationReport, Misfit, ObjectSetDecl, Outcome,
-    ProposalState, ProposedWrite, Recompute, RelationRename, ValueTypeReport, ValueTypeUse,
-    WriteOpts,
+    ProposalState, ProposedWrite, Recompute, RelationRename, ValueRenamed, ValueTypeMigration,
+    ValueTypeReport, ValueTypeUse, WriteOpts,
 };
 use lakelands_api::{
     Access, Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal, ProposalId,
@@ -622,30 +622,32 @@ pub fn check_values(
         let checked = value::check(v, &f.ty, vt)
             .map_err(|e| constraint(Some(name.clone()), e.to_string()))?;
         if let (Some(vt), false) = (vt, checked.is_null())
-            && let Some(c) = &vt.constraint
+            && !satisfies(vt, &checked)?
         {
-            let e = declare::condition(c, Place::Record, "constraint")?;
-            let scope_fields: BTreeMap<FieldName, Value> =
-                [("value".into(), checked.clone())].into();
-            let ok = expr::holds(
-                &e,
-                &RecordScope {
-                    fields: &scope_fields,
-                    settings: None,
-                    now: Timestamp(0),
-                },
-            )
-            .unwrap_or(false);
-            if !ok {
-                return Err(constraint(
-                    Some(name.clone()),
-                    format!("the value does not satisfy the constraint of `{}`", vt.name),
-                ));
-            }
+            return Err(constraint(
+                Some(name.clone()),
+                format!("the value does not satisfy the constraint of `{}`", vt.name),
+            ));
         }
         out.insert(name.clone(), checked);
     }
     Ok(out)
+}
+
+/// Whether a value, checked against its value type's kind, holds its
+/// `constraint`; one without a constraint holds.
+fn satisfies(vt: &ValueTypeDecl, checked: &Value) -> Result<bool> {
+    let Some(c) = &vt.constraint else {
+        return Ok(true);
+    };
+    let e = declare::condition(c, Place::Record, "constraint")?;
+    let fields: BTreeMap<FieldName, Value> = [("value".into(), checked.clone())].into();
+    let scope = RecordScope {
+        fields: &fields,
+        settings: None,
+        now: Timestamp(0),
+    };
+    Ok(expr::holds(&e, &scope).unwrap_or(false))
 }
 
 /// On a create, set the key fields the patch leaves out from the key's
@@ -1669,8 +1671,20 @@ impl Call<'_> {
                 }
                 **report = found;
             }
-            ProposedWrite::MigrateValueType { to, report } => {
-                **report = fits(self.preflight_value_type(&w, view.as_ref(), to)?, false)?;
+            ProposedWrite::MigrateValueType {
+                to,
+                renames,
+                report,
+            } => {
+                let m = ValueTypeMigration {
+                    to: (**to).clone(),
+                    renames: renames.clone(),
+                };
+                let found = self
+                    .preflight_value_type(&w, view.as_ref(), &m, None)?
+                    .report;
+                self.renames_shown(&w.ontology, &m, &found)?;
+                **report = fits(found, false)?;
             }
         }
         let position = position_after(&w, 0);
@@ -1895,20 +1909,43 @@ impl Call<'_> {
                     .filter(|_| !unchanged(&w.ontology, migration));
                 drafts.extend(own.map(&as_accepted));
             }
-            ProposedWrite::MigrateValueType { to, report } => {
+            ProposedWrite::MigrateValueType {
+                to,
+                renames,
+                report,
+            } => {
                 // As a migration is accepted only on the shape it was
                 // proposed on: a value type declared again since would lose
                 // what that added, shown to no one (013, extended).
                 let head = w.ontology.value_types.get(to.name.as_str());
-                if head.map(|v| v.version) != Some(report.from_version) {
-                    return Err(invalid(format!(
+                let changed = || {
+                    invalid(format!(
                         "value type `{}` changed since this was proposed; propose it again",
                         to.name
-                    )));
+                    ))
+                };
+                if head.map(|v| v.version) != Some(report.from_version) {
+                    return Err(changed());
                 }
-                fits(self.preflight_value_type(&w, view.as_ref(), to)?, false)?;
-                let declared = vec![Declaration::ValueType((**to).clone())];
-                let own = self.bundle_drafts(&w, declared, now, drafts.len())?;
+                let m = ValueTypeMigration {
+                    to: (**to).clone(),
+                    renames: renames.clone(),
+                };
+                let plan = self.preflight_value_type(&w, view.as_ref(), &m, Some(now))?;
+                // Renames reach only the fields the proposal's report named:
+                // one that came to use the value type since would be
+                // rewritten unseen by the proposer and the reviewer.
+                let uses = |r: &ValueTypeReport| {
+                    let fields = r.fields.iter();
+                    fields
+                        .map(|u| (u.ty.clone(), u.field.clone()))
+                        .collect::<Vec<_>>()
+                };
+                if !renames.is_empty() && uses(&plan.report) != uses(report) {
+                    return Err(changed());
+                }
+                fits(plan.report.clone(), false)?;
+                let own = self.value_type_drafts(&w, m, plan, now, drafts.len())?;
                 drafts.extend(own.into_iter().map(&as_accepted));
             }
         }
@@ -2252,7 +2289,10 @@ impl Call<'_> {
 
     /// A value type's report as the caller may know it (024): a use and a
     /// misfit are shown where it is shown the type and reads the field. The
-    /// totals and the id, which names the whole report, stay.
+    /// totals and `fits` stay whole, so that a reader never sees no misfit
+    /// beside a report that does not fit, and the id names the whole report.
+    /// A report that renames values is never trimmed: one not shown every
+    /// field it writes is not granted it ([`Call::renames_shown`]).
     pub fn shown_value_type(&self, o: &Ontology, mut report: ValueTypeReport) -> ValueTypeReport {
         // A caller that reads a field is shown its type.
         let read = |ty: &TypeName, field: &FieldName| {
@@ -3107,24 +3147,117 @@ impl Call<'_> {
     }
 }
 
+/// A value type's report named by what it says and where the lake stood
+/// (`head`), its own id left empty: an apply after the lake moved is
+/// refused. Its `conditions` are its reader's, so two readers shown
+/// otherwise are given two ids for one lake.
+pub(crate) fn value_report_id(
+    report: &ValueTypeReport,
+    to: &ValueTypeDecl,
+    renames: &[(String, String)],
+    head: u64,
+) -> String {
+    let mut said = serde_json::json!({
+        "report": serde_json::to_value(report).expect("a report serialises"),
+        "to": serde_json::to_value(to).expect("a declaration serialises"),
+        "head": head,
+    });
+    if !renames.is_empty() {
+        said["renames"] = serde_json::json!(renames);
+    }
+    lakelands_core::canonical::sha256_hex(&said)
+}
+
+/// The declarations in `ontology` whose expressions hold an old value of
+/// `renames` as a literal, and the aging rules on a type that uses the
+/// value type that move from or to one, in the report: those `who` is
+/// shown by what they are, the others by that they are there. A literal
+/// is listed wherever it stands, compared with a field of the value type
+/// or not: they may name one. A rule is shown as a read of its record
+/// would answer it, with its `on`, `from` and `to` (024).
+pub(crate) fn conditions(
+    ontology: &Ontology,
+    view: &dyn ProjectionView,
+    who: &Principal,
+    report: &mut ValueTypeReport,
+    renames: &BTreeMap<&str, &str>,
+) -> Result<()> {
+    use lakelands_api::expr::{Expr, Literal};
+    let old = |e: &Expr| matches!(e, Expr::Lit { value: Literal::Text(t) } if renames.contains_key(t.as_str()));
+    let declared = ontology.declared();
+    let (mut shown, mut unshown) = (Vec::new(), false);
+    for d in declared
+        .iter()
+        .filter(|d| lakelands_core::versions::declares(&d.declaration, &old))
+    {
+        match describe::shown(&d.declaration, &declared, who) {
+            true => shown.push(d.declaration.what()),
+            false => unshown = true,
+        }
+    }
+    let using = crate::lake::using_types(ontology, &report.value_type);
+    let of_it = |r: &StoredRecord| {
+        let text = |n: &str| r.fields.get(n).and_then(Value::as_str);
+        let old = |n| text(n).is_some_and(|v| renames.contains_key(v));
+        text("on").is_some_and(|t| using.contains(&t.into())) && (old("from") || old("to"))
+    };
+    let rule = TypeName::from(AGING_RULE_TYPE);
+    let decl = ontology.ty(&rule).ok();
+    let reads = |f: &str| {
+        let t = decl.filter(|_| describe::one_type(&rule, &declared, who).is_some());
+        let f = t.and_then(|t| Some((t, t.fields.iter().find(|x| x.name.as_str() == f)?)));
+        f.is_some_and(|(t, f)| rights::field_access(who, t, f).reads())
+    };
+    let readable = ["on", "from", "to"].into_iter().all(reads);
+    let pairs = rights::own_only(who, &rule);
+    live(view, &rule, |r| {
+        if of_it(r) {
+            let answered = who.grants.restricted || !r.restricted;
+            match readable && answered && rights::admitted(&pairs, &r.fields) {
+                true => shown.push(format!("the aging rule `{}`", r.key)),
+                false => unshown = true,
+            }
+        }
+        Ok(())
+    })?;
+    report.conditions = shown;
+    report.conditions_unshown = unshown;
+    Ok(())
+}
+
+/// What a value type's migration does, as its preflight plans it: the
+/// report and, for one that renames values and is applied, the types
+/// whose fields' `initial` it renames and the set memberships it changes.
+pub(crate) struct ValueTypePlan {
+    pub(crate) report: ValueTypeReport,
+    initials: Vec<TypeDecl>,
+    members: Vec<Change>,
+}
+
 impl Call<'_> {
-    /// The preflight of a value type's new declaration: every value stored
-    /// under it, in every type and field that uses it, retired and
-    /// restricted records included, checked as a write would check it. It
-    /// asks for no grant: its door asks for `schema`, a proposal for none.
-    pub fn preflight_value_type(
+    /// The preflight of a value type's migration: every value stored under
+    /// it, in every type and field that uses it, retired and restricted
+    /// records included, renamed as the migration renames it and checked as
+    /// a write would check it. It asks for no grant: its door asks for
+    /// `schema`, a proposal for none. Given `now`, the time of an apply, it
+    /// decides each record's set memberships as the step leaves the record,
+    /// with what reads a renamed value computed again and the new
+    /// declaration in force.
+    pub(crate) fn preflight_value_type(
         &self,
         w: &Writer,
         view: &dyn ProjectionView,
-        to: &ValueTypeDecl,
-    ) -> Result<ValueTypeReport> {
+        m: &ValueTypeMigration,
+        now: Option<Timestamp>,
+    ) -> Result<ValueTypePlan> {
+        let to = &m.to;
         let current = w
             .ontology
             .value_types
             .get(to.name.as_str())
             .ok_or_else(|| invalid(format!("`{}` is not a declared value type", to.name)))?;
         match declare::value_type_change(&current.decl, to) {
-            declare::ValueTypeChange::Same => {
+            declare::ValueTypeChange::Same if m.renames.is_empty() => {
                 return Err(invalid(format!(
                     "value type `{}` would accept exactly what it does; there is nothing to \
                      migrate",
@@ -3140,6 +3273,7 @@ impl Call<'_> {
             }
             _ => {}
         }
+        m.check_renames(&current.decl, accepts).map_err(invalid)?;
         // The new declaration is checked as a declaration of its own; the
         // one in force would refuse it as a tightening.
         let mut probe = w.ontology.clone();
@@ -3150,6 +3284,10 @@ impl Call<'_> {
             current.version + 1,
             None,
         );
+        let renames: BTreeMap<&str, &str> = (m.renames.iter())
+            .map(|(old, new)| (old.as_str(), new.as_str()))
+            .collect();
+        let renamed = |v: &Value| v.as_str().and_then(|v| renames.get(v).copied());
         let mut report = ValueTypeReport {
             value_type: to.name.clone(),
             from_version: current.version,
@@ -3159,21 +3297,66 @@ impl Call<'_> {
             first: Vec::new(),
             fits: true,
             report_id: String::new(),
+            conditions: Vec::new(),
+            conditions_unshown: false,
         };
-        for (name, entry) in &probe.types {
-            let decl = &entry.decl;
-            let uses: Vec<&FieldDecl> = decl
-                .fields
-                .iter()
+        let mut plan = ValueTypePlan {
+            report: ValueTypeReport::default(),
+            initials: Vec::new(),
+            members: Vec::new(),
+        };
+        let limit = self.lake.limits.max_set_changes as usize;
+        // What computing a record again reads, at the event the apply would
+        // append: no call is made, an answer recorded is read.
+        let event = provisional(
+            self.lake,
+            position_after(w, 0),
+            &Draft::system(
+                now.unwrap_or(Timestamp(0)),
+                EventBody::Checkpoint {
+                    through: Position::GENESIS,
+                    hash: Digest::zero(),
+                    segments: Vec::new(),
+                },
+            ),
+        );
+        for name in crate::lake::using_types(&probe, &to.name) {
+            let decl = probe.ty(&name)?;
+            let uses: Vec<&FieldDecl> = (decl.fields.iter())
                 .filter(|f| f.ty.value_type.as_ref() == Some(&to.name))
                 .collect();
-            if uses.is_empty() || decl.view.is_some() {
-                continue;
+            let reached = crate::lake::renamed_fields(&probe, decl, &to.name);
+            let reaches = |f: &FieldDecl| reached.contains(&f.name);
+            // A value the lake computes from an expression that names an
+            // old value would be the old value again at its next computation.
+            for f in uses.iter().filter(|f| reaches(f)) {
+                let function = f.function.as_deref().and_then(|n| probe.functions.get(n));
+                let expr = f
+                    .derived
+                    .as_ref()
+                    .or(function.and_then(|e| e.decl.expr.as_ref()));
+                if expr.is_some_and(|c| {
+                    lakelands_core::versions::names_text(c, &|t| renames.contains_key(t))
+                }) {
+                    return Err(invalid(format!(
+                        "`{name}`.`{}` is computed from an expression that holds a value this \
+                         migration renames; change the expression first",
+                        f.name
+                    )));
+                }
             }
-            // One walk of the type, a page at a time. Each field keeps its
-            // tally and its first misfits, as many as the report still has
-            // room for; they are joined in the fields' order afterwards, so
-            // the report lists a field's misfits before the next field's.
+            // A field's `initial` that names an old value takes the new one:
+            // the type is declared again by the lake after the event.
+            let mut again = decl.clone();
+            for f in again
+                .fields
+                .iter_mut()
+                .filter(|f| reached.contains(&f.name))
+            {
+                if let Some(new) = f.initial.as_ref().and_then(renamed) {
+                    f.initial = Some(Value::from(new));
+                }
+            }
             // An `initial` value no door would take is never filled (050):
             // it is a misfit of its field, told as a stored one is, by its
             // count alone to one who does not read the field.
@@ -3182,23 +3365,65 @@ impl Call<'_> {
                 let patch: Patch = [(f.name.clone(), v.clone())].into();
                 check_values(&probe, decl, &patch, &decl.fields).is_err()
             };
-            let tally = |f: &&FieldDecl| ValueTypeUse {
-                ty: name.clone(),
-                field: f.name.clone(),
-                values_scanned: 0,
-                misfits: u64::from(f.initial.as_ref().is_some_and(|v| unfit(f, v))),
+            let tally = |f: &&FieldDecl| {
+                let mapped = again.fields.iter().find(|g| g.name == f.name);
+                let initial = mapped.and_then(|g| g.initial.as_ref());
+                ValueTypeUse {
+                    ty: name.clone(),
+                    field: f.name.clone(),
+                    values_scanned: 0,
+                    misfits: u64::from(initial.is_some_and(|v| unfit(f, v))),
+                    renamed: (m.renames.iter())
+                        .map(|(from, to)| ValueRenamed {
+                            from: from.clone(),
+                            to: to.clone(),
+                            records: 0,
+                        })
+                        .collect(),
+                }
             };
+            if again != *decl {
+                plan.initials.push(again.clone());
+            }
             let mut used: Vec<(ValueTypeUse, Vec<Misfit>)> =
                 uses.iter().map(|f| (tally(f), Vec::new())).collect();
-            crate::lake::walk(view, name, true, |r| {
+            let sets = match now {
+                Some(_) if !renames.is_empty() => sets_of(w, view, &name, |_| true)?,
+                _ => Vec::new(),
+            };
+            let computing = probe.computing(std::slice::from_ref(&name));
+            crate::lake::walk(view, &name, true, |r| {
                 report.records_scanned += 1;
+                let mut is = r.clone();
                 for (f, (used, first)) in uses.iter().zip(&mut used) {
                     let Some(v) = r.fields.get(&f.name).filter(|v| !v.is_null()) else {
                         continue;
                     };
                     used.values_scanned += 1;
-                    let patch: Patch = [(f.name.clone(), v.clone())].into();
-                    if check_values(&probe, decl, &patch, &decl.fields).is_err() {
+                    let misfit = match (renamed(v), reaches(f)) {
+                        (Some(new), true) => {
+                            if decl.key.contains(&f.name) {
+                                return Err(invalid(format!(
+                                    "`{name}`.`{}` is part of the key and holds a value this \
+                                     migration renames, which would leave records whose key \
+                                     no longer matches their fields; re-key `{name}` through \
+                                     its migration first",
+                                    f.name
+                                )));
+                            }
+                            let pair = used.renamed.iter_mut().find(|p| p.from == *v);
+                            pair.into_iter().for_each(|p| p.records += 1);
+                            let new = Value::from(new);
+                            is.fields.insert(f.name.clone(), new.clone());
+                            unfit(f, &new)
+                        }
+                        // An answer computed outside the lake is the
+                        // backing's, which the lake does not rename: an old
+                        // one would be read back against the new value type.
+                        (Some(_), false) => true,
+                        (None, _) => unfit(f, v),
+                    };
+                    if misfit {
                         used.misfits += 1;
                         if first.len() < room {
                             first.push(Misfit {
@@ -3207,6 +3432,26 @@ impl Call<'_> {
                                 field: f.name.clone(),
                             });
                         }
+                    }
+                }
+                let Some(now) = now.filter(|_| !sets.is_empty()) else {
+                    return Ok(());
+                };
+                let mut outputs = Outputs {
+                    view,
+                    staged: None,
+                    before: None,
+                    due: None,
+                    waiting: false,
+                };
+                let is = record::rederive(&computing, &is, &event, &w.settings, &mut outputs)?
+                    .unwrap_or(is);
+                for (s, held) in &sets {
+                    let member = held.contains(&r.key);
+                    if plan.members.len() <= limit && member != member_of((s, &probe), &is, w, now)?
+                    {
+                        plan.members
+                            .push((s.name.clone(), is.ty.clone(), is.key.clone(), !member));
                     }
                 }
                 Ok(())
@@ -3219,37 +3464,127 @@ impl Call<'_> {
             }
         }
         report.fits = report.misfits == 0;
-        // Named by what it says and where the lake stood: an apply after
-        // the lake moved is refused.
+        if !renames.is_empty() {
+            conditions(&w.ontology, view, self.who, &mut report, &renames)?;
+        }
         let head = view.position().map_or(0, |p| p.0);
-        report.report_id = lakelands_core::canonical::sha256_hex(&serde_json::json!({
-            "report": serde_json::to_value(&report).expect("a report serialises"),
-            "to": serde_json::to_value(to).expect("a declaration serialises"),
-            "head": head,
-        }));
-        Ok(report)
+        report.report_id = value_report_id(&report, to, &m.renames, head);
+        plan.report = report;
+        Ok(plan)
     }
 
-    /// Put a tightened value type in force against the report the caller
-    /// was shown: one `declared` at the next version, no record changed.
-    pub fn migrate_value_type_apply(&self, to: ValueTypeDecl, report_id: &str) -> Result<Outcome> {
+    /// Put a value type's migration in force against the report the caller
+    /// was shown: without renames, one `declared` at the next version, no
+    /// record changed; with them, the drafts of [`Self::value_type_drafts`].
+    pub fn migrate_value_type_apply(
+        &self,
+        m: ValueTypeMigration,
+        report_id: &str,
+    ) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema && !rights::holds_only(self.who))?;
         let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
-        let report = self.preflight_value_type(&w, view.as_ref(), &to)?;
-        if report.report_id != report_id {
+        let now = self.lake.clock(&mut w);
+        let plan = self.preflight_value_type(&w, view.as_ref(), &m, Some(now))?;
+        if plan.report.report_id != report_id {
             return Err(invalid(
                 "the lake moved since that preflight report; run the preflight again",
             ));
         }
-        fits(self.shown_value_type(&w.ontology, report), true)?;
-        let now = self.lake.clock(&mut w);
-        let drafts = self.bundle_drafts(&w, vec![Declaration::ValueType(to)], now, 0)?;
+        self.renames_shown(&w.ontology, &m, &plan.report)?;
+        fits(
+            self.shown_value_type(&w.ontology, plan.report.clone()),
+            true,
+        )?;
+        let drafts = self.value_type_drafts(&w, m, plan, now, 0)?;
         drop(view);
         let events = self.lake.append(&mut w, drafts)?;
         Ok(outcome_of(&events))
     }
+
+    /// A migration that renames values writes every field that uses the
+    /// value type: refused, naming nothing, to a caller not shown one of
+    /// them.
+    pub(crate) fn renames_shown(
+        &self,
+        o: &Ontology,
+        m: &ValueTypeMigration,
+        report: &ValueTypeReport,
+    ) -> Result<()> {
+        if m.renames.is_empty() {
+            return Ok(());
+        }
+        let shown = self.shown_value_type(o, report.clone());
+        granted(shown.fields.len() == report.fields.len())
+    }
+
+    /// The drafts that apply a value type's migration its preflight
+    /// planned. Without renames, one `declared`. With them: the
+    /// `value_type_migrated`, the `first` draft of its append not yet
+    /// counted; then, as the system, a `declared` of each type whose field's
+    /// `initial` it renames, one set (`with_the_set`), so that the value type
+    /// in force accepts the new value (the fold never reads `initial`, so a
+    /// page that ends between them is harmless); then the set memberships it
+    /// changes, each caused by the `value_type_migrated`, refused
+    /// `too_large` past the lake's `max_set_changes`, naming the set.
+    pub(crate) fn value_type_drafts(
+        &self,
+        w: &Writer,
+        m: ValueTypeMigration,
+        plan: ValueTypePlan,
+        now: Timestamp,
+        first: usize,
+    ) -> Result<Vec<Draft>> {
+        if m.renames.is_empty() {
+            return self.bundle_drafts(w, vec![Declaration::ValueType(m.to)], now, first);
+        }
+        let max = self.lake.limits.max_set_changes;
+        if let Some((set, ..)) = plan.members.get(max as usize) {
+            return Err(Error::Refused {
+                field: Some(set.as_str().into()),
+                reason: Refusal::TooLarge { max },
+            });
+        }
+        let version = w
+            .ontology
+            .next_version(&Declaration::ValueType(m.to.clone()));
+        let types = crate::lake::using_types(&w.ontology, &m.to.name);
+        let body = EventBody::ValueTypeMigrated {
+            declaration: m.to,
+            version,
+            renames: m.renames,
+            report_id: plan.report.report_id,
+            types,
+        };
+        let mut drafts = vec![self.draft(now, Origin::Authored, body)];
+        let initials = plan.initials.len();
+        for (i, t) in plan.initials.into_iter().enumerate() {
+            let mut d = system_declared(&w.ontology, Declaration::Type(t), now)?;
+            if let EventBody::Declared { with_the_set, .. } = &mut d.body {
+                *with_the_set = i + 1 < initials;
+            }
+            drafts.push(d);
+        }
+        let migrated = position_after(w, first);
+        drafts.extend(
+            plan.members
+                .into_iter()
+                .map(|c| self.changed(c, migrated, now)),
+        );
+        Ok(drafts)
+    }
+}
+
+/// Whether a value type's declaration accepts a text value: its kind, its
+/// `one_of`, its `format` and its `constraint`.
+fn accepts(vt: &ValueTypeDecl, v: &str) -> bool {
+    let ty = lakelands_api::ontology::FieldType {
+        kind: vt.kind,
+        value_type: Some(vt.name.clone()),
+        ..Default::default()
+    };
+    value::check(&Value::from(v), &ty, Some(vt)).is_ok_and(|v| satisfies(vt, &v).is_ok_and(|ok| ok))
 }
 
 /// A value type's preflight report, refused while a stored value would not

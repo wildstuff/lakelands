@@ -7,13 +7,15 @@
 //! argument differently, and a door's answer is the same JSON on both.
 
 use lakelands_api::error::{Error, Refusal};
-use lakelands_api::id::{FieldName, ProposalId, RecordKey, RelationName, TypeName};
+use lakelands_api::id::{ProposalId, RecordKey, RelationName, TypeName};
 use lakelands_api::ontology::{FieldDecl, TypeDecl, ValueTypeDecl};
 use lakelands_api::query::{Pattern, Search};
 use lakelands_api::read::{Find, Get, ReadAt};
 use lakelands_api::record::Patch;
 use lakelands_api::tools::{Door, ToolSpec};
-use lakelands_api::write::{Declaration, Migration, ProposalFilter, ProposedWrite, WriteOpts};
+use lakelands_api::write::{
+    Declaration, Migration, ProposalFilter, ProposedWrite, ValueTypeMigration, WriteOpts,
+};
 use lakelands_api::{Catalog, Principal};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -283,8 +285,9 @@ pub(crate) async fn run(
                 to: Option<TypeDecl>,
                 #[serde(default)]
                 value_type: Option<ValueTypeDecl>,
+                // A type's fields, or a value type's values.
                 #[serde(default)]
-                renames: Vec<(FieldName, FieldName)>,
+                renames: Vec<(String, String)>,
                 #[serde(default)]
                 relation_renames: Vec<(RelationName, RelationName)>,
                 #[serde(default)]
@@ -301,9 +304,10 @@ pub(crate) async fn run(
             };
             match (m.to, m.value_type) {
                 (Some(to), None) => {
+                    let renames = m.renames.into_iter();
                     let migration = Migration {
                         to,
-                        renames: m.renames,
+                        renames: renames.map(|(a, b)| (a.into(), b.into())).collect(),
                         relation_renames: m.relation_renames,
                     };
                     match m.report_id {
@@ -312,15 +316,20 @@ pub(crate) async fn run(
                     }
                 }
                 (None, Some(vt)) => {
-                    if !m.renames.is_empty() {
+                    if !m.relation_renames.is_empty() {
                         return Err(wrong(
-                            "renames",
-                            "a value type has no fields to rename; `renames` belongs to `to`",
+                            "relation_renames",
+                            "a value type has no relations to rename; `relation_renames` belongs \
+                             to `to`",
                         ));
                     }
+                    let vm = ValueTypeMigration {
+                        to: vt,
+                        renames: m.renames,
+                    };
                     match m.report_id {
-                        Some(r) => to_json(&c.migrate_value_type_apply(who, vt, &r).await?),
-                        None => to_json(&c.migrate_value_type(who, vt).await?),
+                        Some(r) => to_json(&c.migrate_value_type_apply(who, vm, &r).await?),
+                        None => to_json(&c.migrate_value_type(who, vm).await?),
                     }
                 }
                 (Some(_), Some(_)) => {
@@ -393,9 +402,9 @@ mod tests {
     }
 
     /// The `migrate` tool names a type (`to`) or a value type
-    /// (`value_type`), one of the two, and a value type takes no renames:
-    /// anything else is refused as invalid, naming the argument, on the
-    /// mock and on the store alike.
+    /// (`value_type`), one of the two, and a value type renames values,
+    /// never relations: anything else is refused as invalid, naming the
+    /// argument, on the mock and on the store alike.
     #[tokio::test(flavor = "multi_thread")]
     async fn migrate_takes_a_type_or_a_value_type_never_both_and_never_neither() {
         let vt = json!({"name": "status_code", "kind": "text", "one_of": ["open", "late"]});
@@ -418,8 +427,8 @@ mod tests {
                 (json!({}), "to"),
                 (json!({"report_id": "r"}), "to"),
                 (
-                    json!({"value_type": vt, "renames": [["a", "b"]]}),
-                    "renames",
+                    json!({"value_type": vt, "relation_renames": [["a", "b"]]}),
+                    "relation_renames",
                 ),
             ] {
                 let answer = call(args.clone()).await;
@@ -436,6 +445,11 @@ mod tests {
             assert!(
                 matches!(&report, Ok(v) if v["data"]["fits"] == json!(true)),
                 "on {name}, the value type's preflight did not answer"
+            );
+            let renamed = call(json!({"value_type": vt, "renames": [["void", "late"]]})).await;
+            assert!(
+                matches!(&renamed, Ok(v) if v["data"]["fits"] == json!(true)),
+                "on {name}, the value type's preflight with renames did not answer"
             );
         }
     }

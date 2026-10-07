@@ -418,12 +418,14 @@ async fn a_type_its_author_is_not_shown_is_a_type_that_is_not_declared(
 
     // A value type's preview, and its refused apply, show a use and a
     // misfit only where their caller is shown the type and reads the field.
-    let to = || serde_json::from_value(state(&["y"])).expect("a value type");
+    let to = || -> lakelands_api::ontology::ValueTypeDecl {
+        serde_json::from_value(state(&["y"])).expect("a value type")
+    };
     let mut shown = Vec::new();
     for who in [&blank, &l.own] {
-        let preview = c.migrate_value_type(who, to()).await;
+        let preview = c.migrate_value_type(who, to().into()).await;
         let report = preview.must("the preview")?.data;
-        let applied = c.migrate_value_type_apply(who, to(), &report.report_id);
+        let applied = c.migrate_value_type_apply(who, to().into(), &report.report_id);
         let named = why(applied.await).is_some_and(|e| e.contains("account"));
         let (uses, first) = (report.fields.len(), report.first.len());
         shown.push((uses, first, report.misfits, named));

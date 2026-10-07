@@ -17,7 +17,7 @@ use crate::event::Digest;
 use crate::id::{
     LakeId, Position, ProposalId, RecordKey, RelationName, SourceId, TypeName, VerbName,
 };
-use crate::ontology::{FieldDecl, ValueTypeDecl};
+use crate::ontology::FieldDecl;
 use crate::principal::{Principal, WriteContext};
 use crate::query::{Hits, Pattern, QueryResult, Search};
 use crate::read::{Find, Found, Get, ReadAt, Reply};
@@ -25,7 +25,7 @@ use crate::record::{Patch, Record, SourceRecord};
 use crate::seam::ChangeFeed;
 use crate::write::{
     Committed, Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter,
-    ProposedWrite, Recompute, ValueTypeReport, WriteOpts,
+    ProposedWrite, Recompute, ValueTypeMigration, ValueTypeReport, WriteOpts,
 };
 
 /// A stream of records from one source, as `ingest` takes it.
@@ -227,25 +227,29 @@ pub trait Catalog: Send + Sync {
         report_id: &str,
     ) -> Result<Outcome>;
 
-    /// The preflight of tightening a value type: every value stored under
-    /// it, over every type and field that uses it, history included,
-    /// checked against the new declaration. Appends nothing. A loosening is
-    /// declared; a change of `kind` or `scale` is not a value-type migration
+    /// The preflight of a value type's migration: every value stored under
+    /// it, over every type and field that uses it, retired and restricted
+    /// records included (not earlier versions), renamed as the migration
+    /// renames it and checked against the new declaration. Appends nothing.
+    /// A loosening without renames is declared; a change of `kind` or
+    /// `scale` is not a value-type migration
     /// (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
     async fn migrate_value_type(
         &self,
         who: &Principal,
-        to: ValueTypeDecl,
+        migration: ValueTypeMigration,
     ) -> Result<Reply<ValueTypeReport>>;
 
-    /// Put a tightened value type in force against the preflight the caller
-    /// was shown. Refused if the lake moved since, or while any stored value
-    /// would not fit; otherwise one `declared` at the next version, and no
-    /// record changes.
+    /// Put a value type's migration in force against the preflight the
+    /// caller was shown. Refused if the lake moved since, or while any
+    /// stored value would not fit; otherwise, without renames, one
+    /// `declared` at the next version, and no record changes; with them,
+    /// one `value_type_migrated`, and every record holding an old value
+    /// holds the new one.
     async fn migrate_value_type_apply(
         &self,
         who: &Principal,
-        to: ValueTypeDecl,
+        migration: ValueTypeMigration,
         report_id: &str,
     ) -> Result<Outcome>;
 

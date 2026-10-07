@@ -213,6 +213,7 @@ macro_rules! door_checks {
             an_ingested_upstream_is_answered_per_field,
             a_schema_proposal_is_refused_by_kind_at_propose_and_at_accept,
             a_value_types_tightening_is_proposed_and_accepted_while_it_fits,
+            a_value_types_renames_are_refused_and_applied_as_the_store_does,
             a_proposal_shows_its_reader_the_values_it_may_read,
             a_proposal_names_what_its_reader_may_know_and_says_there_is_more,
             an_order_by_latest_takes_no_field_and_no_view,
@@ -4804,6 +4805,156 @@ pub async fn an_ingested_upstream_is_answered_per_field(store: Arc<dyn LakeStore
     );
 }
 
+/// A value type's renames are judged by the contract's one rule, so the
+/// mock refuses what the store refuses, in the same words: a value renamed
+/// to itself or twice, one the declaration in force does not accept, one
+/// the new declaration does not, any rename of a value type that is not
+/// text, a value a key field holds; a caller not shown every field the
+/// renames write is not granted them. Applied, a record that held the old
+/// value holds the new one, and the old one is refused
+/// (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`, extended).
+pub async fn a_value_types_renames_are_refused_and_applied_as_the_store_does(
+    store: Arc<dyn LakeStore>,
+) {
+    use lakelands_api::write::ValueTypeMigration;
+    let f = setup(store).await;
+    let (c, own, architect) = (&f.catalog, &f.cast.owner, &f.cast.architect);
+    let decl = |v: Value| -> Declaration { serde_json::from_value(v).unwrap() };
+    let states = |one_of: &[&str]| -> lakelands_api::ontology::ValueTypeDecl {
+        serde_json::from_value(json!({"name": "memo_state", "kind": "text", "one_of": one_of}))
+            .unwrap()
+    };
+    let renamed = |one_of: &[&str], pairs: &[(&str, &str)]| ValueTypeMigration {
+        to: states(one_of),
+        renames: pairs
+            .iter()
+            .map(|(a, b)| ((*a).into(), (*b).into()))
+            .collect(),
+    };
+    c.declare(
+        own,
+        Declaration::ValueType(states(&["open", "filed", "void"])),
+    )
+    .await
+    .expect("the states are declared");
+    let score = json!({"declare": "value_type", "name": "memo_score", "kind": "number"});
+    c.declare(own, decl(score))
+        .await
+        .expect("the score is declared");
+    let memo = json!({"declare": "type", "name": "memo", "fields": [
+        {"name": "state", "type": {"kind": "text", "value_type": "memo_state"}}]});
+    c.declare(own, decl(memo))
+        .await
+        .expect("`memo` is declared");
+    let state = |s: &str| patch(&[("state", json!(s))]);
+    c.upsert(
+        own,
+        &ty("memo"),
+        &key("m1"),
+        state("open"),
+        WriteOpts::default(),
+    )
+    .await
+    .expect("`m1` is open");
+    let to = ["active", "filed", "void"];
+    for (m, word) in [
+        (
+            renamed(&to, &[("open", "open")]),
+            "renamed to another value",
+        ),
+        (
+            renamed(&to, &[("open", "active"), ("open", "void")]),
+            "renamed once",
+        ),
+        (renamed(&to, &[("gone", "active")]), "in force accepts"),
+        (renamed(&to, &[("open", "nope")]), "new declaration accepts"),
+        (
+            ValueTypeMigration {
+                to: serde_json::from_value(json!({"name": "memo_score", "kind": "number",
+                                                  "constraint": "value > 0"}))
+                .unwrap(),
+                renames: vec![("1".into(), "2".into())],
+            },
+            "is not text",
+        ),
+    ] {
+        let e = c.migrate_value_type(own, m).await.expect_err("refused");
+        assert!(
+            matches!(refusal(&e).1, Refusal::Invalid { message } if message.contains(word)),
+            "{e:?} names {word:?}"
+        );
+    }
+    // A key field that holds a renamed value refuses it.
+    let shelf = json!({"declare": "type", "name": "shelf", "key": ["state"], "fields": [
+        {"name": "state", "type": {"kind": "text", "value_type": "memo_state"}}]});
+    c.declare(own, decl(shelf))
+        .await
+        .expect("`shelf` is declared");
+    c.upsert(
+        own,
+        &ty("shelf"),
+        &key("void"),
+        state("void"),
+        WriteOpts::default(),
+    )
+    .await
+    .expect("a shelf is keyed by its state");
+    let rekey = renamed(
+        &["active", "filed", "gone"],
+        &[("open", "active"), ("void", "gone")],
+    );
+    let e = c.migrate_value_type(own, rekey).await.expect_err("refused");
+    assert!(
+        matches!(refusal(&e).1, Refusal::Invalid { message } if message.contains("re-key `shelf`")),
+        "{e:?}"
+    );
+    // The architect does not read a `doc`'s `body`, which the renames write.
+    let doc = json!({"declare": "type", "name": "doc", "fields": [
+        {"name": "body", "type": {"kind": "text", "value_type": "memo_state"}}]});
+    c.declare(own, decl(doc)).await.expect("`doc` is declared");
+    let m = renamed(&to, &[("open", "active")]);
+    let blind = c
+        .migrate_value_type(architect, m.clone())
+        .await
+        .expect_err("refused");
+    assert_eq!(refusal(&blind), (&None, &Refusal::NotGranted), "{blind:?}");
+    let report = c
+        .migrate_value_type(own, m.clone())
+        .await
+        .expect("the preflight")
+        .data;
+    let counts: Vec<_> = (report.fields.iter())
+        .flat_map(|u| u.renamed.iter().map(move |p| (u.ty.to_string(), p.records)))
+        .collect();
+    assert_eq!(
+        counts,
+        [
+            ("doc".to_owned(), 0),
+            ("memo".to_owned(), 1),
+            ("shelf".to_owned(), 0)
+        ],
+        "{report:?}"
+    );
+    c.migrate_value_type_apply(own, m, &report.report_id)
+        .await
+        .expect("the renames are applied");
+    let m1 = c
+        .get(own, &ty("memo"), get("m1"))
+        .await
+        .expect("`m1` reads")
+        .data;
+    assert_eq!(m1.fields.get("state"), Some(&json!("active")));
+    c.upsert(
+        own,
+        &ty("memo"),
+        &key("m2"),
+        state("open"),
+        WriteOpts::default(),
+    )
+    .await
+    .expect_err("`open` is no longer a state");
+}
+
 /// A value type's tightening can be proposed by a principal without the
 /// `schema` grant and holds its preflight's report; while a stored value
 /// would not fit, the proposal and the accept are refused with the count
@@ -4822,6 +4973,7 @@ pub async fn a_value_types_tightening_is_proposed_and_accepted_while_it_fits(
     };
     let narrower = || ProposedWrite::MigrateValueType {
         to: Box::new(states(&["open", "filed"])),
+        renames: Vec::new(),
         report: Default::default(),
     };
     let wide = Declaration::ValueType(states(&["open", "filed", "void"]));
@@ -4882,6 +5034,7 @@ pub async fn a_value_types_tightening_is_proposed_and_accepted_while_it_fits(
             clerk,
             ProposedWrite::MigrateValueType {
                 to: Box::new(states(&["open"])),
+                renames: Vec::new(),
                 report: Default::default(),
             },
             "open only".into(),
@@ -8040,7 +8193,7 @@ pub async fn a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight(
     assert_eq!(store.head().await.unwrap(), head);
     // Its preflight counts `b1`, and the apply is refused while it misfits.
     let report = c
-        .migrate_value_type(own, vt(json!(["open", "void"])))
+        .migrate_value_type(own, vt(json!(["open", "void"])).into())
         .await
         .unwrap()
         .data;
@@ -8051,7 +8204,7 @@ pub async fn a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight(
     );
     assert_eq!(report.first[0].key, key("b1"));
     let refused = c
-        .migrate_value_type_apply(own, vt(json!(["open", "void"])), &report.report_id)
+        .migrate_value_type_apply(own, vt(json!(["open", "void"])).into(), &report.report_id)
         .await;
     assert!(
         matches!(
@@ -8066,10 +8219,14 @@ pub async fn a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight(
     assert_eq!(store.head().await.unwrap(), head);
     // Without `held`, which no bill holds, every value fits.
     let to = vt(json!(["open", "late", "void"]));
-    let report = c.migrate_value_type(own, to.clone()).await.unwrap().data;
+    let report = c
+        .migrate_value_type(own, to.clone().into())
+        .await
+        .unwrap()
+        .data;
     assert!(report.fits, "{report:?}");
     let applied = c
-        .migrate_value_type_apply(own, to, &report.report_id)
+        .migrate_value_type_apply(own, to.into(), &report.report_id)
         .await
         .unwrap();
     assert_eq!(applied.position(), store.head().await.unwrap());
@@ -9286,7 +9443,7 @@ pub async fn a_required_field_is_judged_over_the_record_whole(store: Arc<dyn Lak
         let d = json!({"name": "status", "kind": "text", "one_of": one_of});
         serde_json::from_value(d).expect("a value type")
     };
-    let report = c.migrate_value_type(&own, narrower(&["paid"])).await;
+    let report = c.migrate_value_type(&own, narrower(&["paid"]).into()).await;
     let report = report.expect("the preflight").data;
     let id = report.report_id.clone();
     let misfits: Vec<_> = (report.fields.iter())
@@ -9298,7 +9455,7 @@ pub async fn a_required_field_is_judged_over_the_record_whole(store: Arc<dyn Lak
         "{report:?}"
     );
     let applied = c
-        .migrate_value_type_apply(&own, narrower(&["paid"]), &id)
+        .migrate_value_type_apply(&own, narrower(&["paid"]).into(), &id)
         .await;
     assert!(applied.is_err(), "`initial` would not fit: {applied:?}");
     let ingest = async |t: &str, k: &str| {

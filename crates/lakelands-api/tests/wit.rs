@@ -43,7 +43,7 @@ use lakelands_api::write::{
     AgeReport, Carried, Carrier, CompactReport, Declaration, FieldConversion, FunctionDecl,
     Migration, MigrationReport, Misfit, ObjectSetDecl, Proposal, ProposalFilter, ProposalState,
     ProposedWrite, PurgeReport, RecordRef, ReferenceRewrite, Rekeyed, RelationRename, Restated,
-    RuleRun, TypeRetired, ValueTypeReport, ValueTypeUse,
+    RuleRun, TypeRetired, ValueRenamed, ValueTypeMigration, ValueTypeReport, ValueTypeUse,
 };
 use lakelands_api::{
     Access, After, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, Missing, Origin,
@@ -554,6 +554,14 @@ fn type_description() -> TypeDescription {
             indexed: vec!["embedding".into()],
             kept: Some(Kept::Kept),
         },
+    }
+}
+
+fn value_renamed() -> ValueRenamed {
+    ValueRenamed {
+        from: "open".into(),
+        to: "active".into(),
+        records: 1,
     }
 }
 
@@ -1085,6 +1093,8 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 }],
                 fits: false,
                 report_id: "r".into(),
+                conditions: vec!["the object_set declaration `open`".into()],
+                conditions_unshown: true,
             }),
         ),
         (
@@ -1094,6 +1104,15 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 field: "net".into(),
                 values_scanned: 2,
                 misfits: 1,
+                renamed: vec![value_renamed()],
+            }),
+        ),
+        ("value_renamed", members(&value_renamed())),
+        (
+            "value_type_migration",
+            members(&ValueTypeMigration {
+                to: serde_json::from_value(json!({"name": "v", "kind": "text"})).unwrap(),
+                renames: vec![("open".into(), "active".into())],
             }),
         ),
         (
@@ -1455,6 +1474,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 },
                 ProposedWrite::MigrateValueType {
                     to: serde_json::from_value(json!({"name": "v", "kind": "text"})).unwrap(),
+                    renames: Vec::new(),
                     report: Default::default(),
                 },
             ],

@@ -779,7 +779,7 @@ async fn a_rekeyed_type_migrates_again(store: Arc<dyn LakeStore>) -> Result<(), 
     )
     .expect("a value type");
     let v = cat
-        .migrate_value_type(own, kind.clone())
+        .migrate_value_type(own, kind.clone().into())
         .await
         .must("a value type's preflight")?
         .data;
@@ -787,7 +787,7 @@ async fn a_rekeyed_type_migrates_again(store: Arc<dyn LakeStore>) -> Result<(), 
         v.fits && v.records_scanned == 4,
         "the four accounts, and no ended key, are scanned: {v:?}"
     );
-    cat.migrate_value_type_apply(own, kind, &v.report_id)
+    cat.migrate_value_type_apply(own, kind.into(), &v.report_id)
         .await
         .must("tightening `account_kind` after a re-key")?;
     // A second re-key, back to `number`, over the ended keys `1` to `4`.

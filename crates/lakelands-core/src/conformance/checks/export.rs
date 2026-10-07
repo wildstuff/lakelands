@@ -70,7 +70,7 @@ check!(
 check!(
     /// An imported export is the lake it came from.
     IMPORT_IS_THE_LAKE = an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from,
-    "030 and log-format §4: an export imported into a fresh lake of the engine holds every event unchanged at its position, of every format version the lake wrote (annotations included), so the lake answers as the one exported (the head, verify, the feed from position 0, every type's records with provenance at the head and at an earlier position, describe) and exports the same files byte for byte; its next writer takes a lease greater than every fence in the log and continues it",
+    "030 and log-format §4: an export imported into a fresh lake of the engine holds every event unchanged at its position, of every format version the lake wrote (annotations included), a value type's renames among them, so the lake answers as the one exported (the head, verify, the feed from position 0, every type's records with provenance at the head and at an earlier position, describe) and exports the same files byte for byte; its next writer takes a lease greater than every fence in the log and continues it",
     given
 );
 
@@ -596,7 +596,8 @@ fn import_seams() -> lakelands_api::seam::Seams {
 /// called on its type (version 8), a view that merges a second source
 /// (version 9), a proposed tightening of a value type (version 10), a
 /// derived field calling `floor` (version 11), a
-/// record ingested with an upstream,
+/// record ingested with an upstream, a set of declarations and a value
+/// type's renames, applied and proposed (version 12),
 /// a second checkpoint and more invoices.
 /// Answers the
 /// second writer's handle and a position before the second checkpoint.
@@ -681,6 +682,7 @@ async fn exported_lake(
         .must("declaring `stamp_state`")?;
     let narrower = lakelands_api::write::ProposedWrite::MigrateValueType {
         to: serde_json::from_value(state(json!(["new"]))).expect("a value type"),
+        renames: Vec::new(),
         report: Default::default(),
     };
     let proposed = cat.propose(own, narrower, "one state".into()).await;
@@ -733,6 +735,32 @@ async fn exported_lake(
     let applied = cat.apply(own, set.into()).await;
     applied.must("applying `tick_at` and `tick`")?;
     crate::conformance::fixture::two_makes(&l).await?;
+    // Format version 12 too: a value type's values renamed in a record,
+    // and a rename proposed.
+    l.declare_json(json!({
+        "declare": "type", "name": "stamp_mark",
+        "fields": [{"name": "state", "type": {"kind": "text", "value_type": "stamp_state"}}]
+    }))
+    .await?;
+    l.upsert("stamp_mark", "m1", json!({"state": "seen"}))
+        .await?;
+    let renamed = |one_of: Value, old: &str, new: &str| lakelands_api::write::ValueTypeMigration {
+        to: serde_json::from_value(state(one_of)).expect("a value type"),
+        renames: vec![(old.into(), new.into())],
+    };
+    let m = renamed(json!(["new", "checked"]), "seen", "checked");
+    let report = cat.migrate_value_type(own, m.clone()).await;
+    let id = report.must("the preflight of a rename")?.data.report_id;
+    let applied = cat.migrate_value_type_apply(own, m, &id).await;
+    applied.must("renaming `seen`")?;
+    let back = renamed(json!(["new", "seen"]), "checked", "seen");
+    let proposed = lakelands_api::write::ProposedWrite::MigrateValueType {
+        to: Box::new(back.to),
+        renames: back.renames,
+        report: Default::default(),
+    };
+    let proposed = cat.propose(own, proposed, "back".into()).await;
+    proposed.must("proposing a rename")?;
     let earlier = store.head().await.must("reading the head")?;
     store.checkpoint().await.must("checkpointing")?;
     invoices(store, 3, 2).await?;

@@ -14,7 +14,7 @@ use lakelands_api::describe::{LakeDescription, TypeDescription};
 use lakelands_api::engine::OpenMode;
 use lakelands_api::event::EventBody;
 use lakelands_api::location::Location;
-use lakelands_api::ontology::{FieldDecl, ValueTypeDecl};
+use lakelands_api::ontology::FieldDecl;
 use lakelands_api::principal::WriteContext;
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
 use lakelands_api::seam::{
@@ -22,7 +22,8 @@ use lakelands_api::seam::{
 };
 use lakelands_api::write::{
     AgeReport, CompactReport, Declaration, Migration, MigrationReport, Outcome, Proposal,
-    ProposalFilter, ProposedWrite, PurgeReport, Recompute, ValueTypeReport, WriteOpts,
+    ProposalFilter, ProposedWrite, PurgeReport, Recompute, ValueTypeMigration, ValueTypeReport,
+    WriteOpts,
 };
 use lakelands_api::{
     Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
@@ -512,16 +513,17 @@ impl Catalog for Doors {
     async fn migrate_value_type(
         &self,
         who: &Principal,
-        to: ValueTypeDecl,
+        m: ValueTypeMigration,
     ) -> Result<Reply<ValueTypeReport>> {
         self.write(who, move |c| {
             crate::writes::granted(c.who.grants.schema && !rights::holds_only(c.who))?;
             let w = c.writer()?;
             let view = c.lake.engine.view(None)?;
+            let report = c.preflight_value_type(&w, view.as_ref(), &m, None)?.report;
+            c.renames_shown(&w.ontology, &m, &report)?;
             Ok(Reply {
                 position: view.position().unwrap_or(Position::GENESIS),
-                data: c
-                    .shown_value_type(&w.ontology, c.preflight_value_type(&w, view.as_ref(), &to)?),
+                data: c.shown_value_type(&w.ontology, report),
             })
         })
         .await
@@ -530,11 +532,11 @@ impl Catalog for Doors {
     async fn migrate_value_type_apply(
         &self,
         who: &Principal,
-        to: ValueTypeDecl,
+        m: ValueTypeMigration,
         report_id: &str,
     ) -> Result<Outcome> {
         let id = report_id.to_owned();
-        self.write_settled(who, move |c| c.migrate_value_type_apply(to, &id))
+        self.write_settled(who, move |c| c.migrate_value_type_apply(m, &id))
             .await
     }
 
@@ -740,10 +742,15 @@ fn about(body: &EventBody) -> (Option<&TypeName>, Option<&RecordKey>) {
 
 /// Whether a `migrated` event is also about one of `types`: the link
 /// types its renamed relations move records between, old and new, so a
-/// consumer that follows either hears of the move (035, extended).
+/// consumer that follows either hears of the move (035, extended). A
+/// `value_type_migrated` is about every type whose records it rewrites.
 fn moves(body: &EventBody, types: &[TypeName]) -> bool {
-    let EventBody::Migrated { migration, .. } = body else {
-        return false;
+    let migration = match body {
+        EventBody::Migrated { migration, .. } => migration,
+        EventBody::ValueTypeMigrated { types: of, .. } => {
+            return of.iter().any(|t| types.contains(t));
+        }
+        _ => return false,
     };
     let moved = lakelands_core::links::moved(migration);
     (moved.iter()).any(|(old, new)| types.contains(old) || types.contains(new))

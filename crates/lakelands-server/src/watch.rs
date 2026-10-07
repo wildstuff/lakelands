@@ -10,8 +10,9 @@
 //! could see it then, through the contract's own reads.
 //!
 //! - **`notifications/tools/list_changed`** goes to every session when the
-//!   feed shows a `declared` or `migrated` event, whoever caused it: the
-//!   tools are generated from the ontology the principal sees.
+//!   feed shows a `declared`, `migrated` or `value_type_migrated` event,
+//!   whoever caused it: the tools are generated from the ontology the
+//!   principal sees, which shows a value type's values as an `enum`.
 //! - **`notifications/lakelands/changed`** goes to a subscribed session,
 //!   once per event of the kinds it asked for ([`CHANGE_KINDS`] by
 //!   default) from its position on, when the principal may `get` the
@@ -295,7 +296,11 @@ pub async fn pump(
             return;
         }
         let (generation, subscription, next, declared) = watch.snapshot();
-        let mut kinds: Vec<String> = vec!["declared".into(), "migrated".into()];
+        let mut kinds: Vec<String> = vec![
+            "declared".into(),
+            "migrated".into(),
+            "value_type_migrated".into(),
+        ];
         let from = match &subscription {
             Some(s) => {
                 kinds.extend(s.kinds.iter().cloned());
@@ -325,15 +330,20 @@ pub async fn pump(
             if watch.generation() != generation {
                 continue 'poll;
             }
-            if matches!(e.body.kind(), "declared" | "migrated") {
+            if matches!(
+                e.body.kind(),
+                "declared" | "migrated" | "value_type_migrated"
+            ) {
                 view.forget();
             }
             let queued = match e.body.kind() {
-                "declared" | "migrated" if e.position >= declared => Some(Queued {
-                    generation: None,
-                    message: json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}),
-                }),
-                "declared" | "migrated" => None,
+                "declared" | "migrated" | "value_type_migrated" if e.position >= declared => {
+                    Some(Queued {
+                        generation: None,
+                        message: json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}),
+                    })
+                }
+                "declared" | "migrated" | "value_type_migrated" => None,
                 kind => match &subscription {
                     Some(s) if e.position >= next && s.kinds.iter().any(|k| k == kind) => {
                         match view.of(e, s).await {

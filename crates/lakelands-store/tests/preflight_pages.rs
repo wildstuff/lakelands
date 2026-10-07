@@ -443,9 +443,15 @@ async fn a_value_types_preflight_lists_its_misfits_by_field_across_pages() {
             .await
             .unwrap();
     }
-    let to = serde_json::from_value(kind(false, &["new"])).unwrap();
+    let to: lakelands_api::ontology::ValueTypeDecl =
+        serde_json::from_value(kind(false, &["new"])).unwrap();
     probe.most.store(0, Ordering::SeqCst);
-    let report = l.cat.migrate_value_type(&l.own, to).await.unwrap().data;
+    let report = l
+        .cat
+        .migrate_value_type(&l.own, to.into())
+        .await
+        .unwrap()
+        .data;
     let fields: Vec<_> = (report.fields.iter())
         .map(|u| (u.field.as_str(), u.values_scanned, u.misfits))
         .collect();

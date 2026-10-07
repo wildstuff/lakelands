@@ -33,7 +33,7 @@ use lakelands_api::seam::{
 use lakelands_api::write::{
     Committed, Declaration, FieldConversion, FunctionDecl, Migration, MigrationReport,
     ObjectSetDecl, Outcome, Proposal, ProposalFilter, ProposalState, ProposedWrite, Recompute,
-    WriteOpts,
+    ValueTypeMigration, WriteOpts,
 };
 use lakelands_api::{Catalog, CommitStream, SourceStream};
 
@@ -2183,10 +2183,12 @@ fn tightening(
     st: &State,
     who: &Principal,
     head: Position,
-    to: &lakelands_api::ontology::ValueTypeDecl,
+    m: &ValueTypeMigration,
 ) -> Result<lakelands_api::write::ValueTypeReport> {
-    check_new_value_type(st, who, to)?;
-    let report = crate::valuetypes::preflight(st, head, to)?;
+    check_new_value_type(st, who, &m.to)?;
+    let report = crate::valuetypes::preflight(st, head, m)?;
+    renames_shown(st, who, m, &report)?;
+    let to = &m.to;
     if !report.fits {
         return Err(invalid(format!(
             "value type `{}` is not tightened: {} stored value(s) or a field's declared \
@@ -2195,6 +2197,74 @@ fn tightening(
         )));
     }
     Ok(report)
+}
+
+/// As the store: a migration that renames values writes every field that
+/// uses the value type, and is refused, naming nothing, to a caller not
+/// shown one of them.
+fn renames_shown(
+    st: &State,
+    who: &Principal,
+    m: &ValueTypeMigration,
+    report: &lakelands_api::write::ValueTypeReport,
+) -> Result<()> {
+    let read = |ty: &TypeName, f: &FieldName| {
+        (st.visible(who, ty)).is_some_and(|t| readable(st, who, t, f).is_ok())
+    };
+    match m.renames.is_empty() || report.fields.iter().all(|u| read(&u.ty, &u.field)) {
+        true => Ok(()),
+        false => Err(refused(Refusal::NotGranted)),
+    }
+}
+
+/// The events that put a value type's migration in force, as the store
+/// appends them: without renames one `declared`; with them the
+/// `value_type_migrated`, then the system's `declared` of each type whose
+/// field's `initial` it renames, one set. Each is caused by `cause`.
+fn value_type_drafts(
+    st: &State,
+    who: &Principal,
+    m: ValueTypeMigration,
+    report_id: String,
+    cause: Option<Position>,
+) -> Vec<Draft> {
+    let declaration = Declaration::ValueType(m.to.clone());
+    let (schema_hash, version) = identity_version(st, &declaration);
+    let caused = |mut d: Draft| {
+        d.cause = cause.or(d.cause);
+        d
+    };
+    if m.renames.is_empty() {
+        let body = EventBody::Declared {
+            declaration,
+            schema_hash,
+            version,
+            with_the_set: false,
+        };
+        return vec![caused(Draft::new(who, Origin::System, body))];
+    }
+    let initials = crate::valuetypes::initials(st, &m);
+    let body = EventBody::ValueTypeMigrated {
+        types: crate::valuetypes::using_types(st, &m.to.name),
+        declaration: m.to,
+        version,
+        renames: m.renames,
+        report_id,
+    };
+    let mut out = vec![caused(Draft::new(who, Origin::Authored, body))];
+    let last = initials.len();
+    for (i, t) in initials.into_iter().enumerate() {
+        let declaration = Declaration::Type(t);
+        let (schema_hash, version) = identity_version(st, &declaration);
+        let body = EventBody::Declared {
+            declaration,
+            schema_hash,
+            version,
+            with_the_set: i + 1 < last,
+        };
+        out.push(caused(Draft::new(who, Origin::System, body)));
+    }
+    out
 }
 
 fn plan_propose(
@@ -2256,10 +2326,15 @@ fn plan_propose(
                 report: Box::new(report),
             }
         }
-        ProposedWrite::MigrateValueType { to, .. } => {
+        ProposedWrite::MigrateValueType { to, renames, .. } => {
             let head = Position(batch.peek().0.saturating_sub(1));
-            let report = Box::new(tightening(st, who, head, &to)?);
-            ProposedWrite::MigrateValueType { to, report }
+            let m = ValueTypeMigration { to: *to, renames };
+            let report = Box::new(tightening(st, who, head, &m)?);
+            ProposedWrite::MigrateValueType {
+                to: Box::new(m.to),
+                renames: m.renames,
+                report,
+            }
         }
         other => other,
     };
@@ -4662,28 +4737,41 @@ impl Catalog for MockCatalog {
                 }
                 None
             }
-            ProposedWrite::MigrateValueType { to, report: shown } => {
+            ProposedWrite::MigrateValueType {
+                to,
+                renames,
+                report: shown,
+            } => {
                 // As a migration: accepted only on the declaration it was
                 // proposed on, and only while every stored value fits.
                 let declaration = Declaration::ValueType((*to).clone());
-                let (schema_hash, version) = identity_version(&st, &declaration);
+                let (_, version) = identity_version(&st, &declaration);
+                let name = to.name.clone();
+                let changed = || {
+                    invalid(format!(
+                        "value type `{name}` changed since this was proposed; propose it again"
+                    ))
+                };
                 if version != shown.from_version + 1 {
-                    return Err(invalid(format!(
-                        "value type `{}` changed since this was proposed; propose it again",
-                        to.name
-                    )));
+                    return Err(changed());
                 }
                 let head = Position(accepted.0.saturating_sub(1));
-                tightening(&st, &proposer, head, &to)?;
-                let body = EventBody::Declared {
-                    declaration,
-                    schema_hash,
-                    version,
-                    with_the_set: false,
+                let m = ValueTypeMigration { to: *to, renames };
+                let report = tightening(&st, &proposer, head, &m)?;
+                // As the store: renames reach only the fields the report
+                // named at the proposal.
+                let uses = |r: &lakelands_api::write::ValueTypeReport| {
+                    (r.fields.iter())
+                        .map(|u| (u.ty.clone(), u.field.clone()))
+                        .collect::<Vec<_>>()
                 };
-                let mut d = Draft::new(&proposer, Origin::System, body);
-                d.cause = Some(accepted);
-                batch.push(d);
+                if !m.renames.is_empty() && uses(&report) != uses(&shown) {
+                    return Err(changed());
+                }
+                let id = report.report_id;
+                for d in value_type_drafts(&st, &proposer, m, id, Some(accepted)) {
+                    batch.push(d);
+                }
                 None
             }
         };
@@ -5003,7 +5091,7 @@ impl Catalog for MockCatalog {
     async fn migrate_value_type(
         &self,
         who: &Principal,
-        to: lakelands_api::ontology::ValueTypeDecl,
+        m: ValueTypeMigration,
     ) -> Result<Reply<lakelands_api::write::ValueTypeReport>> {
         self.admit_write(who)?;
         let who = &self.followed(who, None);
@@ -5012,10 +5100,12 @@ impl Catalog for MockCatalog {
         }
         let log = self.log();
         let (head, st) = self.state_at(&log, None)?;
-        check_new_value_type(&st, who, &to)?;
+        check_new_value_type(&st, who, &m.to)?;
         // As the store: a use and a misfit are shown where the caller is
-        // shown the type and reads the field; the totals and the id stay.
-        let mut data = crate::valuetypes::preflight(&st, head, &to)?;
+        // shown the type and reads the field; the totals, `fits` and the id
+        // stay, and renames are not granted to one shown less.
+        let mut data = crate::valuetypes::preflight(&st, head, &m)?;
+        renames_shown(&st, who, &m, &data)?;
         let read = |ty: &TypeName, f: &FieldName| {
             (st.visible(who, ty)).is_some_and(|t| readable(&st, who, t, f).is_ok())
         };
@@ -5030,7 +5120,7 @@ impl Catalog for MockCatalog {
     async fn migrate_value_type_apply(
         &self,
         who: &Principal,
-        to: lakelands_api::ontology::ValueTypeDecl,
+        m: ValueTypeMigration,
         report_id: &str,
     ) -> Result<Outcome> {
         self.admit_write(who)?;
@@ -5040,33 +5130,27 @@ impl Catalog for MockCatalog {
         }
         let mut log = self.log();
         let (head, st) = self.state_at(&log, None)?;
-        check_new_value_type(&st, who, &to)?;
-        let report = crate::valuetypes::preflight(&st, head, &to)?;
+        check_new_value_type(&st, who, &m.to)?;
+        let report = crate::valuetypes::preflight(&st, head, &m)?;
         if report.report_id != report_id {
             return Err(invalid(
                 "the lake moved since this report was made; run the preflight again",
             ));
         }
+        renames_shown(&st, who, &m, &report)?;
         if !report.fits {
             return Err(invalid(format!(
                 "value type `{}` is not tightened: {} stored value(s) or a field's declared \
                  `initial` would not fit it",
-                to.name, report.misfits
+                m.to.name, report.misfits
             )));
         }
-        let declaration = Declaration::ValueType(to);
-        let (schema_hash, version) = identity_version(&st, &declaration);
         let mut batch = Batch::at(&log);
-        let position = batch.push(Draft::new(
-            who,
-            Origin::System,
-            EventBody::Declared {
-                declaration,
-                schema_hash,
-                version,
-                with_the_set: false,
-            },
-        ));
+        let mut drafts = value_type_drafts(&st, who, m, report.report_id, None).into_iter();
+        let position = drafts.next().map(|d| batch.push(d)).unwrap_or(head);
+        drafts.for_each(|d| {
+            batch.push(d);
+        });
         self.commit(&mut log, batch);
         Ok(Outcome::Applied {
             position,

@@ -514,6 +514,10 @@ impl ChangeFeed for Feed {
                     let mut pairs = doors::moved(migration).into_iter();
                     &migration.to.name == t || pairs.any(|(old, new)| &old == t || &new == t)
                 }
+                // And a `value_type_migrated` about every type it rewrites.
+                lakelands_api::event::EventBody::ValueTypeMigrated { types, .. } => {
+                    types.contains(t)
+                }
                 _ => false,
             };
             let type_ok = filter.types.is_empty()

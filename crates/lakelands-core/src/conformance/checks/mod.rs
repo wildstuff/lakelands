@@ -76,6 +76,7 @@ mod settings;
 mod shown_hash;
 mod streaming;
 mod triggers;
+mod value_renames;
 mod value_types;
 mod values;
 mod vector_index;
@@ -424,6 +425,23 @@ pub const ALL: &[Check] = &[
     value_types::STALE_REPORT,
     value_types::SCHEMA_GRANT,
     value_types::BUNDLE_REFUSED_WHOLE,
+    value_renames::RENAMES_IN_ONE_STEP,
+    value_renames::RENAMES_EVERY_RECORD,
+    value_renames::RENAMES_REFUSED,
+    value_renames::RENAMES_AT_ONCE,
+    value_renames::RENAMES_NO_KEY,
+    value_renames::RENAMES_COMPUTE_AGAIN,
+    value_renames::RENAMES_DECIDE_SETS,
+    value_renames::RENAMES_INITIAL,
+    value_renames::RENAMES_FIRE_NOTHING,
+    value_renames::RENAMES_PROPOSED,
+    value_renames::RENAMES_SHOWN,
+    value_renames::RENAMES_IN_THE_FEED,
+    value_renames::RENAMES_REBUILT,
+    value_renames::RENAMES_LIST_CONDITIONS,
+    value_renames::RENAMES_KEPT_VIEW,
+    value_renames::RENAMES_EMBED,
+    value_renames::RENAMES_BACKED_MISFIT,
     rekey::PREFLIGHT_COUNTS,
     rekey::COLLISION,
     rekey::MISSING,

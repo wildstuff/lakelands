@@ -118,7 +118,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 /// The event kinds a mirror reads.
-pub const KINDS: [&str; 7] = [
+pub const KINDS: [&str; 8] = [
     "record_upserted",
     "record_ingested",
     "record_retired",
@@ -126,6 +126,7 @@ pub const KINDS: [&str; 7] = [
     "record_unrestricted",
     "declared",
     "migrated",
+    "value_type_migrated",
 ];
 
 /// The prefix of a link type's name.
@@ -974,6 +975,11 @@ impl Mirror {
         let more = batch.next <= batch.head && batch.next.0 > from;
         let mut run = Run::default();
         for e in &batch.events {
+            if let EventBody::ValueTypeMigrated { types, .. } = &e.body {
+                self.flush(&mut run).await?;
+                self.revalued(types, e.position).await?;
+                continue;
+            }
             let Some(ty) = type_of(&e.body) else {
                 continue;
             };
@@ -1024,6 +1030,33 @@ impl Mirror {
             }
             return self.save().await;
         }
+        self.copied(types, head).await
+    }
+
+    /// At a `value_type_migrated` at `p`: each running type it rewrites is
+    /// checked again, as at a declaration, and, still admitted, copied
+    /// again whole, whatever the connection started from: the source
+    /// renamed stored values and wrote no record event for them.
+    async fn revalued(&mut self, types: &[TypeName], p: Position) -> Result<(), String> {
+        let running = |m: &Self, t: &TypeName| {
+            let state = m.kept.types.get(t);
+            m.map.contains_key(t) && state.is_some_and(|s| s.stopped.is_none() && p.0 >= s.next)
+        };
+        for t in types {
+            if running(self, t) {
+                self.redeclared(t, p).await?;
+            }
+            if running(self, t) {
+                let head = self.head().await?;
+                self.copied(vec![t.clone()], head).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Copy the named types whole, as the source holds them at `head`, and
+    /// follow each from the position after.
+    async fn copied(&mut self, types: Vec<TypeName>, head: Position) -> Result<(), String> {
         let scat = self.source.catalog(WriteContext::default());
         let mut records = Vec::new();
         for s in &types {

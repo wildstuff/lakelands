@@ -478,3 +478,30 @@ fn a_declaration_with_the_set_needs_format_12_and_says_so_below_it() {
         Some("a format 11 event declares `with_the_set`, which format 12 added")
     );
 }
+
+#[test]
+fn a_value_type_rename_needs_format_12_and_says_so_below_it() {
+    let vt = json!({"name": "s", "kind": "text", "one_of": ["b"]});
+    let migrated = json!({"kind": "value_type_migrated", "declaration": vt, "version": 2,
+                          "renames": [["a", "b"]], "report_id": "r", "types": ["t"]});
+    let proposed = |renames: serde_json::Value| {
+        json!({"kind": "write_proposed", "proposal": "p", "why": "w",
+               "write": {"write": "migrate_value_type", "to": vt, "renames": renames}})
+    };
+    let renames = event_json(12, proposed(json!([["a", "b"]])));
+    assert_eq!(needed(&event_json(12, migrated.clone()).body, false), 12);
+    assert_eq!(needed(&renames.body, false), 12);
+    // A proposal that renames nothing needs what a tightening did.
+    assert_eq!(needed(&event_json(10, proposed(json!([]))).body, false), 10);
+    assert_eq!(
+        below(&event_json(11, migrated)).as_deref(),
+        Some("a format 11 event renames a value type's values, which format 12 added")
+    );
+    assert_eq!(
+        below(&event_json(11, proposed(json!([["a", "b"]])))).as_deref(),
+        Some(
+            "a format 11 event proposes a value type's migration that renames values, which \
+             format 12 added"
+        )
+    );
+}

@@ -400,7 +400,10 @@ async fn a_migration_to_what_is_in_force_appends_nothing(
     l.upsert("bill", "b", json!({"net": "3"})).await?;
     let before = store.head().await.must("reading the head")?;
     let stale = l.cat.migrate_apply(&l.own, migration(bill.clone()), "none");
-    let (stale, typed) = (stale.await, l.cat.migrate_value_type(&l.own, state).await);
+    let (stale, typed) = (
+        stale.await,
+        l.cat.migrate_value_type(&l.own, state.into()).await,
+    );
     let got = l.migrate(bill.clone()).await?;
     let (after, version) = (
         store.head().await.must("reading the head")?,

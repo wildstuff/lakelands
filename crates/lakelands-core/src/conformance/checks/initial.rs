@@ -340,7 +340,10 @@ async fn an_initial_value_is_declared_on_an_authored_field_of_a_types_own(
         "one_of": ["paid"]}))
     .expect("the check's value type reads");
     let to = || Box::new(narrower.clone());
-    let shown = l.cat.migrate_value_type(&l.own, narrower.clone()).await;
+    let shown = l
+        .cat
+        .migrate_value_type(&l.own, narrower.clone().into())
+        .await;
     let shown = shown.must("the owner's preflight of the tightening")?.data;
     let uses = json!(shown.fields);
     ensure!(
@@ -355,6 +358,7 @@ async fn an_initial_value_is_declared_on_an_authored_field_of_a_types_own(
     for who in [&hidden, &masked] {
         let write = ProposedWrite::MigrateValueType {
             to: to(),
+            renames: Vec::new(),
             report: Default::default(),
         };
         let said = l.cat.propose(who, write, "fewer states".into()).await;

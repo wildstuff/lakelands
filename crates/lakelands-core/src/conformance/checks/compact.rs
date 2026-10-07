@@ -187,11 +187,11 @@ async fn churned(store: &dyn LakeStore, embedded: bool, token: &str) -> Result<L
     )
     .expect("a value type");
     let r = cat
-        .migrate_value_type(own, tighter.clone())
+        .migrate_value_type(own, tighter.clone().into())
         .await
         .must("running the preflight of tightening `account_kind`")?
         .data;
-    cat.migrate_value_type_apply(own, tighter, &r.report_id)
+    cat.migrate_value_type_apply(own, tighter.into(), &r.report_id)
         .await
         .must("tightening `account_kind`")?;
     rekey::apply(store).await?;

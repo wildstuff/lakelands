@@ -4,10 +4,12 @@
 //!
 //! `declare` admits a change no stored value can stop fitting. A
 //! tightening goes through `migrate_value_type`: every value stored under
-//! the value type, over every field of every type that uses it, history
-//! included, is checked against the new declaration, and the change is put
-//! in force only when all of them fit, as one `declared` that rewrites no
-//! record. A change of `kind` or `scale` is neither.
+//! the value type, over every field of every type that uses it, retired
+//! and restricted records included, is checked against the new
+//! declaration, and the change is put in force only when all of them fit,
+//! as one `declared` that rewrites no record. A change of `kind` or
+//! `scale` is neither. A migration that renames values is in
+//! `value_renames.rs`.
 
 use std::sync::Arc;
 
@@ -145,7 +147,7 @@ async fn versions(store: &dyn LakeStore, name: &str) -> Result<Vec<u32>, Failure
 async fn preflight(l: &Lake, to: ValueTypeDecl) -> Result<ValueTypeReport, Failure> {
     let (cat, who) = (l.cat.as_ref(), &l.own);
     Ok(cat
-        .migrate_value_type(who, to)
+        .migrate_value_type(who, to.into())
         .await
         .must("running a value type's preflight")?
         .data)
@@ -251,7 +253,7 @@ async fn declare_refuses_a_value_type_that_accepts_less_or_reshapes(
         ),
     ] {
         let e = cat
-            .migrate_value_type(own, d)
+            .migrate_value_type(own, d.into())
             .await
             .must_fail(&format!("migrating a value type that {what}"))?;
         ensure!(
@@ -359,7 +361,7 @@ async fn applying_a_tightening_some_value_does_not_fit_is_refused(
     let r = preflight(&l, to.clone()).await?;
     let before = store.head().await.must("reading the head")?;
     let e = cat
-        .migrate_value_type_apply(own, to, &r.report_id)
+        .migrate_value_type_apply(own, to.into(), &r.report_id)
         .await
         .must_fail("applying a tightening five stored values would not fit")?;
     ensure!(
@@ -385,7 +387,7 @@ async fn a_tightening_every_value_fits_is_one_declared_version(
     );
     let before = store.head().await.must("reading the head")?;
     let applied = cat
-        .migrate_value_type_apply(own, to, &r.report_id)
+        .migrate_value_type_apply(own, to.into(), &r.report_id)
         .await
         .must("applying a tightening every value fits")?;
     let head = store.head().await.must("reading the head")?;
@@ -431,7 +433,7 @@ async fn a_value_type_report_from_before_the_lake_moved_is_refused(
     l.upsert("invoice", "i1", json!({"status": "open"})).await?;
     let before = store.head().await.must("reading the head")?;
     let e = cat
-        .migrate_value_type_apply(own, to, &r.report_id)
+        .migrate_value_type_apply(own, to.into(), &r.report_id)
         .await
         .must_fail("applying a report from before the lake moved")?;
     ensure!(
@@ -457,8 +459,10 @@ async fn a_value_type_migration_needs_the_schema_grant(
             ..Grants::owner()
         },
     );
-    let pre = cat.migrate_value_type(&clerk, to.clone()).await;
-    let apply = cat.migrate_value_type_apply(&clerk, to, &r.report_id).await;
+    let pre = cat.migrate_value_type(&clerk, to.clone().into()).await;
+    let apply = cat
+        .migrate_value_type_apply(&clerk, to.into(), &r.report_id)
+        .await;
     let refused = |r: &Result<_, Error>| matches!(reason(&r), Some(Refusal::NotGranted));
     ensure!(
         refused(&pre.map(|_| ())) && refused(&apply.map(|_| ())),
@@ -481,7 +485,7 @@ async fn a_value_type_migration_needs_the_schema_grant(
         relation_renames: Vec::new(),
     };
     let answers = [
-        cat.migrate_value_type_apply(&clerk, none, "r")
+        cat.migrate_value_type_apply(&clerk, none.into(), "r")
             .await
             .map(drop),
         cat.migrate_apply(&clerk, missing, "r").await.map(drop),
@@ -611,7 +615,7 @@ async fn a_trigger_or_set_on_a_value_the_type_no_longer_admits_never_holds(
     // `late` leaves `status_code`: no stored value holds it, so it applies.
     let tighter = status(&["open", "paid", "void"]);
     let r = preflight(&l, tighter.clone()).await?;
-    cat.migrate_value_type_apply(own, tighter, &r.report_id)
+    cat.migrate_value_type_apply(own, tighter.into(), &r.report_id)
         .await
         .must("tightening `status_code` past the trigger and the set")?;
     // Both conditions stay declared: the preflight never looked at them.

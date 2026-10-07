@@ -417,6 +417,7 @@ async fn propose_states(
 ) -> lakelands_api::Result<Outcome> {
     let write = ProposedWrite::MigrateValueType {
         to: Box::new(states(one_of)),
+        renames: Vec::new(),
         report: Default::default(),
     };
     l.cat.propose(who, write, "fewer states".into()).await

@@ -874,8 +874,8 @@ pub(crate) fn note(
 pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event) -> Result<()> {
     // What the event may move: a setting, or the types whose declaration
     // or records it changes under a view: a declared type, and every type
-    // a migration's step reached.
-    use EventBody::{Declared, Migrated};
+    // a migration's step, or a value type's, reached.
+    use EventBody::{Declared, Migrated, ValueTypeMigrated};
     let (mut setting, mut declared) = (None, BTreeSet::new());
     match &e.body {
         EventBody::RecordUpserted { ty, key, .. }
@@ -891,7 +891,9 @@ pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event) -> Result<()> 
             declaration: Declaration::Type(t),
             ..
         } => declared.extend([t.name.clone()]),
-        EventBody::Migrated { .. } => declared = staged.stepped_types(),
+        EventBody::Migrated { .. } | EventBody::ValueTypeMigrated { .. } => {
+            declared = staged.stepped_types();
+        }
         _ => {}
     }
     let asked = (setting.as_deref())
@@ -904,7 +906,11 @@ pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event) -> Result<()> 
     // A setting's write and a declaration may move any view: all are
     // read in. A record's write moves the views that read its type, which
     // its notes have read in.
-    let any = setting.is_some() || matches!(e.body, Declared { .. } | Migrated { .. });
+    let any = setting.is_some()
+        || matches!(
+            e.body,
+            Declared { .. } | Migrated { .. } | ValueTypeMigrated { .. }
+        );
     let mut views = std::mem::take(&mut staged.kept);
     let settled = (|| {
         if any {
