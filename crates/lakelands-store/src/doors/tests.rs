@@ -211,3 +211,89 @@ async fn a_link_that_waited_behind_a_relations_rename_is_sent_again() {
         "sent again, it is held by the grant on the old link type: {again:?}"
     );
 }
+
+/// An executor that keeps the records it is handed.
+struct Kept(std::sync::Mutex<Vec<Option<lakelands_api::Record>>>);
+
+#[async_trait]
+impl lakelands_api::seam::VerbExecutor for Kept {
+    fn name(&self) -> &str {
+        "kept"
+    }
+
+    async fn execute(&self, invocation: &VerbInvocation) -> Result<serde_json::Value> {
+        let mut kept = self.0.lock().expect("the executor's records");
+        kept.push(invocation.record.clone());
+        Ok(json!({}))
+    }
+}
+
+/// An executor is handed the record as it stood at the position that
+/// made its verb due, where the call was judged, not as a later write
+/// left it (013, extended).
+#[tokio::test]
+async fn the_executor_reads_the_record_as_its_call_was_judged() {
+    let kept = Arc::new(Kept(Default::default()));
+    let seams = Seams {
+        engines: vec![Arc::new(MemoryOpener::new())],
+        executors: vec![kept.clone()],
+        ..Seams::default()
+    };
+    let location = Location::memory("waits");
+    let lake = Arc::new(Lake::open(&location, seams, OpenMode::Create).expect("the lake opens"));
+    let cat = Store { lake: lake.clone() }.catalog(WriteContext::default());
+    let owner = principal("owner", Grants::owner());
+    let (ty, key) = (
+        TypeName::from("account"),
+        lakelands_api::RecordKey::from("1"),
+    );
+    let declared = cat.declare(&owner, Declaration::Type(account("holder")));
+    declared.await.expect("the owner declares `account`");
+    let verb = json!({"name": "notify", "on": "account", "risk": "low",
+                      "effect": "external", "executor": "kept"});
+    let verb = serde_json::from_value(verb).expect("a verb");
+    cat.declare(&owner, Declaration::Verb(verb))
+        .await
+        .expect("the owner declares `notify`");
+    let write = |a: &str| serde_json::from_value(json!({"a": a})).expect("a patch");
+    let wrote = cat.upsert(&owner, &ty, &key, write("then"), Default::default());
+    wrote.await.expect("the owner writes the record");
+    let notify = VerbName::from("notify");
+    let called = cat.call(
+        &owner,
+        &notify,
+        Some(&key),
+        Default::default(),
+        Default::default(),
+    );
+    called.await.expect("the owner calls `notify`");
+    let log = lake.read_events(Position::GENESIS, 100).expect("the log");
+    let called = log
+        .iter()
+        .find(|e| matches!(e.body, EventBody::VerbCalled { .. }));
+    let called = called.expect("the call is logged").position;
+    let rewrote = cat.upsert(&owner, &ty, &key, write("now"), Default::default());
+    rewrote.await.expect("the owner writes the record again");
+    let ext = External {
+        executor: "kept".into(),
+        verb: notify,
+        ty,
+        key: Some(key),
+        payload: Default::default(),
+        position: called,
+    };
+    let doors = Doors {
+        lake,
+        context: WriteContext::default(),
+    };
+    let _ = doors.execute(ext, MadeDue::Call { keyed: false }).await;
+    let kept = kept.0.lock().expect("the executor's records");
+    let handed: Vec<_> = (kept.iter().flatten())
+        .map(|r| r.fields.get("a").cloned())
+        .collect();
+    assert_eq!(
+        handed,
+        [Some(json!("then")), Some(json!("then"))],
+        "the executor is handed the record as it stood when `notify` was called"
+    );
+}

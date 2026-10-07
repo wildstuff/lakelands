@@ -74,13 +74,43 @@ record that does not exist.
   answers as one from a free key, and a link a grant's `only` on the
   link type admits by its own fields holds the relation's cardinality
   as any other.
-- **What stays refused**, as not granted, naming no field: a verb above
-  low risk on the type or on a link type with a held end, `propose`,
-  `accept` and `reject` of a write that reaches it (a proposal is judged
-  again when it is accepted, and the accept does not know the
-  proposer's grant), and an aging rule on the type, which moves records
-  at the host's run. A holder of `only` on any type changes no
-  shape: every schema door and the proposal of a declaration or a
+- **A holder proposes writes to its own records, pinned to them.** Its
+  `propose` of an upsert, a retirement or a call, and a call of a verb
+  above low risk, which is a proposal, are judged as the direct write
+  is, against the record it owns at the key. The proposal is logged
+  `pinned` where the holder holds `only` on the type it writes, a link
+  type with a held end included (`docs/log-format.md` §2.4). The accept
+  of a pinned proposal is refused as invalid, the proposal left pending,
+  once the record at its key has an event after the proposal's position,
+  live or retired, or, for a link, either end record has one (a link is
+  its holder's by its ends, and a change to an end moves no link), or
+  the type was declared or migrated since, a re-key included: a rederive and a backed output move the
+  record without a write, and a record made again at the key starts its
+  versions anew, so the position, not the version, is what the accept
+  compares. So the accept applies the write to the record and type its
+  proposer was judged on. The proposer's grant is not in the log, so a
+  holder may propose only where nothing but the write can move its
+  pairs: a proposal is refused where a field its `only` names is derived
+  or backed, or where the verb assigns one. A reference a pinned
+  proposal writes is judged at the accept as a live record, as for any
+  proposal: it names a key the proposer knew when it proposed. The
+  accept writes in the proposer's name, not under its grant, and the pin
+  compares records and types, not grants: a grant narrowed or revoked
+  between the proposal and its accept does not stop a pinned proposal.
+  The reviewer decides it, on what the listing shows.
+- **A reviewer holding `only` decides what it is shown whole.** It
+  accepts or rejects a proposal on a type it holds `only` on only where
+  the proposal listing shows it the proposal whole: the record at the
+  key, before the write and after it as proposed, admitted, and every
+  value the write carries one it may read. Otherwise it is refused as
+  not granted before it is told whether the proposal is decided, so a
+  proposal id, which is positional and so can be guessed, tells it
+  nothing the listing does not. Its accept is judged by its own pairs
+  too: a write that would leave the record outside them is refused as
+  not granted, as its own write would be.
+- **What stays refused**, as not granted, naming no field: an aging rule
+  on the type, which moves records at the host's run. A holder of `only`
+  on any type changes no shape: every schema door and the proposal of a declaration or a
   migration are refused to it, and no migration's proposal, of a type or
   a value type, is listed to it, since a report counts every owner's
   records. A reference written into the type from another type must
@@ -89,7 +119,7 @@ record that does not exist.
   grant can be applied, and offers no write, link or verb that would be
   refused: an upsert only where it writes every field its `only` names
   at the authored door, so that a create can succeed, and no verb above
-  low risk. A field's `initial` value is not counted there: where only
+  low risk that it may not propose. A field's `initial` value is not counted there: where only
   an `initial` value would make a new record the holder's, the write is
   admitted (the record it leaves is judged, `initial` values included)
   but no upsert is offered. The change feed is the log unmasked, so a holder does not
@@ -124,10 +154,13 @@ so that no answer it gets is made from a record it may not read; the
 refusal of a write onto another's key comes last, where a free key
 would have been written, and that one difference is the existence a
 create cannot help showing. A proposal waits for a later accept that
-re-judges the write under no grant of the proposer's, so a holder's
-proposals and the verbs that become proposals stay refused; admitting
-them needs the accept pinned to the record as it was proposed
-(lakelands#660).
+re-judges the write under no grant of the proposer's: the pin makes the
+accept apply the write to the record and the type its proposer was
+judged on, or refuse it. The pin is one bit of the proposer's grant in
+a log that is not masked: whoever reads the log learns that the
+proposer held `only` on the type, never on what. A reviewer is a reader
+of what it decides, so it decides only what it may read, and what it
+accepts it is answered for as for its own write (lakelands#660).
 
 ## What it is not
 

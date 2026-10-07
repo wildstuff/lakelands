@@ -105,10 +105,12 @@ pub struct VerbInvocation {
     pub lake: LakeId,
     /// The verb.
     pub verb: VerbName,
-    /// The record it was called on, whole and unmasked: the executor is
-    /// the host's own code, not a caller, and receives the record as the
-    /// store holds it by design. What it may release is the host's to
-    /// decide. `None` for a verb called on its type, which has no record.
+    /// The record it was called on, as it stood at `position`, where its
+    /// call was judged: a later write, a retirement included, does not
+    /// reach it. Whole and unmasked: the executor is the host's own code,
+    /// not a caller, and receives the record as the store holds it by
+    /// design. What it may release is the host's to decide. `None` for a
+    /// verb called on its type, which has no record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<Record>,
     /// The payload.

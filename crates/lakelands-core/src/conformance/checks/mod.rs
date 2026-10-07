@@ -44,6 +44,7 @@ mod made_of;
 mod masking;
 mod migrate;
 mod only;
+mod only_proposals;
 mod paging;
 mod positions;
 mod proposal_names;
@@ -299,6 +300,8 @@ pub const ALL: &[Check] = &[
     only::ONLY_WRITES,
     only::ONLY_SCHEMA,
     only::ONLY_GRANT_CHECKED,
+    only_proposals::ONLY_PROPOSES,
+    only_proposals::ONLY_DECIDES,
     reactions::VERB_WRITE_REACTS,
     reactions::SET_READ_BY_ITS_FILTER,
     set_declared::SET_DECLARED_OVER_RECORDS,

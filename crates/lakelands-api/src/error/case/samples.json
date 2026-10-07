@@ -1198,6 +1198,11 @@
    "to": "k"
   },
   {
+   "code": "write_changed_since_proposed",
+   "key": "k",
+   "type": "t"
+  },
+  {
    "code": "aging_authority",
    "field": "f",
    "type": "t"

@@ -1151,10 +1151,10 @@ reaches outside the lake names an executor; when that verb runs (at once
 if declared `low`, on acceptance otherwise, as
 `docs/decisions/013-verbs-run-by-declared-risk.md` decides),
 the store hands the executor a `VerbInvocation`: the lake, the verb, the
-record as it stands at the head when the executor is called, after the
-append that made the verb due and the function calls that append made
-due, whole and **unmasked** (none for a verb called on its type, which
-has no record), the payload, and
+record as it stood at the position that made the verb due, where the
+call was judged, so that a later write, a retirement included, does not
+reach the executor, whole and **unmasked** (none for a verb called on
+its type, which has no record), the payload, and
 the position of the event that made it due. The lake and that position
 are the executor's dedup key. The executor is the host's code, bound by
 the host, and decides what it returns; the caller sees only the outcome
@@ -1162,7 +1162,10 @@ and the recorded output, never the record the executor was given. A host
 that wants an executor to see only what the caller may see applies the
 caller's grants in the executor. Its answer is recorded as an
 `output_recorded` event caused by that event, with `input` the digest of
-`{ "verb", "record", "payload", "position" }`.
+`{ "verb", "record", "payload", "position" }`. The mock binds no
+executor and refuses such a verb as `unbound`, so the record an executor
+is handed is pinned by the store's own test, on the memory engine, and
+not by the door checks the mock runs too.
 
 An executor that fails does not undo the verb: the event that made it
 due is in the log, and its position is real. The failure is the recorded
@@ -1205,8 +1208,7 @@ decided, so accepting it again will not run it: propose the call again);
 the proposal is spent. The executor is handed nothing either where the
 drain of due calls before the hand-out failed: the writer may be behind
 then, and the executor's answer could not be recorded. Nor is it where
-the read of the record for the executor fails, or finds it retired since
-the call. The call, folded at its position, is answered that failure as
+the read of the record for the executor fails. The call, folded at its position, is answered that failure as
 `unavailable` with the same sentence. Where the executor answered and
 the recording of its answer failed, the call is answered that failure,
 saying the executor answered and with what: an answer that reached the

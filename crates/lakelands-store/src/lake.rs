@@ -1486,6 +1486,7 @@ impl Lake {
                 proposal,
                 write,
                 why,
+                ..
             } => {
                 let p = Proposal {
                     id: proposal.clone(),

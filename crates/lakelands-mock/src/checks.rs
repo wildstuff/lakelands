@@ -11290,8 +11290,9 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
 /// values alone (051): another's record is not found, `find`, its total,
 /// a walk and a degree over the links answer its own, a proposal on
 /// another's record is listed without its write, its own records it
-/// writes while another's is to its write a key that is free, and
-/// `describe_type` tells it the pairs and its writes.
+/// writes while another's is to its write a key that is free, it
+/// proposes writes to its own records, pinned to them, and decides none
+/// of another's, and `describe_type` tells it the pairs and its writes.
 pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
     store: Arc<dyn LakeStore>,
 ) {
@@ -11332,9 +11333,10 @@ pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
     let bob = &principal(store.lake(), PrincipalKind::Agent, "bob", bob);
     let retire = json!({"write": "retire", "type": "claim", "key": "c2"});
     let retire = serde_json::from_value(retire).expect("a write reads");
-    c.propose(bob, retire, "bob's".into())
-        .await
-        .expect("bob proposes");
+    let his = match c.propose(bob, retire, "bob's".into()).await {
+        Ok(Outcome::Proposed { proposal, .. }) => proposal,
+        other => panic!("bob's retirement must be proposed; it answered {other:?}"),
+    };
     let grants = json!({"default": "write", "review": true,
                         "ingest": true, "types": {"claim": {"only": {"holder": "alice"}},
                                                   "slip": {"only": {"holder": "alice"}}}});
@@ -11499,8 +11501,98 @@ pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
             "bob's proposal is listed to alice with its write: {listed:?}"
         ));
     }
+    // Her own records she proposes to write, pinned to them: a proposal
+    // applies while its record stands as proposed, and is refused once
+    // it moved. Another's she proposes for, and decides, nothing.
+    let amount = |k: &str, n: i64| {
+        let write = json!({"write": "upsert", "type": "claim", "key": k, "patch": {"amount": n}});
+        serde_json::from_value(write).expect("a write reads")
+    };
+    let mut decided = Vec::new();
+    for n in [2, 3] {
+        let proposed = c.propose(alice, amount("c3", n), "mine".into()).await;
+        let Ok(Outcome::Proposed { proposal, .. }) = proposed else {
+            panic!("alice's proposal on her `c3` must be proposed; it answered {proposed:?}");
+        };
+        if n == 3 {
+            c.upsert(own, &claim, &key("c3"), p(), opts())
+                .await
+                .expect("the owner writes `c3`");
+        }
+        decided.push(c.accept(own, &proposal).await.map(|_| ()));
+    }
+    let moved = decided[1]
+        .as_ref()
+        .err()
+        .and_then(Error::case)
+        .map(|s| &s.case);
+    let moved =
+        matches!(moved, Some(Case::WriteChangedSinceProposed { key: Some(k), .. }) if k == "c3");
+    if decided[0].is_err() || !moved {
+        wrong.push(format!(
+            "the owner's accepts of alice's proposals: {decided:?}"
+        ));
+    }
+    let give = json!({"declare": "verb", "name": "give", "on": "claim", "risk": "high",
+                      "effect": "write", "set": [{"field": "holder", "value": "'bob'"}]});
+    let give = serde_json::from_value(give).expect("a verb reads");
+    c.declare(own, give)
+        .await
+        .expect("the owner declares `give`");
+    let (verb, c3) = ("give".into(), key("c3"));
+    let given = c.call(bob, &verb, Some(&c3), none(), opts()).await;
+    let Ok(Outcome::Proposed {
+        proposal: given, ..
+    }) = given
+    else {
+        panic!("bob's call of `give` must be proposed");
+    };
+    let head = store.head().await.expect("the head");
+    for (what, answer) in [
+        (
+            "an accept of a call that hands her `c3` to bob",
+            c.accept(alice, &given).await.map(|_| ()),
+        ),
+        (
+            "her call of a verb that assigns her holder",
+            c.call(alice, &verb, Some(&c3), none(), opts())
+                .await
+                .map(|_| ()),
+        ),
+        (
+            "a proposal on bob's `c2`",
+            c.propose(alice, amount("c2", 2), "mine".into())
+                .await
+                .map(|_| ()),
+        ),
+        (
+            "an accept of bob's",
+            c.accept(alice, &his).await.map(|_| ()),
+        ),
+        (
+            "a reject of bob's",
+            c.reject(alice, &his, "no".into()).await.map(|_| ()),
+        ),
+    ] {
+        if !matches!(
+            answer,
+            Err(Error::Refused {
+                field: None,
+                reason: Refusal::NotGranted
+            })
+        ) {
+            wrong.push(format!("{what}: {answer:?}"));
+        }
+    }
+    if store.head().await.expect("the head") != head {
+        wrong.push("a refused proposal or decision by alice moved the head".to_owned());
+    }
     let told = c.describe_type(alice, &claim, ReadAt::default()).await;
-    let may = told.expect("`claim` is described to alice").data.may;
+    let told = told.expect("`claim` is described to alice").data;
+    if !told.verbs.is_empty() {
+        wrong.push(format!("`give` is described to alice: {:?}", told.verbs));
+    }
+    let may = told.may;
     let only = serde_json::to_value(&may.only).expect("pairs read");
     let link: Vec<&str> = may.link.iter().map(|r| r.as_str()).collect();
     if only != json!({"holder": "alice"}) || !may.upsert || !may.retire || link != ["on_trip"] {

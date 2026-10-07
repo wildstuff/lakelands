@@ -206,15 +206,20 @@ impl Doors {
         let executor = writes::bound_executor(&self.lake, &ext.executor).map_err(not_handed)?;
         let executor = executor.clone();
         // The executor is the host's own code: it receives the record whole,
-        // unmasked by the grants of whoever made the verb due. The caller
-        // sees only the outcome and the recorded output. A verb on its type
-        // has no record to hand it.
+        // unmasked by the grants of whoever made the verb due, as it stood
+        // at the position that made it due, where its call was judged: a
+        // later write, a retirement included, does not reach it (013). The
+        // caller sees only the outcome and the recorded output. A verb on
+        // its type has no record to hand it.
         let record = match &ext.key {
             Some(key) => {
                 let get = Get {
                     key: key.clone(),
                     with_meta: false,
-                    at: ReadAt::default(),
+                    at: ReadAt {
+                        as_of: Some(ext.position),
+                        valid_at: None,
+                    },
                     params: Default::default(),
                 };
                 let host = self.lake.system("host");

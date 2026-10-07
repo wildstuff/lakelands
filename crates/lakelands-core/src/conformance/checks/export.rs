@@ -14,6 +14,7 @@ use std::sync::Arc;
 use lakelands_api::error::{Case, Flaw, Situation};
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind::{Number, Text};
+use lakelands_api::principal::PrincipalKind;
 use lakelands_api::{Error, LakeStore, Position, Refusal};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -694,6 +695,16 @@ async fn exported_lake(
     let days = serde_json::from_value(days).expect("a field");
     let added = cat.add_field(own, &"stamp".into(), days).await;
     added.must("adding `days` to `stamp`")?;
+    // Format version 13: a proposal pinned to its proposer's own record.
+    l.declare(type_of("chore", &[("by", Text)])).await?;
+    l.upsert("chore", "c1", json!({"by": "kim"})).await?;
+    let kim = json!({"default": "write", "types": {"chore": {"only": {"by": "kim"}}}});
+    let kim = serde_json::from_value(kim).expect("grants");
+    let kim = crate::conformance::fixture::principal(store, PrincipalKind::Agent, "kim", kim);
+    let done = json!({"write": "retire", "type": "chore", "key": "c1"});
+    let done = serde_json::from_value(done).expect("a write");
+    let proposed = cat.propose(&kim, done, "done".into()).await;
+    proposed.must("kim's proposal to retire her `c1`")?;
     // Format version 8 too: a verb on its type, called with no key.
     l.declare_json(json!({
         "declare": "verb", "name": "print_stamp", "on": "stamp", "scope": "type",

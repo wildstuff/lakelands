@@ -516,6 +516,23 @@ def main():
         check(sha(canonical(body)) == negative["hash"], "v12.json: a negative line's hash is its own")
         check(negative["v"] == 11 and twelfth(negative),
               "v12.json: a negative line carries in format 11 what format 12 added, which a reader refuses")
+    v13 = json.loads((HERE / "v13.json").read_text("utf-8"))
+    pinned = lambda e: e["body"].get("kind") == "write_proposed" and e["body"].get("pinned") is True
+    for line, want in zip(v13["lines"], v13["hashes"]):
+        event = json.loads(line)
+        check(canonical(event) == line.encode("utf-8"), f"v13.json: position {event['position']} is canonical")
+        check(event["v"] == 13 and pinned(event),
+              f"v13.json: position {event['position']} is format 13 and carries `pinned`")
+        body = {k: v for k, v in event.items() if k != "hash"}
+        check(sha(canonical(body)) == event["hash"] == want, f"v13.json: hash {want[:12]}…")
+        check(event["prev"] == prev, f"v13.json: position {event['position']} follows the one before it")
+        prev = event["hash"]
+    for line in v13["negatives"]:
+        negative = json.loads(line)
+        body = {k: v for k, v in negative.items() if k != "hash"}
+        check(sha(canonical(body)) == negative["hash"], "v13.json: a negative line's hash is its own")
+        check(negative["v"] == 12 and pinned(negative),
+              "v13.json: a negative line carries `pinned` in format 12, which a reader refuses")
     for name in ("negative_verb", "negative_call"):
         negative = json.loads(v8[name])
         body = {k: v for k, v in negative.items() if k != "hash"}

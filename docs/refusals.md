@@ -228,6 +228,7 @@ What a format version added that an event carries, written in an older format.
 | `computed_at` | — | declares when a field is computed | It declares when a field is computed. |
 | `value_renames` | — | renames a value type's values | It renames a value type's values. |
 | `proposes_value_renames` | — | proposes a value type's migration that renames values | It proposes a value type's migration that renames values. |
+| `pinned` | — | proposes a write pinned to its record | It proposes a write pinned to its record. |
 
 ## `Place`
 
@@ -545,6 +546,7 @@ What a refusal is about.
 | `verb_type_takes_no_key` | `verb` (VerbName), `type` (TypeName) | verb `{verb}` is called on the type `{type}`, not on a record: it takes no key | A verb on its type called with a key. |
 | `verb_value_unfit` | `verb` (VerbName), `field` (FieldName) | verb `{verb}` computes a value that does not fit `{field}` | A verb's assignment computing what its field does not take. |
 | `window_links_already` | `from` (RecordKey), `to` (RecordKey), `relation` (RelationName), `cardinality` (Cardinality) | the window links `{from}` to `{to}` over `{relation}` already, and it allows one ({cardinality}) | A link one ingest window made already where one is allowed. |
+| `write_changed_since_proposed` | `type` (TypeName), `key` (RecordKey, optional) | `{type}`[ `{key}`] changed since this write was proposed; propose it again | A pinned proposal's accept after its record or type changed. |
 | `aging_authority` | `type` (TypeName), `field` (FieldName) | `{type}`.`{field}` is not `authored` or `shared`; aging writes it as `upsert` does | An aging rule's field that its door does not write. |
 | `aging_key` | `type` (TypeName), `field` (FieldName) | `{type}`.`{field}` is part of the key; aging never moves a key | An aging rule on a key field. |
 | `aging_no_value` | `member` (FieldName) | an aging rule's `{member}` holds a value | An aging rule's member with no value. |

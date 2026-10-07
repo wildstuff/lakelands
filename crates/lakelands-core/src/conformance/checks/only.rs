@@ -53,7 +53,7 @@ check!(
 check!(
     /// A holder of `only` writes its own records alone.
     ONLY_WRITES = a_holder_of_only_writes_its_own_records_alone,
-    "051: a holder of `only` changes, makes, retires and makes again under its version, links, unlinks, ingests and calls a low-risk verb on its own records; another's record is to its write a key that is free, so a probe under a version, a missing required field, a disagreeing key field and a link ingested from it answer as on a free key, and another's retired key is made again, its version continued, `retire`, `unlink` and a verb answer not found, and a write that would pass, a handover and a re-delivery onto another's key are not granted, appending nothing; a link's cardinality names the other end only where its writer is answered it, restricted or not, and holds, over the lake and the window, for a link that `only` on its link type admits by a field its source sends; a high-risk verb, `propose`, `accept`, `reject` and an aging rule stay refused; a proposal on another's record, retired or not, is listed without its write; a retry under a key used before the grant held answers as before; a reference into the type from another type, through `upsert`, `propose` or `ingest`, must name an admitted record"
+    "051: a holder of `only` changes, makes, retires and makes again under its version, links, unlinks, ingests and calls a low-risk verb on its own records; another's record is to its write a key that is free, so a probe under a version, a missing required field, a disagreeing key field and a link ingested from it answer as on a free key, and another's retired key is made again, its version continued, `retire`, `unlink` and a verb answer not found, and a write that would pass, a handover and a re-delivery onto another's key are not granted, appending nothing; a link's cardinality names the other end only where its writer is answered it, restricted or not, and holds, over the lake and the window, for a link that `only` on its link type admits by a field its source sends; an aging rule stays refused; a proposal on another's record, retired or not, is listed without its write; a retry under a key used before the grant held answers as before; a reference into the type from another type, through `upsert`, `propose` or `ingest`, must name an admitted record"
 );
 
 check!(
@@ -65,22 +65,22 @@ check!(
 check!(
     /// A grant `only` that cannot be applied is refused at the doors that name its type.
     ONLY_GRANT_CHECKED = a_grant_that_cannot_be_applied_is_refused,
-    "051: `describe_type` tells a holder its `only`, offers its writes, the type's links and its low-risk verbs, and an upsert only where it writes every field its `only` names; `only` on a field the type does not declare, of another kind than text or reference, with a value that is not text, or on a field the holder may not read, refuses the doors that name the type as invalid, naming the type and never the field; the grant follows a rename of its field, and after the field is dropped a read at the head is refused while one as of before is answered; a walk or a view that reaches a type whose grant cannot be applied admits none of its records"
+    "051: `describe_type` tells a holder its `only`, offers its writes, the type's links and its verbs but one above low risk that assigns a field its `only` names, and an upsert only where it writes every field its `only` names; `only` on a field the type does not declare, of another kind than text or reference, with a value that is not text, or on a field the holder may not read, refuses the doors that name the type as invalid, naming the type and never the field; the grant follows a rename of its field, and after the field is dropped a read at the head is refused while one as of before is answered; a walk or a view that reaches a type whose grant cannot be applied admits none of its records"
 );
 
 /// A value of the door API from its JSON.
-fn de<T: DeserializeOwned>(v: Value) -> T {
+pub(super) fn de<T: DeserializeOwned>(v: Value) -> T {
     serde_json::from_value(v).expect("the check's JSON reads")
 }
 
 /// A principal `id` with the grants given as JSON.
-fn holder(store: &dyn LakeStore, id: &str, grants: Value) -> Principal {
+pub(super) fn holder(store: &dyn LakeStore, id: &str, grants: Value) -> Principal {
     principal(store, PrincipalKind::Agent, id, de(grants))
 }
 
 /// `alice` reads every type and is admitted only her own claims; `more`
 /// adds to her grants.
-fn alice(store: &dyn LakeStore, more: Value) -> Principal {
+pub(super) fn alice(store: &dyn LakeStore, more: Value) -> Principal {
     let mut grants = json!({"default": "read", "types": {"claim": {"only": {"owner": "alice"}}}});
     if let (Some(g), Value::Object(more)) = (grants.as_object_mut(), more) {
         g.extend(more);
@@ -92,7 +92,7 @@ fn alice(store: &dyn LakeStore, more: Value) -> Principal {
 /// (alice, 5, hotel), each with a vector and linked to t1 over `on_trip`;
 /// the views `spend`, the sum by owner, and `all_spend`, the sum of every
 /// claim, both kept, where `views`. Answers the head.
-async fn claims(l: &Lake, views: bool) -> Result<Position, Failure> {
+pub(super) async fn claims(l: &Lake, views: bool) -> Result<Position, Failure> {
     l.declare(type_decl("trip", vec![field("name", Text)]))
         .await?;
     l.declare(claim_with("owner")).await?;
@@ -126,7 +126,7 @@ async fn claims(l: &Lake, views: bool) -> Result<Position, Failure> {
 }
 
 /// `claim`, the claim `key`, `on_trip` and `t1`, as the doors name them.
-fn names(key: &str) -> (TypeName, RecordKey, RelationName, RecordKey) {
+pub(super) fn names(key: &str) -> (TypeName, RecordKey, RelationName, RecordKey) {
     ("claim".into(), key.into(), "on_trip".into(), "t1".into())
 }
 
@@ -250,7 +250,10 @@ fn unappliable(e: &Error) -> bool {
 }
 
 /// Fails unless `answer` is refused as not granted, naming no field.
-fn not_granted<T: Debug>(what: &str, answer: lakelands_api::Result<T>) -> Result<(), Failure> {
+pub(super) fn not_granted<T: Debug>(
+    what: &str,
+    answer: lakelands_api::Result<T>,
+) -> Result<(), Failure> {
     let (field, reason) = (None, Refusal::NotGranted);
     let refused = Error::Refused { field, reason };
     ensure!(
@@ -261,7 +264,10 @@ fn not_granted<T: Debug>(what: &str, answer: lakelands_api::Result<T>) -> Result
 }
 
 /// Fails unless `answer` is not found, as for a record that is not there.
-fn not_found<T: Debug>(what: &str, answer: lakelands_api::Result<T>) -> Result<(), Failure> {
+pub(super) fn not_found<T: Debug>(
+    what: &str,
+    answer: lakelands_api::Result<T>,
+) -> Result<(), Failure> {
     let missing = matches!(answer, Err(Error::NotFound { .. }));
     ensure!(missing, "{what} must be not found; it answered {answer:?}");
     Ok(())
@@ -513,7 +519,7 @@ fn link_said<T>(answer: lakelands_api::Result<T>) -> String {
 }
 
 /// What a write answered, short: `applied`, `not found`, or its refusal.
-fn said<T>(answer: lakelands_api::Result<T>) -> String {
+pub(super) fn said<T>(answer: lakelands_api::Result<T>) -> String {
     match answer {
         Ok(_) => "applied".to_owned(),
         Err(Error::NotFound { .. }) => "not found".to_owned(),
@@ -619,25 +625,11 @@ async fn a_holder_of_only_writes_its_own_records_alone(
         again == first,
         "a retry must answer as its first call did, {first:?}; it answered {again:?}"
     );
-    // What waits for review, and an aging rule, stay refused to her.
+    // An aging rule stays refused to her.
     let head = store.head().await.must("reading the head")?;
-    let (verb, high) = (VerbName::from("pay"), VerbName::from("propose_pay"));
-    let retire = de(json!({"write": "retire", "type": "claim", "key": "c1"}));
+    let verb = VerbName::from("pay");
     let rule = json!({"on": "claim", "field": "note", "from": "taxi", "to": "cab", "when": "true"});
     let rules = TypeName::from(lakelands_api::seam::AGING_RULE_TYPE);
-    not_granted(
-        "a high-risk verb",
-        cat.call(&alice, &high, Some(&c1), none(), opts()).await,
-    )?;
-    not_granted(
-        "`propose`",
-        cat.propose(&alice, retire, "mine".into()).await,
-    )?;
-    not_granted("`accept`", cat.accept(&alice, &proposals[0]).await)?;
-    not_granted(
-        "`reject`",
-        cat.reject(&alice, &proposals[0], "no".into()).await,
-    )?;
     let ruled = cat
         .upsert(&alice, &rules, &"r1".into(), de(rule), opts())
         .await;
@@ -979,8 +971,10 @@ async fn a_grant_that_cannot_be_applied_is_refused(
                           "effect": "write", "set": set});
         l.declare_json(verb).await?;
     }
-    // She is offered her own writes and the low-risk verb; a create only
-    // where she writes her owner field, which a retire asks of anyone.
+    // She is offered her own writes and her verbs, the one that waits for
+    // review too, since it assigns no field her `only` names; a create
+    // only where she writes her owner field, which a retire asks of
+    // anyone.
     let read_only = json!({"only": {"owner": "alice"}, "fields": {"owner": "read"}});
     for (more, creates) in [
         (json!({"default": "write"}), true),
@@ -1004,8 +998,8 @@ async fn a_grant_that_cannot_be_applied_is_refused(
                 && may.upsert == creates
                 && may.retire == creates
                 && link == ["on_trip"]
-                && verbs == ["pay"],
-            "`describe_type` must tell alice her `only`, her writes, the link and the low-risk verb of `claim`, an upsert where she writes `owner` ({creates}); it says {may:?} and verbs {verbs:?}"
+                && verbs == ["pay", "propose_pay"],
+            "`describe_type` must tell alice her `only`, her writes, the link and both verbs of `claim`, an upsert where she writes `owner` ({creates}); it says {may:?} and verbs {verbs:?}"
         );
     }
     let alice = alice(store.as_ref(), json!({"default": "write"}));

@@ -1944,6 +1944,14 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// Whether the listing shows its reader the proposal logged at `at`,
+    /// writing `write`, whole: a reviewer holding `only` decides no other
+    /// (051).
+    pub(crate) fn shows_whole(&self, write: &ProposedWrite, at: Position) -> bool {
+        let mut shown = write.clone();
+        self.known_shape(&mut shown, (&OnceCell::new(), self.who, at)) && shown == *write
+    }
+
     /// A proposed write as its reader may know it (013 and 024, extended):
     /// a value where a read of the record would show it, a name where
     /// `describe` would. False when the reader may see nothing of it: a

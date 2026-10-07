@@ -93,7 +93,8 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   as events. A verb that writes authored fields runs in the store; a
   verb that reaches outside the lake runs through the executor the host
   bound for it, with the lake and the position that made it due as the
-  dedup key. The executor gets the record unmasked; a host that wants it
+  dedup key. The executor gets the record unmasked, as it stood at that
+  position, where the call was judged; a host that wants it
   to see only what the caller may see applies the caller's grants there. The executor's answer is recorded in the log; a failure is
   recorded as `{"error": …}`, the write that made the verb due stands,
   and the caller gets the recorded answer either way. Without a bound
