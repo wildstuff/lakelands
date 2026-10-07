@@ -205,6 +205,17 @@ Two rules hold by it:
 A failure that depends on a record's value stays that record's. A
 declaration in force is not checked again until it is declared again.
 
+## Extended: what a view computes lands as a derived field does (lakelands#563)
+
+A view's measure `max(due_on)` declared into a `number` field was taken,
+and a read answered the view's records without it: the value never
+lands, and nothing said so. Each measure of a view and of its merged
+sources, read over its source's fields, and each group value are held to
+the rule above for a derived field, at the declaration: one that
+certainly computes a kind its field never holds is refused as `invalid`
+on that field, naming the kind. A name a measure answers under is read
+as nothing certain, since an expression may mean the measure by it.
+
 ## Extended: a path steps only into a value that has members (lakelands#552)
 
 A path's first name was checked against the type, and the rest was not:

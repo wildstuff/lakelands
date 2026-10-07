@@ -317,7 +317,7 @@ impl Grouping {
                 Some(e) => {
                     let scope = RecordScope {
                         fields: row,
-                        settings: None,
+                        settings,
                         now: self.now,
                     };
                     eval(e, &scope).map_or(Value::Null, |v| to_value(&v))
@@ -390,11 +390,17 @@ pub fn group_keys(keys: &[GroupKey]) -> Result<Vec<(FieldName, Option<Expr>)>> {
     Ok(out)
 }
 
-/// `find`'s aggregate over a set of records. No records and no grouping
-/// give one group, so `count` answers 0 rather than nothing.
-pub fn aggregate(rows: &[&Row], agg: &Aggregate, now: Timestamp) -> Result<Vec<Group>> {
+/// A pattern's aggregate over its rows, its keys reading the lake's
+/// `settings`. No rows and no grouping give one group, so `count`
+/// answers 0 rather than nothing.
+pub fn aggregate(
+    rows: &[&Row],
+    agg: &Aggregate,
+    settings: &BTreeMap<String, Value>,
+    now: Timestamp,
+) -> Result<Vec<Group>> {
     let mut grouping = grouping(agg, now)?;
-    rows.iter().for_each(|r| grouping.add(r, None));
+    rows.iter().for_each(|r| grouping.add(r, Some(settings)));
     answer(grouping, agg)
 }
 

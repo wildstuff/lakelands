@@ -165,7 +165,13 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `lakelands age --today <YYYY-MM-DD>` is the same call from the CLI, and
   `lakelands serve` makes it daily when the root's `lakelands.json` has an
   `aging` section: the date at its `utc_offset`, once at start and at each
-  rollover (`docs/seams.md` §aging).
+  rollover (`docs/seams.md` §aging). A rule moves the records whose field
+  holds its `from` to its `to`, and both are values, written as they are:
+  a `to` of `concat('over', 'due')` is that text, never evaluated. A
+  record whose field is null holds no `from`, so no rule moves it and the
+  report does not count it. A host that wants such records aged gives the
+  field a value: a declared `initial` at the write, or a verb that sets
+  it.
   A source that should be taken back is purged with
   `LakeStore::purge_source(source, None, None)`
   (`lakelands purge --source <id>`):
@@ -597,6 +603,22 @@ A host that already has a store of its own moves in four steps.
   Opening a lake for writing appends one `lease_taken`, which carries
   the token every later event of that writer bears; a reader appends
   none.
+- **A request names only what it takes.** `Find`, `Get`, a pattern, a
+  search, the write options, a proposed write, a proposal filter and a
+  feed filter refuse a member they do not take, at any depth, naming it,
+  as a declaration does (lakelands#563): `find {"set": "open"}` is
+  refused, where before it answered every record. A host that reads JSON
+  into them, or sends a member a newer store would take, is told so
+  instead of being answered a request without it. An answer that carries
+  a proposed write or write options (a proposal listing, the feed, an
+  export) is read as strictly by a client, so a client older than its
+  server refuses a member the server added, as it refuses a new variant.
+- **A write one level too deep is refused whole.** A reaction at a depth
+  past `max_reactive_depth` appends nothing, the write included
+  (`docs/decisions/021-the-write-context-belongs-to-the-host.md`). A host
+  that comes from a store which landed such a write and dropped only its
+  reaction raises `max_reactive_depth` at the lake's location, or sends
+  the write outside the chain, at depth 0 with its `cause`.
 - **A required field a source does not write takes `initial`.** A type
   a source feeds may hold a field the source knows nothing of, such as a
   state the lake's own users move. Declared `required` alone, no door

@@ -39,6 +39,7 @@ fn sums_are_exact_and_skip_nulls() {
             ],
             group_by: vec![],
         },
+        &BTreeMap::new(),
         Timestamp(0),
     )
     .unwrap();
@@ -61,6 +62,7 @@ fn groups_come_in_canonical_key_order_with_null_as_a_group() {
             measures: vec![m("total", AggFunc::Sum, Some("amount"))],
             group_by: vec!["debtor".into()],
         },
+        &BTreeMap::new(),
         Timestamp(0),
     )
     .unwrap();
@@ -83,6 +85,7 @@ fn no_records_still_answer_one_ungrouped_row() {
             ],
             group_by: vec![],
         },
+        &BTreeMap::new(),
         Timestamp(0),
     )
     .unwrap();
@@ -102,6 +105,7 @@ fn a_sum_over_text_that_is_not_a_number_is_an_error() {
                 measures: vec![m("s", AggFunc::Sum, Some("x"))],
                 group_by: vec![]
             },
+            &BTreeMap::new(),
             Timestamp(0)
         )
         .is_err()

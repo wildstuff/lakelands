@@ -36,6 +36,7 @@ pub enum Walk {
 /// `max_depth`, or a `min` above `max`, is refused as invalid, never
 /// silently shortened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Depth {
     /// The fewest hops.
     pub min: u32,
@@ -51,6 +52,7 @@ impl Default for Depth {
 
 /// Where a pattern starts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Start {
     /// The start's type.
     #[serde(rename = "type")]
@@ -71,6 +73,7 @@ pub struct Start {
 
 /// One step of a pattern.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Step {
     /// The relation walked; it must be declared on the type in scope, or
     /// be the `inverse` of one, which walks that relation the other way.
@@ -90,7 +93,7 @@ pub struct Step {
 }
 
 /// What a pattern returns.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "as", rename_all = "snake_case")]
 pub enum Projection {
     /// One row per match: the listed paths (`invoice.amount`), or every
@@ -123,6 +126,33 @@ pub enum Projection {
     Components,
 }
 
+impl<'de> Deserialize<'de> for Projection {
+    /// Serde reads a tagged unit variant and drops the rest of its map, so
+    /// a projection without members is read as an empty struct, which
+    /// refuses any member beside `as` (lakelands#563).
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Projection, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields, tag = "as", rename_all = "snake_case")]
+        enum Wire {
+            Rows {
+                #[serde(default)]
+                fields: Vec<String>,
+            },
+            Graph {},
+            Aggregate(Aggregate),
+            Degree {},
+            Components {},
+        }
+        Ok(match Wire::deserialize(d)? {
+            Wire::Rows { fields } => Projection::Rows { fields },
+            Wire::Graph {} => Projection::Graph,
+            Wire::Aggregate(a) => Projection::Aggregate(a),
+            Wire::Degree {} => Projection::Degree,
+            Wire::Components {} => Projection::Components,
+        })
+    }
+}
+
 impl Default for Projection {
     fn default() -> Self {
         Projection::Rows { fields: Vec::new() }
@@ -131,6 +161,7 @@ impl Default for Projection {
 
 /// The one pattern query.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Pattern {
     /// Where it starts.
     pub start: Start,
@@ -282,7 +313,7 @@ pub struct Edge {
 
 /// How a search ranks.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
+#[serde(deny_unknown_fields, tag = "mode", rename_all = "snake_case")]
 pub enum SearchMode {
     /// Full text over the type's searchable fields, or the ones named.
     Lexical {
@@ -332,6 +363,7 @@ pub enum SearchMode {
 
 /// One further vector field of a vector search.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VectorTerm {
     /// The vector field searched.
     pub field: FieldName,
@@ -446,7 +478,7 @@ pub fn weight_fits(w: f64) -> bool {
 /// bound to the position of the first page. A caller who wants the
 /// matches in another order uses `find`, or a pattern query that starts
 /// from a search.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Search {
     /// The type searched.
     #[serde(rename = "type")]
@@ -473,6 +505,51 @@ pub struct Search {
 
 fn default_k() -> u32 {
     20
+}
+
+/// A search's own members as it is read, apart from its mode's: serde
+/// refuses no unknown member beside a flattened enum, so each is read by
+/// itself and refuses what it does not take (lakelands#563).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchWire {
+    #[serde(rename = "type")]
+    ty: TypeName,
+    #[serde(default = "default_k")]
+    k: u32,
+    #[serde(default)]
+    cursor: Option<Cursor>,
+    #[serde(default, rename = "where")]
+    filter: Option<Condition>,
+    #[serde(default)]
+    with_meta: bool,
+    #[serde(default, flatten)]
+    at: ReadAt,
+}
+
+impl<'de> Deserialize<'de> for Search {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Search, D::Error> {
+        use serde::de::Error;
+        let mut own = serde_json::Map::deserialize(d)?;
+        let members = [
+            "mode", "text", "fields", "field", "vector", "weight", "also",
+        ];
+        let mode = (members.iter().chain(&["text_weight"])).filter_map(|m| own.remove_entry(*m));
+        let mode =
+            serde_json::from_value(Value::Object(mode.collect())).map_err(D::Error::custom)?;
+        let w: SearchWire = serde_json::from_value(Value::Object(own)).map_err(D::Error::custom)?;
+        let (ty, k, cursor, filter, with_meta, at) =
+            (w.ty, w.k, w.cursor, w.filter, w.with_meta, w.at);
+        Ok(Search {
+            ty,
+            mode,
+            k,
+            cursor,
+            filter,
+            with_meta,
+            at,
+        })
+    }
 }
 
 /// The answer to `search`.

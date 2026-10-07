@@ -4,21 +4,28 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, ValueTypeDecl};
-use lakelands_api::read::{AggFunc, ReadAt};
+use lakelands_api::query::{Projection, QueryResult};
+use lakelands_api::read::{AggFunc, Aggregate, ReadAt};
 use lakelands_api::write::Declaration;
 use lakelands_api::{Find, Found, LakeStore, Timestamp, TypeName, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, agg, aggregate, all_found, count_view, dec, decimal, field, reads_all, restrict,
-    type_decl, value_type,
+    Lake, Must, agg, aggregate, all_found, count_view, dec, decimal, field, pattern, reads_all,
+    restrict, type_decl, value_type,
 };
 
 check!(
     /// A count is a full walk's length.
     COUNT_IS_THE_WALK = a_count_answers_as_many_records_as_a_full_find_walk,
     "the read contract and 029: `find` with only `count()` answers as many records as a walk of every page of the same `find` returns, with no filter, a filter the engine applies and one only the store evaluates, at `valid_at`, at an earlier position and over a view, for a principal with the `restricted` grant and one without; a superseded state, a retired record and, without the grant, a restricted one are not counted"
+);
+
+check!(
+    /// A group key reads a setting as `where` does.
+    SETTING_IN_A_GROUP_KEY = a_group_key_reads_a_setting_as_a_where_reads_it,
+    "the read contract (lakelands#563): an aggregate's named group key that calls `setting` reads the lake's setting, as the same call in `where` does, in `find` and in a pattern: `setting('threshold')` groups by its value, and in `find` `amount > setting('threshold')` splits the records it holds for from the rest"
 );
 
 check!(
@@ -166,5 +173,49 @@ async fn a_count_answers_as_many_records_as_a_full_find_walk(
         "31 records, two retired: the owner counts 29 and a reader without `restricted` 28, \
          `i05` being held; they counted {everything:?}"
     );
+    Ok(())
+}
+
+async fn a_group_key_reads_a_setting_as_a_where_reads_it(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl(
+        "bill",
+        vec![field("amount", StorageKind::Decimal)],
+    ))
+    .await?;
+    l.set("threshold", json!(10)).await?;
+    for (key, amount) in [("b1", "5"), ("b2", "20"), ("b3", "30")] {
+        l.upsert("bill", key, json!({"amount": amount})).await?;
+    }
+    let mut by: Aggregate = serde_json::from_value(json!({
+        "measures": [{"name": "n", "func": "count"}],
+        "group_by": [{"name": "t", "expr": "setting('threshold')"},
+                     {"name": "over", "expr": "amount > setting('threshold')"}]}))
+    .map_err(|e| Failure::new(format!("reading the aggregate: {e}")))?;
+    let mut find = aggregate(Vec::new());
+    find.aggregate = Some(by.clone());
+    let reply = (l.cat).find(&l.own, &TypeName::from("bill"), find).await;
+    let Found::Groups { rows } = reply.must("aggregating bills")?.data else {
+        return Err(Failure::new("an aggregate answered records, not groups"));
+    };
+    by.group_by.truncate(1);
+    let p = pattern("bill", None, Vec::new(), Projection::Aggregate(by));
+    let reply = (l.cat).query(&l.own, p).await;
+    let QueryResult::Groups { rows: walked } = reply.must("aggregating a pattern")?.data else {
+        return Err(Failure::new("a pattern's aggregate answered no groups"));
+    };
+    let found =
+        json!([[{"over": false, "t": "10"}, {"n": "1"}], [{"over": true, "t": "10"}, {"n": "2"}]]);
+    let walk = json!([[{"t": "10"}, {"n": "3"}]]);
+    for (how, rows, want) in [("find", rows, found), ("a pattern", walked, walk)] {
+        let got: Vec<Value> = rows.iter().map(|g| json!([g.by, g.values])).collect();
+        ensure!(
+            json!(got) == want,
+            "{how} grouped by `setting('threshold')`, the setting 10, over 5, 20 and 30 \
+             answers {got:?}, not {want}"
+        );
+    }
     Ok(())
 }

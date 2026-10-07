@@ -135,3 +135,14 @@ first.
 A mirror's copy is a reaction at the depth of the source state it
 copies, with no cause, so a chain of reactions that crosses lakes still
 meets a ceiling: see 042, "a copy keeps its chain's depth".
+
+## Extended: a write past the ceiling lands nothing (lakelands#563)
+
+A reaction past the ceiling is refused whole: its own write is not
+appended either, and nothing of it is kept for later. Landing the write
+and dropping only the reaction it calls for leaves a lake that no rule
+describes: the rule says the reaction follows the write, and the log
+holds the write without it. So a chain past its ceiling stops before
+its last write, and the host decides what to do with it: raise the
+ceiling, or write it again outside the chain, at depth 0, naming its
+cause.

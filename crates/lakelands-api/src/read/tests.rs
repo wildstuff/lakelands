@@ -23,13 +23,100 @@ fn a_latest_key_carries_no_field_on_the_wire_and_every_other_names_one() {
     assert_eq!(unnamed.misfit().map(|m| m.0), Some(None));
 }
 
+/// Each request's JSON form with every member it takes, read and written
+/// back the same; and a member it does not take, at the top and inside
+/// every object at any depth, refused by name (lakelands#563). `params`,
+/// `patch` and `payload` hold the names a type or a view declares, which
+/// the store checks.
 #[test]
-fn a_group_key_reads_either_form_and_refuses_an_unknown_member() {
-    let field: GroupKey = serde_json::from_str(r#""partner""#).unwrap();
-    assert_eq!(field, GroupKey::from("partner"));
-    let named: GroupKey =
-        serde_json::from_str(r#"{"name": "m", "expr": "date_bucket(on, 'month')"}"#).unwrap();
-    assert_eq!(named.name().as_str(), "m");
-    let extra = serde_json::from_str::<GroupKey>(r#"{"name": "m", "expr": "x", "unit": "day"}"#);
-    assert!(extra.is_err(), "an unknown member is refused: {extra:?}");
+fn a_request_reads_every_member_it_takes_and_refuses_any_other() {
+    use crate::query::{Pattern, Search};
+    use crate::seam::FeedFilter;
+    use crate::write::{ProposalFilter, ProposedWrite, WriteOpts};
+    use serde_json::{Value, json};
+    let whole = json!([
+        ["find", {"where": "n > 1", "order_by": [{"field": "n", "dir": "desc"}, {"by": "latest", "dir": "asc"}],
+            "limit": 5, "cursor": "c", "offset": 2, "total": true, "with_meta": true, "params": {"p": 1},
+            "as_of": 7, "valid_at": "2026-01-01T00:00:00.000000Z"}],
+        ["find", {"aggregate": {"measures": [{"name": "s", "func": "sum", "field": "n"}],
+            "group_by": ["g", {"name": "m", "expr": "date_bucket(on, 'month')"}]},
+            "after": {"values": [1], "key": "k"}, "with_meta": false}],
+        ["get", {"key": "k", "with_meta": true, "params": {"p": 1}, "as_of": 7}],
+        ["pattern", {"start": {"type": "t", "key": "k", "where": "n > 1", "params": {"p": 1},
+            "search": {"mode": "lexical", "text": "a", "fields": ["t"]}},
+            "steps": [{"relation": "r", "walk": "in", "type": "u", "where": "n > 1", "depth": {"min": 1, "max": 3}}],
+            "to": ["u", "k2"], "project": {"as": "rows", "fields": ["n"]},
+            "order_by": [{"field": "n", "dir": "asc"}], "limit": 5, "cursor": "c", "valid_at": "2026-01-01T00:00:00.000000Z"}],
+        ["pattern", {"start": {"type": "t"}, "project": {"as": "aggregate", "measures": [], "group_by": ["g"]}}],
+        ["pattern", {"start": {"type": "t"}, "project": {"as": "graph"}}],
+        ["pattern", {"start": {"type": "t"}, "project": {"as": "degree"}}],
+        ["pattern", {"start": {"type": "t"}, "project": {"as": "components"}}],
+        ["search", {"type": "t", "k": 5, "cursor": "c", "where": "n > 1", "with_meta": true, "as_of": 7,
+            "mode": "lexical", "text": "a", "fields": ["t"]}],
+        ["search", {"type": "t", "k": 5, "with_meta": false, "mode": "vector", "field": "v", "vector": [1.0],
+            "weight": 0.5, "also": [{"field": "w", "vector": [2.0], "weight": 1.0}]}],
+        ["search", {"type": "t", "k": 5, "with_meta": false, "mode": "hybrid", "text": "a", "field": "v",
+            "vector": [1.0], "fields": ["t"], "weight": 0.5, "text_weight": 0.5}],
+        ["write", {"expected_version": 3, "idempotency_key": "i"}],
+        ["proposals", {"state": "pending", "type": "t", "kind": "upsert", "limit": 5,
+            "order_by": [{"field": "position", "dir": "asc"}], "cursor": "c", "as_of": 7}],
+        ["feed", {"kinds": ["record_upserted"], "types": ["t"], "keys": ["k"]}],
+        ["proposed", {"write": "upsert", "type": "t", "key": "k", "patch": {"n": 1},
+            "opts": {"expected_version": 3, "idempotency_key": "i"}}],
+        ["proposed", {"write": "retire", "type": "t", "key": "k", "opts": {}}],
+        ["proposed", {"write": "call", "verb": "v", "key": "k", "payload": {"n": 1}, "opts": {}}],
+        ["proposed", {"write": "declare", "declarations": []}]
+    ]);
+    fn back<T: serde::Serialize + serde::de::DeserializeOwned>(v: &Value) -> Result<Value, String> {
+        let read: T = serde_json::from_value(v.clone()).map_err(|e| e.to_string())?;
+        Ok(serde_json::to_value(read).unwrap())
+    }
+    let read = |what: &Value, v: &Value| match what.as_str().unwrap() {
+        "find" => back::<Find>(v),
+        "get" => back::<Get>(v),
+        "pattern" => back::<Pattern>(v),
+        "search" => back::<Search>(v),
+        "write" => back::<WriteOpts>(v),
+        "proposals" => back::<ProposalFilter>(v),
+        "proposed" => back::<ProposedWrite>(v),
+        _ => back::<FeedFilter>(v),
+    };
+    fn objects(v: &Value, at: String, out: &mut Vec<String>) {
+        match v {
+            Value::Object(o) => {
+                out.push(at.clone());
+                let maps = ["params", "patch", "payload"];
+                let members = o.iter().filter(|(k, _)| !maps.contains(&k.as_str()));
+                members.for_each(|(k, x)| objects(x, format!("{at}/{k}"), out));
+            }
+            Value::Array(a) => {
+                (a.iter().enumerate()).for_each(|(i, x)| objects(x, format!("{at}/{i}"), out))
+            }
+            _ => {}
+        }
+    }
+    let named = |answer: Result<Value, String>, what: &Value, at: &str| {
+        let said = matches!(&answer, Err(e) if e.contains("unknown field `zzz`"));
+        assert!(said, "{what}: `zzz` at {at:?} is read: {answer:?}");
+    };
+    let mut refused = 0;
+    for pair in whole.as_array().unwrap() {
+        let (what, v) = (&pair[0], &pair[1]);
+        assert_eq!(read(what, v).as_ref(), Ok(v), "{what}: written back");
+        let mut places = Vec::new();
+        objects(v, String::new(), &mut places);
+        for place in places {
+            let mut bad = v.clone();
+            let inside = bad.pointer_mut(&place).and_then(Value::as_object_mut);
+            inside.unwrap().insert("zzz".into(), json!(1));
+            named(read(what, &bad), what, &place);
+            refused += 1;
+        }
+    }
+    assert_eq!(refused, 43, "the places a member was planted");
+    // A migration's proposal writes its report back, so it is planted alone.
+    for write in ["migrate", "migrate_value_type"] {
+        let v = json!({"write": write, "zzz": 1});
+        named(read(&json!("proposed"), &v), &v, "");
+    }
 }
