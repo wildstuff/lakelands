@@ -340,12 +340,14 @@ migration and a proposal of either:
   granted on it**, wherever the declaration reads its value. A verb may
   still set such a field: a call is held to its caller's right to write
   each field the verb sets, so the declaration grants nothing.
-- **What a type's shape names stands as declared.** A key field, a
-  valid time and a relation's `via` are named by the shape, not read by
-  it. An author who may not know of such a field still names it, or
-  sends the relation `describe` shows it, and declares its type again or
-  migrates it as before: the reads are held to its view, the shape is
-  not.
+- **What a type's shape names stands as declared.** A valid time and a
+  relation's `via` are named by the shape, not read by it. An author who
+  may not know of such a field still names it, or sends the relation
+  `describe` shows it, and declares its type again or migrates it as
+  before: the reads are held to its view, the shape is not. A key field
+  is different: an author who may not know of one is not shown the type
+  (006, lakelands#715), so its declaration of the type is not granted
+  and a migration of it finds no type.
 - **Only what its author adds or changes is its author's.** A type that
   holds another's derived field over a field its author sees masked is
   declared again as it stands; a field of the author's own over the same
@@ -499,7 +501,10 @@ says a hidden thing exists, and remains on purpose:
 
 - the version, which moves on every change, as above;
 - the key, the valid times and a relation's `via`, which are the shape
-  and are given of a masked field too;
+  and are given of a masked field too. A key field the reader may not
+  know of hides the type instead (006, lakelands#715), since the key
+  would give its value; a valid time naming such a field is still
+  named in `describe_type` (lakelands#692);
 - a reference field's target, which is its type: hiding it would make a
   field's access depend on another type at every read. A host that
   hides a type grants `none` on the reference fields to it;

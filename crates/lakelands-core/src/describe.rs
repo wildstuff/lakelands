@@ -447,10 +447,14 @@ pub fn type_shown<'a>(
     find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
     who: &Principal,
 ) -> bool {
+    // A type keyed by a field its principal may not know of is not shown:
+    // every record key would hand out that field's value.
     let own = |t: &TypeDecl| {
         let fields = &mut t.fields.iter();
-        type_access(who, &t.name) != Access::None
-            || fields.any(|f| granted_access(who, t, f) != Access::None)
+        let mut key = t.fields.iter().filter(|f| t.key.contains(&f.name));
+        key.all(|f| field_access(who, t, f) != Access::None)
+            && (type_access(who, &t.name) != Access::None
+                || fields.any(|f| granted_access(who, t, f) != Access::None))
     };
     let (mut asked, mut next) = (vec![&t.name], vec![t]);
     while let Some(t) = next.pop() {

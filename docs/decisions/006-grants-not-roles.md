@@ -340,12 +340,18 @@ read nor named the type in the pattern, search and subscribe tools.
   or a search over a field the principal does not read is not granted
   (024), so `may.find` promises the door, not every question.
 - **A key is shown to whoever is shown the record.** A key made of
-  fields holds their values, whatever is granted on those fields. A host
-  does not key a type by a field it hides.
+  fields holds their values. So a type keyed by a field its principal
+  may not know of is not shown to it (lakelands#715): it answers as a
+  type that is not declared, and so does every type made of it, a link
+  type of its relations and a view over it. A key field the principal
+  sees masked or may only write still gives its value through the key:
+  the field is known, and only its value is withheld elsewhere.
 - **A step walks a relation by its owner.** A relation is declared on
   the type the principal is shown, so a step over it is answered the
   other end's key also where the principal's grants keep it from the
   relation's link type; it is then shown no link field.
 
 For a host: a principal that is not to list a type's records is granted
-nothing of the type.
+nothing of the type. Holding a key field at `none` now hides the type;
+before lakelands#715 it hid the field and answered its value as the
+key.

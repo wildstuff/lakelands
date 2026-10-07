@@ -536,4 +536,5 @@ pub const ALL: &[Check] = &[
     after::AFTER_RESUMES,
     describe::DESCRIBE_IS_THE_DECLARATION,
     describe::DESCRIBED_AS_SHOWN,
+    made_of::KEYED_BY_HIDDEN,
 ];
