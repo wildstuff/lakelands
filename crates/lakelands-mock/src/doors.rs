@@ -224,10 +224,10 @@ fn uncursor(c: &Cursor, door: &str, ty: Option<&TypeName>, of: &str) -> Result<(
         parts.next(),
         parts.next(),
     ) else {
-        return Err(invalid("the cursor was not issued by this lake"));
+        return Err(invalid("the cursor is not one this lake handed out"));
     };
     let (Ok(p), Ok(o)) = (p.parse(), o.parse()) else {
-        return Err(invalid("the cursor was not issued by this lake"));
+        return Err(invalid("the cursor is not one this lake handed out"));
     };
     let on = |door: &str, ty: &str| match ty {
         "" => format!("`{door}`"),

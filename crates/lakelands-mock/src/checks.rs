@@ -4475,7 +4475,8 @@ pub async fn a_page_answers_its_total_and_jumps_by_offset(store: Arc<dyn LakeSto
 
 /// A cursor continues only the answer it was handed out for: a cursor of
 /// `find` on `invoice` is refused by `find` on another type and by `query`,
-/// as invalid (018).
+/// as invalid (018); one no lake handed out is refused by both as the
+/// store says it.
 pub async fn a_cursor_continues_only_its_own_answer(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     f.sortable().await;
@@ -4520,11 +4521,30 @@ pub async fn a_cursor_continues_only_its_own_answer(store: Arc<dyn LakeStore>) {
     }))
     .expect("a pattern");
     p.cursor = Some(c);
-    let queried = f.catalog.query(&f.cast.owner, p).await.unwrap_err();
+    let queried = f.catalog.query(&f.cast.owner, p.clone()).await.unwrap_err();
     assert!(
         matches!(refusal(&queried).1, Refusal::Invalid { .. }),
         "{queried:?}"
     );
+    // A cursor of one part, and one of five parts that do not parse.
+    for foreign in ["not-a-cursor", "a.b.c.d.e"] {
+        let foreign = Some(Cursor(foreign.into()));
+        let find = Find {
+            cursor: foreign.clone(),
+            ..Find::default()
+        };
+        let found = f.catalog.find(&f.cast.owner, &ty(INVOICE), find).await;
+        p.cursor = foreign;
+        let queried = f.catalog.query(&f.cast.owner, p.clone()).await;
+        for (door, e) in [("find", found.map(|_| ())), ("query", queried.map(|_| ()))] {
+            assert!(
+                matches!(&e, Err(Error::Refused { field: None, reason: Refusal::Invalid { message } })
+                    if message == "the cursor is not one this lake handed out"),
+                "{door} with the cursor {:?}, which no lake handed out: {e:?}",
+                p.cursor
+            );
+        }
+    }
 }
 
 /// A cursor continues only the read it was handed out for: `find` under
