@@ -31,7 +31,7 @@ check!(
 check!(
     /// Search cannot probe an unreadable field.
     SEARCH_PROBE_REFUSED = searching_a_type_whose_searchable_field_is_unreadable_is_refused,
-    "024: a search over a searchable field the principal may not read is refused, naming the field"
+    "024: a search that names a searchable field the principal may not read is refused, naming the field; one that names none searches only the fields it reads, so over a type whose every searchable field it sees masked it answers no hits"
 );
 
 async fn articles(store: &dyn LakeStore) -> Result<Lake, Failure> {
@@ -143,10 +143,20 @@ async fn searching_a_type_whose_searchable_field_is_unreadable_is_refused(
         .await?;
     let masked = [("text", Access::Masked)];
     let reader = field_access(store.as_ref(), "reader", "article", &masked);
-    let err = cat
-        .search(&reader, lexical("secret"))
-        .await
-        .must_fail("searching `article`, whose `text` the reader sees only masked")?;
+    let none = cat.search(&reader, lexical("secret")).await;
+    let none = none.must("searching `article`, whose `text` the reader sees only masked")?;
+    ensure!(
+        none.data.hits.is_empty(),
+        "a search naming no field, over the masked `text` alone, must answer no hits; it \
+         found {:?}",
+        keys(&none.data)
+    );
+    let mut named = lexical("secret");
+    if let SearchMode::Lexical { fields, .. } = &mut named.mode {
+        *fields = Some(vec!["text".into()]);
+    }
+    let err = (cat.search(&reader, named).await)
+        .must_fail("searching `article` in `text`, which the reader sees only masked")?;
     ensure!(
         matches!(refused_on(&err), Some(("text", Refusal::NotGranted))),
         "a search over the masked `text` must be refused as not granted, naming `text`; \
@@ -158,7 +168,7 @@ async fn searching_a_type_whose_searchable_field_is_unreadable_is_refused(
 check!(
     /// Hybrid search cannot probe an unreadable text field.
     HYBRID_PROBE_REFUSED = a_hybrid_search_over_an_unreadable_searchable_field_is_refused_whole,
-    "024: a hybrid search over a type whose searchable field the principal may not read is refused, naming the field, whether it brings a vector or not; it never answers from its vector half"
+    "024: a hybrid search that names a searchable field the principal may not read is refused, naming the field, whether it brings a vector or not; it never answers from its vector half. One that names none leaves that field out of its text half, so the text it brings ranks nothing"
 );
 
 check!(
@@ -216,24 +226,42 @@ async fn a_hybrid_search_over_an_unreadable_searchable_field_is_refused_whole(
         keys(&own)
     );
     let reader = masking(store.as_ref(), "body");
-    refused(
-        store.as_ref(),
-        &reader,
-        doc_search(hybrid("quayside", Some(vec![0.0, 1.0]))),
-        "body",
-        "a hybrid search bringing a vector, by a reader who sees the searchable `body` \
-         only masked,",
-    )
-    .await?;
-    refused(
-        store.as_ref(),
-        &reader,
-        doc_search(hybrid("quayside", None)),
-        "body",
-        "a hybrid search without a vector, by a reader who sees the searchable `body` \
-         only masked,",
-    )
-    .await
+    let in_body = |vector| {
+        let mut mode = hybrid("quayside", vector);
+        if let SearchMode::Hybrid { fields, .. } = &mut mode {
+            *fields = Some(vec!["body".into()]);
+        }
+        doc_search(mode)
+    };
+    for (vector, what) in [
+        (Some(vec![0.0, 1.0]), "bringing a vector"),
+        (None, "without a vector"),
+    ] {
+        let what =
+            format!("a hybrid search in `body` {what}, by a reader who sees it only masked,");
+        refused(store.as_ref(), &reader, in_body(vector), "body", &what).await?;
+    }
+    // Naming none, the text it brings ranks nothing: the vector half alone.
+    let mut found = Vec::new();
+    for text in ["quayside", "harbour"] {
+        let along_b = doc_search(hybrid(text, Some(vec![1.0, 0.0])));
+        let hits = doors(store.as_ref()).search(&reader, along_b).await;
+        let hits = hits
+            .must("the reader's hybrid search naming no field")?
+            .data;
+        found.push(
+            keys(&hits)
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+        );
+    }
+    ensure!(
+        found[0] == found[1] && found[0].first().map(String::as_str) == Some("b"),
+        "a hybrid search naming no field, by a reader who sees `body` only masked, ranks by \
+         its vector alone, whatever its text; along [1, 0] it found {found:?}"
+    );
+    Ok(())
 }
 
 async fn a_vector_search_over_an_unreadable_vector_field_is_refused(

@@ -434,9 +434,10 @@ fn find_type<'a>(declared: &'a [Declared], ty: &TypeName) -> Option<&'a TypeDecl
 /// or to one of its fields, a `sensitive` field's raise not among them,
 /// and it is shown every type that `t` is made of
 /// (`docs/decisions/006-grants-not-roles.md`, extended): a link type is
-/// its owner's edges and a view is its sources' records computed, so one
-/// who is told the other does not exist is told the same of what is made
-/// of it, whatever a grant on its own name says. Each type is asked once,
+/// the edges from its owner to its relation's target, and a view is its
+/// sources' records computed, so one who is told the other does not exist
+/// is told the same of what is made of it, whatever a grant on its own
+/// name says. Each type is asked once,
 /// so views an imported log holds in a cycle are judged by their grants
 /// and the read that refuses the cycle is reached. `find` answers a type
 /// by its name; the description and every door that asks before it names
@@ -454,9 +455,14 @@ pub fn type_shown<'a>(
     let (mut asked, mut next) = (vec![&t.name], vec![t]);
     while let Some(t) = next.pop() {
         let owner = crate::links::link_type_parts(&t.name).map(|p| p.0);
+        // A link type's `to` names its relation's target.
+        let target = (owner.iter())
+            .flat_map(|_| &t.fields)
+            .find(|f| f.name.as_str() == crate::links::TO)
+            .and_then(|f| f.ty.target.as_ref());
         let sources = (t.view.iter())
             .flat_map(|v| std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source)));
-        for o in owner.iter().chain(sources).filter_map(find) {
+        for o in owner.iter().chain(target).chain(sources).filter_map(find) {
             if asked.contains(&&o.name) {
                 continue;
             }
@@ -470,13 +476,40 @@ pub fn type_shown<'a>(
     own(t)
 }
 
+/// Whether `who` is shown relation `r` of `owner` (006, extended): it is
+/// shown both ends, and of a derived relation it may know of every field
+/// the match pairs, on both sides. A relation it is not shown is, to it,
+/// one the type does not declare, at every door. A match over a field it
+/// knows of and may not read stays shown; a walk over it is refused.
+pub fn relation_shown<'a>(
+    owner: &TypeDecl,
+    r: &RelationDecl,
+    find: crate::rights::Find<'_, 'a>,
+    who: &Principal,
+) -> bool {
+    let Some(target) = find(&r.target) else {
+        return false;
+    };
+    let known = |t: &TypeDecl, n: &FieldName| {
+        let f = t.fields.iter().find(|f| &f.name == n);
+        f.is_some_and(|f| field_access(who, t, f) != Access::None)
+    };
+    let pairs = r.derived.iter().flat_map(|d| &d.pairs);
+    type_shown(owner, &|n| find(n), who)
+        && type_shown(target, find, who)
+        && pairs
+            .into_iter()
+            .all(|p| known(owner, &p.from) && known(target, &p.to))
+}
+
 fn type_description(
     t: &TypeDecl,
     d: &Declared,
     declared: &[Declared],
     who: &Principal,
 ) -> Option<TypeDescription> {
-    if !type_shown(t, &|n| find_type(declared, n), who) {
+    let find = &|n: &TypeName| find_type(declared, n);
+    if !type_shown(t, find, who) {
         return None;
     }
     let fields: Vec<FieldDescription> = t
@@ -506,7 +539,7 @@ fn type_description(
             .filter(|r| {
                 crate::links::carried_by_links(r)
                     && r.authority == Authority::Authored
-                    && find_type(declared, &r.target).is_some()
+                    && relation_shown(t, r, find, who)
                     && !only_holder(who, &crate::links::link_type(&t.name, r))
             })
             .filter(|r| {
@@ -536,7 +569,7 @@ fn type_description(
     let view = (t.view.clone()).filter(|v| view_visible(v, declared, who));
     // The hash of the shape as it is shown (024, extended).
     let whole = d.schema_hash.as_deref().unwrap_or_default();
-    let schema_hash = crate::rights::shown_hash(who, t, view.is_some(), whole);
+    let schema_hash = crate::rights::shown_hash(who, t, view.is_some(), whole, find);
     Some(TypeDescription {
         name: t.name.clone(),
         description: t.description.clone(),
@@ -547,22 +580,22 @@ fn type_description(
         relations: t
             .relations
             .iter()
-            .filter(|r| find_type(declared, &r.target).is_some())
+            .filter(|r| relation_shown(t, r, find, who))
             .map(|r| relation_description(&t.name, r, who))
             .collect(),
         access: TypeAccess {
             key: t.key.clone(),
             valid_from: t.valid_from.clone(),
             valid_to: t.valid_to.clone(),
-            searchable: t.fields.iter().any(|f| f.searchable),
+            // Over the fields as shown: a masked field is not searchable
+            // to its reader, nor is one it may not know of sourced (024).
+            searchable: fields.iter().any(|f| f.searchable),
             field_meta: t.field_meta,
         },
         may,
         verbs,
         lineage: TypeLineage {
-            sourced: t
-                .fields
-                .iter()
+            sourced: (fields.iter())
                 .any(|f| matches!(f.authority, Authority::Source | Authority::Shared)),
             view_of: t.view.as_ref().map(|v| v.source.clone()),
         },

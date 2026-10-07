@@ -888,6 +888,30 @@ pub async fn describe_shows_only_what_the_principal_may_see(store: Arc<dyn LakeS
         .unwrap();
     assert_eq!(note.access, Access::Masked);
     assert!(inv.fields.iter().all(|x| x.name.as_str() != "secret"));
+    // A match over a field the clerk may not know of is no relation to it;
+    // one over a field it sees masked is (lakelands#662).
+    let by = |field: &str| {
+        json!({"name": format!("by_{field}"), "target": INVOICE,
+               "derived": {"match": [{"from": "x", "to": field}]}})
+    };
+    let ledger = json!({"declare": "type", "name": "ledger",
+        "fields": [{"name": "x", "type": {"kind": "text"}}],
+        "relations": [by("secret"), by("note")]});
+    let ledger: Declaration = serde_json::from_value(ledger).expect("a declaration");
+    let declared = f.catalog.declare(&f.cast.owner, ledger).await;
+    declared.expect("the owner declares `ledger`");
+    let (clerk, ledger) = (&f.cast.clerk, ty("ledger"));
+    let seen = f
+        .catalog
+        .describe_type(clerk, &ledger, ReadAt::default())
+        .await;
+    let seen = seen.expect("the clerk is described `ledger`").data;
+    let names: Vec<&str> = seen.relations.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["by_note"],
+        "the clerk is described the match it may know of"
+    );
 }
 
 /// A described field, read back as the declaration it describes.
@@ -1974,8 +1998,10 @@ pub async fn a_set_may_hold_a_link_types_records(store: Arc<dyn LakeStore>) {
 /// `describe_type`, `find`, `link` and `unlink` answer it as for a type
 /// that is not there, and a step from `partner` by the inverse of a
 /// relation of `memo` as a relation that is not there. One who reads a
-/// field of `memo` is shown all three, links and walks. On the mock as on
-/// the store.
+/// field of `memo` is shown all three, links and walks. One kept from
+/// `partner` is not shown `seen_by` nor its link type: it is not
+/// described, offered to `link`, linked or walked (lakelands#662). On the
+/// mock as on the store.
 pub async fn a_type_made_of_another_is_shown_only_with_it(store: Arc<dyn LakeStore>) {
     const LINKS: &str = "sys.link.memo.cites";
     let f = setup(store).await;
@@ -2113,6 +2139,89 @@ pub async fn a_type_made_of_another_is_shown_only_with_it(store: Arc<dyn LakeSto
             })
         ),
         "a relation `memo` has not, to one shown `memo`: {invalid:?}"
+    );
+    // Kept from `partner`, the target of `seen_by`; writes its links.
+    let mut kept = grants(&[("t", Access::Read)]);
+    let none = TypeGrants {
+        default: Some(Access::None),
+        ..TypeGrants::default()
+    };
+    let write = TypeGrants {
+        default: Some(Access::Write),
+        ..TypeGrants::default()
+    };
+    kept.types.insert(ty(PARTNER), none);
+    kept.types.insert(ty("sys.link.memo.seen_by"), write);
+    let far = principal(lake, PrincipalKind::Agent, "far", kept);
+    let d = c.describe_type(&far, &memo, ReadAt::default()).await;
+    let d = d.expect("one who reads `t` is described `memo`").data;
+    let seen_links = ty("sys.link.memo.seen_by");
+    let link_type = c.describe_type(&far, &seen_links, ReadAt::default()).await;
+    assert!(
+        !d.relations.iter().any(|r| r.name.as_str() == "seen_by")
+            && !d.may.link.iter().any(|r| r.as_str() == "seen_by")
+            && link_type.as_ref().is_err_and(gone),
+        "one kept from `partner` is not shown `seen_by`: {:?}, link {:?}, {link_type:?}",
+        d.relations,
+        d.may.link
+    );
+    let as_nothing = |e: Error, by: &str| e.to_string().replace(by, "nothing");
+    let nothing = link(&far, "nothing")
+        .await
+        .expect_err("no relation `nothing`");
+    let seen = link(&far, "seen_by")
+        .await
+        .expect_err("`seen_by` is not shown");
+    assert_eq!(as_nothing(seen, "seen_by"), nothing.to_string());
+    let from_memo = |by: &str| {
+        let step = Step {
+            relation: by.into(),
+            walk: Walk::Out,
+            ty: None,
+            filter: None,
+            depth: Default::default(),
+        };
+        Pattern::traverse(memo.clone(), key("a"), vec![step])
+    };
+    let seen = c.query(&far, from_memo("seen_by")).await.map(drop);
+    let ghost = c.query(&far, from_memo("ghost")).await.map(drop);
+    assert_eq!(
+        seen.map_err(|e| e.to_string().replace("seen_by", "ghost")),
+        ghost.map_err(|e| e.to_string()),
+        "`seen_by` answers one kept from `partner` as `ghost` does"
+    );
+    // A migration's refusal names no type by a relation its reader is not
+    // shown: `bill.paid` matches `pay.note` from `bill.note`, hidden.
+    let t = |name: &str| json!({"name": name, "type": {"kind": "text"}});
+    let paid = json!({"name": "paid", "target": "pay",
+                      "derived": {"match": [{"from": "note", "to": "note"}]}});
+    for d in [
+        json!({"declare": "type", "name": "pay", "fields": [t("note"), t("code")]}),
+        json!({"declare": "type", "name": "bill", "fields": [t("note"), t("sum")],
+               "relations": [paid]}),
+    ] {
+        let d: Declaration = serde_json::from_value(d).expect("a declaration");
+        c.declare(owner, d).await.expect("the owner declares it");
+    }
+    let mut g = invoice_grants(Access::Read, &[]);
+    g.schema = true;
+    let blind = TypeGrants {
+        fields: [(FieldName::from("note"), Access::None)].into(),
+        ..TypeGrants::default()
+    };
+    g.types.insert(ty("bill"), blind);
+    let blind = principal(lake, PrincipalKind::Agent, "blind", g);
+    let to: TypeDecl =
+        serde_json::from_value(json!({"name": "pay", "fields": [t("code")]})).expect("a type");
+    let m = Migration {
+        to,
+        renames: Vec::new(),
+        relation_renames: Vec::new(),
+    };
+    let said = format!("{:?}", c.migrate(&blind, m).await.map(drop));
+    assert!(
+        said.contains("a declaration reads `note`") && !said.contains("bill"),
+        "dropping `pay.note`, `blind` is told no type: {said}"
     );
 }
 
@@ -9113,10 +9222,11 @@ pub async fn degree_and_components_answer_the_graph_in_one_order(store: Arc<dyn 
     );
 }
 
-/// A search probes what it searches: every searchable field of the type
-/// and the vector field it names. One the caller may not read refuses the
-/// search whole, naming the field, in every mode; a hybrid search is never
-/// answered from its vector half alone
+/// A search probes what it searches: the searchable fields it names, or
+/// those its caller reads, and the vector field it names. A named field
+/// the caller may not read refuses the search whole, naming the field, in
+/// every mode; one it does not name is never searched, so a hybrid search
+/// is then answered from its vector half alone
 /// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
 pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_mode(
     store: Arc<dyn LakeStore>,
@@ -9172,13 +9282,13 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
         with_meta: false,
         at: ReadAt::default(),
     };
-    let modes = || {
+    let modes = |fields: Option<Vec<FieldName>>| {
         [
             (
                 "lexical",
                 SearchMode::Lexical {
                     text: "quayside".into(),
-                    fields: None,
+                    fields: fields.clone(),
                 },
             ),
             (
@@ -9187,7 +9297,7 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
                     text: "quayside".into(),
                     field: "v".into(),
                     vector: None,
-                    fields: None,
+                    fields: fields.clone(),
                     weight: None,
                     text_weight: None,
                 },
@@ -9198,14 +9308,14 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
                     text: "quayside".into(),
                     field: "v".into(),
                     vector: Some(vec![0.0, 1.0]),
-                    fields: None,
+                    fields: fields.clone(),
                     weight: None,
                     text_weight: None,
                 },
             ),
         ]
     };
-    for (what, mode) in modes() {
+    for (what, mode) in modes(None) {
         let hits = f
             .catalog
             .search(owner, search(mode))
@@ -9222,7 +9332,7 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
         );
     }
     // The clerk reads `v` but sees the searchable `body` only masked.
-    for (what, mode) in modes() {
+    for (what, mode) in modes(Some(vec!["body".into()])) {
         match f.catalog.search(&f.cast.clerk, search(mode)).await {
             Err(e) => {
                 let (field, reason) = refusal(&e);
@@ -9242,6 +9352,18 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
                     .collect::<Vec<_>>()
             ),
         }
+    }
+    // Naming none, it searches no field: only the vector half answers.
+    for ((what, mode), want) in modes(None).into_iter().zip([&[][..], &[], &["a"]]) {
+        let found = f.catalog.search(&f.cast.clerk, search(mode)).await;
+        let found = found.unwrap_or_else(|e| panic!("the clerk's {what} search answers: {e:?}"));
+        let keys: Vec<&str> = found
+            .data
+            .hits
+            .iter()
+            .map(|h| h.record.key.as_str())
+            .collect();
+        assert_eq!(keys, want, "the clerk's {what} search naming no field");
     }
 }
 

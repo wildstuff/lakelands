@@ -14,19 +14,23 @@
 use lakelands_api::describe::{FieldDescription, LakeDescription, TypeDescription};
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
-    Authority, EmbedDecl, FieldDecl, FieldType, StorageKind, TriggerDecl, TypeDecl,
+    Authority, Derived, EmbedDecl, FieldDecl, FieldType, MatchPair, RelationDecl, StorageKind,
+    TriggerDecl, TypeDecl,
 };
-use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl};
+use lakelands_api::write::{
+    Declaration, FunctionDecl, Migration, ObjectSetDecl, ProposalFilter, ProposedWrite,
+};
 use std::sync::Arc;
 
+use lakelands_api::principal::TypeGrants;
 use lakelands_api::{Access, Catalog, Grants, LakeStore, Principal, PrincipalKind, ReadAt};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
-    Must, all, describe_type, doors, field, field_access, owner, principal, type_decl, upsert,
-    view_of,
+    Lake, Must, all, describe_type, doors, field, field_access, owner, principal, type_decl,
+    upsert, view_of,
 };
 
 check!(
@@ -372,6 +376,133 @@ async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) -> Re
         "one shown the ledger with every field masked is answered its record with the \
          masked list, so describe says it may find and get it; it says {may:?} and find \
          answers {found:?}"
+    );
+    Ok(())
+}
+
+check!(
+    /// A description says only what its reader is shown.
+    DESCRIBED_AS_SHOWN = a_description_says_only_what_its_reader_is_shown,
+    "006 and 024, extended (lakelands#662): a type's `searchable` and `sourced` are said of the fields its reader is described, and a field it sees masked is searchable to it no more; a relation is described, listed in a proposal, named by a migration's refusal, offered to `link` and its link type shown only to a reader shown both its ends and, of a derived one, every field its match pairs, which a field it sees masked still is"
+);
+
+async fn a_description_says_only_what_its_reader_is_shown(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let (l, s) = (Lake::of(store.as_ref()), store.as_ref());
+    let note = FieldDecl {
+        searchable: true,
+        authority: Authority::Source,
+        ..field("note", StorageKind::Text)
+    };
+    let mut invoice = type_decl("invoice", vec![field("amount", StorageKind::Decimal), note]);
+    let pairs = vec![MatchPair {
+        from: "note".into(),
+        to: "note".into(),
+    }];
+    invoice.relations = vec![
+        RelationDecl::to("paid", "salary"),
+        RelationDecl {
+            derived: Some(Derived { pairs }),
+            ..RelationDecl::to("same", "salary")
+        },
+    ];
+    let again = ProposedWrite::Declare {
+        declarations: vec![Declaration::Type(invoice.clone())],
+    };
+    for t in [
+        type_decl(
+            "salary",
+            vec![
+                field("note", StorageKind::Text),
+                field("code", StorageKind::Text),
+            ],
+        ),
+        invoice,
+    ] {
+        l.declare_as(Declaration::Type(t), "declaring the types")
+            .await?;
+    }
+    let proposed = l.cat.propose(&l.own, again, "again".into()).await;
+    proposed.must("proposing `invoice` again")?;
+    // `far` writes everything but `salary`, which it is kept from.
+    let mut grants = Grants {
+        default: Access::Write,
+        ..Grants::default()
+    };
+    let none = TypeGrants {
+        default: Some(Access::None),
+        ..TypeGrants::default()
+    };
+    grants.types.insert("salary".into(), none);
+    grants.review = true;
+    let far = principal(s, PrincipalKind::Agent, "far", grants);
+    let mut hidden = field_access(s, "hidden", "invoice", &[("note", Access::None)]);
+    hidden.grants.schema = true;
+    let masked = field_access(s, "masked", "invoice", &[("note", Access::Masked)]);
+    let mut red = Vec::new();
+    for (who, want) in [
+        (&l.own, (true, true, "paid same", true, "paid")),
+        (&far, (true, true, "", false, "")),
+        (&hidden, (false, false, "paid", true, "")),
+        (&masked, (false, true, "paid same", true, "")),
+    ] {
+        let lake = l.cat.describe(who, ReadAt::default()).await;
+        let lake = lake
+            .must(&format!("describing the lake as `{}`", who.id))?
+            .data;
+        let names = |n: Vec<String>| n.join(" ");
+        let Some(t) = lake.types.iter().find(|t| t.name.as_str() == "invoice") else {
+            return Err(Failure::new(format!(
+                "`{}` is not described `invoice`",
+                who.id
+            )));
+        };
+        let got = (
+            t.access.searchable,
+            t.lineage.sourced,
+            names(t.relations.iter().map(|r| r.name.to_string()).collect()),
+            lake.types
+                .iter()
+                .any(|t| t.name.as_str() == "sys.link.invoice.paid"),
+            names(t.may.link.iter().map(|r| r.to_string()).collect()),
+        );
+        if (got.0, got.1, got.2.as_str(), got.3, got.4.as_str()) != want {
+            red.push(format!("`{}`: {got:?}, not {want:?}", who.id));
+        }
+    }
+    // A proposed declaration is listed as it would be described.
+    let listed = l.cat.proposals(&far, ProposalFilter::default()).await;
+    let listed = listed.must("listing the proposals as `far`")?.data;
+    let relations = (listed.iter().filter_map(|p| p.write.as_ref())).find_map(|w| match w {
+        ProposedWrite::Declare { declarations } => match declarations.first() {
+            Some(Declaration::Type(t)) => Some(t.relations.len()),
+            _ => None,
+        },
+        _ => None,
+    });
+    if relations != Some(0) {
+        red.push(format!(
+            "`far` is listed `invoice` with relations: {relations:?}"
+        ));
+    }
+    // Nor does a migration's refusal name the type of a relation not shown.
+    let to = type_decl("salary", vec![field("code", StorageKind::Text)]);
+    let m = Migration {
+        to,
+        renames: Vec::new(),
+        relation_renames: Vec::new(),
+    };
+    let dropped = l.cat.migrate(&hidden, m).await.map(drop);
+    let said = format!("{dropped:?}");
+    if !said.contains("a declaration reads `note`") || said.contains("invoice") {
+        red.push(format!("`hidden` drops `salary.note`: {said}"));
+    }
+    ensure!(
+        red.is_empty(),
+        "searchable, sourced, the relations, the link type and `may.link` as described, and \
+         the relations listed and named: {}",
+        red.join("; ")
     );
     Ok(())
 }

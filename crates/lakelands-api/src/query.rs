@@ -283,7 +283,8 @@ pub enum SearchMode {
     Lexical {
         /// The words searched for.
         text: String,
-        /// Match only in these searchable fields; absent, in every one.
+        /// Match only in these searchable fields; absent, in every one the
+        /// caller reads.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fields: Option<Vec<FieldName>>,
     },
@@ -312,7 +313,7 @@ pub enum SearchMode {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         vector: Option<Vec<f32>>,
         /// Match the text only in these searchable fields; absent, in
-        /// every one. The vector half is not narrowed.
+        /// every one the caller reads. The vector half is not narrowed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fields: Option<Vec<FieldName>>,
         /// The weight of the vector half; absent, 1.

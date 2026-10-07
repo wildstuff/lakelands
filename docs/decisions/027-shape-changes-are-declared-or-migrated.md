@@ -269,7 +269,13 @@ No refusal on the way names a field its author may not know of. A shape
 that names one declares it twice, which is how a taken name is refused.
 A rename from one is a rename from no field. A shape that removes a
 field a hidden one is built from is refused on the field it removes,
-saying only that another field reads it. A masked or a write-only field
+saying only that another part of the type reads it. A relation its
+author is not shown is kept the same way (lakelands#662): put back as
+declared, a field its `via` or its match reads refused on that field
+alone, a rename from it a rename from no relation. An unchanged
+reference field to a type its author is not shown stands as declared;
+a new or changed one names a type the author is not shown, and is
+refused as one that is not declared. A masked or a write-only field
 is shown to the principal, and stays its to remove.
 
 ## Extended: a proposed migration is listed as its reader may know it (lakelands#499)

@@ -85,6 +85,7 @@ impl<'a> Seen<'a> {
                     .relations
                     .iter()
                     .filter(|r| &r.name == relation)
+                    .filter(|r| super::relation_shown(self.st, self.who, &o.decl, r))
                     .map(|r| (o.decl.name.clone(), r.clone()))
             })
             .collect();

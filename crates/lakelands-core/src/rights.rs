@@ -410,14 +410,14 @@ pub fn check_search(
 }
 
 /// The searchable fields a search that names none reads: those the
-/// principal knows of. A field it may not know of is never searched, so
-/// the search neither refuses nor names it; a masked one is still probed.
+/// principal reads. A field it may not read is never searched, so the
+/// search neither refuses, names nor ranks by it.
 pub fn searched_fields<'d>(
     who: &Principal,
     decl: &'d TypeDecl,
 ) -> impl Iterator<Item = &'d FieldName> {
     (decl.fields.iter())
-        .filter(move |f| f.searchable && field_access(who, decl, f) != Access::None)
+        .filter(move |f| f.searchable && field_access(who, decl, f).reads())
         .map(|f| &f.name)
 }
 
@@ -509,10 +509,10 @@ fn no_field(decl: &TypeDecl, name: &FieldName) -> Error {
 /// the names it was written with: `who` is its reader with the grants
 /// followed to the proposal's position, so a restriction on a name taken
 /// since reaches the name it bore then.
-pub fn known_migration(who: &Principal, was: &TypeDecl, m: &mut Migration) {
+pub fn known_migration<'a>(who: &Principal, was: &TypeDecl, m: &mut Migration, find: Find<'_, 'a>) {
     let (then, mut was) = (following(who, m), was.clone());
-    known_fields(who, &mut was);
-    described_fields(&then, &mut m.to);
+    known_fields(who, &mut was, find);
+    described_fields(&then, &mut m.to, find);
     (m.renames).retain(|(old, new)| holds(&was, old) && holds(&m.to, new));
 }
 
@@ -525,11 +525,18 @@ fn following(who: &Principal, m: &Migration) -> Principal {
 }
 
 /// The schema hash of `t` as `who` is shown it (024, extended): without
-/// the fields it may not know of and a view it is not described; `whole`,
-/// the stored hash, where nothing is left out.
-pub fn shown_hash(who: &Principal, t: &TypeDecl, view_shown: bool, whole: &str) -> String {
+/// the fields it may not know of, the relations it is not shown and a
+/// view it is not described; `whole`, the stored hash, where nothing is
+/// left out.
+pub fn shown_hash<'a>(
+    who: &Principal,
+    t: &TypeDecl,
+    view_shown: bool,
+    whole: &str,
+    find: Find<'_, 'a>,
+) -> String {
     let mut shown = t.clone();
-    known_fields(who, &mut shown);
+    known_fields(who, &mut shown, find);
     shown.view = shown.view.filter(|_| view_shown);
     match shown == *t {
         true => whole.to_owned(),
@@ -540,22 +547,31 @@ pub fn shown_hash(who: &Principal, t: &TypeDecl, view_shown: bool, whole: &str) 
 /// A report's hashes as `who` is shown them, set after [`shown_report`]
 /// decided `more`: `from` of `made`, the type it was made from, `to` with
 /// the grants held through the renames; whole to one not shown the type.
-pub fn shown_hashes(who: &Principal, made: &TypeDecl, m: &Migration, report: &mut MigrationReport) {
+/// `find` is the lookup [`known_migration`] lists `to` with, so the `to`
+/// hash is that of the listed `to`.
+pub fn shown_hashes<'a>(
+    who: &Principal,
+    made: &TypeDecl,
+    m: &Migration,
+    report: &mut MigrationReport,
+    find: Find<'_, 'a>,
+) {
     if report.ty != m.to.name {
         return;
     }
-    report.from_schema_hash = shown_hash(who, made, true, &report.from_schema_hash);
+    report.from_schema_hash = shown_hash(who, made, true, &report.from_schema_hash, find);
     let then = following(who, m);
-    report.to_schema_hash = shown_hash(&then, &m.to, true, &report.to_schema_hash);
+    report.to_schema_hash = shown_hash(&then, &m.to, true, &report.to_schema_hash, find);
 }
 
 /// `t` as `describe` would show its fields to `who`, a relation's link
-/// fields too (024): without those it may not know of, and one it may not
-/// read left with its shape alone. A listing hands a declaration out so;
-/// an author's view of a type is made by [`known_fields`], and holds a
-/// field as declared.
-pub fn described_fields(who: &Principal, t: &mut TypeDecl) {
+/// fields too (024): without those it may not know of and the relations
+/// it is not shown, and a field it may not read left with its shape
+/// alone. A listing hands a declaration out so; an author's view of a
+/// type is made by [`known_fields`], and holds a field as declared.
+pub fn described_fields<'a>(who: &Principal, t: &mut TypeDecl, find: Find<'_, 'a>) {
     let whole = t.clone();
+    (t.relations).retain(|r| crate::describe::relation_shown(&whole, r, find, who));
     let shown = |of: &TypeDecl, fields: &mut Vec<FieldDecl>| {
         fields.retain(|f| field_access(who, of, f) != Access::None);
         let unread = fields
@@ -588,9 +604,11 @@ fn unread(who: &Principal, t: &TypeDecl, name: &FieldName) -> bool {
 }
 
 /// `t` without the fields `who` may not know of, a relation's link fields
-/// too.
-pub fn known_fields(who: &Principal, t: &mut TypeDecl) {
+/// too, and without the relations it is not shown. `find` answers a type
+/// by its name.
+pub fn known_fields<'a>(who: &Principal, t: &mut TypeDecl, find: Find<'_, 'a>) {
     let whole = t.clone();
+    (t.relations).retain(|r| crate::describe::relation_shown(&whole, r, find, who));
     t.fields
         .retain(|f| field_access(who, &whole, f) != Access::None);
     for r in &mut t.relations {
@@ -599,6 +617,9 @@ pub fn known_fields(who: &Principal, t: &mut TypeDecl) {
             .retain(|f| field_access(who, &link, f) != Access::None);
     }
 }
+
+/// A type by its name, as the caller's ontology answers it.
+pub type Find<'f, 'a> = &'f dyn Fn(&TypeName) -> Option<&'a TypeDecl>;
 
 /// Whether `who` may not know of some field: only a `none` its grants
 /// give, to the lake, a type or a field, hides one.
@@ -666,8 +687,8 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
     }
     let whole = report.clone();
     let (stands, mut was, mut to) = (was, was.clone(), m.to.clone());
-    known_fields(who, &mut was);
-    known_fields(who, &mut to);
+    known_fields(who, &mut was, &sees);
+    known_fields(who, &mut to, &sees);
     let sourced = |new: &FieldName| {
         let mut from = m.renames.iter().filter(|(_, n)| n == new);
         from.all(|(old, _)| holds(&was, old))

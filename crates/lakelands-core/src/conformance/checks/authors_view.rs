@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{RelationDecl, StorageKind, TypeDecl};
+use lakelands_api::ontology::{Derived, MatchPair, RelationDecl, StorageKind, TypeDecl};
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::write::{Declaration, Migration, ProposalFilter, ProposedWrite};
 use lakelands_api::{
@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, derived, field, field_access, migration, refused_on, type_of, value,
+    Lake, Must, derived, field, field_access, migration, reference, refused_on, type_of, value,
 };
 use crate::links::link_type_name;
 
@@ -28,7 +28,7 @@ check!(
 check!(
     /// No refusal of a change of shape names a hidden field.
     HIDDEN_NAME_NOT_LEARNED = a_change_of_shape_never_names_a_field_its_author_may_not_know_of,
-    "027 and 024, extended: a type declared again from its author's view is taken, keeping the fields and the link fields hidden from the author; a shape that names a hidden field is refused as a field declared twice; one that removes a field a hidden one is built from is refused on that field and names no other; a rename from a hidden field is a rename from no field"
+    "027 and 024, extended: a type declared again from its author's view is taken, keeping the fields and the link fields hidden from the author, and the relations it is not shown, its reference to a type it is not shown as declared (lakelands#662); a shape that names a hidden field is refused as a field declared twice; one that removes a field a hidden field or relation reads is refused on that field and names no other part; a rename from a hidden field is a rename from no field, and one from a hidden relation from no relation"
 );
 
 fn invoice(fields: &[&str]) -> TypeDecl {
@@ -145,16 +145,36 @@ async fn a_change_of_shape_never_names_a_field_its_author_may_not_know_of(
         fields: fields.iter().map(|f| field(f, StorageKind::Text)).collect(),
         ..Default::default()
     };
-    let seen = |fields: &[&str]| TypeDecl {
-        relations: vec![approved_by(&["since"])],
-        ..invoice(fields)
+    // `payee` refers to `payroll`, which the author is not shown, nor
+    // `paid` and `matched`, which `ref` is read by.
+    let seen = |fields: &[&str]| {
+        let mut t = invoice(fields);
+        t.fields.push(reference("payee", "payroll"));
+        t.relations = vec![approved_by(&["since"])];
+        t
     };
-    let mut whole = seen(&["no", "gross", "salary"]);
+    l.declare(type_of("payroll", &[("code", StorageKind::Text)]))
+        .await?;
+    let mut whole = seen(&["no", "gross", "salary", "ref"]);
     let net = derived("net", StorageKind::Text, "gross", &["gross", "salary"]);
     whole.fields.push(net);
-    whole.relations = vec![approved_by(&["since", "grade"])];
+    let pairs = vec![MatchPair {
+        from: "ref".into(),
+        to: "code".into(),
+    }];
+    let matched = RelationDecl {
+        derived: Some(Derived { pairs }),
+        ..RelationDecl::to("matched", "payroll")
+    };
+    let paid = RelationDecl::to("paid", "payroll");
+    whole.relations = vec![approved_by(&["since", "grade"]), paid, matched];
     l.declare(whole).await?;
     let mut who = without_salary(store.as_ref(), "schemer", true);
+    let none = TypeGrants {
+        default: Some(Access::None),
+        ..Default::default()
+    };
+    who.grants.types.insert("payroll".into(), none);
     let grade = [("grade".into(), Access::None)].into();
     let links = TypeGrants {
         default: None,
@@ -165,18 +185,25 @@ async fn a_change_of_shape_never_names_a_field_its_author_may_not_know_of(
     who.grants.types.insert(link_type, links);
 
     // Declared again from the author's view, with one field more.
-    cat.declare(&who, Declaration::Type(seen(&["no", "gross", "memo"])))
-        .await
-        .must("declaring `invoice` again from its author's view, with `memo`")?;
+    cat.declare(
+        &who,
+        Declaration::Type(seen(&["no", "gross", "ref", "memo"])),
+    )
+    .await
+    .must("declaring `invoice` again from its author's view, with `memo`")?;
     let after = l.describe_type("invoice").await?;
     let fields: Vec<&str> = after.fields.iter().map(|f| f.name.as_str()).collect();
+    let relations: Vec<&str> = after.relations.iter().map(|r| r.name.as_str()).collect();
     let link_fields: Vec<&str> = (after.relations.iter())
         .flat_map(|r| r.fields.iter().map(|f| f.name.as_str()))
         .collect();
     ensure!(
-        fields == ["no", "gross", "salary", "net", "memo"] && link_fields == ["since", "grade"],
-        "the type declared again from its author's view must keep `salary`, `net` and the link \
-         field `grade`, each at its place; it holds {fields:?} and the link fields {link_fields:?}"
+        fields == ["no", "gross", "salary", "ref", "memo", "net", "payee"]
+            && relations == ["approved_by", "paid", "matched"]
+            && link_fields == ["since", "grade"],
+        "the type declared again from its author's view must keep `salary`, `net`, `payee`, the \
+         link field `grade` and the relations `paid` and `matched`, each at its place; it holds \
+         {fields:?}, the relations {relations:?} and the link fields {link_fields:?}"
     );
 
     let shape = |to: TypeDecl, renames: &[(&str, &str)]| Migration {
@@ -184,24 +211,47 @@ async fn a_change_of_shape_never_names_a_field_its_author_may_not_know_of(
         renames: (renames.iter().map(|(a, b)| ((*a).into(), (*b).into()))).collect(),
         relation_renames: Vec::new(),
     };
+    let mut settled = seen(&["no", "gross", "ref", "memo"]);
+    settled
+        .relations
+        .push(RelationDecl::to("settled", "invoice"));
+    let settled = Migration {
+        relation_renames: vec![("paid".into(), "settled".into())],
+        ..shape(settled, &[])
+    };
     for (what, m, field, says) in [
         (
             "naming the hidden `salary`",
-            shape(seen(&["no", "gross", "memo", "salary"]), &[]),
+            shape(seen(&["no", "gross", "ref", "memo", "salary"]), &[]),
             Some("salary"),
             "twice",
         ),
         (
             "removing `gross`, which the hidden `net` is built from",
-            shape(seen(&["no", "memo"]), &[]),
+            shape(seen(&["no", "ref", "memo"]), &[]),
             Some("gross"),
-            "read by another field",
+            "read by another part",
+        ),
+        (
+            "removing `ref`, which the hidden `matched` reads",
+            shape(seen(&["no", "gross", "memo"]), &[]),
+            Some("ref"),
+            "read by another part",
         ),
         (
             "renaming the hidden `salary`",
-            shape(seen(&["no", "gross", "memo", "pay"]), &[("salary", "pay")]),
+            shape(
+                seen(&["no", "gross", "ref", "memo", "pay"]),
+                &[("salary", "pay")],
+            ),
             None,
             "no such field before the migration",
+        ),
+        (
+            "renaming the hidden `paid`",
+            settled,
+            None,
+            "the first names a relation the type has",
         ),
     ] {
         let answer = cat.migrate(&who, m).await;
@@ -213,10 +263,11 @@ async fn a_change_of_shape_never_names_a_field_its_author_may_not_know_of(
             }) => message.as_str(),
             _ => "",
         };
+        let hidden = ["net", "matched", "payroll"];
         ensure!(
-            named == field && message.contains(says) && !message.contains("net"),
+            named == field && message.contains(says) && !hidden.iter().any(|h| message.contains(h)),
             "a migration {what} must be refused as invalid on {field:?}, saying \"{says}\" and \
-             not naming `net`; it answered {answer:?}"
+             naming none of {hidden:?}; it answered {answer:?}"
         );
     }
     let _ = own;

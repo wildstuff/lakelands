@@ -112,14 +112,15 @@ fn probing_an_unreadable_field_is_refused_not_masked() {
 }
 
 #[test]
-fn a_search_probes_every_searchable_field_and_the_vector_it_names() {
+fn a_search_probes_every_searchable_field_it_reads_and_the_vector_it_names() {
     let mut decl = invoice();
     decl.fields[2].searchable = true; // iban, sensitive
     let reader = principal(Access::Read, &[("iban", Access::Masked)]);
-    assert_eq!(
-        check_search(&reader, &decl, None, &[]),
-        refused_on("iban", Refusal::NotGranted)
+    assert!(
+        check_search(&reader, &decl, None, &[]).is_ok(),
+        "`iban` is not searched"
     );
+    assert_eq!(searched_fields(&reader, &decl).count(), 0);
     let granted = principal(Access::Read, &[]);
     assert!(check_search(&granted, &decl, None, &[]).is_ok());
     assert!(check_search(&granted, &decl, None, &[&"nope".into()]).is_err());
