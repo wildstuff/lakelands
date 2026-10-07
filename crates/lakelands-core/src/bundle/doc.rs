@@ -16,7 +16,7 @@ use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::{
-    Annotations, Authority, Cardinality, OnInputChange, Risk, StorageKind, VerbScope,
+    Annotations, Authority, Cardinality, ComputedAt, OnInputChange, Risk, StorageKind, VerbScope,
 };
 
 /// `value_types/<name>.yaml`.
@@ -75,6 +75,7 @@ pub(super) struct FieldBody {
     pub authority: Authority,
     pub derived: Option<Cond>,
     pub function: Option<String>,
+    pub computed_at: Option<ComputedAt>,
     #[serde(default)]
     pub depends_on: OneOrMany,
     #[serde(default)]

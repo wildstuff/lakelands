@@ -347,7 +347,7 @@ impl<'a> Reader<'a> {
     /// no view records and would answer none for one.
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
         let Some(all) = self.computed(ty)? else {
-            return self.view.get_many(ty, keys);
+            return Ok(self.at_read(ty, self.view.get_many(ty, keys)?));
         };
         let keys: BTreeSet<&RecordKey> = keys.iter().collect();
         Ok(all
@@ -362,6 +362,54 @@ impl<'a> Reader<'a> {
         Ok(self.get_many(ty, std::slice::from_ref(key))?.pop())
     }
 
+    /// Records of `ty` as an engine holds them, as this read answers them:
+    /// each field computed at the read computed over the record as stored,
+    /// with this read's clock, the one a `where` reads.
+    fn at_read(&self, ty: &TypeName, mut rows: Vec<StoredRecord>) -> Vec<StoredRecord> {
+        let o = &self.shape.ontology;
+        let Some(decl) = o
+            .ty(ty)
+            .ok()
+            .filter(|t| t.fields.iter().any(|f| f.at_read()))
+        else {
+            return rows;
+        };
+        let (decl, value_types) = (
+            crate::record::resolve_functions(decl, o),
+            o.value_type_list(),
+        );
+        for r in &mut rows {
+            core_derive::at_read(&decl, &value_types, r, &self.shape.settings, self.now);
+        }
+        rows
+    }
+
+    /// Whether the store evaluates `e` over records of `decl` itself: it
+    /// needs the store, or reads a field computed at the read, which no
+    /// engine holds.
+    fn store_only(&self, decl: &TypeDecl, e: &Expr) -> bool {
+        let at_read = |n: &&FieldName| decl.fields.iter().any(|f| &f.name == *n && f.at_read());
+        needs_store(e) || e.fields_read().iter().any(at_read)
+    }
+
+    /// Refuse an order by a field computed at the read: it moves with the
+    /// clock, so the order one page is read in would not hold to the next.
+    /// Asked once the reader is known to read the field.
+    fn steady_order(decl: &TypeDecl, field: &str) -> Result<()> {
+        if decl
+            .fields
+            .iter()
+            .any(|f| f.name.as_str() == field && f.at_read())
+        {
+            return Err(invalid(format!(
+                "`order_by` names `{field}` of `{}`, which is computed at the read and moves \
+                 with the clock; a page's order would not hold to the next",
+                decl.name
+            )));
+        }
+        Ok(())
+    }
+
     /// The records of `ty` whose fields hold every value of `equal`, as
     /// [`Self::get_many`] reads them.
     fn matching(&self, ty: &TypeName, equal: Vec<(FieldName, Value)>) -> Result<Vec<StoredRecord>> {
@@ -372,7 +420,7 @@ impl<'a> Reader<'a> {
                 restricted: true,
                 ..Scan::default()
             };
-            return self.view.scan(ty, &scan);
+            return Ok(self.at_read(ty, self.view.scan(ty, &scan)?));
         };
         Ok(all
             .iter()
@@ -727,7 +775,7 @@ impl<'a> Reader<'a> {
         };
         // A link's ends are judged a page at a time, never by the engine.
         let ends = !rights::held_ends(self.who, decl).is_empty();
-        if ends || filter.is_some_and(|e| kept || needs_store(e)) {
+        if ends || filter.is_some_and(|e| kept || self.store_only(decl, e)) {
             let mut n = 0;
             self.each_member(decl, filter, COUNT_PAGE, |_| {
                 n += 1;
@@ -781,7 +829,7 @@ impl<'a> Reader<'a> {
         after: Option<(Vec<Value>, RecordKey)>,
         want: usize,
     ) -> Result<Vec<StoredRecord>> {
-        let push = filter.filter(|e| !needs_store(e)).cloned();
+        let push = filter.filter(|e| !self.store_only(decl, e)).cloned();
         let here = filter.filter(|_| push.is_none());
         let Some(equal) = self.pairs(&decl.name) else {
             return Ok(Vec::new());
@@ -799,7 +847,7 @@ impl<'a> Reader<'a> {
         };
         let mut out = Vec::new();
         loop {
-            let rows = self.view.scan(&decl.name, &scan)?;
+            let rows = self.at_read(&decl.name, self.view.scan(&decl.name, &scan)?);
             // An engine answers a kept name as of an earlier position in
             // key order by its statement's plan alone, and this read goes
             // on from a page's last key: a page in another order would
@@ -1377,6 +1425,9 @@ impl<'a> Reader<'a> {
             }
         }
         rights::check_probe(self.who, &decl, probed.iter())?;
+        for o in find.order_by.iter().filter(|o| o.by != OrderBy::Latest) {
+            Self::steady_order(&decl, o.field.as_str())?;
+        }
         // What can never be evaluated is refused, once the reader is known
         // to read the fields it names (028, extended).
         for (e, at) in filter
@@ -1671,7 +1722,7 @@ impl<'a> Reader<'a> {
                 .into_iter()
                 .find(|r| r.key == get.key)
         } else {
-            let held: Vec<StoredRecord> = self.view.get(ty, &get.key)?.into_iter().collect();
+            let held = self.at_read(ty, self.view.get(ty, &get.key)?.into_iter().collect());
             let ends = self.admitted_ends(&decl, &held)?;
             let mut held = held.into_iter().zip(ends);
             held.find(|(r, ends)| *ends && self.live(&decl, r))
@@ -2191,7 +2242,7 @@ impl<'a> Reader<'a> {
     ) -> Result<Vec<Hit>> {
         // One read for the batch, not one per candidate.
         let keys: Vec<RecordKey> = ranked.iter().map(|(k, _)| k.clone()).collect();
-        let rows = self.view.get_many(&decl.name, &keys)?;
+        let rows = self.at_read(&decl.name, self.view.get_many(&decl.name, &keys)?);
         let (ends, pairs) = (self.admitted_ends(decl, &rows)?, self.pairs(&decl.name));
         let at_head = self.head_admitted(decl, &keys)?;
         let mut stored: BTreeMap<RecordKey, StoredRecord> = (rows.into_iter().zip(ends))
@@ -2381,9 +2432,10 @@ impl<'a> Reader<'a> {
             }
         } else if let Some(mode) = &p.start.search {
             let keys = self.start_hits(p, mode)?;
-            keys.iter()
-                .filter_map(|k| self.view.get(&p.start.ty, k).ok().flatten())
-                .collect()
+            let held = keys
+                .iter()
+                .filter_map(|k| self.view.get(&p.start.ty, k).ok().flatten());
+            self.at_read(&p.start.ty, held.collect())
         } else {
             let f = self.record_filter(&start_decl, p.start.filter.as_ref(), "start where")?;
             self.records(&start_decl, f.as_ref())?
@@ -2442,7 +2494,7 @@ impl<'a> Reader<'a> {
                 }
             }
         }
-        self.probe_rows(&paths)?;
+        self.probe_rows(&paths, p.order_by.len())?;
         // Rows: one per match.
         let mut rows: Vec<BTreeMap<String, Value>> = Vec::new();
         for from in &from {
@@ -2539,9 +2591,10 @@ impl<'a> Reader<'a> {
     /// field the principal may not read, or that the path's type does not
     /// declare, as `find` refuses one (024, 006). A path that names no
     /// declared type, or one the principal is not shown, reads nothing and
-    /// is left alone.
-    fn probe_rows(&self, paths: &[String]) -> Result<()> {
-        for path in paths {
+    /// is left alone. The first `ordered` paths are orders, and an order by
+    /// a field computed at the read is refused once the field is probed.
+    fn probe_rows(&self, paths: &[String], ordered: usize) -> Result<()> {
+        for (i, path) in paths.iter().enumerate() {
             let Some((ty, field)) = path.rsplit_once('.') else {
                 continue;
             };
@@ -2549,6 +2602,9 @@ impl<'a> Reader<'a> {
                 && self.owner_shown(decl)
             {
                 rights::check_probe(self.who, decl, [&FieldName::from(field)])?;
+                if i < ordered {
+                    Self::steady_order(decl, field)?;
+                }
             }
         }
         Ok(())

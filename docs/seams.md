@@ -1881,8 +1881,8 @@ position, as the principal may see it, each declaration whole (suite:
 `describe_answers_the_declaration_whole`; door check of the same name):
 
 - A field the principal reads carries every member of its declaration —
-  `type`, `required`, `authority`, `derived` or `function`, `depends_on`,
-  `on_input_change`, `searchable`, `sensitive`, `label`, `description`,
+  `type`, `required`, `authority`, `derived` or `function`, `computed_at`,
+  `depends_on`, `on_input_change`, `searchable`, `sensitive`, `label`, `description`,
   `embed` — beside its `access` and whether it is `filterable`. A type
   carries its `description`, `label`, `language` and `view`, and on its
   access axis `key`, `valid_from`, `valid_to` and `field_meta`. For a
@@ -1892,7 +1892,7 @@ position, as the principal may see it, each declaration whole (suite:
 - A masked field shows its shape only: `name`, `type`, `access`,
   `sensitive`, `required`, `authority` and `on_input_change`, neither
   `filterable` nor `searchable`, and no `derived`, `function`,
-  `depends_on`, `embed`, `label` or `description`
+  `computed_at`, `depends_on`, `embed`, `label` or `description`
   (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
   Until 0.4.0 a masked field also showed `derived`, `depends_on`,
   `description` and `embed`.

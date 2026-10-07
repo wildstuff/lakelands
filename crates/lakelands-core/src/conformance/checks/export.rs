@@ -685,9 +685,10 @@ async fn exported_lake(
     };
     let proposed = cat.propose(own, narrower, "one state".into()).await;
     proposed.must("proposing a narrower `stamp_state`")?;
-    // Format version 11: a derived field calling `floor`.
+    // Format version 11: a derived field calling `floor`; 12: one that
+    // says when it is computed.
     let days = json!({"name": "days", "type": {"kind": "number"}, "authority": "derived",
-                      "derived": "floor((now() - at) / 1d)"});
+                      "derived": "floor((now() - at) / 1d)", "computed_at": "write"});
     let days = serde_json::from_value(days).expect("a field");
     let added = cat.add_field(own, &"stamp".into(), days).await;
     added.must("adding `days` to `stamp`")?;

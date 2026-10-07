@@ -27,6 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::expr::Expr;
 use lakelands_api::ontology::{FieldDecl, OnInputChange, TypeDecl, ValueTypeDecl};
+use lakelands_api::record::StoredRecord;
 use lakelands_api::{FieldName, Timestamp, Value};
 
 use crate::expr::{WriteScope, eval, eval::to_json, parse};
@@ -46,9 +47,7 @@ impl std::error::Error for DeriveError {}
 /// The fields an expression reads: the first segment of every path, and
 /// the field named by `known_at`, `seen_at`, `previous` and `changed`.
 pub fn reads(e: &Expr) -> BTreeSet<FieldName> {
-    let mut out = Vec::new();
-    paths(e, &mut out);
-    out.into_iter().filter_map(|p| p.first().cloned()).collect()
+    e.fields_read().into_iter().cloned().collect()
 }
 
 fn paths<'e>(e: &'e Expr, out: &mut Vec<&'e [FieldName]>) {
@@ -183,19 +182,14 @@ pub fn apply(
         }
     }
 
-    // 2. Recompute derived fields in dependency order.
+    // 2. Recompute derived fields in dependency order; one computed at the
+    //    read holds no value.
     for (name, expr) in order(ty)? {
         let decl = ty
             .fields
             .iter()
             .find(|f| f.name == name)
             .expect("ordered from the type");
-        let scale = decl
-            .ty
-            .value_type
-            .as_ref()
-            .and_then(|vt| value_types.iter().find(|d| &d.name == vt))
-            .and_then(|vt| vt.scale);
         let scope = WriteScope {
             after: fields,
             before: write.before,
@@ -204,16 +198,69 @@ pub fn apply(
             settings: write.settings,
             now: write.now,
         };
-        let value = eval(&expr, &scope)
-            .ok()
-            .and_then(|v| to_json(&v, decl.ty.kind, scale))
-            .unwrap_or(Value::Null);
+        let value = match decl.at_read() {
+            true => Value::Null,
+            false => computed(decl, &expr, value_types, &scope),
+        };
         if fields.get(&name).unwrap_or(&Value::Null) != &value {
             fields.insert(name.clone(), value);
             touched.insert(name);
         }
     }
     Ok(touched)
+}
+
+/// A record as one read answers it: each field computed at the read
+/// computed from its fields as stored, their provenance, the lake's
+/// settings and the read's clock, in the order the fold computes derived
+/// fields; a value that cannot be computed is none. A type whose derived
+/// fields cannot be ordered was refused when declared, and has none here.
+pub fn at_read(
+    ty: &TypeDecl,
+    value_types: &[ValueTypeDecl],
+    record: &mut StoredRecord,
+    settings: &BTreeMap<String, Value>,
+    now: Timestamp,
+) {
+    if !ty.fields.iter().any(FieldDecl::at_read) {
+        return;
+    }
+    // Provenance one had when it was computed at the write is not its own.
+    (record.meta).retain(|n, _| !ty.fields.iter().any(|f| &f.name == n && f.at_read()));
+    for (name, expr) in order(ty).unwrap_or_default() {
+        let Some(decl) = ty.fields.iter().find(|f| f.name == name && f.at_read()) else {
+            continue;
+        };
+        let scope = WriteScope {
+            after: &record.fields,
+            before: None,
+            retiring: false,
+            meta: Some(&record.meta),
+            settings: Some(settings),
+            now,
+        };
+        match computed(decl, &expr, value_types, &scope) {
+            Value::Null => record.fields.remove(&name),
+            v => record.fields.insert(name, v),
+        };
+    }
+}
+
+/// What `expr` computes for the field `decl` over `scope`, landed in its
+/// kind at its value type's scale; null when it cannot be.
+fn computed(
+    decl: &FieldDecl,
+    expr: &Expr,
+    value_types: &[ValueTypeDecl],
+    scope: &WriteScope<'_>,
+) -> Value {
+    let scale = (decl.ty.value_type.as_ref())
+        .and_then(|vt| value_types.iter().find(|d| &d.name == vt))
+        .and_then(|vt| vt.scale);
+    eval(expr, scope)
+        .ok()
+        .and_then(|v| to_json(&v, decl.ty.kind, scale))
+        .unwrap_or(Value::Null)
 }
 
 #[cfg(test)]

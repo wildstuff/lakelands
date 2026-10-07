@@ -28,9 +28,9 @@ use lakelands_api::describe::{
 use lakelands_api::expr::Condition;
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
-    Assignment, Authority, Cardinality, EmbedDecl, FieldDecl, FieldType, Measure, OnInputChange,
-    RelationDecl, Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
-    VerbScope, ViewDecl, ViewParam, ViewSource,
+    Assignment, Authority, Cardinality, ComputedAt, EmbedDecl, FieldDecl, FieldType, Measure,
+    OnInputChange, RelationDecl, Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl,
+    VerbEffect, VerbScope, ViewDecl, ViewParam, ViewSource,
 };
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{
@@ -246,6 +246,7 @@ fn field_decl() -> FieldDecl {
         authority: Authority::Shared,
         derived: Some(cond()),
         function: Some("g".into()),
+        computed_at: Some(ComputedAt::Read),
         depends_on: vec!["e".into()],
         on_input_change: OnInputChange::Clear,
         initial: Some(serde_json::json!("new")),
@@ -507,6 +508,7 @@ fn field_description() -> FieldDescription {
         access: Access::Read,
         derived: Some(cond()),
         function: Some("g".into()),
+        computed_at: Some(ComputedAt::Read),
         depends_on: vec!["e".into()],
         on_input_change: OnInputChange::Keep,
         initial: Some(serde_json::json!("new")),
@@ -1221,6 +1223,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     }
     units!("authority", Authority, [Authored, Source, Shared, Derived]);
     units!("on_input_change", OnInputChange, [Keep, Clear]);
+    units!("computed_at", ComputedAt, [Write, Read]);
     units!(
         "cardinality",
         Cardinality,

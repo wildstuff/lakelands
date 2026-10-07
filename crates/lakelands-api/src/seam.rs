@@ -326,8 +326,8 @@ pub fn view_kept(value: Option<&Value>) -> bool {
 ///
 /// - `sort_index.<type>` and `vector_index.<type>` name a declared stored
 ///   type and hold an array of the names of fields it declares with a
-///   kind that index keeps ([`sortable`], [`indexable`]); `None` or `null`
-///   asks for no index.
+///   kind that index keeps ([`sortable`], [`indexable`]) and not computed
+///   at the read; `None` or `null` asks for no index.
 /// - `search_weights.<type>` names a declared stored type and holds an
 ///   object of `fields` (each a vector field it declares, with a weight)
 ///   and `text_weight`, one at least, every weight one a search may give
@@ -465,6 +465,16 @@ pub fn check_setting<'a>(
                     format!(
                         "`{key}` names `{name}`, of kind {}; {index} keeps {kinds}",
                         serde_json::to_value(f.ty.kind).unwrap_or_default()
+                    ),
+                ));
+            }
+            // As it is shown: one told nothing of how a field is computed
+            // is not told so here either.
+            Some(f) if f.computed_at == Some(crate::ontology::ComputedAt::Read) => {
+                return Err((
+                    name.into(),
+                    format!(
+                        "`{key}` names `{name}`, which is computed at the read; {index} keeps stored values"
                     ),
                 ));
             }

@@ -276,6 +276,7 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
         authority: Default::default(),
         derived: None,
         function: None,
+        computed_at: None,
         depends_on: vec![],
         on_input_change: Default::default(),
         initial: None,

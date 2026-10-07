@@ -716,6 +716,11 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
     check_initial(st, d)?;
     if let Declaration::Type(t) = d {
         embeddings(t)?;
+        let function = |n: &str| st.functions.iter().find(|f| f.name == n);
+        if let Some((field, message)) = t.computed_at_problem(function) {
+            return Err(on(&field, Refusal::Invalid { message }));
+        }
+        read_as_stored(st, t)?;
         // As the store: a derived field's expression can be evaluated, and
         // what it computes can land in the field.
         for f in t.fields.iter().filter(|_| t.view.is_none()) {
@@ -2580,6 +2585,18 @@ fn reads_its_type(st: &State, d: &Declaration) -> Result<()> {
             on.name
         )));
     }
+    // As the store: a verb, a trigger and a set read a record as stored.
+    if let Some(on) = on.filter(|_| !matches!(d, Declaration::Type(_)))
+        && let reads = declaration_reads(st, d, &on.name)
+        && let Some(n) = (reads.iter()).find(|n| field(on, n).is_some_and(|f| f.at_read()))
+    {
+        return Err(invalid(format!(
+            "{} reads `{n}`, which `{}` computes at the read; it is evaluated over the record as \
+             stored, which never holds it",
+            d.what(),
+            on.name
+        )));
+    }
     Ok(())
 }
 
@@ -3665,6 +3682,7 @@ impl Catalog for MockCatalog {
             }
             if o.by != OrderBy::Latest {
                 readable(&st, who, t, &o.field)?;
+                steady_order(&t.decl, o.field.as_str())?;
             }
         }
         let mut rows = candidates(&st, who, t, find.at, e.as_ref())?;
@@ -4073,6 +4091,7 @@ impl Catalog for MockCatalog {
                 && let Some(ot) = st.visible(who, &TypeName::from(ty))
             {
                 readable(&st, who, ot, &FieldName::from(field))?;
+                steady_order(&ot.decl, field)?;
             }
         }
         let e = filter(&st, who, t, start.filter.as_ref())?;
@@ -5484,6 +5503,78 @@ fn derived_pairs(
                 p.from, p.to
             )));
         }
+        if to.at_read() {
+            return Err(at(format!(
+                "the pair `{}` = `{}` matches `{}.{}`, which is computed at the read; a match \
+                 reads values as stored",
+                p.from, p.to, r.target, p.to
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// As the store: a field a trigger, a verb, an object set or another
+/// type's derived relation in force reads as stored is not taken to the
+/// read; the refusal names the field alone.
+fn read_as_stored(st: &State, t: &TypeDecl) -> Result<()> {
+    if !t.fields.iter().any(FieldDecl::at_read) {
+        return Ok(());
+    }
+    let verbs = st
+        .verbs
+        .values()
+        .filter(|v| v.on == t.name)
+        .map(|v| Declaration::Verb(v.clone()));
+    let triggers = (st.triggers.iter())
+        .filter(|x| x.on == t.name)
+        .map(|x| Declaration::Trigger(x.clone()));
+    let sets = (st.object_sets.iter())
+        .filter(|x| x.of == t.name)
+        .map(|x| Declaration::ObjectSet(x.clone()));
+    let mut read = BTreeSet::new();
+    for d in verbs.chain(triggers).chain(sets) {
+        read.extend(declaration_reads(st, &d, &t.name));
+    }
+    let others = st.types.values().filter(|e| e.decl.name != t.name);
+    let matching = others
+        .flat_map(|e| &e.decl.relations)
+        .filter(|r| r.target == t.name);
+    read.extend(
+        matching
+            .flat_map(|r| r.derived.iter().flat_map(|d| &d.pairs))
+            .map(|p| p.to.clone()),
+    );
+    match t
+        .fields
+        .iter()
+        .find(|f| f.at_read() && read.contains(&f.name))
+    {
+        Some(f) => {
+            let message = format!(
+                "type `{}`, field `{}`: a trigger, a verb, an object set or another type's derived \
+                 relation in force reads it as stored, so it is not computed at the read",
+                t.name, f.name
+            );
+            Err(on(&f.name, Refusal::Invalid { message }))
+        }
+        None => Ok(()),
+    }
+}
+
+/// As the store: an order by a field computed at the read is refused, once
+/// the reader is known to read it.
+fn steady_order(decl: &TypeDecl, field: &str) -> Result<()> {
+    if decl
+        .fields
+        .iter()
+        .any(|f| f.name.as_str() == field && f.at_read())
+    {
+        return Err(invalid(format!(
+            "`order_by` names `{field}` of `{}`, which is computed at the read and moves with \
+             the clock; a page's order would not hold to the next",
+            decl.name
+        )));
     }
     Ok(())
 }

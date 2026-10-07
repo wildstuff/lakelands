@@ -34,7 +34,9 @@
 //!   a proposed `migrate` whose report holds `restated`; and a
 //!   declaration with a field that declares `initial`, in the places 5
 //!   names.
-//! - **12**: what [`TWELFTH`] lists: a `declared` event `with_the_set`.
+//! - **12**: what [`TWELFTH`] lists: a `declared` event `with_the_set`,
+//!   and a declaration with a field that says `computed_at`, in the
+//!   places 5 names.
 //!
 //! The store writes every event of one append at the greatest of the
 //! lake's version and what [`needed`] answers for each event of the
@@ -118,17 +120,24 @@ pub const ELEVENTH: &[Added] = &[
         "proposes a migration whose report holds `restated`",
     ),
     (
-        |body| any_declaration(body, declares_initial),
+        |body| any_declaration(body, |d| any_field(d, |f| f.initial.is_some())),
         "declares an `initial` value",
     ),
 ];
 
 /// What format version 12 added, as [`ELEVENTH`] lists 11's: below 12 a
-/// set's records were computed again at each of its declarations.
-pub const TWELFTH: &[Added] = &[(
-    |body| matches!(body, EventBody::Declared { with_the_set, .. } if *with_the_set),
-    "declares `with_the_set`",
-)];
+/// set's records were computed again at each of its declarations, and no
+/// field said when it is computed.
+pub const TWELFTH: &[Added] = &[
+    (
+        |body| matches!(body, EventBody::Declared { with_the_set, .. } if *with_the_set),
+        "declares `with_the_set`",
+    ),
+    (
+        |body| any_declaration(body, |d| any_field(d, |f| f.computed_at.is_some())),
+        "declares when a field is computed",
+    ),
+];
 
 /// Whether the event proposes a migration whose report says what its `to`
 /// states otherwise: below 11 no report does, and a reader there would
@@ -141,11 +150,11 @@ fn reports_restated(body: &EventBody) -> bool {
     matches!(write, Migrate { report, .. } if !report.restated.is_empty())
 }
 
-/// Whether a declaration holds a field that declares `initial`, wherever
-/// a field is declared: a type's, a relation's, a verb's payload's, a
+/// Whether a declaration holds a field that passes `test`, wherever a
+/// field is declared: a type's, a relation's, a verb's payload's, a
 /// function's input.
-fn declares_initial(d: &Declaration) -> bool {
-    let any = |fs: &[FieldDecl]| fs.iter().any(|f| f.initial.is_some());
+fn any_field(d: &Declaration, test: impl Fn(&FieldDecl) -> bool) -> bool {
+    let any = |fs: &[FieldDecl]| fs.iter().any(&test);
     match d {
         Declaration::Type(t) => any(&t.fields) || t.relations.iter().any(|r| any(&r.fields)),
         Declaration::Verb(v) => any(&v.payload),

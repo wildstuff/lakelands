@@ -67,6 +67,7 @@ fn field(name: &str, kind: StorageKind) -> FieldDecl {
         authority: Authority::Authored,
         derived: None,
         function: None,
+        computed_at: None,
         depends_on: vec![],
         on_input_change: Default::default(),
         initial: None,

@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use crate::expr::Condition;
 use crate::id::{FieldName, LakeId, RelationName, TypeName, VerbName};
 use crate::ontology::{
-    Annotations, Authority, EmbedDecl, FieldDecl, FieldType, OnInputChange, RelationDecl, Risk,
-    TriggerDecl, ValueTypeDecl, VerbScope, ViewDecl,
+    Annotations, Authority, ComputedAt, EmbedDecl, FieldDecl, FieldType, OnInputChange,
+    RelationDecl, Risk, TriggerDecl, ValueTypeDecl, VerbScope, ViewDecl,
 };
 use crate::principal::Access;
 use crate::write::{FunctionDecl, ObjectSetDecl};
@@ -121,6 +121,9 @@ pub struct FieldDescription {
     /// For a derived field: the declared function that computes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function: Option<String>,
+    /// For a computed field: when it is computed, as declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computed_at: Option<ComputedAt>,
     /// The fields it depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<FieldName>,
@@ -172,6 +175,7 @@ impl FieldDescription {
             access,
             derived: decl.derived,
             function: decl.function,
+            computed_at: decl.computed_at,
             depends_on: decl.depends_on,
             on_input_change: decl.on_input_change,
             initial: decl.initial,

@@ -63,7 +63,9 @@ pub(super) fn declaration(st: &State, d: &Declaration) -> Result<()> {
         Declaration::Verb(v) => {
             name("verb", v.name.as_str())?;
             for f in &v.payload {
-                field(&format!("verb `{}`, payload", v.name), f)?;
+                let at = format!("verb `{}`, payload", v.name);
+                field(&at, f)?;
+                computed_here(&at, f)?;
             }
             if let Some(r) = &v.requires {
                 condition(r, Place::Record, &format!("verb `{}`, requires", v.name))?;
@@ -95,7 +97,9 @@ pub(super) fn declaration(st: &State, d: &Declaration) -> Result<()> {
             name("function", &f.name)?;
             name("backing", &f.backing)?;
             for input in &f.inputs {
-                field(&format!("function `{}`, input", f.name), input)?;
+                let at = format!("function `{}`, input", f.name);
+                field(&at, input)?;
+                computed_here(&at, input)?;
             }
             if let ("expr", Some(e)) = (f.backing.as_str(), &f.expr) {
                 condition(e, Place::Record, &format!("function `{}`", f.name))?;
@@ -112,6 +116,23 @@ fn field(owner: &str, f: &FieldDecl) -> Result<()> {
         condition(d, Place::Write, &format!("{owner}, field `{}`", f.name))?;
     }
     Ok(())
+}
+
+/// As the store: `computed_at` on a field no record holds.
+fn computed_here(at: &str, f: &FieldDecl) -> Result<()> {
+    match f.computed_at {
+        Some(_) => {
+            let message = format!(
+                "{at}, field `{}`: only a field of a record says `computed_at`",
+                f.name
+            );
+            Err(super::on(
+                &f.name,
+                lakelands_api::Refusal::Invalid { message },
+            ))
+        }
+        None => Ok(()),
+    }
 }
 
 /// Refuse a name of this kind that cannot be declared.
