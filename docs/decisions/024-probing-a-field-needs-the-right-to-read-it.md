@@ -535,3 +535,16 @@ extended).
 
 This is a change for a host: a reader held from such a field, which
 walked the relation before, is now told it is not there.
+
+## Extended: a database's error quotes no row (lakelands#735)
+
+An engine's error reaches the caller as `unavailable`, and the network
+doors answer it whole. PostgreSQL adds a `DETAIL` to many errors, and
+for a failed constraint it quotes the failing row: a record's key and
+its values, which the caller may not be shown. So the PostgreSQL engine
+answers only the severity, the SQLSTATE and the server's primary
+message, which names a table, a constraint or a column and no value;
+`DETAIL`, `HINT`, `WHERE` and the statement position stay out of the
+answer. SQLite's messages name the columns of a failed constraint, or
+the schema's own check, and never a row's values, so the SQLite engine
+answers them as they are.

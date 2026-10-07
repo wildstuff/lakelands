@@ -62,8 +62,19 @@ pub const NAME: &str = "pg";
 
 pub(crate) use lakelands_core::{invalid, lock, unavailable};
 
-/// A failed statement, for the host, with every cause the driver gives.
+/// A failed statement, for the host. Of an error the server sends, only
+/// its severity, SQLSTATE and primary message: its `DETAIL`, `HINT`,
+/// `WHERE` and statement position can quote a record's key or values,
+/// which the answer carries to a caller who may not be shown that record
+/// (024). Any other failure says every cause the driver gives.
 pub(crate) fn sql(e: postgres::Error) -> Error {
+    if let Some(db) = e.as_db_error() {
+        let (severity, code) = (db.severity(), db.code().code());
+        return unavailable(format!(
+            "the database failed: {severity} {code}: {}",
+            db.message()
+        ));
+    }
     let mut message = format!("the database failed: {e}");
     let mut source = std::error::Error::source(&e);
     while let Some(s) = source {
