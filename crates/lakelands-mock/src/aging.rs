@@ -42,7 +42,11 @@ pub(crate) fn check(
         Some(Value::String(s)) => Ok(s.clone()),
         _ => Err((FieldName::from(name), format!("`{name}` is text"))),
     };
-    text("name")?;
+    // As the store: a rule's name is an identifier.
+    let name = text("name")?;
+    if let Some(m) = crate::doors::rules::fault("aging rule", &name) {
+        return Err(("name".into(), m));
+    }
     let on = TypeName::from(text("on")?.as_str());
     if on.as_str().starts_with("sys.") {
         return Err(("on".into(), format!("`{on}` is a system type")));

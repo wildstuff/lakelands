@@ -113,6 +113,7 @@ macro_rules! door_checks {
             a_step_to_an_unbound_view_is_refused,
             a_view_reads_only_what_its_source_has,
             a_view_is_declared_only_as_the_store_declares_it,
+            names_and_expressions_are_declared_only_as_the_store_declares_them,
             a_migration_keeps_what_a_view_reads,
             a_declaration_reads_only_what_its_type_has,
             a_function_over_null_is_null_on_every_lake,
@@ -2830,6 +2831,273 @@ pub async fn a_view_is_declared_only_as_the_store_declares_it(store: Arc<dyn Lak
     c.declare(owner, decl(valid))
         .await
         .expect("a view merging another source is declared");
+}
+
+/// A declaration is taken only with names and expressions the store
+/// takes: every name an ASCII identifier, a type's identifiers joined by
+/// `.`, an aging rule's too; every expression parsed, its functions given
+/// what they take where they have meaning, its numbers held exactly (the
+/// largest numeral that fits in 96 bits is taken, the next is not); and
+/// `in_set()` only in a set's `where`, a trigger's `when` and a read's
+/// `where`. `add_field` declares the type with the field added. Each
+/// fault is refused as invalid in the store's words, and nothing is
+/// appended; on the mock as on the store (028).
+pub async fn names_and_expressions_are_declared_only_as_the_store_declares_them(
+    store: Arc<dyn LakeStore>,
+) {
+    const IDENT: &str = "is not an ASCII identifier: a letter or `_`, then letters, digits or `_`";
+    const AGG: &str = "count() folds a set of records and has no meaning here";
+    const RETIRED: &str = "retired() has meaning only in a trigger's guard";
+    const CHANGED: &str = "changed() has meaning only in a guard over a write";
+    const PARAM: &str = "param() is read only in a view's `where` and `measures`, where the \
+                         view declares its parameters";
+    const IN_SET: &str = "in_set() has meaning in an object set's `where`, a trigger's `when` \
+                          and a read's `where`";
+    const EARLY: &str = "does not parse: the expression ends too early";
+    const INEXACT: &str = "is not a number this evaluator can hold exactly";
+    const MAX: &str = "79228162514264337593543950335";
+    const PAST: &str = "79228162514264337593543950336";
+    const BIG: &str = "123456789012345678901234567890123";
+    let f = setup(store).await;
+    let (c, owner) = (&f.catalog, &f.cast.owner);
+    let decl = |v: Value| serde_json::from_value::<Declaration>(v).expect("a declaration");
+    let open =
+        json!({"declare": "object_set", "name": "open", "of": INVOICE, "where": "status = 'open'"});
+    c.declare(owner, decl(open))
+        .await
+        .expect("the owner declares it");
+    let text = |n: &str| json!({"name": n, "type": {"kind": "text"}});
+    let derived = |e: &str| json!({"name": "d", "type": {"kind": "text"}, "authority": "derived", "derived": e});
+    let ty = |n: &str, more: Value| json!({"declare": "type", "name": n, "key": ["k"], "fields": [text("k"), more]});
+    let field = |n: &str, e: &str| (ty(n, derived(e)), format!("type `{n}`, field `d`"));
+    let view = |n: &str, m: &str, more: Value| {
+        let mut v = json!({"source": INVOICE, "group_by": ["status"], "measures": [{"name": m, "expr": "count()"}]});
+        v.as_object_mut()
+            .unwrap()
+            .extend(more.as_object().unwrap().clone());
+        json!({"declare": "type", "name": n, "key": ["status"], "view": v,
+               "fields": [text("status"), {"name": "n", "type": {"kind": "number"}}]})
+    };
+    let measure = |n: &str, e: &str| {
+        (
+            view(n, "n", json!({"measures": [{"name": "n", "expr": e}]})),
+            format!("type `{n}`, measure `n`"),
+        )
+    };
+    let filtered = |n: &str, w: &str| {
+        (
+            view(n, "n", json!({"where": w})),
+            format!("type `{n}`, view `where`"),
+        )
+    };
+    let vtype = |n: &str, e: &str| {
+        (
+            json!({"declare": "value_type", "name": n, "kind": "text", "constraint": e}),
+            format!("value type `{n}`, constraint"),
+        )
+    };
+    let verb = |n: &str, requires: Option<&str>, value: &str| {
+        let mut v = json!({"declare": "verb", "name": n, "on": INVOICE, "risk": "low", "effect": "write", "set": [{"field": "status", "value": value}]});
+        if let Some(r) = requires {
+            v["requires"] = json!(r);
+        }
+        v
+    };
+    let requires = |n: &str, e: &str| (verb(n, Some(e), "'x'"), format!("verb `{n}`, requires"));
+    let value = |n: &str, e: &str| (verb(n, None, e), format!("verb `{n}`, `status`"));
+    let trigger = |n: &str, e: &str| {
+        (
+            json!({"declare": "trigger", "name": n, "on": INVOICE, "when": e}),
+            format!("trigger `{n}`"),
+        )
+    };
+    let set = |n: &str, e: &str| {
+        (
+            json!({"declare": "object_set", "name": n, "of": INVOICE, "where": e}),
+            format!("object set `{n}`"),
+        )
+    };
+    let function = |n: &str, backing: &str, e: &str| json!({"declare": "function", "name": n, "backing": backing, "inputs": [text("t")], "expr": e});
+    let body = |n: &str, e: &str| (function(n, "expr", e), format!("function `{n}`"));
+    let with_relation = |r: &str| {
+        let mut t = ty("nr", text("x"));
+        t["relations"] = json!([{"name": r, "target": PARTNER}]);
+        t
+    };
+    let names = [
+        (
+            ty("bad-type", text("x")),
+            "type name `bad-type` is not ASCII identifiers joined by `.`".to_owned(),
+        ),
+        (
+            ty("a..b", text("x")),
+            "type name `a..b` is not ASCII identifiers joined by `.`".to_owned(),
+        ),
+        (
+            ty("nf", text("bad-field")),
+            format!("field name `bad-field` {IDENT}"),
+        ),
+        (
+            with_relation("bad-rel"),
+            format!("relation name `bad-rel` {IDENT}"),
+        ),
+        (
+            verb("bad-verb", None, "'x'"),
+            format!("verb name `bad-verb` {IDENT}"),
+        ),
+        (
+            json!({"declare": "verb", "name": "ext", "on": INVOICE, "risk": "low", "effect": "external", "executor": "bad exec"}),
+            format!("executor name `bad exec` {IDENT}"),
+        ),
+        (
+            trigger("bad-trigger", "true").0,
+            format!("trigger name `bad-trigger` {IDENT}"),
+        ),
+        (
+            set("bad-set", "true").0,
+            format!("object set name `bad-set` {IDENT}"),
+        ),
+        (
+            vtype("bad-vt", "true").0,
+            format!("value type name `bad-vt` {IDENT}"),
+        ),
+        (
+            function("bad-fn", "expr", "upper(t)"),
+            format!("function name `bad-fn` {IDENT}"),
+        ),
+        (
+            function("fine", "bad-backing", "upper(t)"),
+            format!("backing name `bad-backing` {IDENT}"),
+        ),
+        (
+            view("nm", "bad-m", json!({})),
+            format!("measure name `bad-m` {IDENT}"),
+        ),
+        (
+            view(
+                "np",
+                "n",
+                json!({"where": "status = param('bad-p')", "params": [{"name": "bad-p", "kind": "text"}]}),
+            ),
+            format!("parameter name `bad-p` {IDENT}"),
+        ),
+    ];
+    let faults = [
+        (field("e1", "1 +"), format!("`1 +` {EARLY} (at character 3)")),
+        (vtype("e2", "value ="), format!("`value =` {EARLY} (at character 7)")),
+        (requires("e3", "(status"), "`(status` does not parse: expected `)` (at character 7)".to_owned()),
+        (value("e4", "upper("), format!("`upper(` {EARLY} (at character 6)")),
+        (trigger("e5", "status =="), "`status ==` does not parse: unexpected `=` (at character 8)".to_owned()),
+        (set("e6", "status = "), format!("`status = ` {EARLY} (at character 9)")),
+        (body("e7", "upper("), format!("`upper(` {EARLY} (at character 6)")),
+        (set("e8", "status in ()"), "`status in ()` does not parse: `in` needs at least one value (at character 12)".to_owned()),
+        (set("e9", "amount > 1.5e3"), "`amount > 1.5e3` does not parse: a number runs into a name (at character 12)".to_owned()),
+        (field("p1", "count()"), AGG.to_owned()),
+        (field("p2", "retired()"), RETIRED.to_owned()),
+        (field("p3", "param('p')"), PARAM.to_owned()),
+        (field("p4", "upper()"), "`upper()` does not parse: `upper` takes 1 argument(s), not 0 (at character 0)".to_owned()),
+        (field("p5", "setting(k)"), "`setting(k)` does not parse: `setting` takes a quoted key, as in setting('vat_rate') (at character 0)".to_owned()),
+        (field("p6", "date_bucket(k, 'decade')"), "date_bucket() knows no unit 'decade'; the units are 'day', 'week', 'month', 'quarter' and 'year', and a width is written unquoted, as in date_bucket(t, 30d, origin)".to_owned()),
+        (field("p7", "changed('k')"), "`changed('k')` does not parse: `changed` takes a field name (at character 0)".to_owned()),
+        (filtered("p8", "count() > 1"), AGG.to_owned()),
+        (measure("p9", "sum(retired())"), RETIRED.to_owned()),
+        (measure("p10", "count() + len(changed(status))"), CHANGED.to_owned()),
+        (vtype("p11", "count() > 0"), AGG.to_owned()),
+        (vtype("p12", "changed(value)"), CHANGED.to_owned()),
+        (requires("p13", "changed(status)"), CHANGED.to_owned()),
+        (requires("p14", "count() > 0"), AGG.to_owned()),
+        (value("p15", "count()"), AGG.to_owned()),
+        (value("p16", "param('p')"), PARAM.to_owned()),
+        (trigger("p17", "count() > 1"), AGG.to_owned()),
+        (trigger("p18", "param('p') = 'x'"), PARAM.to_owned()),
+        (set("p19", "changed(status)"), CHANGED.to_owned()),
+        (set("p20", "count() > 1"), AGG.to_owned()),
+        (set("p21", "retired()"), RETIRED.to_owned()),
+        (body("p22", "count()"), AGG.to_owned()),
+        (body("p23", "changed(t)"), CHANGED.to_owned()),
+        (field("x1", &format!("k = {BIG}")), format!("`{BIG}` {INEXACT}")),
+        (set("x2", &format!("amount > {BIG}")), format!("`{BIG}` {INEXACT}")),
+        (set("x3", &format!("amount > {PAST}")), format!("`{PAST}` {INEXACT}")),
+        (set("x4", &format!("amount > -{PAST}")), format!("`{PAST}` {INEXACT}")),
+        (field("i1", "in_set('open')"), IN_SET.to_owned()),
+        (filtered("i2", "in_set('open')"), IN_SET.to_owned()),
+        (vtype("i3", "in_set('open')"), IN_SET.to_owned()),
+        (requires("i4", "in_set('open')"), IN_SET.to_owned()),
+        (value("i5", "in_set('open')"), IN_SET.to_owned()),
+        (body("i6", "in_set('open')"), IN_SET.to_owned()),
+        (set("i7", "in_set(open)"), "in_set() takes a quoted name".to_owned()),
+    ];
+    let refused = |e: Result<Outcome, Error>, want: &str, at: Option<&str>| {
+        assert!(
+            matches!(&e, Err(Error::Refused { field, reason: Refusal::Invalid { message } })
+                if message == want && field.as_ref().map(FieldName::as_str) == at),
+            "want {want:?} on {at:?}, got {e:?}"
+        );
+    };
+    let head = f.head().await;
+    for (d, want) in names {
+        refused(c.declare(owner, decl(d)).await, &want, None);
+    }
+    for ((d, at), why) in faults {
+        refused(
+            c.declare(owner, decl(d)).await,
+            &format!("{at}: {why}"),
+            None,
+        );
+    }
+    let invoice = TypeName::from(INVOICE);
+    let added = |name: &str, e: Option<&str>| {
+        let mut fd = text(name);
+        if let Some(e) = e {
+            fd = json!({"name": name, "type": {"kind": "text"}, "authority": "derived", "derived": e});
+        }
+        c.add_field(
+            owner,
+            &invoice,
+            serde_json::from_value(fd).expect("a field"),
+        )
+    };
+    let on_invoice = |n: &str, why: &str| format!("type `invoice`, field `{n}`: {why}");
+    refused(
+        added("bad-f", None).await,
+        &format!("field name `bad-f` {IDENT}"),
+        None,
+    );
+    refused(
+        added("a1", Some("count()")).await,
+        &on_invoice("a1", AGG),
+        None,
+    );
+    refused(
+        added("a2", Some("1 +")).await,
+        &on_invoice("a2", &format!("`1 +` {EARLY} (at character 3)")),
+        None,
+    );
+    refused(
+        added("a3", Some("in_set('open')")).await,
+        &on_invoice("a3", IN_SET),
+        None,
+    );
+    let rule = patch(&[
+        ("name", json!("bad-rule")),
+        ("on", json!(INVOICE)),
+        ("field", json!("status")),
+        ("from", json!("open")),
+        ("to", json!("late")),
+        ("when", json!("true")),
+    ]);
+    let rules = TypeName::from(lakelands_api::seam::AGING_RULE_TYPE);
+    let bad = key("bad-rule");
+    let written = c.upsert(owner, &rules, &bad, rule, WriteOpts::default());
+    refused(
+        written.await,
+        &format!("aging rule name `bad-rule` {IDENT}"),
+        Some("name"),
+    );
+    assert_eq!(f.head().await, head, "nothing is appended");
+    c.declare(owner, decl(set("fits", &format!("amount > {MAX}")).0))
+        .await
+        .expect("the largest numeral held exactly is taken");
 }
 
 /// An invalid refusal whose text names each of `names`.
