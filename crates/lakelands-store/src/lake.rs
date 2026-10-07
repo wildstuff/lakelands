@@ -24,6 +24,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
@@ -85,6 +86,49 @@ pub struct Writer {
     pub answers: Vec<Draft>,
 }
 
+/// What the lake declares at one position, as a read needs it and before
+/// any rule of who is shown what: nothing of a reader is in it. It is
+/// built once and shared by every read at a position of its range.
+pub struct Shape {
+    /// The ontology.
+    pub ontology: Ontology,
+    /// Every declaration, as [`Ontology::declared`] lists them.
+    pub declared: Vec<lakelands_api::engine::Declared>,
+    /// The settings.
+    pub settings: BTreeMap<String, Value>,
+    /// The lake's list of renames.
+    pub renames: Vec<Renamed>,
+}
+
+/// Whether folding `body` can change a [`Shape`]: it puts a declaration
+/// (a type, a function, a value type, a set, a view, a verb, a trigger),
+/// a rename, or a setting. A shape is carried over an append only when no
+/// event of it ends a range. A new kind of event that changes what a read
+/// is shown must end one here, or reads after it are answered with the
+/// shape before it. A restriction ends none: a setting's value holds
+/// restricted too, and what a reader may see is decided per read.
+pub(crate) fn ends_a_range(body: &EventBody) -> bool {
+    let setting = |ty: &TypeName| ty.as_str() == SETTING_TYPE;
+    match body {
+        EventBody::Declared { .. } | EventBody::Migrated { .. } => true,
+        EventBody::RecordUpserted { ty, .. }
+        | EventBody::RecordIngested { ty, .. }
+        | EventBody::RecordRetired { ty, .. } => setting(ty),
+        EventBody::OutputRecorded { field, .. } => field.as_ref().is_some_and(|f| setting(&f.0)),
+        EventBody::LakeCreated { .. }
+        | EventBody::LeaseTaken { .. }
+        | EventBody::RecordRestricted { .. }
+        | EventBody::RecordUnrestricted { .. }
+        | EventBody::VerbCalled { .. }
+        | EventBody::WriteProposed { .. }
+        | EventBody::WriteAccepted { .. }
+        | EventBody::WriteRejected { .. }
+        | EventBody::TriggerFired { .. }
+        | EventBody::ObjectSetChanged { .. }
+        | EventBody::Checkpoint { .. } => false,
+    }
+}
+
 /// The seam name the lake's renames are recorded under, as one output: the
 /// store's own, which no seam records under (`docs/seams.md`).
 pub(crate) const RENAMES: &str = "sys:renames";
@@ -133,6 +177,14 @@ pub struct Lake {
     /// handle that records nothing.
     walked: OnceLock<Vec<Renamed>>,
     holds_lease: AtomicBool,
+    /// The shapes reads were answered with, at most two, each with the
+    /// positions it holds for: no event among them ends a range
+    /// ([`ends_a_range`]). The lock is held to find or put one, never
+    /// across a build or a read.
+    shapes: Mutex<Vec<(RangeInclusive<u64>, Arc<Shape>)>>,
+    /// Moved when a rebuild begins and when it ends: a shape built across
+    /// either read a projection cleared or half folded, and is not kept.
+    rebuilds: AtomicU64,
 }
 
 /// The opener `seams` passes for the engine `location` names.
@@ -192,17 +244,17 @@ pub(crate) fn every(retired: bool) -> lakelands_api::engine::Scan {
     }
 }
 
-/// The settings a view holds: the `value` of every live `sys.setting`
-/// record, by key, a restricted one too. A restriction hides the record
-/// from a reader; the value stays what the lake computes with, as the
-/// fold keeps it, so a read, a writer opened again and a rebuild agree.
-pub fn settings_in(view: &dyn ProjectionView) -> Result<BTreeMap<String, Value>> {
+/// The settings a view holds, `ontology` being its own: the `value` of
+/// every live `sys.setting` record, by key, a restricted one too. A
+/// restriction hides the record from a reader; the value stays what the
+/// lake computes with, as the fold keeps it, so a read, a writer opened
+/// again and a rebuild agree.
+pub fn settings_in(
+    view: &dyn ProjectionView,
+    ontology: &Ontology,
+) -> Result<BTreeMap<String, Value>> {
     let ty = TypeName::from(SETTING_TYPE);
-    if !view
-        .declarations()?
-        .iter()
-        .any(|d| matches!(&d.declaration, Declaration::Type(t) if t.name == ty))
-    {
+    if !ontology.types.contains_key(&ty) {
         return Ok(BTreeMap::new());
     }
     Ok(view
@@ -340,6 +392,8 @@ impl Lake {
             head: AtomicU64::new(0),
             walked: OnceLock::new(),
             holds_lease: AtomicBool::new(false),
+            shapes: Mutex::new(Vec::new()),
+            rebuilds: AtomicU64::new(0),
         }
     }
 
@@ -452,7 +506,7 @@ impl Lake {
         {
             let view = self.engine.view(None)?;
             w.ontology = Ontology::at(view.as_ref())?;
-            w.settings = settings_in(view.as_ref())?;
+            w.settings = settings_in(view.as_ref(), &w.ontology)?;
             // A lake made before the fold recorded renames: its list is
             // found once, and recorded by the handle that writes.
             let recorded = view.output(RENAMES, &Digest::zero())?.is_some();
@@ -525,6 +579,43 @@ impl Lake {
         Ok((!types.is_empty()).then_some(list))
     }
 
+    /// The shape at `view`'s position: the one known for a range that
+    /// holds it, or one built from the view, kept in place of the known
+    /// one that ends first. A built shape is kept only if no rebuild began
+    /// or ended while it was read and the projection is folded through its
+    /// position: one read from a projection cleared or half folded again
+    /// answers its read and nothing after it.
+    pub(crate) fn shape(&self, view: &dyn ProjectionView) -> Result<Arc<Shape>> {
+        let at = view.position().map_or(0, |p| p.0);
+        let held = lakelands_core::lock(&self.shapes);
+        if let Some((_, shape)) = held.iter().find(|(range, _)| range.contains(&at)) {
+            return Ok(shape.clone());
+        }
+        drop(held);
+        let rebuilds = self.rebuilds.load(Ordering::SeqCst);
+        let ontology = Ontology::at(view)?;
+        let shape = Arc::new(Shape {
+            declared: ontology.declared(),
+            settings: settings_in(view, &ontology)?,
+            renames: self.renames(Some(view))?,
+            ontology,
+        });
+        let folded = self.engine.projection().folded_through()?;
+        // Read under the lock: a rebuild moves the count before it takes
+        // the lock to drop the shapes, so a shape put here is either seen
+        // to be stale or dropped after.
+        let mut held = lakelands_core::lock(&self.shapes);
+        if self.rebuilds.load(Ordering::SeqCst) != rebuilds || folded.is_none_or(|f| f.0 < at) {
+            return Ok(shape);
+        }
+        held.sort_by_key(|(range, _)| *range.end());
+        if held.len() > 1 {
+            held.remove(0);
+        }
+        held.push((at..=at, shape.clone()));
+        Ok(shape)
+    }
+
     /// The lake's list of renames: what the fold recorded, read from
     /// `head` or from a view of the head, or what this handle's open found.
     pub(crate) fn renames(&self, head: Option<&dyn ProjectionView>) -> Result<Vec<Renamed>> {
@@ -540,20 +631,22 @@ impl Lake {
 
     /// A principal with its grants held through the lake's renames
     /// (`Grants::follow`), for a read at `at` or a write at the head, and
-    /// how many entries of the list it was followed through. The list is
+    /// how many entries of the list it was followed through: `head`'s, the
+    /// list of a read's shape at the head, or the list read. The list is
     /// asked only for one whose grants name a type: a grant that is only
     /// a default follows a link type's rename too.
     pub(crate) fn followed(
         &self,
         mut who: Principal,
         at: Option<Position>,
-        head: Option<&dyn ProjectionView>,
+        head: Option<&[Renamed]>,
     ) -> Result<(Principal, Option<usize>)> {
         if who.grants.types.is_empty() {
             return Ok((who, None));
         }
-        let list = self.renames(head)?;
-        who.grants.follow(&list, at);
+        let read = head.is_none().then(|| self.renames(None)).transpose()?;
+        let list = head.or(read.as_deref()).unwrap_or_default();
+        who.grants.follow(list, at);
         Ok((who, Some(list.len())))
     }
 
@@ -702,6 +795,18 @@ impl Lake {
                 crate::backed::why(&e)
             ))
         })?;
+        // A shape holds over what is committed now unless an event ends a
+        // range; it is carried only from where it stands, so a fold that
+        // began after its range's end (another handle wrote, or a fold failed
+        // and was caught up) leaves it to its own range.
+        if let (Some(first), Some(last)) = (events.first(), events.last())
+            && !events.iter().any(|e| ends_a_range(&e.body))
+        {
+            let (first, mut held) = (first.position.0, lakelands_core::lock(&self.shapes));
+            for (range, _) in held.iter_mut().filter(|(r, _)| r.end() + 1 == first) {
+                *range = *range.start()..=last.position.0;
+            }
+        }
         // Published only once the fold has committed: a position `head()`
         // answers is one a read can be answered at, on every engine.
         self.publish(w);
@@ -828,13 +933,13 @@ impl Lake {
                 if !of_log {
                     w.failed = Some(events[0].position);
                 }
-                if let Ok(view) = self.engine.view(None) {
-                    if let Ok(o) = Ontology::at(view.as_ref()) {
-                        w.ontology = o;
-                    }
-                    if let Ok(s) = settings_in(view.as_ref()) {
+                if let Ok(view) = self.engine.view(None)
+                    && let Ok(o) = Ontology::at(view.as_ref())
+                {
+                    if let Ok(s) = settings_in(view.as_ref(), &o) {
                         w.settings = s;
                     }
+                    w.ontology = o;
                 }
                 Err(e)
             }
@@ -1106,7 +1211,8 @@ impl Lake {
         let folded = self.engine.projection().folded_through()?;
         {
             let view = self.engine.view(None)?;
-            (w.ontology, w.settings) = (Ontology::at(view.as_ref())?, settings_in(view.as_ref())?);
+            w.ontology = Ontology::at(view.as_ref())?;
+            w.settings = settings_in(view.as_ref(), &w.ontology)?;
         }
         let from = folded.map_or(Position::GENESIS, Position::next);
         self.fold_from(w, from)?;
@@ -1435,14 +1541,23 @@ impl Lake {
         if w.lease.is_none() {
             return Err(unavailable(NO_LEASE));
         }
-        self.engine.projection().clear()?;
-        w.ontology = Ontology::default();
-        w.settings = BTreeMap::new();
-        // A page at a time: a rebuild that stops is continued by the next
-        // fold from where it committed, as a failed fold is.
-        // It reads the recorded outputs and makes no call due but a failed
-        // append's; the calls a write before it made due stay that write's.
-        self.fold_from(&mut w, Position::GENESIS)?;
+        // No shape is kept from here until the fold is whole again.
+        self.rebuilds.fetch_add(1, Ordering::SeqCst);
+        lakelands_core::lock(&self.shapes).clear();
+        let folded = (|| {
+            self.engine.projection().clear()?;
+            w.ontology = Ontology::default();
+            w.settings = BTreeMap::new();
+            // A page at a time: a rebuild that stops is continued by the
+            // next fold from where it committed, as a failed fold is.
+            // It reads the recorded outputs and makes no call due but a
+            // failed append's; the calls a write before it made due stay
+            // that write's.
+            self.fold_from(&mut w, Position::GENESIS)
+        })();
+        self.rebuilds.fetch_add(1, Ordering::SeqCst);
+        lakelands_core::lock(&self.shapes).clear();
+        folded?;
         // Everything the log holds is folded again: the head is its tip.
         self.publish(&w);
         Ok(w.tip.as_ref().map_or(Position::GENESIS, |t| t.0))

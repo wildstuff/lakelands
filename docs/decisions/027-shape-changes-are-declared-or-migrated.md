@@ -590,3 +590,63 @@ was proposed; propose it again".
 A report's id names the whole report, so it differs from the id the
 same migration had before this: a preview is taken again, as after any
 change of the lake.
+
+## Extended: a read shares the shape of its range (lakelands#557)
+
+A shape changes only where the log says so. Between two events that
+declare, migrate or set something, it is one shape. Yet a read built its
+own: it decoded every declaration in force, and asked for them a second
+time to find the settings. So each read cost as much as the lake
+declared, about 20 µs per declared type on SQLite, for a `get` as for a
+`describe_type`.
+
+So a handle keeps what a read builds. That is the ontology, the
+declarations as `describe` lists them, the settings and the lake's list
+of renames, kept for a range of positions over which no event changed
+them. Every read at a position in that range shares it. A handle keeps
+two: one at the head, and one at the last other position read.
+
+- **What ends a range is one function, `ends_a_range`.** These end one:
+  - a `declared` of any kind: a type, its view, a value type, a
+    function, a verb, a trigger, an object set, and `recompute`;
+  - a `migrated`, which also renames;
+  - a write, an ingest, a retirement, or a recorded output of a
+    `sys.setting` record.
+
+  A restriction does not end a range: a setting's value holds while it is
+  restricted. The function names every kind of event, so a new kind does
+  not compile until it says whether it ends a range. One that changes what
+  a read is shown must.
+- **Nothing of a reader is in it.** What is shared is what the lake
+  declares, before any rule of who is shown what (024). A principal's
+  grants, its renames followed and its `only` are applied per read, as
+  before.
+- **A range grows only from where it stands, after the commit.** Once an
+  append's fold has committed, a range that ends just before the append
+  is carried to its last event, unless an event of the append ends a
+  range. A fold that begins anywhere else carries nothing:
+  - the first fold after an open;
+  - the fold that catches up after a failed fold;
+  - a fold after another process wrote.
+
+  There the next read builds its own. A handle takes the lease only at
+  its open, so no two handles write a lake in turn.
+- **Anywhere else, a read builds for its position.** This holds for a
+  read `as_of` an earlier position, a page of a walk at its cursor's
+  position, and a read-only handle beside another process's writer.
+  Each builds once for its position, and keeps what it built as the
+  second.
+- **A shape is kept only from a whole projection.** A rebuild clears the
+  projection and folds the log again, so a read beside it may read the
+  declarations cleared or half folded. That read answers with what it
+  read, as any read beside a rebuild does, but its shape is not kept.
+  A built shape is kept only where no rebuild began or ended while it was
+  built, and the projection is folded through its position. A rebuild
+  drops every shape the handle kept, when it begins and when it ends.
+  A read-only handle in another process sees no count of the writer's
+  rebuilds, only the projection: a build there that began before the
+  rebuild cleared it and ended after the refold passed its position is
+  kept, until a declaration, a migration or a setting ends its range.
+
+Nothing a read answers changes. The rows in
+`crates/lakelands-store/tests/read_shape.rs` count the builds.

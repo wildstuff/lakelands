@@ -514,6 +514,18 @@ A host that already has a store of its own moves in four steps.
   the inputs `describe` shows or without them. A declaration's version
   counts its changes. See
   `docs/decisions/027-shape-changes-are-declared-or-migrated.md`.
+- **A read costs the same however much the lake declares
+  (lakelands#557).** A handle builds what the lake declares once for a
+  range of positions over which nothing was declared, migrated or set,
+  and every read in the range shares it. A declaration, a migration or a
+  setting written starts a new range, and the next read builds again,
+  once. A read as of an earlier position, and a read-only handle beside
+  another process's writer, build once per position. On a lake of 300
+  types, release build, one read at the head took on SQLite 0.03 to
+  0.09 ms (before: 6.7 to 6.8 ms), on PostgreSQL 0.15 to 0.73 ms
+  (before: 11.5 to 12.2 ms), and in memory 0.03 ms (before: 1.1 ms). A
+  value that changes at every write belongs in a type of its own, not in
+  `sys.setting`: each change of a setting makes the next read build.
 - **A model that comes up after the open is bound then (lakelands#641).**
   A host whose embedding model answers later than it opens its lakes (a
   sidecar loading, a model downloading) opens them without one and
