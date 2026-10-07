@@ -54,7 +54,7 @@ use lakelands_api::location::{EngineConfig, Location};
 pub use connect::MIN_SERVER_VERSION;
 pub use handle::{ANALYZE_AFTER, PgLake, export};
 #[doc(hidden)]
-pub use view::read_statements;
+pub use view::{holding_statements, read_statements};
 
 /// The name the engine answers to, in [`LakeEngine::name`] and for
 /// `EngineConfig::Postgres`.

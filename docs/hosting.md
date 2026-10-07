@@ -238,8 +238,9 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   does not own, and the compact reclaims nothing there; connect as the
   role that owns the lake's schema.
   After a bulk load into PostgreSQL the engine analyses its tables
-  itself, once every 5 000 records a writer puts, so the planner knows
-  their size; a host that loads a lake's schema by another path runs
+  itself, once every 5 000 records a writer puts or order index rows a
+  `sort_index.<type>` setting rebuilds, so the planner knows their size;
+  a host that loads a lake's schema by another path runs
   `ANALYZE` on it itself.
   A vector field the lake asks an index for (`vector_index.<type>`,
   `docs/decisions/043-an-index-asked-for-answers-its-set.md`) is indexed on

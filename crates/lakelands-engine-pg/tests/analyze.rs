@@ -144,3 +144,44 @@ fn a_transaction_written_by_pages_is_counted_whole() {
     common::drop_schema(&url, &short);
     common::drop_schema(&url, &whole);
 }
+
+/// A `sort_index.<type>` setting's write rebuilds the type's order index
+/// at once, and the rows it writes count as records put do: the pages
+/// read through the index after it are planned from the index the planner
+/// knows, not from an index it last saw empty (lakelands#587).
+#[test]
+fn the_order_index_a_setting_rebuilds_counts_toward_the_analysis() {
+    let Some(url) = common::url_or_skip("the pg analysis test") else {
+        return;
+    };
+    let schema = common::fresh_schema();
+    let engine = lake(&url, &schema);
+    // Half the threshold and one: the records and their rows reach it.
+    let half = ANALYZE_AFTER / 2 + 1;
+    fold(engine.as_ref(), 0, half, 2);
+    let p = engine.projection();
+    p.begin().unwrap();
+    p.put_record(&StoredRecord {
+        ty: TypeName::from(lakelands_api::seam::SETTING_TYPE),
+        key: RecordKey::from("sort_index.t"),
+        version: Version(1),
+        fields: serde_json::from_value(json!({"key": "sort_index.t", "value": ["v"]})).unwrap(),
+        meta: Default::default(),
+        position: Position(3),
+        retired: false,
+        restricted: false,
+    })
+    .unwrap();
+    p.commit(Position(3)).unwrap();
+    let asked = Instant::now();
+    while !analysed(&url, &schema) {
+        assert!(
+            asked.elapsed() < Duration::from_secs(30),
+            "{half} records went in and a setting rebuilt their order index, {half} rows, and \
+             the tables were not analysed"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    drop(engine);
+    common::drop_schema(&url, &schema);
+}

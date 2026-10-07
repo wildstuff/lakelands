@@ -63,7 +63,7 @@ engine_check!(
 engine_check!(
     /// A field-ordered scan walks page by page as one scan.
     FIELD_ORDER_WALK = a_field_ordered_scan_walks_page_by_page_as_one_scan,
-    "seams §scan and lakelands#137: a scan ordered by fields, walked page by page from `after`, answers what one scan over every state answers, whatever its directions, its filter and its flags, after later puts, a redeclaration and a change of the `sort_index.<type>` setting, at the head and at an earlier position"
+    "seams §scan and lakelands#137: a scan ordered by fields, walked page by page from `after`, answers what one scan over every state answers, whatever its directions, its filter (an exact text among them, which many or few records hold, lakelands#587) and its flags, after later puts, a redeclaration and a change of the `sort_index.<type>` setting, at the head and at an earlier position"
 );
 
 engine_check!(
@@ -1912,7 +1912,8 @@ fn walk_field_orders(
 ) -> Result<(), Failure> {
     let ty = TypeName::from("t");
     let by = |field: &str, dir| order(field, OrderBy::Value, dir);
-    let filter = crate::expr::parse("w != 'b'").expect("the check's filter parses");
+    let filters =
+        ["w != 'b'", "w = 'a'"].map(|f| crate::expr::parse(f).expect("the check's filter parses"));
     let Declaration::Type(decl) = decl else {
         unreachable!("the check declares types")
     };
@@ -1925,11 +1926,11 @@ fn walk_field_orders(
         vec![by("x", Direction::Desc), by("w", Direction::Asc)],
         vec![by("x", Direction::Asc)],
     ] {
-        for filtered in [false, true] {
+        for filtered in [None, Some(&filters[0]), Some(&filters[1])] {
             for flags in [false, true] {
                 for limit in [1, 7, 50] {
                     let scan = Scan {
-                        filter: filtered.then(|| filter.clone()),
+                        filter: filtered.cloned(),
                         order_by: order_by.clone(),
                         limit,
                         retired: flags,
@@ -1965,7 +1966,7 @@ fn walk_field_orders(
                         .unwrap_or(got.len().min(expected.len()));
                     ensure!(
                         got == expected,
-                        "walking {order_by:?} {when} (filter {filtered}, flags {flags}) in \
+                        "walking {order_by:?} {when} (filter {filtered:?}, flags {flags}) in \
                          pages of {limit} answered {} rows, one scan over every state {}; they \
                          part at row {first_wrong}: {:?} against {:?}",
                         got.len(),

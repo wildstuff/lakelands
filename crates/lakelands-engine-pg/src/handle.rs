@@ -17,14 +17,15 @@
 //! loaded tables runs only some time after the load: until then a page
 //! read through an index can be planned as a walk over the type, hundreds
 //! of milliseconds instead of one or two. So the writer counts the records
-//! it puts, and once [`ANALYZE_AFTER`] have gone in since its last
-//! analysis, it runs `ANALYZE` over `records` and the head indexes after
-//! the commit has answered, outside the fold's transaction. A rebuild is
-//! a refold after `clear`, which starts the count again, so it is
-//! analysed as a fresh load is: after its first `ANALYZE_AFTER` records,
-//! and a lake smaller than that is left to PostgreSQL's own. Analysis
-//! changes no answer, only a plan; a failed one leaves the commit as it
-//! is.
+//! it puts, and the order index rows a `sort_index.<type>` setting's write
+//! rebuilds, a type's at once; once [`ANALYZE_AFTER`] have gone in since
+//! its last analysis, it runs `ANALYZE` over `records` and the head
+//! indexes after the commit has answered, outside the fold's transaction.
+//! A rebuild is a refold after `clear`, which starts the count again, so
+//! it is analysed as a fresh load is: after its first `ANALYZE_AFTER`
+//! records, and a lake smaller than that is left to PostgreSQL's own.
+//! Analysis changes no answer, only a plan; a failed one leaves the commit
+//! as it is.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -62,8 +63,9 @@ struct Transaction {
     /// The types whose `vector_index.<type>` setting a page wrote, each with
     /// the setting's position: the commit builds their indexes, once.
     asked: BTreeMap<TypeName, Position>,
-    /// The record states staged in it, for the count that tells the
-    /// planner: counted as they are staged, since the buffer is written and
+    /// The record states staged in it, and the order index rows a page's
+    /// settings rebuilt, for the count that tells the planner: counted as
+    /// they are staged and written, since the buffer is written and
     /// emptied a page at a time.
     put: u64,
 }
@@ -180,7 +182,8 @@ impl PgLake {
             return Ok(());
         }
         let (page, mut db) = (std::mem::take(&mut t.buffer), lock(&writing.projection));
-        page.write(&mut db, &self.names, &mut t.types, &mut t.asked)
+        t.put += page.write(&mut db, &self.names, &mut t.types, &mut t.asked)?;
+        Ok(())
     }
 }
 
@@ -417,7 +420,7 @@ impl ProjectionStore for PgLake {
         // the vector indexes a setting asked for.
         let written = buffer
             .write(&mut db, &self.names, &mut types, &mut asked)
-            .and_then(|()| {
+            .and_then(|rebuilt| {
                 let older = |(ty, at): (&TypeName, &Position)| {
                     projection::index_older(&mut db, &self.names, &mut types, ty, *at)
                 };
@@ -425,12 +428,14 @@ impl ProjectionStore for PgLake {
                 let v = self.pgvector.as_ref();
                 asked.iter().try_for_each(|(ty, at)| {
                     vector_index::rebuild(&mut db, &self.names, v, ty, *at)
-                })
-            })
-            .and_then(|()| projection::set_folded(&mut db, &self.names, through));
-        db.end(written)?;
-        // Once enough records went in since the last analysis, the planner
-        // learns of them, after the commit and outside it (module doc).
+                })?;
+                projection::set_folded(&mut db, &self.names, through)?;
+                Ok(put + rebuilt)
+            });
+        let put = db.end(written)?;
+        // Once enough records went in since the last analysis, or order
+        // index rows a setting rebuilt, the planner learns of them, after
+        // the commit and outside it (module doc).
         if writing.unanalysed.fetch_add(put, Ordering::Relaxed) + put >= ANALYZE_AFTER {
             writing.unanalysed.store(0, Ordering::Relaxed);
             let _ = projection::analyze(&mut db, &self.names);

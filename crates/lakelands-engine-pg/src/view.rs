@@ -154,6 +154,105 @@ fn records_by_key_sql(records: &str) -> String {
     )
 }
 
+/// The statement of [`Read::sorted_after`] over the tables `sorted`,
+/// `text` and `records`: the order index's rows of `$2` for the records
+/// `holders` names, `$4` and `$5` the field and text they hold, and then
+/// the sort key and key bound to seek past when `from` is set. Many
+/// holders are read in the index's order, each kept where the text index
+/// holds its key; few are read from the text index first, materialized so
+/// that no statistics turn it round, and sorted. The index's rows are cut
+/// at the limit before their records are joined: every row is a head
+/// record's, so the join keeps them all.
+fn sorted_after_sql(
+    [sorted, text, records]: &[String; 3],
+    dir: Direction,
+    from: bool,
+    holders: &engines::Holders<'_>,
+) -> String {
+    use engines::Holders;
+    let (k, key) = match holders {
+        Holders::All => (4, 5),
+        _ => (6, 7),
+    };
+    let (seek, by) = match dir {
+        Direction::Asc => (
+            format!("AND (s.sort_key, s.key COLLATE \"C\") > (${k}, ${key} COLLATE \"C\")"),
+            "s.sort_key, s.key COLLATE \"C\"",
+        ),
+        Direction::Desc => (
+            format!(
+                "AND (s.sort_key < ${k} OR (s.sort_key = ${k} AND s.key COLLATE \"C\" > ${key}))"
+            ),
+            "s.sort_key DESC, s.key COLLATE \"C\"",
+        ),
+    };
+    let seek = if from { seek.as_str() } else { "" };
+    let (with, rows) = match holders {
+        Holders::All => (String::new(), format!("{sorted} s WHERE")),
+        Holders::Many(..) => (
+            String::new(),
+            format!(
+                "{sorted} s WHERE EXISTS (SELECT 1 FROM {text} t \
+                 WHERE t.ty = $1 AND t.field = $4 AND t.value = $5 AND t.key = s.key) AND"
+            ),
+        ),
+        Holders::Few(..) => (
+            format!(
+                "WITH t AS MATERIALIZED \
+                 (SELECT key FROM {text} WHERE ty = $1 AND field = $4 AND value = $5) "
+            ),
+            format!("t JOIN {sorted} s ON s.key = t.key WHERE"),
+        ),
+    };
+    format!(
+        "{with}SELECT s.sort_key, r.state FROM \
+         (SELECT s.sort_key, s.key FROM {rows} s.ty = $1 AND s.field = $2 {seek} \
+          ORDER BY {by} LIMIT $3) s \
+         JOIN {records} r ON r.ty = $1 AND r.key = s.key AND r.until IS NULL \
+         ORDER BY {by}"
+    )
+}
+
+/// The statement of [`Read::unsorted_after`] for the records holding the
+/// text `$5` in `$4`: the text index's rows in key order, bytewise, those
+/// with an order row for `$2` passed over, cut at the limit before their
+/// records are joined. The order row is sought by a scalar subquery, one
+/// seek per row: a `NOT EXISTS` is planned on analysed tables as an anti
+/// join of both indexes whole, and sorted.
+fn unsorted_holding_sql([sorted, text, records]: &[String; 3], after: bool) -> String {
+    let from = if after {
+        "AND t.key COLLATE \"C\" > $6"
+    } else {
+        ""
+    };
+    format!(
+        "SELECT r.state FROM \
+         (SELECT t.key FROM {text} t \
+          WHERE t.ty = $1 AND t.field = $4 AND t.value = $5 {from} \
+          AND (SELECT 1 FROM {sorted} s \
+          WHERE s.ty = $1 AND s.field = $2 AND s.key = t.key) IS NULL \
+          ORDER BY t.key COLLATE \"C\" LIMIT $3) t \
+         JOIN {records} r ON r.ty = $1 AND r.key = t.key AND r.until IS NULL \
+         ORDER BY t.key COLLATE \"C\""
+    )
+}
+
+/// The statements a first page under an exact text that many records hold
+/// is read by in the lake's `schema`, in a field's order either way and
+/// among the records without the field, for the engine's own test of
+/// their plans: none may sort (lakelands#587). Each takes the type, the
+/// order field, the limit, the text's field and the text.
+pub fn holding_statements(schema: &str) -> [String; 3] {
+    let tables = ["sort_index", "text_index", "records"].map(|t| format!("{schema}.{t}"));
+    let field = FieldName::from("f");
+    let many = engines::Holders::Many(&field, "x");
+    [
+        sorted_after_sql(&tables, Direction::Asc, false, &many),
+        sorted_after_sql(&tables, Direction::Desc, false, &many),
+        unsorted_holding_sql(&tables, false),
+    ]
+}
+
 /// The statements the view reads the records of `ty` by in the lake's
 /// `schema`, as it runs them at the head (`head`) or at an earlier
 /// position: a first page by key, a later page and the count under the
@@ -368,55 +467,66 @@ impl Read<'_> {
         &mut self,
         ty: &TypeName,
         order: &Order,
+        holders: &engines::Holders<'_>,
         from: Option<(&[u8], &str)>,
         n: u32,
     ) -> Result<Vec<(Vec<u8>, StoredRecord)>> {
         let limit = i64::from(n);
-        let (seek, by) = match order.dir {
-            Direction::Asc => (
-                "AND (s.sort_key, s.key COLLATE \"C\") > ($4, $5 COLLATE \"C\")",
-                "s.sort_key, s.key COLLATE \"C\"",
-            ),
-            Direction::Desc => (
-                "AND (s.sort_key < $4 OR (s.sort_key = $4 AND s.key COLLATE \"C\" > $5))",
-                "s.sort_key DESC, s.key COLLATE \"C\"",
-            ),
-        };
-        let seek = if from.is_some() { seek } else { "" };
-        // The index's rows first, in its order and cut at the limit, then
-        // their records: every row is a head record's, so the join keeps
-        // them all, and the page follows the index whatever the planner
-        // knows of the tables.
-        let query = format!(
-            "SELECT s.sort_key, r.state FROM \
-             (SELECT s.sort_key, s.key FROM {sorted} s \
-              WHERE s.ty = $1 AND s.field = $2 {seek} ORDER BY {by} LIMIT $3) s \
-             JOIN {records} r ON r.ty = $1 AND r.key = s.key AND r.until IS NULL \
-             ORDER BY {by}",
-            sorted = self.names.t("sort_index"),
-            records = self.names.t("records"),
-        );
+        let query = sorted_after_sql(&self.tables(), order.dir, from.is_some(), holders);
+        let (ty, field) = (ty.as_str(), order.field.as_str());
+        let mut args: Vec<&(dyn ToSql + Sync)> = vec![&ty, &field, &limit];
+        let holding = holders.text();
+        if let Some((f, t)) = &holding {
+            args.extend([f as &(dyn ToSql + Sync), t]);
+        }
         let (k, key) = from.unzip();
-        let args: [&(dyn ToSql + Sync); 5] =
-            [&ty.as_str(), &order.field.as_str(), &limit, &k, &key];
-        let rows = self
-            .db
-            .query(&query, &args[..if from.is_some() { 5 } else { 3 }])?;
+        if from.is_some() {
+            args.extend([&k as &(dyn ToSql + Sync), &key]);
+        }
+        let rows = self.db.query(&query, &args)?;
         rows.iter()
             .map(|r| Ok((r.get(0), decode_record(&r.get::<_, String>(1))?)))
             .collect()
     }
 
+    /// The order index's, the exact-text index's and the records' tables.
+    fn tables(&self) -> [String; 3] {
+        ["sort_index", "text_index", "records"].map(|t| self.names.t(t))
+    }
+
+    /// How many head records of a type hold `text` in `field`, counted up
+    /// to `n`: a range of the exact-text index.
+    fn holders(&mut self, ty: &TypeName, field: &FieldName, text: &str, n: u64) -> Result<u64> {
+        let query = format!(
+            "SELECT COUNT(*) FROM (SELECT 1 FROM {} \
+             WHERE ty = $1 AND field = $2 AND value = $3 LIMIT $4) h",
+            self.names.t("text_index")
+        );
+        let n = n as i64;
+        let counted: Vec<i64> = self
+            .db
+            .column(&query, &[&ty.as_str(), &field.as_str(), &text, &n])?;
+        Ok(counted.first().map_or(0, |n| n.unsigned_abs()))
+    }
+
     /// At most `n` head records of a type without a row in the order index
-    /// for `field`, in key order after `after`.
+    /// for `field`, in key order after `after`: those `holders` names.
     fn unsorted_after(
         &mut self,
         ty: &TypeName,
         field: &FieldName,
+        holders: &engines::Holders<'_>,
         after: Option<&str>,
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
         let limit = i64::from(n);
+        if let Some((f, t)) = holders.text() {
+            let query = unsorted_holding_sql(&self.tables(), after.is_some());
+            let (ty, field) = (ty.as_str(), field.as_str());
+            let args: [&(dyn ToSql + Sync); 6] = [&ty, &field, &limit, &f, &t, &after];
+            let args = &args[..5 + usize::from(after.is_some())];
+            return self.db.records(&query, args);
+        }
         let from = after.map_or("", |_| "AND r.key COLLATE \"C\" > $4");
         let query = format!(
             "SELECT r.state FROM {records} r WHERE r.ty = $1 AND r.until IS NULL {from} \
@@ -603,64 +713,56 @@ impl ProjectionView for PgView<'_> {
                     r.in_key_order(ty, &lookup, after, n)
                 });
             }
-            let records = match lookup {
-                // In a field's order, every record holding the text is read
-                // and sorted.
-                Some((field, text)) => {
-                    let query = format!(
-                        "SELECT key FROM {} WHERE ty = $1 AND field = $2 AND value = $3",
-                        r.names.t("text_index")
-                    );
-                    let keys =
-                        r.db.column(&query, &[&ty.as_str(), &field.as_str(), &text])?;
-                    r.records_by_key(ty, keys)?
-                }
-                // Ordered by a field the lake indexes, at the head, the page
-                // is read in the order index's order and stops when it is
-                // full.
-                None => {
-                    let sorted = r.sorted_fields(ty, decl.as_ref())?;
-                    match engines::by_order_index(decl.as_ref(), &sorted, scan) {
-                        Some(first) => {
-                            // At an earlier position, the head's index with
-                            // the keys changed since; past the ceiling, the
-                            // sort.
-                            let changed = if r.head {
-                                None
-                            } else {
-                                let ceiling = engines::changed_ceiling(scan.limit);
-                                let Some(changed) = r.changed(ty, ceiling)? else {
-                                    let records = r.records(ty)?;
-                                    return Ok(engines::scan(decl.as_ref(), &records, scan));
-                                };
-                                Some(changed)
-                            };
-                            let r = std::cell::RefCell::new(r);
-                            let sorted = |from: Option<(&[u8], &str)>, n| {
-                                r.borrow_mut().sorted_after(ty, first, from, n)
-                            };
-                            let missing = |after: Option<&str>, n| {
-                                r.borrow_mut().unsorted_after(ty, &first.field, after, n)
-                            };
-                            return match &changed {
-                                None => engines::scan_in_field_order(
-                                    decl.as_ref(),
-                                    scan,
-                                    sorted,
-                                    missing,
-                                ),
-                                Some(c) => engines::scan_in_field_order_at(
-                                    decl.as_ref(),
-                                    scan,
-                                    c,
-                                    sorted,
-                                    missing,
-                                ),
-                            };
+            let sorted = r.sorted_fields(ty, decl.as_ref())?;
+            let records = match engines::by_order_index(decl.as_ref(), &sorted, scan) {
+                // Ordered by a field the lake indexes, the page is read in
+                // the order index's order and stops when it is full: at the
+                // head, with a text the scan must hold, of the records
+                // holding it; at an earlier position, the head's index with
+                // the keys changed since, and past the ceiling the sort.
+                Some(first) => {
+                    let (changed, holders) = if r.head {
+                        let holders = engines::Holders::of(lookup.as_ref(), |f, t, n| {
+                            r.holders(ty, f, t, n)
+                        })?;
+                        (None, holders)
+                    } else {
+                        let ceiling = engines::changed_ceiling(scan.limit);
+                        let Some(changed) = r.changed(ty, ceiling)? else {
+                            let records = r.records(ty)?;
+                            return Ok(engines::scan(decl.as_ref(), &records, scan));
+                        };
+                        (Some(changed), engines::Holders::All)
+                    };
+                    let r = std::cell::RefCell::new(r);
+                    let sorted = |from: Option<(&[u8], &str)>, n| {
+                        r.borrow_mut().sorted_after(ty, first, &holders, from, n)
+                    };
+                    let missing = |after: Option<&str>, n| {
+                        r.borrow_mut()
+                            .unsorted_after(ty, &first.field, &holders, after, n)
+                    };
+                    return match &changed {
+                        None => engines::scan_in_field_order(decl.as_ref(), scan, sorted, missing),
+                        Some(c) => {
+                            engines::scan_in_field_order_at(decl.as_ref(), scan, c, sorted, missing)
                         }
-                        None => r.records(ty)?,
-                    }
+                    };
                 }
+                // In a field the lake does not index, every record holding
+                // the text, or the type, is read and sorted.
+                None => match &lookup {
+                    Some((field, text)) => {
+                        let query = format!(
+                            "SELECT key FROM {} WHERE ty = $1 AND field = $2 AND value = $3",
+                            r.names.t("text_index")
+                        );
+                        let keys =
+                            r.db.column(&query, &[&ty.as_str(), &field.as_str(), text])?;
+                        r.records_by_key(ty, keys)?
+                    }
+                    None => r.records(ty)?,
+                },
             };
             Ok(engines::scan(decl.as_ref(), &records, scan))
         })

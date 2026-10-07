@@ -462,6 +462,15 @@ pub fn by_order_index<'a>(
 thread_local! {
     static ROWS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static LINKS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static BATCHES_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The batches of index rows [`scan_in_field_order`] asked for on this
+/// thread. An engine may read more than a batch to answer one (the text's
+/// every holder, sorted), so the engine checks count by it that a page
+/// whose filter rejects rows asks for few batches, not one per row.
+pub fn batches_read() -> u64 {
+    BATCHES_READ.with(|n| n.get())
 }
 
 /// The rows the scans and counts on this thread were handed: the whole
@@ -554,6 +563,57 @@ pub struct Changed {
 /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`).
 pub fn changed_ceiling(limit: u32) -> usize {
     (limit as usize).saturating_mul(10).min(4096)
+}
+
+/// The records a page at the head in a field's order is read from, in the
+/// order index's order (`docs/decisions/041-a-sorted-page-reads-its-page.md`,
+/// extended): the type's, or those whose field holds exactly the scan's
+/// [`text_lookup`]. When many hold it, the order index is read in its
+/// order and a row kept where the text index holds its key; when at most
+/// [`FEW_HOLDERS`] do, the text index's rows are sorted by their order
+/// rows. Either way the rulebook admits each record.
+#[derive(Clone, Copy)]
+pub enum Holders<'a> {
+    /// The type's records: the scan holds no exact text.
+    All,
+    /// More than [`FEW_HOLDERS`] hold the text in the field.
+    Many(&'a FieldName, &'a str),
+    /// At most [`FEW_HOLDERS`] hold it.
+    Few(&'a FieldName, &'a str),
+}
+
+/// The most records holding a page's exact text that the page reads from
+/// the text index and orders, rather than walk the order index: a batch
+/// so read reads at most this many index rows, and a page that walks the
+/// order index for more holders spread through it reads about
+/// `limit × N / 4 096` of a type of N
+/// (`docs/decisions/041-a-sorted-page-reads-its-page.md`, extended).
+pub const FEW_HOLDERS: u64 = 4096;
+
+impl<'a> Holders<'a> {
+    /// The holders of `lookup`'s text, `count(field, text, n)` answering
+    /// how many records hold it, counted up to `n`.
+    pub fn of<E>(
+        lookup: Option<&'a (FieldName, String)>,
+        count: impl FnOnce(&FieldName, &str, u64) -> Result<u64, E>,
+    ) -> Result<Holders<'a>, E> {
+        let Some((field, text)) = lookup else {
+            return Ok(Holders::All);
+        };
+        Ok(if count(field, text, FEW_HOLDERS + 1)? > FEW_HOLDERS {
+            Holders::Many(field, text)
+        } else {
+            Holders::Few(field, text)
+        })
+    }
+
+    /// The field and text the records hold, unless they are the type's.
+    pub fn text(&self) -> Option<(&'a str, &'a str)> {
+        match *self {
+            Holders::All => None,
+            Holders::Many(f, t) | Holders::Few(f, t) => Some((f.as_str(), t)),
+        }
+    }
 }
 
 /// [`scan_in_field_order`] at an earlier position, over the head's order
@@ -731,8 +791,13 @@ fn in_field_order<E>(
     let batch = key_batch(scan);
     // After the first batch, what the page still lacks and one more: a
     // page continued inside a run read the rows up to `after` again, and a
-    // whole further batch would hold twice the page.
-    let rest = |have: usize| (limit.saturating_sub(have) + 1).min(batch as usize) as u32;
+    // whole further batch would hold twice the page. Each further one is
+    // at least twice the one before, up to 1 024: a page whose filter
+    // rejects rows asks for a handful of batches, not one per row.
+    let rest = |have: usize, before: u32| {
+        ((limit.saturating_sub(have) + 1).min(batch as usize) as u32)
+            .max(before.saturating_mul(2).min(1024))
+    };
     let after = scan
         .after
         .as_ref()
@@ -767,10 +832,11 @@ fn in_field_order<E>(
         };
         let mut run: Vec<StoredRecord> = Vec::new();
         let mut run_key: Option<Vec<u8>> = None;
-        let mut n = batch;
+        let (mut n, mut refill) = (batch, 0);
         loop {
             let rows = sorted(from.as_ref().map(|(k, r)| (k.as_slice(), r.as_str())), n)?;
             count(rows.len());
+            BATCHES_READ.with(|c| c.set(c.get() + 1));
             let read_all = rows.len() < n as usize;
             for (k, r) in rows {
                 from = Some((k.clone(), r.key.to_string()));
@@ -801,7 +867,8 @@ fn in_field_order<E>(
                 }
                 break;
             }
-            n = rest(out.len());
+            refill = rest(out.len(), refill);
+            n = refill;
         }
     }
     // The records without a value for the first field, last.
@@ -810,7 +877,7 @@ fn in_field_order<E>(
         _ => None,
     };
     let mut run = Vec::new();
-    let mut n = batch;
+    let (mut n, mut refill) = (batch, 0);
     loop {
         let rows = missing(from.as_deref(), n)?;
         count(rows.len());
@@ -830,7 +897,8 @@ fn in_field_order<E>(
             break;
         }
         if !multi {
-            n = rest(out.len());
+            refill = rest(out.len(), refill);
+            n = refill;
         }
     }
     if multi {
