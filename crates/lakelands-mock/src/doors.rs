@@ -2749,12 +2749,15 @@ fn reads_as_author(
     for d in &mut shaped {
         let Declaration::Type(t) = d else { continue };
         // As the store: an unchanged reference to a type its author is not
-        // shown stands as declared, left out of both sides.
+        // shown stands as declared, left out of both sides, where the
+        // author may know of the field.
         let hides = |x: &TypeName| st.types.contains_key(x) && !seen.types.contains_key(x);
         let hidden = |f: &FieldDecl| f.ty.target.as_ref().is_some_and(hides);
         let was = st.types.get(&t.name).map(|w| &w.decl.fields[..]);
+        let known = seen.types.get(&t.name).map(|e| &e.decl.fields[..]);
+        let known = |f: &FieldDecl| known.unwrap_or_default().iter().any(|k| k.name == f.name);
         let unchanged: Vec<FieldDecl> = (t.fields.iter())
-            .filter(|f| hidden(f) && was.unwrap_or_default().contains(f))
+            .filter(|f| hidden(f) && was.unwrap_or_default().contains(f) && known(f))
             .cloned()
             .collect();
         let (Some(was), Some(e)) = (st.types.get(&t.name), seen.types.get_mut(&t.name)) else {
