@@ -37,6 +37,7 @@ use lakelands_api::{Catalog, CommitStream, SourceStream};
 use crate::expr::{self, Scope};
 
 mod measures;
+mod views;
 use crate::links;
 use crate::state::{
     DeclaredType, State, access, admits, door_writes, field, holds_only, only_applies, only_holder,
@@ -743,6 +744,7 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
             if reserved(t.name.as_str(), who) {
                 return Err(refused(Refusal::Reserved));
             }
+            views::check(st, t)?;
             // A view is hashed over its conditions' typed form, so one that
             // does not parse has no schema hash and is not declared.
             lakelands_api::shape::schema_hash(t).map_err(|e| invalid(e.to_string()))?;
@@ -755,24 +757,6 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                 }
             } else {
                 types.push(t.name.clone());
-            }
-            // As the store: a view reads only fields its sources have.
-            if let Some(v) = t.view.as_deref() {
-                for (from, reads) in view_reads(v) {
-                    let Some(source) = st.types.get(&from) else {
-                        continue;
-                    };
-                    if let Some(n) = reads
-                        .iter()
-                        .find(|n| !source.decl.fields.iter().any(|f| &f.name == *n))
-                    {
-                        return Err(invalid(format!(
-                            "type `{}`: its view reads `{n}` of `{from}`, which `{from}` does not \
-                             have",
-                            t.name
-                        )));
-                    }
-                }
             }
             // Its link types too, as the store: a relation dropped by a
             // migration and declared again with another target would
