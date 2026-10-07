@@ -2,8 +2,8 @@
 //! (`docs/decisions/051-a-grant-may-admit-only-some-records.md`).
 //!
 //! `only` on a type admits the records whose fields hold its values at
-//! every door that reads records, and every write that reaches the type
-//! or its shape is refused to its holder before anything is read.
+//! every door that reads records; its holder writes those records alone,
+//! another's being to it a key that is free, and changes no shape.
 
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -51,9 +51,9 @@ check!(
 );
 
 check!(
-    /// A holder of `only` writes nothing that reaches the type.
-    ONLY_WRITES = every_write_by_a_holder_of_only_is_refused,
-    "051: `upsert`, `retire`, `link`, `unlink`, a verb on the type, `propose`, `accept` and `reject` of a write to it, `ingest` and an aging rule on it are refused to a holder of `only` as not granted, naming no field, appending nothing; a proposal on another's record, retired or not, is listed to it without its write; a retry under a key used before the grant held answers as before; a reference into the type from another type, through `upsert`, `propose` or `ingest`, must name an admitted record"
+    /// A holder of `only` writes its own records alone.
+    ONLY_WRITES = a_holder_of_only_writes_its_own_records_alone,
+    "051: a holder of `only` changes, makes, retires and makes again under its version, links, unlinks, ingests and calls a low-risk verb on its own records; another's record is to its write a key that is free, so a probe under a version, a missing required field, a disagreeing key field and a link ingested from it answer as on a free key, and another's retired key is made again, its version continued, `retire`, `unlink` and a verb answer not found, and a write that would pass, a handover and a re-delivery onto another's key are not granted, appending nothing; a link's cardinality names the other end only where its writer is answered it, restricted or not, and holds, over the lake and the window, for a link that `only` on its link type admits by a field its source sends; a high-risk verb, `propose`, `accept`, `reject` and an aging rule stay refused; a proposal on another's record, retired or not, is listed without its write; a retry under a key used before the grant held answers as before; a reference into the type from another type, through `upsert`, `propose` or `ingest`, must name an admitted record"
 );
 
 check!(
@@ -65,7 +65,7 @@ check!(
 check!(
     /// A grant `only` that cannot be applied is refused at the doors that name its type.
     ONLY_GRANT_CHECKED = a_grant_that_cannot_be_applied_is_refused,
-    "051: `describe_type` tells a holder its `only`, writes nothing and lists no verb or link of the type; `only` on a field the type does not declare, of another kind than text or reference, with a value that is not text, or on a field the holder may not read, refuses the doors that name the type as invalid, naming the type and never the field; the grant follows a rename of its field, and after the field is dropped a read at the head is refused while one as of before is answered; a walk or a view that reaches a type whose grant cannot be applied admits none of its records"
+    "051: `describe_type` tells a holder its `only`, offers its writes, the type's links and its low-risk verbs, and an upsert only where it writes every field its `only` names; `only` on a field the type does not declare, of another kind than text or reference, with a value that is not text, or on a field the holder may not read, refuses the doors that name the type as invalid, naming the type and never the field; the grant follows a rename of its field, and after the field is dropped a read at the head is refused while one as of before is answered; a walk or a view that reaches a type whose grant cannot be applied admits none of its records"
 );
 
 /// A value of the door API from its JSON.
@@ -498,7 +498,30 @@ async fn a_link_is_answered_where_its_ends_are_admitted(
     .await
 }
 
-async fn every_write_by_a_holder_of_only_is_refused(
+/// What a link answered, short where a relation's cardinality refused
+/// it: the other end its case names, or that the window links already.
+fn link_said<T>(answer: lakelands_api::Result<T>) -> String {
+    let case = answer.as_ref().err().and_then(Error::case);
+    match case.map(|s| s.case.clone()) {
+        Some(Case::LinkedAlreadyFrom { to, .. }) => to.map_or_else(
+            || "linked to no end".to_owned(),
+            |k| format!("linked to `{k}`"),
+        ),
+        Some(Case::WindowLinksAlready { .. }) => "linked in the window".to_owned(),
+        _ => said(answer),
+    }
+}
+
+/// What a write answered, short: `applied`, `not found`, or its refusal.
+fn said<T>(answer: lakelands_api::Result<T>) -> String {
+    match answer {
+        Ok(_) => "applied".to_owned(),
+        Err(Error::NotFound { .. }) => "not found".to_owned(),
+        Err(e) => e.to_string(),
+    }
+}
+
+async fn a_holder_of_only_writes_its_own_records_alone(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
@@ -507,19 +530,68 @@ async fn every_write_by_a_holder_of_only_is_refused(
     let mut memo = crate::conformance::fixture::reference("claim", "claim");
     memo.authority = lakelands_api::ontology::Authority::Shared;
     l.declare(type_decl("memo", vec![memo])).await?;
+    let shared = json!({"kind": "text"});
+    l.declare_json(json!({"declare": "type", "name": "receipt", "fields": [
+        {"name": "owner", "type": shared, "authority": "shared"},
+        {"name": "sum", "type": {"kind": "number"}, "authority": "shared"}],
+        "relations": [{"name": "for_trip", "target": "trip", "authority": "source"}]}))
+        .await?;
+    let number = json!({"kind": "number"});
+    l.declare_json(
+        json!({"declare": "type", "name": "slip", "key": ["code"], "fields": [
+        {"name": "owner", "type": shared}, {"name": "sum", "type": number, "required": true},
+        {"name": "code", "type": shared}]}),
+    )
+    .await?;
+    let held_by = json!({"name": "held_by", "target": "claim", "cardinality": "many_to_one"});
+    l.declare_json(json!({"declare": "type", "name": "desk",
+        "fields": [{"name": "n", "type": {"kind": "text"}}], "relations": [held_by]}))
+        .await?;
     for (name, risk) in [("pay", "low"), ("propose_pay", "high")] {
         let set = json!([{"field": "note", "value": "'paid'"}]);
         let verb = json!({"declare": "verb", "name": name, "on": "claim", "risk": risk,
                           "effect": "write", "set": set});
         l.declare_json(verb).await?;
     }
+    // Bob's receipt `r2` and its link to `t1`, his slip `s2`; his
+    // receipt `r3` and claim `c4`, retired.
+    l.upsert("trip", "t5", json!({"name": "oslo"})).await?;
+    for (ty, key) in [
+        ("receipt", "r2"),
+        ("slip", "s2"),
+        ("receipt", "r3"),
+        ("claim", "c4"),
+    ] {
+        let n = if ty == "claim" { "amount" } else { "sum" };
+        l.upsert(ty, key, json!({"owner": "bob", n: 1})).await?;
+    }
+    for (ty, key) in [("receipt", "r3"), ("claim", "c4")] {
+        l.retire(ty, key).await?;
+    }
+    let for_trip = crate::links::link_type_name(&"receipt".into(), &"for_trip".into());
+    let link = |from: &str, to: &str| {
+        let key = crate::links::link_key(&from.into(), &to.into());
+        let fields = json!({"from": from, "to": to});
+        de(json!({"type": for_trip.as_str(), "key": key.as_str(), "fields": fields}))
+    };
+    l.ingest("feed", vec![link("r2", "t1")])
+        .await
+        .must("ingesting bob's link of `r2`")?;
+    let (desk, held_by) = (TypeName::from("desk"), RelationName::from("held_by"));
+    for d in ["d1", "d2"] {
+        l.upsert("desk", d, json!({"n": d})).await?;
+    }
+    let (d1, d2) = (RecordKey::from("d1"), RecordKey::from("d2"));
     let (ty, c1, on, t1) = names("c1");
     let (none, opts) = (Default::default, Default::default);
+    let c2 = RecordKey::from("c2");
+    cat.link(&l.own, &desk, &d2, &held_by, &c2, none(), opts())
+        .await
+        .must("linking `d2` to bob's `c2`")?;
     // Bob proposes a change to his claim and a claim of his; alice writes
     // `c1` under a key before her grant holds `only`, and a retry answers
     // as that did.
     let bob = holder(store.as_ref(), "bob", json!({"default": "write"}));
-    let c2 = RecordKey::from("c2");
     let proposed = cat
         .call(&bob, &"propose_pay".into(), Some(&c2), none(), opts())
         .await;
@@ -537,7 +609,9 @@ async fn every_write_by_a_holder_of_only_is_refused(
     let mine = || de(json!({"note": "mine"}));
     let first = cat.upsert(&free, &ty, &c1, mine(), keyed.clone()).await;
     let first = first.must("alice's write before her grant holds `only`")?;
-    let more = json!({"default": "write", "review": true, "ingest": true});
+    let hers = json!({"only": {"owner": "alice"}});
+    let types = json!({"claim": hers, "receipt": hers, "slip": hers});
+    let more = json!({"default": "write", "review": true, "ingest": true, "types": types});
     let alice = alice(store.as_ref(), more);
     let again = cat.upsert(&alice, &ty, &c1, mine(), keyed).await;
     let again = again.must("alice's retry under the same key")?;
@@ -545,30 +619,12 @@ async fn every_write_by_a_holder_of_only_is_refused(
         again == first,
         "a retry must answer as its first call did, {first:?}; it answered {again:?}"
     );
+    // What waits for review, and an aging rule, stay refused to her.
     let head = store.head().await.must("reading the head")?;
     let (verb, high) = (VerbName::from("pay"), VerbName::from("propose_pay"));
     let retire = de(json!({"write": "retire", "type": "claim", "key": "c1"}));
-    let record = de(json!({"type": "claim", "key": "c9", "fields": {"owner": "alice"}}));
     let rule = json!({"on": "claim", "field": "note", "from": "taxi", "to": "cab", "when": "true"});
     let rules = TypeName::from(lakelands_api::seam::AGING_RULE_TYPE);
-    let feed = crate::conformance::fixture::ingest(cat, &alice, "feed", vec![record]);
-    not_granted(
-        "`upsert`",
-        cat.upsert(&alice, &ty, &c1, mine(), opts()).await,
-    )?;
-    not_granted("`retire`", cat.retire(&alice, &ty, &c1, opts()).await)?;
-    not_granted(
-        "`link`",
-        cat.link(&alice, &ty, &c1, &on, &t1, none(), opts()).await,
-    )?;
-    not_granted(
-        "`unlink`",
-        cat.unlink(&alice, &ty, &c1, &on, &t1, opts()).await,
-    )?;
-    not_granted(
-        "a verb",
-        cat.call(&alice, &verb, Some(&c1), none(), opts()).await,
-    )?;
     not_granted(
         "a high-risk verb",
         cat.call(&alice, &high, Some(&c1), none(), opts()).await,
@@ -582,12 +638,198 @@ async fn every_write_by_a_holder_of_only_is_refused(
         "`reject`",
         cat.reject(&alice, &proposals[0], "no".into()).await,
     )?;
-    not_granted("`ingest`", feed.await)?;
     let ruled = cat
         .upsert(&alice, &rules, &"r1".into(), de(rule), opts())
         .await;
     not_granted("an aging rule on the type", ruled)?;
-    head_unmoved(store.as_ref(), head, "every write by alice").await?;
+    // Another's record is, to her write, a key that is free: every probe
+    // answers as there, and a write that would pass is not granted.
+    let (field, reason, gone) = (None, Refusal::NotGranted, "not found");
+    let ng = Error::Refused { field, reason }.to_string();
+    let (expected, actual) = (lakelands_api::Version(7), lakelands_api::Version(0));
+    let conflict = Error::Conflict { expected, actual }.to_string();
+    let at7 = || de::<lakelands_api::write::WriteOpts>(json!({"expected_version": 7}));
+    let k = RecordKey::from;
+    let mut rows: Vec<(String, String, String)> = Vec::new();
+    let mut row = |what: &str, said: String, want: &str| {
+        rows.push((what.to_owned(), said, want.to_owned()));
+    };
+    let (by, claim) = (&alice, &ty);
+    let up = move |key: &'static str, patch: Value, o| async move {
+        cat.upsert(by, claim, &k(key), de(patch), o).await
+    };
+    let changed = up("c2", json!({"note": "x"}), opts()).await;
+    row("bob's `c2` changed", said(changed), &ng);
+    let taken = up("c2", json!({"owner": "alice"}), opts()).await;
+    row("bob's `c2` taken", said(taken), &ng);
+    let bobs = up("c9", json!({"owner": "bob"}), opts()).await;
+    row("a free key with bob's owner", said(bobs), &ng);
+    let handed = up("c1", json!({"owner": "bob"}), opts()).await;
+    row("her `c1` handed to bob", said(handed), &ng);
+    for key in ["c2", "c9"] {
+        let probe = up(key, json!({"owner": "alice"}), at7()).await;
+        row(&format!("`{key}` under version 7"), said(probe), &conflict);
+    }
+    let retired = cat.retire(&alice, &ty, &c2, opts()).await;
+    row("`retire` of bob's `c2`", said(retired), gone);
+    let called = cat.call(&alice, &verb, Some(&c2), none(), opts()).await;
+    row("a verb on bob's `c2`", said(called), gone);
+    let unlinked = cat.unlink(&alice, &ty, &c2, &on, &t1, opts()).await;
+    row("`unlink` of bob's `c2`", said(unlinked), gone);
+    let (relation, trip) = (&on, &t1);
+    let linked = move |key: &'static str| async move {
+        let from = k(key);
+        cat.link(by, claim, &from, relation, trip, none(), opts())
+            .await
+    };
+    let (bobs, missing) = (said(linked("c2").await), said(linked("c9").await));
+    let missing = missing.contains("not a live record").then_some(missing);
+    row(
+        "`link` from bob's `c2`",
+        bobs.replace("c2", "c9"),
+        missing.as_deref().unwrap_or("names no live record"),
+    );
+    let slips = TypeName::from("slip");
+    let slips = &slips;
+    let slip = move |key: &'static str, patch: Value| async move {
+        said(cat.upsert(by, slips, &k(key), de(patch), opts()).await)
+    };
+    let (no_sum, wrong_code) = (
+        json!({"owner": "alice"}),
+        json!({"owner": "alice", "sum": 1, "code": "x"}),
+    );
+    for (what, patch) in [
+        ("without its sum", no_sum),
+        ("whose code disagrees", wrong_code),
+    ] {
+        let (bobs, free) = (slip("s2", patch.clone()).await, slip("s9", patch).await);
+        row(
+            &format!("a slip {what} on bob's `s2`"),
+            bobs.replace("s2", "s9"),
+            &free,
+        );
+    }
+    let fed_link = |from: &str| {
+        let fed = crate::conformance::fixture::ingest(cat, &alice, "feed", vec![link(from, "t5")]);
+        async move { said(fed.await) }
+    };
+    let (bobs, free) = (fed_link("r2").await, fed_link("r9").await);
+    row(
+        "a link ingested from bob's `r2`",
+        bobs.replace("r2", "r9"),
+        &free,
+    );
+    head_unmoved(store.as_ref(), head, "every refused write by alice").await?;
+    let fed = |key: &str, owner: &str| {
+        let r = json!({"type": "receipt", "key": key, "fields": {"owner": owner, "sum": 1}});
+        let fed = crate::conformance::fixture::ingest(cat, &alice, "feed", vec![de(r)]);
+        async move { said(fed.await) }
+    };
+    row("a re-delivery onto bob's `r2`", fed("r2", "bob").await, &ng);
+    row("a receipt with bob's owner", fed("r5", "bob").await, &ng);
+    let ok = "applied";
+    row("her receipt", fed("r1", "alice").await, ok);
+    // A key whose record another retired is free to her: made again, its
+    // version continued.
+    row(
+        "her receipt on bob's retired `r3`",
+        fed("r3", "alice").await,
+        ok,
+    );
+    let c4 = k("c4");
+    let made = cat.upsert(&alice, &ty, &c4, de(json!({"owner": "alice"})), opts());
+    let version = |o: &Outcome| match o {
+        Outcome::Applied {
+            version: Some(v), ..
+        } => v.0,
+        _ => 0,
+    };
+    let made = made.await.map(|o| format!("version {}", version(&o)));
+    row(
+        "her claim on bob's retired `c4`",
+        made.unwrap_or_else(|e| e.to_string()),
+        "version 3",
+    );
+    // Her own records she writes, links and calls on.
+    let changed = up("c1", json!({"note": "x"}), opts()).await;
+    row("her `c1` changed", said(changed), ok);
+    let made = up("c7", json!({"owner": "alice"}), opts()).await;
+    row("her new `c7`", said(made), ok);
+    let called = cat.call(&alice, &verb, Some(&c1), none(), opts()).await;
+    row("a verb on her `c1`", said(called), ok);
+    let unlinked = cat.unlink(&alice, &ty, &c1, &on, &t1, opts()).await;
+    row("`unlink` of her `c1`", said(unlinked), ok);
+    row("`link` of her `c1`", said(linked("c1").await), ok);
+    let c3 = k("c3");
+    let retired = cat.retire(&alice, &ty, &c3, opts()).await;
+    let version = match &retired {
+        Ok(Outcome::Applied {
+            version: Some(v), ..
+        }) => v.0,
+        _ => 0,
+    };
+    row("`retire` of her `c3`", said(retired), ok);
+    let again = de(json!({"expected_version": version}));
+    let again = cat.upsert(&alice, &ty, &c3, de(json!({"owner": "alice"})), again);
+    row(
+        "her `c3` made again under its version",
+        said(again.await),
+        ok,
+    );
+    // A link's cardinality names the other end only where its writer is
+    // answered that record.
+    let (desk, held_by) = (&desk, &held_by);
+    let held = move |who: Principal, from: RecordKey, to: &'static str| async move {
+        cat.link(&who, desk, &from, held_by, &k(to), none(), opts())
+            .await
+    };
+    let hers = held(alice.clone(), d1.clone(), "c1").await;
+    row("her `d1` held by her `c1`", said(hers), ok);
+    let (own, other) = ("linked to `c1`", "linked to no end");
+    let hers = link_said(held(alice.clone(), d1.clone(), "c3").await);
+    row("`d1` already held by her `c1`", hers, own);
+    let bobs = link_said(held(alice.clone(), d2.clone(), "c1").await);
+    row("`d2` already held by bob's `c2`", bobs, other);
+    restrict(store.as_ref(), "claim", "c2", "kept").await?;
+    let carol = holder(store.as_ref(), "carol", json!({"default": "write"}));
+    let restricted = link_said(held(carol, d2.clone(), "c1").await);
+    row("`d2` held by a restricted `c2`", restricted, other);
+    // `only` on a link type, on a field of the link the source sends: a
+    // link it admits holds the relation's cardinality, over the lake and
+    // the window.
+    let feed = json!([{"name": "feed", "type": {"kind": "text"}, "authority": "source"}]);
+    l.declare_json(json!({"declare": "type", "name": "stub",
+        "fields": [{"name": "n", "type": {"kind": "text"}}],
+        "relations": [{"name": "sent", "target": "trip", "authority": "source",
+                       "cardinality": "many_to_one", "fields": feed}]}))
+        .await?;
+    for s in ["s1", "s2"] {
+        l.upsert("stub", s, json!({"n": s})).await?;
+    }
+    let lt = crate::links::link_type_name(&"stub".into(), &"sent".into());
+    let types = json!({lt.as_str(): {"only": {"feed": "a"}}});
+    let grants = json!({"default": "write", "ingest": true, "types": types});
+    let kim = holder(store.as_ref(), "kim", grants);
+    let stub = |from: &str, to: &str| {
+        let key = crate::links::link_key(&from.into(), &to.into());
+        let fields = json!({"from": from, "to": to, "feed": "a"});
+        de(json!({"type": lt.as_str(), "key": key.as_str(), "fields": fields}))
+    };
+    let fed = |links| crate::conformance::fixture::ingest(cat, &kim, "feed", links);
+    row("kim's s1 → t1", said(fed(vec![stub("s1", "t1")]).await), ok);
+    let again = link_said(fed(vec![stub("s1", "t5")]).await);
+    row("kim's s1 → t5", again, "linked to `t1`");
+    let window = link_said(fed(vec![stub("s2", "t1"), stub("s2", "t5")]).await);
+    row(
+        "kim's s2 → t1 and t5 at once",
+        window,
+        "linked in the window",
+    );
+    let wrong: Vec<_> = rows.iter().filter(|(_, said, want)| said != want).collect();
+    ensure!(
+        wrong.is_empty(),
+        "a holder of `only` writes its own records alone, another's answered as a free key: {wrong:?}"
+    );
     // Bob's proposals on his claims are listed to alice without their
     // write, and so once his `c2` is retired.
     for retired in [false, true] {
@@ -731,23 +973,42 @@ async fn a_grant_that_cannot_be_applied_is_refused(
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
     claims(&l, false).await?;
-    let set = json!([{"field": "note", "value": "'paid'"}]);
-    let verb = json!({"declare": "verb", "name": "pay", "on": "claim", "risk": "low",
-                      "effect": "write", "set": set});
-    l.declare_json(verb).await?;
+    for (name, risk) in [("pay", "low"), ("propose_pay", "high")] {
+        let set = json!([{"field": "note", "value": "'paid'"}]);
+        let verb = json!({"declare": "verb", "name": name, "on": "claim", "risk": risk,
+                          "effect": "write", "set": set});
+        l.declare_json(verb).await?;
+    }
+    // She is offered her own writes and the low-risk verb; a create only
+    // where she writes her owner field, which a retire asks of anyone.
+    let read_only = json!({"only": {"owner": "alice"}, "fields": {"owner": "read"}});
+    for (more, creates) in [
+        (json!({"default": "write"}), true),
+        (
+            json!({"default": "write", "types": {"claim": read_only}}),
+            false,
+        ),
+    ] {
+        let alice = alice(store.as_ref(), more);
+        let told = l
+            .cat
+            .describe_type(&alice, &"claim".into(), Default::default())
+            .await;
+        let told = told.must("describing `claim` to alice")?.data;
+        let (may, verbs) = (&told.may, &told.verbs);
+        let only = serde_json::to_value(&may.only).expect("a map reads");
+        let link: Vec<&str> = may.link.iter().map(|r| r.as_str()).collect();
+        let verbs: Vec<&str> = verbs.iter().map(|v| v.as_str()).collect();
+        ensure!(
+            only == json!({"owner": "alice"})
+                && may.upsert == creates
+                && may.retire == creates
+                && link == ["on_trip"]
+                && verbs == ["pay"],
+            "`describe_type` must tell alice her `only`, her writes, the link and the low-risk verb of `claim`, an upsert where she writes `owner` ({creates}); it says {may:?} and verbs {verbs:?}"
+        );
+    }
     let alice = alice(store.as_ref(), json!({"default": "write"}));
-    let told = l
-        .cat
-        .describe_type(&alice, &"claim".into(), Default::default())
-        .await;
-    let told = told.must("describing `claim` to alice")?.data;
-    let (may, verbs) = (&told.may, &told.verbs);
-    let only = serde_json::to_value(&may.only).expect("a map reads");
-    let writes = may.upsert || may.retire || !may.link.is_empty() || !verbs.is_empty();
-    ensure!(
-        only == json!({"owner": "alice"}) && !writes,
-        "`describe_type` must tell alice her `only` and no write, verb or link of `claim`; it says {may:?} and verbs {verbs:?}"
-    );
     let all = vec![field("n", Number)];
     l.declare(view_of(
         "all_claims",

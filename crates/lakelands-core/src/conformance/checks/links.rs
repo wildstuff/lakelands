@@ -747,7 +747,7 @@ async fn ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_windo
         let fields = if ends {
             json!({"from": from, "to": to})
         } else {
-            json!({})
+            json!({"from": from})
         };
         source_record(
             vt.as_str(),
@@ -770,12 +770,12 @@ async fn ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_windo
     l.ingest("registry", vec![record("i1", "p1", true)])
         .await
         .must("ingesting the link i1 → p1")?;
-    // Against the lake, with the ends only in the key.
+    // Against the lake, with `to` only in the key.
     let keyed = l.ingest("registry", vec![record("i1", "p2", false)]).await;
     ensure!(
         matches!(reason(&keyed), Some(Refusal::Constraint(..))),
-        "i1 already links to p1; a record keyed i1:p2 with no fields breaks the \
-         cardinality too, its ends read from the key; it answered {keyed:?}"
+        "i1 already links to p1; a record keyed i1:p2 that leaves `to` to its key \
+         breaks the cardinality too, its end read from the key; it answered {keyed:?}"
     );
     Ok(())
 }

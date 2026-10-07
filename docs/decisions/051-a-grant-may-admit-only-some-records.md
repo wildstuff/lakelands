@@ -46,12 +46,40 @@ record that does not exist.
   links. `only` on a link type admits its links by their fields, in a
   walk too. Readers holding no `only` on either end are answered as
   before.
-- **Every write that reaches the type is refused**, as not granted,
-  naming no field, before any record is read: `upsert`, `retire`,
-  `link` and `unlink` with a held end, a verb on the type or on a link
-  type with a held end, `propose`, `accept` and `reject` of such a
-  write, `ingest` of such a record (before its duplicate test), and an
-  aging rule on the type. A holder of `only` on any type changes no
+- **A holder writes its own records alone.** A write is judged against
+  the record the holder owns at the key: the record there, retired or
+  not, where its grant admits it, and otherwise none. Another's record
+  is, to the holder's write, a key that is free, so every check (the
+  expected version, the key fields, a reference, a required field)
+  answers as it would on a free key. A write that passes them all is
+  refused as not granted, naming no field, where another's live record
+  stands at the key or the record the write leaves is not admitted: a
+  free key with another's owner, another's key and a handover answer
+  alike. `retire`, `unlink` and a verb read the record first: another's
+  is not found, as a missing one is. A link is the holder's where each
+  end it holds `only` on is admitted. `ingest` compares a re-delivery
+  only against the holder's own record, so a re-delivery onto another's
+  key is refused as on a free key, not counted a duplicate.
+- **What a write still tells.** A create succeeds on a free key and is
+  refused on another's: a key's existence shows where a write would
+  make something, and a key that carries the owner (the owner field
+  among the key fields) keeps holders' keys apart. A create on a key
+  whose record another retired continues that record's version, and
+  takes its `restricted` mark, so the holder may not read its new
+  record unless it holds that grant. A refusal for a relation's
+  cardinality names the other link's end only where its writer is
+  answered that record, `restricted` judged as for any reader, and
+  `ingest` judges a link's cardinality only once the record its writer
+  leaves is admitted, as the mock does: a link from another's record
+  answers as one from a free key, and a link a grant's `only` on the
+  link type admits by its own fields holds the relation's cardinality
+  as any other.
+- **What stays refused**, as not granted, naming no field: a verb above
+  low risk on the type or on a link type with a held end, `propose`,
+  `accept` and `reject` of a write that reaches it (a proposal is judged
+  again when it is accepted, and the accept does not know the
+  proposer's grant), and an aging rule on the type, which moves records
+  at the host's run. A holder of `only` on any type changes no
   shape: every schema door and the proposal of a declaration or a
   migration are refused to it, and no migration's proposal, of a type or
   a value type, is listed to it, since a report counts every owner's
@@ -59,7 +87,12 @@ record that does not exist.
   name an admitted record.
 - **`describe`** tells the holder its pairs in `may.only`, where the
   grant can be applied, and offers no write, link or verb that would be
-  refused. The change feed is the log unmasked, so a holder does not
+  refused: an upsert only where it writes every field its `only` names
+  at the authored door, so that a create can succeed, and no verb above
+  low risk. A field's `initial` value is not counted there: where only
+  an `initial` value would make a new record the holder's, the write is
+  admitted (the record it leaves is judged, `initial` values included)
+  but no upsert is offered. The change feed is the log unmasked, so a holder does not
   read everything and is refused it at a door.
 
 `only` is a function of `Principal.id` within a lake: a host gives each
@@ -86,11 +119,15 @@ identity keeps the rule one comparison every engine already makes, with
 no decimal or float spelling to agree on, and lets the engines narrow by
 an index.
 
-Writes are refused whole in this decision. Admitting a holder's own
-writes needs answers to the record before and after a write, a
-proposal's pin, a verb's executor and a key's existence that are not
-settled; they are lakelands#660. Until then a holder's writes go through
-the host.
+A holder's write is judged against its own record, never another's,
+so that no answer it gets is made from a record it may not read; the
+refusal of a write onto another's key comes last, where a free key
+would have been written, and that one difference is the existence a
+create cannot help showing. A proposal waits for a later accept that
+re-judges the write under no grant of the proposer's, so a holder's
+proposals and the verbs that become proposals stay refused; admitting
+them needs the accept pinned to the record as it was proposed
+(lakelands#660).
 
 ## What it is not
 

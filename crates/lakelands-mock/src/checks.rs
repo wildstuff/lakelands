@@ -7442,6 +7442,34 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
         .unwrap();
     let json = serde_json::to_value(&after.data).unwrap();
     assert_eq!(json["rows"].as_array().map(Vec::len), Some(0), "{json}");
+    // A link that breaks both its reference and the cardinality is
+    // refused for the reference: an ingested link's cardinality is judged
+    // last, on the mock as on the store.
+    let witness = |to: &str| SourceRecord {
+        upstream: None,
+        ty: ty("sys.link.doc.witnessed_by"),
+        key: key(&format!("d1:{to}")),
+        fields: patch(&[("from", json!("d1")), ("to", json!(to))]),
+        seen_at: None,
+    };
+    let fed = |to: &str| {
+        let window = stream::of(vec![witness(to)]);
+        let c = c.clone();
+        async move {
+            let commits = c.ingest(own, &"registry".into(), window).await;
+            crate::stream::next(&mut commits.unwrap()).await
+        }
+    };
+    assert!(matches!(fed("p1").await, Some(Ok(_))), "d1 witnessed by p1");
+    let both = fed("p9").await;
+    let case = both
+        .as_ref()
+        .and_then(|r| r.as_ref().err())
+        .and_then(Error::case);
+    assert!(
+        matches!(case.map(|s| &s.case), Some(Case::NotLive { key, .. }) if key == "p9"),
+        "a witness `p9` that is not there, d1 witnessed already: {both:?}"
+    );
 }
 
 /// A migration's shape is its author's view of the type: a field the
@@ -11261,9 +11289,9 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
 /// A grant's `only` admits its holder the records whose fields hold its
 /// values alone (051): another's record is not found, `find`, its total,
 /// a walk and a degree over the links answer its own, a proposal on
-/// another's record is listed without its write, every write that reaches
-/// the type is refused as not granted naming no field and appends nothing,
-/// and `describe_type` tells it the pairs.
+/// another's record is listed without its write, its own records it
+/// writes while another's is to its write a key that is free, and
+/// `describe_type` tells it the pairs and its writes.
 pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
     store: Arc<dyn LakeStore>,
 ) {
@@ -11277,6 +11305,9 @@ pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
             {"name": "holder", "type": {"kind": "text"}},
             {"name": "amount", "type": {"kind": "number"}}],
             "relations": [{"name": "on_trip", "target": "trip"}]}),
+        json!({"declare": "type", "name": "slip", "fields": [
+            {"name": "holder", "type": {"kind": "text"}, "initial": "alice"},
+            {"name": "tag", "type": {"kind": "text"}, "authority": "shared"}]}),
     ] {
         let d = serde_json::from_value::<Declaration>(d).expect("a declaration reads");
         c.declare(own, d).await.expect("the owner declares");
@@ -11305,7 +11336,8 @@ pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
         .await
         .expect("bob proposes");
     let grants = json!({"default": "write", "review": true,
-                        "types": {"claim": {"only": {"holder": "alice"}}}});
+                        "ingest": true, "types": {"claim": {"only": {"holder": "alice"}},
+                                                  "slip": {"only": {"holder": "alice"}}}});
     let grants = serde_json::from_value(grants).expect("grants read");
     let alice = &principal(store.lake(), PrincipalKind::Agent, "alice", grants);
     let mut wrong = Vec::new();
@@ -11353,29 +11385,54 @@ pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
             wrong.push(format!("{what} from `t1`: {got:?}, not {want}"));
         }
     }
+    // Another's record is, to her write, a key that is free: a write that
+    // would pass is not granted, one that reads a record is not found.
     let head = store.head().await.expect("the head");
-    let c1 = key("c1");
+    let (c1, c2, c9) = (key("c1"), key("c2"), key("c9"));
     let p = || patch(&[("amount", json!(1))]);
-    for (what, answer) in [
-        ("`upsert`", c.upsert(alice, &claim, &c1, p(), opts()).await),
-        ("`retire`", c.retire(alice, &claim, &c1, opts()).await),
+    let bobs = || patch(&[("holder", json!("bob"))]);
+    let hers = patch(&[("holder", json!("alice"))]);
+    for (what, answer, read) in [
         (
-            "`link`",
-            c.link(alice, &claim, &c1, &on, &t1, none(), opts()).await,
+            "bob's `c2` taken",
+            c.upsert(alice, &claim, &c2, hers, opts()).await,
+            false,
         ),
         (
-            "`unlink`",
-            c.unlink(alice, &claim, &c1, &on, &t1, opts()).await,
+            "`upsert` of bob's `c2`",
+            c.upsert(alice, &claim, &c2, p(), opts()).await,
+            false,
+        ),
+        (
+            "a claim with bob's holder",
+            c.upsert(alice, &claim, &c9, bobs(), opts()).await,
+            false,
+        ),
+        (
+            "her `c1` handed to bob",
+            c.upsert(alice, &claim, &c1, bobs(), opts()).await,
+            false,
+        ),
+        (
+            "`retire` of bob's `c2`",
+            c.retire(alice, &claim, &c2, opts()).await,
+            true,
+        ),
+        (
+            "`unlink` of bob's `c2`",
+            c.unlink(alice, &claim, &c2, &on, &t1, opts()).await,
+            true,
         ),
     ] {
-        if !matches!(
+        let refused = matches!(
             answer,
             Err(Error::Refused {
                 field: None,
                 reason: Refusal::NotGranted
             })
-        ) {
-            wrong.push(format!("{what} of her own `c1`: {answer:?}"));
+        );
+        if refused == read || read != matches!(answer, Err(Error::NotFound { .. })) {
+            wrong.push(format!("{what}: {answer:?}"));
         }
     }
     let after = store.head().await.expect("the head");
@@ -11383,6 +11440,57 @@ pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
         wrong.push(format!(
             "the refused writes moved the head from {head} to {after}"
         ));
+    }
+    // Bob's slip `s3`, retired, is a key that is free to her: her ingest
+    // there makes a slip whose holder its `initial` fills, as an upsert
+    // of a new one does.
+    let slip = ty("slip");
+    let bobs = patch(&[("holder", json!("bob"))]);
+    c.upsert(own, &slip, &key("s3"), bobs, opts())
+        .await
+        .expect("the owner writes bob's `s3`");
+    c.retire(own, &slip, &key("s3"), opts())
+        .await
+        .expect("the owner retires `s3`");
+    let fed = SourceRecord {
+        upstream: None,
+        ty: slip.clone(),
+        key: key("s3"),
+        fields: patch(&[("tag", json!("x"))]),
+        seen_at: None,
+    };
+    let fed = lakelands_api::ingest_all(c.as_ref(), alice, &"feed".into(), vec![fed]).await;
+    let tagged = patch(&[("tag", json!("y"))]);
+    // Her own she writes, unlinks, links and retires.
+    let fed = fed.map(|_| ());
+    let new = c.upsert(alice, &slip, &key("s1"), tagged, opts()).await;
+    for (what, answer) in [
+        ("a new slip", new.map(|_| ())),
+        ("a slip on bob's retired `s3`", fed),
+        (
+            "her `c1` changed",
+            c.upsert(alice, &claim, &c1, p(), opts()).await.map(|_| ()),
+        ),
+        (
+            "her `c1` unlinked",
+            c.unlink(alice, &claim, &c1, &on, &t1, opts())
+                .await
+                .map(|_| ()),
+        ),
+        (
+            "her `c1` linked",
+            c.link(alice, &claim, &c1, &on, &t1, none(), opts())
+                .await
+                .map(|_| ()),
+        ),
+        (
+            "her `c1` retired",
+            c.retire(alice, &claim, &c1, opts()).await.map(|_| ()),
+        ),
+    ] {
+        if let Err(e) = answer {
+            wrong.push(format!("{what}: {e}"));
+        }
     }
     let listed = c.proposals(alice, Default::default()).await;
     let listed = listed.expect("alice's listing").data;
@@ -11394,7 +11502,8 @@ pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
     let told = c.describe_type(alice, &claim, ReadAt::default()).await;
     let may = told.expect("`claim` is described to alice").data.may;
     let only = serde_json::to_value(&may.only).expect("pairs read");
-    if only != json!({"holder": "alice"}) || may.upsert || may.retire || !may.link.is_empty() {
+    let link: Vec<&str> = may.link.iter().map(|r| r.as_str()).collect();
+    if only != json!({"holder": "alice"}) || !may.upsert || !may.retire || link != ["on_trip"] {
         wrong.push(format!("`describe_type` says {may:?}"));
     }
     assert!(

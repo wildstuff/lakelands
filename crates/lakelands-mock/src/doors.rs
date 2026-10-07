@@ -47,8 +47,8 @@ pub(crate) mod rules;
 mod views;
 use crate::links;
 use crate::state::{
-    DeclaredType, State, access, admits, door_writes, field, holds_only, only_applies, only_holder,
-    own_only,
+    DeclaredType, State, access, admits, creates, door_writes, field, holds_only, only_applies,
+    only_holder, own_only,
 };
 use crate::{Batch, Draft, Log, Shared, refused, stream, value};
 
@@ -1045,10 +1045,10 @@ fn may_retire(who: &Principal, t: &DeclaredType) -> bool {
 }
 
 fn callable(st: &State, who: &Principal, v: &VerbDecl) -> bool {
-    // A holder of `only` writes nothing that reaches the type (051).
+    // A holder of `only` calls no verb that waits for review (051).
     let Some(t) = st
         .visible(who, &v.on)
-        .filter(|t| !only_holder(who, &t.decl))
+        .filter(|t| !only_holder(who, &t.decl) || v.risk == Risk::Low)
     else {
         return false;
     };
@@ -1091,8 +1091,6 @@ pub(crate) fn relation_shown(
 
 fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescription {
     let d = &t.decl;
-    // A holder of `only` writes nothing that reaches the type (051).
-    let held = only_holder(who, d);
     let fields: Vec<FieldDescription> = d
         .fields
         .iter()
@@ -1179,8 +1177,8 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
         may: TypeRights {
             find: true,
             get: true,
-            upsert: !held && !links::is_link_type(&d.name) && authored_writable(who, t),
-            retire: !held && !links::is_link_type(&d.name) && may_retire(who, t),
+            upsert: creates(who, d) && !links::is_link_type(&d.name) && authored_writable(who, t),
+            retire: !links::is_link_type(&d.name) && may_retire(who, t),
             link: d
                 .relations
                 .iter()
@@ -1192,8 +1190,7 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
                 })
                 .filter(|r| {
                     let lt = links::link_type(&d.name, r);
-                    !only_holder(who, &lt)
-                        && lt.fields[..2].iter().all(|f| access(who, &lt, f).writes())
+                    lt.fields[..2].iter().all(|f| access(who, &lt, f).writes())
                 })
                 .map(|r| r.name.clone())
                 .collect(),
@@ -1763,6 +1760,29 @@ fn with_key_fields(
     }
 }
 
+/// The fields a write leaves, as the store's fold makes them before it
+/// computes: the patch over the fields before, a null clearing one, and
+/// at a create each `initial` value the patch left out (050).
+fn after_write(
+    t: &DeclaredType,
+    before: Option<&BTreeMap<FieldName, Value>>,
+    patch: &Patch,
+) -> BTreeMap<FieldName, Value> {
+    let mut after = before.cloned().unwrap_or_default();
+    for (f, v) in patch {
+        match v {
+            Value::Null => after.remove(f),
+            v => after.insert(f.clone(), v.clone()),
+        };
+    }
+    for f in t.decl.fields.iter().filter(|_| before.is_none()) {
+        if let Some(v) = f.initial.as_ref().filter(|_| !after.contains_key(&f.name)) {
+            after.insert(f.name.clone(), v.clone());
+        }
+    }
+    after
+}
+
 /// Refuse a record that would lack a value for a required field, as the
 /// store does: over the record whole as the write leaves it, whichever
 /// door writes the field, with the `initial` values a create fills (050).
@@ -1773,19 +1793,7 @@ fn check_required(
     before: Option<&BTreeMap<FieldName, Value>>,
     patch: &Patch,
 ) -> Result<()> {
-    let mut after = before.cloned().unwrap_or_default();
-    for (f, v) in patch {
-        after.insert(f.clone(), v.clone());
-    }
-    for f in t.decl.fields.iter().filter(|_| before.is_none()) {
-        if let Some(v) = f
-            .initial
-            .as_ref()
-            .filter(|_| after.get(&f.name).is_none_or(Value::is_null))
-        {
-            after.insert(f.name.clone(), v.clone());
-        }
-    }
+    let after = after_write(t, before, patch);
     for f in t
         .decl
         .fields
@@ -1970,7 +1978,13 @@ fn index_fields(
 }
 
 fn check_version(st: &State, ty: &TypeName, key: &RecordKey, opts: &WriteOpts) -> Result<Version> {
-    let actual = st.version(ty, key);
+    versioned(st.records.get(&(ty.clone(), key.clone())), opts)
+}
+
+/// The expected version checked against `own`, the record a write is
+/// judged on; answers its version, 0 for none.
+fn versioned(own: Option<&StoredRecord>, opts: &WriteOpts) -> Result<Version> {
+    let actual = own.map_or(Version(0), |r| r.version);
     match opts.expected_version {
         Some(expected) if expected != actual => Err(Error::Conflict { expected, actual }),
         _ => Ok(actual),
@@ -1996,12 +2010,8 @@ fn plan_upsert(
 ) -> Result<Version> {
     let By { st, who, cause } = *by;
     // The type first, as the store's record plan asks it: one not shown
-    // it is told nothing of the write. A holder of `only` writes nothing
-    // that reaches the type, before any record is read (051).
-    let shown = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
-    if only_holder(who, &shown.decl) {
-        return Err(refused(Refusal::NotGranted));
-    }
+    // it is told nothing of the write.
+    st.visible(who, ty).ok_or_else(|| no_type(ty))?;
     if patch.is_empty() {
         return Err(invalid(Case::PatchEmpty));
     }
@@ -2014,21 +2024,23 @@ fn plan_upsert(
     if ty.as_str() == SETTING_TYPE {
         check_setting(st, who, key, &patch)?;
     }
-    let actual = check_version(st, ty, key, opts)?;
+    // As the store (051): a holder is judged against the record it owns
+    // at the key; another's is, to it, a key that is free, refused once
+    // every check has passed.
+    let own = (st.records.get(&(ty.clone(), key.clone()))).filter(|r| st.admitted(who, r));
+    let live = own.filter(|r| !r.retired);
+    let other = live.is_none() && st.live(ty, key).is_some();
+    versioned(own, opts)?;
     let mut patch = canonical_patch(t, patch);
-    with_key_fields(
-        t,
-        st,
-        who,
-        st.live(ty, key),
-        key,
-        &mut patch,
-        Origin::Authored,
-    )?;
+    with_key_fields(t, st, who, live, key, &mut patch, Origin::Authored)?;
     // After the key fields are filled: a key field may be a reference too.
     check_references(st, who, t, &patch, &BTreeMap::new())?;
-    check_required(t, st.live(ty, key).map(|r| &r.fields), &patch)?;
-    let version = Version(actual.0 + 1);
+    check_required(t, live.map(|r| &r.fields), &patch)?;
+    let after = after_write(t, live.map(|r| &r.fields), &patch);
+    if other || !st.admits_fields(who, ty, &after) {
+        return Err(refused(Refusal::NotGranted));
+    }
+    let version = Version(st.version(ty, key).0 + 1);
     let mut d = Draft::new(
         who,
         Origin::Authored,
@@ -2056,10 +2068,12 @@ fn plan_retire(
     let By { st, who, cause } = *by;
     let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
     not_a_view(&t.decl)?;
-    if !may_retire(who, t) || only_holder(who, &t.decl) {
+    if !may_retire(who, t) {
         return Err(refused(Refusal::NotGranted));
     }
-    st.live(ty, key).ok_or_else(|| no_record(ty, key))?;
+    // To a holder of `only`, another's record is not found (051).
+    let own = st.live(ty, key).filter(|r| st.admitted(who, r));
+    own.ok_or_else(|| no_record(ty, key))?;
     let actual = check_version(st, ty, key, opts)?;
     let version = Version(actual.0 + 1);
     let mut d = Draft::new(
@@ -2146,7 +2160,10 @@ fn check_call<'a>(
     // judged on it, whether the call runs or is proposed (013 and 024,
     // extended).
     let rec = match key {
-        Some(key) => Some(st.live(&v.on, key).ok_or_else(|| no_record(&v.on, key))?),
+        Some(key) => Some(
+            (st.live(&v.on, key).filter(|r| st.admitted(who, r)))
+                .ok_or_else(|| no_record(&v.on, key))?,
+        ),
         None => None,
     };
     if let (Some(_), Some(key)) = (rec, key) {
@@ -5419,11 +5436,7 @@ fn plan_window(
         duplicates: 0,
     };
     for r in chunk {
-        let shown = st.visible(who, &r.ty).ok_or_else(|| no_type(&r.ty))?;
-        // Before the duplicate test, which would tell what the log holds.
-        if only_holder(who, &shown.decl) {
-            return Err(refused(Refusal::NotGranted));
-        }
+        st.visible(who, &r.ty).ok_or_else(|| no_type(&r.ty))?;
         if r.fields.is_empty() {
             return Err(invalid(Case::PatchEmpty));
         }
@@ -5438,18 +5451,26 @@ fn plan_window(
         let id = content_id(source, r, before, &checked);
         // A record that would change no field is a duplicate too, so a full
         // re-import of unchanged data appends nothing.
+        // As the store (051): a record a holder is not admitted is, to it,
+        // a key that is free: not compared, and a live one refused once
+        // every check has passed.
+        let planned = (w.planned.get(&slot)).map(|f| !st.admits_fields(who, &r.ty, f));
+        let not_own = |s: &StoredRecord| !st.admitted(who, s);
+        let other = planned.unwrap_or_else(|| st.live(&r.ty, &r.key).is_some_and(not_own));
+        let unowned = planned.unwrap_or_else(|| st.records.get(&slot).is_some_and(not_own));
         let now = w
             .planned
             .get(&slot)
             .cloned()
-            .or_else(|| st.live(&r.ty, &r.key).map(|l| l.fields.clone()));
+            .or_else(|| st.live(&r.ty, &r.key).map(|l| l.fields.clone()))
+            .filter(|_| !other);
         let unchanged = now.as_ref().is_some_and(|fields| {
             checked.iter().all(|(f, v)| match fields.get(f) {
                 Some(stored) => stored == v,
                 None => v.is_null(),
             })
         });
-        if unchanged || st.ingested.contains(&id) || !w.ids.insert(id.clone()) {
+        if unchanged || !unowned && (st.ingested.contains(&id) || !w.ids.insert(id.clone())) {
             w.duplicates += 1;
             continue;
         }
@@ -5458,7 +5479,7 @@ fn plan_window(
             t,
             st,
             who,
-            st.live(&r.ty, &r.key),
+            st.live(&r.ty, &r.key).filter(|_| !other),
             &r.key,
             &mut fields,
             Origin::Source,
@@ -5475,8 +5496,18 @@ fn plan_window(
             let ty = r.ty.clone();
             return Err(invalid(Case::UnclaimedLinkType { ty }));
         }
+        // A record earlier in this window counts as there.
+        check_references(st, who, t, &fields, &w.versions)?;
+        check_required(t, now.as_ref(), &fields)?;
+        // As the store: a record this window made is there for its next one.
+        let made = now.is_none();
+        let after = after_write(t, now.as_ref(), &fields);
+        if other || !st.admits_fields(who, &r.ty, &after) {
+            return Err(refused(Refusal::NotGranted));
+        }
         // A link holds its relation's cardinality, over the lake's live
-        // links and those earlier in this window.
+        // links and those earlier in this window, judged once the record
+        // is admitted, as the store judges it.
         if links::is_link_type(&r.ty)
             && let Some(rel) = st.types.values().find_map(|o| {
                 o.decl
@@ -5520,19 +5551,6 @@ fn plan_window(
                         return Err(constraint(&FieldName::from(links::TO), case));
                     }
                 }
-            }
-        }
-        // A record earlier in this window counts as there.
-        check_references(st, who, t, &fields, &w.versions)?;
-        check_required(t, now.as_ref(), &fields)?;
-        // As the store: a record this window made is there for its next one.
-        let made = now.is_none();
-        let mut after = now.unwrap_or_default();
-        for (f, v) in &fields {
-            if v.is_null() {
-                after.remove(f);
-            } else {
-                after.insert(f.clone(), v.clone());
             }
         }
         w.planned.insert(slot.clone(), after);
