@@ -928,6 +928,10 @@
    "count": 1
   },
   {
+   "code": "pattern_no_path",
+   "path": "s"
+  },
+  {
    "code": "pattern_to_chain"
   },
   {

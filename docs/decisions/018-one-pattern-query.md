@@ -253,3 +253,30 @@ it was before. A lake declared before 0.8.0 may still hold a verb on a
 record of a view, since replay does not judge a declaration again; a
 call of it is refused at the door as above.
 
+## Extended: a pattern's aggregate reads its rows by their paths (lakelands#720)
+
+A pattern's row holds each value under its path, `<type>.<field>` or
+`<type>.key`, for every type the pattern binds: its start and the type
+each step reaches. A measure's field already named a path whole. A
+group key did not. A named key read `bill.amount` as the field `bill`
+and then its member `amount`, found nothing, and grouped every row
+under null. A field key by its path was refused by the rule for a named
+key's name. So a pattern could group only by a setting or a constant,
+and a name that named nothing answered quietly: a field key `zz`, a
+sum of `zz` as 0.
+
+Every name in a pattern's aggregate is now read against the paths the
+rows hold. A field key and a measure's field name one whole. Each path
+in a named key's expression is read as the longest type the pattern
+binds, then one of its fields or `key`, then members by 028's rule for a
+path. A field key answers under its path in the group's `by`. A name
+that no bound type starts is refused, as a step over an undeclared
+relation is and for the same reason: it reads nothing, and an answer
+built on it looks like one that read something. The refusal is the same
+for a type that does not exist and one its reader is not shown.
+
+A named key is held to what `find` holds it to. Each field it reads is
+probed before a value is read (024), so a field its reader may not know
+of is answered as one the type does not have, as a field key on it is.
+An operation it can never compute is refused (028), checked over the
+row's shape: one field for each path, of its declared kind.

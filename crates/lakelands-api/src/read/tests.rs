@@ -120,3 +120,26 @@ fn a_request_reads_every_member_it_takes_and_refuses_any_other() {
         named(read(&json!("proposed"), &v), &v, "");
     }
 }
+
+/// A group key is a field's name or an object with `name` and `expr`. A
+/// list is refused in the words a number is, though serde reads a struct
+/// from one (lakelands#720).
+#[test]
+fn a_group_key_is_a_name_or_an_object() {
+    use serde_json::json;
+    let key = |v: Value| serde_json::from_value::<GroupKey>(v).map_err(|e| e.to_string());
+    let named = json!({"name": "m", "expr": "date_bucket(on, 'month')"});
+    assert!(matches!(key(json!("g")), Ok(GroupKey::Field(_))));
+    assert!(matches!(key(named), Ok(GroupKey::Named { .. })));
+    for v in [
+        json!(["m", "date_bucket(on, 'month')"]),
+        json!(3),
+        json!(true),
+    ] {
+        let said = key(v.clone()).expect_err("a group key that is neither");
+        assert!(
+            said.contains("expected a field's name, or an object with `name` and `expr`"),
+            "{v}: {said}"
+        );
+    }
+}

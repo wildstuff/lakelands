@@ -630,7 +630,13 @@ expressions (`{"name": "month", "expr": "date_bucket(due_on, 'month')"}`),
 evaluated per record by the one evaluator and answered under their name
 in each group's `by`. A named key's name follows the rule for field names
 and differs from every other key's, and the principal must be allowed to
-read every field its expression reads (024). A value the expression
+read every field its expression reads (024). A named key is an object; a
+list is refused as a number is. In a pattern, a row holds each value
+under its path, `<type>.<field>` or `<type>.key`, of a type the pattern
+binds: a field key, a measure's field and a named key's paths name it so
+(`bill.amount > setting('threshold')`, `customer.tier` over a step), and
+a name no bound type starts is refused
+(`docs/decisions/018-one-pattern-query.md`, extended). A value the expression
 cannot compute for a record is null, so that record falls in the null
 group, which sorts last. `date_bucket(x, unit)` answers the instant in
 UTC at which the bucket holding `x` starts, for `day`, `week` (ISO, from

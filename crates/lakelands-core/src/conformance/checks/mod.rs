@@ -347,6 +347,7 @@ pub const ALL: &[Check] = &[
     aggregates::EMPTY_AGGREGATE,
     aggregates::COUNT_IS_THE_WALK,
     aggregates::SETTING_IN_A_GROUP_KEY,
+    aggregates::PATTERN_AGGREGATE_READS_PATHS,
     date_bucket::GROUPS,
     date_bucket::WHERE,
     date_bucket::DECLARED,

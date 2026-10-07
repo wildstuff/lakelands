@@ -361,13 +361,16 @@ pub type Row = BTreeMap<FieldName, Value>;
 pub type Answer<T> = std::result::Result<T, Said>;
 
 /// An aggregate's group keys, resolved: each key's name and, for a named
-/// expression, the expression, parsed and checked as a `where` is. Names
-/// follow the rule for field names and are distinct.
+/// expression, the expression, parsed and checked as a `where` is. A named
+/// key's name follows the rule for field names, a field key names its
+/// field, and the names are distinct.
 pub fn group_keys(keys: &[GroupKey]) -> Answer<Vec<(FieldName, Option<Expr>)>> {
     let mut out: Vec<(FieldName, Option<Expr>)> = Vec::with_capacity(keys.len());
     for key in keys {
         let name = key.name();
-        if let Some(fault) = crate::names::fault(Naming::Group, name.as_str()) {
+        if let GroupKey::Named { .. } = key
+            && let Some(fault) = crate::names::fault(Naming::Group, name.as_str())
+        {
             return Err(fault.into());
         }
         if out.iter().any(|(n, _)| n == name) {
@@ -388,6 +391,70 @@ pub fn group_keys(keys: &[GroupKey]) -> Answer<Vec<(FieldName, Option<Expr>)>> {
         out.push((name.clone(), expr));
     }
     Ok(out)
+}
+
+/// A pattern's aggregate read over its rows, which hold each value under
+/// its path, `<type>.<field>` or `<type>.key`, for each type `bound`
+/// (018, extended). A measure's field and a field key name a path whole.
+/// Each path of a named key reads the longest type bound, a field of it,
+/// then members, and is rewritten to the row's one key. A name no bound
+/// type starts is refused. Answers the aggregate so read and each type
+/// and field it reads.
+pub fn over_rows(
+    agg: &Aggregate,
+    bound: &dyn Fn(&str) -> bool,
+) -> Answer<(Aggregate, Vec<(String, FieldName)>)> {
+    let read = std::cell::RefCell::new(Vec::new());
+    let joined = |path: &[FieldName]| {
+        path.iter()
+            .map(FieldName::as_str)
+            .collect::<Vec<_>>()
+            .join(".")
+    };
+    let unbound = |path: String| Said::from(Case::PatternNoPath { path });
+    // Where a path's field stands: after the longest type `bound`.
+    let at = |path: &[FieldName]| {
+        let k = (1..path.len()).rev().find(|&k| bound(&joined(&path[..k])));
+        let k = k.ok_or_else(|| unbound(joined(path)))?;
+        read.borrow_mut()
+            .push((joined(&path[..k]), path[k].clone()));
+        Ok(k)
+    };
+    let whole = |name: &FieldName| {
+        let path: Vec<FieldName> = name.as_str().split('.').map(FieldName::from).collect();
+        match at(&path)? {
+            k if k + 1 == path.len() => Ok(()),
+            _ => Err(unbound(name.to_string())),
+        }
+    };
+    agg.measures
+        .iter()
+        .filter_map(|m| m.field.as_ref())
+        .try_for_each(whole)?;
+    let mut out = agg.clone();
+    for (key, (_, e)) in out.group_by.iter_mut().zip(group_keys(&agg.group_by)?) {
+        let (GroupKey::Named { expr, .. }, Some(e)) = (&mut *key, e) else {
+            if let GroupKey::Field(f) = key {
+                whole(f)?;
+            }
+            continue;
+        };
+        let failed = std::cell::RefCell::new(None);
+        let e = lakelands_api::expr::rewrite(&e, &|x| {
+            let Expr::Path { path } = x else {
+                return None;
+            };
+            let k = at(path).map_err(|e| failed.replace(Some(e))).ok()?;
+            let head = std::iter::once(FieldName::from(joined(&path[..=k])));
+            let path = head.chain(path[k + 1..].iter().cloned()).collect();
+            Some(Expr::Path { path })
+        });
+        if let Some(e) = failed.into_inner() {
+            return Err(e);
+        }
+        *expr = Condition::Expr(e);
+    }
+    Ok((out, read.into_inner()))
 }
 
 /// A pattern's aggregate over its rows, its keys reading the lake's
