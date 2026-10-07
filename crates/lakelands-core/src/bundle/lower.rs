@@ -163,6 +163,7 @@ impl<'a> Lower<'a> {
             authority: body.authority,
             derived,
             function: body.function,
+            computed_at: body.computed_at,
             depends_on,
             on_input_change: body.on_input_change,
             initial: body.initial,

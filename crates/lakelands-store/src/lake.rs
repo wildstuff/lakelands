@@ -1258,8 +1258,9 @@ impl Lake {
                 with_the_set,
             } => {
                 // What computes a type's derived fields: its derived
-                // expressions, the functions its fields name and what its
-                // embeddings are made from.
+                // expressions, the functions its fields name, what its
+                // embeddings are made from, and which are computed at the
+                // read: saying `write` where nothing was said changes none.
                 let computes = |t: &lakelands_api::ontology::TypeDecl| -> Vec<_> {
                     t.fields
                         .iter()
@@ -1272,6 +1273,7 @@ impl Lake {
                                 f.derived.clone(),
                                 f.function.clone(),
                                 f.embed.clone(),
+                                f.at_read(),
                             )
                         })
                         .collect()

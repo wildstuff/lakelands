@@ -29,8 +29,8 @@ use lakelands_api::id::{
 };
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
-    Assignment, Authority, FieldDecl, FieldType, Measure, OnInputChange, RelationDecl, Risk,
-    StorageKind, TriggerDecl, TypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewParam,
+    Assignment, Authority, ComputedAt, FieldDecl, FieldType, Measure, OnInputChange, RelationDecl,
+    Risk, StorageKind, TriggerDecl, TypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewParam,
 };
 use lakelands_api::principal::{Access, Grants, Principal, PrincipalKind, TypeGrants};
 use lakelands_api::query::{Pattern, Search, SearchMode, Step, VectorTerm, Walk};
@@ -114,6 +114,9 @@ macro_rules! door_checks {
             a_view_reads_only_what_its_source_has,
             a_view_is_declared_only_as_the_store_declares_it,
             names_and_expressions_are_declared_only_as_the_store_declares_them,
+            when_a_field_is_computed_is_declared_as_the_store_declares_it,
+            #[own_principals]
+            a_grants_only_on_a_field_computed_at_the_read_is_not_applied,
             a_migration_keeps_what_a_view_reads,
             a_declaration_reads_only_what_its_type_has,
             a_function_over_null_is_null_on_every_lake,
@@ -277,6 +280,7 @@ fn text(name: &str) -> FieldDecl {
         authority: Authority::Authored,
         derived: None,
         function: None,
+        computed_at: None,
         depends_on: Vec::new(),
         on_input_change: OnInputChange::Keep,
         initial: None,
@@ -942,6 +946,7 @@ fn as_declared(f: &lakelands_api::describe::FieldDescription) -> FieldDecl {
         authority: f.authority,
         derived: f.derived.clone(),
         function: f.function.clone(),
+        computed_at: f.computed_at,
         depends_on: f.depends_on.clone(),
         on_input_change: f.on_input_change,
         initial: f.initial.clone(),
@@ -3328,6 +3333,201 @@ pub async fn recompute_appends_the_function_in_force_again(store: Arc<dyn LakeSt
         .expect_err("a type with nothing computed outside the lake");
     assert!(invalid_naming(&e, &[INVOICE]), "{e:?}");
     assert_eq!(f.head().await, head, "a refused call appended");
+}
+
+/// When a field is computed is declared as the store takes it: a derived
+/// expression that reads the clock says it; a field computed at the read
+/// is derived, required by no write, no key, no link's field, no derived
+/// relation's match, read by no field computed at the write and by no
+/// trigger, verb or object set, and not taken to the read where one reads
+/// it; a verb's payload says no `computed_at`. Each is refused as invalid
+/// in the store's words and nothing is appended; an order by it is
+/// refused; `describe` shows the member; on the mock as on the store (052).
+pub async fn when_a_field_is_computed_is_declared_as_the_store_declares_it(
+    store: Arc<dyn LakeStore>,
+) {
+    const READ: &str = "computed at the read, it";
+    let f = setup(store).await;
+    let (c, owner) = (&f.catalog, &f.cast.owner);
+    let decl = |v: Value| serde_json::from_value::<Declaration>(v).expect("a declaration");
+    let late = |more: Value| {
+        let mut l = json!({"name": "late", "type": {"kind": "boolean"}, "authority": "derived",
+                           "derived": "due < now()", "computed_at": "read"});
+        l.as_object_mut()
+            .unwrap()
+            .extend(more.as_object().unwrap().clone());
+        l
+    };
+    let ty = |fields: Vec<Value>, more: Value| {
+        let mut t = json!({"declare": "type", "name": "ca", "key": ["k"], "fields": [
+            {"name": "k", "type": {"kind": "text"}}, {"name": "due", "type": {"kind": "date_time"}}]});
+        t["fields"].as_array_mut().unwrap().extend(fields);
+        t.as_object_mut()
+            .unwrap()
+            .extend(more.as_object().unwrap().clone());
+        t
+    };
+    let on = |what: &str| {
+        format!(
+            "the {what} reads `late`, which `ca` computes at the read; it is evaluated over the record as stored, which never holds it"
+        )
+    };
+    let rows = [
+        (ty(vec![late(json!({"computed_at": null}))], json!({})), Some("late"),
+         "type `ca`, field `late`: its expression reads the clock: say `computed_at: read` for a value of the day it is read, or `computed_at: write` for the instant of its last write".to_owned()),
+        (ty(vec![json!({"name": "x", "type": {"kind": "text"}, "computed_at": "write"})], json!({})), Some("x"),
+         "type `ca`, field `x`: only a field derived from an expression or computed by a function says `computed_at`".to_owned()),
+        (ty(vec![late(json!({"required": true}))], json!({})), Some("late"),
+         format!("type `ca`, field `late`: {READ} is not `required`: no write gives it a value")),
+        (ty(vec![late(json!({}))], json!({"key": ["late"]})), Some("late"),
+         format!("type `ca`, field `late`: {READ} is no key, which is read as stored")),
+        (ty(vec![], json!({"relations": [{"name": "next", "target": "ca", "fields": [late(json!({}))]}]})), Some("late"),
+         "type `ca`, relation `next`, field `late`: a link's field is computed at the write; a walk reads links as stored".to_owned()),
+        (ty(vec![late(json!({})), json!({"name": "flag", "type": {"kind": "boolean"}, "authority": "derived", "derived": "not late"})], json!({})), Some("flag"),
+         "type `ca`, field `flag`: computed at the write, it reads `late`, which is computed at the read and never stored".to_owned()),
+        (ty(vec![late(json!({"type": {"kind": "text"}, "derived": "k"}))],
+            json!({"relations": [{"name": "same", "target": "ca", "derived": {"match": [{"from": "k", "to": "late"}]}}]})), None,
+         "type `ca`, relation `same`: the pair `k` = `late` matches `ca.late`, which is computed at the read; a match reads values as stored".to_owned()),
+    ];
+    let head = f.head().await;
+    let refused = |e: &Error, field: Option<&str>, want: &str| {
+        matches!(e, Error::Refused { field: at, reason: Refusal::Invalid { message } }
+            if message == want && at.as_ref().map(FieldName::as_str) == field)
+    };
+    for (d, field, want) in rows {
+        let e = c.declare(owner, decl(d)).await.expect_err(&want);
+        assert!(
+            refused(&e, field, &want),
+            "want {want:?} on {field:?}, got {e:?}"
+        );
+    }
+    assert_eq!(f.head().await, head, "nothing is appended");
+    let soon = |when: &str| json!({"name": "soon", "type": {"kind": "date_time"}, "authority": "derived", "derived": "due", "computed_at": when});
+    let band = late(json!({"name": "band", "type": {"kind": "text"}, "derived": "k"}));
+    c.declare(
+        owner,
+        decl(ty(
+            vec![late(json!({})), soon("write"), band.clone()],
+            json!({}),
+        )),
+    )
+    .await
+    .expect("a field computed at the read is declared");
+    let watch = json!({"declare": "trigger", "name": "watch", "on": "ca", "when": "soon > due"});
+    c.declare(owner, decl(watch))
+        .await
+        .expect("a trigger reads `soon`");
+    let head = f.head().await;
+    for (d, what) in [
+        (
+            json!({"declare": "trigger", "name": "tr", "on": "ca", "when": "late"}),
+            "trigger declaration `tr`",
+        ),
+        (
+            json!({"declare": "object_set", "name": "st", "of": "ca", "where": "late"}),
+            "object_set declaration `st`",
+        ),
+        (
+            json!({"declare": "verb", "name": "vb", "on": "ca", "risk": "low", "effect": "write",
+                "set": [{"field": "k", "value": "if(late, 'a', 'b')"}]}),
+            "verb declaration `vb`",
+        ),
+    ] {
+        let e = c.declare(owner, decl(d)).await.expect_err(what);
+        assert!(
+            refused(&e, None, &on(what)),
+            "want {:?}, got {e:?}",
+            on(what)
+        );
+    }
+    let p = json!([{"name": "p", "type": {"kind": "text"}, "computed_at": "write"}]);
+    let more = [
+        (
+            ty(vec![late(json!({})), soon("read"), band], json!({})),
+            Some("soon"),
+            "type `ca`, field `soon`: a trigger, a verb, an object set or another type's derived relation in force reads it as stored, so it is not computed at the read",
+        ),
+        (
+            json!({"declare": "verb", "name": "pv", "on": "ca", "risk": "low", "effect": "write", "payload": p,
+                "set": [{"field": "k", "value": "payload.p"}]}),
+            Some("p"),
+            "verb `pv`, payload, field `p`: only a field of a record says `computed_at`",
+        ),
+    ];
+    for (d, field, want) in more {
+        let e = c.declare(owner, decl(d)).await.expect_err(want);
+        assert!(
+            refused(&e, field, want),
+            "want {want:?} on {field:?}, got {e:?}"
+        );
+    }
+    assert_eq!(f.head().await, head, "nothing is appended");
+    // An order by it is refused, by `find` and by a pattern.
+    let order = |field: &str| {
+        vec![Order {
+            field: field.into(),
+            by: OrderBy::Value,
+            dir: Direction::Asc,
+        }]
+    };
+    let want = "`order_by` names `late` of `ca`, which is computed at the read and moves with the clock; a page's order would not hold to the next";
+    let find = Find {
+        order_by: order("late"),
+        ..Find::default()
+    };
+    let e = c.find(owner, &"ca".into(), find).await.expect_err(want);
+    assert!(refused(&e, None, want), "`find`: want {want:?}, got {e:?}");
+    let mut walk: Pattern = serde_json::from_value(
+        json!({"start": {"type": "ca"}, "steps": [], "project": {"as": "rows"}}),
+    )
+    .expect("a pattern");
+    walk.order_by = order("ca.late");
+    let e = c.query(owner, walk).await.expect_err(want);
+    assert!(
+        refused(&e, None, want),
+        "a pattern: want {want:?}, got {e:?}"
+    );
+    let shape = c
+        .describe_type(owner, &"ca".into(), Default::default())
+        .await;
+    let shape = shape.expect("the owner describes `ca`").data;
+    let late = shape.fields.iter().find(|f| f.name.as_str() == "late");
+    assert_eq!(
+        late.and_then(|f| f.computed_at),
+        Some(ComputedAt::Read),
+        "{late:?}"
+    );
+}
+
+/// A grant's `only` on a field computed at the read cannot be applied: no
+/// engine holds the field to filter by. A read is refused naming the type
+/// alone; on the mock as on the store (052).
+pub async fn a_grants_only_on_a_field_computed_at_the_read_is_not_applied(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let (c, owner) = (&f.catalog, &f.cast.owner);
+    let ca = json!({"declare": "type", "name": "ca", "key": ["k"], "fields": [
+        {"name": "k", "type": {"kind": "text"}},
+        {"name": "band", "type": {"kind": "text"}, "authority": "derived", "derived": "k",
+         "computed_at": "read"}]});
+    let ca = serde_json::from_value::<Declaration>(ca).expect("a declaration");
+    c.declare(owner, ca).await.expect("`ca` is declared");
+    let grants = json!({"default": "read", "types": {"ca": {"only": {"band": "x"}}}});
+    let eve = Principal {
+        id: "eve".into(),
+        grants: serde_json::from_value(grants).expect("grants"),
+        ..owner.clone()
+    };
+    let want = "the grant's `only` on `ca` cannot be applied here; the host's grants need fixing";
+    let e = c
+        .find(&eve, &"ca".into(), Find::default())
+        .await
+        .expect_err(want);
+    assert!(
+        matches!(&e, Error::Refused { field: None, reason: Refusal::Invalid { message } } if message == want),
+        "want {want:?}, got {e:?}"
+    );
 }
 
 /// A derived field, an object set's `where`, a trigger's `when` and a

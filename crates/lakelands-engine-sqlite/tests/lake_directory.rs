@@ -53,6 +53,7 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
         authority: Authority::Authored,
         derived: None,
         function: None,
+        computed_at: None,
         depends_on: vec![],
         on_input_change: Default::default(),
         initial: None,

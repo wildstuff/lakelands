@@ -15,7 +15,7 @@ use crate::ontology::{FieldDecl, StorageKind, TypeDecl, ViewDecl};
 use crate::{FieldName, TypeName};
 
 /// Whether `view` can be kept, by its declaration alone: it declares no
-/// parameter and reads no clock, and every aggregate call of its measures
+/// parameter and reads no clock, nor a field computed at the read, and every aggregate call of its measures
 /// and of its merged sources' is a function of its values: any `count`, a
 /// `sum` or `avg` of what is certainly a number, a `min` or `max` of what
 /// is certainly a number or an instant, and that only under group fields
@@ -38,17 +38,36 @@ pub fn keepable<'a>(
     for (source, filter, group_by, measures) in std::iter::once(own).chain(merged) {
         let fields = declared(source).map_or(&[][..], |t| &t.fields);
         let clock = "reads the clock, and a kept record is computed when its source is written";
-        if filter
-            .iter()
-            .any(|c| typed(c).is_ok_and(|e| reads_clock(&e)))
-        {
-            return Err(format!("its `where` over `{source}` {clock}"));
+        // A field computed at the read moves with the clock as well.
+        let moving = |e: &Expr| {
+            (e.fields_read().into_iter())
+                .find(|n| at_read(fields, n))
+                .cloned()
+        };
+        let read = |n: FieldName| {
+            format!(
+                "reads `{n}` of `{source}`, which is computed at the read, and a kept record is computed when its source is written"
+            )
+        };
+        if let Some(n) = group_by.iter().find(|n| at_read(fields, n)) {
+            return Err(format!("it groups by what {}", read(n.clone())));
+        }
+        for e in filter.iter().filter_map(|c| typed(c).ok()) {
+            if e.reads_clock() {
+                return Err(format!("its `where` over `{source}` {clock}"));
+            }
+            if let Some(n) = moving(&e) {
+                return Err(format!("its `where` {}", read(n)));
+            }
         }
         for m in measures {
             let named = |why: String| format!("measure `{}`: {why}", m.name);
             let e = typed(&m.expr).map_err(named)?;
-            if reads_clock(&e) {
+            if e.reads_clock() {
                 return Err(named(format!("it {clock}")));
+            }
+            if let Some(n) = moving(&e) {
+                return Err(named(format!("it {}", read(n))));
             }
             let mut made = Vec::new();
             calls(&e, &mut made);
@@ -71,9 +90,8 @@ fn typed(c: &Condition) -> Result<Expr, String> {
     }
 }
 
-fn reads_clock(e: &Expr) -> bool {
-    let here = matches!(e, Expr::Call { func, .. } if matches!(func, Func::Now | Func::Today));
-    here || children(e).any(reads_clock)
+fn at_read(fields: &[FieldDecl], n: &FieldName) -> bool {
+    fields.iter().any(|f| &f.name == n && f.at_read())
 }
 
 /// The aggregate calls in `e`.

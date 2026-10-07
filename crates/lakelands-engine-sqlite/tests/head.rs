@@ -52,6 +52,7 @@ async fn a_read_as_of_the_head_is_never_refused_while_a_writer_appends() {
         authority: Default::default(),
         derived: None,
         function: None,
+        computed_at: None,
         depends_on: vec![],
         on_input_change: Default::default(),
         initial: None,

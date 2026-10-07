@@ -37,8 +37,8 @@ use std::collections::BTreeSet;
 use lakelands_api::expr::kind::{self, Kind};
 use lakelands_api::expr::{Condition, Expr, Func};
 use lakelands_api::ontology::{
-    Authority, Derived, FieldDecl, OnInputChange, RelationDecl, StorageKind, TypeDecl,
-    ValueTypeDecl, VerbEffect, VerbScope, ViewDecl,
+    Authority, Derived, FieldDecl, OnInputChange, RelationDecl, StorageKind, TriggerDecl, TypeDecl,
+    ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl,
 };
 use lakelands_api::tools::name_problems;
 use lakelands_api::write::{Declaration, ObjectSetDecl};
@@ -441,6 +441,21 @@ fn initial(o: &Ontology, owner: &str, f: &FieldDecl, of: Option<&TypeDecl>) -> R
     Err(invalid_field(&f.name, format!("{at}: {why}")))
 }
 
+/// Refuse `computed_at` on a field no record holds: a verb's payload's, a
+/// function's input.
+fn computed_here(at: &str, f: &FieldDecl) -> Result<()> {
+    match f.computed_at {
+        Some(_) => Err(invalid_field(
+            &f.name,
+            format!(
+                "{at}, field `{}`: only a field of a record says `computed_at`",
+                f.name
+            ),
+        )),
+        None => Ok(()),
+    }
+}
+
 /// `of` is the type a field is one of, `None` for a relation's field, a
 /// verb's payload and a function's input, which declare no `initial`.
 fn field_type(
@@ -528,6 +543,9 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
         ));
     }
     if let Some((field, why)) = t.embedding_problem() {
+        return Err(invalid_field(&field, why));
+    }
+    if let Some((field, why)) = t.computed_at_problem(|n| o.functions.get(n).map(|e| &e.decl)) {
         return Err(invalid_field(&field, why));
     }
     for f in &t.fields {
@@ -859,6 +877,13 @@ fn derived(o: &Ontology, t: &TypeDecl, r: &RelationDecl, d: &Derived, owner: &st
                 p.from, p.to, from.ty.kind
             )));
         }
+        if to.at_read() {
+            return Err(at(&format!(
+                "the pair `{}` = `{}` matches `{}.{}`, which is computed at the read; a match \
+                 reads values as stored",
+                p.from, p.to, r.target, p.to
+            )));
+        }
     }
     Ok(())
 }
@@ -879,6 +904,19 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
     {
         return Err(invalid(format!(
             "{} reads `{n}`, which `{}` does not have",
+            d.what(),
+            on.name
+        )));
+    }
+    // A verb, a trigger and a set read a record as stored, at a write.
+    if let Some(on) = on.filter(|_| !matches!(d, Declaration::Type(_)))
+        && let reads = lakelands_core::describe::declaration_reads(d, &on.name, &|_| None)
+        && let Some(n) =
+            (reads.iter()).find(|n| on.fields.iter().any(|f| &f.name == *n && f.at_read()))
+    {
+        return Err(invalid(format!(
+            "{} reads `{n}`, which `{}` computes at the read; it is evaluated over the record as \
+             stored, which never holds it",
             d.what(),
             on.name
         )));
@@ -907,6 +945,52 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
     Ok(())
 }
 
+/// Refuse taking to the read a field that a trigger, a verb, an object set
+/// or another type's derived relation in force reads: each reads the
+/// record as stored. The refusal names the field alone, not what reads it,
+/// which its declarer may not be shown.
+fn read_as_stored(o: &Ontology, t: &TypeDecl) -> Result<()> {
+    if !t.fields.iter().any(FieldDecl::at_read) {
+        return Ok(());
+    }
+    let mut read = BTreeSet::new();
+    for d in o.declared().iter().map(|d| &d.declaration) {
+        if let Declaration::Verb(VerbDecl { on, .. })
+        | Declaration::Trigger(TriggerDecl { on, .. })
+        | Declaration::ObjectSet(ObjectSetDecl { of: on, .. }) = d
+            && on == &t.name
+        {
+            read.extend(lakelands_core::describe::declaration_reads(d, on, &|_| {
+                None
+            }));
+        }
+    }
+    let others = o.types.values().filter(|e| e.decl.name != t.name);
+    let matching = others
+        .flat_map(|e| &e.decl.relations)
+        .filter(|r| r.target == t.name);
+    read.extend(
+        matching
+            .flat_map(|r| r.derived.iter().flat_map(|d| &d.pairs))
+            .map(|p| p.to.clone()),
+    );
+    match t
+        .fields
+        .iter()
+        .find(|f| f.at_read() && read.contains(&f.name))
+    {
+        Some(f) => Err(invalid_field(
+            &f.name,
+            format!(
+                "type `{}`, field `{}`: a trigger, a verb, an object set or another type's derived \
+                 relation in force reads it as stored, so it is not computed at the read",
+                t.name, f.name
+            ),
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Passes the refusal of a reshaping declaration, which a migration is.
 pub(crate) fn unless_a_migration(e: Error) -> Result<()> {
     match &e {
@@ -930,6 +1014,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 return Err(crate::writes::refused(Refusal::Reserved));
             }
             type_decl(o, t)?;
+            read_as_stored(o, t)?;
             if let Some(current) = o.types.get(&t.name)
                 && let Change::Migrate { reasons } = shape::classify(&current.decl, t)
             {
@@ -1053,7 +1138,9 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 )));
             }
             for f in &v.payload {
-                field_type(o, &format!("verb `{}`, payload", v.name), f, &v.on, None)?;
+                let at = format!("verb `{}`, payload", v.name);
+                field_type(o, &at, f, &v.on, None)?;
+                computed_here(&at, f)?;
             }
             if let Some(r) = &v.requires {
                 condition(r, Place::Record, &format!("verb `{}`, requires", v.name))?;
@@ -1181,13 +1268,9 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 })?;
             }
             for input in &f.inputs {
-                field_type(
-                    o,
-                    &format!("function `{}`, input", f.name),
-                    input,
-                    &TypeName::from(""),
-                    None,
-                )?;
+                let at = format!("function `{}`, input", f.name);
+                field_type(o, &at, input, &TypeName::from(""), None)?;
+                computed_here(&at, input)?;
             }
             match (f.backing.as_str(), &f.expr) {
                 ("expr", Some(e)) => {

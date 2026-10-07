@@ -147,6 +147,7 @@ pub fn mirror_type() -> TypeDecl {
         authority: Authority::Authored,
         derived: None,
         function: None,
+        computed_at: None,
         depends_on: vec![],
         on_input_change: Default::default(),
         initial: None,

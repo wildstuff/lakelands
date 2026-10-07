@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::expr::Condition;
+use crate::expr::{Condition, Func};
 use crate::id::{
     FieldName, ParamName, RelationName, TriggerName, TypeName, ValueTypeName, VerbName,
 };
@@ -179,6 +179,18 @@ pub enum OnInputChange {
     Clear,
 }
 
+/// When a computed field is computed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputedAt {
+    /// By the fold, at each write that changes its inputs: the value is
+    /// stored, and the clock it reads is the write's.
+    Write,
+    /// At every read, from the record as stored and the read's clock: the
+    /// value is never stored, so a log, a feed and an export hold none.
+    Read,
+}
+
 /// One field of a type or of a relation.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -203,6 +215,10 @@ pub struct FieldDecl {
     /// any derived expression.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function: Option<String>,
+    /// For a computed field: when it is computed. Left out, at the write,
+    /// and an expression that reads the clock is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computed_at: Option<ComputedAt>,
     /// The fields this one depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<FieldName>,
@@ -249,6 +265,11 @@ impl FieldDecl {
             ..FieldDecl::default()
         }
     }
+
+    /// Whether it is computed at every read ([`ComputedAt::Read`]).
+    pub fn at_read(&self) -> bool {
+        self.computed_at == Some(ComputedAt::Read)
+    }
 }
 
 /// The members of a field's declaration that say what it is computed
@@ -272,7 +293,7 @@ macro_rules! unread {
         }
     };
 }
-unread! { derived, function, depends_on, initial, searchable, description, label, embed, annotations }
+unread! { derived, function, computed_at, depends_on, initial, searchable, description, label, embed, annotations }
 
 /// What a vector field is the embedding of
 /// (`docs/decisions/022-functions-are-declarations.md`, extended).
@@ -315,6 +336,136 @@ impl TypeDecl {
             ))
         })
     }
+
+    /// The first of this type's fields that says when it is computed
+    /// against the rules, with why. A computed field whose expression, or
+    /// `expr` function, reads the clock says when. One computed at the
+    /// read is computed at every read from the record as stored, so no
+    /// write gives it and nothing that reads stored records names it: it
+    /// has the authority `derived`, an expression computes it, and it is
+    /// not required, sensitive by itself, cleared or searched; it is no
+    /// key, validity bound, `via` or derived relation's match, no field of
+    /// a view or of a link; and no field computed at the write reads it.
+    /// `None` when every field keeps them. Every door checks this.
+    pub fn computed_at_problem<'f>(
+        &self,
+        function: impl Fn(&str) -> Option<&'f crate::write::FunctionDecl>,
+    ) -> Option<(FieldName, String)> {
+        let owner = format!("type `{}`", self.name);
+        let said = |at: &str, f: &FieldDecl, why: &str| {
+            Some((f.name.clone(), format!("{at}, field `{}`: {why}", f.name)))
+        };
+        let view = self
+            .view
+            .as_ref()
+            .and(self.fields.iter().find(|f| f.computed_at.is_some()));
+        if let Some(f) = view {
+            let why =
+                "a view's fields say no `computed_at`; its records are computed at every read";
+            return said(&owner, f, why);
+        }
+        for r in &self.relations {
+            let at = format!("{owner}, relation `{}`", r.name);
+            for f in &r.fields {
+                if f.at_read() {
+                    let why =
+                        "a link's field is computed at the write; a walk reads links as stored";
+                    return said(&at, f, why);
+                }
+                if let Some(why) = computed_at_problem(&r.fields, f, &function) {
+                    return said(&at, f, &why);
+                }
+            }
+        }
+        let pairs = self
+            .relations
+            .iter()
+            .flat_map(|r| r.derived.iter().flat_map(|d| &d.pairs));
+        let named = (self.key.iter().map(|n| (n, "key")))
+            .chain(self.valid_from.iter().map(|n| (n, "`valid_from`")))
+            .chain(self.valid_to.iter().map(|n| (n, "`valid_to`")))
+            .chain(
+                self.relations
+                    .iter()
+                    .filter_map(|r| Some((r.via.as_ref()?, "`via`"))),
+            )
+            .chain(pairs.map(|p| (&p.from, "derived relation's match")));
+        for (n, what) in named {
+            if let Some(f) = self.fields.iter().find(|f| &f.name == n && f.at_read()) {
+                let why = format!("computed at the read, it is no {what}, which is read as stored");
+                return said(&owner, f, &why);
+            }
+        }
+        self.fields.iter().find_map(|f| {
+            let why = computed_at_problem(&self.fields, f, &function)?;
+            said(&owner, f, &why)
+        })
+    }
+}
+
+/// What of `computed_at_problem` one field of `fields` breaks by itself.
+fn computed_at_problem<'f>(
+    fields: &[FieldDecl],
+    f: &FieldDecl,
+    function: &dyn Fn(&str) -> Option<&'f crate::write::FunctionDecl>,
+) -> Option<String> {
+    let called = f.function.as_deref().and_then(function);
+    let backed = called.is_some_and(|func| func.backing != "expr");
+    let expr = match (&f.derived, called) {
+        (Some(c), _) => c.typed().ok(),
+        (None, Some(func)) => func.expr.as_ref().and_then(|c| c.typed().ok()),
+        _ => None,
+    };
+    let reads: Vec<&FieldName> = match (&expr, called, &f.embed) {
+        (Some(e), _, _) => e.fields_read().into_iter().collect(),
+        (None, Some(func), _) => func.inputs.iter().map(|i| &i.name).collect(),
+        (_, _, Some(embed)) => embed.from.iter().collect(),
+        _ => Vec::new(),
+    };
+    let at_read = |n: &&FieldName| fields.iter().any(|d| &d.name == *n && d.at_read());
+    match f.computed_at {
+        Some(_) if f.derived.is_none() && f.function.is_none() => {
+            return Some(
+                "only a field derived from an expression or computed by a function says \
+                 `computed_at`"
+                    .into(),
+            );
+        }
+        None if expr.as_ref().is_some_and(crate::expr::Expr::reads_clock) => {
+            return Some(
+                "its expression reads the clock: say `computed_at: read` for a value of the day \
+                 it is read, or `computed_at: write` for the instant of its last write"
+                    .into(),
+            );
+        }
+        Some(ComputedAt::Read) => {}
+        _ => {
+            let n = reads.into_iter().find(at_read)?;
+            return Some(format!(
+                "computed at the write, it reads `{n}`, which is computed at the read and never \
+                 stored"
+            ));
+        }
+    }
+    let write = expr.is_some_and(|e| e.calls(&[Func::Previous, Func::Changed]));
+    let why = if f.authority != Authority::Derived {
+        "it has the authority `derived`: no door writes it"
+    } else if backed {
+        "an expression computes it; a function's backing is called at a write"
+    } else if write {
+        "it reads no `previous` or `changed`, which a write has and a read has not"
+    } else if f.required {
+        "it is not `required`: no write gives it a value"
+    } else if f.sensitive {
+        "it is not `sensitive` by itself, but as what it is computed from"
+    } else if f.on_input_change == OnInputChange::Clear {
+        "no value of it is kept to clear"
+    } else if f.searchable {
+        "it is not searchable: an index holds stored values only"
+    } else {
+        return None;
+    };
+    Some(format!("computed at the read, {why}"))
 }
 
 fn embedding_problem(t: &TypeDecl, f: &FieldDecl) -> Option<String> {

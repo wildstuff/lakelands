@@ -326,8 +326,9 @@ pub fn holds_only(who: &Principal) -> bool {
 
 /// Refuse a read that names `decl` where `who`'s `only` on it cannot be
 /// applied: a pair on a field the type does not declare, of a kind other
-/// than `text` or `reference`, with a value that is not text, or that the
-/// holder may not read. The refusal names the type, never the field, so a
+/// than `text` or `reference`, with a value that is not text, that the
+/// holder may not read, or that is computed at the read, which an engine
+/// does not hold to filter by. The refusal names the type, never the field, so a
 /// field the holder may not know of is not told.
 pub fn check_only(who: &Principal, decl: &TypeDecl) -> Result<(), Error> {
     use lakelands_api::ontology::StorageKind;
@@ -337,6 +338,7 @@ pub fn check_only(who: &Principal, decl: &TypeDecl) -> Result<(), Error> {
             matches!(d.ty.kind, StorageKind::Text | StorageKind::Reference)
                 && v.is_string()
                 && field_access(who, decl, d).reads()
+                && !d.at_read()
         })
     };
     if own_only(who, &decl.name).iter().all(applies) {

@@ -598,8 +598,8 @@ pub(crate) fn admits(who: &Principal, ty: &TypeName, fields: &BTreeMap<FieldName
 }
 
 /// Whether `who`'s `only` on `decl` can be applied: each pair a text
-/// value of a `text` or `reference` field the type declares and `who`
-/// may read.
+/// value of a `text` or `reference` field the type declares, `who` may
+/// read and no read computes.
 pub(crate) fn only_applies(who: &Principal, decl: &TypeDecl) -> bool {
     use lakelands_api::ontology::StorageKind;
     own_only(who, &decl.name).iter().all(|(f, v)| {
@@ -607,6 +607,7 @@ pub(crate) fn only_applies(who: &Principal, decl: &TypeDecl) -> bool {
             matches!(d.ty.kind, StorageKind::Text | StorageKind::Reference)
                 && v.is_string()
                 && access(who, decl, d).reads()
+                && !d.at_read()
         })
     })
 }

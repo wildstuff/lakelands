@@ -15,6 +15,7 @@ mod authors_view;
 mod backings;
 mod bundles;
 mod compact;
+mod computed_at;
 mod computed_inputs;
 mod concurrency;
 mod cursors;
@@ -177,6 +178,9 @@ pub const ALL: &[Check] = &[
     masking::MASKED_AND_ABSENT,
     masking::BUILT_FROM_HIDDEN,
     computed_inputs::COMPUTED_AS_ITS_INPUTS,
+    computed_at::AT_THE_READ,
+    computed_at::SAID_WHEN,
+    computed_at::MOVED,
     authored_reads::AUTHOR_READS,
     renamed_grants::GRANT_FOLLOWS,
     authored_reads::HIDDEN_TYPE,

@@ -294,7 +294,7 @@ fn a_strict_declaration_is_read_back_from_what_it_writes() {
                    {"name": "amount", "type": {"kind": "decimal", "value_type": "money"},
                     "description": "gross", "label": "Amount"},
                    {"name": "late", "type": {"kind": "boolean"}, "authority": "derived",
-                    "derived": "due < now()", "depends_on": ["due"]},
+                    "derived": "due < now()", "computed_at": "write", "depends_on": ["due"]},
                    {"name": "due", "type": {"kind": "date_time"}},
                ],
                "relations": [{"name": "paid_by", "target": "payment", "cardinality": "many_to_many",

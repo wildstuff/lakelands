@@ -59,7 +59,7 @@ type Kind = (&'static str, Vec<&'static str>, fn(&str) -> bool);
 fn kinds() -> [Kind; 3] {
     [
         ("the type", members!(TypeDecl { name, key, fields, relations, view, valid_from, valid_to, language, field_meta, description, label, annotations }), |t| t == "-"),
-        ("a field", members!(FieldDecl { name, ty, required, authority, derived, function, depends_on, on_input_change, initial, sensitive, searchable, description, label, embed, annotations }), |t| t != "-" && !RELATIONS.contains(&t)),
+        ("a field", members!(FieldDecl { name, ty, required, authority, derived, function, computed_at, depends_on, on_input_change, initial, sensitive, searchable, description, label, embed, annotations }), |t| t != "-" && !RELATIONS.contains(&t)),
         ("a relation", members!(RelationDecl { name, target, cardinality, inverse, via, fields, authority, description, annotations, derived }), |t| RELATIONS.contains(&t)),
     ]
 }
@@ -88,6 +88,7 @@ secret required null restated
 secret authority "authored" restated
 loud derived "lower(title)" restated
 loud depends_on null nothing
+loud computed_at "write" restated
 made function "hush" restated
 verdict depends_on ["body"] restated
 verdict on_input_change "keep" restated
