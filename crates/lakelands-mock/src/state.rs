@@ -518,6 +518,62 @@ impl State {
         held
     }
 
+    /// As the store (024 and 051, extended): `who` with each reference to
+    /// a type it is not shown held at `none`, a type's own fields and its
+    /// relations' link fields alike, to a fixed point. A field its type's
+    /// `only` names stays as granted, and so does a view's group field the
+    /// `only` of its one source names.
+    pub fn hidden(&self, who: &Principal) -> Principal {
+        let mut who = who.clone();
+        if !crate::doors::hides_some(&who) {
+            return who;
+        }
+        loop {
+            let unshown =
+                |ty: &TypeName| self.types.contains_key(ty) && self.visible(&who, ty).is_none();
+            let mut more = Vec::new();
+            for d in self.types.values().map(|t| &t.decl) {
+                let only = |f: &FieldName| {
+                    own_only(&who, &d.name).contains_key(f)
+                        || d.view.as_deref().is_some_and(|v| {
+                            v.merge.is_empty()
+                                && v.group_by.contains(f)
+                                && own_only(&who, &v.source).contains_key(f)
+                        })
+                };
+                let links = (d.relations.iter())
+                    .map(|r| (crate::links::name(&d.name, &r.name), &r.fields[..], false));
+                for (ty, fields, own) in
+                    std::iter::once((d.name.clone(), &d.fields[..], true)).chain(links)
+                {
+                    let held = |f: &FieldName| {
+                        let none = who.grants.types.get(&ty).and_then(|g| g.fields.get(f));
+                        none == Some(&Access::None) || own && only(f)
+                    };
+                    let refers = fields
+                        .iter()
+                        .filter(|f| f.ty.target.as_ref().is_some_and(unshown));
+                    more.extend(
+                        refers
+                            .filter(|f| !held(&f.name))
+                            .map(|f| (ty.clone(), f.name.clone())),
+                    );
+                }
+            }
+            if more.is_empty() {
+                return who;
+            }
+            for (ty, f) in more {
+                who.grants
+                    .types
+                    .entry(ty)
+                    .or_default()
+                    .fields
+                    .insert(f, Access::None);
+            }
+        }
+    }
+
     /// A record as one principal may read it.
     pub fn read(&self, who: &Principal, rec: &StoredRecord, with_meta: bool) -> Record {
         let decl = self.types.get(&rec.ty).map(|t| &t.decl);

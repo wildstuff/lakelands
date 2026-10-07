@@ -656,6 +656,64 @@ pub fn known_fields<'a>(who: &Principal, t: &mut TypeDecl, find: Find<'_, 'a>) {
 /// A type by its name, as the caller's ontology answers it.
 pub type Find<'f, 'a> = &'f dyn Fn(&TypeName) -> Option<&'a TypeDecl>;
 
+/// `who` with each reference to a type it is not shown held at `none`, a
+/// type's own fields and its relations' link fields alike, whatever the
+/// grant gave them (024 and 051, extended): a type kept from a principal
+/// is not learned through what names it. To a fixed point, since a field
+/// so hidden can leave another type unshown (006, extended). A field the
+/// effective `only` of its type names stays as granted, its value the one
+/// the host gave. `types` are the shape's types and `find` answers one by
+/// its name. Answers the fields hidden, in order.
+pub fn hide_unshown_references<'a>(
+    who: &mut Principal,
+    types: &[&'a TypeDecl],
+    find: Find<'_, 'a>,
+) -> Vec<(TypeName, FieldName)> {
+    let mut hidden = Vec::new();
+    if !hides_some(who) {
+        return hidden;
+    }
+    loop {
+        let unshown =
+            |ty: &TypeName| find(ty).is_some_and(|d| !crate::describe::type_shown(d, find, who));
+        let mut more = Vec::new();
+        for t in types {
+            let only = only(who, &t.name, find);
+            let links = (t.relations.iter()).map(|r| {
+                (
+                    crate::links::link_type_name(&t.name, &r.name),
+                    &r.fields[..],
+                    false,
+                )
+            });
+            for (ty, fields, own) in
+                std::iter::once((t.name.clone(), &t.fields[..], true)).chain(links)
+            {
+                let held = |f: &FieldName| {
+                    let none = who.grants.types.get(&ty).and_then(|g| g.fields.get(f));
+                    none == Some(&Access::None) || own && only.pairs().iter().any(|(n, _)| n == f)
+                };
+                let refers = fields
+                    .iter()
+                    .filter(|f| f.ty.target.as_ref().is_some_and(unshown));
+                more.extend(
+                    refers
+                        .filter(|f| !held(&f.name))
+                        .map(|f| (ty.clone(), f.name.clone())),
+                );
+            }
+        }
+        if more.is_empty() {
+            return hidden;
+        }
+        for (ty, f) in &more {
+            let grants = who.grants.types.entry(ty.clone()).or_default();
+            grants.fields.insert(f.clone(), Access::None);
+        }
+        hidden.extend(more);
+    }
+}
+
 /// Whether `who` may not know of some field: only a `none` its grants
 /// give, to the lake, a type or a field, hides one.
 pub fn hides_some(who: &Principal) -> bool {

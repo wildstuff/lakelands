@@ -436,10 +436,17 @@ impl MockCatalog {
     /// As the store: a principal with its grants held through the lake's
     /// renames (`Grants::follow`), for a read at `at` or a write at the head.
     /// The list is every `migrated` event's renames, in the log's order.
+    /// Then each reference to a type it is not shown, by the lake at `at`,
+    /// is held at `none` ([`State::hidden`]).
     fn followed(&self, who: &Principal, at: Option<Position>) -> Principal {
         let mut who = who.clone();
         who.grants.follow(&self.renames(), at);
-        who
+        if !hides_some(&who) {
+            return who;
+        }
+        let log = self.log();
+        let st = (self.state_at(&log, at)).or_else(|_| self.state_at(&log, None));
+        st.map_or(who.clone(), |(_, st)| st.hidden(&who))
     }
 
     /// As the store: the lake's list of renames, every `migrated` event's
@@ -2866,8 +2873,7 @@ fn authored(st: &State, who: &Principal, m: &mut Migration) -> Result<Option<Aut
     if st.types.contains_key(&m.to.name) && st.visible(who, &m.to.name).is_none() {
         return Err(no_type(&m.to.name));
     }
-    let renames = Some(&m.relation_renames[..]);
-    reads_as_author(st, who, &[Declaration::Type(m.to.clone())], renames)?;
+    reads_as_author(st, who, &[Declaration::Type(m.to.clone())], true)?;
     let Some(before) = st.types.get(&m.to.name) else {
         return Ok(None);
     };
@@ -2919,7 +2925,7 @@ fn reads_as_author(
     st: &State,
     who: &Principal,
     sent: &[Declaration],
-    migration: Option<&[(RelationName, RelationName)]>,
+    reshapes: bool,
 ) -> Result<()> {
     // As the store: a type its author is not shown is a type that is not
     // declared, for whatever names it; to declare it is not granted.
@@ -2936,34 +2942,16 @@ fn reads_as_author(
     for t in seen.types.values_mut() {
         known_fields((st, who), &mut t.decl);
     }
-    // As the store: what a type's shape names stands as declared, known to
-    // its author or not: a key field, a valid time, a relation's `via`.
+    // As the store: a valid time left out where the one in force names a
+    // field outside the author's view stands as declared, left out of both
+    // sides; a valid time sent, the one in force too, is read against the
+    // view.
     let mut shaped = sent.to_vec();
     for d in &mut shaped {
         let Declaration::Type(t) = d else { continue };
-        // As the store: an unchanged reference to a type its author is not
-        // shown stands as declared, left out of both sides, where the
-        // author may know of the field.
-        let hides = |x: &TypeName| st.types.contains_key(x) && !seen.types.contains_key(x);
-        let hidden = |f: &FieldDecl| f.ty.target.as_ref().is_some_and(hides);
-        let was = st.types.get(&t.name).map(|w| &w.decl.fields[..]);
-        let known = seen.types.get(&t.name).map(|e| &e.decl.fields[..]);
-        let known = |f: &FieldDecl| known.unwrap_or_default().iter().any(|k| k.name == f.name);
-        let unchanged: Vec<FieldDecl> = (t.fields.iter())
-            .filter(|f| hidden(f) && was.unwrap_or_default().contains(f) && known(f))
-            .cloned()
-            .collect();
         let (Some(was), Some(e)) = (st.types.get(&t.name), seen.types.get_mut(&t.name)) else {
             continue;
         };
-        for fields in [&mut t.fields, &mut e.decl.fields] {
-            fields.retain(|f| !unchanged.contains(f));
-        }
-        // As the store: a valid time left out where the one in force names a
-        // field outside the author's view, and a relation the author is
-        // shown as it stands (whole but for a rename) naming such a field,
-        // are left out of both sides; a valid time sent, the one in force
-        // too, is read against the view.
         let held = &was.decl;
         let view: Vec<FieldName> = e.decl.fields.iter().map(|f| f.name.clone()).collect();
         let unseen = |f: &Option<FieldName>| f.as_ref().is_some_and(|f| !view.contains(f));
@@ -2975,42 +2963,12 @@ fn reads_as_author(
                 (*sent, *kept) = (None, None);
             }
         }
-        let renamed = migration.unwrap_or_default();
-        let standing = |r: &RelationDecl| {
-            let old = renamed.iter().find(|(_, new)| new == &r.name);
-            let old = old.map_or(&r.name, |(old, _)| old).clone();
-            let h = e.decl.relations.iter().find(|h| h.name == old)?;
-            let whole = *h
-                == RelationDecl {
-                    name: old.clone(),
-                    ..r.clone()
-                };
-            (whole && unseen(&r.via)).then_some((r.name.clone(), old))
-        };
-        let gone: Vec<_> = t.relations.iter().filter_map(standing).collect();
-        t.relations
-            .retain(|r| !gone.iter().any(|(new, _)| new == &r.name));
-        (e.decl.relations).retain(|r| !gone.iter().any(|(_, old)| old == &r.name));
-        // As the store: the key keeps its fields at their declared place.
-        let named = if t.key == held.key {
-            t.key.clone()
-        } else {
-            Vec::new()
-        };
-        let declared = held.fields.iter().enumerate();
-        for (i, f) in declared.filter(|(_, f)| named.contains(&f.name)) {
-            for fields in [&mut t.fields, &mut e.decl.fields] {
-                if !fields.iter().any(|x| x.name == f.name) {
-                    fields.insert(i.min(fields.len()), f.clone());
-                }
-            }
-        }
     }
     // A migration's shape is refused as a declaration, of the type or of
     // a relation's links.
     let reshaping = |e: &Error| {
         let said = e.case().map(|s| &s.case);
-        migration.is_some()
+        reshapes
             && matches!(
                 said,
                 Some(Case::Reshapes { .. } | Case::ReshapesLinks { .. })
@@ -3082,7 +3040,7 @@ fn reads_as_author(
 /// Each type of `declarations` the lake declares already, read as its
 /// author's view of it.
 fn redeclared(st: &State, who: &Principal, declarations: &mut [Declaration]) -> Result<()> {
-    reads_as_author(st, who, declarations, None)?;
+    reads_as_author(st, who, declarations, false)?;
     for d in declarations {
         if let Declaration::Type(t) = d
             && let Some(before) = st.types.get(&t.name)
@@ -3348,6 +3306,7 @@ fn known_shape(
                 let (hash, version) = identity_version(&after, d);
                 after.declare(d, hash, version);
             }
+            let who = &after.hidden(then);
             declarations.retain(|d| listed(&after, who, d));
             for d in declarations.iter_mut() {
                 if let Declaration::Type(t) = d {
@@ -3405,7 +3364,7 @@ fn following(who: &Principal, m: &Migration) -> Principal {
 
 /// As the store: whether `who` may not know of some field, which only a
 /// `none` its grants give hides.
-fn hides_some(who: &Principal) -> bool {
+pub(crate) fn hides_some(who: &Principal) -> bool {
     let (g, none) = (&who.grants, |a: &Access| *a == Access::None);
     let typed =
         |t: &TypeGrants| t.default.as_ref().is_some_and(none) || t.fields.values().any(none);
@@ -5027,7 +4986,6 @@ impl Catalog for MockCatalog {
     ) -> Result<Reply<Vec<Proposal>>> {
         self.admit(who)?;
         let asked = who;
-        let who = &self.followed(who, None);
         let limit = self.limit(filter.limit, false)?;
         let (pinned, offset) = match &filter.cursor {
             Some(c) => {
@@ -5037,6 +4995,12 @@ impl Catalog for MockCatalog {
             None => (filter.at.as_of, 0),
         };
         let (position, st) = self.state_at(&self.log(), pinned)?;
+        // As the store: the reader's grants followed to the listing, its
+        // references hidden by the lake there (024, extended).
+        let renames = self.renames();
+        let mut here = asked.clone();
+        here.grants.follow(&renames, pinned);
+        let who = &st.hidden(&here);
         let touches = |w: &ProposedWrite, ty: &TypeName| match w {
             ProposedWrite::Upsert { ty: t, .. } | ProposedWrite::Retire { ty: t, .. } => t == ty,
             ProposedWrite::Call { verb, .. } => st.verbs.get(verb).is_some_and(|v| &v.on == ty),
@@ -5075,7 +5039,6 @@ impl Catalog for MockCatalog {
         }
         // As the store: the entry as its reader is shown it, and the kind
         // and the type asked of that.
-        let renames = self.renames();
         for p in &mut rows {
             // `more` is what the trim left out, not what the completion added.
             let mut logged = p.write.take();
@@ -5085,6 +5048,9 @@ impl Catalog for MockCatalog {
             // followed to the position it was proposed at, and a report made
             // from a type changed since by the type it was made from, where
             // those grants hide a field.
+            // Its references are held as the type it was proposed against
+            // shows them; a bundle's, as the bundle in force would, from the
+            // grants as asked.
             let mut then = asked.clone();
             then.grants.follow(&renames, Some(p.position));
             let made = match &logged {
@@ -5092,11 +5058,15 @@ impl Catalog for MockCatalog {
                     let ty = &migration.to.name;
                     let head = st.types.get(ty).map(|t| &t.schema_hash);
                     let stale = head != Some(&report.from_schema_hash) && hides_some(&then);
-                    let then = stale.then(|| self.state_at(&self.log(), Some(p.position)).ok());
-                    let then = then
-                        .flatten()
-                        .and_then(|(_, then)| then.types.get(ty).cloned());
-                    then.map(|t| t.decl)
+                    let at = stale.then(|| self.state_at(&self.log(), Some(p.position)).ok());
+                    let at = at.flatten().map(|(_, at)| at);
+                    then = at.as_ref().unwrap_or(&st).hidden(&then);
+                    let made = at.and_then(|at| at.types.get(ty).cloned());
+                    made.map(|t| t.decl)
+                }
+                Some(ProposedWrite::Declare { .. }) => {
+                    then = here.clone();
+                    None
                 }
                 _ => None,
             };

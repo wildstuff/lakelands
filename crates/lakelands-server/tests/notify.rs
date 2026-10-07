@@ -808,6 +808,71 @@ async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_who
     }
 }
 
+/// A principal who reads every field of `invoice` but is not shown
+/// `partner` may not know of `invoice.partner`, which refers to it
+/// (lakelands#718): it is told of the write, never of the firing or the
+/// set change, as one who may not read a field is (024, extended).
+#[tokio::test]
+async fn a_condition_is_not_told_to_one_kept_from_a_type_a_field_refers_to() {
+    for backend in [Backend::Memory, Backend::Sqlite] {
+        let store = common::lake_on(backend).await;
+        declare(
+            store.as_ref(),
+            json!({"declare": "trigger", "name": "paid", "on": "invoice", "when": "status = 'paid'"}),
+        )
+        .await;
+        let mut grants = Grants {
+            default: Access::Read,
+            ..Grants::default()
+        };
+        let read = TypeGrants {
+            fields: [("note".into(), Access::Read)].into(),
+            ..Default::default()
+        };
+        let none = TypeGrants {
+            default: Some(Access::None),
+            ..Default::default()
+        };
+        grants
+            .types
+            .extend([("invoice".into(), read), ("partner".into(), none)]);
+        let who = Principal {
+            kind: PrincipalKind::Agent,
+            id: "unbilled".into(),
+            lake: "finance".into(),
+            grants,
+        };
+        let mut s = Stdio::open(store.clone(), who).await;
+        s.call(
+            "subscribe",
+            json!({"kinds": ["trigger_fired", "record_upserted"]}),
+        )
+        .await;
+        let p = write(
+            store.as_ref(),
+            "invoice",
+            "INV-1",
+            json!({"status": "paid"}),
+        )
+        .await;
+        let m = s.change().await;
+        assert_eq!(
+            (&m["params"]["kind"], &m["params"]["position"]),
+            (&json!("record_upserted"), &json!(p)),
+            "{backend:?}: {m}"
+        );
+        let later = write(
+            store.as_ref(),
+            "invoice",
+            "INV-2",
+            json!({"status": "open"}),
+        )
+        .await;
+        let m = s.change().await;
+        assert_eq!(m["params"]["position"], json!(later), "{backend:?}: {m}");
+    }
+}
+
 /// The write that made a record changed every field the fold filled with
 /// its `initial` value (050): a principal granted `state` alone is told
 /// of the create whose patch named another field, and not of a later

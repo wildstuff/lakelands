@@ -288,6 +288,7 @@ pub fn run(
         who: &system,
         context: WriteContext::default(),
         followed: None,
+        shown: None,
     };
     let mut w = lake.for_write()?;
     let view = lake.engine.view(None)?;

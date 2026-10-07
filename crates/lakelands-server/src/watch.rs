@@ -623,11 +623,18 @@ impl<'a> View<'a> {
             .describe_type(self.host, ty, as_of(at))
             .await
             .map_err(|e| failed(&e))?;
-        let w = d
-            .data
-            .fields
-            .iter()
-            .all(|f| self.who.grants.access(ty, &f.name).reads());
+        // As the principal's own description shows it, which leaves out a
+        // field its grants leave readable but it may not know of, as a
+        // reference to a type it is not shown (024, extended).
+        let mine = self
+            .catalog
+            .describe_type(self.who, ty, as_of(at))
+            .await
+            .map_err(|e| failed(&e))?;
+        let reads = |n: &lakelands_api::FieldName| {
+            (mine.data.fields.iter()).any(|f| &f.name == n && f.access.reads())
+        };
+        let w = d.data.fields.iter().all(|f| reads(&f.name));
         self.whole.insert(ty.clone(), w);
         Ok(w)
     }

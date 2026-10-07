@@ -175,6 +175,21 @@ pub struct Call<'a> {
     /// How many entries of the lake's renames `who`'s grants were followed
     /// through; `None` for one whose grants name no field.
     pub followed: Option<usize>,
+    /// What `who` was shown as the call was made, for one whose grants
+    /// hide something: judged again under the writer's lock.
+    pub shown: Option<Shown>,
+}
+
+/// A write's principal as the head's types showed it when its call was
+/// made (024, extended): its grants as asked, the types' versions, and
+/// the references to types it is not shown, held at `none` in `who`.
+pub struct Shown {
+    /// The principal before the references were hidden.
+    pub asked: Principal,
+    /// The types' versions it was shown by.
+    pub versions: Vec<(TypeName, u32)>,
+    /// The fields hidden.
+    pub hidden: Vec<(TypeName, FieldName)>,
 }
 
 /// The record events of one append that are not in the projection yet.
@@ -2138,9 +2153,16 @@ impl Call<'_> {
     /// (006, extended).
     pub(crate) fn writer(&self) -> Result<std::sync::MutexGuard<'_, crate::lake::Writer>> {
         let w = self.lake.for_write()?;
+        let moved = |s: &Shown| {
+            s.versions != w.ontology.versions()
+                && crate::lake::Lake::hidden(s.asked.clone(), &w.ontology).1 != s.hidden
+        };
         match self.followed {
             Some(n) if self.lake.renames(None)?.len() != n => {
                 Err(Error::unavailable(Situation::Moved))
+            }
+            _ if self.shown.as_ref().is_some_and(moved) => {
+                Err(Error::unavailable(Situation::TypesMoved))
             }
             _ => Ok(w),
         }
@@ -2351,14 +2373,8 @@ impl Call<'_> {
     /// author is shown it, so a field the author may not know of answers as
     /// one the type does not have, whatever reads it. Then a field it knows
     /// of and may not read is refused as not granted, where what its author
-    /// adds or changes reads its value. A migration's set is its `to`,
-    /// with the relations it renames.
-    fn reads_as_author(
-        &self,
-        o: &Ontology,
-        sent: &[Declaration],
-        migration: Option<&[(RelationName, RelationName)]>,
-    ) -> Result<()> {
+    /// adds or changes reads its value.
+    fn reads_as_author(&self, o: &Ontology, sent: &[Declaration], reshapes: bool) -> Result<()> {
         // A type its author is not shown is a type that is not declared,
         // for whatever names it; to declare it is not granted, and names
         // nothing of it.
@@ -2373,39 +2389,20 @@ impl Call<'_> {
         for e in seen.types.values_mut().map(Arc::make_mut) {
             rights::known_fields(self.who, &mut e.decl, &|n| o.ty(n).ok());
         }
-        // What a type's shape names stands as declared, known to its author
-        // or not: a key field, a valid time, a relation's `via`.
+        // A valid time left out where the one in force names a field outside
+        // its author's view stands as declared: left out of both sides, it is
+        // checked whole at apply. A valid time its author sends, the one in
+        // force too, is read against its view, where such a field is no field
+        // (027, extended, lakelands#726, lakelands#692). A key and a
+        // relation's `via` name fields their author knows of, or the type and
+        // the relation are not shown to it (006 and 024, extended).
         let mut shaped = sent.to_vec();
         for d in &mut shaped {
             let Declaration::Type(t) = d else { continue };
-            // An unchanged reference to a type its author is not shown
-            // stands as declared: left out of both sides, it is checked
-            // whole at apply. Only a field the author may know of is so:
-            // one it is held from answers as a field the type does not
-            // have, whatever it names (027, extended).
-            let hides = |x: &TypeName| o.types.contains_key(x) && !seen.types.contains_key(x);
-            let hidden = |f: &FieldDecl| f.ty.target.as_ref().is_some_and(hides);
-            let was = o.ty(&t.name).map(|w| &w.fields[..]).unwrap_or_default();
-            let known = seen.types.get(&t.name).map(|e| &e.decl.fields[..]);
-            let known = |f: &FieldDecl| known.unwrap_or_default().iter().any(|k| k.name == f.name);
-            let unchanged: Vec<FieldDecl> = (t.fields.iter())
-                .filter(|f| hidden(f) && was.contains(f) && known(f))
-                .cloned()
-                .collect();
-            let Some(e) = seen.types.get_mut(&t.name).map(Arc::make_mut) else {
+            let (Ok(held), Some(e)) = (o.ty(&t.name), seen.types.get_mut(&t.name)) else {
                 continue;
             };
-            for fields in [&mut t.fields, &mut e.decl.fields] {
-                fields.retain(|f| !unchanged.contains(f));
-            }
-            // A valid time left out where the one in force names a field
-            // outside its author's view, and a relation its author is shown
-            // as it stands, whole but for a rename, naming such a field, are
-            // left out of both sides and checked whole at apply. A valid time
-            // its author sends, the one in force too, is read against its
-            // view, where such a field is no field (027, extended,
-            // lakelands#726, lakelands#692).
-            let held = o.ty(&t.name)?;
+            let e = Arc::make_mut(e);
             let view: Vec<FieldName> = e.decl.fields.iter().map(|f| f.name.clone()).collect();
             let unseen = |f: &Option<FieldName>| f.as_ref().is_some_and(|f| !view.contains(f));
             for (sent, kept, was) in [
@@ -2416,41 +2413,10 @@ impl Call<'_> {
                     (*sent, *kept) = (None, None);
                 }
             }
-            let renamed = migration.unwrap_or_default();
-            let standing = |r: &RelationDecl| {
-                let old = renamed.iter().find(|(_, new)| new == &r.name);
-                let old = old.map_or(&r.name, |(old, _)| old).clone();
-                let h = e.decl.relations.iter().find(|h| h.name == old)?;
-                let whole = *h
-                    == RelationDecl {
-                        name: old.clone(),
-                        ..r.clone()
-                    };
-                (whole && unseen(&r.via)).then_some((r.name.clone(), old))
-            };
-            let gone: Vec<_> = t.relations.iter().filter_map(standing).collect();
-            t.relations
-                .retain(|r| !gone.iter().any(|(new, _)| new == &r.name));
-            (e.decl.relations).retain(|r| !gone.iter().any(|(_, old)| old == &r.name));
-            // The key names no field its author may not know of (006), and
-            // keeps its fields at their declared place.
-            let named = if t.key == held.key {
-                t.key.clone()
-            } else {
-                Vec::new()
-            };
-            let was = held.fields.iter().enumerate();
-            for (i, f) in was.filter(|(_, f)| named.contains(&f.name)) {
-                for fields in [&mut t.fields, &mut e.decl.fields] {
-                    if !fields.iter().any(|x| x.name == f.name) {
-                        fields.insert(i.min(fields.len()), f.clone());
-                    }
-                }
-            }
         }
         // A migration's shape is refused as a declaration; its preflight is next.
         match self.check_bundle(&seen, &shaped) {
-            Err(e) if migration.is_some() => declare::unless_a_migration(e)?,
+            Err(e) if reshapes => declare::unless_a_migration(e)?,
             checked => checked?,
         }
         let (before, mut after) = (o.declared(), o.clone());
@@ -2495,9 +2461,10 @@ impl Call<'_> {
     /// A report that renames values is never trimmed: one not shown every
     /// field it writes is not granted it ([`Call::renames_shown`]).
     pub fn shown_value_type(&self, o: &Ontology, mut report: ValueTypeReport) -> ValueTypeReport {
-        // A caller that reads a field is shown its type.
+        // A use is shown in a field the caller reads, of a type it is
+        // shown: one keyed by a reference it may not know of is not (024).
         let read = |ty: &TypeName, field: &FieldName| {
-            let Ok(t) = o.ty(ty) else {
+            let Ok(t) = shown_type(o, ty, self.who) else {
                 return false;
             };
             let f = t.fields.iter().find(|f| &f.name == field);
@@ -2515,8 +2482,7 @@ impl Call<'_> {
         if o.types.contains_key(&m.to.name) {
             shown_type(o, &m.to.name, self.who)?;
         }
-        let renames = Some(&m.relation_renames[..]);
-        self.reads_as_author(o, &[Declaration::Type(m.to.clone())], renames)?;
+        self.reads_as_author(o, &[Declaration::Type(m.to.clone())], true)?;
         initials(o, &mut m.to);
         let Some(before) = o.types.get(&m.to.name) else {
             return Ok(None);
@@ -2532,7 +2498,7 @@ impl Call<'_> {
     /// Reads each type of `declarations` that is declared already as its
     /// author's view of it ([`as_author`]).
     fn redeclared(&self, o: &Ontology, declarations: &mut [Declaration]) -> Result<()> {
-        self.reads_as_author(o, declarations, None)?;
+        self.reads_as_author(o, declarations, false)?;
         // An `initial` is read against the value types the set declares.
         let mut after = o.clone();
         let types = declarations

@@ -24,6 +24,12 @@ use crate::conformance::fixture::{
 const LINKS: &str = "sys.link.invoice.approved_by";
 
 check!(
+    /// A reference to a type not shown is a field not known of.
+    REFERENCE_TO_UNSHOWN = a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_know_of,
+    "024 and 051, extended (lakelands#718): a reference to a type its reader is not shown is a field it may not know of, read, masked or by default alike: `describe_type`, `get` and `find` leave it out, a filter, an order, a grouping and an upsert on it answer word for word as on a field the type does not have; a type keyed by it, a view grouped by it and a type keyed by a reference to either answer every door as types that are not there; proposals are listed to a reviewer kept from the target without it, an upsert, a bundle and a migration alike, and a source is refused it; a value type's rename writing a use in a type keyed by it is not granted to that reviewer's preflight, naming nothing, and listed without the use or the set over it; a principal that may write every other field is not granted `retire`, and `may.retire` is false; a reference the reader's own `only` names stays, a reader shown the target by its type-level grant alone keeps it all, and a read as of a position judges the types as they stood"
+);
+
+check!(
     /// A type made of another is shown only with it.
     SHOWN_WITH_WHAT_IT_IS_MADE_OF = a_type_made_of_another_is_shown_only_with_it,
     "006, extended (lakelands#595): a link type is shown to a principal only where the type that declares its relation is, and a view only where its source is, whatever a grant on its own name says: to one kept from a type, `describe` names neither a link type of it, nor a set or a trigger on that, nor a view over either, a proposed trigger on the link type is not listed, and `describe_type`, `find`, `get` and `search` of the link type, a read of the view, a walk over the relation from the type, `link` and `unlink`, over a relation the type has or one it has not, answer as for a type that is not there; a link type is made of its relation's target too (lakelands#662), so to one kept from the target the walk over the relation, `link` and `unlink` answer as for a relation that is not there, and a link sent again answers the first; a step from the target by the inverse of a relation of that type, carried by links or by a reference field, answers as a relation that is not there; a principal who reads one field of the owner is shown them all, and one kept from the link type by its own grant is kept from the view over it and walks the edge"
@@ -628,6 +634,356 @@ async fn a_type_keyed_by_a_field_its_reader_may_not_know_of_is_not_shown(
         "a type keyed by a field its reader may not know of, its link type and a view over it \
          answer as a name that is not declared, and to one who reads the key masked as \
          declared; nothing is written; apart:\n{}",
+        apart.join("\n")
+    );
+    Ok(())
+}
+
+async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_know_of(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let f = |name: &str, kind: &str| json!({"name": name, "type": {"kind": kind}});
+    let to = |name: &str, target: &str| json!({"name": name, "type": {"kind": "reference", "target": target}});
+    // `slip` is keyed by its reference to `payroll`, `stub` by its reference
+    // to `slip`, and `by_payee` groups `ticket` by its reference.
+    let count = json!([{"name": "n", "expr": "count()"}]);
+    for mut d in [
+        json!({"name": "payroll", "fields": [f("code", "text")]}),
+        json!({"name": "ticket", "fields": [f("no", "text"), to("payee", "payroll"), f("cat", "text")]}),
+        json!({"name": "slip", "key": ["payee"], "fields": [to("payee", "payroll")]}),
+        json!({"name": "stub", "key": ["of"], "fields": [to("of", "slip")]}),
+        json!({"name": "by_payee", "key": ["payee"], "fields": [to("payee", "payroll"), f("n", "decimal")],
+            "view": {"source": "ticket", "group_by": ["payee"], "measures": count}}),
+        json!({"name": "fed", "fields": [{"name": "no", "type": {"kind": "text"}, "authority": "source"},
+            {"name": "payee", "type": {"kind": "reference", "target": "payroll"}, "authority": "source"}]}),
+    ] {
+        d["declare"] = json!("type");
+        l.declare_json(d).await?;
+    }
+    l.upsert("payroll", "p1", json!({"code": "c"})).await?;
+    l.upsert(
+        "ticket",
+        "t1",
+        json!({"no": "1", "payee": "p1", "cat": "a"}),
+    )
+    .await?;
+    l.upsert("slip", "p1", json!({"payee": "p1"})).await?;
+    l.upsert("stub", "p1", json!({"of": "p1"})).await?;
+    let reader = |id: &str, payroll: TypeGrants, ticket: TypeGrants| {
+        let mut grants = Grants {
+            default: Access::Write,
+            ..Grants::default()
+        };
+        grants
+            .types
+            .extend([("payroll".into(), payroll), ("ticket".into(), ticket)]);
+        principal(store.as_ref(), PrincipalKind::Agent, id, grants)
+    };
+    let none = TypeGrants {
+        default: Some(Access::None),
+        ..Default::default()
+    };
+    let masked = TypeGrants {
+        fields: [("payee".into(), Access::Masked)].into(),
+        ..Default::default()
+    };
+    let only = TypeGrants {
+        only: [("payee".into(), json!("p1"))].into(),
+        ..Default::default()
+    };
+    let by_type = TypeGrants {
+        default: Some(Access::Read),
+        fields: [("code".into(), Access::None)].into(),
+        ..Default::default()
+    };
+    let kept = reader("kept", none.clone(), TypeGrants::default());
+    let mut apart = Vec::new();
+    // `ticket` without `payee`, read or masked alike.
+    for who in [&kept, &reader("masked", none.clone(), masked)] {
+        let c = l.cat.as_ref();
+        let t = TypeName::from("ticket");
+        let described = c
+            .describe_type(who, &t, Default::default())
+            .await
+            .must("describing `ticket`")?;
+        let fields: Vec<String> = described
+            .data
+            .fields
+            .iter()
+            .map(|f| f.name.to_string())
+            .collect();
+        let got = c
+            .get(who, &t, get_at("t1", None))
+            .await
+            .must("getting `t1`")?
+            .data;
+        let rows = c
+            .find(who, &t, Find::default())
+            .await
+            .must("finding `ticket`")?;
+        let found = format!("{:?}", rows.data);
+        if fields != ["no", "cat"] || got.fields.contains_key("payee") || found.contains("payee") {
+            apart.push(format!(
+                "`{}` reads `ticket` as {fields:?}, `t1` as {:?}, and {found}",
+                who.id, got.fields
+            ));
+        }
+    }
+    // Every door on `payee` as on `zz`, and nothing appended.
+    let head = store.head().await.must("the head")?;
+    let probes = |name: &str| {
+        let (c, kept, t) = (l.cat.clone(), kept.clone(), TypeName::from("ticket"));
+        let name = name.to_owned();
+        async move {
+            let find = |j: serde_json::Value| serde_json::from_value::<Find>(j).expect("a find");
+            let asks = [
+                find(json!({"where": format!("{name} = 'p1'")})),
+                find(json!({"order_by": [{"field": name, "by": "value", "dir": "asc"}]})),
+                find(
+                    json!({"aggregate": {"measures": [{"name": "n", "func": "count"}], "group_by": [name]}}),
+                ),
+            ];
+            let mut said = Vec::new();
+            for ask in asks {
+                said.push(format!("{:?}", c.find(&kept, &t, ask).await.map(drop)));
+            }
+            let t2 = lakelands_api::RecordKey::from("t2");
+            let up = c.upsert(
+                &kept,
+                &t,
+                &t2,
+                patch(json!({name.as_str(): "p1"})),
+                WriteOpts::default(),
+            );
+            said.push(format!("{:?}", up.await.map(drop)));
+            said.join(" | ").replace(&name, "N")
+        }
+    };
+    let (payee, zz) = (probes("payee").await, probes("zz").await);
+    if payee != zz || store.head().await.must("the head")? != head {
+        apart.push(format!("`payee` and `zz`: {payee} || {zz}"));
+    }
+    // A type keyed by it, a view grouped by it, and a type keyed by a
+    // reference to the first answer as types that are not there.
+    for (ty, key) in [("slip", "p1"), ("stub", "p1"), ("by_payee", "p1")] {
+        let ghost = "ghost".to_owned();
+        let there = doors(l.cat.as_ref(), &kept, ty, key).await;
+        let none = doors(l.cat.as_ref(), &kept, &ghost, key).await;
+        for (n, (a, b)) in there.iter().zip(&none).enumerate() {
+            let what = format!("on `{ty}`, door {n}");
+            let alike = match (a, b) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(a), Err(b)) => alike_renamed(&what, a, b, (&ghost, ty)),
+                _ => Err(Failure::new(format!("{what}: {a:?}; on `{ghost}`: {b:?}"))),
+            };
+            if let Err(f) = alike {
+                apart.push(f.message);
+            }
+        }
+    }
+    // A proposal is listed without it, and a source is refused it as a
+    // field `fed` does not have.
+    let upsert = |name: &str| ProposedWrite::Upsert {
+        ty: "ticket".into(),
+        key: "t3".into(),
+        patch: patch(json!({"no": "3", name: "p1"})),
+        opts: WriteOpts::default(),
+    };
+    // A bundle declaring a type that refers to `payroll`, and a migration
+    // of `ticket`, listed as the reader is shown them.
+    let bundle = json!({"declare": "type", "name": "pay", "fields": [f("no", "text"), to("payee", "payroll")]});
+    let bundle: lakelands_api::write::Declaration = serde_json::from_value(bundle).expect("a type");
+    let to_ticket = json!({"name": "ticket", "fields": [f("no", "text"), to("payee", "payroll"),
+        f("cat", "text"), f("memo", "text")]});
+    let to_ticket = serde_json::from_value(to_ticket).expect("a type");
+    let migrate = ProposedWrite::Migrate {
+        migration: Box::new(lakelands_api::write::Migration {
+            to: to_ticket,
+            renames: Vec::new(),
+            relation_renames: Vec::new(),
+        }),
+        report: Default::default(),
+    };
+    for (write, why) in [
+        (upsert("payee"), "an upsert"),
+        (
+            ProposedWrite::Declare {
+                declarations: vec![bundle],
+            },
+            "a bundle",
+        ),
+        (migrate, "a migration"),
+    ] {
+        let proposed = l.cat.propose(&l.own, write, why.into()).await;
+        proposed.must(&format!("proposing {why} naming `payee`"))?;
+    }
+    let mut reviewer = kept.clone();
+    reviewer.grants.review = true;
+    let listed = l.cat.proposals(&reviewer, ProposalFilter::default()).await;
+    let listed = format!("{:?}", listed.must("listing the proposals")?.data);
+    if listed.contains("payee") {
+        apart.push(format!("the reviewer lists {listed}"));
+    }
+    let mut source = kept.clone();
+    source.grants.ingest = true;
+    let mut fed = Vec::new();
+    for name in ["payee", "zz"] {
+        let record =
+            crate::conformance::fixture::source_record("fed", "f1", json!({"no": "1", name: "p1"}));
+        let answer =
+            crate::conformance::fixture::ingest(l.cat.as_ref(), &source, "src", vec![record]).await;
+        fed.push(format!("{:?}", answer.map(drop)).replace(name, "N"));
+    }
+    if fed[0] != fed[1] {
+        apart.push(format!("an ingest of `payee` and `zz`: {fed:?}"));
+    }
+    // A value type's rename writes `chit.note`, in a type keyed by `payee`
+    // that the reviewer is not shown: its preflight is not granted, naming
+    // nothing, and the proposal is listed without the use or the set over
+    // `chit`, only telling it that one it is not shown may name a value.
+    let state = json!({"declare": "value_type", "name": "state", "kind": "text", "one_of": ["open", "done"]});
+    let note = json!({"name": "note", "type": {"kind": "text", "value_type": "state"}});
+    let chit = json!({"declare": "type", "name": "chit", "key": ["payee"], "fields": [to("payee", "payroll"), note]});
+    for d in [state, chit] {
+        l.declare_json(d).await?;
+    }
+    let opened = object_set_on("opened", "chit", "note = 'open'");
+    l.declare_as(opened, "declaring `opened`").await?;
+    let state = json!({"name": "state", "kind": "text", "one_of": ["active", "done"]});
+    let m = lakelands_api::write::ValueTypeMigration {
+        to: serde_json::from_value(state).expect("a value type"),
+        renames: vec![("open".into(), "active".into())],
+    };
+    reviewer.grants.schema = true;
+    let told = l.cat.migrate_value_type(&reviewer, m.clone()).await;
+    let refused = matches!(
+        &told,
+        Err(lakelands_api::Error::Refused {
+            reason: lakelands_api::Refusal::NotGranted,
+            field: None
+        })
+    );
+    let rename = ProposedWrite::MigrateValueType {
+        to: Box::new(m.to.clone()),
+        renames: m.renames.clone(),
+        report: Default::default(),
+    };
+    l.cat
+        .propose(&l.own, rename, "a rename".into())
+        .await
+        .must("proposing the rename")?;
+    let listed = l.cat.proposals(&reviewer, ProposalFilter::default()).await;
+    let listed: Vec<_> = (listed.must("listing the proposals")?.data.into_iter())
+        .filter_map(|p| match p.write {
+            Some(ProposedWrite::MigrateValueType { report, .. }) => Some(*report),
+            _ => None,
+        })
+        .collect();
+    let hidden = |r: &lakelands_api::write::ValueTypeReport| {
+        r.fields.is_empty() && r.conditions.is_empty() && r.conditions_unshown
+    };
+    if !refused || listed.len() != 1 || !listed.iter().all(hidden) {
+        apart.push(format!("the rename: preflight {told:?}, listed {listed:?}"));
+    }
+    // To retire a record removes every field, a reference it may not know
+    // of too: `kept` may not, and is told so (024).
+    let t1 = lakelands_api::RecordKey::from("t1");
+    let retired = l
+        .cat
+        .retire(&kept, &"ticket".into(), &t1, WriteOpts::default())
+        .await;
+    let described = l
+        .cat
+        .describe_type(&kept, &"ticket".into(), Default::default())
+        .await;
+    let may = described.must("describing `ticket`")?.data.may.retire;
+    let refused = matches!(
+        &retired,
+        Err(lakelands_api::Error::Refused {
+            reason: lakelands_api::Refusal::NotGranted,
+            ..
+        })
+    );
+    if !refused || may {
+        apart.push(format!(
+            "`kept` retiring `t1`: {retired:?}, `may.retire` {may}"
+        ));
+    }
+    // Its own `only` keeps the reference, and the type-level grant keeps
+    // it all.
+    let held = reader("held", none, only);
+    let typed = reader("typed", by_type, TypeGrants::default());
+    for (who, ty, want) in [
+        (&held, "ticket", true),
+        (&held, "by_payee", true),
+        (&typed, "ticket", true),
+        (&typed, "slip", true),
+    ] {
+        let d = l
+            .cat
+            .describe_type(who, &ty.into(), Default::default())
+            .await;
+        let has = d
+            .as_ref()
+            .is_ok_and(|d| d.data.fields.iter().any(|f| f.name.as_str() == "payee"));
+        if has != want {
+            apart.push(format!(
+                "`{}` describes `{ty}` as {:?}",
+                who.id,
+                d.map(|d| d.data.fields.len())
+            ));
+        }
+    }
+    let rows = l.cat.find(&held, &"ticket".into(), Find::default()).await;
+    if !format!("{:?}", rows).contains("payee") {
+        apart.push(format!("`held` finds `ticket` as {rows:?}"));
+    }
+    // A read is judged by the types as they stood: keyed by `code`, which
+    // `late` may not know of, `boss` is not shown to it at the head, and
+    // `memo.by` is there before.
+    for mut d in [
+        json!({"name": "boss", "fields": [f("code", "text")]}),
+        json!({"name": "memo", "fields": [f("no", "text"), to("by", "boss")]}),
+    ] {
+        d["declare"] = json!("type");
+        l.declare_json(d).await?;
+    }
+    let held = TypeGrants {
+        default: Some(Access::Read),
+        fields: [("code".into(), Access::None)].into(),
+        ..Default::default()
+    };
+    let mut late = reader("late", TypeGrants::default(), TypeGrants::default());
+    late.grants.types.insert("boss".into(), held);
+    let before = store.head().await.must("the head")?;
+    let code = json!({"name": "code", "type": {"kind": "text"}, "required": true});
+    l.migrate(
+        serde_json::from_value(json!({"name": "boss", "key": ["code"], "fields": [code]}))
+            .expect("a type"),
+    )
+    .await?;
+    let mut by = Vec::new();
+    for at in [None, Some(before)] {
+        let at = lakelands_api::ReadAt {
+            as_of: at,
+            valid_at: None,
+        };
+        let d = l
+            .cat
+            .describe_type(&late, &"memo".into(), at)
+            .await
+            .must("describing `memo`")?;
+        by.push(d.data.fields.iter().any(|f| f.name.as_str() == "by"));
+    }
+    if by != [false, true] {
+        apart.push(format!(
+            "`late` reads `memo.by` at the head and before the key: {by:?}"
+        ));
+    }
+    ensure!(
+        apart.is_empty(),
+        "a reference to a type not shown:\n{}",
         apart.join("\n")
     );
     Ok(())

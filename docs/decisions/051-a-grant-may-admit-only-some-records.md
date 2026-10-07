@@ -170,3 +170,16 @@ accepts it is answered for as for its own write (lakelands#660).
 - It does not change `restricted`: a record must pass both rules.
 - A reference value naming another's key is shown as a key; the record
   behind it is not found, as for a restricted record.
+
+## Extended: `only` keeps the reference it names (lakelands#718)
+
+A reference to a type its principal is not shown is a field it may not
+know of (024, extended). A field the effective `only` of a type names is
+kept as granted: its value is the pair the host wrote into the grant, so
+it tells the holder nothing, and `only` stays one that can be applied.
+The effective `only` counts, a view's included: a view grouped by its
+source's `only` field keeps that field, and so its key, and does not
+vanish (006). The type a grant names, and the value it holds a field
+to, are the host's own choice: naming a type in a grant shows its name
+to no one.
+
