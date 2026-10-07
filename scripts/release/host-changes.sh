@@ -18,7 +18,8 @@
 # method whose signature changed while its parameter count did not, which
 # every call must follow; and a field of a public struct or of a public
 # enum's variant whose type changed, named (`Type.field`) or positional
-# (`Type.0`), which a literal, a pattern or a read of it must follow. An
+# (`Type.0`), the struct or variant written over several lines or on one,
+# which a literal, a pattern or a read of it must follow. An
 # item counts as public when every module on its way from the crate root
 # is `pub mod`, or a private one re-exports it with `pub use`. Only
 # changes count: an addition asks nothing of a host, so it is not listed.
@@ -33,7 +34,9 @@
 #
 # Not compared, so a release reviewer reads them by hand: the items of a
 # public struct, enum, trait or impl block declared anywhere but at
-# column 0; a method whose impl block lies in a private module that does
+# column 0; the fields of a struct whose `{` stands on a line after its
+# name's (under a `where` clause of its own lines), and of an enum
+# written whole on one line, which `rustfmt` never writes; a method whose impl block lies in a private module that does
 # not re-export its type; `pub(crate)` items, which reach no host; and a
 # path written shorter whose shorter form an import now binds to another
 # type of that name (`std::result::Result<T>` and a crate's own
@@ -313,35 +316,39 @@ fields() {
             print field "\t" norm(ty)
             reading = 0; typ = ""
         }
-        # The text between the first `(` of s and the `)` that closes it.
-        function inner(s,    i, n, c, d, from) {
-            n = length(s); d = 0; from = index(s, "(")
+        # The text between the first `open` of s, `(` or `{`, and the
+        # bracket that closes it.
+        function inner(s, open,    i, n, c, d, from) {
+            n = length(s); d = 0; from = index(s, open)
             for (i = from; i <= n; i++) {
                 c = substr(s, i, 1)
                 if (c == "-" && substr(s, i + 1, 1) == ">") { i++; continue }
-                if (c == "(" || c == "[" || c == "<") d++
-                else if (c == ")" || c == "]" || c == ">") d--
+                if (c == "(" || c == "[" || c == "<" || c == "{") d++
+                else if (c == ")" || c == "]" || c == ">" || c == "}") d--
                 if (d == 0) break
             }
             return substr(s, from + 1, i - from - 1)
         }
-        # One line per place of a tuple; for a struct, only its `pub` places.
-        function places(prefix, s, pubonly,    i, n, c, d, part, pos) {
-            s = inner(s); n = length(s); d = 0; part = ""; pos = 0
+        # One line per place of a tuple, or with `braced` per field of a
+        # struct or variant written on one line; for a struct, only its
+        # `pub` places or fields.
+        function places(prefix, s, pubonly, braced,    i, n, c, d, part, pos) {
+            s = inner(s, braced ? "{" : "("); n = length(s); d = 0; part = ""; pos = 0
             for (i = 1; i <= n; i++) {
                 c = substr(s, i, 1)
                 if (c == "-" && substr(s, i + 1, 1) == ">") { part = part "->"; i++; continue }
                 if (c == "(" || c == "[" || c == "<") d++
                 else if (c == ")" || c == "]" || c == ">") d--
-                if (c == "," && d == 0) { place(prefix, part, pos++, pubonly); part = ""; continue }
+                if (c == "," && d == 0) { place(prefix, part, pos++, pubonly, braced); part = ""; continue }
                 part = part c
             }
-            if (part !~ /^[ \t]*$/) place(prefix, part, pos, pubonly)
+            if (part !~ /^[ \t]*$/) place(prefix, part, pos, pubonly, braced)
             tuple = 0; tbuf = ""
         }
-        function place(prefix, part, pos, pubonly) {
+        function place(prefix, part, pos, pubonly, braced,    name) {
             part = norm(part)
             if (pubonly) { if (part !~ /^pub /) return; sub(/^pub /, "", part) }
+            if (braced) { name = part; sub(/:.*/, "", name); sub(/^[^:]*: */, "", part); pos = name }
             print prefix "." pos "\t" part
         }
         {
@@ -351,8 +358,11 @@ fields() {
         }
         tuple {
             tbuf = tbuf " " line
-            if (depth(tbuf) <= 0) places(tprefix, tbuf, tpub)
+            if (depth(tbuf) <= 0) places(tprefix, tbuf, tpub, 0)
             next
+        }
+        line ~ /^pub struct [A-Za-z_][A-Za-z0-9_]*(<.*>)? *\{.*\}[ \t]*$/ {
+            item = $3; sub(/[^A-Za-z0-9_].*/, "", item); places(item, line, 1, 1); next
         }
         /^pub struct [A-Za-z_]/ && /\{[ \t]*$/ {
             item = $3; sub(/[^A-Za-z0-9_].*/, "", item); kind = "struct"; inside = 1; next
@@ -360,7 +370,7 @@ fields() {
         /^pub struct [A-Za-z_][A-Za-z0-9_]*(<.*>)?\(/ {
             tprefix = $3; sub(/[^A-Za-z0-9_].*/, "", tprefix); tpub = 1
             tbuf = substr(line, index(line, "(")); tuple = 1
-            if (depth(tbuf) <= 0) places(tprefix, tbuf, tpub)
+            if (depth(tbuf) <= 0) places(tprefix, tbuf, tpub, 0)
             next
         }
         /^pub enum [A-Za-z_]/ && /\{[ \t]*$/ {
@@ -379,6 +389,10 @@ fields() {
             if (depth(typ) == 0 && typ ~ /,[ \t]*$/) done()
             next
         }
+        kind == "enum" && line ~ /^    [A-Z][A-Za-z0-9_]* \{.*\},?[ \t]*$/ {
+            tprefix = line; sub(/^    /, "", tprefix); sub(/ .*/, "", tprefix)
+            places(item "::" tprefix, line, 0, 1); next
+        }
         kind == "enum" && line ~ /^    [A-Z][A-Za-z0-9_]* \{[ \t]*$/ {
             variant = line; sub(/^    /, "", variant); sub(/ .*/, "", variant); next
         }
@@ -386,7 +400,7 @@ fields() {
             tprefix = line; sub(/^    /, "", tprefix); sub(/\(.*/, "", tprefix)
             tprefix = item "::" tprefix; tpub = 0
             tbuf = substr(line, index(line, "(")); tuple = 1
-            if (depth(tbuf) <= 0) places(tprefix, tbuf, tpub)
+            if (depth(tbuf) <= 0) places(tprefix, tbuf, tpub, 0)
             next
         }
         kind == "enum" && line ~ /^    \}/ { variant = ""; next }

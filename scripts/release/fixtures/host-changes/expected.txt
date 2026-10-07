@@ -2,7 +2,9 @@ trait method Lane::another: was `fn another(&self, decl: a::Decl) -> Result<()>`
 trait method Lane::wider: was `fn wider(&self, n: u32)`, now `fn wider(&self, n: u64)`
 function or method Shape::another: was `pub fn another(&self, key: a::Key)`, now `pub fn another(&self, key: b::Key)`
 function or method borrowed: was `pub fn borrowed(decl: Decl) -> u32`, now `pub fn borrowed(decl: &Decl) -> u32`
+field One.a: was `u32`, now `u64`
 field Pair.1: was `u8`, now `u16`
 field Shape.another: was `a::Decl`, now `b::Decl`
 field Shape.wider: was `u32`, now `u64`
+field Write::Braced.a: was `u32`, now `u64`
 field Write::Upsert.count: was `u32`, now `u64`
