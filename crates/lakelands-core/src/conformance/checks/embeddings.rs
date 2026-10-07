@@ -15,9 +15,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{Authority, FieldDecl, FieldType, StorageKind};
+use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{Search, SearchMode};
 use lakelands_api::seam::Seams;
-use lakelands_api::{Error, LakeStore, Outcome};
+use lakelands_api::{Access, Error, Grants, LakeStore, Outcome, Principal, PrincipalKind, Refusal};
 use serde_json::{Value, json};
 
 use super::search::doc_search;
@@ -25,8 +26,9 @@ use crate::conformance::backing::{
     EMBED_MODEL, UNREACHABLE, embedded, plug_text, release, unplug_text,
 };
 use crate::conformance::fixture::{
-    Caller, Lake, Must, derived, doors, embedding, field, get_at, head_unmoved, join_all,
-    migration, owner, read, recorded_outputs, refused_on, source_record, sourced, type_decl, value,
+    Caller, Lake, Must, derived, doors, embedding, field, field_access, get_at, head_unmoved,
+    join_all, migration, owner, principal, read, recorded_outputs, refused_on, source_record,
+    sourced, type_decl, value,
 };
 use crate::conformance::{Failure, Reopen, backing};
 
@@ -646,7 +648,7 @@ fn reopen_failed(what: &str, e: Error) -> Failure {
 check!(
     /// A hybrid search through a backend of another model is unbound.
     EMBED_SEARCH_OTHER_BACKEND = a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_unbound,
-    "seams, EmbedBackend: a hybrid search over an embed field whose model or dimensions are not the bound backend's is refused as unbound when it is made, not ranked with vectors of another space",
+    "seams, EmbedBackend: a hybrid search over an embed field whose model or dimensions are not the bound backend's is refused as unbound when it is made, not ranked with vectors of another space; a search as of an earlier position is held to the head's declaration, whose vectors the engines index",
     reopens
 );
 
@@ -660,6 +662,7 @@ async fn a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_un
     let l = notes(store.as_ref()).await?;
     l.upsert("note", "n1", json!({"title": "Quayside crane"}))
         .await?;
+    let before = store.head().await.must("reading the head")?;
     for (model, dimensions) in [("another-model", 2), (EMBED_MODEL, 3)] {
         store = reopen(
             store,
@@ -667,7 +670,7 @@ async fn a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_un
         )
         .await
         .map_err(|e| reopen_failed(&format!("with a backend of `{model}`/{dimensions}"), e))?;
-        let got = quay(store.as_ref()).await;
+        let got = quay(store.as_ref(), None).await;
         // The refusal names both: what the field was declared with, and
         // what is bound.
         let names_both = |seam: &str| {
@@ -680,6 +683,151 @@ async fn a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_un
              `{model}` and {dimensions} dimensions bound, a hybrid search over it must be \
              refused as unbound, naming both; it answered {}",
             answered(&got)
+        );
+    }
+    // The engines index the head's vectors only: `vec` declared again with
+    // `another-model`, a search as of before is embedded by the head's
+    // declaration, not by the one it reads.
+    let other = || with_embedder(Some(backing::embedder_as("another-model", 2)));
+    store = reopen(store, other())
+        .await
+        .map_err(|e| reopen_failed("with a backend of `another-model`", e))?;
+    let l = Lake::of(store.as_ref());
+    l.declare(notes_by(&["title", "body"], "another-model", 2))
+        .await?;
+    recomputed(&l).await?;
+    let ranked = quay(store.as_ref(), Some(before)).await;
+    store = reopen(store, with_embedder(Some(backing::embedder())))
+        .await
+        .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
+    let old = quay(store.as_ref(), Some(before)).await;
+    ensure!(
+        ranked.as_ref().is_ok_and(|h| h.ranked_by == "hybrid")
+            && matches!(&old, Err(Error::Unbound { seam }) if seam.contains("`another-model` with 2")),
+        "`vec`, declared again with `another-model`, holds its vectors at the head: a search \
+         as of before ranks `hybrid` with that backend bound and is unbound, naming it, with \
+         `{EMBED_MODEL}` bound; they answered {} and {}",
+        format!("{:?}", ranked.map(|h| h.ranked_by)),
+        answered(&old)
+    );
+    Ok(())
+}
+
+check!(
+    /// A hybrid search is judged before it embeds.
+    EMBED_SEARCH_JUDGED_FIRST = a_hybrid_search_is_judged_for_its_caller_before_its_model_or_its_text,
+    "024 and seams, EmbedBackend: a hybrid search without a vector is judged for its caller before its field's model is compared with the bound backend's and before its text is embedded: whatever backend is bound, a type not shown answers as one not declared, a field the caller may not know of, or one its vector is embedded from, as one not declared, and a masked one as not granted; a refused search calls nothing, the owner's over a type or field not declared or with a `where` on one included",
+    reopens
+);
+
+/// A hybrid search for `text` over `ty.field` by `who`, with `filter` as
+/// its `where`: how it ranked, or its error's words, and how often `text`
+/// was embedded.
+async fn judged(
+    store: &dyn LakeStore,
+    who: &Principal,
+    (ty, field, filter): (&str, &str, Option<&str>),
+    text: &str,
+) -> (Result<String, String>, usize) {
+    let mode = SearchMode::Hybrid {
+        text: text.into(),
+        field: field.into(),
+        vector: None,
+        fields: None,
+        weight: None,
+        text_weight: None,
+    };
+    let search = Search {
+        ty: ty.into(),
+        filter: filter.map(Into::into),
+        ..doc_search(mode)
+    };
+    let got = doors(store).search(who, search).await;
+    let got = got.map(|r| r.data.ranked_by).map_err(|e| format!("{e:?}"));
+    (got, embedded(text))
+}
+
+async fn a_hybrid_search_is_judged_for_its_caller_before_its_model_or_its_text(
+    store: Arc<dyn LakeStore>,
+    reopen: Reopen,
+) -> Result<(), Failure> {
+    let mut store = reopen(store, with_embedder(Some(backing::embedder())))
+        .await
+        .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
+    let l = notes(store.as_ref()).await?;
+    l.upsert("note", "n1", json!({"title": "Judged quay"}))
+        .await?;
+    let (s, own) = (store.as_ref(), l.own.clone());
+    let mut grants = Grants {
+        default: Access::Read,
+        ..Grants::default()
+    };
+    let none = TypeGrants {
+        default: Some(Access::None),
+        ..TypeGrants::default()
+    };
+    grants.types.insert("note".into(), none);
+    let held = |id: &str, f: &str, a| field_access(s, id, "note", &[(f, a)]);
+    // Each caller, and what its answer names: the type, or the field.
+    let cast = [
+        (
+            principal(s, PrincipalKind::Agent, "unshown", grants),
+            "note",
+        ),
+        (held("vec-none", "vec", Access::None), "vec"),
+        (held("body-none", "body", Access::None), "body"),
+        (held("vec-masked", "vec", Access::Masked), "masked"),
+    ];
+    let masked = Error::Refused {
+        field: Some("vec".into()),
+        reason: Refusal::NotGranted,
+    };
+    let backends = [None, Some(("another-model", 2)), Some((EMBED_MODEL, 3))];
+    for (round, backend) in backends.into_iter().enumerate() {
+        if let Some((model, dimensions)) = backend {
+            let embed = backing::embedder_as(model, dimensions);
+            store = reopen(store, with_embedder(Some(embed)))
+                .await
+                .map_err(|e| reopen_failed(&format!("with a backend of `{model}`"), e))?;
+        }
+        let (s, text) = (store.as_ref(), |of: &str| format!("Judged {round} {of}"));
+        let (ghost, ghost_calls) = judged(s, &own, ("zz", "vec", None), &text("zz")).await;
+        let (nope, nope_calls) = judged(s, &own, ("note", "zz", None), &text("note.zz")).await;
+        let filter = Some("zz = 1");
+        let (bad, bad_calls) = judged(s, &own, ("note", "vec", filter), &text("where")).await;
+        for (who, named) in &cast {
+            let (got, calls) = judged(s, who, ("note", "vec", None), &text(&who.id)).await;
+            let want = match *named {
+                "masked" => Err(format!("{masked:?}")),
+                "note" => ghost.clone().map_err(|e| e.replace("zz", "note")),
+                field => nope.clone().map_err(|e| e.replace("zz", field)),
+            };
+            ensure!(
+                got == want && calls == 0,
+                "with {backend:?} bound, `{}`'s search over `note.vec` answers {want:?} \
+                 and calls nothing; it answered {got:?} after {calls} calls",
+                who.id
+            );
+        }
+        ensure!(
+            ghost.is_err()
+                && nope.is_err()
+                && bad.is_err()
+                && ghost_calls + nope_calls + bad_calls == 0,
+            "with {backend:?} bound, the owner's search over `zz`, over `note.zz` and \
+             `where zz = 1` is refused and calls nothing; they answered {ghost:?}, {nope:?} \
+             and {bad:?} after {ghost_calls}, {nope_calls} and {bad_calls} calls"
+        );
+        let (got, calls) = judged(s, &own, ("note", "vec", None), &text("quay")).await;
+        let fits = match backend {
+            None => got.as_deref() == Ok("hybrid") && calls == 1,
+            Some(_) => got.as_ref().is_err_and(|e| e.starts_with("Unbound")) && calls == 0,
+        };
+        ensure!(
+            fits,
+            "the owner's hybrid search over `note.vec` ranks `hybrid` after one call with \
+             the suite's backend bound and is unbound, calling nothing, with another; with \
+             {backend:?} it answered {got:?} after {calls} calls"
         );
     }
     Ok(())
@@ -779,8 +927,11 @@ check!(
     reopens
 );
 
-/// A hybrid search over `note.vec` for "quay", as the owner.
-async fn quay(store: &dyn LakeStore) -> lakelands_api::Result<lakelands_api::query::Hits> {
+/// A hybrid search over `note.vec` for "quay", as the owner, as of `as_of`.
+async fn quay(
+    store: &dyn LakeStore,
+    as_of: Option<lakelands_api::Position>,
+) -> lakelands_api::Result<lakelands_api::query::Hits> {
     let mode = SearchMode::Hybrid {
         text: "quay".into(),
         field: "vec".into(),
@@ -791,6 +942,10 @@ async fn quay(store: &dyn LakeStore) -> lakelands_api::Result<lakelands_api::que
     };
     let search = Search {
         ty: "note".into(),
+        at: lakelands_api::ReadAt {
+            as_of,
+            ..Default::default()
+        },
         ..doc_search(mode)
     };
     doors(store)
@@ -837,7 +992,7 @@ async fn a_backend_bound_after_open_is_read_from_then_on(
     let l = Lake::of(store.as_ref());
     let early = "Bound late early quay";
     l.upsert("note", "early", json!({"title": early})).await?;
-    let before = quay(store.as_ref())
+    let before = quay(store.as_ref(), None)
         .await
         .must("a hybrid search with none bound")?;
     let head = store.head().await.must("reading the head")?;
@@ -851,7 +1006,7 @@ async fn a_backend_bound_after_open_is_read_from_then_on(
     );
     l.upsert("note", "late", json!({"title": "Bound late later quay"}))
         .await?;
-    let searched = quay(store.as_ref())
+    let searched = quay(store.as_ref(), None)
         .await
         .must("a hybrid search once bound")?;
     let (late, waits) = (
@@ -880,7 +1035,7 @@ async fn a_backend_bound_after_open_is_read_from_then_on(
     store
         .bind_embed(backing::embedder_as("another-model", 2))
         .must("binding a backend of another model")?;
-    let search = quay(store.as_ref()).await;
+    let search = quay(store.as_ref(), None).await;
     let other = l
         .try_declare(notes_by(&["title", "body"], "another-model", 2))
         .await;

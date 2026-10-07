@@ -22,6 +22,10 @@ text, so a vector or hybrid search also probes every field its vector
 is embedded from, even when the principal may read the vector itself.
 A hybrid search that one of these refuses is refused whole, never
 answered from its other half. This tightened in 0.5.0 (lakelands#242).
+A hybrid search the store embeds the text of is judged so before its
+field's embedding model is compared with the bound backend's and before
+the text is sent (lakelands#741): the model is said only to a caller who
+may make the search, and a search refused calls no backend.
 
 A lexical or hybrid search may name the searchable fields it matches in
 (`fields`). It then probes those fields instead of the searchable ones

@@ -499,6 +499,7 @@ pub const ALL: &[Check] = &[
     vocabulary::RESERVED_NAME_REFUSES_OPEN,
     backings::FAILURE_RETRIED,
     embeddings::EMBED_SEARCH_OTHER_BACKEND,
+    embeddings::EMBED_SEARCH_JUDGED_FIRST,
     embeddings::EMBED_WAITS,
     embeddings::EMBED_BOUND_LATE,
     embeddings::EMBED_UNBOUND_KEPT,

@@ -993,8 +993,13 @@ fallback is for an absent backend, never a failing one, so the same
 query never ranks differently by the network's weather. A search over a
 field declared with `embed` whose model or dimensions are not the bound
 backend's is refused as `Unbound`, naming both: that is a configuration to
-fix, not weather. A vector search, and a hybrid search that brings its
-own vector, never call the backend.
+fix, not weather. The search is judged for its caller first, as any
+search is, by the shape of the lake it reads (lakelands#741): only one it
+may make has its field's model compared and its text embedded, so a search
+refused for its caller calls nothing and names no model. The model is the
+head's declaration even for a search as of an earlier position, since the
+engines index the head's vectors. A vector search, and a hybrid search
+that brings its own vector, never call the backend.
 
 **A search that fuses rankings** weighs each as it asks
 (`docs/decisions/046-a-hybrid-search-fuses-the-ranks-a-read-may-see.md`):
