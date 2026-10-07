@@ -51,13 +51,18 @@ keeps the event, as a **step**: what the event does to one record.
   event's provenance with each function's own version. A view the lake
   keeps over such a type waits for the set's end as it waits for a
   pending step, and is made once, from the records the step put.
-  A page of a fold of the log never ends inside a set: while the page's
-  last `declared` carries `with_the_set`, it reads on to the set's last
-  declaration, past the memberships an object set of the set changed,
-  which carry no mark. A log that ends so is damaged, and its fold is
-  refused. A foreign log, which no write path drafts, may also make a
-  record read inside a set commit in the middle of a page; the set's list
-  is carried across that commit, but a restart after it may lose it.
+  A page of a fold of the log never ends inside a set: when the page's
+  last `declared` carries `with_the_set`, it reads on, a chunk at a time,
+  to the set's last declaration and past the memberships an object set
+  of the set changed, which carry no mark, also where they begin the
+  next chunk; it stops reading there and ends there. The rest of the
+  chunk read last goes to the next page and is read again, so a page
+  reads at most a chunk beyond the set it had to finish, and two large
+  sets back to back are two pages. A log that ends inside a set is
+  damaged, and its fold is refused. A foreign log, which no write path
+  drafts, may also make a record read inside a set commit in the middle
+  of a page; the set's list is carried across that commit, but a restart
+  after it may lose it.
 - **A fold of the log ends its transaction after a flush that kept a
   step.** A rebuild, an open's catch-up and an import fold a page of
   1 024 events; such a page commits through the last event folded and

@@ -1772,8 +1772,9 @@ const PAGE: u32 = 1024;
 const NO_LEASE: &str = "this lake is open read-only here; another process holds its writer lease";
 
 /// The log read a page at a time (`Lake::pages`): each item is up to
-/// `PAGE` events, opened and checked; the iteration ends after the tip, or
-/// after the first error.
+/// `PAGE` events, or more to finish a set of declarations, ending with it
+/// and read at most a chunk beyond it; opened and checked; the iteration
+/// ends after the tip, or after the first error.
 pub struct Pages<'a> {
     lake: &'a Lake,
     at: Option<Position>,
@@ -1789,14 +1790,26 @@ impl Iterator for Pages<'_> {
             Err(e) => return Some(Err(e)),
         };
         // A page never ends inside a set of declarations: its commit would
-        // be a head where half the set is in force.
-        while let Some(last) = page.last().filter(|_| open_set(&page)) {
+        // be a head where half the set is in force. It reads on only to the
+        // set's end, its last `declared` and the memberships after it, and
+        // is cut there: the chunk that closed the set may begin the next,
+        // which goes to the next page.
+        let (open, mut end, mut closed) = (open_set(&page), page.len(), false);
+        while let Some(last) = page.last().filter(|_| open && end == page.len()) {
             match self.lake.read_events(last.position.next(), PAGE) {
                 Ok(more) if more.is_empty() => break,
                 Ok(more) => page.extend(more),
                 Err(e) => return Some(Err(e)),
             }
+            for e in &page[end..] {
+                if closed && !matches!(e.body, EventBody::ObjectSetChanged { .. }) {
+                    break;
+                }
+                closed |= set_mark(e) == Some(false);
+                end += 1;
+            }
         }
+        page.truncate(end);
         self.at = Some(page.last()?.position.next());
         Some(Ok(page))
     }
@@ -1948,11 +1961,15 @@ fn foreign(o: &Ontology, body: &EventBody) -> Option<String> {
 /// `declared` goes on in its append. The events a declaration of the set
 /// drafts after it, an object set's changed memberships, carry no mark.
 fn open_set(events: &[Event]) -> bool {
-    let declared = events.iter().rev().find_map(|e| match e.body {
+    events.iter().rev().find_map(set_mark) == Some(true)
+}
+
+/// A `declared`'s `with_the_set`: whether its set goes on after it.
+fn set_mark(e: &Event) -> Option<bool> {
+    match e.body {
         EventBody::Declared { with_the_set, .. } => Some(with_the_set),
         _ => None,
-    });
-    declared == Some(true)
+    }
 }
 
 /// Whether the fold of an event reads a record: such an event is folded
