@@ -8,10 +8,12 @@
 //! to key and a seek of each key's state there. A read by keys seeks each
 //! key's state, and a recorded output is read by a seek. The engine check
 //! holds the answers. Here each statement's plan is read, as the engine
-//! itself writes it, on tables the planner has no statistics of and on
-//! analysed ones, and what the reads cost is counted where the server
-//! counts it: the tuples of `records` and of `outputs` it fetched
-//! (`pg_stat_user_tables`), which a backend reports when it ends.
+//! itself writes it, on a small lake the planner may or may not hold
+//! statistics of (the server's autoanalyze decides that, not the test),
+//! on that lake analysed, and on a large one the writer analysed; and
+//! what the reads cost is counted where the server counts it: the tuples
+//! of `records` and of `outputs` it fetched (`pg_stat_user_tables`),
+//! which a backend reports when it ends.
 
 mod common;
 
@@ -56,17 +58,23 @@ fn state(ty: &TypeName, key: &str, at: u64) -> StoredRecord {
 /// binds, and as the server ran it (a plan not run does not show how the
 /// next key is found): the pages of the name with many keys, the count
 /// of the one with few (a count of most of a table is rightly planned as
-/// a read of the table).
+/// a read of the table). Under `analyse` the tables read are analysed
+/// first.
 fn plans(
     url: &str,
     schema: &str,
     names: &[TypeName; 2],
     (last, at): (u64, u64),
+    analyse: bool,
 ) -> Vec<(bool, Vec<String>)> {
     let (url, schema, names) = (url.to_owned(), schema.to_owned(), names.clone());
     let [many, few] = names.clone();
     std::thread::spawn(move || {
         let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        if analyse {
+            let tables = format!("ANALYZE {schema}.records, {schema}.outputs");
+            client.batch_execute(&tables).unwrap();
+        }
         // As the engine's sessions plan: each run for its values.
         client
             .batch_execute("SET plan_cache_mode = force_custom_plan")
@@ -98,7 +106,7 @@ fn plans(
 }
 
 /// What every plan of a kept name's statements must be, the planner
-/// knowing the tables (`analysed`) or not.
+/// knowing the tables (`analysed`) or not: the same seeks either way.
 fn seeks(plans: &[(bool, Vec<String>)], analysed: bool) {
     for (i, (head, plan)) in plans.iter().enumerate() {
         let has = |step: &str| plan.iter().any(|line| line.contains(step));
@@ -218,8 +226,9 @@ fn a_kept_name_is_read_by_seeks_with_statistics_and_without() {
     let engine = open(OpenMode::Create);
     // Six hundred keys written once, then two thousand states of `a`
     // under both names: fewer records than the writer analyses its tables
-    // after, so the planner has no statistics of them. Then the other
-    // keys and the rest of `a`'s states, which it analyses as it loads.
+    // after, so the planner holds statistics of them only if the server's
+    // autoanalyze took them. Then the other keys and the rest of `a`'s
+    // states, which the writer analyses as it loads.
     // The output is recorded at every position.
     let (early, last) = (600, MANY + STATES);
     let key = |at: u64| match at {
@@ -247,16 +256,12 @@ fn a_kept_name_is_read_by_seeks_with_statistics_and_without() {
         }
     };
     load(1..=early + UNANALYSED);
-    let unknown = common::settled(
+    let known = common::settled(
         &url,
         &schema,
         "SELECT reltuples::bigint FROM pg_class WHERE relname = 'records' \
          AND relnamespace = $1::text::regnamespace",
-    );
-    assert_eq!(
-        unknown, -1,
-        "the planner has statistics of a lake below the threshold"
-    );
+    ) >= 0;
     // The index of the head is over the kept names alone, as the server
     // prints its condition: a stored type's put does not maintain it.
     let narrowed = common::settled(
@@ -270,20 +275,16 @@ fn a_kept_name_is_read_by_seeks_with_statistics_and_without() {
         narrowed, 1,
         "`records_head` is not over the kept names alone"
     );
-    seeks(
-        &plans(
-            &url,
-            &schema,
-            &names,
-            (early + UNANALYSED, early + UNANALYSED / 2),
-        ),
-        false,
-    );
+    // The small lake as the planner holds it, then analysed: the plans
+    // are seeks whether autoanalyze ran before them or not.
+    let small = (early + UNANALYSED, early + UNANALYSED / 2);
+    seeks(&plans(&url, &schema, &names, small, false), known);
+    seeks(&plans(&url, &schema, &names, small, true), true);
     load(early + UNANALYSED + 1..=last);
     drop(engine);
     // The writer analysed its tables as it loaded them.
     let middle = last - (STATES - UNANALYSED) / 2;
-    seeks(&plans(&url, &schema, &names, (last, middle)), true);
+    seeks(&plans(&url, &schema, &names, (last, middle), false), true);
     let before = ["records", "outputs"].map(|table| common::fetched(&url, &schema, table));
     let engine = open(OpenMode::Read);
     for _ in 0..20 {
