@@ -624,6 +624,16 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             ));
         }
     }
+    // Before any relation is judged: one its author is not shown, put back
+    // under a name the author sends again, is refused as any relation
+    // declared twice, and nothing else is said of it (024, extended).
+    let mut named = BTreeSet::new();
+    if let Some(r) = t.relations.iter().find(|r| !named.insert(&r.name)) {
+        return Err(invalid(format!(
+            "{owner} declares the relation `{}` twice",
+            r.name
+        )));
+    }
     for r in &t.relations {
         name("relation", r.name.as_str())?;
         let at = |why: &str| invalid(format!("{owner}, relation `{}`: {why}", r.name));

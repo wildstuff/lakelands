@@ -481,10 +481,11 @@ pub fn type_shown<'a>(
 }
 
 /// Whether `who` is shown relation `r` of `owner` (006, extended): it is
-/// shown both ends, and of a derived relation it may know of every field
-/// the match pairs, on both sides. A relation it is not shown is, to it,
-/// one the type does not declare, at every door. A match over a field it
-/// knows of and may not read stays shown; a walk over it is refused.
+/// shown both ends, it may know of the reference field that carries it,
+/// and of a derived relation it may know of every field the match pairs,
+/// on both sides. A relation it is not shown is, to it, one the type does
+/// not declare, at every door. A field it knows of and may not read leaves
+/// the relation shown; a walk over it is refused (024, extended).
 pub fn relation_shown<'a>(
     owner: &TypeDecl,
     r: &RelationDecl,
@@ -501,6 +502,7 @@ pub fn relation_shown<'a>(
     let pairs = r.derived.iter().flat_map(|d| &d.pairs);
     type_shown(owner, &|n| find(n), who)
         && type_shown(target, find, who)
+        && r.via.iter().all(|v| known(owner, v))
         && pairs
             .into_iter()
             .all(|p| known(owner, &p.from) && known(target, &p.to))

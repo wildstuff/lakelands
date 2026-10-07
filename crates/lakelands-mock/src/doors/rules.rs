@@ -46,6 +46,11 @@ pub(super) fn declaration(st: &State, d: &Declaration) -> Result<()> {
             for f in &t.fields {
                 field(&owner, f)?;
             }
+            let mut named = std::collections::BTreeSet::new();
+            if let Some(r) = t.relations.iter().find(|r| !named.insert(&r.name)) {
+                let twice = format!("{owner} declares the relation `{}` twice", r.name);
+                return Err(invalid(twice));
+            }
             for r in &t.relations {
                 name("relation", r.name.as_str())?;
                 for f in &r.fields {

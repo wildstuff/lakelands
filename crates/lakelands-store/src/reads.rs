@@ -2298,20 +2298,30 @@ impl<'a> Reader<'a> {
         Ok(Some(admitted.map(|(r, _)| r.key).collect()))
     }
 
-    /// Refuse a walk over a derived relation around `here` that probes a
-    /// matched field the principal may not read, on either side: an edge
-    /// that appears or not answers whether the two values are equal (024,
-    /// 044). Only a relation the step walks and the principal is shown is
-    /// probed, so a refusal never names a type or a field it is told is
-    /// not there (006, extended): what remains is a masked field.
-    fn probe_derived(&self, here: &TypeName, relation: &RelationName, walk: Walk) -> Result<()> {
+    /// Refuse a walk around `here` over a relation that probes a field the
+    /// principal may not read: the reference field that carries it, whose
+    /// value each edge answers, or a derived relation's matched field, on
+    /// either side, where an edge that appears or not answers whether the
+    /// two values are equal (024, 044). A step is probed before it walks,
+    /// and every hop again around the type it reached, over `relation` or,
+    /// when it is `None`, over every relation it walks. Only a relation the
+    /// hop walks and the principal is shown is probed, so a refusal never
+    /// names a type or a field it is told is not there (006, extended):
+    /// what remains is a masked field.
+    fn probe_derived(
+        &self,
+        here: &TypeName,
+        relation: Option<&RelationName>,
+        walk: Walk,
+    ) -> Result<()> {
         for (t, r) in self.shown_relations(Some(here)) {
-            let Some(d) = &r.derived else { continue };
             let out = t.name == *here && walk != Walk::In;
             let inn = r.target == *here && walk != Walk::Out;
-            if r.name != *relation || !(out || inn) {
+            if relation.is_some_and(|n| r.name != *n) || !(out || inn) {
                 continue;
             }
+            rights::check_probe(self.who, t, r.via.iter())?;
+            let Some(d) = &r.derived else { continue };
             rights::check_probe(self.who, t, d.pairs.iter().map(|p| &p.from))?;
             let target = self.shape.ontology.ty(&r.target)?;
             rights::check_probe(self.who, target, d.pairs.iter().map(|p| &p.to))?;
@@ -2357,7 +2367,7 @@ impl<'a> Reader<'a> {
             } else {
                 self.neighbour_target(i, step)?
             };
-            self.probe_derived(&here, &step.relation, step.walk)?;
+            self.probe_derived(&here, Some(&step.relation), step.walk)?;
             if let (Some(t), Some(r)) = (&step.ty, &reached)
                 && t != r
             {
@@ -2949,6 +2959,9 @@ impl EdgeSource for Visible<'_, '_> {
         walk: Walk,
     ) -> Result<Vec<Vec<Edge>>> {
         let r = self.reader;
+        // A hop past the first reaches types the step's own probe did not
+        // look at.
+        r.probe_derived(ty, relation, walk)?;
         let shown = r.shown_relations(Some(ty));
         let mut lists = ProjectionView::edges(r.view.as_ref(), ty, keys, relation, walk)?;
         for (list, derived) in
@@ -2991,6 +3004,12 @@ impl EdgeSource for Visible<'_, '_> {
         for list in lists {
             let mut kept = Vec::with_capacity(list.len());
             for mut e in list {
+                // An edge of a relation the principal is not shown answers
+                // nothing, whatever step asked for it: a step over another
+                // type's relation of the same name walks it (024, extended).
+                if !(shown.iter()).any(|(t, x)| t.name == e.from.0 && x.name == e.relation) {
+                    continue;
+                }
                 if carried(&e) {
                     let (lt, lk) = link_of(&e);
                     let Some(link) = links.get(&(lt.clone(), lk)) else {

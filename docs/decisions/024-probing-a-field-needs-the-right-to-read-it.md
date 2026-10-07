@@ -494,7 +494,8 @@ The rest of a type's description is computed over the same shown shape
 sourced are said of the fields its reader is described: a field it sees
 masked is described without `searchable` and is searchable to it no
 more, and one it may not know of says nothing. A relation is described
-only to a reader shown both its ends and, for a derived relation, every
+only to a reader shown both its ends, the field that carries it where
+it is carried by a reference field, and, for a derived relation, every
 field its match pairs
 (`docs/decisions/006-grants-not-roles.md`, extended). What remains
 says a hidden thing exists, and remains on purpose:
@@ -509,3 +510,28 @@ says a hidden thing exists, and remains on purpose:
   field's access depend on another type at every read. A host that
   hides a type grants `none` on the reference fields to it;
 - `may.retire`, which says every field is writable.
+
+## Extended: a relation carried by a field is walked by its reader only (lakelands#727)
+
+A relation carried by a reference field (`via`) answers that field's
+value with every edge: a walk out of a record reaches the record the
+field names. So the relation is read as its field is. To a reader who
+may not know of the field the relation is not shown: `describe_type`
+does not list it, and a walk over it, out, in or as a graph, is answered
+as over a relation the type does not declare. To a reader who sees the
+field masked the relation is shown, and a walk over it is refused as not
+granted, naming the field, as a walk over a derived relation's masked
+pair is. Every hop is probed so, a derived relation's matched fields
+too, around the type it reached, not only a step's first: a walk of two
+hops, a graph or `components` that meets such a relation or pair past
+its first hop is refused alike. A walk reaches no edge of a relation its
+reader is not shown, whatever step asked for it, so a step over another
+type's relation of the same name walks only that one. An author with
+`schema` who may not know of the field now sends a type whose target it
+is shown, so a relation it sends under the hidden relation's name is
+refused as one declared twice, in the words any type declaring a
+relation twice gets, and the type in force does not change (027,
+extended).
+
+This is a change for a host: a reader held from such a field, which
+walked the relation before, is now told it is not there.
