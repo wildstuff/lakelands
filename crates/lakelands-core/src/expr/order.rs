@@ -76,15 +76,20 @@ pub fn cmp_values(a: &Value, b: &Value) -> Ordering {
 /// - a boolean: `false` before `true`;
 /// - a JSON value: its canonical bytes, as [`cmp_values`] orders them.
 pub fn sort_key(value: &Value) -> Vec<u8> {
+    val_key(&from_json(value))
+}
+
+/// [`sort_key`] of a value as the evaluator holds it, so that an instant
+/// needs no JSON form.
+pub fn val_key(v: &Val) -> Vec<u8> {
     // The kind is read as `rank` reads it, each parse done once: text is a
     // number when it reads as a decimal, else an instant when it reads as
     // one, else text.
-    let v = from_json(value);
     let mut key = Vec::new();
-    match &v {
+    match v {
         Val::Num(d) => number_key(*d, &mut key),
         Val::Time(t) => signed_key(1, t.0, &mut key),
-        Val::Text(s) => match (as_number(&v), as_time(&v)) {
+        Val::Text(s) => match (as_number(v), as_time(v)) {
             (Some(d), _) => number_key(d, &mut key),
             (None, Some(t)) => signed_key(1, t.0, &mut key),
             (None, None) => {
@@ -93,9 +98,13 @@ pub fn sort_key(value: &Value) -> Vec<u8> {
             }
         },
         Val::Bool(b) => key.extend([3, u8::from(*b)]),
-        Val::Json(_) | Val::Null => {
+        Val::Json(j) => {
             key.push(4);
-            key.extend(crate::canonical::to_vec(value));
+            key.extend(crate::canonical::to_vec(j));
+        }
+        Val::Null => {
+            key.push(4);
+            key.extend(crate::canonical::to_vec(&Value::Null));
         }
         Val::Duration(d) => signed_key(5, *d, &mut key),
     }

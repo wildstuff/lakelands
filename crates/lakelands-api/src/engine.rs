@@ -198,6 +198,12 @@ pub trait ProjectionStore: Send + Sync {
     /// entries and edges from it and the declarations in force.
     fn put_record(&self, record: &StoredRecord) -> Result<()>;
 
+    /// End every key of the head-only name `name` ([`crate::seam::is_head_only`])
+    /// at once, at `at`: whatever its keys held, put earlier in the
+    /// transaction or before it, is deleted, and a key put after it in the
+    /// same transaction is kept.
+    fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()>;
+
     /// Store a proposal's state as of its latest event, at `at`; earlier
     /// states are kept, so a view before `at` still sees the earlier one.
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()>;

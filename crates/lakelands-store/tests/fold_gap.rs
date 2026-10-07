@@ -151,6 +151,9 @@ impl ProjectionStore for Failing {
         }
         self.inner.projection().put_record(record)
     }
+    fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
+        self.inner.projection().end_head_only(name, at)
+    }
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         self.inner.projection().put_proposal(proposal, at)
     }

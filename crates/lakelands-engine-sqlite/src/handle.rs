@@ -473,6 +473,13 @@ impl ProjectionStore for SqliteLake {
         })
     }
 
+    fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
+        self.stage(at, |conn, _| {
+            let gone = conn.execute("DELETE FROM records WHERE ty = ?1", [name.as_str()]);
+            gone.map(drop).map_err(sql)
+        })
+    }
+
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         let state = serde_json::to_string(proposal).expect("a proposal serialises");
         self.stage(at, |conn, _| {

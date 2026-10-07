@@ -727,45 +727,22 @@ A host that already has a store of its own moves in four steps.
   - **A read computes, as before,** when it names a valid time, when it
     is as of a position before the view was made, and while a group of
     the view is not exact for its reader: a measure that fails over it,
-    or an extreme that was given up (below). `describe_type` then says
+    or a member whose argument does not fold. `describe_type` then says
     `not_whole` with the number of such groups, to a principal the
     view's read would answer.
-  - **A write that takes an extreme's holder away reads its group
-    again,** in its own append and under the writer: the live records
-    that hold the group's values, 8 192 at most. The bound is one for
-    the group over all the view's sources, and a record the view's
-    `where` leaves out counts in it. An append whose n events each take
-    a holder away reads up to n times that: an aging run that moves the
-    oldest record of 1 000 groups of 5 000 under `min(date)` reads 5
-    million records in its append. Such a step is one for a quiet
-    moment, as a migration is. Three reads cost more than the bound
-    lets one expect:
-    - **A view over a kept view** reads, beside the inner records of
-      the group's values, every inner record whose whole face reads
-      otherwise than its own (a restricted member of its group makes it
-      so), whatever its group, and each counts in the bound: an outer
-      group of three members is given up once the inner view has about
-      8 190 such records, and until then every such reread reads them
-      all.
-    - **A view grouped by more than one field** is looked up by its
-      first text field alone: a view grouped by `country, city` reads
-      every record of the country for a reread of one city, on the
-      memory engine every record of the source. Those are read and not
-      handed to the fold, and the bound does not count them.
-    - **After a migration's step in the same append** every lookup
-      walks the source whole.
-  - **A group past that bound is given up:** its extreme is kept no
-    more, the view computes for the readers it concerns, and
-    `describe_type` says `not_whole` with the group counted. Nothing
-    mends it by itself, and the fold goes on keeping the view's other
-    records meanwhile, at a state for each write: a reader whose face
-    of the group is exact, one without the `restricted` grant where the
-    group was given up on the whole face alone, is answered from them.
-    What mends it is what makes the view again
-    (above), or writing its setting `false` and then `true`; or the
-    group's own end. A view with a `min` or `max` over groups larger
-    than the bound, or whose holders leave in bulk, is not worth
-    keeping today (lakelands#629).
+  - **A write that takes an extreme's holder away reads the next one**
+    from the extreme's order, in its own append: one entry, whatever
+    the group's size, and a batch more for each run of entries the same
+    append ended ahead of it. For a view with a `min` or `max`, the fold
+    keeps that order beside the kept records, an entry for each member
+    of each extreme, and every write to a member puts its entry again
+    where its value or group moves. Making the view writes one entry for
+    each member of each extreme and holds about 270 bytes for each until
+    it commits; making it again writes as many, and ending it deletes
+    its order in one statement. On SQLite a `max` over 10⁶ members was
+    made in 28 s at a peak of 549 MB more and ended in 7 s, and a
+    declaration of a source, which does both in one event, holds the
+    writer about 35 s: declare in a quiet moment.
   - **A reader with the `restricted` grant** reads the groups whose
     faces differ (a restricted record is a member of each) beside the
     engine's page of the others (lakelands#628): a page in key order

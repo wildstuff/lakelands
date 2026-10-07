@@ -6,7 +6,8 @@
 //! that hands another digest than the engine took or asks twice; and it
 //! counts the rows its scans hand out by type and the reads of a kept
 //! view's state, and keeps the last record put under each kept name and
-//! key. [`calls`] reads what a lake owes as the drain would.
+//! key, and the entries of the kept views' orders since the last clear.
+//! [`calls`] reads what a lake owes as the drain would.
 
 #![allow(dead_code)]
 
@@ -72,6 +73,9 @@ pub struct Probe {
     pub states: AtomicUsize,
     /// The last record put under each kept name and key.
     pub kept: Mutex<std::collections::BTreeMap<(TypeName, RecordKey), StoredRecord>>,
+    /// The entries of the kept views' orders put since the last clear, by
+    /// name and key, an ended one left out.
+    pub orders: Mutex<std::collections::BTreeMap<(TypeName, RecordKey), StoredRecord>>,
     /// Called before each commit reaches the engine, with the position it
     /// commits through: its transaction is still open.
     pub before_commit: Mutex<Option<Look>>,
@@ -346,8 +350,19 @@ impl ProjectionStore for Probed {
                 .lock()
                 .unwrap()
                 .insert((ty, key), record.clone());
+        } else if lakelands_api::seam::is_head_only(&ty) {
+            let mut orders = self.probe.orders.lock().unwrap();
+            match record.is_ended() {
+                true => drop(orders.remove(&(ty, key))),
+                false => drop(orders.insert((ty, key), record.clone())),
+            }
         }
         self.inner.projection().put_record(record)
+    }
+    fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
+        let mut orders = self.probe.orders.lock().unwrap();
+        orders.retain(|(ty, _), _| ty != name);
+        self.inner.projection().end_head_only(name, at)
     }
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         self.inner.projection().put_proposal(proposal, at)
@@ -370,6 +385,7 @@ impl ProjectionStore for Probed {
         self.inner.projection().mark_applied(id, at)
     }
     fn clear(&self) -> Result<()> {
+        self.probe.orders.lock().unwrap().clear();
         self.inner.projection().clear()
     }
     fn compact(&self) -> Result<Reclaimed> {

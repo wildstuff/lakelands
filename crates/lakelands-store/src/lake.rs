@@ -136,6 +136,8 @@ pub(crate) const RENAMES: &str = "sys:renames";
 /// The prefix of every seam name of the store's own, [`RENAMES`] and the
 /// kept views' among them. A host's seams are named behind their kind's
 /// prefix (`function:`, `embed:`, `verb:`), so no door records under one.
+/// Every type name it begins is the store's own too, as no declared type
+/// name holds a `:`.
 pub(crate) const OWN_SEAM: &str = "sys:";
 
 /// The lake's list of renames as its output holds it; empty where none is
@@ -2061,11 +2063,10 @@ fn foreign(o: &Ontology, body: &EventBody) -> Option<String> {
         | EventBody::ObjectSetChanged { ty, .. } => (ty, false),
         _ => return None,
     };
-    if lakelands_api::seam::is_kept_name(ty) {
+    if ty.as_str().starts_with(OWN_SEAM) {
         return Some(format!(
-            "declares or writes the type `{ty}`: a name that begins `{}` is the store's own, for \
-             the records of a view it keeps",
-            lakelands_api::seam::KEPT_PREFIX
+            "declares or writes the type `{ty}`: a name that begins `{OWN_SEAM}` is the store's \
+             own, for what it keeps of a view"
         ));
     }
     let view = !declares && o.ty(ty).is_ok_and(|t| t.view.is_some());
@@ -2370,7 +2371,7 @@ impl Migrated {
 pub struct Staged {
     /// The records this transaction wrote, each under the key and in the
     /// state it has now: ended only where the fold ended a kept view's
-    /// record, which `each` and `matching` leave out.
+    /// record, which `each` leaves out.
     records: BTreeMap<(TypeName, RecordKey), StoredRecord>,
     /// The steps this transaction folded and kept, in the order of their
     /// events.
@@ -2392,6 +2393,9 @@ pub struct Staged {
     members: BTreeMap<(String, TypeName, RecordKey), bool>,
     /// The views the lake keeps, as this append works on them.
     pub(crate) kept: crate::kept::Views,
+    /// The entries of the kept views' orders this append put or ended, by
+    /// the name they are kept under.
+    pub(crate) orders: BTreeMap<TypeName, crate::kept::Orders>,
 }
 
 impl Staged {
@@ -2465,39 +2469,6 @@ impl Staged {
             stepped.map_or(Ok(()), &mut each)
         })?;
         (self.of_type(ty).filter(|r| !r.is_ended()).cloned()).try_for_each(each)
-    }
-
-    /// The live records of `ty` whose fields hold every value of `equal`,
-    /// as the append leaves them so far, handed to `each` until it answers
-    /// false: the view's by the engine's lookup, a page at a time, then
-    /// what the append wrote; after a kept step, by a walk of the type,
-    /// which goes on to its end once `each` has answered false.
-    pub(crate) fn matching(
-        &self,
-        view: &dyn ProjectionView,
-        ty: &TypeName,
-        equal: &[(FieldName, Value)],
-        mut each: impl FnMut(&StoredRecord) -> bool,
-    ) -> Result<bool> {
-        let holds = |r: &StoredRecord| {
-            !r.retired && !r.is_ended() && equal.iter().all(|(f, v)| r.fields.get(f) == Some(v))
-        };
-        // A kept step moved what the view holds: every record of the type
-        // as the steps leave it, the lookup's own answer among them.
-        if !self.steps.is_empty() {
-            let mut all = true;
-            self.each(view, ty, |r| {
-                all = all && (!holds(&r) || each(&r));
-                Ok(())
-            })?;
-            return Ok(all);
-        }
-        let mut walk = Walk::new(view, ty, false);
-        walk.scan.equal = equal.to_vec();
-        let mut unwritten = walk.by_ref().filter(|r| !self.wrote(ty, &r.key));
-        let all = unwritten.all(|r| each(&r));
-        walk.failed()?;
-        Ok(all && self.of_type(ty).filter(|r| holds(r)).all(each))
     }
 
     /// Whether a recomputation of the records of `ty` is pending: their

@@ -33,7 +33,7 @@
 //!
 //! Every table is named with the lake's schema ([`Names`]).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use lakelands_api::engine::Declared;
 use lakelands_api::error::Result;
@@ -813,6 +813,12 @@ pub(crate) const PAGE: usize = 1_024;
 #[derive(Default)]
 pub(crate) struct Buffer {
     records: BTreeMap<(Vec<String>, i64), StoredRecord>,
+    /// The last state put of each key of a head-only name, none for one
+    /// ended: written over whatever the key held, with no row beside it.
+    heads: BTreeMap<(String, String), (i64, Option<String>)>,
+    /// The head-only names whose every key was ended: deleted before the
+    /// heads are written.
+    ended: BTreeSet<String>,
     proposals: BTreeMap<(Vec<String>, i64), String>,
     outputs: BTreeMap<(Vec<String>, i64), String>,
     members: BTreeMap<(Vec<String>, i64), bool>,
@@ -824,15 +830,29 @@ impl Buffer {
     /// The puts it holds, of every kind.
     pub(crate) fn len(&self) -> usize {
         let (records, states) = (
-            self.records.len(),
+            self.records.len() + self.heads.len() + self.ended.len(),
             self.proposals.len() + self.outputs.len(),
         );
         records + states + self.members.len() + self.applied.len()
     }
 
     pub(crate) fn record(&mut self, r: &StoredRecord) {
+        if lakelands_api::seam::is_head_only(&r.ty) {
+            let state =
+                (!r.is_ended()).then(|| serde_json::to_string(r).expect("a record serialises"));
+            let key = (r.ty.to_string(), r.key.to_string());
+            self.heads.insert(key, (r.position.0 as i64, state));
+            return;
+        }
         let ident = vec![r.ty.as_str().to_owned(), r.key.as_str().to_owned()];
         self.records.insert((ident, r.position.0 as i64), r.clone());
+    }
+
+    /// Every key of the head-only name `ty` ended: what the buffer holds
+    /// of it goes, and so do its rows, before any head put after.
+    pub(crate) fn end_heads(&mut self, ty: &str) {
+        self.heads.retain(|(t, _), _| t != ty);
+        self.ended.insert(ty.to_owned());
     }
 
     pub(crate) fn proposal(&mut self, id: &str, at: Position, state: String) {
@@ -877,6 +897,33 @@ impl Buffer {
             })
             .collect();
         let heads = RECORDS.put_many(db, names, &records)?;
+        let table = names.t("records");
+        if !self.ended.is_empty() {
+            let tys: Vec<&str> = self.ended.iter().map(String::as_str).collect();
+            let gone = format!("DELETE FROM {table} WHERE ty = ANY($1::text[])");
+            db.execute(&gone, &[&tys])?;
+        }
+        if !self.heads.is_empty() {
+            let (mut tys, mut keys, mut since, mut states) = (vec![], vec![], vec![], vec![]);
+            for ((ty, key), (at, state)) in &self.heads {
+                tys.push(ty.as_str());
+                keys.push(key.as_str());
+                since.push(*at);
+                states.push(state.as_deref());
+            }
+            let b = "unnest($1::text[], $2::text[]) AS b(ty, key)";
+            let gone =
+                format!("DELETE FROM {table} t USING {b} WHERE t.ty = b.ty AND t.key = b.key");
+            db.execute(&gone, &[&tys, &keys])?;
+            db.execute(
+                &format!(
+                    "INSERT INTO {table} (ty, key, since, state) SELECT * FROM \
+                     unnest($1::text[], $2::text[], $3::int8[], $4::text[]) AS b(ty, key, since, state) \
+                     WHERE state IS NOT NULL"
+                ),
+                &[&tys, &keys, &since, &states],
+            )?;
+        }
         PROPOSALS.put_many(db, names, &self.proposals)?;
         OUTPUTS.put_many(db, names, &self.outputs)?;
         MEMBERS.put_many(db, names, &self.members)?;

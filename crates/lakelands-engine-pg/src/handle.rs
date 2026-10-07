@@ -491,6 +491,10 @@ impl ProjectionStore for PgLake {
         Ok(())
     }
 
+    fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
+        self.stage(at, |b| b.end_heads(name.as_str()))
+    }
+
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         let state = serde_json::to_string(proposal).expect("a proposal serialises");
         self.stage(at, |b| b.proposal(proposal.id.as_str(), at, state))

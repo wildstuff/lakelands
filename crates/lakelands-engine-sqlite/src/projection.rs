@@ -586,6 +586,22 @@ pub(crate) type Kept = BTreeMap<TypeName, (Option<TypeDecl>, Vec<FieldName>)>;
 /// a declaration.
 pub(crate) fn put_record(conn: &Connection, kept: &mut Kept, r: &StoredRecord) -> Result<()> {
     let state = serde_json::to_string(r).expect("a record serialises");
+    // A head-only name keeps one state for each key and no row beside it.
+    if lakelands_api::seam::is_head_only(&r.ty) {
+        let key = [r.ty.as_str(), r.key.as_str()];
+        (conn.prepare_cached("DELETE FROM records WHERE ty = ?1 AND key = ?2"))
+            .and_then(|mut s| s.execute(key))
+            .map_err(sql)?;
+        if r.is_ended() {
+            return Ok(());
+        }
+        return (conn.prepare_cached(
+            "INSERT INTO records (ty, key, since, state) VALUES (?1, ?2, ?3, ?4)",
+        ))
+        .and_then(|mut s| s.execute(params![key[0], key[1], r.position.0 as i64, state]))
+        .map(drop)
+        .map_err(sql);
+    }
     RECORDS.put(conn, &[&r.ty.as_str(), &r.key.as_str()], r.position, &state)?;
     if is_head(conn, &r.ty, &r.key, r.position)? {
         if !kept.contains_key(&r.ty) {

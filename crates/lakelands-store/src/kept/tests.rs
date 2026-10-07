@@ -752,18 +752,25 @@ async fn not_folded(bodies: &[(Value, &str)]) {
     }
 }
 
-/// A log that declares a type under a kept name, writes a record of one or
-/// moves one into a set is not folded: no door appends any, and the second
-/// would change a view's kept record behind its state.
+/// A log that declares a type under a name of the store's own, writes a
+/// record of one or moves one into a set is not folded: no door appends
+/// any, and it would change a view's kept record, or an extreme's order,
+/// behind the fold.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_event_that_names_a_kept_name_is_not_folded() {
-    let k = "sys:kept.book";
-    let named = "`sys:kept.book`: a name that begins `sys:kept.`";
-    let declared = json!({"kind": "declared", "declaration": stored(k, &[]), "version": 1});
-    let retired = json!({"kind": "record_retired", "type": k, "key": "k", "version": 2});
-    let set =
-        json!({"kind": "object_set_changed", "set": "s", "type": k, "key": "k", "joined": true});
-    not_folded(&[(declared, named), (retired, named), (set, named)]).await;
+async fn an_event_that_names_a_name_of_the_stores_own_is_not_folded() {
+    let mut bodies = Vec::new();
+    for k in ["sys:kept.book", "sys:order.book", "sys:else"] {
+        let named = format!("`{k}`: a name that begins `sys:`");
+        let declared = json!({"kind": "declared", "declaration": stored(k, &[]), "version": 1});
+        let retired = json!({"kind": "record_retired", "type": k, "key": "k", "version": 2});
+        let set = json!({"kind": "object_set_changed", "set": "s", "type": k, "key": "k", "joined": true});
+        bodies.extend([declared, retired, set].map(|b| (b, named.clone())));
+    }
+    let bodies: Vec<(Value, &str)> = bodies
+        .iter()
+        .map(|(b, n)| (b.clone(), n.as_str()))
+        .collect();
+    not_folded(&bodies).await;
 }
 
 /// An output under a seam of the store's own is not folded: no door

@@ -8,7 +8,10 @@
 //! read, as the engine itself writes it, and what a read costs is
 //! counted in the steps SQLite's virtual machine takes: for a name with a
 //! key of five thousand states no more than for a name whose keys were
-//! written once. A recorded output is read the same way, by a seek.
+//! written once. A recorded output is read the same way, by a seek. An
+//! order name (`lakelands_api::seam::ORDER_PREFIX`, lakelands#629) keeps
+//! one state for each key and is read by the statements of a stored type,
+//! its page after a key a seek into the primary key; nothing indexes it.
 
 use std::path::PathBuf;
 
@@ -17,7 +20,7 @@ use lakelands_api::engine::{EngineOpener, OpenMode};
 use lakelands_api::event::Digest;
 use lakelands_api::id::{Position, RecordKey, TypeName, Version};
 use lakelands_api::record::StoredRecord;
-use lakelands_api::seam::kept_name;
+use lakelands_api::seam::{kept_name, order_name};
 use lakelands_engine_sqlite::{SqliteOpener, read_statements};
 use rusqlite::types::Value as Sql;
 use rusqlite::{Connection, StatementStatus, params_from_iter};
@@ -238,4 +241,52 @@ fn a_read_of_a_kept_name_takes_the_steps_of_one_whose_keys_were_written_once() {
          of {STATES} states and an output recorded as often, and for one whose keys and output \
          were written once: {taken:?}"
     );
+}
+
+#[test]
+fn an_order_name_is_read_by_a_seek_and_indexed_nowhere() {
+    let (dir, engine) = lake("order");
+    let name = order_name(&TypeName::from("v"));
+    let p = engine.projection();
+    p.begin().unwrap();
+    for at in 1..=100 {
+        let mut entry = state(&name, &format!("k{:02}", at % 50), at);
+        entry.fields =
+            serde_json::from_value(json!({"sys:entry": {"v": {"text": "1"}}, "t": "word"}))
+                .unwrap();
+        p.put_record(&entry).unwrap();
+    }
+    p.commit(Position(100)).unwrap();
+    drop(engine);
+    let db = Connection::open(dir.join("projection.db")).unwrap();
+    let count = |sql: &str| {
+        db.query_row(sql, [name.as_str()], |r| r.get::<_, i64>(0))
+            .unwrap()
+    };
+    let rows = [
+        "SELECT COUNT(*) FROM records WHERE ty = ?1",
+        "SELECT COUNT(*) FROM text_index WHERE ty = ?1",
+        "SELECT COUNT(*) FROM sort_index WHERE ty = ?1",
+        "SELECT COUNT(*) FROM search_rows WHERE ty = ?1",
+        "SELECT COUNT(*) FROM edges WHERE src_ty = ?1 OR dst_ty = ?1",
+    ]
+    .map(count);
+    let full_text: i64 = db
+        .query_row("SELECT COUNT(*) FROM full_text", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        (rows, full_text),
+        ([50, 0, 0, 0, 0], 0),
+        "one state for each of 50 keys, no other row"
+    );
+    let [_, later, _, _] = read_statements(&name, true);
+    let plan = plan(&db, &later);
+    assert!(
+        plan.len() == 1
+            && plan[0].starts_with(
+                "SEARCH records USING INDEX sqlite_autoindex_records_1 (ty=? AND key>?)"
+            ),
+        "an order name's page after a key is not a seek into the primary key:\n  {later}\n  {plan:#?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
