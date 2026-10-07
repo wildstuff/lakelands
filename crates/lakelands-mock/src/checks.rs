@@ -184,7 +184,6 @@ macro_rules! door_checks {
             a_reference_key_field_filled_from_the_key_must_name_a_live_record,
             key_components_and_source_ids_use_each_values_one_form,
             schema_hashes_and_proposal_ids_have_the_stores_form,
-            #[own_principals]
             a_reader_is_answered_the_hash_of_the_shape_it_is_described,
             links_are_written_walked_and_held_to_their_relation,
             a_relation_declared_again_with_another_target_reshapes_its_links,
@@ -418,8 +417,11 @@ pub struct Cast {
     pub owner: Principal,
     /// Reads everything but `secret`, sees `note` masked, writes `status`
     /// and `partner`; of a `doc`, which a check may declare, sees `body`
-    /// masked.
+    /// masked; of a `credit`, which a check may declare, reads everything
+    /// but `hush`.
     pub clerk: Principal,
+    /// The clerk, holding the `schema` grant.
+    pub architect: Principal,
     /// Reads everything, writes `verdict` and `reason`.
     pub auditor: Principal,
     /// Reads, and reviews proposals.
@@ -457,6 +459,18 @@ impl Cast {
                 ..Default::default()
             },
         );
+        clerk.types.insert(
+            TypeName::from("credit"),
+            TypeGrants {
+                default: Some(Access::Read),
+                fields: [(FieldName::from("hush"), Access::None)].into(),
+                ..Default::default()
+            },
+        );
+        let architect = Grants {
+            schema: true,
+            ..clerk.clone()
+        };
         let mut tuner = invoice_grants(Access::None, &[("status", Access::Read)]);
         for (name, access) in [("sys.setting", Access::Write), ("longest", Access::Read)] {
             let grants = TypeGrants {
@@ -469,6 +483,7 @@ impl Cast {
         Cast {
             owner: principal(lake, PrincipalKind::Human, "owner", Grants::owner()),
             clerk: principal(lake, PrincipalKind::Agent, "clerk", clerk),
+            architect: principal(lake, PrincipalKind::Agent, "architect", architect),
             auditor: principal(
                 lake,
                 PrincipalKind::Human,
@@ -2116,24 +2131,46 @@ pub async fn a_type_made_of_another_is_shown_only_with_it(store: Arc<dyn LakeSto
     );
 }
 
-/// A read of a view probes what its definition reads: a reader who may not
-/// know of a field its `where` reads is refused as not granted, on no field
-/// and without that field's name, by `find` and by `get`; the owner is
-/// answered. On the mock as on the store (024, extended).
+/// A read of a view probes what computing it reads: each source's fields,
+/// a merged source's as its own, and those of a source that is itself a
+/// view. A reader who may not know of a field one of them reads is refused
+/// as not granted, on no field and without that field's name, by `find`
+/// and by `get`, and `describe` withholds the definition where the view
+/// itself reads that field of its own or a merged source; a holder of the
+/// `schema` grant is refused on that field; the owner is answered. On the
+/// mock as on the store (024, extended).
 pub async fn a_view_over_a_hidden_field_names_nothing(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let (owner, c) = (&f.cast.owner, &f.catalog);
-    let view = json!({"declare": "type", "name": "kept_by_status", "key": ["status"],
-        "fields": [{"name": "status", "type": {"kind": "text"}},
-                   {"name": "n", "type": {"kind": "number"}}],
-        "view": {"source": INVOICE, "group_by": ["status"], "where": "secret = 'x'",
-                 "measures": [{"name": "n", "expr": "count()"}]}});
-    let view: Declaration = serde_json::from_value(view).expect("a declaration");
-    c.declare(owner, view)
-        .await
-        .expect("the owner declares the view");
-    let kept = ty("kept_by_status");
-    let unnamed = |what: &str, e: Error| {
+    let n = |n: &str| json!([{"name": n, "expr": "count()"}]);
+    let fields = |n: &str| {
+        json!([{"name": "status", "type": {"kind": "text"}},
+        {"name": n, "type": {"kind": "number"}}])
+    };
+    let declared = [
+        json!({"declare": "type", "name": "credit", "key": ["status"],
+            "fields": [{"name": "status", "type": {"kind": "text"}},
+                       {"name": "hush", "type": {"kind": "text"}}]}),
+        json!({"declare": "type", "name": "kept_by_status", "key": ["status"],
+            "fields": fields("n"),
+            "view": {"source": INVOICE, "group_by": ["status"], "where": "secret = 'x'",
+                     "measures": n("n")}}),
+        json!({"declare": "type", "name": "merged", "key": ["status"],
+            "fields": [{"name": "status", "type": {"kind": "text"}},
+                       {"name": "n", "type": {"kind": "number"}},
+                       {"name": "m", "type": {"kind": "number"}}],
+            "view": {"source": INVOICE, "group_by": ["status"], "measures": n("n"),
+                     "merge": [{"source": "credit", "group_by": ["status"],
+                                "where": "hush = 'x'", "measures": n("m")}]}}),
+        json!({"declare": "type", "name": "over_kept", "key": ["status"],
+            "fields": fields("k"),
+            "view": {"source": "kept_by_status", "group_by": ["status"], "measures": n("k")}}),
+    ];
+    for d in declared {
+        let d: Declaration = serde_json::from_value(d).expect("a declaration");
+        c.declare(owner, d).await.expect("the owner declares it");
+    }
+    let unnamed = |what: &str, hidden: &str, e: Error| {
         let nothing = matches!(
             &e,
             Error::Refused {
@@ -2141,27 +2178,44 @@ pub async fn a_view_over_a_hidden_field_names_nothing(store: Arc<dyn LakeStore>)
                 reason: Refusal::NotGranted
             }
         );
-        assert!(
-            nothing && !e.to_string().contains("secret"),
-            "{what}: {e:?}"
-        );
+        assert!(nothing && !e.to_string().contains(hidden), "{what}: {e:?}");
     };
-    let found = c.find(&f.cast.clerk, &kept, Find::default()).await;
-    unnamed(
-        "find",
-        found.expect_err("the clerk may not know of `secret`"),
-    );
-    let get = Get {
+    let get = || Get {
         key: key("open"),
         with_meta: false,
         params: Default::default(),
         at: Default::default(),
     };
-    let got = c.get(&f.cast.clerk, &kept, get).await;
-    unnamed("get", got.expect_err("the clerk may not know of `secret`"));
-    c.find(owner, &kept, Find::default())
-        .await
-        .expect("the owner reads the view");
+    let (clerk, architect) = (&f.cast.clerk, &f.cast.architect);
+    for (view, hidden) in [
+        ("kept_by_status", "secret"),
+        ("merged", "hush"),
+        ("over_kept", "secret"),
+    ] {
+        let v = ty(view);
+        let found = c.find(clerk, &v, Find::default()).await;
+        unnamed(
+            view,
+            hidden,
+            found.expect_err("the clerk may not know of it"),
+        );
+        let got = c.get(clerk, &v, get()).await;
+        unnamed(view, hidden, got.expect_err("the clerk may not know of it"));
+        let found = c.find(architect, &v, Find::default()).await;
+        let e = found.expect_err("the architect may not read it");
+        assert!(no_field(&e, hidden), "{view}: {e:?}");
+        let got = c.get(architect, &v, get()).await;
+        let e = got.expect_err("the architect may not read it");
+        assert!(no_field(&e, hidden), "{view}: {e:?}");
+        c.find(owner, &v, Find::default())
+            .await
+            .expect("the owner reads the view");
+    }
+    for view in ["kept_by_status", "merged"] {
+        let d = c.describe_type(clerk, &ty(view), ReadAt::default()).await;
+        let d = d.expect("the clerk is described the view").data;
+        assert!(d.view.is_none(), "{view}: its definition is withheld");
+    }
 }
 
 /// A view's records are computed, so a relation on a view carried by link
@@ -5669,12 +5723,10 @@ pub async fn schema_hashes_and_proposal_ids_have_the_stores_form(store: Arc<dyn 
 /// extended).
 pub async fn a_reader_is_answered_the_hash_of_the_shape_it_is_described(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
-    // The clerk is kept from `secret`, the stranger from `partner`, the
+    // The architect is kept from `secret`, the stranger from `partner`, the
     // relation's target: each is answered the hash of what it is described.
-    let mut clerk = f.cast.clerk.clone();
-    clerk.grants.schema = true;
     let mut seen = Vec::new();
-    for who in [&f.cast.owner, &clerk, &f.cast.stranger] {
+    for who in [&f.cast.owner, &f.cast.architect, &f.cast.stranger] {
         let d = (f
             .catalog
             .describe_type(who, &ty(INVOICE), ReadAt::default())
@@ -5696,7 +5748,10 @@ pub async fn a_reader_is_answered_the_hash_of_the_shape_it_is_described(store: A
     }
     let hash = "b63567bce0ec4046d82237cc2fab92986b6a01b1a58afeb0a7b5beb29b0a4693";
     assert_eq!(seen[0].0, hash, "the owner is answered the whole hash");
-    assert_ne!(seen[1].0, hash, "the clerk's shape is not the whole one");
+    assert_ne!(
+        seen[1].0, hash,
+        "the architect's shape is not the whole one"
+    );
     // Its preview of the shape it is described: both hashes are that one's,
     // and its id is not the owner's.
     let to = Migration {
@@ -5704,7 +5759,7 @@ pub async fn a_reader_is_answered_the_hash_of_the_shape_it_is_described(store: A
         renames: Vec::new(),
         relation_renames: Vec::new(),
     };
-    // The owner's is the same migration, `secret` as the clerk's is put back.
+    // The owner's is the same migration, `secret` as the architect's is put back.
     let mut whole = to.clone();
     let secret = seen[0]
         .1
@@ -5712,21 +5767,21 @@ pub async fn a_reader_is_answered_the_hash_of_the_shape_it_is_described(store: A
         .iter()
         .find(|x| x.name.as_str() == "secret");
     whole.to.fields.extend(secret.cloned());
-    let shown = f.catalog.migrate(&clerk, to).await.unwrap().data;
+    let shown = f.catalog.migrate(&f.cast.architect, to).await.unwrap().data;
     let whole = f.catalog.migrate(&f.cast.owner, whole).await.unwrap().data;
     assert_eq!(
         (&shown.records_scanned, &shown.restated, shown.more),
         (&whole.records_scanned, &whole.restated, false),
-        "the clerk and the owner preview one migration"
+        "the architect and the owner preview one migration"
     );
     assert_eq!(
         (&shown.from_schema_hash, &shown.to_schema_hash),
         (&seen[1].0, &seen[1].0),
-        "the clerk's preview is answered the hashes of its shape"
+        "the architect's preview is answered the hashes of its shape"
     );
     assert_ne!(
         shown.report_id, whole.report_id,
-        "the clerk's id is of what it is shown"
+        "the architect's id is of what it is shown"
     );
 }
 

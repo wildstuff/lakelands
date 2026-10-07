@@ -34,7 +34,15 @@ pub async fn memory_lake(lake: &str, limits: Limits) -> Arc<dyn LakeStore> {
 pub fn cast(lake: &LakeId) -> Vec<Principal> {
     let c = Cast::of(lake);
     vec![
-        c.owner, c.clerk, c.auditor, c.reviewer, c.importer, c.stranger, c.keeper, c.tuner,
+        c.owner,
+        c.clerk,
+        c.architect,
+        c.auditor,
+        c.reviewer,
+        c.importer,
+        c.stranger,
+        c.keeper,
+        c.tuner,
     ]
 }
 

@@ -1252,29 +1252,36 @@ fn condition_visible(st: &State, who: &Principal, ty: &TypeName, c: Option<&Cond
     who.grants.schema || c.is_none_or(|c| named(c).is_some_and(|n| reads_all(st, who, ty, &n)))
 }
 
-/// As the store: a read of a view probes what its definition reads, so a
-/// reader `describe` withholds the definition from is not granted it, and
-/// no field of its source is named.
+/// As the store: a read of a view probes what computing it reads, each
+/// source in turn, its own first, and after each a source that is itself
+/// a view by that view's probes (024). The refusal names the field to a
+/// holder of the `schema` grant; to another reader, whom `describe` may
+/// withhold the definition from, it names nothing.
 fn view_readable(st: &State, who: &Principal, t: &DeclaredType) -> Result<()> {
-    match t.decl.view.as_deref() {
-        Some(v) if !view_visible(st, who, v) => Err(refused(Refusal::NotGranted)),
-        _ => Ok(()),
+    let Some(v) = t.decl.view.as_deref() else {
+        return Ok(());
+    };
+    let unnamed = |e| match who.grants.schema {
+        true => e,
+        false => refused(Refusal::NotGranted),
+    };
+    for (source, reads) in view_reads(v) {
+        let s = st.types.get(&source).ok_or_else(|| no_type(&source))?;
+        for name in &reads {
+            readable(st, who, s, name).map_err(unnamed)?;
+        }
+        view_readable(st, who, s)?;
     }
+    Ok(())
 }
 
-/// A view is shown whole on the same rule, over its source's fields.
+/// A view is shown whole to a holder of the `schema` grant, or to one who
+/// reads every field it reads of each of its sources.
 fn view_visible(st: &State, who: &Principal, v: &ViewDecl) -> bool {
-    if who.grants.schema {
-        return true;
-    }
-    let mut names: BTreeSet<FieldName> = v.group_by.iter().cloned().collect();
-    for c in v.r#where.iter().chain(v.measures.iter().map(|m| &m.expr)) {
-        match named(&[], c) {
-            Some(n) => names.extend(n),
-            None => return false,
-        }
-    }
-    reads_all(st, who, &v.source, &names)
+    who.grants.schema
+        || view_reads(v)
+            .iter()
+            .all(|(source, reads)| reads_all(st, who, source, reads))
 }
 
 /// A function is shown when it computes some field and, on every type
