@@ -60,7 +60,9 @@ pub(crate) fn io_error(doing: &str, path: &Path, e: std::io::Error) -> Error {
     unavailable(format!("{doing} {} failed: {e}", path.display()))
 }
 
-/// A failed projection operation, for the host.
+/// A failed projection operation, for the host. SQLite names the columns
+/// of a failed constraint, or the schema's own check, never a row's values
+/// (024).
 pub(crate) fn sql(e: rusqlite::Error) -> Error {
     unavailable(format!("the projection failed: {e}"))
 }
