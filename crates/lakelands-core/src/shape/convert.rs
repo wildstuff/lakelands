@@ -34,7 +34,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl};
+use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl, is_vector_component};
 use lakelands_api::write::{FieldConversion, Migration, MigrationReport};
 use lakelands_api::{FieldName, RecordKey, Timestamp};
 use serde_json::Value;
@@ -101,7 +101,7 @@ pub fn fits(ty: &FieldType, value: &Value) -> bool {
             .as_str()
             .is_some_and(|s| !s.is_empty() && !s.contains('\0')),
         StorageKind::Vector => value.as_array().is_some_and(|items| {
-            items.iter().all(Value::is_number)
+            items.iter().all(is_vector_component)
                 && ty.dimensions.is_none_or(|d| items.len() == d as usize)
         }),
         StorageKind::Geo => check_geo(value).is_ok(),

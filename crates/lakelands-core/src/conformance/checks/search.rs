@@ -404,7 +404,7 @@ check!(
 check!(
     /// A bound backend embeds hybrid search, and only when needed.
     HYBRID_THROUGH_BACKEND = a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_else,
-    "the embedding seam (docs/seams.md): a hybrid search without a vector ranks through the bound backend and says `hybrid`; a vector search or a hybrid one bringing its vector never calls it; a backend that fails, whatever error it answers, makes the search unavailable, never lexical",
+    "the embedding seam (docs/seams.md): a hybrid search without a vector ranks through the bound backend and says `hybrid`; a vector search or a hybrid one bringing its vector never calls it; a backend that fails, whatever error it answers, or that answers a vector of no direction, makes the search unavailable, never lexical or invalid",
     embedding
 );
 
@@ -764,7 +764,7 @@ async fn a_hybrid_search_without_a_vector_or_a_backend_ranks_lexically_and_says_
 async fn a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_else(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    use crate::conformance::backing::{UNREACHABLE, embed_calls};
+    use crate::conformance::backing::{NOWHERE, UNREACHABLE, embed_calls};
     let l = two_docs(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     // The backend makes every text (1, 0), which only `b` points along:
@@ -801,16 +801,23 @@ async fn a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_els
          the embedding backend; they made {} calls",
         embed_calls() - before
     );
-    let text = format!("{UNREACHABLE} quayside");
-    match cat.search(own, doc_search(hybrid(&text, None))).await {
-        Err(Error::Unavailable { .. }) => Ok(()),
-        other => Err(Failure::new(format!(
-            "a hybrid search whose bound embedding backend fails must be unavailable, \
-             never ranked lexically instead: the same query must not rank differently \
-             by the backend's weather; it answered {:?}",
-            other.map(|r| (keys(&r.data).join(","), r.data.ranked_by))
-        ))),
+    // A vector of zeros is the backend's fault, not the caller's.
+    for text in [
+        format!("{UNREACHABLE} quayside"),
+        format!("{NOWHERE} quayside"),
+    ] {
+        match cat.search(own, doc_search(hybrid(&text, None))).await {
+            Err(Error::Unavailable { .. }) => {}
+            other => Err(Failure::new(format!(
+                "a hybrid search for {text:?} whose bound embedding backend fails or \
+                 answers a vector of no direction must be unavailable, never ranked \
+                 lexically or refused as the caller's: the same query must not rank \
+                 differently by the backend's weather; it answered {:?}",
+                other.map(|r| (keys(&r.data).join(","), r.data.ranked_by))
+            )))?,
+        }
     }
+    Ok(())
 }
 
 check!(

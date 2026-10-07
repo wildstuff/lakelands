@@ -22,7 +22,9 @@
 
 use std::fmt;
 
-use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, ValueTypeDecl};
+use lakelands_api::ontology::{
+    FieldDecl, FieldType, StorageKind, ValueTypeDecl, is_vector_component,
+};
 use lakelands_api::{FieldName, Timestamp, Value, ValueTypeName};
 
 mod format;
@@ -325,13 +327,13 @@ fn is_base64(s: &str) -> bool {
 }
 
 fn check_vector(value: &Value, ty: &FieldType) -> Result<Value, ValueError> {
-    let numbers = |items: &&Vec<Value>| items.iter().all(Value::is_number);
+    let numbers = |items: &&Vec<Value>| items.iter().all(is_vector_component);
     let items = value
         .as_array()
         .filter(numbers)
         .ok_or(ValueError::WrongShape {
             kind: StorageKind::Vector,
-            expected: "an array of numbers",
+            expected: "an array of numbers, each finite as a 32-bit float",
         })?;
     let expected = ty.dimensions.ok_or(ValueError::NoDimensions)?;
     if items.len() != expected as usize {

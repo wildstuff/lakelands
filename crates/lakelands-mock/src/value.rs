@@ -1,7 +1,7 @@
 //! Values against their declared types, and the mock's stable ids.
 
 use lakelands_api::id::{IdempotencyKey, Position};
-use lakelands_api::ontology::{FieldType, StorageKind, ValueTypeDecl};
+use lakelands_api::ontology::{FieldType, StorageKind, ValueTypeDecl, is_vector_component};
 use lakelands_api::principal::Principal;
 use lakelands_api::record::Value;
 use lakelands_api::time::Timestamp;
@@ -26,7 +26,7 @@ pub(crate) fn misfit(ty: &FieldType, v: &Value, value_types: &[ValueTypeDecl]) -
         StorageKind::DateTime => v.as_str().is_some_and(|s| Timestamp::parse(s).is_ok()),
         StorageKind::Json => true,
         StorageKind::Vector => v.as_array().is_some_and(|a| {
-            a.iter().all(Value::is_number) && ty.dimensions.is_none_or(|d| a.len() == d as usize)
+            a.iter().all(is_vector_component) && ty.dimensions.is_none_or(|d| a.len() == d as usize)
         }),
         StorageKind::Geo => v.get("type").is_some_and(Value::is_string),
     };

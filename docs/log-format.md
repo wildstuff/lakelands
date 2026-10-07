@@ -628,7 +628,7 @@ Every storage kind has one JSON form in a patch
 | `bytes` | string, standard base64 (RFC 4648 §4) with padding |
 | `json` | any JSON value, under the rule of §1.2 |
 | `reference` | string, the target record's key |
-| `vector` | array of numbers, exactly as many as the field's `dimensions` |
+| `vector` | array of numbers, exactly as many as the field's `dimensions`, each finite as a 32-bit float |
 | `geo` | a GeoJSON geometry object (RFC 7946) |
 
 `null` in a patch clears the field.
@@ -653,6 +653,15 @@ shorter decimal: `0.1` as a 32-bit float is written
 records it. The log does not use a denser binary form for vectors: one
 form per kind keeps a verifier to one codec, and a denser encoding would
 be a new format version (§6).
+
+Every `vector` element is finite as a 32-bit float, the form a search
+ranks by; otherwise every search of the field would score the record
+`NaN`. A write holding `1e300` is refused, naming the field; a
+migration counts a stored value holding it as one that does not
+convert; a function's output holding it fills nothing and names the
+field in its `error` (§2.5); and a derived value holding it, or any
+value its field's type would not take, lands no value. `1e-200` is a value, 0 as a 32-bit
+float, and so is a vector of zeros.
 
 ## 6. Versioning
 

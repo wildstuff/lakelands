@@ -82,6 +82,12 @@ check!(
     "022, extended: computed fields settle in the order of what they read; a backed field whose input is not computed yet is not called, so no output is recorded under an input that was never meant"
 );
 
+check!(
+    /// An output its field's type would not take fills nothing.
+    OUTPUT_NOT_A_VALUE = an_output_its_fields_type_would_not_take_clears_the_field_naming_it,
+    "022 and 011, extended: an output is held to its field's type as a write is, so a vector output with a component that is not finite as an `f32` (`1e300`) is recorded, fills nothing, clears the field, and puts in its metadata's `error` why, naming the field"
+);
+
 /// Declares `lookup`, a function of the suite's backing that echoes its
 /// input `input`.
 async fn lookup(store: &dyn LakeStore, input: &str, config: Value) -> Result<Lake, Failure> {
@@ -283,6 +289,34 @@ async fn a_failing_backing_clears_the_field_and_records_the_failure(
         value(&r, "name").is_none() && r.meta.get("name").is_some_and(|m| m.error.is_some()),
         "`p2` reads the recorded failure: no `name`, and an error in its metadata; it \
          reads {r:?}"
+    );
+    Ok(())
+}
+
+async fn an_output_its_fields_type_would_not_take_clears_the_field_naming_it(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    l.declare_json(json!({
+        "declare": "function", "name": "lookup", "backing": KIND,
+        "inputs": [{"name": "raw", "type": {"kind": "json"}}],
+        "config": {"token": "output_not_a_value", "echo": "raw"}
+    }))
+    .await?;
+    let mut at = computed_by("at", StorageKind::Vector, "lookup", &["raw"]);
+    at.ty.dimensions = Some(2);
+    let fields = vec![field("raw", StorageKind::Json), at];
+    l.declare(type_decl("point", fields)).await?;
+    l.upsert("point", "p1", json!({"raw": [0.6, 0.8]})).await?;
+    l.upsert("point", "p1", json!({"raw": [1e300, 0]})).await?;
+    let r = l.read("point", "p1").await?;
+    let error = r.meta.get("at").and_then(|m| m.error.as_deref());
+    ensure!(
+        value(&r, "at").is_none() && error.is_some_and(|e| e.contains("`at`")),
+        "`lookup` answers `[1e300, 0]`, which no `f32` holds, so `at` must hold no value, \
+         not the `[0.6, 0.8]` before, and its metadata's `error` must name `at`; it reads \
+         {:?} with the error {error:?}",
+        value(&r, "at")
     );
     Ok(())
 }

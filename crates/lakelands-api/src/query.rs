@@ -436,17 +436,23 @@ impl SearchMode {
         }
     }
 
-    /// What the mode asks that no fusion can do: the fault, with the
+    /// What the mode asks that no ranking can do: the fault, with the
     /// field it names if any. A weight weighs one ranking against
     /// another, so it is above 0 and at most 1 000 000, a vector search
-    /// of one field takes none, and no field is named twice.
+    /// of one field takes none, no field is named twice, and every query
+    /// vector has a direction ([`no_direction`]).
     pub fn misfit(&self) -> Option<(Option<FieldName>, String)> {
         let terms = self.vectors();
         let lone = matches!(self, SearchMode::Vector { also, .. } if also.is_empty());
         let fits = |w: Option<f64>| w.is_none_or(weight_fits);
         let range = "must be above 0 and at most 1000000";
-        for (i, (field, _, weight)) in terms.iter().enumerate() {
-            let fault = if lone && weight.is_some() {
+        for (i, (field, vector, weight)) in terms.iter().enumerate() {
+            // An empty vector is a hybrid search's that brings none, or
+            // one of the wrong length, which the field's check names.
+            let aimless = no_direction(vector).filter(|_| !vector.is_empty());
+            let fault = if let Some(why) = aimless {
+                format!("`{field}`'s vector {why}")
+            } else if lone && weight.is_some() {
                 "`weight` weighs one vector field's ranking against another's, and the search \
                  names no other in `also`"
                     .into()
@@ -461,6 +467,21 @@ impl SearchMode {
         }
         let text = matches!(self, SearchMode::Hybrid { text_weight, .. } if !fits(*text_weight));
         text.then(|| (None, format!("`text_weight` {range}")))
+    }
+}
+
+/// Why `vector` gives a search no direction to rank along, if it gives
+/// none: a component that is not a finite number, or every one 0. Near a
+/// vector of no direction is nothing, and its ranking would be every
+/// record tied. A cosine of finite `f32`s summed in `f64` neither
+/// overflows nor underflows, so this is the whole condition.
+pub fn no_direction(vector: &[f32]) -> Option<&'static str> {
+    if !vector.iter().all(|x| x.is_finite()) {
+        Some("has a component that is not a finite number")
+    } else if vector.iter().all(|&x| x == 0.0) {
+        Some("has no direction: every component is 0")
+    } else {
+        None
     }
 }
 

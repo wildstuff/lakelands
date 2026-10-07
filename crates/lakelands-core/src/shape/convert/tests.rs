@@ -158,6 +158,13 @@ fn vectors_and_geometries_are_never_made_only_kept() {
     );
     assert_eq!(convert(&json!([1, 2]), &json_ty, &three), Conversion::Lossy);
     assert_eq!(convert(&json!(["a"]), &json_ty, &three), Conversion::Lossy);
+    // An element no `f32` holds finite is no vector's; zeros are.
+    let huge = json!([1e300, 0, 0]);
+    assert_eq!(convert(&huge, &json_ty, &three), Conversion::Lossy);
+    assert!(matches!(
+        convert(&json!([0, 0, 0]), &json_ty, &three),
+        Conversion::Exact(_)
+    ));
     assert_eq!(
         convert(&json!("1,2,3"), &json_ty, &three),
         Conversion::Lossy

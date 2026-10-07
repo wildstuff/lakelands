@@ -44,7 +44,7 @@ check!(
 check!(
     /// A weight that weighs nothing is refused.
     WEIGHTS_REFUSED = a_weight_that_cannot_weigh_or_a_field_named_twice_is_refused_naming_it,
-    "046, extended: a weight of 0, below 0 or above 1 000 000, a `weight` on a vector search that names no other field, and a vector field named twice are each refused as invalid, naming the field or `text_weight`, before the principal's rights to the field are looked at"
+    "046, extended: a weight of 0, below 0 or above 1 000 000, a `weight` on a vector search that names no other field, a vector field named twice, and a query vector in `vector`, in `also` or in a hybrid search whose components are all 0 or one is not a finite number once read as an `f32` (`(0, 0)`, `(1e-200, 0)`, `(1e300, 0)`) are each refused as invalid, naming the field or `text_weight`, before the principal's rights to the field are looked at"
 );
 
 /// A lake of `doc`s: each a key, a text, a unit vector that many degrees
@@ -348,6 +348,29 @@ async fn a_weight_that_cannot_weigh_or_a_field_named_twice_is_refused_naming_it(
         let what = format!("{mode:?}, by a reader who sees `v` only masked,");
         let answer = l.cat.search(&reader, doc_search(mode)).await;
         invalid_naming(&what, answer.map(|r| scored(&r.data)), &names)?;
+    }
+    // A query vector read from JSON as a caller's is: `1e-200` is 0 as an
+    // `f32`, and `1e300` is infinite.
+    for (written, why) in [
+        (json!([0, 0]), "no direction"),
+        (json!([1e-200, 0]), "no direction"),
+        (json!([1e300, 0]), "not a finite number"),
+    ] {
+        let aimless: Vec<f32> = serde_json::from_value(written.clone())
+            .map_err(|e| Failure::new(format!("{written} does not read as `f32`s: {e}")))?;
+        let (mut also, mut hybrid) = (along(None, "w", None), weighed(None, None));
+        if let SearchMode::Vector { also: terms, .. } = &mut also {
+            terms[0].vector = aimless.clone();
+        }
+        if let SearchMode::Hybrid { vector, .. } = &mut hybrid {
+            *vector = Some(aimless.clone());
+        }
+        let lone = SearchMode::vector("v", aimless);
+        for (mode, on) in [(lone, "on `v`"), (also, "on `w`"), (hybrid, "on `v`")] {
+            let what = format!("{mode:?}, its vector written {written},");
+            let answer = l.cat.search(&reader, doc_search(mode)).await;
+            invalid_naming(&what, answer.map(|r| scored(&r.data)), &[on, why])?;
+        }
     }
     Ok(())
 }
