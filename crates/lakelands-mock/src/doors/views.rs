@@ -2,17 +2,19 @@
 //! with its sentences: its sources, each declared, read once, not itself
 //! through other views and not a view with a parameter; its conditions;
 //! its grouping, field by field; its merged sources; the fields it
-//! declares; and its parameters. The mock is a second implementation, so
+//! declares; and its parameters. Its names and conditions are checked by
+//! `rules`, at the store's places. The mock is a second implementation, so
 //! these are copies of the store's (`declare.rs`), held to it by
 //! `a_view_is_declared_only_as_the_store_declares_it`.
 
 use std::collections::BTreeSet;
 
 use lakelands_api::error::{Refusal, Result};
-use lakelands_api::expr::{Condition, Expr, Func, Literal, children, parse};
+use lakelands_api::expr::{Expr, Func, Literal, children};
 use lakelands_api::id::{FieldName, TypeName};
 use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl, ViewDecl};
 
+use super::rules::{Place, condition, name};
 use super::{invalid, on, view_reads};
 use crate::state::State;
 
@@ -37,14 +39,16 @@ pub(super) fn check(st: &State, t: &TypeDecl) -> Result<()> {
     unbound_source(&owner, source)?;
     let mut read = BTreeSet::new();
     if let Some(w) = &v.r#where {
-        params_read(&condition(w, &format!("{owner}, view `where`"))?, &mut read);
+        let at = format!("{owner}, view `where`");
+        params_read(&condition(w, Place::View, &at)?, &mut read);
     }
     for g in &v.group_by {
         grouped_field(source, g, &format!("{owner}: its view"))?;
     }
     for m in &v.measures {
+        name("measure", m.name.as_str())?;
         let at = format!("{owner}, measure `{}`", m.name);
-        params_read(&condition(&m.expr, &at)?, &mut read);
+        params_read(&condition(&m.expr, Place::Group, &at)?, &mut read);
     }
     merged_sources(st, &owner, v, source, &mut read)?;
     // Every field the view reads from a source is one that source has.
@@ -67,16 +71,6 @@ pub(super) fn check(st: &State, t: &TypeDecl) -> Result<()> {
 
 fn declared<'s>(st: &'s State, ty: &TypeName) -> Option<&'s TypeDecl> {
     st.types.get(ty).map(|t| &t.decl)
-}
-
-/// A condition parsed, refused at `at` when it does not.
-fn condition(c: &Condition, at: &str) -> Result<Expr> {
-    match c {
-        Condition::Expr(e) => Ok(e.clone()),
-        Condition::Text(t) => {
-            parse(t).map_err(|e| invalid(format!("{at}: `{t}` does not parse: {e}")))
-        }
-    }
 }
 
 /// The names `param('name')` reads in `e`.
@@ -224,10 +218,15 @@ fn merged_sources(
             }
         }
         if let Some(w) = &m.r#where {
-            params_read(&condition(w, &format!("{at}, `where`"))?, read);
+            params_read(&condition(w, Place::View, &format!("{at}, `where`"))?, read);
         }
         for x in &m.measures {
-            let e = condition(&x.expr, &format!("{at}, measure `{}`", x.name))?;
+            name("measure", x.name.as_str())?;
+            let e = condition(
+                &x.expr,
+                Place::Group,
+                &format!("{at}, measure `{}`", x.name),
+            )?;
             if !aggregates(&e) {
                 return Err(invalid(format!(
                     "{at}, measure `{}`: it calls no aggregate, so it measures nothing of `{}`",
@@ -296,6 +295,7 @@ fn view_fields(owner: &str, t: &TypeDecl, v: &ViewDecl) -> Result<()> {
 /// names one of them.
 fn view_params(owner: &str, v: &ViewDecl, read: &BTreeSet<String>) -> Result<()> {
     for (i, p) in v.params.iter().enumerate() {
+        name("parameter", p.name.as_str())?;
         if v.params[..i].iter().any(|q| q.name == p.name) {
             return Err(invalid(format!(
                 "{owner}: its view declares the parameter `{}` twice",

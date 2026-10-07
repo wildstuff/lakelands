@@ -37,6 +37,7 @@ use lakelands_api::{Catalog, CommitStream, SourceStream};
 use crate::expr::{self, Scope};
 
 mod measures;
+pub(crate) mod rules;
 mod views;
 use crate::links;
 use crate::state::{
@@ -708,6 +709,7 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
     if let Some(fault) = d.annotation_fault() {
         return Err(fault.into());
     }
+    rules::declaration(st, d)?;
     check_initial(st, d)?;
     if let Declaration::Type(t) = d {
         embeddings(t)?;
@@ -4913,7 +4915,8 @@ impl Catalog for MockCatalog {
         }
         let mut decl = t.decl.clone();
         decl.fields.push(f);
-        embeddings(&decl)?;
+        // As the store: the type with the field added is declared.
+        check_declaration(&st, who, &Declaration::Type(decl.clone()))?;
         let mut batch = Batch::at(&log);
         let position = batch.push(Draft::new(
             who,
