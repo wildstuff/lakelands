@@ -551,6 +551,10 @@ its values, which the caller may not be shown. So the PostgreSQL engine
 answers only the severity, the SQLSTATE and the server's primary
 message, which names a table, a constraint or a column and no value;
 `DETAIL`, `HINT`, `WHERE` and the statement position stay out of the
-answer. SQLite's messages name the columns of a failed constraint, or
-the schema's own check, and never a row's values, so the SQLite engine
-answers them as they are.
+answer. SQLite's own messages name the columns of a failed constraint,
+or the schema's own check, and never a row's values, so the SQLite
+engine answers a failure SQLite reports by its extended code and that
+message. Its driver's own errors do quote: a statement that does not
+parse is answered with its text, and a stored value that does not fit
+its type with the value. Of any such error the SQLite engine answers
+only its kind (lakelands#739).

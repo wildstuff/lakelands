@@ -60,11 +60,26 @@ pub(crate) fn io_error(doing: &str, path: &Path, e: std::io::Error) -> Error {
     unavailable(format!("{doing} {} failed: {e}", path.display()))
 }
 
-/// A failed projection operation, for the host. SQLite names the columns
-/// of a failed constraint, or the schema's own check, never a row's values
-/// (024).
+/// A failed projection operation, for the host, as [`told`] says it.
 pub(crate) fn sql(e: rusqlite::Error) -> Error {
-    unavailable(format!("the projection failed: {e}"))
+    unavailable(format!("the projection failed: {}", told(&e)))
+}
+
+/// What a SQLite error says to the host: of a failure SQLite reports, its
+/// extended code and message, which name a failed constraint's columns or
+/// the schema's own check, never a row's values; of any other error, only
+/// its kind. The driver's own errors quote the statement's text
+/// (`SqlInputError`) or a stored value (`IntegralValueOutOfRange`, a
+/// failed conversion), which the answer would carry to a caller who may
+/// not be shown them (024).
+fn told(e: &rusqlite::Error) -> String {
+    if let rusqlite::Error::SqliteFailure(f, message) = e {
+        let message = message.clone().unwrap_or_else(|| f.to_string());
+        return format!("SQLite {}: {message}", f.extended_code);
+    }
+    let kind = format!("{e:?}");
+    let kind = kind.split(|c: char| !c.is_alphanumeric()).next();
+    kind.unwrap_or_default().to_owned()
 }
 
 /// Finds the SQLite engine by name and opens lakes kept by it.
@@ -95,3 +110,6 @@ impl EngineOpener for SqliteOpener {
         )?))
     }
 }
+
+#[cfg(test)]
+mod tests;
