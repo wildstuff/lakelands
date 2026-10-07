@@ -833,11 +833,11 @@ async fn a_rule_is_skipped_when_its_field_is_dropped_or_its_value_no_longer_admi
     // `late` leaves `stage`; every stored value (`open`) still fits.
     let tighter = stage_type(&["open", "closed"])?;
     let vt = cat
-        .migrate_value_type(own, tighter.clone())
+        .migrate_value_type(own, tighter.clone().into())
         .await
         .must("the preflight of tightening `stage`")?
         .data;
-    cat.migrate_value_type_apply(own, tighter, &vt.report_id)
+    cat.migrate_value_type_apply(own, tighter.into(), &vt.report_id)
         .await
         .must("tightening `stage`")?;
 

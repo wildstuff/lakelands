@@ -10,7 +10,8 @@ use crate::id::{
 };
 use crate::ontology::{
     ANNOTATION_KEY_MAX_BYTES, ANNOTATIONS_MAX_BYTES, Annotations, FieldDecl, FieldType,
-    RESERVED_ANNOTATION_NAMESPACES, RelationDecl, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl,
+    RESERVED_ANNOTATION_NAMESPACES, RelationDecl, StorageKind, TriggerDecl, TypeDecl,
+    ValueTypeDecl, VerbDecl,
 };
 
 use crate::record::Patch;
@@ -188,12 +189,15 @@ pub enum ProposedWrite {
         #[serde(default)]
         report: Box<MigrationReport>,
     },
-    /// A value type's tightening, as `migrate_value_type_apply` applies it,
+    /// A value type's migration, as `migrate_value_type_apply` applies it,
     /// with the report its preflight answered when it was proposed (log
     /// format version 10).
     MigrateValueType {
         /// The new declaration.
         to: Box<ValueTypeDecl>,
+        /// The values it renames (log format version 12).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        renames: Vec<(String, String)>,
         /// The preflight's report at the proposal, for the reviewer. The
         /// store answers it; whatever a proposer sends is replaced.
         #[serde(default)]
@@ -836,6 +840,86 @@ pub struct Restated {
     pub to: serde_json::Value,
 }
 
+/// A value type's migration: its new declaration, and the values it
+/// renames in every stored record that holds them (log format version 12).
+/// With no rename it changes no record, and is the tightening it was
+/// before.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ValueTypeMigration {
+    /// The value type's new declaration.
+    pub to: ValueTypeDecl,
+    /// Values renamed: old value to new value, of a text value type.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub renames: Vec<(String, String)>,
+}
+
+impl From<ValueTypeDecl> for ValueTypeMigration {
+    /// A migration that renames no value.
+    fn from(to: ValueTypeDecl) -> ValueTypeMigration {
+        ValueTypeMigration {
+            to,
+            renames: Vec::new(),
+        }
+    }
+}
+
+impl ValueTypeMigration {
+    /// Refuse, saying why, renames that cannot be applied to `before`, the
+    /// declaration in force: of a value type not text; an old value
+    /// `before` does not accept, a new one `to` does not, a value renamed
+    /// to itself or twice. A merge, a chain and a swap are allowed, unlike
+    /// a type's relation renames: each pair maps a value as it stood before.
+    /// Here so that the mock refuses the same; `accepts` is the caller's
+    /// check of a value.
+    pub fn check_renames(
+        &self,
+        before: &ValueTypeDecl,
+        accepts: impl Fn(&ValueTypeDecl, &str) -> bool,
+    ) -> std::result::Result<(), String> {
+        if !self.renames.is_empty() && self.to.kind != StorageKind::Text {
+            return Err(format!(
+                "value type `{}` is not text: only a text value type renames its values",
+                self.to.name
+            ));
+        }
+        for (i, (old, new)) in self.renames.iter().enumerate() {
+            let wrong = |why: &str| Err(format!("renaming `{old}` to `{new}`: {why}"));
+            if old == new {
+                return wrong("a value is renamed to another value");
+            }
+            if self.renames[..i].iter().any(|(o, _)| o == old) {
+                return wrong("a value is renamed once");
+            }
+            if !accepts(before, old) {
+                return wrong("the old value is one the value type in force accepts");
+            }
+            if !accepts(&self.to, new) {
+                return wrong("the new value is one the new declaration accepts");
+            }
+        }
+        Ok(())
+    }
+
+    /// A stored value as the migration leaves it: renamed, or as it is.
+    pub fn renamed<'a>(&'a self, value: &'a str) -> &'a str {
+        let pair = self.renames.iter().find(|(old, _)| old == value);
+        pair.map_or(value, |(_, new)| new)
+    }
+}
+
+/// How many stored values one of a value type's renames rewrites in one
+/// field.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValueRenamed {
+    /// The old value.
+    pub from: String,
+    /// The new value.
+    pub to: String,
+    /// The records whose field holds the old value.
+    pub records: u64,
+}
+
 /// The preflight of a migration: what it would do to the stored records
 /// and to the declaration, computed before anything changes. Every
 /// difference between the declaration in force and `to` is in it. A migration is applied only when its
@@ -1067,7 +1151,7 @@ pub struct TypeRetired {
 /// would refuse among the values stored under it, computed before
 /// anything changes (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
 /// The empty report (`Default`) is what a proposer sends with a proposed
-/// tightening, which the store replaces with the preflight's.
+/// value type's migration, which the store replaces with the preflight's.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValueTypeReport {
     /// The value type migrated.
@@ -1079,13 +1163,24 @@ pub struct ValueTypeReport {
     pub records_scanned: u64,
     /// Per field that uses it: the values examined and those refused.
     pub fields: Vec<ValueTypeUse>,
-    /// Values the new declaration would refuse, over every field.
+    /// Values the new declaration would refuse, as the renames leave them,
+    /// over every field, shown to the reader or not.
     pub misfits: u64,
     /// The first misfits, at most ten. Never values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub first: Vec<Misfit>,
-    /// True when every stored value fits the new declaration.
+    /// True when every stored value fits the new declaration, in every
+    /// field, shown to the reader or not.
     pub fits: bool,
+    /// The declarations in force that may name an old value the migration
+    /// renames in a condition or an expression, each as its kind and name
+    /// say it (set `open_tasks`), and the aging rules that move from or
+    /// to one. They stay as they are: changing them is the author's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<String>,
+    /// Whether a declaration the reader is not shown may name one too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub conditions_unshown: bool,
     /// Names this report; `migrate_value_type_apply` must repeat it.
     pub report_id: String,
 }
@@ -1103,6 +1198,9 @@ pub struct ValueTypeUse {
     /// Values the new declaration would refuse: stored ones, and the
     /// field's declared `initial`.
     pub misfits: u64,
+    /// Per rename: how many stored values in the field it rewrites.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub renamed: Vec<ValueRenamed>,
 }
 
 /// A stored value a new declaration would refuse: where it is, never what.

@@ -682,9 +682,11 @@ async fn a_holder_of_only_changes_no_shape(store: Arc<dyn LakeStore>) -> Result<
     )?;
     not_granted("`migrate`", cat.migrate(&alice, m()).await)?;
     not_granted("`migrate_apply`", cat.migrate_apply(&alice, m(), "x").await)?;
-    let vt = cat.migrate_value_type(&alice, label.clone()).await;
+    let vt = cat.migrate_value_type(&alice, label.clone().into()).await;
     not_granted("`migrate_value_type`", vt)?;
-    let vt = cat.migrate_value_type_apply(&alice, label, "x").await;
+    let vt = cat
+        .migrate_value_type_apply(&alice, label.into(), "x")
+        .await;
     not_granted("`migrate_value_type_apply`", vt)?;
     for write in writes {
         not_granted(

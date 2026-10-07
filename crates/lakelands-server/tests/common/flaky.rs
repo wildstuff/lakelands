@@ -333,14 +333,14 @@ impl Catalog for Doors {
     async fn migrate_value_type(
         &self,
         who: &Principal,
-        to: lakelands_api::ontology::ValueTypeDecl,
+        to: lakelands_api::write::ValueTypeMigration,
     ) -> Result<Reply<lakelands_api::write::ValueTypeReport>> {
         self.inner.migrate_value_type(who, to).await
     }
     async fn migrate_value_type_apply(
         &self,
         who: &Principal,
-        to: lakelands_api::ontology::ValueTypeDecl,
+        to: lakelands_api::write::ValueTypeMigration,
         report_id: &str,
     ) -> Result<Outcome> {
         self.inner

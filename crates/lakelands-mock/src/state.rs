@@ -130,6 +130,40 @@ impl State {
                 let to = Declaration::Type(migration.to.clone());
                 self.declare(&to, Some(schema_hash.clone()), *version);
             }
+            EventBody::ValueTypeMigrated {
+                declaration,
+                version,
+                renames,
+                types,
+                ..
+            } => {
+                // As the store: every field of the value type but one a
+                // backed function computes takes the new value, at the
+                // event's position, its version and provenance as they are.
+                let reached: BTreeMap<TypeName, Vec<FieldName>> = (types.iter())
+                    .filter_map(|t| self.types.get(t).map(|d| (t.clone(), d)))
+                    .map(|(t, d)| {
+                        let fields =
+                            crate::valuetypes::renamed_fields(self, &d.decl, &declaration.name);
+                        (t, fields)
+                    })
+                    .collect();
+                for ((t, _), rec) in self.records.iter_mut() {
+                    for f in reached.get(t).into_iter().flatten() {
+                        let old = rec.fields.get(f).and_then(|v| v.as_str());
+                        let new = old.and_then(|o| renames.iter().find(|(from, _)| from == o));
+                        if let Some((_, new)) = new {
+                            rec.fields.insert(f.clone(), new.as_str().into());
+                            rec.position = e.position;
+                        }
+                    }
+                }
+                let decl = Declaration::ValueType(declaration.clone());
+                if let Some(k) = decl_key(&decl) {
+                    self.decl_versions.insert(k, *version);
+                }
+                self.declare(&decl, None, *version);
+            }
             EventBody::RecordUpserted {
                 ty,
                 key,

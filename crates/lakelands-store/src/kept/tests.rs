@@ -948,3 +948,45 @@ async fn a_setting_a_measure_names_makes_the_view_again() {
     t.retire("sys.setting", "fx").await;
     t.same("book", "the setting is retired").await;
 }
+
+/// A `value_type_migrated` that names other types than those that use the
+/// value type is not folded: only an imported or damaged log carries one,
+/// and its records would be renamed in types the ontology does not name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_value_rename_that_names_other_types_is_not_folded() {
+    for (types, folds) in [
+        (json!([]), false),
+        (json!(["other"]), false),
+        (json!(["line", "other"]), false),
+        (json!(["line"]), true),
+    ] {
+        let vt = json!({"declare": "value_type", "name": "kinds", "kind": "text",
+                        "one_of": ["k", "j"]});
+        let line = json!({"declare": "type", "name": "line", "fields": [
+            {"name": "kind", "type": {"kind": "text", "value_type": "kinds"}}]});
+        let t = Kept::new(vec![vt, line]).await;
+        t.put("line", "a", json!({"kind": "k"})).await;
+        let was = t.read(&t.owner, "line").await;
+        let body = json!({"kind": "value_type_migrated", "renames": [["k", "j"]],
+                          "report_id": "r", "version": 2, "types": types,
+                          "declaration": {"name": "kinds", "kind": "text", "one_of": ["j"]}});
+        let folded = {
+            let mut w = t.lake.writer();
+            let body = serde_json::from_value(body).expect("an event");
+            let draft = crate::log::Draft::system(t.lake.clock(&mut w), body);
+            t.lake.append(&mut w, vec![draft]).map(drop)
+        };
+        let now = t.read(&t.owner, "line").await;
+        match folds {
+            true => assert!(folded.is_ok() && now.contains(r#"{"kind":"j"}"#), "{now}"),
+            false => {
+                let why = folded.expect_err("not folded").to_string();
+                assert!(
+                    why.contains("in other types than those that use it"),
+                    "{types}: {why}"
+                );
+                assert_eq!(now, was, "{types}: as it was");
+            }
+        }
+    }
+}

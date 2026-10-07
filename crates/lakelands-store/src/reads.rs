@@ -1774,10 +1774,13 @@ impl<'a> Reader<'a> {
             let mut logged = p.write.take();
             logged.iter_mut().for_each(|w| self.completed(w));
             let shown = logged.clone();
-            // A proposed migration's reader, its grants followed to the
-            // position it was proposed at: what it names, it named then.
+            // A proposed migration's reader, of a type or a value type, its
+            // grants followed to the position it was proposed at: what it
+            // names, it named then.
             let mut then = None;
-            if let Some(ProposedWrite::Migrate { .. }) = &shown {
+            if let Some(ProposedWrite::Migrate { .. } | ProposedWrite::MigrateValueType { .. }) =
+                &shown
+            {
                 let mut who = asked.clone();
                 (who.grants).follow(&self.shape.renames, Some(p.position));
                 then = Some(who);
@@ -1933,11 +1936,37 @@ impl<'a> Reader<'a> {
                 !declarations.is_empty()
             }
             // A use says something of a field's values, so it is shown only
-            // in a field the reader may read, of a type it may see (024);
-            // the report's totals stay whole. Its `first` needs no such
-            // care: a logged proposal's report fits, so it names no misfit.
-            ProposedWrite::MigrateValueType { report, .. } => {
+            // in a field the reader may read, of a type it may see (024),
+            // with its renames' counts. The totals and `fits` stay whole, as
+            // the preflight's do (`Call::shown_value_type`); a logged report
+            // fits, so its `first` names no misfit. Its conditions are
+            // judged again for the reader with its grants at the proposal,
+            // as the lake stood before it, where its id is made again; a
+            // failed read of that lake tells each only as one there may be.
+            ProposedWrite::MigrateValueType {
+                to,
+                renames,
+                report,
+            } => {
                 report.fields.retain(|u| read(&u.ty, &u.field));
+                let before = Position(at.0.saturating_sub(1));
+                if !renames.is_empty() {
+                    let old = renames
+                        .iter()
+                        .map(|(o, n)| (o.as_str(), n.as_str()))
+                        .collect();
+                    let view = self.lake.engine.view(Some(before));
+                    let judged = view.and_then(|v| {
+                        let o = Ontology::at(v.as_ref())?;
+                        crate::writes::conditions(&o, v.as_ref(), then, report, &old)
+                    });
+                    if judged.is_err() {
+                        report.conditions.clear();
+                        report.conditions_unshown = true;
+                    }
+                }
+                report.report_id = String::new();
+                report.report_id = crate::writes::value_report_id(report, to, renames, before.0);
                 true
             }
         }

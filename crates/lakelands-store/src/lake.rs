@@ -38,7 +38,7 @@ use lakelands_api::seam::{EmbedBackend, Seams};
 use lakelands_api::write::{Declaration, Migration, Proposal, ProposalFilter, ProposalState};
 use lakelands_api::{
     Error, FieldName, LakeId, Position, Principal, ProposalId, RecordKey, Refusal, Result,
-    Timestamp, TypeName, Value, WriteContext,
+    Timestamp, TypeName, Value, ValueTypeName, WriteContext,
 };
 use lakelands_core::{shape, unavailable};
 
@@ -110,7 +110,9 @@ pub struct Shape {
 pub(crate) fn ends_a_range(body: &EventBody) -> bool {
     let setting = |ty: &TypeName| ty.as_str() == SETTING_TYPE;
     match body {
-        EventBody::Declared { .. } | EventBody::Migrated { .. } => true,
+        EventBody::Declared { .. }
+        | EventBody::Migrated { .. }
+        | EventBody::ValueTypeMigrated { .. } => true,
         EventBody::RecordUpserted { ty, .. }
         | EventBody::RecordIngested { ty, .. }
         | EventBody::RecordRetired { ty, .. } => setting(ty),
@@ -1081,6 +1083,47 @@ impl Lake {
         Ok(())
     }
 
+    /// Fold one `value_type_migrated` event's step over every record of
+    /// the types it renames in, retired and restricted ones included, as
+    /// [`Self::step`] folds a migration's: each type walked once, a page
+    /// of the view at a time, nothing of the walk kept, a record this
+    /// transaction wrote stepped where it is kept, and a later read of any
+    /// other taken through the step. Only a record the step changes is
+    /// put; no key moves and no type.
+    fn step_values(
+        &self,
+        view: &dyn ProjectionView,
+        projection: &dyn lakelands_api::engine::ProjectionStore,
+        staged: &mut Staged,
+        step: Values,
+    ) -> Result<()> {
+        for ty in step.fields.keys() {
+            walk(view, staged.known(ty), true, |row| {
+                if staged.wrote(ty, &row.key) {
+                    return Ok(());
+                }
+                let pre = staged.stepped(view, row)?;
+                let post = step.apply(pre.clone());
+                match post != pre {
+                    true => projection.put_record(&post),
+                    false => Ok(()),
+                }
+            })?;
+            let written = (staged.records)
+                .range_mut((ty.clone(), RecordKey::from(""))..)
+                .take_while(|((t, _), _)| t == ty);
+            for (_, r) in written {
+                let post = step.apply(r.clone());
+                if post != *r {
+                    projection.put_record(&post)?;
+                    *r = post;
+                }
+            }
+        }
+        staged.steps.push(Step::Values(Box::new(step)));
+        Ok(())
+    }
+
     /// Compute derived fields again for the `declared` events that are
     /// pending, each type walked once however many of them recompute it:
     /// every live record of the view the transaction did not write, as the
@@ -1371,6 +1414,54 @@ impl Lake {
                 let step = Migrated::new(&w.ontology, e.position, before, migration, rekeyed);
                 step.carry(&mut w.owed);
                 self.step(w, view, projection, staged, step)?;
+            }
+            EventBody::ValueTypeMigrated {
+                declaration,
+                version,
+                renames,
+                types,
+                ..
+            } => {
+                // Only an imported or damaged log names other types than
+                // those that use the value type: the writer named them.
+                if using_types(&w.ontology, &declaration.name) != *types {
+                    return Err(unavailable(format!(
+                        "the event at position {} renames values of `{}` in other types than \
+                         those that use it, and the log is not folded past it",
+                        e.position, declaration.name
+                    )));
+                }
+                let decl = Declaration::ValueType(declaration.clone());
+                w.ontology.put(decl.clone(), *version, None);
+                projection.put_declaration(&decl, *version, None, e.position)?;
+                let step = Values::new(&w.ontology, e.position, &declaration.name, renames);
+                // What reads a renamed value is computed again, as of this
+                // event, at the flush: a derived field, one computed by a
+                // function, an embedding, whose calls are owed with this
+                // event as their cause. Queued here, so that a kept view
+                // over such a type is ended at this event.
+                let computes = |t: &TypeName| {
+                    let computed = |f: &lakelands_api::ontology::FieldDecl| {
+                        f.derived.is_some() || f.function.is_some() || f.embed.is_some()
+                    };
+                    w.ontology
+                        .ty(t)
+                        .is_ok_and(|t| t.fields.iter().any(computed))
+                };
+                let rederive: Vec<TypeName> =
+                    types.iter().filter(|t| computes(t)).cloned().collect();
+                self.step_values(view, projection, staged, step)?;
+                if !rederive.is_empty() {
+                    let settings = match staged.pending.last() {
+                        Some(s) => s.settings.clone(),
+                        None => Arc::new(w.settings.clone()),
+                    };
+                    staged.pending.push(Recomputed {
+                        event: e.clone(),
+                        entries: w.ontology.computing(&rederive),
+                        settings,
+                    });
+                }
             }
             EventBody::RecordUpserted { ty, key, .. }
             | EventBody::RecordIngested { ty, key, .. }
@@ -2102,8 +2193,10 @@ fn reads_a_record(body: &EventBody) -> bool {
         | EventBody::RecordRetired { .. }
         | EventBody::RecordRestricted { .. }
         | EventBody::RecordUnrestricted { .. }
-        // Every record of the migrated type, and those a re-key reaches.
-        | EventBody::Migrated { .. } => true,
+        // Every record of the migrated type, and those a re-key reaches;
+        // every record of a type that uses the migrated value type.
+        | EventBody::Migrated { .. }
+        | EventBody::ValueTypeMigrated { .. } => true,
         // The record whose field it fills; one that names no field is put
         // and fills nothing.
         EventBody::OutputRecorded { field, .. } => field.is_some(),
@@ -2136,6 +2229,8 @@ pub(crate) enum Step {
     /// A `declared` event that computed derived fields again and changed a
     /// record.
     Recomputed(Box<Recomputed>),
+    /// A `value_type_migrated` event.
+    Values(Box<Values>),
 }
 
 impl Step {
@@ -2152,6 +2247,7 @@ impl Step {
         match self {
             Step::Migrated(s) => s.apply(r),
             Step::Recomputed(s) => Ok(s.apply(&r, view, recorded, None)?.unwrap_or(r)),
+            Step::Values(s) => Ok(s.apply(r)),
         }
     }
 
@@ -2160,7 +2256,7 @@ impl Step {
     fn migrated(&self) -> Option<&Migrated> {
         match self {
             Step::Migrated(s) => Some(s),
-            Step::Recomputed(_) => None,
+            Step::Recomputed(_) | Step::Values(_) => None,
         }
     }
 }
@@ -2206,6 +2302,79 @@ impl Recomputed {
         };
         record::rederive(&self.entries, r, &self.event, &self.settings, &mut outputs)
     }
+}
+
+/// One `value_type_migrated` event a transaction folded: what it does to
+/// a record, kept in place of the records it changed, as [`Migrated`] is.
+pub(crate) struct Values {
+    /// The event's position.
+    at: Position,
+    /// Per type that uses the value type, the fields it renames in: every
+    /// field of the value type but one computed outside the lake, whose
+    /// answer the lake does not write.
+    fields: BTreeMap<TypeName, Vec<FieldName>>,
+    /// Old value to new value.
+    renames: BTreeMap<String, String>,
+}
+
+impl Values {
+    fn new(o: &Ontology, at: Position, vt: &ValueTypeName, renames: &[(String, String)]) -> Values {
+        let fields = (o.types.values().map(|t| &t.decl))
+            .filter(|t| t.view.is_none())
+            .map(|t| (t.name.clone(), renamed_fields(o, t, vt)))
+            .filter(|(_, fields)| !fields.is_empty())
+            .collect();
+        Values {
+            at,
+            fields,
+            renames: renames.iter().cloned().collect(),
+        }
+    }
+
+    /// A record after the step: each field it renames in that holds an
+    /// old value holds the new one, at the step's position. Its version,
+    /// its flags and each field's provenance are never touched, and a
+    /// record holding no old value is as it was.
+    fn apply(&self, mut r: StoredRecord) -> StoredRecord {
+        let Some(fields) = self.fields.get(&r.ty) else {
+            return r;
+        };
+        for f in fields {
+            let new = r.fields.get(f).and_then(Value::as_str);
+            if let Some(new) = new.and_then(|v| self.renames.get(v)) {
+                r.fields.insert(f.clone(), Value::from(new.as_str()));
+                r.position = self.at;
+            }
+        }
+        r
+    }
+}
+
+/// The types that use a value type, in name order: each, not a view,
+/// with a field of it. A `value_type_migrated` names them, and a fold
+/// refuses one that names others.
+pub(crate) fn using_types(o: &Ontology, vt: &ValueTypeName) -> Vec<TypeName> {
+    let uses = |t: &TypeDecl| (t.fields.iter()).any(|f| f.ty.value_type.as_ref() == Some(vt));
+    let types = o.types.values().map(|t| &t.decl);
+    types
+        .filter(|t| t.view.is_none() && uses(t))
+        .map(|t| t.name.clone())
+        .collect()
+}
+
+/// The fields of `t` a value type's renames reach: every field of the
+/// value type, derived ones and those computed by an expression included,
+/// but one computed outside the lake.
+pub(crate) fn renamed_fields(o: &Ontology, t: &TypeDecl, vt: &ValueTypeName) -> Vec<FieldName> {
+    let backed = |n: &str| {
+        o.functions
+            .get(n)
+            .is_some_and(|f| crate::backed::is_backed(&f.decl))
+    };
+    let of = |f: &&lakelands_api::ontology::FieldDecl| {
+        f.ty.value_type.as_ref() == Some(vt) && !f.function.as_deref().is_some_and(backed)
+    };
+    t.fields.iter().filter(of).map(|f| f.name.clone()).collect()
 }
 
 /// One `migrated` event a transaction folded: what it does to a record,
@@ -2482,10 +2651,13 @@ impl Staged {
 
     /// The types whose records the append's last step reached: the
     /// migrated one, those with moved keys or references to them, and the
-    /// link types records moved between.
+    /// link types records moved between; or those a value type's renames
+    /// reach.
     pub(crate) fn stepped_types(&self) -> BTreeSet<TypeName> {
-        let Some(s) = self.steps.last().and_then(Step::migrated) else {
-            return BTreeSet::new();
+        let s = match self.steps.last() {
+            Some(Step::Migrated(s)) => s,
+            Some(Step::Values(s)) => return s.fields.keys().cloned().collect(),
+            _ => return BTreeSet::new(),
         };
         let reached = s.decls.keys().chain(s.types.keys()).chain(s.types.values());
         reached.chain([&s.migration.to.name]).cloned().collect()

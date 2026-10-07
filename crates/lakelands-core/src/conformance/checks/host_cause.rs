@@ -367,13 +367,13 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
         ..vt
     };
     let report = cat
-        .migrate_value_type(own, tightened.clone())
+        .migrate_value_type(own, tightened.clone().into())
         .await
         .must("preflighting a tightened `code`")?
         .data;
     let before = store.head().await.must("reading the head")?;
     match deep
-        .migrate_value_type_apply(own, tightened, &report.report_id)
+        .migrate_value_type_apply(own, tightened.into(), &report.report_id)
         .await
     {
         Err(e) if matches!(reason(&e), Some(Refusal::TooDeep { max }) if *max == ceiling) => {}
@@ -467,7 +467,9 @@ async fn every_write_door_checks_the_context_before_anything_else(
         ),
         (
             "migrate_value_type_apply",
-            d.migrate_value_type_apply(p, vt, "r").await.map(drop),
+            d.migrate_value_type_apply(p, vt.into(), "r")
+                .await
+                .map(drop),
         ),
         (
             "ingest",

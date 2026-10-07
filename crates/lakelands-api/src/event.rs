@@ -166,6 +166,22 @@ pub enum EventBody {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         rekeyed: Vec<crate::write::Rekey>,
     },
+    /// A value type's migration that renames values: its declaration is
+    /// put in force and every stored record that holds an old value takes
+    /// the new one in the fold (format version 12).
+    ValueTypeMigrated {
+        /// The value type's new declaration.
+        declaration: crate::ontology::ValueTypeDecl,
+        /// Its version after this event.
+        version: u32,
+        /// The values renamed: old value to new value.
+        renames: Vec<(String, String)>,
+        /// The preflight report it was applied against.
+        report_id: String,
+        /// The types whose fields use the value type, which the fold
+        /// rewrites: every one the ontology names, in name order.
+        types: Vec<TypeName>,
+    },
     /// An authored write: `upsert`, a verb's effect, an accepted
     /// proposal.
     RecordUpserted {
@@ -341,6 +357,7 @@ kinds! {
     LeaseTaken => "lease_taken",
     Declared => "declared",
     Migrated => "migrated",
+    ValueTypeMigrated => "value_type_migrated",
     RecordUpserted => "record_upserted",
     RecordIngested => "record_ingested",
     RecordRetired => "record_retired",

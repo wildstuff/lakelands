@@ -23,14 +23,14 @@ use lakelands_api::expr::Condition;
 use lakelands_api::id::{
     LakeId, ProposalId, RecordKey, RelationName, SourceId, TypeName, VerbName,
 };
-use lakelands_api::ontology::{FieldDecl, ValueTypeDecl};
+use lakelands_api::ontology::FieldDecl;
 use lakelands_api::principal::Principal;
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
 use lakelands_api::read::{Find, Found, Get, ReadAt, Reply};
 use lakelands_api::record::{Patch, Record};
 use lakelands_api::write::{
     Committed, Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter,
-    ProposedWrite, Recompute, ValueTypeReport, WriteOpts,
+    ProposedWrite, Recompute, ValueTypeMigration, ValueTypeReport, WriteOpts,
 };
 use serde_json::{Value, json};
 
@@ -324,21 +324,21 @@ impl Catalog for RemoteCatalog {
     async fn migrate_value_type(
         &self,
         who: &Principal,
-        to: ValueTypeDecl,
+        m: ValueTypeMigration,
     ) -> Result<Reply<ValueTypeReport>> {
-        let call =
-            Call::new(Method::POST, "schema/migrate".into()).json(&json!({ "value_type": to }));
+        let body = json!({ "value_type": m.to, "renames": m.renames });
+        let call = Call::new(Method::POST, "schema/migrate".into()).json(&body);
         self.go(who, call).await
     }
 
     async fn migrate_value_type_apply(
         &self,
         who: &Principal,
-        to: ValueTypeDecl,
+        m: ValueTypeMigration,
         report_id: &str,
     ) -> Result<Outcome> {
-        let call = Call::new(Method::POST, "schema/migrate/apply".into())
-            .json(&json!({ "value_type": to, "report_id": report_id }));
+        let body = json!({ "value_type": m.to, "renames": m.renames, "report_id": report_id });
+        let call = Call::new(Method::POST, "schema/migrate/apply".into()).json(&body);
         self.go(who, call).await
     }
 

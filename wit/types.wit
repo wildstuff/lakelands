@@ -345,6 +345,13 @@ interface types {
         relation-renames: list<tuple<relation-name, relation-name>>,
     }
 
+    /// A value type's migration: its new declaration and the values it
+    /// renames in every stored record, old to new.
+    record value-type-migration {
+        to: value-type-decl,
+        renames: list<tuple<string, string>>,
+    }
+
     /// How a relation's edges are carried.
     enum carrier {
         via,
@@ -656,10 +663,11 @@ interface types {
         report: migration-report,
     }
 
-    /// A value type's tightening and the report its preflight answered
+    /// A value type's migration and the report its preflight answered
     /// when it was proposed.
     record migrate-value-type-write {
         to: value-type-decl,
+        renames: list<tuple<string, string>>,
         report: value-type-report,
     }
 
@@ -1021,6 +1029,10 @@ interface types {
         first: list<misfit>,
         fits: bool,
         report-id: string,
+        /// The declarations and aging rules that may name a renamed value.
+        conditions: list<string>,
+        /// Whether one the reader is not shown may name one too.
+        conditions-unshown: bool,
     }
 
     /// One field that uses a value type, as its preflight found it.
@@ -1029,6 +1041,14 @@ interface types {
         field: field-name,
         values-scanned: u64,
         misfits: u64,
+        renamed: list<value-renamed>,
+    }
+
+    /// How many stored values one rename rewrites in a field.
+    record value-renamed {
+        %from: string,
+        to: string,
+        records: u64,
     }
 
     /// Where a stored value a new declaration would refuse is; never what.

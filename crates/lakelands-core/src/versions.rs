@@ -34,9 +34,10 @@
 //!   a proposed `migrate` whose report holds `restated`; and a
 //!   declaration with a field that declares `initial`, in the places 5
 //!   names.
-//! - **12**: what [`TWELFTH`] lists: a `declared` event `with_the_set`,
-//!   and a declaration with a field that says `computed_at`, in the
-//!   places 5 names.
+//! - **12**: what [`TWELFTH`] lists: a `declared` event `with_the_set`;
+//!   a declaration with a field that says `computed_at`, in the places 5
+//!   names; a `value_type_migrated` event; and a proposed
+//!   `migrate_value_type` whose `renames` is not empty.
 //!
 //! The store writes every event of one append at the greatest of the
 //! lake's version and what [`needed`] answers for each event of the
@@ -126,8 +127,9 @@ pub const ELEVENTH: &[Added] = &[
 ];
 
 /// What format version 12 added, as [`ELEVENTH`] lists 11's: below 12 a
-/// set's records were computed again at each of its declarations, and no
-/// field said when it is computed.
+/// set's records were computed again at each of its declarations, no
+/// field said when it is computed, and a value type's migration renamed
+/// no value.
 pub const TWELFTH: &[Added] = &[
     (
         |body| matches!(body, EventBody::Declared { with_the_set, .. } if *with_the_set),
@@ -136,6 +138,18 @@ pub const TWELFTH: &[Added] = &[
     (
         |body| any_declaration(body, |d| any_field(d, |f| f.computed_at.is_some())),
         "declares when a field is computed",
+    ),
+    (
+        |body| matches!(body, EventBody::ValueTypeMigrated { .. }),
+        "renames a value type's values",
+    ),
+    (
+        |body| {
+            matches!(body, EventBody::WriteProposed {
+                write: ProposedWrite::MigrateValueType { renames, .. }, ..
+            } if !renames.is_empty())
+        },
+        "proposes a value type's migration that renames values",
     ),
 ];
 
@@ -219,12 +233,16 @@ pub fn carried(added: &[Added], body: &EventBody) -> Option<&'static str> {
 }
 
 /// Whether any declaration the event carries holds for `test`: a
-/// `declared` event's declaration, a `migrated` event's `to`, a proposed
-/// `declare` or `migrate`.
+/// `declared` event's declaration, a `migrated` event's `to`, a
+/// `value_type_migrated` event's declaration, a proposed `declare` or
+/// `migrate`.
 fn any_declaration(body: &EventBody, test: impl Fn(&Declaration) -> bool) -> bool {
     match body {
         EventBody::Declared { declaration, .. } => test(declaration),
         EventBody::Migrated { migration, .. } => test(&Declaration::Type(migration.to.clone())),
+        EventBody::ValueTypeMigrated { declaration, .. } => {
+            test(&Declaration::ValueType(declaration.clone()))
+        }
         EventBody::WriteProposed { write, .. } => match write {
             ProposedWrite::Declare { declarations } => declarations.iter().any(test),
             ProposedWrite::Migrate { migration, .. } => {
@@ -425,6 +443,13 @@ pub fn declares(declaration: &Declaration, test: &dyn Fn(&Expr) -> bool) -> bool
         Declaration::Function(f) => conditions.extend(f.expr.as_ref()),
     }
     (conditions.into_iter()).any(|c| crate::describe::parsed(c).is_some_and(|e| holds(&e, test)))
+}
+
+/// Whether a condition holds, anywhere, a text literal `text` accepts.
+pub fn names_text(c: &Condition, text: &dyn Fn(&str) -> bool) -> bool {
+    use lakelands_api::expr::Literal;
+    let lit = |e: &Expr| matches!(e, Expr::Lit { value: Literal::Text(t) } if text(t));
+    crate::describe::parsed(c).is_some_and(|e| holds(&e, &lit))
 }
 
 /// Whether an expression calls, anywhere, a function `f` accepts.

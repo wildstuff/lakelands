@@ -2152,6 +2152,23 @@ admits (a trigger's `when`, an object set's `where`) is not checked, and
 simply never holds afterwards; an aging rule whose `from` or `to` the
 type no longer admits is skipped by `age` and named in its report.
 
+A value type's migration may rename values (`ValueTypeMigration`, its
+`to` and its `renames`, pairs of an old and a new text value; the
+`migrate` tool and route take `renames` beside `value_type`). Its
+preflight renames each stored value before it checks it, counts per
+field how many values each pair rewrites (`ValueTypeUse.renamed`), and
+lists what may name an old value in a condition (`conditions`, and
+`conditions_unshown` for one the caller is not shown); it refuses a
+rename of a value a key field holds, and one a computed expression holds.
+Applied, it appends one `value_type_migrated`, the system's declaration
+again of each type whose `initial` it renames, and the set memberships
+it changes; the fold renames the value in every record of every type
+that uses the value type, retired and restricted ones included, with
+version, flags and provenance as they were, and computes again what reads
+it. A field computed by a function with a backing keeps its answer: an old
+one is a misfit. The renames are not granted to a caller not shown every
+field that uses the value type (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`, extended).
+
 A migration may re-key a type: name other key fields, or change a key
 field's value. Its preflight (`MigrationReport.rekeyed`, `references`,
 `sample_collisions`) counts, per type, the records whose key moves,

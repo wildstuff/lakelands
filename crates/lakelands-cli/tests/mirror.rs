@@ -876,6 +876,72 @@ async fn a_rekey_in_the_source_stops_the_type_until_the_target_is_rekeyed_the_sa
     }
 }
 
+/// A value type's renames in the source write no record event: the mirror
+/// checks each type they rewrite again, as at a declaration, and copies it
+/// again whole, also when it started from the head.
+#[tokio::test]
+async fn a_value_renamed_in_the_source_is_copied_again() {
+    let tiers = |one_of: Value| {
+        decl(json!({"declare": "value_type", "name": "tiers", "kind": "text", "one_of": one_of}))
+    };
+    let tiered = |types: Vec<Declaration>, authority: &str| {
+        let mut out = vec![];
+        for d in types {
+            let mut v = serde_json::to_value(&d).unwrap();
+            for f in v
+                .get_mut("fields")
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                if f["name"] == "tier" {
+                    *f = json!({"name": "tier", "authority": authority,
+                                "type": {"kind": "text", "value_type": "tiers"}});
+                }
+            }
+            out.push(decl(v));
+        }
+        out
+    };
+    for engine in engines() {
+        let engine = &engine;
+        for start in [Start::Snapshot, Start::Head] {
+            let mut source = vec![tiers(json!(["gold", "silver"]))];
+            source.extend(tiered(source_types(), "authored"));
+            let mut target = vec![tiers(json!(["gold", "silver", "platinum"]))];
+            target.extend(tiered(target_types(), "source"));
+            let two = Two::with(&format!("revalued-{start:?}"), engine, source, target).await;
+            let mut m = two.mirror_from(start).await.unwrap();
+            settle(&mut m).await;
+            two.upsert("customer", "c1", json!({"code": "c1", "tier": "gold"}))
+                .await;
+            settle(&mut m).await;
+            let cat = doors(two.crm.as_ref());
+            let who = owner(two.crm.as_ref());
+            let m2 = lakelands_api::write::ValueTypeMigration {
+                to: serde_json::from_value(
+                    json!({"name": "tiers", "kind": "text", "one_of": ["platinum", "silver"]}),
+                )
+                .unwrap(),
+                renames: vec![("gold".into(), "platinum".into())],
+            };
+            let report = cat.migrate_value_type(&who, m2.clone()).await.unwrap().data;
+            cat.migrate_value_type_apply(&who, m2, &report.report_id)
+                .await
+                .unwrap();
+            settle(&mut m).await;
+            let copy = two.copy("customer", "c1").await.expect("copied");
+            assert_eq!(
+                copy.fields.get("tier"),
+                Some(&json!("platinum")),
+                "{start:?}"
+            );
+            let kept = &m.kept().types[&TypeName::from("customer")];
+            assert!(kept.stopped.is_none(), "{start:?}: {kept:?}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn snapshot_copies_what_is_there_and_head_does_not() {
     for engine in engines() {
