@@ -78,7 +78,9 @@
 //! what its measures fold, never its records, so each holds a batch and
 //! the groups (lakelands#388). And the owner's first page of a kept view
 //! in key order while one group's whole face differs from its open one,
-//! which holds the page and that group, not the view (lakelands#628). The
+//! which holds the page and that group, not the view (lakelands#628), and
+//! a sum over the view and a pattern started on one of its groups, which
+//! hold a page of it (lakelands#731). The
 //! view, a group per record, is fed before the feed and the export, so
 //! each size's import and rebuild fold a view as large: its fold holds
 //! what a page of the log touches. On SQLite import and rebuild hold
@@ -155,7 +157,7 @@ use crate::links::{link_key, link_type_name};
 check!(
     /// A large lake goes through ingest, the feed and export in bounded memory.
     STREAMS = a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it,
-    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification and its import into a new lake, each page of a walk of a type through find, the first pages of a walk ordered by an indexed field, with and without writes between them, each also reading its page and a few rows more, not the type, a rebuild, a reopen, a three-hop walk over link records, a three-hop walk over a derived relation, the owner's page of a kept view, in key order, while one group's whole face differs from its open one (lakelands#628), a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, the ten records of highest degree over the whole type, and components refused at the lake's max_graph_nodes, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must; and (lakelands#558) a feed poll examines at most FEED_EXAMINED events: one whose filter matches nothing answers none and a next short of the head, and following next reaches it, the checkpoints are each answered once, an event is in the poll whose last examined position it is and not in the one before, and no limit answers more",
+    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification and its import into a new lake, each page of a walk of a type through find, the first pages of a walk ordered by an indexed field, with and without writes between them, each also reading its page and a few rows more, not the type, a rebuild, a reopen, a three-hop walk over link records, a three-hop walk over a derived relation, the owner's page of a kept view, in key order, while one group's whole face differs from its open one (lakelands#628), and its sum over every group and a pattern started on one group (lakelands#731), a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, the ten records of highest degree over the whole type, and components refused at the lake's max_graph_nodes, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must; and (lakelands#558) a feed poll examines at most FEED_EXAMINED events: one whose filter matches nothing answers none and a next short of the head, and following next reaches it, the checkpoints are each answered once, an event is in the poll whose last examined position it is and not in the one before, and no limit answers more",
     given,
     embedding
 );
@@ -918,8 +920,10 @@ impl Size<'_> {
     /// The owner's first page, in key order, of `ticks`: a kept view with
     /// a group for each `tick`, one of which reads otherwise on the whole
     /// face, where a second member is restricted. It holds the page and
-    /// that group, not the view (lakelands#628). It is fed before the
-    /// feed and the export, so each size's import carries a view as large.
+    /// that group, not the view (lakelands#628). A sum over every group and
+    /// a pattern started on one hold a page of it (lakelands#731). It is fed
+    /// before the feed and the export, so each size's import carries a view
+    /// as large.
     async fn whole_face(
         &mut self,
         store: &dyn LakeStore,
@@ -972,6 +976,57 @@ impl Size<'_> {
         let what = format!("the owner's page of 10 of {records} kept groups, one differing");
         self.row(
             "kept-whole-page",
+            Claim::Held,
+            records,
+            head.0 + 1,
+            what,
+            measured,
+        );
+        // A sum over every group and a pattern started on one: each reads
+        // the kept records a page at a time (lakelands#731).
+        let summed = aggregate(vec![agg("s", AggFunc::Sum, Some("c"))]);
+        let (started, m) = (Instant::now(), Measure::start(&self.given.meter, false));
+        let reply = cat.find(&own, &"ticks".into(), summed).await;
+        let measured = (m.stop().0, started.elapsed());
+        let reply = reply.must("the owner's sum over `ticks`")?;
+        let sum = match &reply.data {
+            Found::Groups { rows } => rows.first().and_then(|g| g.values.get("s")).cloned(),
+            _ => None,
+        };
+        ensure!(
+            sum == Some(json!((records + 1).to_string())),
+            "the owner's sum of `c` over `ticks` counts every tick and the restricted one, {}; \
+             it answered {sum:?}",
+            records + 1
+        );
+        let what = format!("the owner's sum over {records} kept groups");
+        self.row("kept-sum", Claim::Held, records, head.0 + 1, what, measured);
+        let mut start = pattern(
+            "ticks",
+            None,
+            Vec::new(),
+            Projection::Rows { fields: Vec::new() },
+        );
+        start.start.filter = Some(lakelands_api::expr::Condition::Text(format!(
+            "g = {}",
+            records / 2
+        )));
+        let (started, m) = (Instant::now(), Measure::start(&self.given.meter, false));
+        let reply = cat.query(&own, start).await;
+        let measured = (m.stop().0, started.elapsed());
+        let reply = reply.must("a pattern started on one group of `ticks`")?;
+        let QueryResult::Rows { rows, .. } = &reply.data else {
+            return Err(Failure::new("a pattern projecting rows answered a graph"));
+        };
+        ensure!(
+            rows.len() == 1,
+            "a pattern started on the group `g = {}` of `ticks` holds it alone; it held {}",
+            records / 2,
+            rows.len()
+        );
+        let what = format!("a pattern started on one of {records} kept groups");
+        self.row(
+            "kept-start",
             Claim::Held,
             records,
             head.0 + 1,
