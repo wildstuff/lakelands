@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BinaryHeap};
 
 use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Walk};
 use lakelands_api::record::StoredRecord;
-use lakelands_api::{Params, RecordKey, RelationName, Result, Value};
+use lakelands_api::{Cursor, Params, RecordKey, RelationName, Result, Value};
 use lakelands_core::graph::{self, Components, Node};
 
 use super::{CursorState, Reader, Visible, encode, invalid};
@@ -152,19 +152,23 @@ impl Reader<'_> {
         limit: usize,
         params: Params,
     ) -> QueryResult {
-        let next_cursor = (all.len() > offset + limit).then(|| {
-            encode(&CursorState {
-                at: self.position,
-                after: None,
-                offset: (offset + limit) as u64,
-                params,
-                door: "query".into(),
-                ty: Some(p.start.ty.clone()),
-                of: super::pattern_read(p),
-            })
-        });
+        let next_cursor =
+            (all.len() > offset + limit).then(|| self.page_cursor(p, offset + limit, params));
         let rows = all.into_iter().skip(offset).take(limit).collect();
         QueryResult::Rows { rows, next_cursor }
+    }
+
+    /// The cursor that continues a pattern's answer at `offset`.
+    pub(super) fn page_cursor(&self, p: &Pattern, offset: usize, params: Params) -> Cursor {
+        encode(&CursorState {
+            at: self.position,
+            after: None,
+            offset: offset as u64,
+            params,
+            door: "query".into(),
+            ty: Some(p.start.ty.clone()),
+            of: super::pattern_read(p),
+        })
     }
 
     /// Hands every seed of the pattern's start to `each`, in key order: the

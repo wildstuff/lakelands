@@ -143,8 +143,8 @@ fn a_boxed_view_is_an_edge_source() {
 #[test]
 fn a_walk_over_named_relations_asks_the_view_for_each_one() {
     let v = view();
-    let relations = [RelationName::new("a"), RelationName::new("b")];
-    subgraph(&v, &node("n", "live"), &relations, Walk::Both, 1, 10, 16).unwrap();
+    let steps = fixture::over(&["a", "b"], Walk::Both, 1);
+    subgraph(&v, &[node("n", "live")], &steps, 16, 0, 10, fixture::every).unwrap();
     assert_eq!(
         *v.asked.borrow(),
         vec![Some(RelationName::new("a")), Some(RelationName::new("b"))]

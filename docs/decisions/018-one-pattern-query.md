@@ -48,6 +48,51 @@ would look complete when it is not, and the caller could not tell. A
 `subgraph` pattern's steps are one walk over any of their relations,
 not a chain of steps.
 
+## Extended: a graph answers what its steps say (lakelands#556)
+
+A graph pattern whose steps all start at depth 0 is a neighbourhood:
+one walk from its start over any of its steps' relations, each walked
+in its own step's direction to its own step's `max`. A record reached
+over a step's relation is kept, and walked on from, only where that
+step's `type` and `where` hold of it. Since a neighbourhood walks into
+types its start does not declare, a step may name a relation any type
+declares. Its `where` is read against the type that relation reaches,
+wherever it is declared: its target walked out, its owner walked in. A
+step that may reach several types (walked both ways, or a relation
+several types declare) and reads a `where` is refused as invalid unless
+it names its `type`. Any other graph pattern is a chain, walked as its rows are:
+each step from the records the step before it kept, with its own
+relation, direction, depth range, `type` and `where`, and a step over a
+relation its type does not declare is refused. A chain's graph is the
+start, every record a match binds, the records each was walked through
+from the record before it, and the links walked, so no link has an end
+outside the graph. Several starts are one walk: each record is at the
+fewest hops any start reaches it in. A step that names no depth is
+`1..1`, so a graph of several such steps is a chain; a neighbourhood
+names `0..` on each step.
+
+A graph cut by `limit` says `truncated` and carries a `next_cursor`,
+exactly as a page of rows does. The next page is the next `limit`
+records of the one order (depth, type, key), with every link between a
+record of that page and one of this or an earlier page, so the pages
+together are the graph, each record and link once. Each page walks
+again, at the cursor's position, as deep as its last record.
+
+A pattern with `to` is a path: the shortest walk to that record, over
+its steps' relations as a neighbourhood walks them, each in its step's
+direction and only through records its step's `type` and `where` keep.
+A path has one start, so a pattern whose start names several records
+is refused as invalid, as is one with a step that does not start at
+depth 0. A path is a graph, and a pattern with `to` that asks for rows
+or an aggregate is refused as invalid: an answer that ignored what it
+was asked would look like more than it is. Where no path is, the answer
+is an empty graph. A path and an aggregate answer in one page and hand
+out no cursor, so a cursor handed to either is another read's, and is
+refused as such. A path or a neighbourhood with no steps walks no
+relation: the neighbourhood is its start alone, and a path reaches no
+other record. (Before lakelands#556 a path with no steps walked every
+relation one hop.)
+
 ## Extended: views are computed on read
 
 A view type's records are computed when they are read: the source's

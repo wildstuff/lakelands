@@ -182,6 +182,7 @@ belongs in the suite, not beside one engine:
 - `paging_through_find_visits_every_record_exactly_once` — the read contract: a cursor continues where its page ended, so a page set is a total order with no repeat and no gap
 - `a_page_answers_its_total_and_an_offset_jumps_to_the_walks_slice` — 045 and 029: `total` answers as many records as a full walk finds, for a filter the engine applies and one only the store evaluates, a view and a reader without `restricted`, the same on every page of a cursor walk while another writer writes; `offset` answers the full walk's slice from it, by key, by a field and by a field with an order index, a view too, and its cursor continues the walk; `offset` beside `cursor`, `after` or `aggregate`, and `total` beside `aggregate`, are refused as invalid, and an offset past `max_offset` as too_large naming it
 - `records_without_the_sort_field_are_listed_last_in_either_direction` — the read contract: records without a value for a sort key sort last in either direction; ordering never drops them
+- `a_read_that_names_no_limit_takes_the_smaller_bound` — the location's limits: a read that names no `limit` takes `default_limit`, or `max_limit` where that is smaller, so it is never refused for a bound it did not ask for; a `limit` the caller names above `max_limit` is still refused as invalid
 
 **latest**
 
@@ -619,6 +620,14 @@ belongs in the suite, not beside one engine:
 - `components_past_the_lakes_max_graph_nodes_are_refused_too_large` — 018 and the location's limits: `components` whose records, over all components, would number more than `max_graph_nodes` are refused as too_large naming the ceiling, and nothing partial is answered
 - `a_measure_refuses_depth_where_to_order_by_and_one_way_components` — 018: a measure refuses a step `depth` or `where`, `to`, `order_by`, and a `components` step that does not walk `both`, each as invalid, rather than answer less than it seems to
 - `a_measure_is_read_whole_in_one_page_up_to_max_graph_nodes` — 026, extended, and the location's limits: a measure's `limit` may go up to the lake's `max_graph_nodes` where that is above `max_limit`, so one page answers the rows its small pages answer in turn, with no cursor; above that bound, and above `max_limit` for a `rows` projection, a `limit` is refused as invalid naming the bound
+
+**graph steps**
+
+- `a_graph_cut_by_its_limit_pages_on_with_its_cursor` — 018 and 029, extended: a graph cut by `limit` answers `truncated` and a `next_cursor`, and the next page holds the next records of the one order with every link between a record of that page and one of this or an earlier page, read at the first page's position; several starts are one walk, cut together
+- `a_graph_refuses_a_cursor_of_another_read_and_a_path_any` — 018: a graph refuses a cursor handed out for rows, for `find` or for another pattern, and a path and an aggregate, which have no pages, refuse every cursor, each as invalid before anything is walked
+- `a_graph_honours_each_steps_direction_depth_and_where` — 018, extended: a graph whose steps all start at depth 0 walks each relation in its own step's direction to its own `max`, keeping and walking on from a record only where its step's `where`, read against the type its relation reaches wherever it is declared, holds, and a step that reaches several types and reads a `where` names its `type`; any other is a chain walked as rows walk it, answered as the start, what rows bind, the records between and the links walked; an empty range and a chain's undeclared relation are refused; over a reference field and over link records alike
+- `a_path_honours_its_steps_and_has_one_start` — 018, extended: a path walks each relation in its step's direction, only through records its step's `where` keeps, and no path is an empty graph; several starts, a projection other than `graph`, and a step starting below depth 0 are refused as invalid
+- `a_graph_shows_a_reader_no_more_than_its_rows` — 024 and 026, extended: a graph's step `where` on a field the reader may not read is refused as in rows; a restricted record and its links are left out of a graph as out of rows, and a chain is not walked through a record the reader is not shown
 
 **vector index**
 

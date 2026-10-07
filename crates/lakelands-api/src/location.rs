@@ -227,7 +227,8 @@ pub struct KeyHandle(pub String);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Limits {
-    /// Rows a list-shaped read returns when the caller names no limit.
+    /// Rows a list-shaped read returns when the caller names no limit,
+    /// or `max_limit` where that is smaller.
     pub default_limit: u32,
     /// The largest `limit` a caller may ask for.
     pub max_limit: u32,

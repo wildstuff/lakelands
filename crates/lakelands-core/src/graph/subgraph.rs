@@ -1,95 +1,136 @@
-//! A bounded neighbourhood, as nodes and edges, for a viewer.
+//! A bounded neighbourhood, as nodes and edges, for a viewer, a page at a
+//! time.
 //!
-//! The start is always present, at depth 0, even with no links, so an
+//! The starts are always present, at depth 0, even with no links, so an
 //! isolated record still renders. The answer is closed: an edge appears
 //! only if both of its ends are among the nodes, so a viewer never draws
-//! a link into nothing. When the node cap cuts the walk short the answer
-//! says so, because a prefix of a neighbourhood is otherwise
-//! indistinguishable from the whole of a smaller one.
+//! a link into nothing. When the page's size cuts the walk short the
+//! answer says so, because a prefix of a neighbourhood is otherwise
+//! indistinguishable from the whole of a smaller one, and the next page
+//! continues the same order.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::query::{Depth, Edge, Walk};
-use lakelands_api::{RelationName, Result};
+use lakelands_api::Result;
+use lakelands_api::query::{Edge, Step};
 
-use super::{EdgeId, EdgeSource, Links, Node, Reached, check_depth, edge_id};
+use super::{EdgeId, EdgeSource, Links, Node, Reached, check_depth, edge_id, hop};
 
-/// A bounded neighbourhood.
+/// One page of a graph.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Subgraph {
-    /// The records reached, the start first, ordered by
-    /// `(depth, type, key)`.
+    /// The page's records, ordered by `(depth, type, key)`.
     pub nodes: Vec<Reached>,
-    /// The links seen from the records expanded whose both ends are
-    /// among `nodes`, ordered by `(from, relation, to)`.
+    /// The links walked between a record of the page and one of this or
+    /// an earlier page, ordered by `(from, relation, to)`.
     pub edges: Vec<Edge>,
-    /// Whether the node cap left reachable records out.
+    /// Whether records follow the page.
     pub truncated: bool,
 }
 
-/// Everything within `depth` hops of `from` over `relations` (all of
-/// them when the slice is empty), walking in the direction `walk`.
+/// The neighbourhood of `starts` over `steps`: one walk over any of the
+/// steps' relations, each walked in its own step's direction to its own
+/// step's `max`. A record reached over a step's relation is taken in,
+/// and walked from, only where `keep(i, record)` holds for that step;
+/// that is where the caller applies the step's `type` and `where`. Each
+/// record is at the fewest hops any start reaches it in.
 ///
-/// At most `max_nodes` records, the start included and always kept.
-/// When the cap bites, the nearest records are kept, and among records
-/// equally near those first by `(type, key)`. Refused as invalid when
-/// `depth` goes past `max_depth`, the lake's ceiling.
-pub fn subgraph<S: EdgeSource + ?Sized>(
+/// One page of it: the records at `offset..offset + limit` of the order
+/// `(depth, type, key)`, and every link walked between a record of the
+/// page and one of this or an earlier page, so the pages together are
+/// the neighbourhood, each record and link once. The walk goes only as
+/// deep as the page's last record. Refused as invalid when a step's
+/// depth goes past `max_depth`, the lake's ceiling.
+pub fn subgraph<S, K>(
     source: &S,
-    from: &Node,
-    relations: &[RelationName],
-    walk: Walk,
-    depth: u32,
-    max_nodes: usize,
+    starts: &[Node],
+    steps: &[Step],
     max_depth: u32,
-) -> Result<Subgraph> {
-    check_depth(Depth { min: 0, max: depth }, max_depth)?;
-    let mut links = Links::new(source);
-    let mut depth_of: BTreeMap<Node, u32> = BTreeMap::from([(from.clone(), 0)]);
-    let mut seen: BTreeMap<EdgeId, Edge> = BTreeMap::new();
-    let mut frontier: BTreeSet<Node> = BTreeSet::from([from.clone()]);
-    let mut truncated = false;
-
-    for hop in 1..=depth {
-        let nears: Vec<Node> = frontier.iter().cloned().collect();
+    offset: usize,
+    limit: usize,
+    keep: K,
+) -> Result<Subgraph>
+where
+    S: EdgeSource + ?Sized,
+    K: FnMut(usize, &Node) -> Result<bool>,
+{
+    for s in steps {
+        check_depth(s.depth, max_depth)?;
+    }
+    let (mut links, mut keep) = (Links::new(source), keep);
+    let end = offset + limit;
+    let mut seen: BTreeSet<Node> = starts.iter().cloned().collect();
+    let mut nodes: Vec<Reached> = seen
+        .iter()
+        .map(|node| Reached {
+            node: node.clone(),
+            depth: 0,
+        })
+        .collect();
+    let mut walked: BTreeMap<EdgeId, Edge> = BTreeMap::new();
+    let mut level = 0..nodes.len();
+    let deepest = steps.iter().map(|s| s.depth.max).max().unwrap_or(0);
+    for at in 1..=deepest {
+        // Only the records up to the page's end are walked from: a link
+        // between two of them is seen from either end.
+        let nears: Vec<Node> = nodes[level.start..level.end.min(end)]
+            .iter()
+            .map(|r| r.node.clone())
+            .collect();
+        if nears.is_empty() {
+            break;
+        }
         let mut found = BTreeSet::new();
-        for around in links.around(&nears, relations, walk)? {
+        for around in hop(&mut links, &nears, steps, at, &mut keep)? {
             for (other, edge) in around {
-                seen.entry(edge_id(&edge)).or_insert(edge);
-                if !depth_of.contains_key(&other) {
+                walked.entry(edge_id(&edge)).or_insert(edge);
+                if !seen.contains(&other) {
                     found.insert(other);
                 }
             }
         }
-        let mut admitted = BTreeSet::new();
-        for node in found {
-            if depth_of.len() >= max_nodes.max(1) {
-                truncated = true;
-                break;
-            }
-            depth_of.insert(node.clone(), hop);
-            admitted.insert(node);
-        }
-        if admitted.is_empty() {
+        if nodes.len() > end {
             break;
         }
-        frontier = admitted;
+        let first = nodes.len();
+        for node in found {
+            seen.insert(node.clone());
+            nodes.push(Reached { node, depth: at });
+        }
+        level = first..nodes.len();
     }
+    Ok(page(nodes, walked, offset, limit))
+}
 
-    let edges = seen
+/// The page at `offset..offset + limit` of `nodes`, already in their
+/// order, with the links of `walked` between a record of the page and
+/// one of this or an earlier page.
+pub(super) fn page(
+    mut nodes: Vec<Reached>,
+    walked: BTreeMap<EdgeId, Edge>,
+    offset: usize,
+    limit: usize,
+) -> Subgraph {
+    let end = offset + limit;
+    let truncated = nodes.len() > end;
+    nodes.truncate(end);
+    let at: BTreeMap<&Node, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (&r.node, i))
+        .collect();
+    let edges = walked
         .into_values()
-        .filter(|e| depth_of.contains_key(&e.from) && depth_of.contains_key(&e.to))
+        .filter(|e| match (at.get(&e.from), at.get(&e.to)) {
+            (Some(a), Some(b)) => *a.max(b) >= offset,
+            _ => false,
+        })
         .collect();
-    let mut nodes: Vec<Reached> = depth_of
-        .into_iter()
-        .map(|(node, depth)| Reached { node, depth })
-        .collect();
-    nodes.sort_by(|a, b| (a.depth, &a.node).cmp(&(b.depth, &b.node)));
-    Ok(Subgraph {
-        nodes,
+    Subgraph {
+        nodes: nodes.split_off(offset.min(nodes.len())),
         edges,
         truncated,
-    })
+    }
 }
 
 #[cfg(test)]
