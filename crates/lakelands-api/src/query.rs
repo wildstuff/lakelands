@@ -411,7 +411,7 @@ impl SearchMode {
     pub fn misfit(&self) -> Option<(Option<FieldName>, String)> {
         let terms = self.vectors();
         let lone = matches!(self, SearchMode::Vector { also, .. } if also.is_empty());
-        let fits = |w: Option<f64>| w.is_none_or(|w| w > 0.0 && w <= 1e6);
+        let fits = |w: Option<f64>| w.is_none_or(weight_fits);
         let range = "must be above 0 and at most 1000000";
         for (i, (field, _, weight)) in terms.iter().enumerate() {
             let fault = if lone && weight.is_some() {
@@ -430,6 +430,12 @@ impl SearchMode {
         let text = matches!(self, SearchMode::Hybrid { text_weight, .. } if !fits(*text_weight));
         text.then(|| (None, format!("`text_weight` {range}")))
     }
+}
+
+/// Whether `w` weighs one ranking against another: above 0 and at most
+/// 1 000 000, in a search and in its type's `search_weights` alike.
+pub fn weight_fits(w: f64) -> bool {
+    w > 0.0 && w <= 1e6
 }
 
 /// `search`: ranked retrieval over one type. Unlike `find`, the answer
@@ -501,6 +507,10 @@ pub struct Axis {
     /// lake's matches. A search of one axis gives none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidates: Option<u64>,
+    /// Where the search fuses, the weight this axis ranked by: the
+    /// search's own, else its type's `search_weights` setting's, else 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<f64>,
 }
 
 /// One search hit.

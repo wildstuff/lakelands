@@ -136,3 +136,38 @@ naming its field.
 
 A hit's score by axis is not given: that answers why a hit ranks where
 it does, a question of its own.
+
+## Extended: a type weighs its searches by a setting (lakelands#561)
+
+A search could weigh its rankings, and only a search could, so a host
+that always wanted one field to count more said so in every request. The
+setting `search_weights.<type>` says it once:
+
+```
+{"fields": {"va": 0.9, "vb": 0.1}, "text_weight": 0.5}
+```
+
+- **It weighs what a search does not.** A fused search that gives a
+  vector field no `weight` takes the setting's `fields` weight, and a
+  hybrid search with no `text_weight` takes the setting's; a weight the
+  search gives wins, and a ranking neither names weighs 1. Each fused
+  axis names the weight it ranked by. A search of one axis is not fused,
+  and the setting changes nothing there. A restricted setting's value
+  shows only as the weight of an axis its reader is shown, as any
+  computation uses a restricted setting's value (`docs/seams.md`).
+- **It is a setting, not a member of the field,** because a weight is how
+  a host wants its searches ranked today, not what the field is: it
+  changes without a migration, and a read as of a position before it
+  ranks without it.
+- **It says nothing a search cannot say.** It names declared vector
+  fields the writer is shown, and every weight is one a search may give,
+  above 0 and at most 1 000 000. Anything else, an unknown member, an
+  empty object or empty `fields`, is refused when it is written, naming
+  the member.
+- **It is harmless when the type changes.** A field it names that a
+  migration removed, or that is no longer a vector, is named by no
+  search and weighs nothing; the setting is not rewritten, so a field
+  declared again under that name takes its weight again. The rule that
+  carries a grant through a field's rename (lakelands#527) does not reach
+  a setting: a host that renames a weighed field writes the setting
+  again.

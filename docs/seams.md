@@ -1001,7 +1001,9 @@ a hybrid search its text (`text_weight`) and its vector (`weight`), a
 vector search its `field` and every further field it names in `also`.
 The store asks the engine for each ranking on its own, through `lexical`
 and `nearest` as before, and fuses them itself, so an engine sees
-neither a weight nor a second field.
+neither a weight nor a second field. A ranking the search gives no
+weight takes the one its type's setting `search_weights.<type>` gives it
+(below), and a ranking neither weighs weighs 1.
 
 **A field declared with `embed`** is the embedding of text fields of its
 record (`docs/decisions/022-functions-are-declarations.md`, extended):
@@ -1677,10 +1679,23 @@ an `if` with `null` for one branch stands for its other branch
 (`lakelands_api::expr::keepable`). `false` and a retired setting ask for
 nothing. A view declared again so that it can no longer be kept is not
 refused under a standing setting: the setting stays, and `describe_type`
-says why the view computes. The judge of all three settings is the
-contract's (`lakelands_api::seam::check_setting`), so the mock refuses
-what the store refuses. It changes no answer, only where a read of the
-view gets it.
+says why the view computes. It changes no answer, only where a read of
+the view gets it.
+
+Another is **`search_weights.<type>`**: it holds an object of `fields`,
+vector fields of `<type>` with their weights, and `text_weight`, each
+optional and one at least, and weighs each ranking a fused search of
+`<type>` gives no weight, as the read finds it at its position. A write
+of it is refused as invalid when `<type>` is no declared stored type
+(`key`), when it names a field the type does not declare or declares
+with a kind other than vector, or a weight a search could not give
+(above 0, at most 1 000 000; the member named), and when its value is no
+such object or names nothing (`value`). A field a migration removed
+stays named and weighs nothing; declared again, it takes its weight
+again. The judge of all four settings is the contract's
+(`lakelands_api::seam::check_setting`), so the mock refuses what the
+store refuses. It changes no answer's members, only the order a fused
+search ranks them in.
 
 **A setting the store reads is judged by what its writer is shown,**
 after the writer's grant on `sys.setting`

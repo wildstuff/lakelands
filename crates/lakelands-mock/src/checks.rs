@@ -9161,7 +9161,8 @@ pub async fn a_retry_is_answered_before_its_writer_is_asked_what_it_is_shown(
 /// ranked by `vector`
 /// (`docs/decisions/043-an-index-asked-for-answers-its-set.md`). A hybrid
 /// search lists its axes, each counted, a text that matches nothing at 0,
-/// and a search of one axis lists its own without a count (lakelands#560).
+/// and a search of one axis lists its own without a count (lakelands#560);
+/// a type's `search_weights` weighs what a search does not (lakelands#561).
 pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranked_by_the_index(
     store: Arc<dyn LakeStore>,
 ) {
@@ -9358,6 +9359,35 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
     assert_eq!(
         axes(by_vector("v")).await,
         vec![(vector().0, vector().1, None)]
+    );
+    // The type's `search_weights` weighs what a search does not
+    // (lakelands#561), and the axes say so.
+    let weights = json!({"fields": {"v": 0.5}, "text_weight": 0.25});
+    let (k, setting) = (key("search_weights.doc"), ty("sys.setting"));
+    let fields = patch(&[("key", json!("search_weights.doc")), ("value", weights)]);
+    let written = f
+        .catalog
+        .upsert(owner, &setting, &k, fields, WriteOpts::default());
+    written.await.expect("the weights are a setting");
+    let s = Search {
+        k: 5,
+        cursor: None,
+        filter: None,
+        with_meta: false,
+        at: ReadAt::default(),
+        ty: ty("doc"),
+        mode: hybrid(),
+    };
+    let hits = f
+        .catalog
+        .search(owner, s)
+        .await
+        .expect("the search answers");
+    let weighed: Vec<_> = hits.data.axes.iter().map(|a| a.weight).collect();
+    assert_eq!(
+        weighed,
+        [Some(0.25), Some(0.5)],
+        "the setting's weights rank"
     );
     set(json!(["v"]))
         .await
