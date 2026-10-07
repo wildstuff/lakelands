@@ -240,7 +240,7 @@ fn an_extreme_is_held_by_its_value_and_then_by_the_least_key() {
         ("k2", "3", "k0", "2", "2"),
         ("k2", "3", "k0", "3", "3"),
         ("k2", "3", "k2", "4", "waits"),
-        ("k2", "3", "k8", "1", "waits"),
+        ("k2", "3", "k8", "1", "1"),
         ("k2", "3", "-", "-", "waits"),
         ("k3", "7", "k3", "1", "1"),
         ("k1", "5", "k1", "3.0", "3.0"),
@@ -357,16 +357,12 @@ fn an_extreme_is_held_as_it_is_written_and_only_among_values_of_one_kind() {
     assert!(!kept.take("k1", &instant));
     assert!(kept.folds.exact());
     assert_eq!(kept.text(), "5");
+    // The number comes first in the order whichever came first: its
+    // leaving is the holder's.
     let mut kept = Kept::of("min(x)");
     kept.put("k1", &instant).put("k2", &number);
     assert!(!kept.folds.exact());
-    // The holder of the other kind leaving is a holder leaving.
-    assert!(kept.take("k1", &instant));
-    let mut kept = Kept::of("min(x)");
-    kept.put("k1", &instant).put("k2", &number);
-    assert!(!kept.take("k2", &number));
-    assert!(kept.folds.exact());
-    assert_eq!(kept.text(), "2026-01-01T00:00:00Z");
+    assert!(kept.take("k2", &number));
 
     // A state read back with a scale no decimal has is not exact.
     let written = r#"{"folds":[{"n":1,"sum":{"29":[1,"5","5"]}}],"members":1}"#;
@@ -375,4 +371,90 @@ fn an_extreme_is_held_as_it_is_written_and_only_among_values_of_one_kind() {
     assert!(!kept.folds.exact());
     kept.put("k1", &x("1"));
     assert!(!kept.folds.exact());
+}
+
+#[test]
+fn an_extreme_has_one_holder_whatever_order_its_members_came_in() {
+    // Numbers and instants mixed, and equal values under other keys.
+    let members = [
+        ("k3", x("2026-01-01T00:00:00Z")),
+        ("k5", x("1.0")),
+        ("k2", x("1")),
+        ("k4", x("2026-01-01T00:00:00.000Z")),
+        ("k1", x("7")),
+        ("k6", x("1.00")),
+    ];
+    for (expr, holder) in [("min(x)", "k2"), ("max(x)", "k3")] {
+        let mut written = Vec::new();
+        for turn in 0..members.len() {
+            let mut kept = Kept::of(expr);
+            let (first, then) = members.split_at(turn);
+            for (key, fields) in then.iter().chain(first.iter().rev()) {
+                kept.put(key, fields);
+            }
+            written.push(kept.written());
+        }
+        assert!(
+            written.windows(2).all(|w| w[0] == w[1]),
+            "{expr}: {written:?}"
+        );
+        assert!(
+            written[0].contains(&format!(r#""{holder}"]"#)),
+            "{expr}: {}",
+            written[0]
+        );
+    }
+}
+
+#[test]
+fn a_waiting_extreme_is_read_from_its_order_after_the_holder() {
+    let mut kept = Kept::of("max(x) + min(x) + count()");
+    let (k, settings) = (RecordKey::from("k2"), None);
+    // Each extreme's entry: a `max` puts the greatest value first, and a
+    // value whose key begins another's after it.
+    let entries = kept.keeping.entries(&k, &row(&x("1")), settings);
+    let longer = kept.keeping.entries(&k, &row(&x("1.5")), settings);
+    assert_eq!(entries.iter().map(|e| e.0).collect::<Vec<_>>(), [0, 1]);
+    assert!(longer[0].1 < entries[0].1 && entries[1].1 < longer[1].1);
+    assert!(
+        kept.keeping
+            .entries(&k, &row(&json!({})), settings)
+            .is_empty()
+    );
+    kept.put("k1", &x("1.5")).put("k2", &x("1"));
+    assert!(kept.keeping.waiting(&kept.folds).is_empty());
+    // The `max`'s holder leaves: both extremes are read from where their
+    // holders stand.
+    assert!(kept.take("k1", &x("1.5")));
+    let waiting = kept.keeping.waiting(&kept.folds);
+    let held = kept
+        .keeping
+        .entries(&RecordKey::from("k1"), &row(&x("1.5")), settings);
+    assert_eq!(
+        waiting,
+        [
+            (0, Some((held[0].1.clone(), "k1".into()))),
+            (1, Some((entries[1].1.clone(), k.clone())))
+        ]
+    );
+    let first = vec![
+        (0, Some(entries[0].2.clone())),
+        (1, Some(entries[1].2.clone())),
+    ];
+    kept.keeping.seated(&mut kept.folds, first);
+    assert!(kept.folds.exact());
+    assert_eq!(
+        kept.m(),
+        computed(&[("k2", x("1"))], "max(x) + min(x) + count()")
+    );
+    // The last member leaving waits for nothing.
+    assert!(!kept.take("k2", &x("1")));
+    assert_eq!(kept.folds, kept.keeping.none());
+    // An order with no entry while a member still folds has lost it (an
+    // entry deleted under the view): the group is computed, never null.
+    kept.put("k1", &x("2")).put("k2", &x("1"));
+    assert!(kept.take("k1", &x("2")));
+    kept.keeping
+        .seated(&mut kept.folds, vec![(0, None), (1, None)]);
+    assert!(!kept.folds.exact() && !kept.folds.waits());
 }

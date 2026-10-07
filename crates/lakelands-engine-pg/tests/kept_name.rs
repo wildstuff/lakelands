@@ -13,7 +13,10 @@
 //! on that lake analysed, and on a large one the writer analysed; and
 //! what the reads cost is counted where the server counts it: the tuples
 //! of `records` and of `outputs` it fetched (`pg_stat_user_tables`),
-//! which a backend reports when it ends.
+//! which a backend reports when it ends. An order name
+//! (`lakelands_api::seam::ORDER_PREFIX`, lakelands#629) keeps one state
+//! for each key and is read by the statements of a stored type, its page
+//! after a key a seek into `records_key_c`; nothing indexes it.
 
 mod common;
 
@@ -22,7 +25,7 @@ use lakelands_api::event::Digest;
 use lakelands_api::id::{Position, RecordKey, TypeName, Version};
 use lakelands_api::read::{Direction, Order};
 use lakelands_api::record::StoredRecord;
-use lakelands_api::seam::kept_name;
+use lakelands_api::seam::{kept_name, order_name};
 use lakelands_engine_pg::{PgOpener, read_statements};
 use postgres::types::ToSql;
 use serde_json::json;
@@ -309,5 +312,64 @@ fn a_kept_name_is_read_by_seeks_with_statistics_and_without() {
         "two pages, three keys, a count, a page in a field's order and the view's state, read at the head \
          and in the middle of the states of a key with {STATES} of them, fetched {each:?} \
          tuples of `records` and of `outputs`; `records_head` was read {through_head} times"
+    );
+}
+
+#[test]
+fn an_order_name_is_read_by_a_seek_and_indexed_nowhere() {
+    let Some(url) = common::url_or_skip("the pg test of an order name") else {
+        return;
+    };
+    let schema = common::fresh_schema();
+    let engine = PgOpener
+        .open(&common::location(&url, "order", &schema), OpenMode::Create)
+        .unwrap();
+    let name = order_name(&TypeName::from("v"));
+    // Twenty thousand keys, and the first two thousand of them put again.
+    let (keys, last) = (20_000, 22_000);
+    for first in (1..=last).step_by(1_000) {
+        let p = engine.projection();
+        p.begin().unwrap();
+        for at in first..first + 1_000 {
+            let mut entry = state(&name, &format!("k{:05}", (at - 1) % keys), at);
+            entry.fields =
+                serde_json::from_value(json!({"sys:entry": {"v": {"text": "1"}}, "t": "word"}))
+                    .unwrap();
+            p.put_record(&entry).unwrap();
+        }
+        p.commit(Position(first + 999)).unwrap();
+    }
+    drop(engine);
+    let rows = ["records", "text_index", "sort_index", "full_text"].map(|table| {
+        let query =
+            format!("SELECT count(*) FROM {schema}.{table} WHERE ty = 'sys:order.v' AND $1 <> ''");
+        common::settled(&url, &schema, &query)
+    });
+    assert_eq!(
+        rows,
+        [keys as i64, 0, 0, 0],
+        "one state for each key, no other row"
+    );
+    let (u, sc, n) = (url.clone(), schema.clone(), name.clone());
+    let plan: Vec<String> = std::thread::spawn(move || {
+        let mut client = postgres::Client::connect(&u, postgres::NoTls).unwrap();
+        client
+            .batch_execute(&format!(
+                "ANALYZE {sc}.records; SET plan_cache_mode = force_custom_plan"
+            ))
+            .unwrap();
+        let [_, later, ..] = read_statements(&sc, &n, true);
+        let (ty, at, limit, after) = (n.as_str(), last as i64, 1_i64, "k10000");
+        let explain = format!("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) {later}");
+        let rows = client.query(&explain, &[&ty, &at, &limit, &after]).unwrap();
+        rows.iter().map(|row| row.get(0)).collect()
+    })
+    .join()
+    .unwrap();
+    common::drop_schema(&url, &schema);
+    let has = |step: &str| plan.iter().any(|line| line.contains(step));
+    assert!(
+        has("records_key_c") && !has("Sort") && !has("Seq Scan") && !has("records_head"),
+        "an order name's page after a key is not a seek into `records_key_c`: {plan:#?}"
     );
 }

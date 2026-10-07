@@ -217,6 +217,24 @@ pub fn is_kept_name(ty: &TypeName) -> bool {
     ty.as_str().starts_with(KEPT_PREFIX)
 }
 
+/// The prefix of the name under which the fold keeps, for a view it keeps,
+/// the order of each extreme's members, `sys:order.<view>`: an entry for
+/// each member, keyed so that the first entry after a key is the next
+/// holder. Such a name is read at the head only, and an engine keeps one
+/// state for each of its keys (`docs/seams.md` §`ProjectionStore`).
+pub const ORDER_PREFIX: &str = "sys:order.";
+
+/// The name the extremes' orders of the view `view` are kept under.
+pub fn order_name(view: &TypeName) -> TypeName {
+    format!("{ORDER_PREFIX}{view}").into()
+}
+
+/// Whether an engine keeps one state for each key of this name, with no
+/// row beside it: a put replaces the key's state, and an end deletes it.
+pub fn is_head_only(ty: &TypeName) -> bool {
+    ty.as_str().starts_with(ORDER_PREFIX)
+}
+
 /// The declaration of [`SETTING_TYPE`], which every lake holds from its
 /// creation (`docs/seams.md` §`SystemVocabulary`). One definition, so every
 /// implementation of the contract creates a lake the same way.

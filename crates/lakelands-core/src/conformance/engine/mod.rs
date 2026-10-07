@@ -128,6 +128,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     projection::EDGES_OF_MANY_KEYS,
     projection::GET_MANY,
     projection::MUCH_WRITTEN_KEY,
+    projection::HEAD_ONLY_NAME,
     projection::EDGES_TO_RETIRED,
     projection::EDGES_FOLLOW_THE_LATEST_STATE,
     projection::COMMIT_INVALID,

@@ -115,6 +115,12 @@ engine_check!(
 );
 
 engine_check!(
+    /// A head-only name keeps one state for each key.
+    HEAD_ONLY_NAME = a_head_only_name_keeps_one_state_for_each_key,
+    "seams §ProjectionStore (lakelands#629): under a head-only name, `sys:order.<view>`, a put replaces its key's state and an end deletes it, a rollback leaves what the key held, and a page in key order after a key reads the next key's one row, an ended key between them read as none; it is read at the head only. `end_head_only` deletes every key's state at once, whether put before or earlier in the transaction, and keeps a key put after it in the same transaction"
+);
+
+engine_check!(
     /// `clear` empties the projection and the vector index.
     CLEAR = clear_empties_the_projection_and_the_vector_index,
     "seams §ProjectionStore: clear deletes every state, kept history and the vector index included, and leaves nothing folded, for a rebuild from the log"
@@ -954,6 +960,77 @@ fn a_much_written_key_is_put_and_read_as_one_written_twice(
         answers == [want(head), want(then)].concat(),
         "`a` was put at every position from 3 to {head} and `b` at 1 and 2; a `get` of each, a \
          page and a count answered {answers:?} at the head and as of {then}"
+    );
+    Ok(())
+}
+
+fn a_head_only_name_keeps_one_state_for_each_key(engine: &dyn LakeEngine) -> Result<(), Failure> {
+    let ty = TypeName::from(format!("{}v", lakelands_api::seam::ORDER_PREFIX));
+    let entry =
+        |key: &str, n: u64, at: u64| record(ty.as_str(), key, json!({"sys:entry": {"n": n}}), at);
+    let ended =
+        |key: &str, at: u64| StoredRecord::ended(ty.clone(), RecordKey::from(key), Position(at));
+    fold(engine, 1, |p| {
+        (0..100).try_for_each(|i| p.put_record(&entry(&format!("k{i:03}"), 1, 1)))
+    })?;
+    fold(engine, 2, |p| {
+        p.put_record(&entry("k001", 2, 2))?;
+        p.put_record(&ended("k002", 2))
+    })?;
+    let p = engine.projection();
+    p.begin().must("beginning a transaction")?;
+    p.end_head_only(&ty, Position(3)).must("ending the name")?;
+    p.put_record(&entry("k001", 3, 3)).must("putting k001")?;
+    p.put_record(&ended("k003", 3)).must("ending k003")?;
+    p.rollback();
+    let v = view(engine, None)?;
+    let n = |r: Option<StoredRecord>| r.and_then(|r| r.fields.get("sys:entry")?.get("n")?.as_u64());
+    let mut got = Vec::new();
+    for key in ["k001", "k002", "k003"] {
+        got.push(n(v
+            .get(&ty, &RecordKey::from(key))
+            .must("reading an entry")?));
+    }
+    let all = v.count(&ty, &lakelands_api::engine::Scan::default());
+    let all = all.must("counting the entries")?;
+    ensure!(
+        (got.as_slice(), all) == ([Some(2), None, Some(1)].as_slice(), 99),
+        "100 entries were put at 1, then k001 again and k002 ended at 2, and a rolled-back \
+         transaction put k001 and ended k003: k001, k002 and k003 read {got:?} and the name \
+         counts {all}, where one state for each key leaves [Some(2), None, Some(1)] and 99"
+    );
+    let after = lakelands_api::engine::After {
+        values: Vec::new(),
+        key: RecordKey::from("k001"),
+    };
+    let scan = lakelands_api::engine::Scan {
+        after: Some(after),
+        limit: 1,
+        ..Default::default()
+    };
+    let before = crate::engines::rows_read();
+    let page = v.scan(&ty, &scan).must("reading a page after k001")?;
+    let read = crate::engines::rows_read() - before;
+    let keys: Vec<&str> = page.iter().map(|r| r.key.as_str()).collect();
+    ensure!(
+        (keys.as_slice(), read) == (["k003"].as_slice(), 1),
+        "a page of one after k001, with k002 ended, answered {keys:?} reading {read} rows: the \
+         next key's one row, k003"
+    );
+    fold(engine, 4, |p| {
+        p.put_record(&entry("k060", 4, 4))?;
+        p.end_head_only(&ty, Position(4))?;
+        p.put_record(&entry("k050", 4, 4))
+    })?;
+    let v = view(engine, None)?;
+    let all = v.count(&ty, &lakelands_api::engine::Scan::default());
+    let all = all.must("counting the entries")?;
+    let page = v.scan(&ty, &scan).must("reading a page after k001")?;
+    let keys: Vec<&str> = page.iter().map(|r| r.key.as_str()).collect();
+    ensure!(
+        (keys.as_slice(), all) == (["k050"].as_slice(), 1),
+        "one transaction put k060, ended the name and put k050: a page after k001 answered \
+         {keys:?} and the name counts {all}, where it holds k050 alone"
     );
     Ok(())
 }

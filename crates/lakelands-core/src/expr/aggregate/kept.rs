@@ -19,19 +19,23 @@
 //! - A sum is its numbers by scale (`Scales`), which a number is taken
 //!   out of as exactly as it was put in.
 //! - A minimum or maximum is its value and the key of the member that
-//!   holds it: of equal values the least key, as a fold in key order
-//!   keeps. No value's leaving is read again but the holder's.
+//!   holds it: the first member in the extreme's order ([`Entry`]), which
+//!   ranks every value by its sort key, a number before an instant, and
+//!   equal values by the least key. So the holder is a function of the
+//!   members whatever the order they arrived in. When the holder leaves,
+//!   the next one is the first entry of an order the store keeps.
 
 use std::collections::BTreeMap;
 use std::ops::Not;
 
-use lakelands_api::expr::{CmpOp, Expr, Func};
+use lakelands_api::expr::{Expr, Func};
 use lakelands_api::{FieldName, RecordKey, Timestamp, Value};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use super::{Fold, Folds, Row, Scales};
-use crate::expr::eval::{RecordScope, Result, Val, as_number, as_time, compare, eval};
+use crate::expr::eval::{RecordScope, Result, Val, as_number, as_time, eval};
+use crate::expr::order::val_key;
 
 /// An extreme's value as the evaluator read it, so that what a measure
 /// hands on is the value the computation hands on. A number is held as
@@ -162,27 +166,21 @@ impl KeptFold {
                 _ => true,
             };
         }
-        let want = match func {
-            Func::Min => CmpOp::Lt,
-            Func::Max => CmpOp::Gt,
-            _ => return (held, false),
-        };
+        if !extreme(func) {
+            return (held, false);
+        }
         let new = is.as_ref().and_then(|(key, arg)| match arg {
-            Arg::Value(v) => Held::of(v).map(|h| (v, h, *key)),
+            Arg::Value(v) => Held::of(v).map(|h| (place(func, v), h, *key)),
             _ => None,
         });
         let holder = self.best.as_ref().map(|(_, key)| key);
         let leaves = was.as_ref().is_some_and(|(k, _)| holder == Some(*k));
-        // The holder's own change replaces in place under an equal or
-        // better value and the same or a lesser key; another member takes
-        // over with a better value, or an equal one under a lesser key.
+        // The first entry of the order holds: the holder's own change keeps
+        // it where it stays first, and another member takes over where it
+        // comes first.
         let takes = match (&new, &self.best) {
-            (Some((v, _, key)), Some((best, holder))) => {
-                let is = |op| compare(op, v, &best.val()).unwrap_or(false);
-                match leaves {
-                    true => (is(want) || is(CmpOp::Eq)) && *key <= holder,
-                    false => is(want) || (is(CmpOp::Eq) && *key < holder),
-                }
+            (Some((at, _, key)), Some((best, holder))) => {
+                (at, *key) <= (&place(func, &best.val()), holder)
             }
             (new, _) => new.is_some(),
         };
@@ -225,24 +223,48 @@ impl KeptFolds {
         !self.lost && !self.waits && self.folds.iter().all(exact)
     }
 
-    /// An extreme's holder left and the group is to be read again: put
-    /// into [`Keeping::none`], member by member. It stays so until then.
+    /// An extreme's holder left and the next is to be read from the
+    /// extreme's order ([`Keeping::waiting`], [`Keeping::seated`]). It
+    /// stays so until then.
     pub fn waits(&self) -> bool {
         self.waits
     }
+}
 
-    /// The group could not be read again: what waited is not exact for
-    /// as long as the group has a record.
-    pub fn give_up(&mut self) {
-        self.lost |= std::mem::take(&mut self.waits);
-    }
+/// Whether `func` is an extreme, `min` or `max`.
+fn extreme(func: Func) -> bool {
+    matches!(func, Func::Min | Func::Max)
+}
 
-    /// Given up, or a count went below nothing: not exact, and nothing
-    /// reads the group again, for as long as it has a record.
-    pub fn lost(&self) -> bool {
-        self.lost
+/// Where a value stands in the order of the extreme `func`: its sort key
+/// for a `min`; for a `max` the same with a zero byte after it, every byte
+/// complemented, so that the greatest value comes first and a value whose
+/// key begins another's (`1` before `1.5`) comes after it.
+fn place(func: Func, v: &Val) -> Vec<u8> {
+    let key = val_key(v);
+    match func {
+        Func::Max => key.into_iter().chain([0]).map(|b| !b).collect(),
+        _ => key,
     }
 }
+
+/// One member's entry in the order of one extreme: its value as the fold
+/// read it, so that a holder read from the order hands on its own bytes,
+/// and its key. Written into a record's field it is a JSON object.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Entry {
+    v: Held,
+    m: RecordKey,
+}
+
+/// Where a member stands in an extreme's order: its place ([`place`]) and
+/// its key.
+pub type Standing = (Vec<u8>, RecordKey);
+
+/// An entry of one extreme for one member: the extreme's index among the
+/// source's calls, the member's place in its order ([`place`], then its
+/// key), and the entry.
+pub type Placed = (usize, Vec<u8>, Entry);
 
 /// A member: its key and its fields.
 type Member<'a> = (&'a RecordKey, &'a Row);
@@ -293,9 +315,8 @@ impl Keeping {
     }
 
     /// A member stays in its group and changes: its key, its fields, or
-    /// both. An extreme's holder that changes to an equal or better value
-    /// under the same or a lesser key stays the holder; under a worse
-    /// value or a greater key it has left. Answers [`KeptFolds::waits`].
+    /// both. An extreme's holder that stays first in the extreme's order
+    /// stays the holder; else it has left. Answers [`KeptFolds::waits`].
     pub fn change(
         &self,
         folds: &mut KeptFolds,
@@ -336,6 +357,60 @@ impl Keeping {
             folds.waits |= left;
         }
         folds.waits
+    }
+
+    /// The member's entries, one for each extreme it holds a value for: a
+    /// member with a null argument, or one an extreme does not fold, has
+    /// none, as it has no part in the extreme.
+    pub fn entries(&self, key: &RecordKey, row: &Row, settings: Settings<'_>) -> Vec<Placed> {
+        let (fields, now) = (row, Timestamp(0));
+        let scope = RecordScope {
+            fields,
+            settings,
+            now,
+        };
+        let mut placed = Vec::new();
+        for (i, (func, arg)) in self.0.iter().enumerate().filter(|(_, (f, _))| extreme(*f)) {
+            if let Arg::Value(v) = Arg::of(*func, arg.as_ref(), &scope)
+                && let Some(v) = Held::of(&v).map(|held| (place(*func, &v), held))
+            {
+                let m = key.clone();
+                placed.push((i, v.0, Entry { v: v.1, m }));
+            }
+        }
+        placed
+    }
+
+    /// Where the order of each extreme of `folds` is read from when they
+    /// wait: the place of the holder they keep, which is the first entry
+    /// unless it left, and then the next one follows it. None when they
+    /// do not wait.
+    pub fn waiting(&self, folds: &KeptFolds) -> Vec<(usize, Option<Standing>)> {
+        let mut from = Vec::new();
+        for (i, ((func, _), f)) in self.0.iter().zip(&folds.folds).enumerate() {
+            if folds.waits && extreme(*func) {
+                from.push((
+                    i,
+                    f.best
+                        .as_ref()
+                        .map(|(h, k)| (place(*func, &h.val()), k.clone())),
+                ));
+            }
+        }
+        from
+    }
+
+    /// Each waiting extreme's holder is the first entry of its order, or
+    /// none where the order holds none. An order with no entry for an
+    /// extreme that still folds members has lost them, and the folds are
+    /// not exact.
+    pub fn seated(&self, folds: &mut KeptFolds, first: Vec<(usize, Option<Entry>)>) {
+        for (i, entry) in first {
+            let fold = &mut folds.folds[i];
+            folds.lost |= entry.is_none() && fold.n > 0;
+            fold.best = entry.map(|e| (e.v, e.m));
+        }
+        folds.waits = false;
     }
 
     /// One group's measures over its kept folds, as [`super::measures`]

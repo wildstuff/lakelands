@@ -71,6 +71,16 @@ pub(crate) enum Put {
     Declaration(Declared),
     /// A record's whole state from its `position`.
     Record(StoredRecord),
+    /// The one state of a key of a head-only name, or its end: it takes
+    /// the place of whatever the key held, and nothing indexes it.
+    Head(StoredRecord),
+    /// Every key of a head-only name ended at once, at `at`.
+    HeadsEnded {
+        /// The name.
+        ty: TypeName,
+        /// The position.
+        at: Position,
+    },
     /// A proposal's state from `at`.
     Proposal {
         /// The proposal.
@@ -116,9 +126,10 @@ impl Put {
     fn own_position(&self) -> Position {
         match self {
             Put::Declaration(d) => d.since,
-            Put::Record(r) => r.position,
+            Put::Record(r) | Put::Head(r) => r.position,
             Put::Membership { at, .. }
             | Put::Applied { at, .. }
+            | Put::HeadsEnded { at, .. }
             | Put::Proposal { at, .. }
             | Put::Output { at, .. } => *at,
         }
@@ -496,6 +507,19 @@ impl Projection {
                 .put(at, output),
             Put::Applied { id, at } => {
                 self.applied.entry(id).or_insert(at);
+            }
+            Put::Head(r) => {
+                let id = (r.ty.clone(), r.key.clone());
+                match r.is_ended() {
+                    true => drop(self.records.remove(&id)),
+                    false => drop(self.records.insert(id, History(vec![(r.position, r)]))),
+                }
+            }
+            Put::HeadsEnded { ty, .. } => {
+                let from = (ty.clone(), RecordKey::from(""));
+                let of = self.records.range(from..).map(|(id, _)| id);
+                let ids: Vec<_> = of.take_while(|(t, _)| *t == ty).cloned().collect();
+                ids.iter().for_each(|id| drop(self.records.remove(id)));
             }
         }
     }

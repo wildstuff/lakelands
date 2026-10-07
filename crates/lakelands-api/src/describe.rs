@@ -305,9 +305,8 @@ pub enum NotKept {
     /// Its records are not whole.
     NotWhole {
         /// The groups whose kept record is not exact, for this reader: a
-        /// measure fails over the group, which mends when its cause
-        /// leaves, or an extreme was given up, which only what makes the
-        /// view again mends.
+        /// measure fails over the group, or a member's argument does not
+        /// fold, which mends when its cause leaves.
         not_exact: u64,
     },
     /// Its records are not kept at this position, or by this lake.

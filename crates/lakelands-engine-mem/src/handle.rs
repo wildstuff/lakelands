@@ -211,7 +211,15 @@ impl ProjectionStore for MemoryLake {
     }
 
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
-        self.stage(Put::Record(record.clone()))
+        match lakelands_api::seam::is_head_only(&record.ty) {
+            true => self.stage(Put::Head(record.clone())),
+            false => self.stage(Put::Record(record.clone())),
+        }
+    }
+
+    fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
+        let ty = name.clone();
+        self.stage(Put::HeadsEnded { ty, at })
     }
 
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {

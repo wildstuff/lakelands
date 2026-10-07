@@ -462,7 +462,7 @@ pub fn measures(
 }
 
 mod kept;
-pub use kept::{Keeping, KeptFolds};
+pub use kept::{Entry, Keeping, KeptFolds, Placed};
 
 #[cfg(test)]
 mod tests;

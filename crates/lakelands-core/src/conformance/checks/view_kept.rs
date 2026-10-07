@@ -55,7 +55,7 @@ check!(
 check!(
     /// A kept measure is its twin's whatever it folds.
     KEPT_VALUES = a_kept_measure_answers_as_its_twin_whatever_values_it_folds,
-    "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: an extreme whose holder leaves, equal values at two keys and an equal value written over the holder, which reads as written; a group's values under a number and a decimal group field, written and fed, where `1.0` and `1.00` are two groups of a decimal and one of a number; the holder of an outer view's extreme leaving a group whose other member is in it on the whole face alone; a sum whose large member leaves, and sums of `5` and `0.00` in both key orders; a setting written over a group whose measure divides by zero, after which the next write is accepted and the view is refused as its twin is until the member changes; and `max(known_at(n))`, null in both",
+    "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: an extreme whose holder leaves, equal values at two keys and an equal value written over the holder, which reads as written; a maximum whose holder `1.5` leaves for `1`, whose sort key begins its own; a group's values under a number and a decimal group field, written and fed, where `1.0` and `1.00` are two groups of a decimal and one of a number; the holder of an outer view's extreme leaving a group whose other member is in it on the whole face alone; a sum whose large member leaves, and sums of `5` and `0.00` in both key orders; a setting written over a group whose measure divides by zero, after which the next write is accepted and the view is refused as its twin is until the member changes; and `max(known_at(n))`, null in both",
     given
 );
 
@@ -69,7 +69,7 @@ check!(
 check!(
     /// A kept extreme is its twin when its holders are moved in one event.
     KEPT_RUNS = a_kept_extreme_answers_as_its_twin_when_a_run_or_a_re_key_moves_its_holders,
-    "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: a kept `min` and `max` answer as their twins after one aging run takes the holders of nine groups out of the view's `where`, after a purge retires the holders of nine groups, and after a re-key moves a holder to a greater key and the keys of the records that refer to it in the same event, `describe_type` saying `kept` after each, since every group is read again in the fold of the event that took its holder; and after the appends that follow each",
+    "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: a kept `min` and `max` answer as their twins after one aging run takes the holders of nine groups out of the view's `where`, after a purge retires the holders of nine groups, and after a re-key moves a holder to a greater key and the keys of the records that refer to it in the same event, `describe_type` saying `kept` after each, since every group's next holder is read from its extreme's order in the fold of the event that took the holder; and after the appends that follow each",
     given
 );
 
@@ -182,12 +182,18 @@ const VALUES: &str = r#"
     is ends v 1.0,1.0; w 8,8
     put line k1 {"n": "1.00"}
     is ends v 1.00,1.00; w 8,8
+    row a maximum's holder leaves for a value whose key begins its own
+    put line o1 {"g": "o", "n": "1.5"}
+    put line o2 {"g": "o", "n": "1"}
+    put line o3 {"g": "o", "n": "0.9"}
+    retire line o1
+    is ends o 0.9,1; v 1.00,1.00; w 8,8
     row a sum whose large member leaves
     put line big {"g": "u", "n": "10000000000000000000"}
     put line small {"g": "u", "n": "0.0000000000000000001"}
     retire line big
     read sums
-    is sums u 1,0.0000000000000000001,0.0000000000000000001; v 2,2.00,1.00; w 1,8,8
+    is sums o 2,1.9,0.950; u 1,0.0000000000000000001,0.0000000000000000001; v 2,2.00,1.00; w 1,8,8
     row a sum reads at the largest scale in both key orders
     put line s1 {"g": "p", "n": "5"}
     put line s2 {"g": "p", "n": "0.00"}
