@@ -229,7 +229,9 @@ macro_rules! door_checks {
             #[own_principals]
             a_hidden_target_is_not_learned_by_declaring_its_field,
             #[own_principals]
-            a_relation_carried_by_a_hidden_field_answers_nothing_of_it);
+            a_relation_carried_by_a_hidden_field_answers_nothing_of_it,
+            #[own_principals]
+            a_shape_names_no_field_its_author_may_not_know_of);
     };
     (@each $at:ident, $new:expr, $block_on:path;
         $($(#[$mark:ident])? $name:ident),* $(,)?) => {
@@ -11011,6 +11013,293 @@ pub async fn a_hidden_target_is_not_learned_by_declaring_its_field(store: Arc<dy
     assert!(
         said.iter().all(|s| s == &said[2] && !s.contains("twice")),
         "an author held from `payee` is answered alike for each target: {said:?}"
+    );
+}
+
+/// An author held at `none` on `veiled` and `cloak` names them in a valid
+/// time, a key or a new relation's `via`, by `declare` and by `migrate`, and
+/// is answered word for word as for a name no field has, with the type in
+/// force unmoved. What stands as declared is taken, a relation it renames
+/// keeps its `via`, and one it is not shown renames as no relation
+/// (lakelands#726).
+pub async fn a_shape_names_no_field_its_author_may_not_know_of(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    let typed = |d: Value| serde_json::from_value::<Declaration>(d).expect("a declaration reads");
+    let kind = |name: &str, kind: &str| json!({"name": name, "type": {"kind": kind}});
+    let to = |name: &str, target: &str| json!({"name": name, "type": {"kind": "reference", "target": target}});
+    let goes = |name: &str, via: &str| json!({"name": name, "target": "other", "via": via});
+    // `goes`, carried by the hidden `cloak`, is not shown to the author;
+    // `pays` is carried by `payee`, which refers to the hidden `payroll`.
+    let ev = |more: &[Value], relations: Vec<Value>, shape: Value| {
+        let mut fields = vec![
+            kind("no", "text"),
+            kind("from", "date_time"),
+            to("payee", "payroll"),
+        ];
+        fields.extend(more.iter().cloned());
+        let mut d = json!({"declare": "type", "name": "ev", "fields": fields,
+            "relations": relations});
+        let shape = shape.as_object().expect("an object").clone();
+        d.as_object_mut().expect("an object").extend(shape);
+        typed(d)
+    };
+    let stamped = |more: Value| {
+        typed(
+            json!({"declare": "type", "name": "stamped", "valid_from": "veiled",
+            "valid_to": "cloak", "fields": [kind("no", "text"), more]}),
+        )
+    };
+    let other =
+        |name: &str| typed(json!({"declare": "type", "name": name, "fields": [kind("x", "text")]}));
+    let hidden = [kind("veiled", "date_time"), to("cloak", "other")];
+    let mut timed = stamped(kind("veiled", "date_time"));
+    if let Declaration::Type(t) = &mut timed {
+        t.fields
+            .push(serde_json::from_value(kind("cloak", "date_time")).expect("a field reads"));
+    }
+    let whole = ev(
+        &hidden,
+        vec![goes("goes", "cloak"), goes("pays", "payee")],
+        json!({}),
+    );
+    // `plain` is `stamped` with no valid time.
+    let plain = typed(
+        json!({"declare": "type", "name": "plain", "fields": [kind("no", "text"),
+        kind("veiled", "date_time"), kind("cloak", "date_time")]}),
+    );
+    for d in [other("other"), other("payroll"), whole, timed, plain] {
+        c.declare(own, d).await.expect("the owner declares");
+    }
+    let later =
+        json!({"no": "1", "veiled": "2030-01-01T00:00:00Z", "cloak": "2031-01-01T00:00:00Z"});
+    let later: BTreeMap<FieldName, Value> = serde_json::from_value(later).expect("fields read");
+    for ty in ["stamped", "plain"] {
+        let (ty, s1) = (TypeName::from(ty), RecordKey::from("s1"));
+        let wrote = c.upsert(own, &ty, &s1, later.clone(), WriteOpts::default());
+        wrote.await.expect("the owner writes `s1`");
+    }
+    let held = json!({"fields": {"veiled": "none", "cloak": "none"}});
+    let grants = json!({"default": "write", "schema": true, "types": {
+        "ev": held, "stamped": held, "plain": held, "payroll": {"default": "none"}}});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let author = &principal(store.lake(), PrincipalKind::Agent, "author", grants);
+    let seen = |shape: Value, more: Vec<Value>| {
+        let mut relations = vec![goes("pays", "payee")];
+        relations.extend(more);
+        ev(&[], relations, shape)
+    };
+    // As the store: a valid time over a field the author may not know of
+    // is not named to it, and a read at a valid time answers as for a
+    // type with none.
+    let at = lakelands_api::Timestamp::parse("2026-06-01T00:00:00Z").expect("an instant");
+    let mut read = Vec::new();
+    for ty in ["stamped", "plain"] {
+        let find = Find {
+            at: ReadAt {
+                valid_at: Some(at),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let found = c.find(author, &ty.into(), find).await.map(|r| r.data);
+        read.push(format!("{found:?}").replace(ty, "T"));
+    }
+    let shown = c
+        .describe_type(author, &"stamped".into(), Default::default())
+        .await;
+    let shown = shown.expect("the author describes `stamped`").data.access;
+    assert!(
+        (shown.valid_from, shown.valid_to) == (None, None) && read[0] == read[1],
+        "`stamped` must be described with no valid time and read at one as `plain`: {read:?}"
+    );
+    // As the store: with one bound over a field the reader may not know
+    // of, only that bound is dropped. `half` reads as `halfplain`, valid
+    // from `from` alone, and `mhalf`, from the masked `veiled`, as `mplain`.
+    let fields = json!([
+        kind("no", "text"),
+        kind("from", "date_time"),
+        kind("veiled", "date_time"),
+        kind("cloak", "date_time")
+    ]);
+    let late = json!({"no": "1", "from": "2030-01-01T00:00:00Z", "veiled": "2030-01-01T00:00:00Z"});
+    let late: BTreeMap<FieldName, Value> = serde_json::from_value(late).expect("fields read");
+    let halves = [
+        ("half", "from", Some("cloak")),
+        ("halfplain", "from", None),
+        ("mhalf", "veiled", Some("cloak")),
+        ("mplain", "veiled", None),
+    ];
+    for (name, from, to) in halves {
+        let d = typed(json!({"declare": "type", "name": name, "fields": fields,
+            "valid_from": from, "valid_to": to}));
+        c.declare(own, d).await.expect("the owner declares");
+        let (ty, h1) = (TypeName::from(name), RecordKey::from("h1"));
+        let wrote = c.upsert(own, &ty, &h1, late.clone(), WriteOpts::default());
+        wrote.await.expect("the owner writes `h1`");
+    }
+    let held = json!({"fields": {"veiled": "masked", "cloak": "none"}});
+    let grants = json!({"default": "write", "types": {
+        "half": held, "halfplain": held, "mhalf": held, "mplain": held}});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let reader = &principal(store.lake(), PrincipalKind::Agent, "reader", grants);
+    let at = ReadAt {
+        valid_at: Some(at),
+        ..Default::default()
+    };
+    let mut apart = Vec::new();
+    for (a, b) in [("half", "halfplain"), ("mhalf", "mplain")] {
+        let mut said = Vec::new();
+        for ty in [a, b] {
+            let find = Find {
+                at,
+                ..Default::default()
+            };
+            let found = c.find(reader, &ty.into(), find).await.map(|r| r.data);
+            let get = Get {
+                key: "h1".into(),
+                with_meta: false,
+                at,
+                params: Default::default(),
+            };
+            let got = c.get(reader, &ty.into(), get).await.map(|r| r.data);
+            said.push(format!("{found:?} {got:?}").replace(ty, "T"));
+        }
+        if said[0] != said[1] {
+            apart.push(format!("`{a}` | `{b}`: {said:?}"));
+        }
+    }
+    assert!(
+        apart.is_empty(),
+        "one bound hidden reads as the other alone: {apart:?}"
+    );
+    let described = match stamped(kind("memo", "text")) {
+        Declaration::Type(t) => Declaration::Type(TypeDecl {
+            valid_from: None,
+            valid_to: None,
+            ..t
+        }),
+        _ => unreachable!("a type"),
+    };
+    for d in [
+        seen(json!({}), Vec::new()),
+        stamped(kind("memo", "text")),
+        described,
+    ] {
+        c.declare(author, d)
+            .await
+            .expect("declaring again what the author is shown");
+    }
+    let migration = |d, relation_renames| match d {
+        Declaration::Type(to) => Migration {
+            to,
+            renames: Vec::new(),
+            relation_renames,
+        },
+        _ => unreachable!("a type"),
+    };
+    let mut apart = Vec::new();
+    for member in ["valid_from", "valid_to", "key", "via"] {
+        for door in ["declare", "migrate"] {
+            let mut said = Vec::new();
+            for name in [if member == "via" { "cloak" } else { "veiled" }, "nowhere"] {
+                let d = match member {
+                    "valid_from" => seen(json!({"valid_from": name}), Vec::new()),
+                    "valid_to" => seen(json!({"valid_from": "from", "valid_to": name}), Vec::new()),
+                    "key" => seen(json!({"key": [name]}), Vec::new()),
+                    _ => seen(json!({}), vec![goes("runs", name)]),
+                };
+                let answer = match door {
+                    "declare" => c.declare(author, d).await.map(drop),
+                    _ => c.migrate(author, migration(d, Vec::new())).await.map(drop),
+                };
+                let answer = answer.map_or_else(|e| e.to_string(), |()| "taken".into());
+                said.push(answer.replace(name, "N"));
+            }
+            if said[0] != said[1] {
+                apart.push(format!("{member} by `{door}`: {} | {}", said[0], said[1]));
+            }
+        }
+    }
+    // A rename from `goes`, which the author is not shown, answers as one
+    // from no relation.
+    let mut said = Vec::new();
+    for from in ["goes", "nothing"] {
+        let m = migration(
+            seen(json!({}), vec![goes("went", "cloak")]),
+            vec![(from.into(), "went".into())],
+        );
+        let answer = c.migrate(author, m).await.map(drop);
+        said.push(
+            answer
+                .map_or_else(|e| e.to_string(), |()| "taken".into())
+                .replace(from, "N"),
+        );
+    }
+    if said[0] != said[1] {
+        apart.push(format!("a rename: {} | {}", said[0], said[1]));
+    }
+    let described = |ty: &'static str| {
+        let c = c.clone();
+        async move {
+            let d = c.describe_type(own, &ty.into(), Default::default()).await;
+            d.expect("the owner describes it").data
+        }
+    };
+
+    let (after, timed) = (described("ev").await, described("stamped").await);
+    let times =
+        |a: &lakelands_api::describe::TypeAccess| (a.valid_from.clone(), a.valid_to.clone());
+    assert!(
+        apart.is_empty()
+            && after.access.key.is_empty()
+            && times(&after.access) == (None, None)
+            && after.relations.len() == 2
+            && times(&timed.access) == (Some("veiled".into()), Some("cloak".into())),
+        "a hidden name must answer as `nowhere`, with `ev` and `stamped` as declared; apart \
+         (hidden | none): {apart:?}; `ev` holds {:?} and {:?}, `stamped` {:?}",
+        after.access,
+        after.relations,
+        timed.access
+    );
+    // A relation renamed keeps its `via`, which stands as declared.
+    let paid = migration(
+        ev(&[], vec![goes("paid", "payee")], json!({})),
+        vec![("pays".into(), "paid".into())],
+    );
+    let report = c.migrate(author, paid.clone()).await;
+    let report = report.expect("renaming `pays`, carried by `payee`").data;
+    (c.migrate_apply(author, paid, &report.report_id).await).expect("applying the rename");
+    let after = described("ev").await;
+    assert!(
+        after
+            .relations
+            .iter()
+            .any(|r| r.name.as_str() == "paid" && r.via == Some("payee".into())),
+        "`paid` must be carried by `payee`; `ev` holds {:?}",
+        after.relations
+    );
+    // `paid` sent to another target stands no more: the hidden `payroll`
+    // answers as `zzt`, which is no type.
+    let mut said = Vec::new();
+    for door in ["declare", "migrate"] {
+        for target in ["payroll", "zzt"] {
+            let paid = json!({"name": "paid", "target": target, "via": "payee"});
+            let d = ev(&[], vec![paid], json!({}));
+            let answer = match door {
+                "declare" => c.declare(author, d).await.map(drop),
+                _ => c.migrate(author, migration(d, Vec::new())).await.map(drop),
+            };
+            said.push(
+                answer
+                    .map_or_else(|e| e.to_string(), |()| "taken".into())
+                    .replace(target, "N"),
+            );
+        }
+    }
+    assert!(
+        said[0] == said[1] && said[2] == said[3] && !said.iter().any(|s| s == "taken"),
+        "`paid` sent to the hidden `payroll` must answer as to `zzt`: {said:?}"
     );
 }
 

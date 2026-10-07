@@ -754,32 +754,13 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
             if reserved(t.name.as_str(), who) {
                 return Err(refused(Refusal::Reserved));
             }
+            shape_names(t)?;
             views::check(st, t)?;
             // A view is hashed over its conditions' typed form, so one that
             // does not parse has no schema hash and is not declared.
             lakelands_api::shape::schema_hash(t).map_err(|e| invalid(e.to_string()))?;
-            if let Some(old) = st.types.get(&t.name) {
-                if reshapes(&old.decl, t) {
-                    return Err(invalid(format!(
-                        "this declaration reshapes the records of `{}`; change it with `migrate`",
-                        t.name
-                    )));
-                }
-            } else {
+            if !st.types.contains_key(&t.name) {
                 types.push(t.name.clone());
-            }
-            // Its link types too, as the store: a relation dropped by a
-            // migration and declared again with another target would
-            // reshape the links it kept.
-            for lt in links::of(t) {
-                if let Some(old) = st.types.get(&lt.name)
-                    && reshapes(&old.decl, &lt)
-                {
-                    return Err(invalid(format!(
-                        "this declaration reshapes the links `{}` holds; that is a migration of `{}`",
-                        lt.name, t.name
-                    )));
-                }
             }
             for f in &t.fields {
                 if let Some(target) = &f.ty.target
@@ -818,6 +799,17 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                         t.name, r.name, r.target
                     )));
                 }
+                // As the store: a `via` names a field of the type.
+                if let Some(via) = r
+                    .via
+                    .as_ref()
+                    .filter(|v| !t.fields.iter().any(|f| &f.name == *v))
+                {
+                    return Err(invalid(format!(
+                        "type `{}`, relation `{}`: `via` names `{via}`, which is not a field",
+                        t.name, r.name
+                    )));
+                }
                 if r.via.is_some() && !r.fields.is_empty() {
                     return Err(invalid(format!(
                         "type `{}`, relation `{}`: a relation carried by `via` has no fields of \
@@ -850,6 +842,29 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                 }
                 if let Some(d) = &r.derived {
                     derived_pairs(st, t, r, d)?;
+                }
+            }
+            // As the store: a reshape is judged after the shape's own checks,
+            // so a migration that is forgiven it is still checked whole.
+            if let Some(old) = st.types.get(&t.name)
+                && reshapes(&old.decl, t)
+            {
+                return Err(invalid(format!(
+                    "this declaration reshapes the records of `{}`; change it with `migrate`",
+                    t.name
+                )));
+            }
+            // Its link types too, as the store: a relation dropped by a
+            // migration and declared again with another target would
+            // reshape the links it kept.
+            for lt in links::of(t) {
+                if let Some(old) = st.types.get(&lt.name)
+                    && reshapes(&old.decl, &lt)
+                {
+                    return Err(invalid(format!(
+                        "this declaration reshapes the links `{}` holds; that is a migration of `{}`",
+                        lt.name, t.name
+                    )));
                 }
             }
         }
@@ -1080,6 +1095,13 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
         .collect();
     // As the store: over the fields as shown.
     let searchable = fields.iter().any(|f| f.searchable);
+    // As the store: a valid time over a field the principal may not know
+    // of is not named.
+    let named = |v: &FieldName| fields.iter().any(|f| &f.name == v);
+    let (valid_from, valid_to) = (
+        d.valid_from.clone().filter(named),
+        d.valid_to.clone().filter(named),
+    );
     let sourced =
         (fields.iter()).any(|f| matches!(f.authority, Authority::Source | Authority::Shared));
     let visible = |names: Vec<FieldName>| -> Vec<FieldName> {
@@ -1141,8 +1163,8 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
             .collect(),
         access: TypeAccess {
             key: d.key.clone(),
-            valid_from: d.valid_from.clone(),
-            valid_to: d.valid_to.clone(),
+            valid_from,
+            valid_to,
             searchable,
             field_meta: d.field_meta,
         },
@@ -1490,20 +1512,30 @@ fn no_field(ty: &TypeName, name: &FieldName) -> Error {
     )
 }
 
+/// A read's valid time for a type, as the principal is shown it: the
+/// instant, and whether each bound is shown.
+type Valid = Option<(lakelands_api::Timestamp, bool, bool)>;
+
 /// A read at a valid time filters on the type's valid-time fields, so it
-/// probes them as a filter on them would (024).
-fn valid_time_readable(st: &State, who: &Principal, t: &DeclaredType, at: ReadAt) -> Result<()> {
-    if at.valid_at.is_some() {
-        for f in t.decl.valid_from.iter().chain(&t.decl.valid_to) {
-            readable(st, who, t, f)?;
-        }
+/// probes them as a filter on them would (024). As the store, a bound over
+/// a field the principal may not know of is not described, so it is
+/// dropped, and only the bounds shown are probed.
+fn valid_time_readable(st: &State, who: &Principal, t: &DeclaredType, at: ReadAt) -> Result<Valid> {
+    let shown =
+        |n: &FieldName| field(&t.decl, n).is_none_or(|f| access(who, &t.decl, f) != Access::None);
+    let Some(at) = at.valid_at else {
+        return Ok(None);
+    };
+    let (from, to) = (t.decl.valid_from.as_ref(), t.decl.valid_to.as_ref());
+    for f in from.into_iter().chain(to).filter(|f| shown(f)) {
+        readable(st, who, t, f)?;
     }
-    Ok(())
+    Ok(Some((at, from.is_some_and(shown), to.is_some_and(shown))))
 }
 
-/// Whether a record is valid at a business instant.
-fn valid_at(t: &DeclaredType, r: &StoredRecord, at: Option<lakelands_api::Timestamp>) -> bool {
-    let (Some(at), Some(from)) = (at, &t.decl.valid_from) else {
+/// Whether a record is valid at a business instant, by the bounds shown.
+fn valid_at(t: &DeclaredType, r: &StoredRecord, valid: Valid) -> bool {
+    let (Some((at, from_shown, to_shown)), Some(from)) = (valid, &t.decl.valid_from) else {
         return true;
     };
     let ts = |f: &FieldName| {
@@ -1512,13 +1544,9 @@ fn valid_at(t: &DeclaredType, r: &StoredRecord, at: Option<lakelands_api::Timest
             .and_then(Value::as_str)
             .and_then(|s| lakelands_api::Timestamp::parse(s).ok())
     };
-    let starts = ts(from).is_some_and(|s| s <= at);
-    let ends = t
-        .decl
-        .valid_to
-        .as_ref()
-        .and_then(ts)
-        .is_some_and(|e| e <= at);
+    let starts = !from_shown || ts(from).is_some_and(|s| s <= at);
+    let to = t.decl.valid_to.as_ref().filter(|_| to_shown);
+    let ends = to.and_then(ts).is_some_and(|e| e <= at);
     starts && !ends
 }
 
@@ -1531,13 +1559,13 @@ fn candidates<'a>(
     at: ReadAt,
     filter: Option<&Expr>,
 ) -> Result<Vec<&'a StoredRecord>> {
-    valid_time_readable(st, who, t, at)?;
+    let valid = valid_time_readable(st, who, t, at)?;
     let mut out = Vec::new();
     for r in st.records.values() {
         if r.ty != t.decl.name || r.retired || (r.restricted && !who.grants.restricted) {
             continue;
         }
-        if !valid_at(t, r, at.valid_at) || !st.admitted(who, r) {
+        if !valid_at(t, r, valid) || !st.admitted(who, r) {
             continue;
         }
         if let Some(e) = filter {
@@ -2744,6 +2772,20 @@ fn as_author(
         }
     }
     put_back(before, &before.fields, &mut to.fields);
+    // As the store: a valid time over a field the author may not know of,
+    // left out, stands as declared.
+    let unseen = |v: &Option<FieldName>| {
+        v.as_ref()
+            .is_some_and(|v| unknown.iter().any(|f| &f.name == v))
+    };
+    for (sent, held) in [
+        (&mut to.valid_from, &before.valid_from),
+        (&mut to.valid_to, &before.valid_to),
+    ] {
+        if sent.is_none() && unseen(held) {
+            sent.clone_from(held);
+        }
+    }
     for r in &mut to.relations {
         if let Some(old) = before.relations.iter().find(|o| o.name == r.name) {
             let link = links::link_type(&before.name, old);
@@ -2790,11 +2832,28 @@ fn authored(st: &State, who: &Principal, m: &mut Migration) -> Result<()> {
     if st.types.contains_key(&m.to.name) && st.visible(who, &m.to.name).is_none() {
         return Err(no_type(&m.to.name));
     }
-    reads_as_author(st, who, &[Declaration::Type(m.to.clone())], true)?;
+    let renames = Some(&m.relation_renames[..]);
+    reads_as_author(st, who, &[Declaration::Type(m.to.clone())], renames)?;
     match st.types.get(&m.to.name) {
         Some(before) => {
             let (renames, relations) = (&m.renames, &m.relation_renames);
             as_author((st, who), &before.decl, &mut m.to, renames, relations)
+        }
+        None => Ok(()),
+    }
+}
+
+/// As the store: a key and a valid time name fields of their type, in the
+/// store's words.
+fn shape_names(t: &TypeDecl) -> Result<()> {
+    let has = |f: &FieldName| t.fields.iter().any(|d| &d.name == f);
+    match (t.key.iter().chain(&t.valid_from).chain(&t.valid_to)).find(|k| !has(k)) {
+        Some(k) => {
+            let message = format!(
+                "type `{}` names `{k}`, which is not one of its fields",
+                t.name
+            );
+            Err(on(k, Refusal::Invalid { message }))
         }
         None => Ok(()),
     }
@@ -2809,7 +2868,7 @@ fn reads_as_author(
     st: &State,
     who: &Principal,
     sent: &[Declaration],
-    reshapes: bool,
+    migration: Option<&[(RelationName, RelationName)]>,
 ) -> Result<()> {
     // As the store: a type its author is not shown is a type that is not
     // declared, for whatever names it; to declare it is not granted.
@@ -2849,15 +2908,44 @@ fn reads_as_author(
         for fields in [&mut t.fields, &mut e.decl.fields] {
             fields.retain(|f| !unchanged.contains(f));
         }
-        let via = t.relations.iter().filter_map(|r| r.via.as_ref());
-        let named = t
-            .key
-            .iter()
-            .chain(&t.valid_from)
-            .chain(&t.valid_to)
-            .chain(via);
-        let named: Vec<FieldName> = named.cloned().collect();
-        let declared = was.decl.fields.iter().enumerate();
+        // As the store: a valid time, or a relation the author is shown, as
+        // it stands (whole but for a rename) and naming a field outside the
+        // author's view, is left out of both sides; one given anew is read
+        // against the view.
+        let held = &was.decl;
+        let view: Vec<FieldName> = e.decl.fields.iter().map(|f| f.name.clone()).collect();
+        let unseen = |f: &Option<FieldName>| f.as_ref().is_some_and(|f| !view.contains(f));
+        for (sent, kept, was) in [
+            (&mut t.valid_from, &mut e.decl.valid_from, &held.valid_from),
+            (&mut t.valid_to, &mut e.decl.valid_to, &held.valid_to),
+        ] {
+            if (sent == was || sent.is_none()) && unseen(was) {
+                (*sent, *kept) = (None, None);
+            }
+        }
+        let renamed = migration.unwrap_or_default();
+        let standing = |r: &RelationDecl| {
+            let old = renamed.iter().find(|(_, new)| new == &r.name);
+            let old = old.map_or(&r.name, |(old, _)| old).clone();
+            let h = e.decl.relations.iter().find(|h| h.name == old)?;
+            let whole = *h
+                == RelationDecl {
+                    name: old.clone(),
+                    ..r.clone()
+                };
+            (whole && unseen(&r.via)).then_some((r.name.clone(), old))
+        };
+        let gone: Vec<_> = t.relations.iter().filter_map(standing).collect();
+        t.relations
+            .retain(|r| !gone.iter().any(|(new, _)| new == &r.name));
+        (e.decl.relations).retain(|r| !gone.iter().any(|(_, old)| old == &r.name));
+        // As the store: the key keeps its fields at their declared place.
+        let named = if t.key == held.key {
+            t.key.clone()
+        } else {
+            Vec::new()
+        };
+        let declared = held.fields.iter().enumerate();
         for (i, f) in declared.filter(|(_, f)| named.contains(&f.name)) {
             for fields in [&mut t.fields, &mut e.decl.fields] {
                 if !fields.iter().any(|x| x.name == f.name) {
@@ -2870,7 +2958,8 @@ fn reads_as_author(
     // a relation's links.
     let reshaping = |e: &Error| {
         let why = e.to_string();
-        reshapes && (why.contains("change it with `migrate`") || why.contains("is a migration"))
+        migration.is_some()
+            && (why.contains("change it with `migrate`") || why.contains("is a migration"))
     };
     check_set(&seen, who, &shaped).or_else(|e| if reshaping(&e) { Ok(()) } else { Err(e) })?;
     let mut after = st.clone();
@@ -2938,7 +3027,7 @@ fn reads_as_author(
 /// Each type of `declarations` the lake declares already, read as its
 /// author's view of it.
 fn redeclared(st: &State, who: &Principal, declarations: &mut [Declaration]) -> Result<()> {
-    reads_as_author(st, who, declarations, false)?;
+    reads_as_author(st, who, declarations, None)?;
     for d in declarations {
         if let Declaration::Type(t) = d
             && let Some(before) = st.types.get(&t.name)
@@ -2975,6 +3064,11 @@ fn described_fields((st, who): (&State, &Principal), t: &mut TypeDecl) {
     for r in &mut t.relations {
         shown(&links::link_type(&whole.name, r), &mut r.fields);
     }
+    let held = |v: &FieldName| t.fields.iter().any(|f| &f.name == v);
+    (t.valid_from, t.valid_to) = (
+        t.valid_from.take().filter(held),
+        t.valid_to.take().filter(held),
+    );
 }
 
 /// As the store: whether `t` declares `name`, a field or a link field
@@ -3055,10 +3149,15 @@ fn shown_report(
         let had = m.renames.iter().find(|(_, new)| new == f);
         !unread(who, &m.to, f) && !unread(who, stands, had.map_or(f, |(old, _)| old))
     };
+    // A valid time over a field the reader may not know of is not named
+    // (024, extended).
+    let named =
+        |v: &serde_json::Value, t: &TypeDecl| v.as_str().is_none_or(|f| holds(t, &f.into()));
     report.restated.retain(|r| {
         let shape = !FieldDecl::UNREAD.contains(&r.member.as_str());
         let shown = |f| holds(&to, f) && sourced(f) && (shape || read(f));
-        r.field.as_ref().is_none_or(shown)
+        let timed = r.field.is_none() && matches!(r.member.as_str(), "valid_from" | "valid_to");
+        r.field.as_ref().is_none_or(shown) && (!timed || named(&r.was, &was) && named(&r.to, &to))
     });
     report.dropped.retain(|(f, _)| holds(&was, f));
     // As the store: a renamed relation as a dropped one, by the name it
@@ -3828,11 +3927,11 @@ impl Catalog for MockCatalog {
         check_only(who, t)?;
         bound(&t.decl, &get.params)?;
         view_readable(&st, who, t)?;
-        valid_time_readable(&st, who, t, get.at)?;
+        let valid = valid_time_readable(&st, who, t, get.at)?;
         let r = st
             .live(ty, &get.key)
             .filter(|r| !r.restricted || who.grants.restricted)
-            .filter(|r| valid_at(t, r, get.at.valid_at) && st.admitted(who, r))
+            .filter(|r| valid_at(t, r, valid) && st.admitted(who, r))
             .ok_or_else(|| no_record(ty, &get.key))?;
         Ok(Reply {
             position,

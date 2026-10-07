@@ -51,7 +51,7 @@ use std::sync::Arc;
 
 use lakelands_api::describe::{Kept, LakeDescription, NotKept, TypeDescription};
 use lakelands_api::engine::{After, ProjectionView, Scan};
-use lakelands_api::expr::{Expr, Func, Literal};
+use lakelands_api::expr::{CmpOp, Expr, Func, Literal};
 use lakelands_api::ontology::{
     FieldType, MatchPair, RelationDecl, StorageKind, TypeDecl, VerbEffect,
 };
@@ -533,12 +533,84 @@ impl<'a> Reader<'a> {
             });
         }
         // A read at a valid time filters on the type's valid-time fields,
-        // so it probes them as a `where` on them would (024).
+        // so it probes them as a `where` on them would (024): those it is
+        // shown.
         if self.valid_at.is_some() {
             let timed = decl.valid_from.iter().chain(&decl.valid_to);
-            rights::check_probe(self.who, decl, timed)?;
+            rights::check_probe(self.who, decl, timed.filter(|n| self.knows(decl, n)))?;
         }
         Ok(decl)
+    }
+
+    /// Whether the reader may know of `decl`'s field `name`.
+    fn knows(&self, decl: &TypeDecl, name: &FieldName) -> bool {
+        let f = decl.fields.iter().find(|f| &f.name == name);
+        !f.is_some_and(|f| rights::field_access(self.who, decl, f) == lakelands_api::Access::None)
+    }
+
+    /// The read's valid time for `decl`, as `describe` shows it to the
+    /// reader (024, extended): `valid_at` where it is shown each bound. A
+    /// bound over a field it may not know of is not named, so it is
+    /// dropped: the other is read as a condition on the record instead,
+    /// and with neither the type reads as one with no valid time.
+    fn valid_for(&self, decl: &TypeDecl) -> (Option<Timestamp>, Option<Expr>) {
+        let (Some(t), Some(from)) = (self.valid_at, &decl.valid_from) else {
+            return (self.valid_at, None);
+        };
+        let to = decl.valid_to.as_ref();
+        let shown = |n: &FieldName| self.knows(decl, n);
+        // Built, never parsed: a field may be named as a keyword is.
+        let path = |f: &FieldName| {
+            Box::new(Expr::Path {
+                path: vec![f.clone()],
+            })
+        };
+        let at = || {
+            Box::new(Expr::Lit {
+                value: Literal::Text(t.to_string()),
+            })
+        };
+        let condition = match (shown(from), to.filter(|to| shown(to))) {
+            (true, Some(_)) => return (Some(t), None),
+            (true, None) if to.is_none() => return (Some(t), None),
+            (true, None) => Expr::Cmp {
+                cmp: CmpOp::Le,
+                lhs: path(from),
+                rhs: at(),
+            },
+            (false, Some(to)) => Expr::Or {
+                args: vec![
+                    Expr::IsNull { arg: path(to) },
+                    Expr::Cmp {
+                        cmp: CmpOp::Gt,
+                        lhs: path(to),
+                        rhs: at(),
+                    },
+                ],
+            },
+            (false, None) => return (None, None),
+        };
+        (None, Some(condition))
+    }
+
+    /// [`Self::valid_for`]'s `valid_at`, which the engine applies.
+    fn valid_at_for(&self, decl: &TypeDecl) -> Option<Timestamp> {
+        self.valid_for(decl).0
+    }
+
+    /// Whether a read of `decl` is held to a valid time, whole or in part.
+    fn timed(&self, decl: &TypeDecl) -> bool {
+        self.valid_for(decl) != (None, None)
+    }
+
+    /// `filter` and, where a valid-time bound is dropped, the condition the
+    /// other stands for ([`Self::valid_for`]).
+    fn with_bound(&self, decl: &TypeDecl, filter: Option<&Expr>) -> Option<Expr> {
+        let bound = self.valid_for(decl).1;
+        match (filter.cloned(), bound) {
+            (Some(f), Some(b)) => Some(Expr::And { args: vec![f, b] }),
+            (f, b) => f.or(b),
+        }
     }
 
     /// The type a read door names, as [`Self::visible_type`], refused where
@@ -567,7 +639,9 @@ impl<'a> Reader<'a> {
         !r.retired
             && (self.who.grants.restricted || !r.restricted)
             && pairs.is_some_and(|p| rights::admitted(p, &r.fields))
-            && (self.valid_at).is_none_or(|t| valid_time::record_holds(decl, &r.fields, t))
+            && (self.valid_at_for(decl))
+                .is_none_or(|t| valid_time::record_holds(decl, &r.fields, t))
+            && (self.valid_for(decl).1).is_none_or(|b| self.holds(&b, &r.fields, None))
     }
 
     /// The pairs a record of `ty` must hold for this reader (051), a kept
@@ -775,6 +849,8 @@ impl<'a> Reader<'a> {
         };
         // A link's ends are judged a page at a time, never by the engine.
         let ends = !rights::held_ends(self.who, decl).is_empty();
+        let bounded = self.with_bound(decl, filter);
+        let filter = bounded.as_ref();
         if ends || filter.is_some_and(|e| kept || self.store_only(decl, e)) {
             let mut n = 0;
             self.each_member(decl, filter, COUNT_PAGE, |_| {
@@ -786,7 +862,7 @@ impl<'a> Reader<'a> {
         let scan = Scan {
             filter: filter.cloned(),
             equal,
-            valid_at: self.valid_at,
+            valid_at: self.valid_at_for(decl),
             restricted: self.who.grants.restricted,
             ..Default::default()
         };
@@ -829,6 +905,8 @@ impl<'a> Reader<'a> {
         after: Option<(Vec<Value>, RecordKey)>,
         want: usize,
     ) -> Result<Vec<StoredRecord>> {
+        let bounded = self.with_bound(decl, filter);
+        let filter = bounded.as_ref();
         let push = filter.filter(|e| !self.store_only(decl, e)).cloned();
         let here = filter.filter(|_| push.is_none());
         let Some(equal) = self.pairs(&decl.name) else {
@@ -841,7 +919,7 @@ impl<'a> Reader<'a> {
             order_by: order.to_vec(),
             after: after.map(|(values, key)| After { values, key }),
             limit: u32::try_from(want).unwrap_or(u32::MAX),
-            valid_at: self.valid_at,
+            valid_at: self.valid_at_for(decl),
             restricted: self.who.grants.restricted,
             ..Default::default()
         };
@@ -906,6 +984,8 @@ impl<'a> Reader<'a> {
         v: &lakelands_api::ontology::ViewDecl,
         filter: Option<&Expr>,
     ) -> Result<Vec<StoredRecord>> {
+        let bounded = self.with_bound(decl, filter);
+        let filter = bounded.as_ref();
         if let Some(at) = self.computing.borrow().iter().position(|t| *t == decl.name) {
             let chain = self.computing.borrow()[at..]
                 .iter()
@@ -976,7 +1056,7 @@ impl<'a> Reader<'a> {
     ) -> Result<Option<(TypeDecl, bool)>> {
         let face = usize::from(self.who.grants.restricted);
         let state = match self.kept_read(&decl.name, v, face)? {
-            Some((state, 0)) if self.valid_at.is_none() && !self.computes(&decl.name) => state,
+            Some((state, 0)) if !self.timed(decl) && !self.computes(&decl.name) => state,
             _ => return Ok(None),
         };
         self.probe_view(v)?;
@@ -1018,7 +1098,7 @@ impl<'a> Reader<'a> {
         let scan = Scan {
             equal,
             limit: u32::MAX,
-            valid_at: self.valid_at,
+            valid_at: self.valid_at_for(stored),
             restricted: self.who.grants.restricted,
             ..Default::default()
         };
@@ -2180,7 +2260,7 @@ impl<'a> Reader<'a> {
             && self.whole(decl)
             && self.who.grants.restricted
             && filter.is_none()
-            && self.valid_at.is_none();
+            && !self.timed(decl);
         loop {
             // Each list's visible candidates to the window, and what a
             // record it has not ranked yet could still gain from it:

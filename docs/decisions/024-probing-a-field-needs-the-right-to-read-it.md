@@ -504,8 +504,14 @@ says a hidden thing exists, and remains on purpose:
 - the key, the valid times and a relation's `via`, which are the shape
   and are given of a masked field too. A key field the reader may not
   know of hides the type instead (006, lakelands#715), since the key
-  would give its value; a valid time naming such a field is still
-  named in `describe_type` (lakelands#692);
+  would give its value. A valid time naming such a field is not named
+  (lakelands#726): `describe`, `describe_type`, a listed proposal and a
+  migration's report give the type without that bound. A read at a
+  `valid_at` filters by the bounds the reader is shown and probes only
+  those: with both hidden it answers as for a type with no valid time,
+  with one hidden as for a type declared with the other alone, word for
+  word. A refusal, or a filter by the hidden bound, would tell the reader
+  that a valid time it is not shown exists;
 - a reference field's target, which is its type: hiding it would make a
   field's access depend on another type at every read. A host that
   hides a type grants `none` on the reference fields to it;
