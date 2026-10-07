@@ -175,6 +175,7 @@ pub const ALL: &[Check] = &[
     filters::PROBING_REFUSED,
     filters::PROVENANCE_IN_WHERE_AND_ORDER,
     provenance::TWO_TIME_AXES,
+    provenance::VALID_TIME_IS_A_DATE_TIME,
     provenance::FIELD_PROVENANCE,
     masking::MASKED_AND_ABSENT,
     masking::BUILT_FROM_HIDDEN,

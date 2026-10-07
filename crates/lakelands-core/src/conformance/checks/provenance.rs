@@ -17,6 +17,12 @@ use crate::conformance::fixture::{
 };
 
 check!(
+    /// A valid time is a stored date-time field.
+    VALID_TIME_IS_A_DATE_TIME = a_valid_time_names_a_stored_date_time_field,
+    "028, extended (lakelands#714): `valid_from` and `valid_to` each name a field of kind `date_time`, so a value that only reads as an instant never sets a record's validity; a field of any other kind is refused as invalid on it, by `declare`, `apply`, a proposal and a migration, a derived `date_time` field and a view's `date_time` field are valid times as any is, and a read at `valid_at` admits by them"
+);
+
+check!(
     /// Business time and transaction time are two axes.
     TWO_TIME_AXES = valid_at_and_as_of_combine_and_neither_stands_in_for_the_other,
     "009 and the glossary: `valid_at` asks what was true in the world, `as_of` what the lake knew; a read may name both"
@@ -234,6 +240,142 @@ async fn every_field_carries_its_own_provenance(store: Arc<dyn LakeStore>) -> Re
         plain.data.meta.is_empty(),
         "a read that does not ask for meta answered provenance for {:?}",
         plain.data.meta.keys().collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+async fn a_valid_time_names_a_stored_date_time_field(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use crate::conformance::fixture::{derived, migration, reference, refused_on, vector, view_of};
+    use lakelands_api::Refusal;
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl("payroll", vec![field("code", StorageKind::Text)]))
+        .await?;
+    let typed = |name: &str, at: FieldDecl, valid: (&str, &str)| {
+        let mut t = type_decl(name, vec![field("from", StorageKind::DateTime), at]);
+        (t.valid_from, t.valid_to) = (Some(valid.0.into()), Some(valid.1.into()));
+        t
+    };
+    let mut wrong = Vec::new();
+    // Every other kind, as `valid_from` and as `valid_to`.
+    let other = StorageKind::ALL
+        .into_iter()
+        .filter(|k| *k != StorageKind::DateTime);
+    for kind in other {
+        let at = match kind {
+            StorageKind::Reference => reference("at", "payroll"),
+            StorageKind::Vector => vector("at", 2),
+            _ => field("at", kind),
+        };
+        for valid in [("at", "from"), ("from", "at")] {
+            let answer = l.try_declare(typed("stamped", at.clone(), valid)).await;
+            let said = matches!(refused_on(&answer), Some(("at", Refusal::Invalid { message }))
+                if message.contains("a valid time is a date-time field"));
+            if !said {
+                wrong.push(format!("`at` of kind {kind:?} as {valid:?}: {answer:?}"));
+            }
+        }
+    }
+    // A stored `date_time` field, derived or written, is a valid time, and
+    // a read at `valid_at` admits by it.
+    let on = derived("on", StorageKind::DateTime, "from", &["from"]);
+    let ok = typed("stamped", on, ("on", "from"));
+    let mut late = ok.clone();
+    late.fields.push(field("until", StorageKind::DateTime));
+    late.fields.push(field("code", StorageKind::Text));
+    late.valid_to = Some("until".into());
+    l.declare(late.clone()).await?;
+    l.upsert(
+        "stamped",
+        "s1",
+        json!({"from": "2026-03-01T00:00:00Z", "until": "2026-05-01T00:00:00Z", "code": "a"}),
+    )
+    .await?;
+    let at = |t: &str| Find {
+        at: ReadAt {
+            valid_at: Some(Timestamp::parse(t).expect("an instant")),
+            ..ReadAt::default()
+        },
+        ..Find::default()
+    };
+    let (april, june) = (
+        l.all_found("stamped", at("2026-04-01T00:00:00Z")).await?,
+        l.all_found("stamped", at("2026-06-01T00:00:00Z")).await?,
+    );
+    if (april.len(), june.len()) != (1, 0) {
+        wrong.push(format!(
+            "`stamped`, valid from its derived `on`, read in April and June: {} and {}",
+            april.len(),
+            june.len()
+        ));
+    }
+    // A view's `date_time` field is one, and its `number` field none.
+    let view = |valid: &str| {
+        let fields = vec![
+            field("code", StorageKind::Text),
+            field("first", StorageKind::DateTime),
+            field("n", StorageKind::Number),
+        ];
+        let measures = [("first", "min(on)"), ("n", "count()")];
+        let mut v = view_of("firsts", "stamped", &["code"], fields, &measures);
+        v.valid_from = Some(valid.into());
+        v
+    };
+    let answer = l.try_declare(view("n")).await;
+    let said = matches!(refused_on(&answer), Some(("n", Refusal::Invalid { message }))
+        if message.contains("a valid time is a date-time field"));
+    if !said {
+        wrong.push(format!("a view valid from its `n`: {answer:?}"));
+    }
+    l.declare(view("first")).await?;
+    let (feb, april) = (
+        l.all_found("firsts", at("2026-02-01T00:00:00Z")).await?,
+        l.all_found("firsts", at("2026-04-01T00:00:00Z")).await?,
+    );
+    if (feb.len(), april.len()) != (0, 1) {
+        wrong.push(format!(
+            "`firsts`, valid from its `first`, read in February and April: {} and {}",
+            feb.len(),
+            april.len()
+        ));
+    }
+    // A migration to a text valid time is refused alike, and so is the
+    // declaration by `apply` and by a proposal.
+    let mut text = late.clone();
+    text.fields.retain(|f| f.name.as_str() != "until");
+    text.fields.push(field("until", StorageKind::Text));
+    let declared = || vec![lakelands_api::write::Declaration::Type(text.clone())];
+    let proposed = lakelands_api::write::ProposedWrite::Declare {
+        declarations: declared(),
+    };
+    for (door, answer) in [
+        (
+            "a migration",
+            l.cat
+                .migrate(&l.own, migration(text.clone()))
+                .await
+                .map(drop),
+        ),
+        ("`apply`", l.cat.apply(&l.own, declared()).await.map(drop)),
+        (
+            "a proposal",
+            l.cat
+                .propose(&l.own, proposed, "text".into())
+                .await
+                .map(drop),
+        ),
+    ] {
+        let said = matches!(refused_on(&answer), Some(("until", Refusal::Invalid { message }))
+            if message.contains("a valid time is a date-time field"));
+        if !said {
+            wrong.push(format!("{door} of `until` as text: {answer:?}"));
+        }
+    }
+    ensure!(
+        wrong.is_empty(),
+        "a valid time names a stored date-time field:\n{}",
+        wrong.join("\n")
     );
     Ok(())
 }
