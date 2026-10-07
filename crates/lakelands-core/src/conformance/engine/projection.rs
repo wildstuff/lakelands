@@ -117,7 +117,7 @@ engine_check!(
 engine_check!(
     /// A head-only name keeps one state for each key.
     HEAD_ONLY_NAME = a_head_only_name_keeps_one_state_for_each_key,
-    "seams §ProjectionStore (lakelands#629): under a head-only name, `sys:order.<view>`, a put replaces its key's state and an end deletes it, a rollback leaves what the key held, and a page in key order after a key reads the next key's one row, an ended key between them read as none; it is read at the head only. `end_head_only` deletes every key's state at once, whether put before or earlier in the transaction, and keeps a key put after it in the same transaction"
+    "seams §ProjectionStore (lakelands#629): under a head-only name, `sys:order.<view>`, a put replaces its key's state and an end deletes it, a rollback leaves what the key held, and a page in key order after a key reads the next key's one row, an ended key between them read as none; it is read at the head only. `end_head_only` deletes every key's state at once, whether put before or earlier in the transaction, and keeps a key put after it in the same transaction, also where the transaction's puts are written a page at a time around it (2 600 puts); it leaves a sibling name (`sys:order.vx`) as it was, and refuses a name that is not head-only as invalid, leaving that type's records"
 );
 
 engine_check!(
@@ -970,7 +970,10 @@ fn a_head_only_name_keeps_one_state_for_each_key(engine: &dyn LakeEngine) -> Res
         |key: &str, n: u64, at: u64| record(ty.as_str(), key, json!({"sys:entry": {"n": n}}), at);
     let ended =
         |key: &str, at: u64| StoredRecord::ended(ty.clone(), RecordKey::from(key), Position(at));
+    let sibling = TypeName::from(format!("{}vx", lakelands_api::seam::ORDER_PREFIX));
     fold(engine, 1, |p| {
+        p.put_record(&record(sibling.as_str(), "k001", json!({}), 1))?;
+        p.put_record(&record("doc", "d", json!({}), 1))?;
         (0..100).try_for_each(|i| p.put_record(&entry(&format!("k{i:03}"), 1, 1)))
     })?;
     fold(engine, 2, |p| {
@@ -1031,6 +1034,39 @@ fn a_head_only_name_keeps_one_state_for_each_key(engine: &dyn LakeEngine) -> Res
         (keys.as_slice(), all) == (["k050"].as_slice(), 1),
         "one transaction put k060, ended the name and put k050: a page after k001 answered \
          {keys:?} and the name counts {all}, where it holds k050 alone"
+    );
+    // Puts enough to be written a page at a time before and after the end.
+    fold(engine, 5, |p| {
+        (0..1_500).try_for_each(|i| p.put_record(&entry(&format!("p{i:04}"), 5, 5)))?;
+        p.end_head_only(&ty, Position(5))?;
+        (0..1_100).try_for_each(|i| p.put_record(&entry(&format!("q{i:04}"), 5, 5)))
+    })?;
+    let p = engine.projection();
+    p.begin().must("beginning a transaction")?;
+    let refused = p.end_head_only(&TypeName::from("doc"), Position(6));
+    p.rollback();
+    let v = view(engine, None)?;
+    let count = |ty: &TypeName| v.count(ty, &lakelands_api::engine::Scan::default());
+    let counts = (
+        count(&ty).must("counting")?,
+        count(&sibling).must("counting")?,
+    );
+    let first = v
+        .get(&ty, &RecordKey::from("p0000"))
+        .must("reading p0000")?;
+    let doc = v.get(&TypeName::from("doc"), &RecordKey::from("d"));
+    let doc = doc.must("reading `doc`")?;
+    ensure!(
+        counts == (1_100, 1)
+            && first.is_none()
+            && doc.is_some()
+            && crate::conformance::fixture::is_invalid(&refused),
+        "a transaction put 1 500 keys, ended the name and put 1 100: the name counts {} where \
+         1 100 remain, p0000 reads {first:?}; the sibling `sys:order.vx` counts {} where its \
+         one key remains; ending the stored type `doc` answered {refused:?}, which must be \
+         invalid, and `d` reads {doc:?}",
+        counts.0,
+        counts.1
     );
     Ok(())
 }

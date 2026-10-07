@@ -474,6 +474,7 @@ impl ProjectionStore for SqliteLake {
     }
 
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
+        engines::head_only(name)?;
         self.stage(at, |conn, _| {
             let gone = conn.execute("DELETE FROM records WHERE ty = ?1", [name.as_str()]);
             gone.map(drop).map_err(sql)

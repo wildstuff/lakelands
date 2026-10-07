@@ -492,6 +492,7 @@ impl ProjectionStore for PgLake {
     }
 
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
+        engines::head_only(name)?;
         self.stage(at, |b| b.end_heads(name.as_str()))
     }
 
