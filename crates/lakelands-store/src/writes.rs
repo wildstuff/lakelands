@@ -1313,9 +1313,16 @@ impl Call<'_> {
         }
     }
 
-    /// Check a verb's payload against its declaration.
+    /// Check a verb's payload against its declaration: a member the verb
+    /// does not declare is refused, naming the verb, before any value is
+    /// read, even when its type has a field of that name.
     fn verb_payload(&self, w: &Writer, verb: &VerbDecl, payload: &Patch) -> Result<Patch> {
         let decl = w.ontology.ty(&verb.on)?;
+        let declared = |n: &&FieldName| verb.payload.iter().any(|f| &f.name == *n);
+        if let Some(name) = payload.keys().find(|n| !declared(n)) {
+            let said = format!("verb `{}` has no `{name}` in its payload", verb.name);
+            return Err(invalid_field(name, said));
+        }
         let checked = check_values(&w.ontology, decl, payload, &verb.payload)?;
         for f in verb.payload.iter().filter(|f| f.required) {
             if checked.get(&f.name).is_none_or(Value::is_null) {

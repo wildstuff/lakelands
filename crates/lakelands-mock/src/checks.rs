@@ -3192,11 +3192,22 @@ pub async fn a_step_to_an_unbound_view_is_refused(store: Arc<dyn LakeStore>) {
     }
 }
 
-/// A `low`-risk verb whose effect writes authored fields runs at once.
+/// A `low`-risk verb whose effect writes authored fields runs at once. A
+/// payload member the verb does not declare is refused naming the verb,
+/// even when its type has a field of that name.
 pub async fn a_low_risk_verb_runs_at_once(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     f.write(&f.cast.clerk, "INV-1", &[("status", json!("open"))])
         .await;
+    let (c, approve, inv) = (&f.catalog, VerbName::from("approve"), key("INV-1"));
+    let sent = Patch::from([("status".into(), json!("paid"))]);
+    let opts = WriteOpts::default();
+    let e = c.call(&f.cast.clerk, &approve, Some(&inv), sent, opts);
+    let e = e.await.expect_err("`approve` declares no payload");
+    let said = "verb `approve` has no `status` in its payload".to_string();
+    let (on, reason) = refusal(&e);
+    assert_eq!(on.as_ref().map(FieldName::as_str), Some("status"), "{e:?}");
+    assert_eq!(reason, &Refusal::Invalid { message: said });
     let o = f
         .catalog
         .call(

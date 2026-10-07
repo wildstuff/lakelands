@@ -2045,15 +2045,16 @@ fn check_call<'a>(
         Some(key) => Some(st.live(&v.on, key).ok_or_else(|| no_record(&v.on, key))?),
         None => None,
     };
+    // As the store: a member the verb does not declare before any value.
+    let declared = |n: &&FieldName| v.payload.iter().any(|f| &f.name == *n);
+    if let Some(name) = payload.keys().find(|n| !declared(n)) {
+        let message = format!("verb `{verb}` has no `{name}` in its payload");
+        return Err(on(name, Refusal::Invalid { message }));
+    }
     for (name, val) in payload {
-        let f = v.payload.iter().find(|f| &f.name == name).ok_or_else(|| {
-            on(
-                name,
-                Refusal::Invalid {
-                    message: format!("`{verb}` takes no `{name}`"),
-                },
-            )
-        })?;
+        let Some(f) = v.payload.iter().find(|f| &f.name == name) else {
+            continue;
+        };
         if !val.is_null()
             && let Some(message) = value::misfit(&f.ty, val, &st.value_types)
         {
@@ -2065,7 +2066,7 @@ fn check_call<'a>(
             return Err(on(
                 &f.name,
                 Refusal::Constraint {
-                    message: format!("`{verb}` needs `{}`", f.name),
+                    message: format!("verb `{verb}` requires `{}` in its payload", f.name),
                 },
             ));
         }
