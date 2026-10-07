@@ -461,9 +461,10 @@ batch at a time as it goes and not all of them for each page
 way, a batch at a time. A reader whose grant admits only some records of
 the type (051) has its pairs added to `equal` on every scan and count
 the store makes, so its reads go by the same index. The memory engine keeps no such index and passes
-over the type's rows. **Its ceilings:** a page in a field's order whose
-scan must hold a text still reads every record holding it and sorts
-them, for each page, whether or not the lake indexes the field; a filter
+over the type's rows. **Its ceilings:** a page in the order of a field
+the lake does not index whose scan must hold a text still reads every
+record holding it and sorts them, for each page (in an indexed field's
+order it reads its page, below); a filter
 only the store evaluates is not handed down, so no term of it reaches
 the index and the page passes over the type's rows; and an earlier
 position has no index of exact text, so there too the page passes over
@@ -478,7 +479,16 @@ the page in the index's order from `after`; values that share the first
 32 bytes are read as a run and ordered from the values
 (`scan_in_field_order`; `docs/decisions/041-a-sorted-page-reads-its-page.md`).
 A page of 50 ordered by one indexed field over 100 000 records takes
-about 0.1 ms in memory, 0.3 ms on SQLite and 2 ms on PostgreSQL.
+about 0.1 ms in memory, 0.3 ms on SQLite and 2 ms on PostgreSQL. **Under
+an exact text,** at the head, SQLite and PostgreSQL hand such a page only
+the records holding the text (lakelands#587): they count the holders up
+to 4 096 (`FEW_HOLDERS`); more, and the order index is read in its
+order, a row kept where the exact-text index holds its key; at most
+that, and the text's rows in the exact-text index are ordered by their
+order rows and cut at the page, index rows only. The records without the
+field are read from the text's rows in key order. The memory engine
+keeps no exact-text index and admits the order index's rows as it reads
+them (`Holders`; 041, extended).
 `describe_type` names a type's indexed fields in its lifecycle
 (`sorted`). The index is used only while it describes the head; a lake
 whose index a writer did not keep sorts as below until a writer's open

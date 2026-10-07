@@ -467,23 +467,24 @@ pub(crate) fn analyze(db: &mut Db, names: &Names) -> Result<()> {
 /// declaration at the head, and mark it kept through `through`; with no
 /// field to keep, drop its rows and its mark. The fold does this when it
 /// writes the setting's head state, and a writer's open when the mark is
-/// behind.
+/// behind. It answers the rows it wrote, which the planner is told of as
+/// of the records put (`handle`'s module doc).
 pub(crate) fn rebuild_sorted(
     db: &mut Db,
     names: &Names,
     ty: &TypeName,
     through: Position,
-) -> Result<()> {
+) -> Result<u64> {
     db.execute(
         &format!("DELETE FROM {} WHERE ty = $1", names.t("sort_index")),
         &[&ty.as_str()],
     )?;
     let head = head_type(db, names, ty)?;
     if head.sorted.is_empty() {
-        return set_sorted(db, names, ty, None);
+        return set_sorted(db, names, ty, None).map(|()| 0);
     }
     // A page of the type at a time, so the pass holds a page, not the type.
-    let mut after = String::new();
+    let (mut after, mut rows) = (String::new(), 0);
     loop {
         let page = head_records_after(db, names, ty, &after, REBUILD_PAGE)?;
         let Some(last) = page.last() else { break };
@@ -504,11 +505,12 @@ pub(crate) fn rebuild_sorted(
             ),
             &[&ty.as_str(), &fields, &keys, &sort_keys],
         )?;
+        rows += keys.len() as u64;
         if (page.len() as i64) < REBUILD_PAGE {
             break;
         }
     }
-    set_sorted(db, names, ty, Some(through))
+    set_sorted(db, names, ty, Some(through)).map(|()| rows)
 }
 
 /// Mark `ty`'s order index kept through `through`; with none, drop its
@@ -857,14 +859,15 @@ impl Buffer {
     /// one, under their types' declarations at the head as `types` reads
     /// them after every declaration the transaction put, and the applied
     /// ids. That leaves what putting them one by one leaves. The types
-    /// whose `vector_index.<type>` setting it wrote go into `asked`.
+    /// whose `vector_index.<type>` setting it wrote go into `asked`. It
+    /// answers the order index rows the settings it wrote rebuilt.
     pub(crate) fn write(
         self,
         db: &mut Db,
         names: &Names,
         types: &mut HeadTypes,
         asked: &mut BTreeMap<TypeName, Position>,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let records: BTreeMap<(Vec<String>, i64), String> = self
             .records
             .iter()
@@ -913,8 +916,9 @@ impl Buffer {
         index_records(db, names, &indexed, &stale)?;
         // The setting's write rebuilds the index it asks for, so the index
         // describes the head from the next read on.
+        let mut rebuilt = 0;
         for (ty, at) in settings {
-            rebuild_sorted(db, names, &ty, at)?;
+            rebuilt += rebuild_sorted(db, names, &ty, at)?;
         }
         if !self.applied.is_empty() {
             let (ids, at): (Vec<&str>, Vec<i64>) = self
@@ -931,7 +935,7 @@ impl Buffer {
                 &[&ids, &at],
             )?;
         }
-        Ok(())
+        Ok(rebuilt)
     }
 }
 
