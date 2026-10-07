@@ -946,6 +946,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 axis: "vector".into(),
                 field: Some("v".into()),
                 candidates: Some(5),
+                weight: Some(0.5),
             }),
         ),
         (

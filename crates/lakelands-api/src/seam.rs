@@ -12,6 +12,7 @@
 //! grants, provenance, the `sys.` guard, idempotency — are never a seam's
 //! to keep. `docs/seams.md` specifies each one.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -266,6 +267,27 @@ pub fn indexable(kind: &crate::ontology::StorageKind) -> bool {
     matches!(kind, crate::ontology::StorageKind::Vector)
 }
 
+/// The key prefix of the setting that weighs a type's searches: the
+/// setting `search_weights.<type>`, whose value is an object of
+/// `fields`, vector fields of the type with their weights, and
+/// `text_weight`, each optional and one at least. A search that gives a
+/// ranking no weight takes the setting's (lakelands#561).
+pub const SEARCH_WEIGHTS_SETTING: &str = "search_weights.";
+
+/// The weights a `search_weights.<type>` setting of this value gives: a
+/// vector field's, then the text's. A member that does not read gives
+/// none, since the setting is checked when it is written.
+pub fn search_weights(value: Option<&Value>) -> (BTreeMap<String, f64>, Option<f64>) {
+    let member = |m: &str| value.and_then(|v| v.get(m));
+    let fields = member("fields").and_then(Value::as_object);
+    let weights =
+        (fields.into_iter().flatten()).filter_map(|(f, w)| Some((f.clone(), w.as_f64()?)));
+    (
+        weights.collect(),
+        member("text_weight").and_then(Value::as_f64),
+    )
+}
+
 /// The key prefix of the setting that asks for a view's records to be
 /// kept as its sources are written: the setting `view_kept.<type>`, which
 /// holds when its value is `true`.
@@ -288,6 +310,10 @@ pub fn view_kept(value: Option<&Value>) -> bool {
 ///   type and hold an array of the names of fields it declares with a
 ///   kind that index keeps ([`sortable`], [`indexable`]); `None` or `null`
 ///   asks for no index.
+/// - `search_weights.<type>` names a declared stored type and holds an
+///   object of `fields` (each a vector field it declares, with a weight)
+///   and `text_weight`, one at least, every weight one a search may give
+///   ([`crate::query::weight_fits`]); `None` or `null` weighs nothing.
 /// - `view_kept.<type>` names a declared view and holds `true` or
 ///   `false`; under `true` the view must be one that can be kept
 ///   ([`crate::expr::keepable`]), and the refusal says why it is not to a
@@ -321,6 +347,56 @@ pub fn check_setting<'a>(
                 format!("`{key}` holds `true` for a view that is kept, or `false`"),
             )),
         };
+    }
+    if let Some(ty) = key.strip_prefix(SEARCH_WEIGHTS_SETTING) {
+        let Some((seen, _)) = known(ty).filter(|(_, d)| d.view.is_none()) else {
+            return Err((
+                "key".into(),
+                format!("`{key}` weighs the searches of `{ty}`, which is no declared stored type"),
+            ));
+        };
+        let shape = || {
+            let holds = "an object of `fields` (vector fields and their weights) and \
+                         `text_weight`, one at least, or null";
+            ("value".into(), format!("`{key}` holds {holds}"))
+        };
+        let weighs = |member: &str, w: &Value| match w.as_f64() {
+            Some(w) if crate::query::weight_fits(w) => Ok(()),
+            _ => Err((
+                member.into(),
+                format!("`{key}` weighs `{member}` {w}; a weight is above 0 and at most 1000000"),
+            )),
+        };
+        let members = match value {
+            None | Some(Value::Null) => return Ok(()),
+            Some(Value::Object(o)) if !o.is_empty() => o,
+            Some(_) => return Err(shape()),
+        };
+        for (member, w) in members {
+            match (member.as_str(), w.as_object()) {
+                ("text_weight", _) => weighs(member, w)?,
+                ("fields", Some(fields)) if !fields.is_empty() => {
+                    for (name, w) in fields {
+                        let f = seen.fields.iter().find(|f| f.name.as_str() == name);
+                        let fault = match f {
+                            None => {
+                                format!("`{key}` names `{name}`, which `{ty}` does not declare")
+                            }
+                            Some(f) if !indexable(&f.ty.kind) => {
+                                format!("`{key}` names `{name}`, which is no vector field")
+                            }
+                            Some(_) => {
+                                weighs(name, w)?;
+                                continue;
+                            }
+                        };
+                        return Err((name.as_str().into(), fault));
+                    }
+                }
+                _ => return Err(shape()),
+            }
+        }
+        return Ok(());
     }
     let (ty, index, keeps, kinds): (_, _, fn(&crate::ontology::StorageKind) -> bool, _) =
         if let Some(ty) = key.strip_prefix(SORT_INDEX_SETTING) {

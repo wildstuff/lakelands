@@ -27,7 +27,8 @@ use lakelands_api::query::{
 use lakelands_api::read::{After, Direction, Find, Found, Get, Order, OrderBy, ReadAt, Reply};
 use lakelands_api::record::{Origin, Patch, Record, SourceRecord, StoredRecord, Value};
 use lakelands_api::seam::{
-    SETTING_TYPE, SORT_INDEX_SETTING, VECTOR_INDEX_SETTING, VIEW_KEPT_SETTING, indexable, sortable,
+    SEARCH_WEIGHTS_SETTING, SETTING_TYPE, SORT_INDEX_SETTING, VECTOR_INDEX_SETTING,
+    VIEW_KEPT_SETTING, indexable, search_weights, sortable,
 };
 use lakelands_api::write::{
     Committed, Declaration, FieldConversion, FunctionDecl, Migration, MigrationReport,
@@ -4398,7 +4399,13 @@ impl Catalog for MockCatalog {
             axis: (if field.is_some() { "vector" } else { "lexical" }).into(),
             field: field.cloned(),
             candidates: None,
+            weight: None,
         };
+        // As the store: a ranking the search does not weigh takes its
+        // type's `search_weights` setting at the read's position.
+        let key = RecordKey::from(format!("{SEARCH_WEIGHTS_SETTING}{}", search.ty));
+        let set = st.live(&TypeName::from(SETTING_TYPE), &key);
+        let (field_weights, text_default) = search_weights(set.and_then(|r| r.fields.get("value")));
         let mut axes = Vec::new();
         if let (
             SearchMode::Hybrid {
@@ -4407,11 +4414,12 @@ impl Catalog for MockCatalog {
             false,
         ) = (&search.mode, by_text)
         {
-            lists.push((text_weight.unwrap_or(1.0), matching(text)));
+            lists.push((text_weight.or(text_default).unwrap_or(1.0), matching(text)));
             axes.push(axis(None));
         }
         for (f, vector, weight) in vectors.iter().filter(|_| !by_text) {
-            lists.push((weight.unwrap_or(1.0), nearest(f, vector)));
+            let set = field_weights.get(f.as_str()).copied();
+            lists.push((weight.or(set).unwrap_or(1.0), nearest(f, vector)));
             axes.push(axis(Some(f)));
         }
         if axes.is_empty() {
@@ -4431,8 +4439,8 @@ impl Catalog for MockCatalog {
                 // the read may see and to `max_limit` (046).
                 let window = self.shared.limits.max_limit as usize;
                 let mut fused: BTreeMap<&RecordKey, (f64, &StoredRecord)> = BTreeMap::new();
-                for (a, (_, list)) in axes.iter_mut().zip(&lists) {
-                    a.candidates = Some(list.len().min(window) as u64);
+                for (a, (w, list)) in axes.iter_mut().zip(&lists) {
+                    (a.candidates, a.weight) = (Some(list.len().min(window) as u64), Some(*w));
                 }
                 for (weight, list) in lists {
                     for (rank, (_, r)) in best_first(list).into_iter().take(window).enumerate() {

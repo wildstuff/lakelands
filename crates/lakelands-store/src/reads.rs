@@ -1979,7 +1979,14 @@ impl<'a> Reader<'a> {
             axis: (if field.is_some() { "vector" } else { "lexical" }).into(),
             field: field.cloned(),
             candidates: None,
+            weight: None,
         };
+        // A ranking the search does not weigh takes its type's setting, as
+        // the read finds it at its position (lakelands#561); a field the
+        // type no longer holds is never named by a search, so weighs 1.
+        let key = format!("{}{}", lakelands_api::seam::SEARCH_WEIGHTS_SETTING, s.ty);
+        let (field_weights, text_default) =
+            lakelands_api::seam::search_weights(self.shape.settings.get(&key));
         let mut axes = Vec::new();
         if let (
             SearchMode::Hybrid {
@@ -1989,14 +1996,15 @@ impl<'a> Reader<'a> {
         ) = (&s.mode, by_text)
         {
             lists.push((
-                text_weight.unwrap_or(1.0),
+                text_weight.or(text_default).unwrap_or(1.0),
                 Box::new(move |pull| lexical(text, pull)),
             ));
             axes.push(axis(None));
         }
         for (field, v, weight) in vectors.iter().filter(|_| !by_text) {
+            let set = || field_weights.get(field.as_str()).copied();
             lists.push((
-                weight.unwrap_or(1.0),
+                weight.or_else(set).unwrap_or(1.0),
                 Box::new(move |pull| vector(field, v, pull)),
             ));
             axes.push(axis(Some(field)));
@@ -2005,8 +2013,8 @@ impl<'a> Reader<'a> {
             _ if lists.len() > 1 => {
                 let (hits, counts) =
                     self.fused(&decl, filter.as_ref(), &lists, want, s.with_meta)?;
-                for (a, n) in axes.iter_mut().zip(counts) {
-                    a.candidates = Some(n);
+                for ((a, n), (w, _)) in axes.iter_mut().zip(counts).zip(&lists) {
+                    (a.candidates, a.weight) = (Some(n), Some(*w));
                 }
                 hits
             }
@@ -2046,8 +2054,9 @@ impl<'a> Reader<'a> {
                 of: search_read,
             })
         });
-        // A search of one axis lists it without a count: it reads no
-        // further than its page (lakelands#560).
+        // A lexical search, and a hybrid one that fell back to its text,
+        // rank by the text alone: its axis is listed without a count, since
+        // it reads no further than its page (lakelands#560).
         if axes.is_empty() {
             axes.push(axis(vectors.first().map(|v| v.0).filter(|_| !by_text)));
         }

@@ -834,11 +834,13 @@ interface types {
 
     /// One axis a search ranked by: `lexical` or `vector`, a vector
     /// axis's field, and, where the search fuses, the candidates it handed
-    /// the fusion for this reader, up to the lake's `max_limit`.
+    /// the fusion for this reader, up to the lake's `max_limit`, with the
+    /// weight it ranked by.
     record axis {
         axis: string,
         field: option<field-name>,
         candidates: option<u64>,
+        weight: option<f64>,
     }
 
     // ------------------------------------------------------------------
