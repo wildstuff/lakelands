@@ -566,11 +566,12 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             for input in &func.decl.inputs {
                 let why = match t.fields.iter().find(|d| d.name == input.name) {
                     Some(d) if d.ty.kind == input.ty.kind => continue,
-                    Some(_) => format!(
-                        "`{}` as a {}, and `{}` holds it as another kind",
+                    Some(d) => format!(
+                        "`{}` as a {}, and `{}` holds it as a {}",
                         input.name,
                         value::kind_name(input.ty.kind),
-                        t.name
+                        t.name,
+                        value::kind_name(d.ty.kind)
                     ),
                     None => format!("`{}`, which is not one of its fields", input.name),
                 };
@@ -755,6 +756,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             }
         }
         view_fields(&owner, t, v)?;
+        view_kinds(o, &owner, t, v)?;
         view_params(&owner, v, &read)?;
     }
     // A derived field's expression can be evaluated, and what it computes
@@ -767,14 +769,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
     {
         let at = format!("{owner}, field `{}`", f.name);
         let e = condition(f.derived.as_ref().expect("derived"), Place::Write, &at)?;
-        if let Some(k) = evaluates(&e, t, &at)?.filter(|k| !k.lands(f.ty.kind)) {
-            let (is, holds) = (k.name(), value::kind_name(f.ty.kind));
-            let unit = "; divide a duration by a unit, as in `(a - b) / 1d`";
-            let hint = if k == Kind::Duration { unit } else { "" };
-            let why =
-                format!("{at}: its expression is {is}, which a {holds} field never holds{hint}");
-            return Err(invalid_field(&f.name, why));
-        }
+        lands(f, evaluates(&e, t, &at)?, &at)?;
     }
     // Order the fields as the fold will compute them: a field computed by
     // a function reads what that function's expression reads, so it is
@@ -786,6 +781,64 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
     // (`docs/decisions/022-functions-are-declarations.md`, extended).
     crate::backed::computed_order(o, t).map_err(|e| invalid(format!("{owner}: {e}")))?;
     Ok(())
+}
+
+/// What an expression certainly computes, `k`, can land in the field `f`:
+/// one that never could would be taken and never filled (028, extended).
+fn lands(f: &FieldDecl, k: Option<Kind>, at: &str) -> Result<()> {
+    let Some(k) = k.filter(|k| !k.lands(f.ty.kind)) else {
+        return Ok(());
+    };
+    let (is, holds) = (k.name(), value::kind_name(f.ty.kind));
+    let unit = "; divide a duration by a unit, as in `(a - b) / 1d`";
+    let hint = if k == Kind::Duration { unit } else { "" };
+    let why = format!("{at}: its expression is {is}, which a {holds} field never holds{hint}");
+    Err(invalid_field(&f.name, why))
+}
+
+/// What a view computes lands in the field declared for it, as a derived
+/// field's value does: each measure, read over its source's fields, and
+/// each group value. A name a measure answers under is read as nothing
+/// certain, since it may be a measure's and not the field's.
+fn view_kinds(o: &Ontology, owner: &str, t: &TypeDecl, v: &ViewDecl) -> Result<()> {
+    let field = |n: &FieldName| t.fields.iter().find(|f| &f.name == n);
+    let merged = v.merge.iter().map(|m| (&m.source, &m.measures));
+    let measured: BTreeSet<&FieldName> = (v.measures.iter())
+        .chain(v.merge.iter().flat_map(|m| &m.measures))
+        .map(|m| &m.name)
+        .collect();
+    for (source, measures) in std::iter::once((&v.source, &v.measures)).chain(merged) {
+        let Ok(s) = o.ty(source) else {
+            continue;
+        };
+        let read = |n: &FieldName| {
+            let f = s
+                .fields
+                .iter()
+                .find(|f| &f.name == n && !measured.contains(n));
+            f.map(|f| f.ty.kind)
+        };
+        let by = (v.group_by.iter()).filter(|_| source == &v.source);
+        let by = by.map(|g| (g, format!("{owner}, group_by field `{g}`"), Ok(path(g))));
+        let measures = measures.iter().map(|m| {
+            let at = format!("{owner}, measure `{}`", m.name);
+            let e = condition(&m.expr, Place::Group, &at);
+            (&m.name, at, e)
+        });
+        for (name, at, e) in by.chain(measures) {
+            if let Some(f) = field(name) {
+                lands(f, kind::of(&e?, &read).ok().flatten(), &at)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The expression that reads the field `name`.
+fn path(name: &FieldName) -> Expr {
+    Expr::Path {
+        path: vec![name.clone()],
+    }
 }
 
 /// A type's relations carried by link records, as the tool generator

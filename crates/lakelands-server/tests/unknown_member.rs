@@ -5,7 +5,10 @@
 //! and the lake does not move.
 //!
 //! `schema/declare` and `schema/apply` are REST's alone; `declare_type`,
-//! `add_field`, `migrate` and `propose` are asked on both.
+//! `add_field`, `migrate` and `propose` are asked on both. A read's
+//! request is refused the same way for a member it does not take inside
+//! another (lakelands#563): a query's start, a search's mode, a find's
+//! aggregate.
 
 mod common;
 
@@ -150,5 +153,65 @@ async fn mcp_on(backend: Backend) {
             "{at}: the todo does not say nothing was declared: {text}"
         );
         assert_eq!(store.head().await.unwrap(), head, "{at}: the lake moved");
+    }
+}
+
+// ------------------------------------------------------- a read's request
+
+/// A read asked with a member it does not take inside another: its REST
+/// route (none for a find, which REST reads from the query string), its
+/// MCP tool, its arguments, and what the refusal names.
+fn reads() -> Vec<(
+    Option<&'static str>,
+    &'static str,
+    Value,
+    &'static [&'static str],
+)> {
+    vec![
+        (
+            Some("query"),
+            "query",
+            json!({"start": {"type": "invoice", "zzz": 1}}),
+            &["zzz", "start"],
+        ),
+        (
+            Some("search"),
+            "search",
+            json!({"type": "invoice", "mode": "lexical", "text": "a", "zzz": 1}),
+            &["zzz"],
+        ),
+        (
+            None,
+            "invoice_find",
+            json!({"aggregate": {"measures": [{"name": "n", "func": "count", "zzz": 1}]}}),
+            &["zzz", "aggregate.measures[0]"],
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn a_read_refuses_a_member_it_does_not_take_inside_another_naming_it() {
+    for backend in BACKENDS {
+        let store = common::lake_on(backend).await;
+        let addr = serve(store.clone(), common::resolver()).await;
+        let mut mcp = Mcp::open(store.clone(), common::owner()).await;
+        for (route, tool, args, names) in reads() {
+            if let Some(route) = route {
+                let (status, answer) = rest(addr, "k-owner", "POST", route, Some(&args)).await;
+                let at = format!("{backend:?}, POST {route}");
+                assert_eq!(
+                    (status, &answer["reason"]["refusal"]),
+                    (400, &json!("invalid")),
+                    "{at}: {answer}"
+                );
+                let what = answer["what"].as_str().unwrap_or_default();
+                names_all(what, names).unwrap_or_else(|e| panic!("{at}: {e}"));
+            }
+            let result = mcp.call(tool, args).await;
+            let at = format!("{backend:?}, {tool}");
+            assert_eq!(result["isError"], true, "{at}: {result}");
+            let text = result["content"][0]["text"].as_str().unwrap_or_default();
+            names_all(text, names).unwrap_or_else(|e| panic!("{at}: {e}"));
+        }
     }
 }

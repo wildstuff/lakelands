@@ -18,6 +18,7 @@ use crate::time::Timestamp;
 
 /// Options every authored write takes.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WriteOpts {
     /// Refuse the write unless the record is at this version
     /// (compare-and-set). For a record that must not exist yet, pass
@@ -131,7 +132,7 @@ impl Outcome {
 
 /// A write that can be proposed instead of applied.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "write", rename_all = "snake_case")]
+#[serde(deny_unknown_fields, tag = "write", rename_all = "snake_case")]
 pub enum ProposedWrite {
     /// An `upsert`.
     Upsert {
@@ -289,6 +290,7 @@ pub struct Proposal {
 
 /// Which proposals to list.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProposalFilter {
     /// Only proposals in this state.
     #[serde(default, skip_serializing_if = "Option::is_none")]

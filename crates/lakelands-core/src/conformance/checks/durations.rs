@@ -19,9 +19,9 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, agg, dec, decimal, derived, field, field_access, find_where, invalid_naming,
-    log_events, migration, no_such_field, object_set_on, pattern, refused_on, trigger_on,
-    type_decl, value, write_verb,
+    Lake, Must, agg, computed_by, dec, decimal, derived, field, field_access, find_where,
+    invalid_naming, log_events, migration, no_such_field, object_set_on, pattern, refused_on,
+    trigger_on, type_decl, value, view_of, write_verb,
 };
 
 check!(
@@ -34,6 +34,12 @@ check!(
     /// A derived field that is never filled.
     LANDS = a_derived_field_its_expression_can_never_fill_is_refused,
     "028, extended: a derived field whose expression is certainly of a kind its field never holds is refused as invalid on that field by declare, add_field and a migration, naming both kinds, and nothing is appended; a text into a number field and an expression whose kind depends on the record are taken"
+);
+
+check!(
+    /// What a view computes, and what a function takes, never fits.
+    VIEW_LANDS = a_view_value_its_field_never_holds_is_refused_and_a_function_names_both_kinds,
+    "028, extended (lakelands#563): a view whose measure or group value is certainly of a kind its field never holds, `max(due_on)` into a `number` field or a text group into a `boolean` field, is refused as invalid on that field, naming the kind, and nothing is appended; the same measure into a `date_time` field is taken; a field computed by a function whose input the type holds as another kind is refused naming both kinds"
 );
 
 check!(
@@ -268,4 +274,45 @@ async fn what_can_never_be_evaluated_is_refused_and_a_records_own_failure_is_not
         );
     }
     Ok(())
+}
+
+async fn a_view_value_its_field_never_holds_is_refused_and_a_function_names_both_kinds(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = lake(store.as_ref()).await?;
+    let head = store.head().await.must("reading the head")?;
+    let late = |by: StorageKind, last: StorageKind| {
+        let fields = vec![field("code", by), field("last", last)];
+        view_of("late", TYPE, &["code"], fields, &[("last", "max(due_on)")])
+    };
+    for (view, on, names) in [
+        (late(Text, Number), "last", ["an instant", "never holds"]),
+        (late(Boolean, DateTime), "code", ["a text", "never holds"]),
+    ] {
+        let refused = l.try_declare(view).await;
+        let what = format!("a view whose `{on}` never lands");
+        ensure!(
+            refused_on(&refused).is_some_and(|(f, _)| f == on),
+            "{what} is refused on the field; declaring it answered {refused:?}"
+        );
+        invalid_naming(&what, refused, &names)?;
+    }
+    let now = store.head().await.must("reading the head")?;
+    ensure!(
+        now == head,
+        "a refused view appends nothing; the head is {now}"
+    );
+    l.declare(late(Text, DateTime)).await?;
+    let fee = json!({"declare": "function", "name": "fee", "backing": "conformance",
+        "inputs": [{"name": "n", "type": {"kind": "decimal"}}],
+        "config": {"token": "kinds", "echo": "n"}});
+    l.declare_json(fee).await?;
+    let mut bill = type_decl("bill", vec![field("n", Number)]);
+    bill.fields.push(computed_by("fee", Decimal, "fee", &["n"]));
+    let names = ["`n` as a decimal", "`bill` holds it as a number"];
+    invalid_naming(
+        "a function's input of another kind",
+        l.try_declare(bill).await,
+        &names,
+    )
 }

@@ -1667,7 +1667,7 @@ impl<'a> Reader<'a> {
         let named = |e| invalid(format!("aggregate over `{}`: {e}", decl.name));
         let mut grouping = aggregate::grouping(a, self.now).map_err(named)?;
         self.each_member(decl, filter, COUNT_PAGE, |r| {
-            grouping.add(&r.fields, None);
+            grouping.add(&r.fields, Some(&self.shape.settings));
             Ok(())
         })?;
         let mut groups = aggregate::answer(grouping, a).map_err(named)?;
@@ -2525,8 +2525,8 @@ impl<'a> Reader<'a> {
                 })
                 .collect();
             let refs: Vec<&BTreeMap<FieldName, Value>> = as_fields.iter().collect();
-            let groups =
-                aggregate::aggregate(&refs, a, self.now).map_err(|e| invalid(e.to_string()))?;
+            let groups = aggregate::aggregate(&refs, a, &self.shape.settings, self.now)
+                .map_err(|e| invalid(e.to_string()))?;
             return Ok(QueryResult::Groups { rows: groups });
         }
         if p.order_by.iter().any(|o| o.by == OrderBy::Latest) {

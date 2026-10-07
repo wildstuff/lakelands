@@ -418,11 +418,17 @@ fn a_blind_agent_works_the_shop_through_mcp_alone() {
     let not_granted = Some(json!({"error": "refused", "field": "paid_on",
                                   "reason": {"refusal": "not_granted"}}));
     assert_eq!(refused(&r[6]), (NOT_GRANTED, not_granted.clone()));
+    // A proposed write refuses a member it does not take, naming it
+    // (lakelands#563); the walk's page shows what the lake said then.
+    let unknown = "remove the member or correct its name, then call again; nothing was declared";
     assert_eq!(
         refused(&r[7]),
         (
-            format!("error: the arguments do not fit `propose` at `write`: missing field `patch`\n  {FIT}")
-                .as_str(),
+            format!(
+                "error: the arguments do not fit `propose` at `write`: unknown field `fields`, \
+                 expected one of `type`, `key`, `patch`, `opts`\n  what to do: {unknown}\n"
+            )
+            .as_str(),
             None
         )
     );

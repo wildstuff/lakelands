@@ -132,6 +132,7 @@ pub trait VerbExecutor: Send + Sync {
 
 /// Which events a feed reader wants.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FeedFilter {
     /// Only these kinds (as [`crate::event::EventBody::kind`] names them);
     /// all when empty.
