@@ -138,6 +138,7 @@ macro_rules! door_checks {
             a_low_risk_verb_runs_at_once,
             a_riskier_verb_is_proposed_and_accept_applies_it,
             an_accept_after_the_verb_was_declared_differently_is_refused,
+            a_call_is_refused_in_the_order_013_gives,
             a_call_that_could_not_run_now_is_neither_run_nor_proposed,
             a_rejected_proposal_writes_nothing_and_stays_decided,
             only_a_reviewer_decides_proposals,
@@ -3900,6 +3901,48 @@ pub async fn a_low_risk_verb_runs_at_once(store: Arc<dyn LakeStore>) {
     assert_eq!(f.head().await, p);
     let r = f.read(&f.cast.clerk, "INV-1").await;
     assert_eq!(field(&r, "status"), Some(&json!("approved")));
+}
+
+/// A call is refused in decision record 013's order, through `call` and
+/// through `propose`: an external verb's unbound executor before its
+/// payload, and the payload before the record, so a member the verb does
+/// not declare is refused as such on a key no record holds.
+pub async fn a_call_is_refused_in_the_order_013_gives(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    declare_register(&f).await;
+    let (owner, head) = (&f.cast.owner, f.head().await);
+    let nope = || Patch::from([("nope".into(), json!(1))]);
+    for (verb, k) in [("approve", Some(key("INV-404"))), ("register", None)] {
+        for proposed in [false, true] {
+            let (name, payload, opts) = (VerbName::from(verb), nope(), WriteOpts::default());
+            let e = if proposed {
+                let write = ProposedWrite::Call {
+                    verb: name,
+                    key: k.clone(),
+                    payload,
+                    opts,
+                };
+                f.catalog.propose(owner, write, "later".into()).await
+            } else {
+                f.catalog
+                    .call(owner, &name, k.as_ref(), payload, opts)
+                    .await
+            }
+            .expect_err("the call is refused");
+            match (verb, &e) {
+                ("approve", e) => {
+                    let message = "verb `approve` has no `nope` in its payload".to_owned();
+                    let (on, reason) = refusal(e);
+                    let on = on.as_ref().map(FieldName::as_str);
+                    let want = (Some("nope"), &Refusal::Invalid { message });
+                    assert_eq!((on, reason), want, "proposed {proposed}");
+                }
+                (_, Error::Unbound { seam }) => assert_eq!(seam, "the verb executor `crm`"),
+                (_, e) => panic!("`register`, proposed {proposed}: {e:?}"),
+            }
+        }
+    }
+    assert_eq!(f.head().await, head, "nothing is appended");
 }
 
 /// A call that could not run now is neither run nor proposed, at any risk

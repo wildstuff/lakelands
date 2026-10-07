@@ -2059,10 +2059,14 @@ fn check_call<'a>(
     if !callable(st, who, v) {
         return Err(refused(Refusal::NotGranted));
     }
-    let rec = match key {
-        Some(key) => Some(st.live(&v.on, key).ok_or_else(|| no_record(&v.on, key))?),
-        None => None,
-    };
+    // The mock binds no executor, so a verb that reaches outside the lake
+    // is refused, as the store refuses one whose executor its host did not
+    // bind: before the payload, and whether it runs or is proposed (013).
+    if let VerbEffect::External { executor } = &v.effect {
+        return Err(Error::Unbound {
+            seam: format!("the verb executor `{executor}`"),
+        });
+    }
     // As the store: a member the verb does not declare before any value.
     let declared = |n: &&FieldName| v.payload.iter().any(|f| &f.name == *n);
     if let Some(name) = payload.keys().find(|n| !declared(n)) {
@@ -2089,8 +2093,13 @@ fn check_call<'a>(
             ));
         }
     }
-    // The version before `requires` is judged on the record, whether the
-    // call runs or is proposed (013 and 024, extended).
+    // The record after the payload; the version before `requires` is
+    // judged on it, whether the call runs or is proposed (013 and 024,
+    // extended).
+    let rec = match key {
+        Some(key) => Some(st.live(&v.on, key).ok_or_else(|| no_record(&v.on, key))?),
+        None => None,
+    };
     if let (Some(_), Some(key)) = (rec, key) {
         check_version(st, &v.on, key, opts)?;
     }
@@ -2223,15 +2232,7 @@ fn plan_propose(
             payload,
             opts,
         } => {
-            // The mock binds no executor: a call that could not run when
-            // accepted is not proposed.
-            if let VerbEffect::External { executor } =
-                &check_call(st, who, verb, key.as_ref(), payload, opts)?.effect
-            {
-                return Err(Error::Unbound {
-                    seam: format!("the verb executor `{executor}`"),
-                });
-            }
+            check_call(st, who, verb, key.as_ref(), payload, opts)?;
         }
         // A change of the ontology is checked as its door would check it;
         // the proposer needs no `schema` grant.
@@ -3927,14 +3928,6 @@ impl Catalog for MockCatalog {
             return Ok(o);
         }
         let v = check_call(&st, who, verb, key, &payload, &opts)?.clone();
-        // The mock binds no executor, so a verb that reaches outside the
-        // lake is refused when called, as the store refuses one whose
-        // executor its host did not bind.
-        if let VerbEffect::External { executor } = &v.effect {
-            return Err(Error::Unbound {
-                seam: format!("the verb executor `{executor}`"),
-            });
-        }
         // Past the executor, only a verb on a record is left.
         let key = record_key(&v, key)?;
         check_version(&st, &v.on, key, &opts)?;
