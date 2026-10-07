@@ -108,3 +108,31 @@ relative, so it takes nothing a caller needs.
 
 A hybrid search does not take `also`: its text is embedded by one
 model, and several fields may have several.
+
+## Extended: a search says what each axis brought (lakelands#560)
+
+A hybrid search whose text matched nothing answered as one whose text
+matched, only its scores lower. A host could tell the two apart only by
+running each half again on its own. So every answer lists the axes that
+ranked it, `axes`, in the order the fusion sums them, a vector axis
+naming its field.
+
+- **Where a search fuses, each axis is counted.** The count is of the
+  candidates the axis handed the fusion *for this reader*: after the
+  search's `where` and the rights that decide a hit, and up to the
+  lake's `max_limit`. It is never a count of the lake's matches, and a
+  host must not read it as one; `total` stays unknown.
+- **A fused list is read to its window.** Where hidden candidates leave
+  a list short of `max_limit` when the first page could already be
+  ranked, the list is read on to its window or its end. So every page
+  of a search answers the same counts, as it answers one ranking. The
+  reads it adds fall only there.
+- **A search of one axis lists it without a count.** It reads no further
+  than its page and one more, so a count would change with the page.
+  Its hits and its cursor say what it found.
+- **A page continued by a cursor computes its counts again.** A search's
+  cursor holds an offset and the first page's position, and each page
+  ranks again there, so the cursor carries no count.
+
+A hit's score by axis is not given: that answers why a hit ranks where
+it does, a question of its own.

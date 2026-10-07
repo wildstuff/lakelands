@@ -21,7 +21,9 @@ use lakelands_api::ontology::{
 use lakelands_api::principal::{
     Access, Principal, PrincipalKind, Renamed, TypeGrants, WriteContext,
 };
-use lakelands_api::query::{Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk};
+use lakelands_api::query::{
+    Axis, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk,
+};
 use lakelands_api::read::{After, Direction, Find, Found, Get, Order, OrderBy, ReadAt, Reply};
 use lakelands_api::record::{Origin, Patch, Record, SourceRecord, StoredRecord, Value};
 use lakelands_api::seam::{
@@ -4391,6 +4393,13 @@ impl Catalog for MockCatalog {
         // order they are summed: a hybrid search's text, then each vector
         // field (046).
         let mut lists = Vec::new();
+        // As the store: each axis that ranked, counted where it is fused.
+        let axis = |field: Option<&FieldName>| Axis {
+            axis: (if field.is_some() { "vector" } else { "lexical" }).into(),
+            field: field.cloned(),
+            candidates: None,
+        };
+        let mut axes = Vec::new();
         if let (
             SearchMode::Hybrid {
                 text, text_weight, ..
@@ -4399,9 +4408,14 @@ impl Catalog for MockCatalog {
         ) = (&search.mode, by_text)
         {
             lists.push((text_weight.unwrap_or(1.0), matching(text)));
+            axes.push(axis(None));
         }
         for (f, vector, weight) in vectors.iter().filter(|_| !by_text) {
             lists.push((weight.unwrap_or(1.0), nearest(f, vector)));
+            axes.push(axis(Some(f)));
+        }
+        if axes.is_empty() {
+            axes.push(axis(None));
         }
         let (scored, ranked_by) = match &search.mode {
             SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. } if by_text => {
@@ -4417,6 +4431,9 @@ impl Catalog for MockCatalog {
                 // the read may see and to `max_limit` (046).
                 let window = self.shared.limits.max_limit as usize;
                 let mut fused: BTreeMap<&RecordKey, (f64, &StoredRecord)> = BTreeMap::new();
+                for (a, (_, list)) in axes.iter_mut().zip(&lists) {
+                    a.candidates = Some(list.len().min(window) as u64);
+                }
                 for (weight, list) in lists {
                     for (rank, (_, r)) in best_first(list).into_iter().take(window).enumerate() {
                         fused.entry(&r.key).or_insert((0.0, r)).0 += weight / (60.0 + rank as f64);
@@ -4450,6 +4467,7 @@ impl Catalog for MockCatalog {
                 hits,
                 next_cursor,
                 ranked_by: ranked_by.to_owned(),
+                axes,
             },
         })
     }

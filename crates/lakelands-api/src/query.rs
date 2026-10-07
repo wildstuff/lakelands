@@ -482,6 +482,25 @@ pub struct Hits {
     /// `vector`, `hybrid`, or `index` and `hybrid (index)` when the vector
     /// field is one the lake asks an index for, whose set the hits are.
     pub ranked_by: String,
+    /// Each axis that ranked, in the order the fusion sums them.
+    #[serde(default)]
+    pub axes: Vec<Axis>,
+}
+
+/// One axis a search ranked by.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Axis {
+    /// `lexical` or `vector`.
+    pub axis: String,
+    /// The vector field it ranked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<FieldName>,
+    /// Where the search fuses, the candidates this axis handed the fusion
+    /// for this reader, after the search's `where` and the rights that
+    /// decide a hit, up to the lake's `max_limit`: never a count of the
+    /// lake's matches. A search of one axis gives none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidates: Option<u64>,
 }
 
 /// One search hit.
