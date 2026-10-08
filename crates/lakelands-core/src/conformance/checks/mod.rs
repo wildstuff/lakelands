@@ -306,6 +306,7 @@ pub const ALL: &[Check] = &[
     only::ONLY_WRITES,
     only::ONLY_SCHEMA,
     only::ONLY_GRANT_CHECKED,
+    only::ONLY_UNAPPLIED_ADMITS_NONE,
     only_proposals::ONLY_PROPOSES,
     only_proposals::ONLY_DECIDES,
     reactions::VERB_WRITE_REACTS,

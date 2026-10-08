@@ -1991,9 +1991,10 @@ impl<'a> Reader<'a> {
         };
         // A record the reader is not answered: restricted, without the
         // grant, or one its `only` does not admit, before the write or
-        // after it as proposed (051).
+        // after it as proposed (051). An `only` that cannot be applied
+        // admits none, whatever a record holds (lakelands#771).
         let only = |ty: &TypeName, f: &BTreeMap<_, _>| {
-            rights::admitted(&rights::own_only(self.who, ty), f)
+            (self.visible_type(ty)).is_ok_and(|d| rights::admits(self.who, d, f))
         };
         let after = |ty: &TypeName, key: &RecordKey, patch: &lakelands_api::Patch| {
             let stored = self.view.get(ty, key).ok().flatten().filter(|r| !r.retired);
@@ -2508,7 +2509,8 @@ impl<'a> Reader<'a> {
     /// candidates admitted at the head as well, under the grant followed
     /// there and by the name the type bears there: a ranking by the text
     /// and vectors at the head must find no record by another's (051).
-    /// `None` where every candidate passes.
+    /// A grant that cannot be applied to the head's declaration admits
+    /// none there (lakelands#771). `None` where every candidate passes.
     fn head_admitted(
         &self,
         decl: &TypeDecl,
@@ -2524,14 +2526,21 @@ impl<'a> Reader<'a> {
                 name = to;
             }
         }
-        let pairs = rights::own_only(who, &name);
+        let shape = self.lake.shape(head.as_ref())?;
+        let applied = |t: &TypeName| {
+            let d = shape.ontology.ty(t).ok();
+            d.filter(|d| rights::check_only(who, d).is_ok())
+        };
+        let Some(at_head) = applied(&name) else {
+            return Ok(Some(BTreeSet::new()));
+        };
         let rows = head.get_many(&name, keys)?;
         // A link's ends are judged at the head too, under the same grant.
         let ends = ends_admitted(head.as_ref(), who, decl, &rows, |t| {
-            Some(rights::own_only(who, t))
+            applied(t).map(|_| rights::own_only(who, t))
         })?;
         let admitted = (rows.into_iter().zip(ends))
-            .filter(|(r, ends)| *ends && !r.retired && rights::admitted(&pairs, &r.fields));
+            .filter(|(r, ends)| *ends && !r.retired && rights::admits(who, at_head, &r.fields));
         Ok(Some(admitted.map(|(r, _)| r.key).collect()))
     }
 

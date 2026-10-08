@@ -1666,7 +1666,8 @@ fn canonical_patch(t: &DeclaredType, patch: Patch) -> Patch {
 
 /// Refuse a reference that names no live record of its target type, nor
 /// one written earlier in the same ingest window. A record its writer's
-/// `only` does not admit is, to it, not there (051).
+/// `only` does not admit is, to it, not there (051), and under one that
+/// cannot be applied none is (lakelands#771).
 fn check_references(
     st: &State,
     who: &Principal,
@@ -1680,7 +1681,7 @@ fn check_references(
         };
         let Some(key) = v.as_str() else { continue };
         let slot = (target.clone(), RecordKey::from(key));
-        let live = (st.live(&slot.0, &slot.1)).filter(|r| admits(who, target, &r.fields));
+        let live = (st.live(&slot.0, &slot.1)).filter(|r| st.only_admits(who, target, &r.fields));
         if live.is_none() && !earlier.contains_key(&slot) {
             let (field, (ty, key)) = (name.clone(), slot);
             return Err(constraint(name, Case::NotLive { field, ty, key }));
@@ -3234,10 +3235,11 @@ fn known_shape(
         (st.visible(who, ty)).is_some_and(|t| readable(st, who, t, f).is_ok())
     };
     // As the store (051): a record its `only` does not admit, retired or
-    // not, or after a proposed patch, is not answered.
+    // not, or after a proposed patch, is not answered; one that cannot be
+    // applied admits none (lakelands#771).
     let stored = |ty: &TypeName, key: &RecordKey| st.records.get(&(ty.clone(), key.clone()));
     let answered = |ty: &TypeName, key: &RecordKey| {
-        seen(ty) && stored(ty, key).is_none_or(|r| admits(who, ty, &r.fields))
+        seen(ty) && stored(ty, key).is_none_or(|r| st.only_admits(who, ty, &r.fields))
     };
     match write {
         // A field the reader may not know of and a masked one both leave
@@ -3247,7 +3249,7 @@ fn known_shape(
             let mut after = live.map(|r| r.fields.clone()).unwrap_or_default();
             after.extend(patch.clone());
             patch.retain(|f, _| read(ty, f));
-            answered(ty, key) && admits(who, ty, &after)
+            answered(ty, key) && st.only_admits(who, ty, &after)
         }
         ProposedWrite::Retire { ty, key, .. } => answered(ty, key),
         // A payload is what the verb's fields become: whole to a reader who

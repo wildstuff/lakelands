@@ -732,12 +732,13 @@ fn fill_key_fields(
 fn check_references(
     view: &dyn ProjectionView,
     pending: &Pending,
-    decl: &TypeDecl,
+    ontology: &Ontology,
     ty: &TypeName,
     key: &RecordKey,
     patch: &Patch,
     who: &Principal,
 ) -> Result<()> {
+    let decl = ontology.ty(ty)?;
     for (name, v) in patch {
         let Some(f) = decl.fields.iter().find(|f| &f.name == name) else {
             continue;
@@ -750,10 +751,14 @@ fn check_references(
             continue;
         }
         // A record a holder of `only` is not admitted, or one restricted, is
-        // to it not there.
-        let only = rights::own_only(who, target);
-        let exists = (pending.record(view, target, &to)?)
-            .is_some_and(|r| !r.retired && answered(who, &r) && rights::admitted(&only, &r.fields));
+        // to it not there; under an `only` that cannot be applied, none is
+        // (lakelands#771).
+        let held = ontology.ty(target).ok();
+        let exists = (pending.record(view, target, &to)?).is_some_and(|r| {
+            !r.retired
+                && answered(who, &r)
+                && held.is_some_and(|d| rights::admits(who, d, &r.fields))
+        });
         if !exists {
             let (field, ty, key) = (name.clone(), target.clone(), to);
             return Err(constraint(
@@ -824,6 +829,7 @@ pub(crate) fn provisional(lake: &Lake, position: Position, d: &Draft) -> Event {
 pub(crate) fn owned(
     view: &dyn ProjectionView,
     pending: &Pending,
+    ontology: &Ontology,
     who: &Principal,
     decl: &TypeDecl,
     before: Option<StoredRecord>,
@@ -832,7 +838,7 @@ pub(crate) fn owned(
         Some(b)
             if !answered(who, &b)
                 || !ends_answered(view, pending, who, decl, &b.fields)?
-                || !owns(view, pending, who, decl, &b.fields)? =>
+                || !owns(view, pending, ontology, who, decl, &b.fields)? =>
         {
             Ok(None)
         }
@@ -868,15 +874,17 @@ fn ends_answered(
 
 /// Whether `who`'s grant admits a record of `decl` holding `fields`: its
 /// pairs, and for a link type each end whose type it holds `only` on,
-/// that end retired or not (051).
+/// that end retired or not (051); a grant that cannot be applied admits
+/// none (lakelands#771).
 fn owns(
     view: &dyn ProjectionView,
     pending: &Pending,
+    ontology: &Ontology,
     who: &Principal,
     decl: &TypeDecl,
     fields: &BTreeMap<FieldName, Value>,
 ) -> Result<bool> {
-    if !rights::admitted(&rights::own_only(who, &decl.name), fields) {
+    if !rights::admits(who, decl, fields) {
         return Ok(false);
     }
     for (f, end) in rights::held_ends(who, decl) {
@@ -884,7 +892,8 @@ fn owns(
             return Ok(false);
         };
         let e = pending.record(view, end, &RecordKey::from(k))?;
-        if !e.is_some_and(|e| rights::admitted(&rights::own_only(who, end), &e.fields)) {
+        let held = ontology.ty(end).ok();
+        if !e.is_some_and(|e| held.is_some_and(|d| rights::admits(who, d, &e.fields))) {
             return Ok(false);
         }
     }
@@ -898,6 +907,7 @@ fn owns(
 /// without the grant (006).
 fn own_record(
     view: &dyn ProjectionView,
+    ontology: &Ontology,
     decl: &TypeDecl,
     key: &RecordKey,
     who: &Principal,
@@ -909,7 +919,7 @@ fn own_record(
     match r {
         Some(r)
             if ends_answered(view, none, who, decl, &r.fields)?
-                && owns(view, none, who, decl, &r.fields)? =>
+                && owns(view, none, ontology, who, decl, &r.fields)? =>
         {
             Ok(r)
         }
@@ -1130,7 +1140,7 @@ impl Call<'_> {
         // key: another's is, to its write, a key that is free, refused
         // only once every check has passed, so no probe tells them apart
         // (051).
-        let own = owned(view, pending, who, decl, before.clone())?;
+        let own = owned(view, pending, &w.ontology, who, decl, before.clone())?;
         let live = own.as_ref().filter(|b| !b.retired);
         // A retired record the writer is not answered is another's too: its
         // hold is not written into (006).
@@ -1142,7 +1152,7 @@ impl Call<'_> {
             fill_key_fields(w, decl, key, &mut patch, door, who)?;
         }
         check_key_agrees(decl, key, live, &patch)?;
-        check_references(view, pending, decl, ty, key, &patch, who)?;
+        check_references(view, pending, &w.ontology, ty, key, &patch, who)?;
         cas(expected, own.as_ref())?;
         let version = Version(before.as_ref().map_or(0, |b| b.version.0) + 1);
         // Said once, here, of what this writer holds, its own drafts too.
@@ -1198,7 +1208,7 @@ impl Call<'_> {
             let value = after.fields.get("value");
             lakelands_api::seam::check_setting(key.as_str(), value, &declared, &shown)?;
         }
-        granted(!other && owns(view, pending, who, decl, &after.fields)?)?;
+        granted(!other && owns(view, pending, &w.ontology, who, decl, &after.fields)?)?;
         Ok(RecordPlan {
             draft,
             after,
@@ -1492,7 +1502,7 @@ impl Call<'_> {
         let decl = w.ontology.ty(ty)?;
         rights::not_a_view(decl)?;
         granted(rights::may_retire(self.who, decl))?;
-        let before = own_record(view.as_ref(), decl, key, self.who)?;
+        let before = own_record(view.as_ref(), &w.ontology, decl, key, self.who)?;
         cas(opts.expected_version, Some(&before))?;
         let now = self.lake.clock(&mut w);
         let mut d = self.draft(now, Origin::Authored, retirement(ty, key, before.version));
@@ -1582,7 +1592,7 @@ impl Call<'_> {
         let Some(key) = key else {
             return Ok((vec![called], Vec::new(), None));
         };
-        let record = own_record(view, w.ontology.ty(&verb.on)?, key, as_whom)?;
+        let record = own_record(view, &w.ontology, w.ontology.ty(&verb.on)?, key, as_whom)?;
         // The version before anything is judged on the record (024).
         cas(expected, Some(&record))?;
         requires(w, verb, key, &record, now)?;
@@ -1711,7 +1721,13 @@ impl Call<'_> {
             // record again (013).
             let pinned = self.pin(w.ontology.ty(&decl.on)?, Some(&decl))?;
             if let Some(key) = key {
-                let record = own_record(view.as_ref(), w.ontology.ty(&decl.on)?, key, self.who)?;
+                let record = own_record(
+                    view.as_ref(),
+                    &w.ontology,
+                    w.ontology.ty(&decl.on)?,
+                    key,
+                    self.who,
+                )?;
                 cas(opts.expected_version, Some(&record))?;
                 requires(&w, &decl, key, &record, now)?;
             }
@@ -1821,7 +1837,7 @@ impl Call<'_> {
                 let decl = w.ontology.ty(ty)?;
                 rights::not_a_view(decl)?;
                 granted(rights::may_retire(self.who, decl))?;
-                let before = own_record(view.as_ref(), decl, key, self.who)?;
+                let before = own_record(view.as_ref(), &w.ontology, decl, key, self.who)?;
                 cas(opts.expected_version, Some(&before))?;
             }
             ProposedWrite::Call {
@@ -1854,8 +1870,13 @@ impl Call<'_> {
                         self.who,
                     )?;
                 } else if let Some(key) = key {
-                    let record =
-                        own_record(view.as_ref(), w.ontology.ty(&decl.on)?, key, self.who)?;
+                    let record = own_record(
+                        view.as_ref(),
+                        &w.ontology,
+                        w.ontology.ty(&decl.on)?,
+                        key,
+                        self.who,
+                    )?;
                     cas(opts.expected_version, Some(&record))?;
                     requires(&w, &decl, key, &record, now)?;
                 }
@@ -2141,6 +2162,7 @@ impl Call<'_> {
                 granted(owns(
                     view.as_ref(),
                     &pending,
+                    &w.ontology,
                     self.who,
                     decl,
                     &plan.after.fields,
@@ -2157,7 +2179,13 @@ impl Call<'_> {
                 )?);
             }
             ProposedWrite::Retire { ty, key, opts } => {
-                let before = own_record(view.as_ref(), w.ontology.ty(ty)?, key, &proposer)?;
+                let before = own_record(
+                    view.as_ref(),
+                    &w.ontology,
+                    w.ontology.ty(ty)?,
+                    key,
+                    &proposer,
+                )?;
                 cas(opts.expected_version, Some(&before))?;
                 let body = retirement(ty, key, before.version);
                 let d = as_proposer(self.draft(now, Origin::Authored, body));
@@ -2215,7 +2243,14 @@ impl Call<'_> {
                 )?;
                 if let Some(after) = after {
                     let on = w.ontology.ty(&decl.on)?;
-                    granted(owns(view.as_ref(), &pending, self.who, on, &after.fields)?)?;
+                    granted(owns(
+                        view.as_ref(),
+                        &pending,
+                        &w.ontology,
+                        self.who,
+                        on,
+                        &after.fields,
+                    )?)?;
                 }
                 drafts.extend(own.into_iter().map(as_proposer));
                 drafts.extend(reactions);
@@ -4307,7 +4342,13 @@ pub fn restrict(
     let mut w = lake.for_write()?;
     rights::not_a_view(w.ontology.ty(ty)?)?;
     let view = lake.engine.view(None)?;
-    let before = own_record(view.as_ref(), w.ontology.ty(ty)?, key, &lake.system("host"))?;
+    let before = own_record(
+        view.as_ref(),
+        &w.ontology,
+        w.ontology.ty(ty)?,
+        key,
+        &lake.system("host"),
+    )?;
     let version = Version(before.version.0 + 1);
     let restriction = |already| {
         let (ty, key) = (ty.clone(), key.clone());
