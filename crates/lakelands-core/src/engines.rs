@@ -345,29 +345,48 @@ pub fn order_key(value: &Value) -> Vec<u8> {
     key
 }
 
-/// The fields of `decl` whose order index a lake keeps, by `setting`, the
-/// value of its `sort_index.<type>` setting at the head: those it names
-/// that the type declares with a kind the index keeps
+/// The fields of `ty` whose order index a lake keeps, by `decl`, the
+/// declaration of `ty` (of its [`kept_view`] for a kept name) at the head,
+/// and `setting`, the value of its [`sort_index_key`] setting there: those
+/// it names that the type declares with a kind the index keeps
 /// ([`lakelands_api::seam::sortable`]), once each, in the setting's order.
-/// A setting the store would refuse keeps what it can; none keeps none.
-pub fn sorted_fields(decl: &TypeDecl, setting: Option<&Value>) -> Vec<FieldName> {
-    index_fields(decl, setting, lakelands_api::seam::sortable)
+/// A view keeps none of its own; its kept records are ordered by the
+/// fields it declares. A setting the store would refuse keeps what it
+/// can; none keeps none.
+pub fn sorted_fields(ty: &TypeName, decl: &TypeDecl, setting: Option<&Value>) -> Vec<FieldName> {
+    let kept = kept_view(ty).is_some();
+    index_fields(decl, setting, kept, lakelands_api::seam::sortable)
+}
+
+/// The view a kept name (`sys:kept.<view>`) holds the records of. They are
+/// ordered as the view declares them, by the order index its
+/// `sort_index.<view>` setting asks for.
+pub fn kept_view(ty: &TypeName) -> Option<TypeName> {
+    let view = ty.as_str().strip_prefix(lakelands_api::seam::KEPT_PREFIX)?;
+    Some(TypeName::from(view))
+}
+
+/// The names whose order index the setting `sort_index.<ty>` asks for:
+/// `ty`'s own, and its kept name's where it is a view.
+pub fn ordered_names(ty: &TypeName) -> [TypeName; 2] {
+    [ty.clone(), lakelands_api::seam::kept_name(ty)]
 }
 
 /// The vector fields of `decl` a lake asks an index for, by `setting`, the
 /// value of its `vector_index.<type>` setting: those it names that the
 /// type declares as vectors, once each, in the setting's order.
 pub fn indexed_fields(decl: &TypeDecl, setting: Option<&Value>) -> Vec<FieldName> {
-    index_fields(decl, setting, lakelands_api::seam::indexable)
+    index_fields(decl, setting, false, lakelands_api::seam::indexable)
 }
 
 fn index_fields(
     decl: &TypeDecl,
     setting: Option<&Value>,
+    kept: bool,
     keeps: fn(&lakelands_api::ontology::StorageKind) -> bool,
 ) -> Vec<FieldName> {
     let mut out: Vec<FieldName> = Vec::new();
-    if decl.view.is_some() {
+    if decl.view.is_some() != kept {
         return out;
     }
     for name in setting
@@ -407,8 +426,10 @@ fn setting_for(r: &StoredRecord, prefix: &str) -> Option<TypeName> {
         .map(TypeName::from)
 }
 
-/// The key of the setting that asks for `ty`'s order index.
+/// The key of the setting that asks for `ty`'s order index: a kept name's
+/// is its view's.
 pub fn sort_index_key(ty: &TypeName) -> String {
+    let ty = kept_view(ty).unwrap_or_else(|| ty.clone());
     format!("{}{ty}", lakelands_api::seam::SORT_INDEX_SETTING)
 }
 
@@ -448,13 +469,8 @@ pub fn order_rows<'a>(
 /// Whether an order index kept by [`order_rows`] for `fields` can answer
 /// `scan`: it is ordered, first by the value of one of them. What the
 /// index cannot answer (an order by `known_at` or `seen_at`, a field the
-/// lake does not index, a view type) is sorted whole by [`scan`].
-pub fn by_order_index<'a>(
-    decl: Option<&TypeDecl>,
-    fields: &[FieldName],
-    scan: &'a Scan,
-) -> Option<&'a Order> {
-    decl.filter(|d| d.view.is_none())?;
+/// lake does not index) is sorted whole by [`scan`].
+pub fn by_order_index<'a>(fields: &[FieldName], scan: &'a Scan) -> Option<&'a Order> {
     let first = scan.order_by.first()?;
     (first.by == OrderBy::Value && fields.contains(&first.field)).then_some(first)
 }

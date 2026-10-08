@@ -299,3 +299,68 @@ text the page must hold either thins its rows, which the order index
 walks past cheaply, or picks out a few, which the text index names
 directly. Counting the few, up to a ceiling, is a short range read, and
 it tells the two apart without reading the type.
+
+## Extended: a kept view's order index
+
+A kept view's records are records of its kept name, `sys:kept.<view>`
+(049). A kept name has no declaration, and no setting could name it, so
+a page of a kept view in another order than its key read every kept
+record and sorted them. At 100 000 groups that took about 400 ms on
+SQLite and 500 ms on PostgreSQL, and held some 465 MB, more than
+computing the view holds. A host asks for an order index of a kept view
+as it does for a stored type's (lakelands#668).
+
+- **The setting names the view.** `sort_index.<view>` is taken for a
+  declared view, on fields the view declares, under the same refusals as
+  a stored type's. A vector index remains a stored type's alone. It is
+  asked for per view, not kept for every kept view: the index costs
+  every write that changes a kept group, whether or not anyone orders by
+  it.
+- **The engine reads the view's declaration.** A kept name's order
+  fields are those the view's setting names that the view declares at
+  the head (`engines::sorted_fields`, `kept_view`). A kept name still has
+  no declaration of its own, so nothing else an engine derives changes.
+- **The rows follow the kept records.** The fold puts a kept record again
+  at every write to its group, and its rows follow it as a stored
+  record's do; an ended group has none. The setting's write rebuilds the
+  kept name's rows with the view's own (`ordered_names`). A declaration
+  of the view needs nothing further: the store makes the view again,
+  putting every group. A writer's open catches up the kept name's index
+  as it does a type's: each setting asks for the indexes of
+  `ordered_names`, and of those only one that keeps a field has a mark
+  to be behind, so the view's own name, which keeps none, costs an open
+  nothing.
+- **The store does not change.** A kept page is the engine's page,
+  merged with the groups whose whole face reads otherwise (lakelands#628);
+  the store holds every row it is handed to the reader's grants
+  (`restricted`, `only`) as before, and at an earlier position the engine
+  reads the head's index and the keys changed since, as above.
+  `describe_type` names a view's indexed fields in its lifecycle.
+
+**The cost.** 200 000 records in 100 000 groups of two, a kept view of
+`count()` and `sum(v)`, a page of 10, medians of five:
+
+| a page of 10 by a measure | SQLite | PostgreSQL |
+|---|---|---|
+| no index | 357 to 433 ms, +463 MB | 471 to 911 ms, +473 MB |
+| `sort_index.<view>` on both measures | 0.16 to 0.24 ms, +0.1 MB | 1.0 to 1.2 ms, +0.1 MB |
+
+The setting's write after the ingest built the index in 0.8 s on SQLite
+and 3.9 s on PostgreSQL. With the setting written before it, the ingest
+took 59.5 s against 56.5 s on SQLite and 167 s against 156 s on
+PostgreSQL, one run each: some 5 to 8 % more for each write that changes
+a kept group. A page in an indexed order under a filter that rejects the
+rows it meets first reads past them, as a stored type's does: ascending
+by the sum where half the groups hold more than the middle value took
+220 ms on SQLite and 440 ms on PostgreSQL, holding 5 MB.
+
+**Found at the build.** At an earlier position the memory engine handed
+the merge each index row's state at that position, not at the head, so
+a key first put after it dropped out of a batch. A batch shorter than it
+asked for reads as the index's end, and a page ended early. It now
+hands the head's states, as the disk engines do, for stored types and
+kept names alike.
+
+**Not in it.** An aggregate other than a count and a pattern started over
+a view read every group, a kept view's too (lakelands#731), and a view
+that computes is computed whole.

@@ -75,6 +75,59 @@ fn a_stale_order_index_is_not_read_and_a_writers_open_rebuilds_it() {
     }
 }
 
+/// A view's setting asks for its kept name's index, and the view's own
+/// name keeps no field. A writer's open rebuilds nothing while the kept
+/// name's index is kept through the fold, and rebuilds it when its mark is
+/// gone.
+#[test]
+fn a_writers_open_catches_up_a_kept_names_index_and_not_its_views_name() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("order-index-kept-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let location = Location::sqlite("sorted", &dir);
+    let kept = fill_view(
+        SqliteOpener
+            .open(&location, OpenMode::Create)
+            .unwrap()
+            .as_ref(),
+    );
+    let db = || rusqlite::Connection::open(dir.join("projection.db")).unwrap();
+    let held = |when: &str| -> (Option<i64>, i64, i64) {
+        db().query_row(
+            &format!(
+                "SELECT (SELECT v FROM meta WHERE k = 'sorted.{kept}'), \
+                 (SELECT count(*) FROM sort_index WHERE ty = '{kept}'), \
+                 (SELECT count(*) FROM sort_index WHERE ty = 'w')"
+            ),
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap_or_else(|e| panic!("{when}: {e}"))
+    };
+    // A row under the view's own name, which a rebuild of that name drops.
+    db().execute_batch(
+        "INSERT INTO sort_index (ty, field, key, sort_key) VALUES ('w', 'v', 'k0', x'00')",
+    )
+    .unwrap();
+    drop(SqliteOpener.open(&location, OpenMode::Write).unwrap());
+    assert_eq!(
+        held("built"),
+        (Some(1), 3, 1),
+        "an open after the index is built rebuilds nothing"
+    );
+    db().execute_batch(&format!(
+        "DELETE FROM sort_index WHERE ty = '{kept}'; DELETE FROM meta WHERE k = 'sorted.{kept}'"
+    ))
+    .unwrap();
+    drop(SqliteOpener.open(&location, OpenMode::Write).unwrap());
+    assert_eq!(
+        held("mark lost"),
+        (Some(1), 3, 1),
+        "an open with the kept name's mark gone rebuilds its index"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_setting_keeps_the_rows_of_the_fields_it_names_and_no_others() {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
@@ -260,6 +313,50 @@ fn fill(engine: &dyn LakeEngine) {
     }
     p.put_record(&setting(json!(["v", "w"]), 1)).unwrap();
     p.commit(Position(1)).unwrap();
+}
+
+/// Fold a view `w` of `t`, three records its fold keeps under its kept
+/// name, and the setting `sort_index.w` on `v`; answers the kept name.
+fn fill_view(engine: &dyn LakeEngine) -> TypeName {
+    let view: Declaration = serde_json::from_value(json!({
+        "declare": "type", "name": "w",
+        "fields": [{"name": "v", "type": {"kind": "text"}}],
+        "view": {"source": "t", "group_by": ["v"], "measures": []}
+    }))
+    .unwrap();
+    let kept = lakelands_api::seam::kept_name(&TypeName::from("w"));
+    let record = |ty: &TypeName, key: &str, fields: Value| StoredRecord {
+        ty: ty.clone(),
+        key: RecordKey::from(key),
+        version: Version(1),
+        fields: serde_json::from_value(fields).unwrap(),
+        meta: Default::default(),
+        position: Position(1),
+        retired: false,
+        restricted: false,
+    };
+    let p = engine.projection();
+    p.begin().unwrap();
+    p.put_declaration(&declaration(), 1, None, Position(0))
+        .unwrap();
+    p.put_declaration(&view, 1, None, Position(0)).unwrap();
+    for i in 0..3 {
+        p.put_record(&record(
+            &kept,
+            &format!("k{i}"),
+            json!({"v": format!("v{i}")}),
+        ))
+        .unwrap();
+    }
+    let setting = TypeName::from(lakelands_api::seam::SETTING_TYPE);
+    p.put_record(&record(
+        &setting,
+        "sort_index.w",
+        json!({"key": "sort_index.w", "value": ["v"]}),
+    ))
+    .unwrap();
+    p.commit(Position(1)).unwrap();
+    kept
 }
 
 /// The state of the setting `sort_index.t` asking for `fields`, at `at`.

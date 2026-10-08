@@ -766,8 +766,13 @@ impl<'a> Reader<'a> {
         };
         let seen = |f: &FieldName| t.fields.iter().any(|d| d.name == *f);
         let settings = &self.shape.settings;
-        let setting = settings.get(&core_engines::sort_index_key(&t.name));
-        t.lifecycle.sorted = core_engines::sorted_fields(decl, setting);
+        // A view's order index is its kept records'.
+        let ordered = match decl.view {
+            Some(_) => lakelands_api::seam::kept_name(&t.name),
+            None => t.name.clone(),
+        };
+        let setting = settings.get(&core_engines::sort_index_key(&ordered));
+        t.lifecycle.sorted = core_engines::sorted_fields(&ordered, decl, setting);
         t.lifecycle.sorted.retain(seen);
         let setting = settings.get(&core_engines::vector_index_key(&t.name));
         t.lifecycle.indexed = core_engines::indexed_fields(decl, setting);

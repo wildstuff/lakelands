@@ -328,7 +328,8 @@ pub fn view_kept(value: Option<&Value>) -> bool {
 /// - `sort_index.<type>` and `vector_index.<type>` name a declared stored
 ///   type and hold an array of the names of fields it declares with a
 ///   kind that index keeps ([`sortable`], [`indexable`]) and not computed
-///   at the read; `None` or `null` asks for no index.
+///   at the read; `None` or `null` asks for no index. `sort_index` may
+///   name a declared view too: the index is kept of its kept records.
 /// - `search_weights.<type>` names a declared stored type and holds an
 ///   object of `fields` (each a vector field it declares, with a weight)
 ///   and `text_weight`, one at least, every weight one a search may give
@@ -417,23 +418,31 @@ pub fn check_setting<'a>(
         }
         return Ok(());
     }
-    let (ty, index, keeps, kinds): (_, _, fn(&crate::ontology::StorageKind) -> bool, _) =
+    let (ty, index, keeps, kinds, of): (_, _, fn(&crate::ontology::StorageKind) -> bool, _, _) =
         if let Some(ty) = key.strip_prefix(SORT_INDEX_SETTING) {
             (
                 ty,
                 "an order index",
                 sortable,
                 "text, number, decimal, boolean, date-time and reference fields",
+                "stored type or view",
             )
         } else if let Some(ty) = key.strip_prefix(VECTOR_INDEX_SETTING) {
-            (ty, "a vector index", indexable, "vector fields")
+            (
+                ty,
+                "a vector index",
+                indexable,
+                "vector fields",
+                "stored type",
+            )
         } else {
             return Ok(());
         };
-    let Some((seen, _)) = known(ty).filter(|(_, d)| d.view.is_none()) else {
+    let views = key.starts_with(SORT_INDEX_SETTING);
+    let Some((seen, _)) = known(ty).filter(|(_, d)| views || d.view.is_none()) else {
         return Err((
             "key".into(),
-            format!("`{key}` asks for {index} of `{ty}`, which is no declared stored type"),
+            format!("`{key}` asks for {index} of `{ty}`, which is no declared {of}"),
         ));
     };
     let names = match value {

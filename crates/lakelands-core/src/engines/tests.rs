@@ -154,10 +154,13 @@ fn walk_by_index(
     let mut index: Vec<(Vec<u8>, &StoredRecord)> = records
         .iter()
         .filter_map(|r| {
-            order_rows(&sorted_fields(decl, Some(&json!(["v", "w"]))), r)
-                .into_iter()
-                .find(|(f, _)| **f == first.field)
-                .map(|(_, k)| (k, r))
+            order_rows(
+                &sorted_fields(&decl.name, decl, Some(&json!(["v", "w"]))),
+                r,
+            )
+            .into_iter()
+            .find(|(f, _)| **f == first.field)
+            .map(|(_, k)| (k, r))
         })
         .collect();
     index.sort_by(|a, b| match first.dir {

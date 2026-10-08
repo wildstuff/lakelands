@@ -279,14 +279,18 @@ pub(crate) fn sorted(conn: &Connection, ty: &TypeName) -> Result<Option<Position
 }
 
 /// The fields of `ty` whose order index the lake keeps: those its
-/// `sort_index.<type>` setting at the head names that `decl` declares
-/// with a kind the index keeps.
+/// `sort_index.<type>` setting at the head names that `decl` (a kept
+/// name's view at the head) declares with a kind the index keeps.
 pub(crate) fn sorted_fields(
     conn: &Connection,
     ty: &TypeName,
     decl: Option<&TypeDecl>,
 ) -> Result<Vec<FieldName>> {
-    let Some(decl) = decl else {
+    let view = match engines::kept_view(ty) {
+        Some(view) => type_at(conn, &view, None)?,
+        None => None,
+    };
+    let Some(decl) = view.as_ref().or(decl) else {
         return Ok(Vec::new());
     };
     let setting = head_record(
@@ -295,6 +299,7 @@ pub(crate) fn sorted_fields(
         &RecordKey::from(engines::sort_index_key(ty)),
     )?;
     Ok(engines::sorted_fields(
+        ty,
         decl,
         setting.as_ref().and_then(engines::setting_value),
     ))
@@ -356,7 +361,9 @@ fn set_sorted(conn: &Connection, ty: &TypeName, through: Option<Position>) -> Re
 /// At a writer's open: rebuild, in one transaction, every order index
 /// that does not describe the head, because a writer that does not keep
 /// it (a binary before it) folded past its mark or wrote its setting, and
-/// drop the index of a type whose setting such a writer removed.
+/// drop the index of a type whose setting such a writer removed. A
+/// setting asks for the indexes of [`engines::ordered_names`]; one of
+/// those that keeps no field has no mark and is not behind.
 pub(crate) fn catch_up_sorted(conn: &Connection) -> Result<()> {
     let Some(folded) = folded(conn)? else {
         return Ok(());
@@ -376,16 +383,21 @@ pub(crate) fn catch_up_sorted(conn: &Connection) -> Result<()> {
         ],
         Ok,
     )?;
-    let behind: BTreeSet<String> = asked
-        .into_iter()
-        .filter(|ty| !marks.iter().any(|(t, v)| t == ty && *v as u64 == folded.0))
-        .chain(
-            marks
-                .iter()
-                .filter(|(_, v)| *v as u64 != folded.0)
-                .map(|(t, _)| t.clone()),
-        )
+    let mut behind: BTreeSet<String> = marks
+        .iter()
+        .filter(|(_, v)| *v as u64 != folded.0)
+        .map(|(t, _)| t.clone())
         .collect();
+    for ty in asked
+        .iter()
+        .flat_map(|t| engines::ordered_names(&t.as_str().into()))
+    {
+        if !marks.iter().any(|(t, _)| t == ty.as_str())
+            && !sorted_fields(conn, &ty, type_at(conn, &ty, None)?.as_ref())?.is_empty()
+        {
+            behind.insert(ty.to_string());
+        }
+    }
     if behind.is_empty() {
         return Ok(());
     }
@@ -523,9 +535,6 @@ pub(crate) fn index_record(
     conn.prepare_cached("DELETE FROM full_text WHERE rowid = ?1")
         .and_then(|mut s| s.execute(params![row]))
         .map_err(sql)?;
-    let Some(decl) = decl else {
-        return Ok(());
-    };
     for (field, sort_key) in engines::order_rows(sorted, r) {
         conn.prepare_cached(
             "INSERT INTO sort_index (ty, field, key, sort_key) VALUES (?1, ?2, ?3, ?4)",
@@ -533,6 +542,9 @@ pub(crate) fn index_record(
         .and_then(|mut s| s.execute(params![ty, field.as_str(), key, sort_key]))
         .map_err(sql)?;
     }
+    let Some(decl) = decl else {
+        return Ok(());
+    };
     for e in engines::links_of(decl, r, None) {
         run(
             conn,
@@ -605,7 +617,11 @@ pub(crate) fn put_record(conn: &Connection, kept: &mut Kept, r: &StoredRecord) -
     RECORDS.put(conn, &[&r.ty.as_str(), &r.key.as_str()], r.position, &state)?;
     if is_head(conn, &r.ty, &r.key, r.position)? {
         if !kept.contains_key(&r.ty) {
-            let decl = type_at(conn, &r.ty, None)?;
+            // A kept name has no declaration; its order fields are its view's.
+            let decl = match engines::kept_view(&r.ty) {
+                Some(_) => None,
+                None => type_at(conn, &r.ty, None)?,
+            };
             let sorted = sorted_fields(conn, &r.ty, decl.as_ref())?;
             kept.insert(r.ty.clone(), (decl, sorted));
         }
@@ -614,7 +630,9 @@ pub(crate) fn put_record(conn: &Connection, kept: &mut Kept, r: &StoredRecord) -
         // The setting's write rebuilds the index it asks for, so the index
         // describes the head from the next read on.
         if let Some(ty) = engines::sort_index_type(r) {
-            rebuild_sorted(conn, &ty, r.position)?;
+            for ty in engines::ordered_names(&ty) {
+                rebuild_sorted(conn, &ty, r.position)?;
+            }
             kept.clear();
         }
     }

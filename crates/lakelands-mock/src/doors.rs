@@ -1934,7 +1934,8 @@ fn index_fields(
         return Vec::new();
     };
     let mut out: Vec<FieldName> = Vec::new();
-    if t.view.is_some() {
+    // As the store: a view's order index is its kept records'.
+    if t.view.is_some() && prefix != SORT_INDEX_SETTING {
         return out;
     }
     for name in setting

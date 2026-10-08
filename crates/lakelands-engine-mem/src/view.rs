@@ -26,7 +26,7 @@ use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Proposal, ProposalFilter};
 use lakelands_core::engines;
 
-use crate::projection::Projection;
+use crate::projection::{History, Projection};
 use crate::{Lake, lock};
 
 /// A read view of one lake's projection at one position.
@@ -115,7 +115,7 @@ impl ProjectionView for MemView {
             } else {
                 Vec::new()
             };
-            if let Some(first) = engines::by_order_index(decl, &sorted, scan) {
+            if let Some(first) = engines::by_order_index(&sorted, scan) {
                 let changed = match at {
                     Some(at) if Some(at) != p.folded => {
                         match p.changed(ty, at, engines::changed_ceiling(scan.limit)) {
@@ -125,10 +125,13 @@ impl ProjectionView for MemView {
                     }
                     _ => None,
                 };
+                // The index and the records without a row answer the head,
+                // a key put since included: the changed keys' states at
+                // `at` take their place.
                 let head = |key: &RecordKey| {
                     p.records
                         .get(&(ty.clone(), key.clone()))
-                        .and_then(|h| h.at(at))
+                        .and_then(History::latest)
                         .cloned()
                 };
                 let sorted = |from: Option<(&[u8], &str)>, n| {
@@ -143,7 +146,7 @@ impl ProjectionView for MemView {
                     // Key-ordered batches, less the records the index holds
                     // for the field.
                     loop {
-                        let batch = p.records_after(ty, at, from.as_deref(), n);
+                        let batch = p.records_after(ty, p.folded, from.as_deref(), n);
                         let done = batch.len() < n as usize;
                         for r in batch {
                             from = Some(r.key.to_string());

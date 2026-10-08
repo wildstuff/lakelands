@@ -790,8 +790,21 @@ A host that already has a store of its own moves in four steps.
     holds its rows and those groups, a count is the engine's and those
     groups, and `get` reads its one record. For every other reader, and
     for that one while no group differs, the page and the count are the
-    engine's alone. A page in another order, an aggregate and a
-    pattern's start read the whole view for every reader (lakelands#668).
+    engine's alone. A page in another order reads the engine's page too
+    where `sort_index.<view>` asks for an order index on that field,
+    below; without it, it reads the whole view for every reader
+    (lakelands#668). An aggregate other than a count and a pattern's
+    start read every group a page of kept records at a time, holding a
+    page, not the view (lakelands#731).
+  - **A kept view is indexed by its setting:** `sort_index.<view>`
+    names fields the view declares, and a page ordered by one of them
+    reads its page (lakelands#668). At 100 000 groups a page of 10 by a
+    measure took 0.2 ms on SQLite and 1 ms on PostgreSQL where it took
+    about 400 and 500 ms and held some 465 MB without the index. Each
+    write that changes a kept group writes its rows too: some 5 to 8 %
+    more on an ingest. The setting's write builds the index in one pass,
+    0.8 s and 3.9 s at that size. A view that computes has no records
+    to index.
   - **Not every view can be kept:** only counts, sums and averages of
     what is certainly a number, and a `min` or `max` of a number or an
     instant under text or reference group fields. The setting's write is
