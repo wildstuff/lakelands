@@ -256,30 +256,10 @@ impl<'a> Plan<'a> {
         }
         let old: BTreeMap<&FieldName, &FieldDecl> =
             before.fields.iter().map(|f| (&f.name, f)).collect();
-        let new: BTreeSet<&FieldName> = after.fields.iter().map(|f| &f.name).collect();
-        let mut sources: BTreeMap<&FieldName, &FieldName> = BTreeMap::new();
-        let mut renamed: BTreeSet<&FieldName> = BTreeSet::new();
-        for (from, to) in &migration.renames {
-            if !old.contains_key(from) {
-                return Err(Case::RenameFromUnknown { from: from.clone() });
-            }
-            if !new.contains(to) {
-                return Err(Case::RenameToUnknown { to: to.clone() });
-            }
-            if !renamed.insert(from) {
-                return Err(Case::RenameRepeated {
-                    field: from.clone(),
-                });
-            }
-            if sources.insert(to, from).is_some() {
-                return Err(Case::RenameRepeated { field: to.clone() });
-            }
-        }
-        for to in sources.keys() {
-            if old.contains_key(to) && !renamed.contains(to) {
-                return Err(Case::RenameCollides { to: (*to).clone() });
-            }
-        }
+        let pairs = migration.renamed_fields(before)?;
+        let sources: BTreeMap<&FieldName, &FieldName> =
+            pairs.iter().map(|(f, t)| (*t, *f)).collect();
+        let renamed: BTreeSet<&FieldName> = pairs.iter().map(|(f, _)| *f).collect();
         let mut steps: Vec<Step<'a>> = after
             .fields
             .iter()

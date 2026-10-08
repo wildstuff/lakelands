@@ -9,7 +9,7 @@ use lakelands_api::describe::{
     TypeDescription, TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
 };
 use lakelands_api::error::{
-    Case, Error, Missing, Names, Naming, Place, Refusal, Result, Revision, Said, Seam, Unmocked,
+    Case, Error, Missing, Names, Place, Refusal, Result, Revision, Said, Seam, Unmocked,
 };
 use lakelands_api::event::{Event, EventBody, EventId};
 use lakelands_api::expr::kind::Kind;
@@ -2321,10 +2321,10 @@ fn plan_propose(
     key: Option<lakelands_api::IdempotencyKey>,
 ) -> Result<(Position, ProposalId)> {
     // A change of shape is read as its proposer's view, and logged so.
-    let mut write = write;
+    let (mut write, mut author) = (write, None);
     match &mut write {
         ProposedWrite::Declare { declarations } => redeclared(st, who, declarations)?,
-        ProposedWrite::Migrate { migration, .. } => authored(st, who, migration)?,
+        ProposedWrite::Migrate { migration, .. } => author = authored(st, who, migration)?,
         _ => {}
     }
     // A proposal is checked as its write would be, so that an accept
@@ -2362,7 +2362,7 @@ fn plan_propose(
     let write = match write {
         ProposedWrite::Migrate { migration, .. } => {
             let head = Position(batch.peek().0.saturating_sub(1));
-            let report = preflight(st, head, &migration, who)?;
+            let report = preflight(st, head, (&migration, author.as_ref()), who)?;
             if !report.lossless {
                 return Err(lossy(st, who, &migration, head, report));
             }
@@ -2727,48 +2727,24 @@ fn unbound_view(start: &TypeName, reached: &DeclaredType, step: Place) -> Result
 /// declared as `before`, as its author's view, as the store does: a field
 /// `who` may not know of, or a relation it is not shown, is put back as
 /// declared, at its declared place, and so are such link fields of each
-/// relation `to` keeps. A shape that names one declares it twice, a rename
-/// from one is from no field or relation, and a field one reads is
-/// refused on that field.
+/// relation `to` keeps or renames that it is shown. A shape that names one
+/// declares it twice, found where the declaration is checked; a rename
+/// from one is judged against the author's view ([`preflight`]); a field
+/// one reads is refused on that field.
 fn as_author(
     (st, who): (&State, &Principal),
     before: &TypeDecl,
     to: &mut TypeDecl,
-    renames: &[(FieldName, FieldName)],
     relations: &[(RelationName, RelationName)],
 ) -> Result<()> {
     let hidden = |t: &TypeDecl, f: &FieldDecl| access(who, t, f) == Access::None;
     let unshown = |r: &RelationDecl| !relation_shown(st, who, before, r);
-    for (old, new) in relations {
-        if before
-            .relations
-            .iter()
-            .any(|r| &r.name == old && unshown(r))
-        {
-            // To its author it renames no relation the type has.
-            let (from, to) = (old.clone(), new.clone());
-            let said = Said::from(Case::RelationRenameNamesNone);
-            return Err(invalid(said.within(Place::RelationRename { from, to })));
-        }
-    }
-    let owner = [of_type(&to.name)];
     let put_back = |t: &TypeDecl, declared: &[FieldDecl], fields: &mut Vec<FieldDecl>| {
         for (i, f) in declared.iter().enumerate().filter(|(_, f)| hidden(t, f)) {
             fields.insert(i.min(fields.len()), f.clone());
         }
     };
     let unknown: Vec<&FieldDecl> = (before.fields.iter().filter(|f| hidden(before, f))).collect();
-    for f in &unknown {
-        if renames.iter().any(|(from, _)| from == &f.name) {
-            let from = f.name.clone();
-            return Err(invalid(Case::RenameFromUnknown { from }));
-        }
-        if field(to, &f.name).is_some() {
-            let (what, name) = (Naming::Field, f.name.to_string());
-            let case = at(&owner, Case::DeclaredTwice { what, name });
-            return Err(invalid_field(&f.name, case));
-        }
-    }
     put_back(before, &before.fields, &mut to.fields);
     // As the store: a valid time over a field the author may not know of,
     // left out, stands as declared.
@@ -2785,7 +2761,12 @@ fn as_author(
         }
     }
     for r in &mut to.relations {
-        if let Some(old) = before.relations.iter().find(|o| o.name == r.name) {
+        // As the store: a renamed relation is the one it was, and one its
+        // author is not shown is none to rename.
+        let was = relations.iter().find(|(_, new)| new == &r.name);
+        let name = was.map_or(&r.name, |(old, _)| old);
+        let shown = |o: &&RelationDecl| &o.name == name && !unshown(o);
+        if let Some(old) = before.relations.iter().find(shown) {
             let link = links::link_type(&before.name, old);
             put_back(&link, &old.fields, &mut r.fields);
         }
@@ -2796,10 +2777,6 @@ fn as_author(
         .enumerate()
         .filter(|(_, r)| unshown(r))
     {
-        if to.relations.iter().any(|t| t.name == r.name) {
-            let (what, name) = (Naming::Relation, r.name.to_string());
-            return Err(invalid(at(&owner, Case::DeclaredTwice { what, name })));
-        }
         to.relations.insert(i.min(to.relations.len()), r.clone());
     }
     // What a relation it is not shown reads: its `via`, its match's own side.
@@ -2820,20 +2797,27 @@ fn as_author(
     }
 }
 
-/// A migration read as its author's view of its type.
-fn authored(st: &State, who: &Principal, m: &mut Migration) -> Result<()> {
+/// A migration read as its author's view of its type, and that view, for
+/// [`preflight`] to judge its names against, as the store does.
+fn authored(st: &State, who: &Principal, m: &mut Migration) -> Result<Option<Authored>> {
     if st.types.contains_key(&m.to.name) && st.visible(who, &m.to.name).is_none() {
         return Err(no_type(&m.to.name));
     }
     let renames = Some(&m.relation_renames[..]);
     reads_as_author(st, who, &[Declaration::Type(m.to.clone())], renames)?;
-    match st.types.get(&m.to.name) {
-        Some(before) => {
-            let (renames, relations) = (&m.renames, &m.relation_renames);
-            as_author((st, who), &before.decl, &mut m.to, renames, relations)
-        }
-        None => Ok(()),
-    }
+    let Some(before) = st.types.get(&m.to.name) else {
+        return Ok(None);
+    };
+    let (sent, mut known) = (m.clone(), before.decl.clone());
+    known_fields((st, who), &mut known);
+    as_author((st, who), &before.decl, &mut m.to, &m.relation_renames)?;
+    Ok(Some(Authored { sent, known }))
+}
+
+/// A migration as its author sent it, and the type as its author sees it.
+struct Authored {
+    sent: Migration,
+    known: TypeDecl,
 }
 
 /// As the store: a key and a valid time name fields of their type, and a
@@ -3039,7 +3023,7 @@ fn redeclared(st: &State, who: &Principal, declarations: &mut [Declaration]) -> 
         if let Declaration::Type(t) = d
             && let Some(before) = st.types.get(&t.name)
         {
-            as_author((st, who), &before.decl, t, &[], &[])?;
+            as_author((st, who), &before.decl, t, &[])?;
         }
     }
     Ok(())
@@ -3448,7 +3432,7 @@ fn listed(st: &State, who: &Principal, d: &Declaration) -> bool {
 fn preflight(
     st: &State,
     head: Position,
-    m: &Migration,
+    (m, author): (&Migration, Option<&Authored>),
     who: &Principal,
 ) -> Result<MigrationReport> {
     let ty = &m.to.name;
@@ -3469,6 +3453,14 @@ fn preflight(
         let what = Unmocked::Rekey;
         return Err(invalid(Case::MockCannot { what }));
     }
+    // As the store: the shape is checked as a declaration, its reshape
+    // forgiven, so a name it holds twice is found here.
+    check_declaration(st, who, &Declaration::Type(m.to.clone())).or_else(|e| {
+        match e.case().map(|s| &s.case) {
+            Some(Case::Reshapes { .. } | Case::ReshapesLinks { .. }) => Ok(()),
+            _ => Err(e),
+        }
+    })?;
     // The refusal of a migration that takes away a field a declaration
     // reads, said after the migration, at the reader where it is named.
     let after_it = |said: Said| {
@@ -3598,6 +3590,12 @@ fn preflight(
     }
     // As the store: and the type it migrates to reads only fields it has.
     reads_its_type(st, &Declaration::Type(m.to.clone()))?;
+    // As the store: the renames as their author sent them are judged
+    // against the type as it sees it, then against the type.
+    if let Some(a) = author {
+        a.sent.renamed_fields(&a.known).map_err(invalid)?;
+    }
+    m.renamed_fields(&t.decl).map_err(invalid)?;
     let renamed = |old: &FieldName| -> FieldName {
         m.renames
             .iter()
@@ -3665,6 +3663,9 @@ fn preflight(
         .collect();
     // As the store: a renamed relation keeps its edges; its link records
     // move to the new name's link type, which must hold none.
+    if let Some(a) = author {
+        a.sent.renamed_relations(&a.known).map_err(invalid)?;
+    }
     let pairs = m.renamed_relations(&t.decl).map_err(invalid)?;
     let held = |lt: &TypeName| st.records.values().filter(|r| &r.ty == lt).count() as u64;
     let mut relations = Vec::new();
@@ -4814,7 +4815,7 @@ impl Catalog for MockCatalog {
                     return Err(changed());
                 }
                 let head = Position(accepted.0.saturating_sub(1));
-                let report = preflight(&st, head, &migration, who)?;
+                let report = preflight(&st, head, (&migration, None), who)?;
                 // As the store: nor does it take away a mark set since.
                 if report.restated != shown.restated {
                     return Err(changed());
@@ -5159,8 +5160,8 @@ impl Catalog for MockCatalog {
         let log = self.log();
         let (position, st) = self.state_at(&log, None)?;
         let mut migration = migration;
-        authored(&st, who, &mut migration)?;
-        let data = preflight(&st, position, &migration, who)?;
+        let author = authored(&st, who, &mut migration)?;
+        let data = preflight(&st, position, (&migration, author.as_ref()), who)?;
         let data = shown(&st, who, &migration, position, data);
         Ok(Reply { position, data })
     }
@@ -5262,8 +5263,8 @@ impl Catalog for MockCatalog {
         let mut log = self.log();
         let (head, st) = self.state_at(&log, None)?;
         let mut migration = migration;
-        authored(&st, who, &mut migration)?;
-        let report = preflight(&st, head, &migration, who)?;
+        let author = authored(&st, who, &mut migration)?;
+        let report = preflight(&st, head, (&migration, author.as_ref()), who)?;
         if shown(&st, who, &migration, head, report.clone()).report_id != report_id {
             return Err(invalid(Case::MigrationStale));
         }

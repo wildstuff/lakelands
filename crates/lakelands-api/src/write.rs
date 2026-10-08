@@ -660,6 +660,40 @@ pub struct Migration {
 }
 
 impl Migration {
+    /// The fields the migration renames, as pairs of the old name and the
+    /// new. A pair names a field of `before` and one of the new shape, each
+    /// once, and no new name is a field `before` keeps. Otherwise the case
+    /// that says why. Judged against an author's view of the type, a field
+    /// it may not know of is no field to it (lakelands#750). It lives in
+    /// the contract so that the mock refuses the same.
+    pub fn renamed_fields(&self, before: &TypeDecl) -> Result<Vec<(&FieldName, &FieldName)>, Case> {
+        let has = |t: &TypeDecl, n: &FieldName| t.fields.iter().any(|f| &f.name == n);
+        let mut out: Vec<(&FieldName, &FieldName)> = Vec::new();
+        for (from, to) in &self.renames {
+            if !has(before, from) {
+                return Err(Case::RenameFromUnknown { from: from.clone() });
+            }
+            if !has(&self.to, to) {
+                return Err(Case::RenameToUnknown { to: to.clone() });
+            }
+            if out.iter().any(|(f, _)| *f == from) {
+                let field = from.clone();
+                return Err(Case::RenameRepeated { field });
+            }
+            if out.iter().any(|(_, t)| *t == to) {
+                return Err(Case::RenameRepeated { field: to.clone() });
+            }
+            out.push((from, to));
+        }
+        let renamed = |n: &FieldName| out.iter().any(|(f, _)| *f == n);
+        let mut onto: Vec<&FieldName> = out.iter().map(|(_, t)| *t).collect();
+        onto.sort();
+        match onto.into_iter().find(|t| has(before, t) && !renamed(t)) {
+            Some(to) => Err(Case::RenameCollides { to: to.clone() }),
+            None => Ok(out),
+        }
+    }
+
     /// The relations the migration renames, each as it stood on `before`
     /// and as it stands. A pair names a relation of the type before and
     /// one of `to`, each once, and frees the old name. A rename moves edges

@@ -50,7 +50,15 @@ pub(super) fn declaration(st: &State, d: &Declaration) -> Result<()> {
             let owner = [Place::Type {
                 name: t.name.clone(),
             }];
+            // As the store: a field named twice is refused at the second,
+            // a hidden one put back under a name its author sends again too.
+            let mut seen = std::collections::BTreeSet::new();
             for f in &t.fields {
+                if !seen.insert(&f.name) {
+                    let (what, name) = (Naming::Field, f.name.to_string());
+                    let case = at(&owner, Case::DeclaredTwice { what, name });
+                    return Err(invalid_field(&f.name, case));
+                }
                 field(&owner, f)?;
             }
             let mut named = std::collections::BTreeSet::new();
