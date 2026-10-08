@@ -36,7 +36,7 @@ use lakelands_api::seam::{
 use lakelands_api::write::{
     Carrier, Committed, Declaration, FieldConversion, FunctionDecl, Migration, MigrationReport,
     ObjectSetDecl, Outcome, Proposal, ProposalFilter, ProposalState, ProposedWrite, Recompute,
-    ValueTypeMigration, WriteOpts,
+    ValueTypeMigration, ValueTypeReport, WriteOpts,
 };
 use lakelands_api::{Catalog, CommitStream, SourceStream};
 
@@ -2277,9 +2277,10 @@ fn tightening(
     who: &Principal,
     head: Position,
     m: &ValueTypeMigration,
-) -> Result<lakelands_api::write::ValueTypeReport> {
+) -> Result<ValueTypeReport> {
     check_new_value_type(st, who, &m.to)?;
-    let report = crate::valuetypes::preflight(st, head, m)?;
+    let shown = |r: &mut ValueTypeReport| conditions(st, who, r, &m.renames);
+    let report = crate::valuetypes::preflight(st, head, m, &shown)?;
     renames_shown(st, who, m, &report)?;
     if !report.fits {
         let (value_type, misfits) = (m.to.name.clone(), report.misfits);
@@ -2291,6 +2292,132 @@ fn tightening(
         }));
     }
     Ok(report)
+}
+
+/// As the store: in a value type's `report`, what may name an old value of
+/// `renames` in a condition, none without renames. A declaration in force
+/// whose kept expressions hold one as a text literal, wherever it stands,
+/// in the store's order (value types, types, functions, verbs, triggers,
+/// object sets, each by name), then a live aging rule on a type that uses
+/// the value type that moves from or to one, by key. One `who` is shown,
+/// as `describe` shows a declaration and a read a rule's record, is named;
+/// any other only sets `conditions_unshown`.
+fn conditions(
+    st: &State,
+    who: &Principal,
+    report: &mut ValueTypeReport,
+    renames: &[(String, String)],
+) {
+    use lakelands_api::expr::{Literal, children};
+    (report.conditions, report.conditions_unshown) = (Vec::new(), false);
+    if renames.is_empty() {
+        return;
+    }
+    let old = |t: &str| renames.iter().any(|(o, _)| o == t);
+    fn holds(e: &Expr, old: &dyn Fn(&str) -> bool) -> bool {
+        matches!(e, Expr::Lit { value: Literal::Text(t) } if old(t))
+            || children(e).any(|c| holds(c, old))
+    }
+    let names = |c: &Condition| expr::typed(c).is_ok_and(|e| holds(&e, &old));
+    let seen = describe_lake(&who.lake, st, who);
+    let by_name = |a: &Declaration, b: &Declaration| a.what().cmp(&b.what());
+    let sorted = |mut ds: Vec<Declaration>| {
+        ds.sort_by(by_name);
+        ds
+    };
+    let declared = [
+        sorted(
+            st.value_types
+                .iter()
+                .cloned()
+                .map(Declaration::ValueType)
+                .collect(),
+        ),
+        (st.types.values())
+            .map(|t| Declaration::Type(t.decl.clone()))
+            .collect(),
+        sorted(
+            st.functions
+                .iter()
+                .cloned()
+                .map(Declaration::Function)
+                .collect(),
+        ),
+        st.verbs.values().cloned().map(Declaration::Verb).collect(),
+        sorted(
+            st.triggers
+                .iter()
+                .cloned()
+                .map(Declaration::Trigger)
+                .collect(),
+        ),
+        sorted(
+            st.object_sets
+                .iter()
+                .cloned()
+                .map(Declaration::ObjectSet)
+                .collect(),
+        ),
+    ];
+    for d in declared.iter().flatten() {
+        let mut kept: Vec<&Condition> = Vec::new();
+        match d {
+            Declaration::Type(t) => {
+                kept.extend(t.fields.iter().filter_map(|f| f.derived.as_ref()));
+                if let Some(v) = &t.view {
+                    kept.extend(v.r#where.as_ref());
+                    kept.extend(v.measures.iter().map(|m| &m.expr));
+                }
+            }
+            Declaration::ValueType(v) => kept.extend(v.constraint.as_ref()),
+            Declaration::Verb(v) => {
+                kept.extend(v.requires.as_ref());
+                if let VerbEffect::Write { set } = &v.effect {
+                    kept.extend(set.iter().map(|a| &a.value));
+                }
+            }
+            Declaration::Trigger(t) => kept.extend(t.when.as_ref()),
+            Declaration::ObjectSet(o) => kept.push(&o.filter),
+            Declaration::Function(f) => kept.extend(f.expr.as_ref()),
+        }
+        if !kept.into_iter().any(names) {
+            continue;
+        }
+        let shown = match d {
+            Declaration::Type(t) => (seen.types.iter())
+                .any(|s| s.name == t.name && (t.view.is_none() || s.view.is_some())),
+            Declaration::Verb(v) => seen.verbs.iter().any(|s| s.name == v.name),
+            Declaration::Trigger(t) => seen.triggers.iter().any(|s| s.name == t.name),
+            Declaration::ObjectSet(o) => seen.object_sets.iter().any(|s| s.name == o.name),
+            Declaration::Function(f) => seen.functions.iter().any(|s| s.name == f.name),
+            Declaration::ValueType(_) => true,
+        };
+        match shown {
+            true => report.conditions.push(d.what()),
+            false => report.conditions_unshown = true,
+        }
+    }
+    let using = crate::valuetypes::using_types(st, &report.value_type);
+    let rule = TypeName::from(crate::aging::RULE_TYPE);
+    let reads =
+        |f: &str| (st.visible(who, &rule)).is_some_and(|t| readable(st, who, t, &f.into()).is_ok());
+    let readable = ["on", "from", "to"].into_iter().all(reads);
+    let rules = st.records.values().filter(|r| r.ty == rule && !r.retired);
+    for r in rules {
+        let text = |n: &str| r.fields.get(n).and_then(Value::as_str);
+        let moves = |n: &str| text(n).is_some_and(old);
+        if !text("on").is_some_and(|t| using.contains(&t.into())) || !(moves("from") || moves("to"))
+        {
+            continue;
+        }
+        let answered = who.grants.restricted || !r.restricted;
+        match readable && answered && admits(who, &rule, &r.fields) {
+            true => report
+                .conditions
+                .push(format!("the aging rule `{}`", r.key)),
+            false => report.conditions_unshown = true,
+        }
+    }
 }
 
 /// As the store: a migration that renames values writes every field that
@@ -5168,6 +5295,27 @@ impl Catalog for MockCatalog {
             };
             let listing = (&then, made.as_ref(), p.position);
             p.write = shown.and_then(|mut w| known_shape(&st, who, &mut w, listing).then_some(w));
+            // As the store: a value type's report holds the conditions its
+            // reader is shown, judged with the grants followed to the
+            // proposal on the lake as it stood before it, and its id is
+            // made again there.
+            if let Some(ProposedWrite::MigrateValueType {
+                to,
+                renames,
+                report,
+            }) = &mut p.write
+            {
+                let before = Position(p.position.0.saturating_sub(1));
+                if !renames.is_empty() {
+                    match self.state_at(&self.log(), Some(before)) {
+                        Ok((_, was)) => conditions(&was, &then, report, renames),
+                        Err(_) => {
+                            (report.conditions, report.conditions_unshown) = (Vec::new(), true)
+                        }
+                    }
+                }
+                report.report_id = crate::valuetypes::report_id(report, to, renames, before);
+            }
             p.more = p.write != logged;
         }
         rows.retain(|p| {
@@ -5342,7 +5490,8 @@ impl Catalog for MockCatalog {
         // As the store: a use and a misfit are shown where the caller is
         // shown the type and reads the field; the totals, `fits` and the id
         // stay, and renames are not granted to one shown less.
-        let mut data = crate::valuetypes::preflight(&st, head, &m)?;
+        let shown = |r: &mut ValueTypeReport| conditions(&st, who, r, &m.renames);
+        let mut data = crate::valuetypes::preflight(&st, head, &m, &shown)?;
         renames_shown(&st, who, &m, &data)?;
         let read = |ty: &TypeName, f: &FieldName| {
             (st.visible(who, ty)).is_some_and(|t| readable(&st, who, t, f).is_ok())
@@ -5369,7 +5518,8 @@ impl Catalog for MockCatalog {
         let mut log = self.log();
         let (head, st) = self.state_at(&log, None)?;
         check_new_value_type(&st, who, &m.to)?;
-        let report = crate::valuetypes::preflight(&st, head, &m)?;
+        let shown = |r: &mut ValueTypeReport| conditions(&st, who, r, &m.renames);
+        let report = crate::valuetypes::preflight(&st, head, &m, &shown)?;
         if report.report_id != report_id {
             return Err(invalid(Case::MigrationStale));
         }

@@ -43,7 +43,8 @@ use lakelands_api::seam::{FEED_EXAMINED, FeedFilter};
 use lakelands_api::tools::{Door, tools};
 use lakelands_api::write::{
     Carrier, Declaration, FunctionDecl, Migration, MigrationReport, ObjectSetDecl, Outcome,
-    Proposal, ProposalFilter, ProposalState, ProposedWrite, Recompute, WriteOpts,
+    Proposal, ProposalFilter, ProposalState, ProposedWrite, Recompute, ValueTypeMigration,
+    ValueTypeReport, WriteOpts,
 };
 use lakelands_api::{Catalog, LakeStore, WriteContext};
 use serde_json::json;
@@ -194,6 +195,8 @@ macro_rules! door_checks {
             #[own_principals]
             a_verb_names_no_system_type_but_a_link_type,
             ingest_judges_a_record_around_its_duplicate_test,
+            #[own_principals]
+            a_value_types_report_names_its_conditions_as_the_store_does,
             a_dependent_field_declared_clear_is_cleared_with_its_input,
             two_writers_keep_each_others_fields,
             per_field_meta_names_the_writer_and_the_position,
@@ -6926,6 +6929,133 @@ pub async fn every_path_a_pattern_names_is_one_its_rows_hold(store: Arc<dyn Lake
         rows.len() == 1 && rows[0].is_empty(),
         "a masked field projected: {rows:?}"
     );
+}
+
+/// A value type's rename on a lake, as the owner preflights it and as the
+/// owner and a reader who is not shown `credit.hush` or the type `cold`
+/// are listed the owner's proposal of it.
+async fn a_rename_reported(store: Arc<dyn LakeStore>) -> [ValueTypeReport; 3] {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    let st = json!({"kind": "text", "value_type": "st"});
+    for d in [
+        json!({"declare": "value_type", "name": "st", "kind": "text", "one_of": ["a", "b"]}),
+        json!({"declare": "type", "name": "credit",
+            "fields": [{"name": "s", "type": st}, {"name": "hush", "type": st}]}),
+        json!({"declare": "type", "name": "cold", "fields": [{"name": "s", "type": st}]}),
+        json!({"declare": "object_set", "name": "hot", "of": "credit", "where": "s = 'a'"}),
+        json!({"declare": "object_set", "name": "chill", "of": "cold", "where": "s = 'a'"}),
+        json!({"declare": "function", "name": "fa", "backing": "expr",
+            "inputs": [{"name": "x", "type": {"kind": "text"}}], "expr": "x = 'a'"}),
+    ] {
+        c.declare(own, serde_json::from_value(d).unwrap())
+            .await
+            .unwrap();
+    }
+    let rule = json!({"on": "credit", "field": "s", "from": "a", "to": "b", "when": "true"});
+    for (t, k, v) in [
+        ("credit", "k1", json!({"s": "a", "hush": "a"})),
+        ("cold", "k1", json!({"s": "a"})),
+        (lakelands_api::seam::AGING_RULE_TYPE, "r1", rule),
+    ] {
+        let p = serde_json::from_value(v).unwrap();
+        c.upsert(own, &ty(t), &key(k), p, WriteOpts::default())
+            .await
+            .unwrap();
+    }
+    let to = serde_json::from_value(json!({"name": "st", "kind": "text", "one_of": ["aa", "b"]}));
+    let to: lakelands_api::ontology::ValueTypeDecl = to.unwrap();
+    let renames = vec![("a".to_owned(), "aa".to_owned())];
+    let m = ValueTypeMigration {
+        to: to.clone(),
+        renames: renames.clone(),
+    };
+    let preflight = c
+        .migrate_value_type(own, m)
+        .await
+        .expect("the preflight")
+        .data;
+    let report = Default::default();
+    let w = ProposedWrite::MigrateValueType {
+        to: Box::new(to),
+        renames,
+        report,
+    };
+    c.propose(own, w, "renamed".into()).await.expect("proposed");
+    let grants = json!({"default": "write", "schema": true, "review": true, "types": {
+        "credit": {"fields": {"hush": "none"}}, "cold": {"default": "none"}}});
+    let reader = principal(
+        store.lake(),
+        PrincipalKind::Agent,
+        "reader",
+        serde_json::from_value(grants).unwrap(),
+    );
+    let listed = |who: Principal| {
+        let c = c.clone();
+        async move {
+            let listed = c
+                .proposals(&who, ProposalFilter::default())
+                .await
+                .unwrap()
+                .data;
+            match listed.into_iter().next().and_then(|p| p.write) {
+                Some(ProposedWrite::MigrateValueType { report, .. }) => *report,
+                other => panic!("the rename is listed to `{}`: {other:?}", who.id),
+            }
+        }
+    };
+    [preflight, listed(own.clone()).await, listed(reader).await]
+}
+
+/// A value type's report says what may name an old value in a condition,
+/// as its reader is shown it, on the mock as on the store (lakelands#766):
+/// the owner's preflight and listing name both object sets and the aging
+/// rule, under one id; a reader not shown `cold` or `credit.hush` is
+/// listed the use and the conditions it is shown, the rest as unshown,
+/// under an id made again for it. The reports are the mock's, but for
+/// their ids, which name a position.
+pub async fn a_value_types_report_names_its_conditions_as_the_store_does(
+    store: Arc<dyn LakeStore>,
+) {
+    let [pre, own, reader] = a_rename_reported(store).await;
+    let set = |n: &str| format!("the object_set declaration `{n}`");
+    let fa = "the function declaration `fa`".to_owned();
+    let all = vec![
+        fa.clone(),
+        set("chill"),
+        set("hot"),
+        "the aging rule `r1`".to_owned(),
+    ];
+    assert_eq!(
+        (&pre.conditions, pre.conditions_unshown),
+        (&all, false),
+        "{pre:?}"
+    );
+    assert_eq!(own, pre, "the owner is listed its preflight");
+    let shown = vec![fa, set("hot"), "the aging rule `r1`".to_owned()];
+    assert_eq!(
+        (&reader.conditions, reader.conditions_unshown),
+        (&shown, true),
+        "{reader:?}"
+    );
+    let uses: Vec<_> = reader
+        .fields
+        .iter()
+        .map(|u| format!("{}.{}", u.ty, u.field))
+        .collect();
+    assert_eq!(uses, ["credit.s"], "the reader is listed the use it reads");
+    assert_ne!(
+        reader.report_id, pre.report_id,
+        "its id is made again for it"
+    );
+    let mock = a_rename_reported(Arc::new(crate::MockLake::new("finance"))).await;
+    let unnamed = |r: &ValueTypeReport| ValueTypeReport {
+        report_id: String::new(),
+        ..r.clone()
+    };
+    for (here, there) in [pre, own, reader].iter().zip(&mock) {
+        assert_eq!(unnamed(here), unnamed(there), "as the mock reports it");
+    }
 }
 
 /// Ingest judges a record in 016's order around its duplicate test

@@ -11,8 +11,9 @@
 //! A migration that renames values renames them as the store does, in
 //! every field of the value type but one a backed function computes, and
 //! refuses what the store refuses: a renamed value in a key field, and one
-//! a derived field's expression holds. Its report lists no conditions: the
-//! mock reads no expression for a literal.
+//! a derived field's expression holds. Its report lists, as the store's
+//! does, what may name an old value in a condition, as its caller is
+//! shown it (`conditions` in `doors.rs`).
 
 use lakelands_api::error::{Case, Error, Result};
 use lakelands_api::id::{FieldName, Position, TypeName, ValueTypeName};
@@ -139,11 +140,13 @@ fn accepts(vt: &ValueTypeDecl, v: &str) -> bool {
 }
 
 /// The preflight: every stored value under the value type, renamed as
-/// the migration renames it, checked against its new declaration.
+/// the migration renames it, checked against its new declaration, with
+/// the `conditions` its caller is shown, named at `head`.
 pub(crate) fn preflight(
     st: &State,
     head: Position,
     m: &ValueTypeMigration,
+    conditions: &dyn Fn(&mut ValueTypeReport),
 ) -> Result<ValueTypeReport> {
     let to = &m.to;
     let current = st
@@ -264,14 +267,30 @@ pub(crate) fn preflight(
         }
     }
     report.fits = report.misfits == 0;
+    conditions(&mut report);
+    report.report_id = report_id(&report, to, &m.renames, head);
+    Ok(report)
+}
+
+/// As the store: a value type's report named by what it says and where
+/// the lake stood, its own id left out.
+pub(crate) fn report_id(
+    report: &ValueTypeReport,
+    to: &ValueTypeDecl,
+    renames: &[(String, String)],
+    head: Position,
+) -> String {
+    let report = ValueTypeReport {
+        report_id: String::new(),
+        ..report.clone()
+    };
     let mut id = serde_json::json!({
         "report": serde_json::to_value(&report).unwrap_or_default(),
         "to": serde_json::to_value(to).unwrap_or_default(),
         "head": head.0,
     });
-    if !m.renames.is_empty() {
-        id["renames"] = serde_json::json!(m.renames);
+    if !renames.is_empty() {
+        id["renames"] = serde_json::json!(renames);
     }
-    report.report_id = lakelands_api::canonical::sha256_hex(&id);
-    Ok(report)
+    lakelands_api::canonical::sha256_hex(&id)
 }
