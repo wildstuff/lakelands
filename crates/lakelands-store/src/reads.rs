@@ -2695,20 +2695,37 @@ impl<'a> Reader<'a> {
         // Rows are ordered and measured by their paths, `type.field`: each
         // probes its field as `find`'s order and aggregate do (024), so an
         // answer is never computed over values the principal may not read.
+        // An aggregate's names are read as the rows hold them, and a named
+        // key's fields are probed as a field key's are (018, extended).
         let mut paths: Vec<String> = p.order_by.iter().map(|o| o.field.to_string()).collect();
+        let row = self.row_shape(&types);
+        let mut over_rows = None;
         if let Projection::Aggregate(a) = &p.project {
-            paths.extend(
-                a.measures
-                    .iter()
-                    .filter_map(|m| Some(m.field.as_ref()?.to_string())),
-            );
-            for key in &a.group_by {
-                if let lakelands_api::read::GroupKey::Field(f) = key {
-                    paths.push(f.to_string());
+            let bound = |t: &str| types.iter().any(|b| b.as_str() == t);
+            let (a, read) = aggregate::over_rows(a, &bound).map_err(invalid)?;
+            // A row's `<type>.key` is its record's key, unless the type
+            // has a field of that name its reader may know of (024).
+            let ty = |t: &str| self.shape.ontology.ty(&TypeName::from(t)).ok();
+            let field = |t: &str, f: &FieldName| {
+                ty(t).is_some_and(|d| d.fields.iter().any(|x| &x.name == f) && self.knows(d, f))
+            };
+            let probed = read
+                .iter()
+                .filter(|(t, f)| f.as_str() != "key" || field(t, f));
+            paths.extend(probed.map(|(t, f)| format!("{t}.{f}")));
+            over_rows = Some(a);
+        }
+        self.probe_rows(&paths, p.order_by.len())?;
+        // What a named key can never compute is refused, as `find` refuses
+        // it, over the row's shape (028, extended).
+        if let Some(a) = &over_rows {
+            let keys = aggregate::group_keys(&a.group_by).map_err(invalid)?;
+            for (name, e) in keys {
+                if let Some(e) = e {
+                    crate::declare::evaluates(&e, &row, &[Place::Group { name }])?;
                 }
             }
         }
-        self.probe_rows(&paths, p.order_by.len())?;
         // Rows: one per match.
         let mut rows: Vec<BTreeMap<String, Value>> = Vec::new();
         for from in &from {
@@ -2729,7 +2746,7 @@ impl<'a> Reader<'a> {
                 row.retain(|k, _| fields.iter().any(|f| f == k));
             }
         }
-        if let Projection::Aggregate(a) = &p.project {
+        if let Some(a) = &over_rows {
             let as_fields: Vec<BTreeMap<FieldName, Value>> = rows
                 .iter()
                 .map(|r| {
@@ -2941,9 +2958,46 @@ impl<'a> Reader<'a> {
         Ok((self.get_one(ty, key)?).and_then(|r| rights::visible(self.who, decl, &r, false)))
     }
 
+    /// A pattern's row as one type: each field of each type `bound` its
+    /// reader may know of under its path, `<type>.<field>`, and each one's
+    /// `<type>.key`, the record's key where no such field is named `key`.
+    fn row_shape(&self, bound: &[TypeName]) -> TypeDecl {
+        let mut row = TypeDecl::default();
+        for t in bound.iter().filter_map(|t| self.shape.ontology.ty(t).ok()) {
+            let at = |f: &str| FieldName::from(format!("{}.{f}", t.name));
+            let known = t.fields.iter().filter(|f| self.knows(t, &f.name));
+            let fields: Vec<_> = known
+                .map(|f| lakelands_api::ontology::FieldDecl {
+                    name: at(f.name.as_str()),
+                    ..f.clone()
+                })
+                .collect();
+            if !fields.iter().any(|f| f.name == at("key")) {
+                row.fields.push(lakelands_api::ontology::FieldDecl {
+                    name: at("key"),
+                    ..Default::default()
+                });
+            }
+            row.fields.extend(fields);
+        }
+        row
+    }
+
+    /// A record's values into a pattern's row under their paths. A row's
+    /// `<type>.key` is the record's key, unless the type declares a field
+    /// `key` its reader may know of: then that field's value, null where
+    /// the record holds none.
     fn bind(&self, row: &mut BTreeMap<String, Value>, node: &graph::Node) -> Result<()> {
         if let Some(rec) = self.shown(node)? {
-            row.insert(format!("{}.key", node.0), Value::String(node.1.to_string()));
+            let decl = self.shape.ontology.ty(&node.0)?;
+            let named = |f: &lakelands_api::ontology::FieldDecl| {
+                f.name.as_str() == "key" && self.knows(decl, &f.name)
+            };
+            let key = match decl.fields.iter().any(named) {
+                true => Value::Null,
+                false => Value::String(node.1.to_string()),
+            };
+            row.insert(format!("{}.key", node.0), key);
             for (f, v) in rec.fields {
                 row.insert(format!("{}.{f}", node.0), v);
             }

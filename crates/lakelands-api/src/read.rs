@@ -171,8 +171,10 @@ pub enum GroupKey {
 impl<'de> Deserialize<'de> for GroupKey {
     /// A text is a field; anything else is read as a named key, so that a
     /// member it does not take is named, which an untagged enum's error
-    /// does not do.
+    /// does not do. A named key is an object: a list is no key, though a
+    /// struct reads from one.
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<GroupKey, D::Error> {
+        const EXPECTING: &str = "a field's name, or an object with `name` and `expr`";
         #[derive(Deserialize)]
         #[serde(
             deny_unknown_fields,
@@ -184,6 +186,10 @@ impl<'de> Deserialize<'de> for GroupKey {
         }
         let named = match Value::deserialize(d)? {
             Value::String(field) => return Ok(GroupKey::Field(field.into())),
+            Value::Array(_) => {
+                let seq = serde::de::Unexpected::Seq;
+                return Err(serde::de::Error::invalid_type(seq, &EXPECTING));
+            }
             other => serde_json::from_value::<Named>(other),
         };
         let named = named.map_err(serde::de::Error::custom)?;

@@ -546,6 +546,13 @@ async fn a_pattern_names_no_type_its_reader_is_not_shown(
             apart.push(format!("over `secret.x`: {a}; over `ghost.x`: {b}"));
         }
     }
+    // Over `item.x`, which the reader is shown, the order and the grouping
+    // are answered, so the two above are not alike for being refused alike
+    // (lakelands#720); a sum of text is refused for itself.
+    let shown = rows("item").await;
+    if [&shown[0], &shown[2]].iter().any(|s| s.starts_with("Err")) {
+        apart.push(format!("over `item.x`: {shown:?}"));
+    }
     ensure!(
         apart.is_empty(),
         "a pattern names no type its reader is not shown; apart:\n{}",
