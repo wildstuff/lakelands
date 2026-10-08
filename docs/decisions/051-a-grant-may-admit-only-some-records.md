@@ -183,3 +183,26 @@ vanish (006). The type a grant names, and the value it holds a field
 to, are the host's own choice: naming a type in a grant shows its name
 to no one.
 
+
+## Extended: a restricted record is not there to a write (lakelands#772)
+
+A restricted record is a hold: 006 keeps it from every reader without
+the `restricted` grant, and a writer that may not read it must not
+change it, point at it, or learn its version. So the record is, to such
+a writer, not there at any write door, as another's record is to a
+holder of `only`. A reference to it and either end of a `link` are
+refused `not_live`, as for a key no record holds; `retire`, a verb
+called on it, and `unlink` of a link with a restricted end are not
+found; an upsert onto its key is refused as not granted, naming no
+field, so the key is told as a create tells it and the held record is
+neither written nor its version shown. A retired record that is held
+counts as another's too, so no upsert, ingest or proposal writes into
+it, and an ingest judges a link's ends as `retire` does. A proposal of
+each is judged as its write. Its accept judges the write as the records stand then. The
+proposer's grant is not logged; a proposal that reached a record
+restricted when it was proposed could only be a holder's, and is
+accepted as one; any other is judged without the grant, so a record
+restricted since the proposal is not there to its accept. A proposal
+whose record its reviewer is not answered is listed without its write,
+as before, and that reviewer decides it no more than a holder of `only`
+decides one it is not listed whole: it is refused as not granted.

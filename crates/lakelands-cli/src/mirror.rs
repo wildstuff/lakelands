@@ -43,7 +43,8 @@
 //! same source key brings the copy back. A retention hold crosses through
 //! the host's `restrict` and `unrestrict` only when the principal holds
 //! the `restricted` grant; without it the hold is invisible to the mirror,
-//! and so is the record. Each of these keeps its place in feed order.
+//! and so is the record. A mirror whose principal holds it in the source
+//! must hold it in the target too, or it is refused at the start. Each of these keeps its place in feed order.
 //!
 //! **It fails closed, by type.** At every declaration or migration of a
 //! mapped source type, the mirror asks whether the target's declaration
@@ -780,6 +781,16 @@ impl Mirror {
         if !writer.grants.ingest {
             return Err(format!(
                 "connection `{name}`: the principal may not ingest into lake `{to}`"
+            ));
+        }
+        // A held record's copy is held, and only a writer with the grant
+        // keeps it: the mirror writes with the grants it is given, never
+        // one it infers (042).
+        if reader.grants.restricted && !writer.grants.restricted {
+            return Err(format!(
+                "connection `{name}`: the principal `{}` reads held records from lake `{from}` \
+                 but holds no `restricted` grant in lake `{to}`, where their copies are held",
+                writer.id
             ));
         }
         let home = dir.join("mirrors").join(to.as_str());
