@@ -1675,9 +1675,9 @@ impl Call<'_> {
                 self.check_bundle(&w.ontology, declarations)?;
             }
             ProposedWrite::Migrate { migration, report } => {
-                self.authored(&w.ontology, migration)?;
+                let author = self.authored(&w.ontology, migration)?;
                 let found = self
-                    .preflight_plan(&w, view.as_ref(), migration, None)?
+                    .preflight_plan(&w, view.as_ref(), (migration, author.as_ref()), None)?
                     .report;
                 if !found.lossless {
                     return Err(self.lossy(&w, migration, found));
@@ -1905,7 +1905,9 @@ impl Call<'_> {
                 if head.as_ref() != Some(&report.from_schema_hash) {
                     return Err(changed());
                 }
-                let plan = self.preflight_plan(&w, view.as_ref(), migration, Some(now))?;
+                // Judged as its author's at the proposal: the lake's own
+                // names are judged again.
+                let plan = self.preflight_plan(&w, view.as_ref(), (migration, None), Some(now))?;
                 // So would it take away a mark set since, which the hash
                 // does not cover: it restates what its report said, no more.
                 if plan.report.restated != report.restated {
@@ -2342,22 +2344,25 @@ impl Call<'_> {
         report
     }
 
-    /// Reads a migration as its author's view of its type ([`as_author`]).
-    fn authored(&self, o: &Ontology, m: &mut Migration) -> Result<()> {
+    /// Reads a migration as its author's view of its type ([`as_author`]),
+    /// and answers that view, for [`Self::preflight_plan`] to judge its
+    /// names against.
+    fn authored(&self, o: &Ontology, m: &mut Migration) -> Result<Option<Authored>> {
         if o.types.contains_key(&m.to.name) {
             shown_type(o, &m.to.name, self.who)?;
         }
         let renames = Some(&m.relation_renames[..]);
         self.reads_as_author(o, &[Declaration::Type(m.to.clone())], renames)?;
         initials(o, &mut m.to);
-        match o.types.get(&m.to.name) {
-            Some(before) => {
-                let (to, pairs) = (&mut m.to, &m.relation_renames);
-                let find = |n: &TypeName| o.ty(n).ok();
-                as_author(self.who, (&before.decl, &find), to, &m.renames, pairs)
-            }
-            None => Ok(()),
-        }
+        let Some(before) = o.types.get(&m.to.name) else {
+            return Ok(None);
+        };
+        let find = |n: &TypeName| o.ty(n).ok();
+        let (sent, mut known) = (m.clone(), before.decl.clone());
+        rights::known_fields(self.who, &mut known, &find);
+        let (to, pairs) = (&mut m.to, &m.relation_renames);
+        as_author(self.who, (&before.decl, &find), to, pairs)?;
+        Ok(Some(Authored { sent, known }))
     }
 
     /// Reads each type of `declarations` that is declared already as its
@@ -2375,7 +2380,7 @@ impl Call<'_> {
             initials(&after, t);
             if let Some(before) = o.types.get(&t.name) {
                 let find = |n: &TypeName| o.ty(n).ok();
-                as_author(self.who, (&before.decl, &find), t, &[], &[])?;
+                as_author(self.who, (&before.decl, &find), t, &[])?;
             }
         }
         Ok(())
@@ -2584,8 +2589,10 @@ impl Call<'_> {
     ) -> Result<MigrationReport> {
         granted(self.who.grants.schema && !rights::holds_only(self.who))?;
         let mut m = m.clone();
-        self.authored(&w.ontology, &mut m)?;
-        let report = self.preflight_plan(w, view, &m, None)?.report;
+        let author = self.authored(&w.ontology, &mut m)?;
+        let report = self
+            .preflight_plan(w, view, (&m, author.as_ref()), None)?
+            .report;
         self.shown(w, &m, report)
     }
 
@@ -2636,7 +2643,7 @@ impl Call<'_> {
         &self,
         w: &Writer,
         view: &dyn ProjectionView,
-        m: &Migration,
+        (m, author): (&Migration, Option<&Authored>),
         now: Option<Timestamp>,
     ) -> Result<MigrationPlan> {
         let before = w.ontology.ty(&m.to.name)?.clone();
@@ -2825,6 +2832,12 @@ impl Call<'_> {
         // names it moves with it: `crate::rekey`), and each record's
         // memberships as if no key moved.
         let (sets, mut keyed) = (held(&m.to.name)?, Vec::new());
+        // The renames as the author sent them are judged first, against the
+        // type as it sees it: a field it may not know of is no field to it,
+        // here, as an absent one is (lakelands#750).
+        if let Some(a) = author {
+            a.sent.renamed_fields(&a.known).map_err(invalid)?;
+        }
         let mut report = shaped(view, &before, m, |r| {
             if m.to.key.is_empty() && sets.is_empty() {
                 return Ok(());
@@ -2924,6 +2937,10 @@ impl Call<'_> {
         // head, and is listed with their number, another with none. A
         // relation of another name is another relation; a rename is not
         // inferred.
+        // So are its relation renames, against the relations it is shown.
+        if let Some(a) = author {
+            a.sent.renamed_relations(&a.known).map_err(invalid)?;
+        }
         let pairs = m.renamed_relations(&before).map_err(invalid)?;
         let removed = |r: &&RelationDecl| {
             !m.to.relations.iter().any(|n| n.name == r.name)
@@ -3045,10 +3062,10 @@ impl Call<'_> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema && !rights::holds_only(self.who))?;
         let mut w = self.writer()?;
-        self.authored(&w.ontology, &mut m)?;
+        let author = self.authored(&w.ontology, &mut m)?;
         let view = self.lake.engine.view(None)?;
         let now = self.lake.clock(&mut w);
-        let plan = self.preflight_plan(&w, view.as_ref(), &m, Some(now))?;
+        let plan = self.preflight_plan(&w, view.as_ref(), (&m, author.as_ref()), Some(now))?;
         if self.shown(&w, &m, plan.report.clone())?.report_id != report_id {
             return Err(invalid(Case::MigrationStale));
         }
@@ -3620,14 +3637,14 @@ fn initials(o: &Ontology, t: &mut TypeDecl) {
 /// extended): a field `who` may not know of, or a relation it is not
 /// shown, was not its to leave out, so it is put back as declared, at its
 /// declared place, and so are such link fields of each relation `to`
-/// keeps or renames. No refusal names one: a rename from it is from no
-/// field or relation, and a field it reads is refused on that field.
-/// `find` answers a type by its name.
+/// keeps or renames that it is shown. No refusal names one: a rename from
+/// it is judged against its author's view, where it is no field or
+/// relation ([`Call::preflight_plan`]), and a field it reads is refused
+/// on that field. `find` answers a type by its name.
 fn as_author<'a>(
     who: &Principal,
     (before, find): (&TypeDecl, rights::Find<'_, 'a>),
     to: &mut TypeDecl,
-    renames: &[(FieldName, FieldName)],
     relations: &[(RelationName, RelationName)],
 ) -> Result<()> {
     fn put_back<T: Clone>(declared: &[T], hidden: impl Fn(&T) -> bool, into: &mut Vec<T>) {
@@ -3638,22 +3655,6 @@ fn as_author<'a>(
     let hidden = |t: &TypeDecl, f: &FieldDecl| rights::field_access(who, t, f) == Access::None;
     let unshown = |r: &RelationDecl| !describe::relation_shown(before, r, find, who);
     let unknown: Vec<&FieldDecl> = (before.fields.iter().filter(|f| hidden(before, f))).collect();
-    let renamed = |f: &&&FieldDecl| renames.iter().any(|(from, _)| from == &f.name);
-    if let Some(f) = unknown.iter().find(renamed) {
-        let from = f.name.clone();
-        return Err(invalid(Case::RenameFromUnknown { from }));
-    }
-    let mut known = before.clone();
-    known.relations.retain(|r| !unshown(r));
-    let from_unshown = |(old, _): &&(RelationName, RelationName)| {
-        (before.relations.iter()).any(|r| &r.name == old && unshown(r))
-    };
-    if let Some(pair) = relations.iter().find(from_unshown) {
-        // To its author it renames no relation the type has.
-        let (from, to) = pair.clone();
-        let said = Said::from(Case::RelationRenameNamesNone);
-        return Err(invalid(said.within(Place::RelationRename { from, to })));
-    }
     put_back(&before.fields, |f| hidden(before, f), &mut to.fields);
     // A valid time over a field it may not know of is not named to it, so
     // left out it stands as declared (024 and 027, extended).
@@ -3673,7 +3674,9 @@ fn as_author<'a>(
         // A renamed relation is the one it was, under its old name.
         let was = relations.iter().find(|(_, new)| new == &r.name);
         let name = was.map_or(&r.name, |(old, _)| old);
-        if let Some(old) = before.relations.iter().find(|o| &o.name == name) {
+        // To its author a relation it is not shown is none to rename.
+        let shown = |o: &&RelationDecl| &o.name == name && !unshown(o);
+        if let Some(old) = before.relations.iter().find(shown) {
             let link = links::link_type(&before.name, old);
             put_back(&old.fields, |f| hidden(&link, f), &mut r.fields);
         }
@@ -3695,6 +3698,14 @@ fn as_author<'a>(
         }
         None => Ok(()),
     }
+}
+
+/// A migration as its author sent it, and the type as its author sees it
+/// (`rights::known_fields`): the fields it may know of and the relations
+/// it is shown, with their link fields it may know of.
+pub(crate) struct Authored {
+    sent: Migration,
+    known: TypeDecl,
 }
 
 fn risk_word(r: Risk) -> &'static str {

@@ -351,7 +351,12 @@ author is not shown is kept the same way (lakelands#662): put back as
 declared, a field its `via` or its match reads refused on that field
 alone, a rename from it a rename from no relation, and a shape that
 sends a relation of its name declares that relation twice, refused in
-the words any type that declares a relation twice is (lakelands#727). An
+the words any type that declares a relation twice is (lakelands#727).
+Each is said where the same fault of a name the lake does not have is
+said (lakelands#750): the migration as its author sent it is judged
+against the type as its author is shown it, by the rule and at the step
+that judge the type's own names, so a second fault in the migration
+comes first or after alike, and the order tells nothing. An
 unchanged reference field to a type its author is not shown stands as
 declared, where the author may know of the field; a new or changed one
 names a type the author is not shown, and is refused as one that is not

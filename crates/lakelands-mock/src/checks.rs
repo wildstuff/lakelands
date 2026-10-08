@@ -236,6 +236,8 @@ macro_rules! door_checks {
             a_relation_carried_by_a_hidden_field_answers_nothing_of_it,
             #[own_principals]
             a_shape_names_no_field_its_author_may_not_know_of,
+            #[own_principals]
+            a_migrations_faults_come_in_one_order_for_a_hidden_name_and_an_absent_one,
             a_valid_time_names_a_date_time_field);
     };
     (@each $at:ident, $new:expr, $block_on:path;
@@ -11513,6 +11515,168 @@ pub async fn a_hidden_target_is_not_learned_by_declaring_its_field(store: Arc<dy
         said.iter()
             .all(|s| s == &said[2] && !s.contains("DeclaredTwice")),
         "an author held from `payee` is answered alike for each target: {said:?}"
+    );
+}
+
+/// A migration's renames are judged against its author's view of the
+/// type, at the step that judges the lake's own, as the store does: a
+/// hidden field or relation renamed answers word for word as an absent one,
+/// alone and beside a fault judged before or after it; a shape naming a
+/// hidden field answers as one naming a field twice, and one also removing
+/// a field a hidden relation reads is refused on that field first
+/// (lakelands#750).
+pub async fn a_migrations_faults_come_in_one_order_for_a_hidden_name_and_an_absent_one(
+    store: Arc<dyn LakeStore>,
+) {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    let typed = |d: Value| serde_json::from_value::<Declaration>(d).expect("a declaration reads");
+    let text = |name: &str| json!({"name": name, "type": {"kind": "text"}});
+    let texts = |names: &[&str]| names.iter().map(|n| text(n)).collect::<Vec<_>>();
+    // `paid` and `matched`, which reads `ref`, go to the hidden `payroll`.
+    let matched = json!({"name": "matched", "target": "payroll",
+        "derived": {"match": [{"from": "ref", "to": "code"}]}});
+    let invoice = json!({"declare": "type", "name": "invoice",
+        "fields": texts(&["no", "gross", "salary", "ref"]),
+        "relations": [{"name": "paid", "target": "payroll"}, matched]});
+    let payroll = json!({"declare": "type", "name": "payroll", "fields": texts(&["code"])});
+    for d in [payroll, invoice] {
+        c.declare(own, typed(d)).await.expect("the owner declares");
+    }
+    let grants = json!({"default": "write", "schema": true, "types": {
+        "invoice": {"fields": {"salary": "none"}}, "payroll": {"default": "none"}}});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let author = &principal(store.lake(), PrincipalKind::Agent, "author", grants);
+    let m = |fields: &[&str], renames: &[(&str, &str)], relations: &[(&str, &str)]| {
+        let fields = texts(fields);
+        let news: Vec<Value> = (relations.iter())
+            .map(|(_, new)| json!({"name": new, "target": "invoice"}))
+            .collect();
+        let Declaration::Type(to) = typed(json!({"declare": "type", "name": "invoice",
+            "fields": fields, "relations": news}))
+        else {
+            unreachable!("a type")
+        };
+        Migration {
+            to,
+            renames: (renames.iter().map(|(a, b)| ((*a).into(), (*b).into()))).collect(),
+            relation_renames: (relations.iter().map(|(a, b)| ((*a).into(), (*b).into()))).collect(),
+        }
+    };
+    // `numbered`, shown to the author, reads `no`, which nothing hidden
+    // reads: taking `no` away is a fault judged after the shape is read
+    // and before any rename.
+    let numbered = json!({"declare": "object_set", "name": "numbered", "of": "invoice",
+        "where": "no = 'x'"});
+    c.declare(own, typed(numbered))
+        .await
+        .expect("the owner declares `numbered`");
+    // Each row: the migration naming the hidden name, the one naming an
+    // absent name in its place, and the two names; ("", "") where the
+    // answer names neither.
+    let rows = [
+        (
+            "renaming the hidden `salary`",
+            m(&["no", "gross", "ref", "pay"], &[("salary", "pay")], &[]),
+            m(&["no", "gross", "ref", "pay"], &[("ghost", "pay")], &[]),
+            ("ghost", "salary"),
+        ),
+        (
+            "renaming the hidden `paid`",
+            m(&["no", "gross", "ref"], &[], &[("paid", "settled")]),
+            m(&["no", "gross", "ref"], &[], &[("nope", "settled")]),
+            ("nope", "paid"),
+        ),
+        (
+            "naming the hidden `salary`, as `memo` named twice",
+            m(&["no", "gross", "ref", "salary"], &[], &[]),
+            m(&["no", "gross", "ref", "memo", "memo"], &[], &[]),
+            ("memo", "salary"),
+        ),
+        (
+            "renaming the hidden `paid` and the absent `ghostf`",
+            m(
+                &["no", "gross", "ref", "x"],
+                &[("ghostf", "x")],
+                &[("paid", "settled")],
+            ),
+            m(
+                &["no", "gross", "ref", "x"],
+                &[("ghostf", "x")],
+                &[("nope", "settled")],
+            ),
+            ("", ""),
+        ),
+        (
+            "renaming `no` to no field, then the hidden `salary`",
+            m(
+                &["no", "gross", "ref", "x"],
+                &[("no", "nosuchto"), ("salary", "x")],
+                &[],
+            ),
+            m(
+                &["no", "gross", "ref", "x"],
+                &[("no", "nosuchto"), ("ghost", "x")],
+                &[],
+            ),
+            ("", ""),
+        ),
+        (
+            "renaming the hidden `salary` and taking away `no`, which `numbered` reads",
+            m(&["gross", "ref", "pay"], &[("salary", "pay")], &[]),
+            m(&["gross", "ref", "pay"], &[("ghost", "pay")], &[]),
+            ("", ""),
+        ),
+    ];
+    // Each by `migrate`, by `migrate_apply` and by `propose`, which judge
+    // the migration in one path.
+    let send = |door: &'static str, m: Migration| {
+        let c = c.clone();
+        async move {
+            match door {
+                "migrate" => c.migrate(author, m).await.map(drop),
+                "apply" => c.migrate_apply(author, m, "none").await.map(drop),
+                _ => {
+                    let write = ProposedWrite::Migrate {
+                        migration: Box::new(m),
+                        report: Default::default(),
+                    };
+                    c.propose(author, write, "a migration".into())
+                        .await
+                        .map(drop)
+                }
+            }
+        }
+    };
+    for (what, hidden, absent, (from, to)) in rows {
+        for door in ["migrate", "apply", "propose"] {
+            let wire = |r: lakelands_api::Result<()>| match r {
+                Err(e) => serde_json::to_string(&e).expect("an error prints"),
+                Ok(()) => panic!("a migration {what} is refused by `{door}`; it was taken"),
+            };
+            let hidden = wire(send(door, hidden.clone()).await);
+            let absent = wire(send(door, absent.clone()).await);
+            let absent = if from.is_empty() {
+                absent
+            } else {
+                absent.replace(from, to)
+            };
+            assert_eq!(
+                hidden, absent,
+                "a migration {what}, by `{door}`, is answered as its absent twin"
+            );
+        }
+    }
+    // `salary` named again, and `ref` removed, which the hidden `matched`
+    // reads: the read is judged first, on the field.
+    let answer = c
+        .migrate(author, m(&["no", "gross", "salary"], &[], &[]))
+        .await;
+    let read = |e: &Error| matches!(e.case(), Some(Said { case: Case::FieldReadElsewhere { field, .. }, .. }) if field.as_str() == "ref");
+    assert!(
+        answer.as_ref().is_err_and(read),
+        "a migration naming the hidden `salary` and removing `ref` is refused as `ref` read \
+         elsewhere: {answer:?}"
     );
 }
 
