@@ -204,11 +204,15 @@ const TYPES: [&str; 9] = [
     "person", "account", "payment", "entry", "invoice", "totals", "place", "note", "mark",
 ];
 
-/// One answer as it serialises, or the refusal it was.
+/// One answer as it serialises, or the refusal it was, by its wire form
+/// (its code, places and parameters and its sentence).
 fn said<T: Serialize>(answer: lakelands_api::Result<T>) -> String {
     match answer {
         Ok(a) => serde_json::to_string(&a).expect("an answer serialises"),
-        Err(e) => format!("refused: {e}"),
+        Err(e) => format!(
+            "refused: {}",
+            serde_json::to_string(&e).expect("an error serialises")
+        ),
     }
 }
 

@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use lakelands_api::engine::{EngineOpener, OpenMode};
+use lakelands_api::error::Case;
 use lakelands_api::event::{Digest, EventBody, SegmentDigest};
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
@@ -16,6 +17,7 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::query::{Search, SearchMode};
 use lakelands_api::seam::{FeedFilter, Seams};
+use lakelands_api::tools::NameProblem;
 use lakelands_api::write::{
     Declaration, FunctionDecl, Migration, Outcome, ProposalFilter, ProposedWrite,
 };
@@ -23,6 +25,7 @@ use lakelands_api::{
     Error, Get, Grants, LakeStore, Location, Patch, Position, Principal, PrincipalKind, ReadAt,
     Refusal, SourceRecord, WriteContext, WriteOpts,
 };
+use lakelands_core::conformance::fixture::invalid_case;
 use lakelands_engine_mem::MemoryOpener;
 use serde_json::json;
 
@@ -681,9 +684,9 @@ async fn a_migration_covers_retired_records_and_keeps_the_key() {
         matches!(
             &r,
             Err(Error::Refused {
-                reason: Refusal::Invalid { message },
+                reason: Refusal::Invalid(said),
                 ..
-            }) if message.contains("key")
+            }) if matches!(said.case, Case::KeyFieldRequired { .. })
         ),
         "a migration that changes the key is refused: {r:?}"
     );
@@ -1451,7 +1454,7 @@ async fn apply_takes_a_set_whole_and_refuses_duplicates_and_readers() {
         .apply(&o, vec![forward[1].clone(), forward[1].clone()])
         .await;
     assert!(
-        matches!(&twice, Err(Error::Refused { reason: Refusal::Invalid { message }, .. }) if message.contains("more than once")),
+        matches!(invalid_case(&twice), Some(Case::SetDeclaresTwice)),
         "{twice:?}"
     );
     let head = store.head().await.unwrap();
@@ -1652,16 +1655,13 @@ async fn a_declaration_names_every_tool_name_problem_at_once() {
     let r = cat
         .declare(&owner(&lake), Declaration::Type(ty(&long, vec![])))
         .await;
-    let Err(Error::Refused {
-        reason: Refusal::Invalid { message },
-        ..
-    }) = r
-    else {
+    let Some(Case::ToolNames { problems }) = invalid_case(&r) else {
         panic!("{r:?}")
     };
+    let long = |p: &&NameProblem| matches!(p, NameProblem::TooLong { .. });
     assert!(
-        message.matches("is longer than").count() > 1,
-        "every too-long tool name is named: {message}"
+        problems.iter().filter(long).count() > 1,
+        "every too-long tool name is named: {problems:?}"
     );
 }
 
@@ -2150,12 +2150,12 @@ async fn a_failed_request_records_a_failure_for_each_text() {
         .await
         .unwrap();
     assert_eq!(*backend.calls.lock().unwrap(), [2]);
+    let timed_out = "the storage failed while writing the projection: the endpoint timed out";
     for k in ["a", "b"] {
         let r = cat.get(&o, &"doc".into(), get(k)).await.unwrap().data;
         let why = r.meta.get("vec").and_then(|m| m.error.clone());
         assert!(
-            !r.fields.contains_key("vec")
-                && why.as_deref() == Some("writing the projection failed: the endpoint timed out"),
+            !r.fields.contains_key("vec") && why.as_deref() == Some(timed_out),
             "{k}: {r:?}"
         );
     }
@@ -2353,29 +2353,42 @@ async fn an_embedding_declared_wrongly_is_refused_naming_the_field() {
             ],
         )
     };
-    let cases: Vec<(&str, TypeDecl)> = vec![
-        ("not text", with(&["n"], |_| {})),
-        ("not one of its fields", with(&["nowhere"], |_| {})),
-        ("from itself", with(&["vec"], |_| {})),
-        ("twice", with(&["body", "body"], |_| {})),
-        ("names the fields", with(&[], |_| {})),
-        ("sensitive", with(&["secret"], |_| {})),
+    let (n, nowhere, body, secret) = ("n".into(), "nowhere".into(), "body".into(), "secret".into());
+    let cases: Vec<(Case, TypeDecl)> = vec![
+        (Case::EmbedFromNotText { field: n }, with(&["n"], |_| {})),
         (
-            "authority",
+            Case::UnknownField {
+                ty: "doc".into(),
+                field: nowhere,
+            },
+            with(&["nowhere"], |_| {}),
+        ),
+        (Case::EmbedFromItself, with(&["vec"], |_| {})),
+        (
+            Case::EmbedFromTwice { field: body },
+            with(&["body", "body"], |_| {}),
+        ),
+        (Case::EmbedNoFrom, with(&[], |_| {})),
+        (
+            Case::EmbedFromSensitive { field: secret },
+            with(&["secret"], |_| {}),
+        ),
+        (
+            Case::EmbedNotDerived,
             with(&["body"], |v| v.authority = Authority::Authored),
         ),
         (
-            "`depends_on`",
+            Case::EmbedDependsOn,
             with(&["body"], |v| v.depends_on = vec!["body".into()]),
         ),
         (
-            "only a vector",
+            Case::EmbedNotVector,
             with(&["body"], |v| {
                 v.ty = FieldType::kind(StorageKind::Text);
             }),
         ),
         (
-            "only one",
+            Case::EmbedAlsoComputed,
             with(&["body"], |v| v.derived = Some(Condition::from("body"))),
         ),
     ];
@@ -2384,10 +2397,10 @@ async fn an_embedding_declared_wrongly_is_refused_naming_the_field() {
         match got {
             Err(Error::Refused {
                 field: Some(f),
-                reason: Refusal::Invalid { message },
+                reason: Refusal::Invalid(said),
             }) => {
-                assert_eq!(f.as_str(), "vec", "{why}: {message}");
-                assert!(message.contains(why), "{why}: {message}");
+                assert_eq!(f.as_str(), "vec", "{why}: {said}");
+                assert_eq!(said.case, why, "{said}");
             }
             other => panic!("{why}: expected invalid, got {other:?}"),
         }
@@ -2490,8 +2503,8 @@ async fn retry_far_behind() {
         .await;
     assert!(
         matches!(&running, Err(lakelands_api::Error::Refused {
-            reason: lakelands_api::Refusal::Unanswered { message }, ..
-        }) if message.contains("is still running")),
+            reason: lakelands_api::Refusal::Unanswered(said), ..
+        }) if matches!(said.case, Case::Unanswered { accepted: false, .. })),
         "a retry while the executor runs is `unanswered`: {running:?}"
     );
     // The lake takes more than the old reach of other events while the

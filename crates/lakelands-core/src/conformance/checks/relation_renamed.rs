@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{
     Authority, Cardinality, Derived, MatchPair, RelationDecl, StorageKind,
@@ -19,9 +20,9 @@ use serde_json::json;
 use super::links::{SEPT, dated, invoice, lake, link_ok, pairs};
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, derived, events_after, field, find_at, get_at, head_unmoved, is_invalid,
-    object_set_on, patch, pattern, principal, reference, source_record, sourced, step, trigger_on,
-    type_decl, vector,
+    Lake, Must, derived, events_after, field, find_at, get_at, head_unmoved, invalid_case,
+    invalid_like, object_set_on, patch, pattern, principal, reference, source_record, sourced,
+    step, trigger_on, type_decl, vector,
 };
 
 const OLD: &str = "sys.link.invoice.approved_by";
@@ -332,41 +333,49 @@ async fn a_rename_that_would_change_or_lose_edges_is_refused(
     let mut keyed = invoice(vec![named("countersigned_by", true)]);
     (keyed.key, keyed.fields[0].required) = (vec!["amount".into()], true);
     let mut red = Vec::new();
-    for (what, to, relation_renames) in [
+    for (what, to, relation_renames, code) in [
         (
             "a first name the type has no relation of",
             renaming().to,
             pair("ghost", "signed_by"),
+            "relation_rename_names_none",
         ),
         (
             "a second name the new shape has no relation of",
             renaming().to,
             pair("approved_by", "ghost"),
+            "relation_rename_names_none",
         ),
         (
             "a change of the link fields",
             invoice(vec![named("countersigned_by", false)]),
             pair("approved_by", "countersigned_by"),
+            "relation_rename_changes",
         ),
         (
             "a re-key in the same migration",
             keyed,
             pair("approved_by", "countersigned_by"),
+            "rename_while_rekeying",
         ),
         (
             "a name whose link type holds an earlier relation's links",
             renaming().to,
             pair("approved_by", "signed_by"),
+            "rename_name_held",
         ),
     ] {
+        // Said at the rename, which names the relation.
+        let (from, to_name) = &relation_renames[0];
+        let place = json!({"code": "relation_rename", "from": from, "to": to_name});
+        let case = json!({"code": code, "at": [place]});
         let m = Migration {
             to,
             renames: Vec::new(),
             relation_renames,
         };
         let got = l.cat.migrate(&l.own, m).await;
-        let names = format!("{got:?}").contains("approved_by") || what.contains("first name");
-        if !is_invalid(&got) || !names {
+        if !invalid_like(&got, &case) {
             red.push(format!("{what}: {got:?}"));
         }
     }
@@ -395,7 +404,8 @@ async fn a_rename_that_would_change_or_lose_edges_is_refused(
         l.declare(referring).await?;
         let got = l.cat.migrate(&l.own, m.clone()).await;
         ensure!(
-            is_invalid(&got) && format!("{got:?}").contains(&format!("`{ty}` refers")),
+            matches!(invalid_case(&got), Some(Case::RenameReferredLinks { ty: Some(t), .. })
+                if *t == ty),
             "a rename of a relation whose link type `{ty}` refers to is refused, naming \
              `{ty}`; it answered {got:?}"
         );
@@ -414,10 +424,11 @@ async fn a_rename_that_would_change_or_lose_edges_is_refused(
         migration: Box::new(m),
         report: Default::default(),
     };
-    let got = format!("{:?}", l.cat.propose(&apart, write, "a name".into()).await);
+    let got = l.cat.propose(&apart, write, "a name".into()).await;
     ensure!(
-        got.contains("a declaration refers") && !got.contains("memo") && !got.contains("minute"),
-        "one kept from the types that refer to the link type is told neither; it is answered {got}"
+        matches!(invalid_case(&got), Some(Case::RenameReferredLinks { ty: None, links })
+            if links == "sys.link.invoice.approved_by"),
+        "one kept from the types that refer to the link type is told neither; it is answered {got:?}"
     );
     head_unmoved(store.as_ref(), before, "a refused rename").await
 }
@@ -610,7 +621,7 @@ async fn every_carrier_keeps_its_edges_through_renames_and_a_rebuild(
             ("approved_by", Some(before)),
         ] {
             let edges = walked(&l, relation, "i1", as_of).await;
-            walks.push(edges.map(|e| pairs(&e)).map_err(|e| e.to_string()));
+            walks.push(edges.map(|e| pairs(&e)).map_err(|e| json!(e).to_string()));
         }
         let back = pattern(
             "partner",
@@ -1006,7 +1017,12 @@ async fn a_rename_onto_a_standing_link_type_keeps_the_link_fields(
     let onto = l.cat.migrate(&l.own, rename(vec![wider("n")], "w", "n"));
     let onto = onto.await;
     ensure!(
-        is_invalid(&onto) && format!("{onto:?}").contains("flagged"),
+        invalid_like(
+            &onto,
+            &json!({"code": "migration_takes_read", "field": "flag",
+                    "type": "sys.link.invoice.n",
+                    "at": [{"code": "object_set", "name": "flagged"}]})
+        ),
         "a rename onto a name whose standing link type a set reads a field of is refused, \
          naming the set; it answered {onto:?}"
     );
@@ -1164,8 +1180,8 @@ async fn the_old_link_type_takes_no_link_after_the_rename(
         .await;
     let edges = walked(&l, "dst", "i2", None).await.must("walking `dst`")?;
     ensure!(
-        is_invalid(&old)
-            && format!("{old:?}").contains("sys.link.invoice.src")
+        matches!(invalid_case(&old), Some(Case::UnclaimedLinkType { ty })
+            if ty == "sys.link.invoice.src")
             && new.is_ok()
             && pairs(&edges) == ["i2>p2"],
         "an ingest into the old link type is refused, naming it, and one into the new is an \

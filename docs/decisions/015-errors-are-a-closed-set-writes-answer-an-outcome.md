@@ -61,6 +61,9 @@ refusal's sentence: a test checks the kind, the field and, for a door,
 its own framing lines. What would otherwise tie a second implementation
 to the first one's wording is left free.
 
+(Superseded by "a refusal says a case" below: the case is the contract
+now, and the mock builds the store's cases.)
+
 ## Extended: an outcome says what the write set off (lakelands#431)
 
 A write that fires a trigger or moves its record into or out of an object
@@ -152,11 +155,75 @@ which remote end failed and in what exchange, which seam and which name.
   names a part of a lake (the log, its index, a segment, the lease file,
   an export), never the file. The operator, who reads the location,
   knows where it is. A remote end is named by its model, its function or
-  its lake, never by an address or a path, which may carry a secret. Two
-  refusals still quote a path (the SQLite engine's lake directory and an
-  import's source); they become cases with the refusals.
+  its lake, never by an address or a path, which may carry a secret. No
+  refusal names one either: the SQLite engine's lake directory and an
+  import's source are "the lake's directory" and "the export's
+  directory".
 
 This is a change for a host: an `unavailable` or `unbound` answer is an
 object with a code, not a string, every error carries a `message`, and
 some sentences changed their words. A client and a lake on either side
 of this change cannot read each other's errors.
+
+## Extended: a refusal says a case (lakelands#650)
+
+What part 1 did for an outage, part 2 does for every refusal of
+`invalid`, `constraint`, `precondition` and `unanswered`: it carries a
+`Said`, a case and the places it is said at, instead of a sentence.
+
+- **One catalog.** Every case is one entry of a closed set in
+  `lakelands_api::error`: its code, its parameters and its template. The
+  template is the case's only sentence, and nothing else builds one.
+  `docs/refusals.md` is generated from the entries, so a host reads the
+  catalog it renders from. The outage sets of part 1 are entries of the
+  same form now.
+- **A place is data.** "type `T`, field `f`: …" is a case said at
+  `[type T, field f]`, outermost first. A check inside a place does not
+  say it twice.
+- **A sentence determines its case.** No two templates of a set can say
+  the same text, which the `refusals` gate proves over every template
+  with each parameter standing for what its type can say and each
+  optional segment read both ways. A code splits later only where its
+  sentence splits too, and never between a hidden thing and an absent
+  one: a hidden thing is answered with the absent thing's case and the
+  same parameters, so the case says no more than the words did, and the
+  suite compares the two whole errors.
+- **Codes are by meaning.** Sentences that said one thing in two ways
+  are one case; sentences that say different things are different
+  cases, even where they differ little. A host renders each code it
+  knows; rewording to make fewer codes would only churn what hosts read.
+- **A code keeps its meaning.** Once a release ships a code, it is not
+  removed or renamed, and no parameter is taken away or changes its type
+  or whether it is optional; a case may gain optional parameters only,
+  and a reader ignores a member it does not know. A retired code is not
+  used again. The gate compares the catalog with the page of the last
+  release tag, which lists each parameter's type.
+- **A code is the case's name.** A case carries no serde attribute of
+  its own, and no parameter takes a name the wire gives the case itself
+  (`code`, `message`, the set's tag, and for a refusal's case `at` and
+  `refusal`), so every case reads back as itself; a test reads one of
+  each, generated from the catalog, back through an error.
+- **A reader keeps what it cannot read.** A known code whose parameters
+  a reader cannot read (a newer lake's change) is read as `Unknown` with
+  its message, as an unknown code is, and a case nested in another is
+  read the same way, so the error around it still reads.
+- **A parameter is a value, not a sentence.** A parameter of text is a
+  name or a value the caller gave, never words built elsewhere; the gate
+  refuses a case built from `format!`. Foreign words are a `Detail`, as
+  in part 1.
+- **The suite compares cases,** and the mock builds the store's: a door
+  check compares the two `Error`s whole. A row keeps words only where
+  the words are its subject.
+- **What stays out of the catalog, and why.** Each of these is said to
+  the operator who runs the tool, never answered by a lake to a caller:
+  a bundle's problems, read from the operator's own files by the CLI;
+  the CLI's own terminal messages; the host's configuration errors at
+  load time (a client's, an embedding backend's, a deliverer's); and the
+  JSON-RPC protocol errors of MCP, which are the protocol's, not a
+  refusal. A `not_granted` refusal carries no case on purpose: it never
+  says which grant is missing, and its door words say only how to
+  authenticate. A door's advice (`todo`) is a function of the case.
+
+This is a change for a host: a refusal's `reason` carries `code`, `at`
+when it has places, its parameters and `message`, and many sentences
+changed their words, so a host that matched words matches codes now.

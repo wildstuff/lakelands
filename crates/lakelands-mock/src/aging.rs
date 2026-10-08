@@ -5,9 +5,9 @@
 
 use std::collections::BTreeMap;
 
-use lakelands_api::error::{Error, Refusal, Result};
+use lakelands_api::error::{Case, Error, Naming, Place, Refusal, Result, Said};
 use lakelands_api::event::{EventBody, EventId, Procedure};
-use lakelands_api::expr::{Condition, Expr, Func};
+use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName, Version};
 use lakelands_api::ontology::Authority;
 use lakelands_api::principal::{WriteContext, WriteOrigin};
@@ -16,6 +16,7 @@ use lakelands_api::time::Timestamp;
 use lakelands_api::write::{AgeReport, RuleRun};
 use sha2::{Digest as _, Sha256};
 
+use crate::doors::rules;
 use crate::expr::{self, Scope};
 use crate::state::{self, State};
 use crate::{Batch, Draft, Log, Shared};
@@ -33,62 +34,75 @@ pub(crate) struct Rule {
     pub(crate) when: Expr,
 }
 
-/// Check a rule's fields: the rule, or the rule field at fault and why.
+/// The rule field at fault, and why.
+type Fault = (FieldName, Box<Said>);
+
+/// Check a rule's fields as the store checks them: the rule, or its fault.
 pub(crate) fn check(
     st: &State,
     fields: &BTreeMap<FieldName, Value>,
-) -> std::result::Result<Rule, (FieldName, String)> {
-    let text = |name: &str| match fields.get(name) {
+) -> std::result::Result<Rule, Fault> {
+    let wrong = |member: &str, case: Case| -> Fault { (member.into(), Box::new(case.into())) };
+    let text = |member: &str| match fields.get(member) {
         Some(Value::String(s)) => Ok(s.clone()),
-        _ => Err((FieldName::from(name), format!("`{name}` is text"))),
+        _ => {
+            let case = Case::AgingNotText {
+                member: member.into(),
+            };
+            Err(wrong(member, case))
+        }
     };
-    // As the store: a rule's name is an identifier.
     let name = text("name")?;
-    if let Some(m) = crate::doors::rules::fault("aging rule", &name) {
-        return Err(("name".into(), m));
+    if let Some(c) = rules::fault(Naming::AgingRule, &name) {
+        return Err(wrong("name", c));
     }
     let on = TypeName::from(text("on")?.as_str());
+    let ty = on.clone();
     if on.as_str().starts_with("sys.") {
-        return Err(("on".into(), format!("`{on}` is a system type")));
+        return Err(wrong("on", Case::AgingSystemType { ty }));
     }
-    let t = st
-        .types
-        .get(&on)
-        .filter(|t| t.decl.view.is_none())
-        .ok_or_else(|| (FieldName::from("on"), format!("`{on}` is no written type")))?;
+    let Some(t) = st.types.get(&on) else {
+        return Err(wrong("on", Case::Undeclared { ty }));
+    };
+    if t.decl.view.is_some() {
+        return Err(wrong("on", Case::IsAView { ty }));
+    }
     let field = FieldName::from(text("field")?.as_str());
-    let f = state::field(&t.decl, &field)
-        .filter(|f| matches!(f.authority, Authority::Authored | Authority::Shared))
-        .filter(|f| !t.decl.key.contains(&f.name))
-        .ok_or_else(|| {
-            (
-                FieldName::from("field"),
-                format!("`{field}` is no authored or shared field of `{on}` outside its key"),
-            )
-        })?;
-    let value = |name: &str| {
-        let v = fields
-            .get(name)
-            .filter(|v| !v.is_null())
-            .ok_or_else(|| (FieldName::from(name), format!("`{name}` holds a value")))?;
-        if let Some(m) = crate::value::misfit(&f.ty, v, &st.value_types) {
-            return Err((FieldName::from(name), m));
+    let Some(f) = state::field(&t.decl, &field) else {
+        return Err(wrong("field", Case::UnknownField { ty, field }));
+    };
+    if !matches!(f.authority, Authority::Authored | Authority::Shared) {
+        return Err(wrong("field", Case::AgingAuthority { ty, field }));
+    }
+    if t.decl.key.contains(&f.name) {
+        return Err(wrong("field", Case::AgingKey { ty, field }));
+    }
+    let value = |member: &str| {
+        let Some(v) = fields.get(member).filter(|v| !v.is_null()) else {
+            let case = Case::AgingNoValue {
+                member: member.into(),
+            };
+            return Err(wrong(member, case));
+        };
+        if let Some(c) = crate::value::misfit(&f.ty, v, &st.value_types) {
+            let cause = Box::new(Error::Refused {
+                field: Some(field.clone()),
+                reason: Refusal::Constraint(Box::new(c.into())),
+            });
+            let (ty, field) = (on.clone(), field.clone());
+            return Err(wrong(member, Case::AgingNotAValue { ty, field, cause }));
         }
         Ok(crate::value::canonical(&f.ty, v))
     };
     let (from, to) = (value("from")?, value("to")?);
     if lakelands_api::canonical::to_vec(&from) == lakelands_api::canonical::to_vec(&to) {
-        return Err(("to".into(), "`to` equals `from`".into()));
+        return Err(wrong("to", Case::AgingSameValue));
     }
-    let when = expr::typed(&Condition::Text(text("when")?))
-        .ok()
-        .filter(|e| !writes_only(e))
-        .ok_or_else(|| {
-            (
-                FieldName::from("when"),
-                "`when` is a condition over the record, without `changed` or `previous`".into(),
-            )
-        })?;
+    let when = Condition::Text(text("when")?);
+    let when = rules::condition(&when, rules::Eval::Record, &[]).map_err(|e| {
+        let said = e.case().cloned().expect("a condition's refusal");
+        (FieldName::from("when"), Box::new(said))
+    })?;
     Ok(Rule {
         on,
         field,
@@ -96,24 +110,6 @@ pub(crate) fn check(
         to,
         when,
     })
-}
-
-/// Whether an expression reads `changed`, `previous` or `retired`, which
-/// have meaning only in a write.
-fn writes_only(e: &Expr) -> bool {
-    match e {
-        Expr::Lit { .. } | Expr::Path { .. } => false,
-        Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => {
-            writes_only(lhs) || writes_only(rhs)
-        }
-        Expr::Neg { arg } | Expr::Not { arg } | Expr::IsNull { arg } => writes_only(arg),
-        Expr::Call { func, args } => {
-            matches!(func, Func::Changed | Func::Previous | Func::Retired)
-                || args.iter().any(writes_only)
-        }
-        Expr::And { args } | Expr::Or { args } => args.iter().any(writes_only),
-        Expr::In { arg, list } => writes_only(arg) || list.iter().any(writes_only),
-    }
 }
 
 /// The id of a move, as `docs/log-format.md` §3 gives it.
@@ -147,9 +143,7 @@ pub(crate) fn run(shared: &Shared, log: &mut Log, today: Timestamp) -> Result<Ag
     if today.0.rem_euclid(MICROS_PER_DAY) != 0 {
         return Err(Error::Refused {
             field: Some("today".into()),
-            reason: Refusal::Invalid {
-                message: "`today` is a date, at UTC midnight".into(),
-            },
+            reason: Refusal::Invalid(Box::new(Case::AgingNotADate { today }.into())),
         });
     }
     let rule_type = TypeName::from(RULE_TYPE);
@@ -177,7 +171,8 @@ pub(crate) fn run(shared: &Shared, log: &mut Log, today: Timestamp) -> Result<Ag
         let rule = match check(&st, &r.fields) {
             Ok(rule) => rule,
             Err((field, why)) => {
-                ran.skipped = Some(format!("`{field}`: {why}"));
+                let why = why.within(Place::Field { name: field });
+                ran.skipped = Some(why.to_string());
                 report.rules.push(ran);
                 continue;
             }

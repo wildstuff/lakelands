@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use lakelands_api::error::{Error, Refusal};
+use lakelands_api::error::{Case, Error, Place, Refusal, Said, Situation};
 use lakelands_api::id::Position;
 use lakelands_api::read::ReadAt;
 use lakelands_api::tools::{Door, ToolSpec, tools};
@@ -202,8 +202,10 @@ impl Session {
             .describe(&self.who, ReadAt::default())
             .await
             .map_err(|e| Failure::from(e).to_string())?;
-        tools(&d.data)
-            .map_err(|p| format!("the lake's names cannot all become tools: {}", to_json(&p)))
+        tools(&d.data).map_err(|problems| {
+            let names = Error::unavailable(Situation::ToolNames { problems });
+            Failure::from(names).to_string()
+        })
     }
 
     async fn call(&mut self, id: Value, params: &Map<String, Value>) -> Vec<Value> {
@@ -331,18 +333,22 @@ impl Session {
         if s.keys.iter().flatten().any(|k| k.as_str().is_empty()) {
             return Err(Fault::Contract(Error::Refused {
                 field: Some("keys".into()),
-                reason: Refusal::Invalid {
-                    message: "a key to subscribe to is empty".into(),
-                },
+                reason: Refusal::Invalid(Box::new(Case::FilterKeyEmpty.into())),
             }));
         }
         let kinds = crate::watch::kinds(s.kinds).map_err(|bad| {
-            Fault::Arguments(
-                format!("`{label}` takes no kind `{bad}`"),
-                format!(
-                    "name kinds among {}",
-                    lakelands_api::tools::CHANGE_KINDS.join(", ")
-                ),
+            let case = Case::NotOneOf {
+                value: Value::String(bad),
+                allowed: lakelands_api::tools::CHANGE_KINDS.iter().collect(),
+            };
+            let at = Place::Member {
+                path: "kinds".into(),
+            };
+            let tool = label.into();
+            Fault::arguments(
+                Said::from(case)
+                    .within(at)
+                    .within(Place::Arguments { tool }),
             )
         })?;
         self.watch.subscribe(from, kinds, s.types, s.keys);
@@ -366,9 +372,10 @@ fn tool_answer(outcome: Result<Value, Fault>) -> Value {
             let text = Failure::from(e.clone()).to_string();
             json!({"content": [{"type": "text", "text": text}, {"type": "text", "text": to_json(&e).to_string()}], "isError": true})
         }
-        Err(Fault::Arguments(what, todo)) => {
-            let text = Failure::new(what, todo).to_string();
-            json!({"content": [{"type": "text", "text": text}], "isError": true})
+        Err(Fault::Arguments(said)) => {
+            let text = Failure::of(&said).to_string();
+            let e = Error::invalid(*said);
+            json!({"content": [{"type": "text", "text": text}, {"type": "text", "text": to_json(&e).to_string()}], "isError": true})
         }
     }
 }

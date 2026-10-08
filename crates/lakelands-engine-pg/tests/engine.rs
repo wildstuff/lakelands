@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
-use lakelands_api::error::Situation;
+use lakelands_api::error::{Case, Situation};
 use lakelands_api::location::EngineConfig;
 use lakelands_api::seam::Seams;
 use lakelands_api::write::Declaration;
@@ -258,6 +258,14 @@ fn an_open_refuses_what_the_location_cannot_mean() {
     let Some(url) = common::url_or_skip("refusals") else {
         return;
     };
+    // The case an open was refused as invalid for.
+    let case = |location: &Location, mode| match PgOpener.open(location, mode) {
+        Err(e @ Error::Refused { .. }) => e.case().map(|said| said.case.clone()),
+        other => panic!(
+            "expected the open to be refused, got {:?}",
+            other.map(|_| ())
+        ),
+    };
     let schema = common::fresh_schema();
     // TLS in the URL: configured by the location alone.
     let mut with_tls = common::location(&url, "tls", &schema);
@@ -268,20 +276,23 @@ fn an_open_refuses_what_the_location_cannot_mean() {
             "?sslmode=disable"
         });
     }
-    let refused = PgOpener.open(&with_tls, OpenMode::Create).map(|_| ());
-    assert!(
-        matches!(&refused, Err(Error::Refused { .. })),
-        "a URL carrying sslmode is refused: {refused:?}"
+    let key = "sslmode".to_owned();
+    let refused = case(&with_tls, OpenMode::Create);
+    assert_eq!(
+        refused,
+        Some(Case::LocationUrlTls { key }),
+        "a URL carrying sslmode is refused"
     );
     // No user in the URL: the driver would take the operating system's.
     let mut userless = common::location(&url, "userless", &schema);
     if let EngineConfig::Postgres { url: u, .. } = &mut userless.engine {
         *u = "postgres://localhost/lakelands".into();
     }
-    let refused = PgOpener.open(&userless, OpenMode::Create).map(|_| ());
-    assert!(
-        matches!(&refused, Err(Error::Refused { .. })),
-        "a URL naming no user is refused: {refused:?}"
+    let refused = case(&userless, OpenMode::Create);
+    assert_eq!(
+        refused,
+        Some(Case::LocationUrlNoUser),
+        "a URL naming no user is refused"
     );
     // A schema an identifier cannot hold, never shortened.
     let long = Location {
@@ -291,16 +302,17 @@ fn an_open_refuses_what_the_location_cannot_mean() {
         },
         ..Location::memory("x")
     };
-    assert!(matches!(
-        PgOpener.open(&long, OpenMode::Create).map(|_| ()),
-        Err(Error::Refused { .. })
-    ));
+    let schema_name = |schema: &str| {
+        Some(Case::SchemaName {
+            schema: schema.into(),
+        })
+    };
+    assert_eq!(case(&long, OpenMode::Create), schema_name(&"s".repeat(64)));
     let with_nul = common::location(&url, "x", "lake\0name");
-    assert!(
-        matches!(
-            PgOpener.open(&with_nul, OpenMode::Create).map(|_| ()),
-            Err(Error::Refused { .. })
-        ),
+    let refused = case(&with_nul, OpenMode::Create);
+    assert_eq!(
+        refused,
+        schema_name("lake\0name"),
         "a schema holding NUL is refused"
     );
     // A schema holding something else: one schema holds one lake and
@@ -308,15 +320,19 @@ fn an_open_refuses_what_the_location_cannot_mean() {
     let foreign = common::fresh_schema();
     admin(&url, &format!("CREATE SCHEMA \"{foreign}\""));
     admin(&url, &format!("CREATE TABLE \"{foreign}\".notes (x int)"));
-    let refused = PgOpener
-        .open(
-            &common::location(&url, "foreign", &foreign),
-            OpenMode::Create,
-        )
-        .map(|_| ());
-    assert!(
-        matches!(&refused, Err(Error::Refused { reason: lakelands_api::Refusal::Invalid { message }, .. }) if message.contains("notes")),
-        "a schema holding another table is refused: {refused:?}"
+    let refused = case(
+        &common::location(&url, "foreign", &foreign),
+        OpenMode::Create,
+    );
+    let tables = Some(["notes"].into_iter().collect());
+    let not_a_lake = Case::SchemaNotALake {
+        schema: foreign.clone(),
+        tables,
+    };
+    assert_eq!(
+        refused,
+        Some(not_a_lake),
+        "a schema holding another table is refused"
     );
     common::drop_schema(&url, &foreign);
     // Nothing there: reading and writing without `create` are refused, and
@@ -336,10 +352,12 @@ fn an_open_refuses_what_the_location_cannot_mean() {
     // A schema holding another lake.
     drop(PgOpener.open(&missing, OpenMode::Create).unwrap());
     let other = common::location(&url, "other", &schema);
-    assert!(matches!(
-        PgOpener.open(&other, OpenMode::Read).map(|_| ()),
-        Err(Error::Refused { .. })
-    ));
+    let lake_other = Case::LakeOther {
+        schema: Some(schema.clone()),
+        held: "missing".into(),
+        lake: Box::new("other".into()),
+    };
+    assert_eq!(case(&other, OpenMode::Read), Some(lake_other));
     common::drop_schema(&url, &schema);
 }
 

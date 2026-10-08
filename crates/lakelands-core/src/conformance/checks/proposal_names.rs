@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::write::{Declaration, Migration, Proposal, ProposalFilter, ProposedWrite};
 use lakelands_api::{Access, LakeStore, Principal, WriteOpts};
@@ -16,7 +17,8 @@ use serde_json::{Value, json};
 use super::rekey::{IBANS, lake, to_iban};
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field_access, invalid_naming, object_set_on, patch, reviewer, trigger_on,
+    Lake, Must, field_access, invalid_case, object_set_on, patch, refused_like, reviewer,
+    trigger_on,
 };
 
 check!(
@@ -298,16 +300,18 @@ async fn a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_fi
     let drop = all.into_iter().find(|p| p.why == "drop").map(|p| p.id);
     let drop = drop.ok_or_else(|| Failure::new("the owner lists `drop`".to_owned()))?;
     let told = l.cat.accept(&hid, &drop).await;
-    let said = told.as_ref().err().map(ToString::to_string);
-    let said = said.unwrap_or_default();
-    let names = said.contains("secret") || said.contains("watch");
+    // Neither name in any member of its wire form, its sentence among them.
+    let wire = told.as_ref().err().map(|e| json!(e).to_string());
+    let wire = wire.unwrap_or_default();
+    let names = wire.contains("secret") || wire.contains("watch");
     ensure!(
-        said.contains("a declaration reads a field") && !names,
+        matches!(invalid_case(&told), Some(Case::ReadsTakenAway)) && !names,
         "an accepter who may not know of `secret` is told that a declaration reads a field \
          the migration takes away, and neither name; it answered {told:?}"
     );
-    let names = ["trigger declaration `watch`", "reads `secret`"];
     let told = l.cat.accept(&l.own, &drop).await;
-    invalid_naming("the owner accepting it", told, &names)?;
+    let case = json!({"code": "migration_takes_read", "unnamed": false, "field": "secret",
+                      "at": [{"code": "trigger", "name": "watch"}]});
+    refused_like("the owner accepting it", told, &case)?;
     Ok(())
 }

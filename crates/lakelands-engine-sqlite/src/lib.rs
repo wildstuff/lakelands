@@ -40,7 +40,7 @@ mod projection;
 mod view;
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
-use lakelands_api::error::{Detail, Doing, Error, Part, Result, Situation};
+use lakelands_api::error::{Case, Detail, Doing, Error, Part, Result, Situation};
 use lakelands_api::location::{EngineConfig, Location};
 
 pub use handle::SqliteLake;
@@ -100,11 +100,13 @@ impl EngineOpener for SqliteOpener {
     /// directory holding no lake answer `Unavailable`.
     fn open(&self, location: &Location, mode: OpenMode) -> Result<Box<dyn LakeEngine>> {
         let EngineConfig::Sqlite { dir, tuning } = &location.engine else {
-            return Err(invalid(format!(
-                "the {NAME} engine opens only sqlite locations, and lake `{}` is configured for \
-                 another engine",
-                location.lake
-            )));
+            let lake = Box::new(location.lake.clone());
+            let (engine, location) = (NAME.to_owned(), "sqlite".to_owned());
+            return Err(invalid(Case::EngineOtherLocation {
+                engine,
+                location,
+                lake,
+            }));
         };
         Ok(Box::new(SqliteLake::open(
             location.lake.clone(),

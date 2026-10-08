@@ -8,6 +8,7 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use lakelands_api::error::{Case, Said};
 use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::principal::PrincipalKind;
 use lakelands_api::query::{Hits, QueryResult};
@@ -243,12 +244,17 @@ async fn finds(l: &Lake, who: &Principal, rows: &str, before: Position) -> Resul
     Ok(())
 }
 
+/// Whether `e` says that the grant's `only` on `claim` cannot be applied.
+fn unappliable(e: &Error) -> bool {
+    matches!(e.case(), Some(Said { case: Case::OnlyUnappliable { ty }, .. }) if ty == "claim")
+}
+
 /// Fails unless `answer` is refused as not granted, naming no field.
 fn not_granted<T: Debug>(what: &str, answer: lakelands_api::Result<T>) -> Result<(), Failure> {
     let (field, reason) = (None, Refusal::NotGranted);
-    let refused = Error::Refused { field, reason }.to_string();
+    let refused = Error::Refused { field, reason };
     ensure!(
-        answer.as_ref().err().map(ToString::to_string) == Some(refused),
+        answer.as_ref().err() == Some(&refused),
         "{what} by a holder of `only` must be refused as not granted, naming no field; it answered {answer:?}"
     );
     Ok(())
@@ -627,9 +633,9 @@ async fn every_write_by_a_holder_of_only_is_refused(
                 .map(|_| ()),
         ),
     ] {
-        let says = other.as_ref().err().map(ToString::to_string);
+        let says = other.as_ref().err().and_then(Error::case);
         ensure!(
-            says.is_some_and(|s| s.contains("not a live record")),
+            matches!(says, Some(Said { case: Case::NotLive { key, .. }, .. }) if key == "c3"),
             "a memo naming bob's `c3` through {what} must be refused as naming no live record; it answered {other:?}"
         );
     }
@@ -763,16 +769,12 @@ async fn a_grant_that_cannot_be_applied_is_refused(
             json!({"default": "read", "types": {"claim": grant}}),
         );
         let said = l.cat.find(&eve, &"claim".into(), Default::default()).await;
-        let named = |e: &Error| {
-            ["payer", "`owner`"]
-                .iter()
-                .all(|f| !e.to_string().contains(f))
+        // The type alone is named: no field, no place, no other parameter.
+        let refused = |e: &Error| {
+            matches!(e, Error::Refused { field: None, reason: Refusal::Invalid(said) }
+                if said.at.is_empty() && unappliable(e))
         };
-        let refused = |e: &Error| matches!(e, Error::Refused { field: None, .. }) && named(e);
-        if !said
-            .as_ref()
-            .is_err_and(|e| refused(e) && e.to_string().contains("`claim` cannot be applied"))
-        {
+        if !said.as_ref().is_err_and(refused) {
             wrong.push(format!("{what}: {said:?}"));
         }
         // A walk or a view that reaches the type admits none of its records.
@@ -807,9 +809,7 @@ async fn a_grant_that_cannot_be_applied_is_refused(
         .find(&alice, &"claim".into(), Default::default())
         .await;
     ensure!(
-        dropped
-            .as_ref()
-            .is_err_and(|e| e.to_string().contains("cannot be applied")),
+        dropped.as_ref().is_err_and(unappliable),
         "after `owner` is dropped alice's `find` at the head must be refused; it answered {dropped:?}"
     );
     Ok(())

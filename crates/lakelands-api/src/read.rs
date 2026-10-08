@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::Case;
 use crate::expr::Condition;
 use crate::id::{Cursor, FieldName, ParamName, Position, RecordKey};
 use crate::record::{Record, Value};
@@ -96,21 +97,14 @@ fn is_no_field(field: &FieldName) -> bool {
 impl Order {
     /// Whether a key names its field as its `by` asks: `latest` none,
     /// every other a field. The fault, with the field it names if any.
-    pub fn misfit(&self) -> Option<(Option<FieldName>, String)> {
+    pub fn misfit(&self) -> Option<(Option<FieldName>, Case)> {
         match (self.by, self.field.as_str().is_empty()) {
-            (OrderBy::Latest, false) => Some((
-                Some(self.field.clone()),
-                format!(
-                    "`latest` orders by the position of each record's latest change and takes \
-                     no field, and `{}` was given",
-                    self.field
-                ),
-            )),
+            (OrderBy::Latest, false) => {
+                let field = self.field.clone();
+                Some((Some(field.clone()), Case::LatestTakesNoField { field }))
+            }
             (OrderBy::Latest, true) | (_, false) => None,
-            (_, true) => Some((
-                None,
-                "an order by a value, `known_at` or `seen_at` names its field".into(),
-            )),
+            (_, true) => Some((None, Case::OrderNamesNoField)),
         }
     }
 }

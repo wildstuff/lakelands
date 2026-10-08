@@ -1,9 +1,8 @@
 //! Enough of the one expression grammar for the doors' tests: the text
-//! form parsed into the typed core, and the core evaluated over one
-//! record.
+//! form parsed into the typed core as the store parses it
+//! (`lakelands_api::expr::parse`), and the core evaluated over one record.
 //!
-//! The parser takes the whole grammar of `lakelands_api::expr`. The
-//! evaluator knows comparisons, `and`, `or`, `not`, `in`, `is null`,
+//! The evaluator knows comparisons, `and`, `or`, `not`, `in`, `is null`,
 //! arithmetic and the string functions `lower`, `upper`, `trim`, `len`,
 //! `contains`, `starts_with`, `concat` and `coalesce`, a date-time shifted
 //! by a duration, and `now()` and `today()` where the scope has a clock
@@ -16,27 +15,28 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
-use lakelands_api::error::{Error, Refusal};
-use lakelands_api::expr::{ArithOp, CmpOp, Condition, Expr, Func, Literal};
+use lakelands_api::error::{Case, Error};
+use lakelands_api::expr::{ArithOp, CmpOp, Condition, Expr, Func, Literal, func_name, parse};
 use lakelands_api::id::FieldName;
 use lakelands_api::record::Value;
 use lakelands_api::time::Timestamp;
 
-fn invalid(message: impl Into<String>) -> Error {
-    Error::Refused {
-        field: None,
-        reason: Refusal::Invalid {
-            message: message.into(),
-        },
+/// The typed form of a condition, parsing the text form as the store
+/// parses it, and refusing it in the store's case.
+pub(crate) fn typed(c: &Condition) -> Result<Expr, Case> {
+    match c {
+        Condition::Expr(e) => Ok(e.clone()),
+        Condition::Text(t) => parse(t).map_err(|e| {
+            let (text, why) = (t.clone(), Box::new(e.into()));
+            Case::NotParsed { text, why }
+        }),
     }
 }
 
-/// The typed form of a condition, parsing the text form.
-pub(crate) fn typed(c: &Condition) -> Result<Expr, Error> {
-    match c {
-        Condition::Expr(e) => Ok(e.clone()),
-        Condition::Text(s) => Parser::new(s)?.whole(),
-    }
+/// A function the mock does not evaluate where it is called.
+fn unevaluated(func: Func) -> Error {
+    let name = func_name(func).to_owned();
+    Error::invalid(Case::MockUnevaluated { name })
 }
 
 /// As the store: the member of the call's payload a path in a verb's value
@@ -201,9 +201,7 @@ pub(crate) fn eval(e: &Expr, s: &Scope<'_>) -> Result<Value, Error> {
             func: func @ (Func::Now | Func::Today),
             args,
         } if args.is_empty() => {
-            let now = s
-                .now
-                .ok_or_else(|| invalid("the in-memory mock keeps no clock here"))?;
+            let now = s.now.ok_or_else(|| unevaluated(*func))?;
             let day = 86_400 * 1_000_000;
             let t = match func {
                 Func::Today => Timestamp(now.0 - now.0.rem_euclid(day)),
@@ -243,15 +241,7 @@ fn call(func: Func, args: &[Value]) -> Result<Value, Error> {
             .cloned()
             .unwrap_or(Value::Null),
         Func::Floor => (args.first().and_then(number)).map_or(Value::Null, |n| num(n.floor())),
-        other => {
-            return Err(invalid(format!(
-                "the in-memory mock does not evaluate `{}`",
-                serde_json::to_value(other)
-                    .ok()
-                    .and_then(|v| v.as_str().map(str::to_owned))
-                    .unwrap_or_default()
-            )));
-        }
+        other => return Err(unevaluated(other)),
     })
 }
 
@@ -308,309 +298,6 @@ pub(crate) fn compare(a: &Value, b: &Value) -> Option<Ordering> {
     }
 }
 
-// ---- the text form ----
-
-#[derive(Clone, Debug, PartialEq)]
-enum Tok {
-    Ident(String),
-    Num(String),
-    Dur(i64),
-    Str(String),
-    Sym(&'static str),
-}
-
-struct Parser {
-    toks: Vec<Tok>,
-    at: usize,
-}
-
-const SYMBOLS: [&str; 13] = [
-    "!=", "<=", ">=", "=", "<", ">", "+", "-", "*", "/", "(", ")", ",",
-];
-
-impl Parser {
-    fn new(src: &str) -> Result<Parser, Error> {
-        let b = src.as_bytes();
-        let mut toks = Vec::new();
-        let mut i = 0;
-        while i < b.len() {
-            let c = b[i];
-            if c.is_ascii_whitespace() {
-                i += 1;
-            } else if c == b'\'' {
-                let mut s = String::new();
-                i += 1;
-                loop {
-                    match b.get(i) {
-                        None => return Err(invalid(format!("unterminated string in `{src}`"))),
-                        Some(b'\'') if b.get(i + 1) == Some(&b'\'') => {
-                            s.push('\'');
-                            i += 2;
-                        }
-                        Some(b'\'') => {
-                            i += 1;
-                            break;
-                        }
-                        Some(_) => {
-                            let ch = src[i..].chars().next().unwrap_or_default();
-                            s.push(ch);
-                            i += ch.len_utf8();
-                        }
-                    }
-                }
-                toks.push(Tok::Str(s));
-            } else if c.is_ascii_digit() {
-                let start = i;
-                while i < b.len() && (b[i].is_ascii_digit() || b[i] == b'.') {
-                    i += 1;
-                }
-                let n = &src[start..i];
-                let unit = b.get(i).copied();
-                let ident_follows = b.get(i + 1).is_some_and(|c| c.is_ascii_alphanumeric());
-                match unit {
-                    Some(u @ (b'd' | b'h' | b'm' | b's')) if !ident_follows => {
-                        let per: i64 = match u {
-                            b'd' => 86_400_000_000,
-                            b'h' => 3_600_000_000,
-                            b'm' => 60_000_000,
-                            _ => 1_000_000,
-                        };
-                        let n: f64 = n
-                            .parse()
-                            .map_err(|_| invalid(format!("bad number `{n}`")))?;
-                        toks.push(Tok::Dur((n * per as f64) as i64));
-                        i += 1;
-                    }
-                    _ => toks.push(Tok::Num(n.to_owned())),
-                }
-            } else if c.is_ascii_alphabetic() || c == b'_' {
-                let start = i;
-                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'.')
-                {
-                    i += 1;
-                }
-                toks.push(Tok::Ident(src[start..i].to_owned()));
-            } else if let Some(sym) = SYMBOLS.iter().find(|s| src[i..].starts_with(**s)) {
-                toks.push(Tok::Sym(sym));
-                i += sym.len();
-            } else {
-                return Err(invalid(format!(
-                    "unexpected `{}` in `{src}`",
-                    src[i..].chars().next().unwrap_or_default()
-                )));
-            }
-        }
-        Ok(Parser { toks, at: 0 })
-    }
-
-    fn whole(mut self) -> Result<Expr, Error> {
-        let e = self.or()?;
-        match self.toks.get(self.at) {
-            None => Ok(e),
-            Some(t) => Err(invalid(format!(
-                "unexpected {t:?} after a complete expression"
-            ))),
-        }
-    }
-
-    fn peek(&self) -> Option<&Tok> {
-        self.toks.get(self.at)
-    }
-
-    fn keyword(&mut self, k: &str) -> bool {
-        if matches!(self.peek(), Some(Tok::Ident(i)) if i == k) {
-            self.at += 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn sym(&mut self, s: &str) -> bool {
-        if matches!(self.peek(), Some(Tok::Sym(x)) if *x == s) {
-            self.at += 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn expect(&mut self, s: &str) -> Result<(), Error> {
-        if self.sym(s) {
-            Ok(())
-        } else {
-            Err(invalid(format!("expected `{s}`")))
-        }
-    }
-
-    fn or(&mut self) -> Result<Expr, Error> {
-        let mut args = vec![self.and()?];
-        while self.keyword("or") {
-            args.push(self.and()?);
-        }
-        Ok(if args.len() == 1 {
-            args.remove(0)
-        } else {
-            Expr::Or { args }
-        })
-    }
-
-    fn and(&mut self) -> Result<Expr, Error> {
-        let mut args = vec![self.not()?];
-        while self.keyword("and") {
-            args.push(self.not()?);
-        }
-        Ok(if args.len() == 1 {
-            args.remove(0)
-        } else {
-            Expr::And { args }
-        })
-    }
-
-    fn not(&mut self) -> Result<Expr, Error> {
-        if self.keyword("not") {
-            return Ok(Expr::Not {
-                arg: Box::new(self.not()?),
-            });
-        }
-        self.cmp()
-    }
-
-    fn cmp(&mut self) -> Result<Expr, Error> {
-        let lhs = self.sum()?;
-        let op = match self.peek() {
-            Some(Tok::Sym("=")) => CmpOp::Eq,
-            Some(Tok::Sym("!=")) => CmpOp::Ne,
-            Some(Tok::Sym("<")) => CmpOp::Lt,
-            Some(Tok::Sym("<=")) => CmpOp::Le,
-            Some(Tok::Sym(">")) => CmpOp::Gt,
-            Some(Tok::Sym(">=")) => CmpOp::Ge,
-            _ => {
-                if self.keyword("in") {
-                    self.expect("(")?;
-                    let list = self.list()?;
-                    self.expect(")")?;
-                    return Ok(Expr::In {
-                        arg: Box::new(lhs),
-                        list,
-                    });
-                }
-                if self.keyword("is") {
-                    let negated = self.keyword("not");
-                    if !self.keyword("null") {
-                        return Err(invalid("expected `null` after `is`"));
-                    }
-                    let e = Expr::IsNull { arg: Box::new(lhs) };
-                    return Ok(if negated {
-                        Expr::Not { arg: Box::new(e) }
-                    } else {
-                        e
-                    });
-                }
-                return Ok(lhs);
-            }
-        };
-        self.at += 1;
-        Ok(Expr::Cmp {
-            cmp: op,
-            lhs: Box::new(lhs),
-            rhs: Box::new(self.sum()?),
-        })
-    }
-
-    fn sum(&mut self) -> Result<Expr, Error> {
-        let mut lhs = self.product()?;
-        loop {
-            let arith = if self.sym("+") {
-                ArithOp::Add
-            } else if self.sym("-") {
-                ArithOp::Sub
-            } else {
-                return Ok(lhs);
-            };
-            lhs = Expr::Arith {
-                arith,
-                lhs: Box::new(lhs),
-                rhs: Box::new(self.product()?),
-            };
-        }
-    }
-
-    fn product(&mut self) -> Result<Expr, Error> {
-        let mut lhs = self.unary()?;
-        loop {
-            let arith = if self.sym("*") {
-                ArithOp::Mul
-            } else if self.sym("/") {
-                ArithOp::Div
-            } else {
-                return Ok(lhs);
-            };
-            lhs = Expr::Arith {
-                arith,
-                lhs: Box::new(lhs),
-                rhs: Box::new(self.unary()?),
-            };
-        }
-    }
-
-    fn unary(&mut self) -> Result<Expr, Error> {
-        if self.sym("-") {
-            return Ok(Expr::Neg {
-                arg: Box::new(self.unary()?),
-            });
-        }
-        self.atom()
-    }
-
-    fn list(&mut self) -> Result<Vec<Expr>, Error> {
-        let mut out = vec![self.or()?];
-        while self.sym(",") {
-            out.push(self.or()?);
-        }
-        Ok(out)
-    }
-
-    fn atom(&mut self) -> Result<Expr, Error> {
-        let lit = |value| Ok(Expr::Lit { value });
-        let tok = self
-            .toks
-            .get(self.at)
-            .cloned()
-            .ok_or_else(|| invalid("the expression ends too early"))?;
-        self.at += 1;
-        match tok {
-            Tok::Num(n) => lit(Literal::Number(n)),
-            Tok::Dur(d) => lit(Literal::Duration(d)),
-            Tok::Str(s) => lit(Literal::Text(s)),
-            Tok::Sym("(") => {
-                let e = self.or()?;
-                self.expect(")")?;
-                Ok(e)
-            }
-            Tok::Ident(i) if i == "true" => lit(Literal::Bool(true)),
-            Tok::Ident(i) if i == "false" => lit(Literal::Bool(false)),
-            Tok::Ident(i) if i == "null" => lit(Literal::Null),
-            Tok::Ident(i) if self.sym("(") => {
-                let func: Func = serde_json::from_value(Value::String(i.clone()))
-                    .map_err(|_| invalid(format!("there is no function `{i}`")))?;
-                let args = if self.sym(")") {
-                    Vec::new()
-                } else {
-                    let a = self.list()?;
-                    self.expect(")")?;
-                    a
-                };
-                Ok(Expr::Call { func, args })
-            }
-            Tok::Ident(i) => Ok(Expr::Path {
-                path: i.split('.').map(FieldName::from).collect(),
-            }),
-            Tok::Sym(s) => Err(invalid(format!("unexpected `{s}`"))),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -654,16 +341,7 @@ mod tests {
     fn broken_text_is_refused_as_invalid() {
         for src in ["status =", "status = 'open", "(status", "nope(1)", "a # b"] {
             let e = typed(&Condition::from(src)).unwrap_err();
-            assert!(
-                matches!(
-                    e,
-                    Error::Refused {
-                        reason: Refusal::Invalid { .. },
-                        ..
-                    }
-                ),
-                "{src}"
-            );
+            assert!(matches!(e, Case::NotParsed { .. }), "{src}");
         }
     }
 }

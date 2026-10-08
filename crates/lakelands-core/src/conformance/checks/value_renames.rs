@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::ontology::{StorageKind, ValueTypeDecl};
 use lakelands_api::seam::FeedFilter;
@@ -26,7 +27,7 @@ use serde_json::{Value, json};
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, all_found, derived, events_after, field, field_access, find_at, followed, get_at,
-    head_unmoved, invalid_naming, migration, object_set_on, reason, restrict, reviewer, trigger_on,
+    head_unmoved, migration, object_set_on, reason, refused_like, restrict, reviewer, trigger_on,
     try_upsert, type_decl,
 };
 
@@ -347,23 +348,28 @@ async fn renames_that_name_a_value_twice_or_one_not_accepted_are_refused(
     l.upsert("task", "t1", json!({"state": "void"})).await?;
     let before = store.head().await.must("reading the head")?;
     let to = |pairs| renamed(&["active", "done", "void"], pairs);
-    for (what, m, word) in [
-        ("to itself", to(&[("open", "open")]), "`open`"),
-        ("twice", to(&[("open", "active"), ("open", "done")]), "once"),
-        ("not in force", to(&[("gone", "active")]), "in force"),
-        ("to one not accepted", to(&[("open", "nope")]), "new"),
-        (
-            "of a number",
-            ValueTypeMigration {
-                to: vt(json!({"name": "score", "kind": "number", "constraint": "value > 0"})),
-                renames: vec![("1".into(), "2".into())],
-            },
-            "text",
-        ),
+    // Each said at its rename but `twice`, as `value_rename_<code>`.
+    for (what, pairs, code) in [
+        ("to itself", &[("open", "open")][..], "same"),
+        ("twice", &[("open", "active"), ("open", "done")], "twice"),
+        ("not in force", &[("gone", "active")], "old_refused"),
+        ("to one not accepted", &[("open", "nope")], "new_refused"),
     ] {
-        let said = l.cat.migrate_value_type(&l.own, m).await;
-        invalid_naming(&format!("a rename {what}"), said, &[word])?;
+        let (from, to_value) = pairs[0];
+        let mut case = json!({"code": format!("value_rename_{code}")});
+        if code != "twice" {
+            case["at"] = json!([{"code": "value_rename", "from": from, "to": to_value}]);
+        }
+        let said = l.cat.migrate_value_type(&l.own, to(pairs)).await;
+        refused_like(&format!("a rename {what}"), said, &case)?;
     }
+    let number = ValueTypeMigration {
+        to: vt(json!({"name": "score", "kind": "number", "constraint": "value > 0"})),
+        renames: vec![("1".into(), "2".into())],
+    };
+    let said = l.cat.migrate_value_type(&l.own, number).await;
+    let case = json!({"code": "value_rename_not_text", "value_type": "score"});
+    refused_like("a rename of a number", said, &case)?;
     // `void` is neither renamed nor accepted: a misfit, and no apply.
     let m = renamed(&["active", "done"], &[("open", "active")]);
     let report = preflight(&l, m.clone()).await?;
@@ -428,8 +434,11 @@ async fn a_rename_of_a_value_a_key_field_holds_is_refused(
         ..m
     };
     let said = l.cat.migrate_value_type(&l.own, m).await;
-    let words = ["`stage`.`name`", "re-key"];
-    invalid_naming("a rename of a value a key field holds", said, &words)?;
+    refused_as!(
+        "a rename of a value a key field holds",
+        said,
+        Case::KeyHoldsRenamed { ty, field } if ty == "stage" && field == "name"
+    )?;
     head_unmoved(store.as_ref(), before, "a refused re-key by value").await?;
     // The key holds no `open`: renaming it is no re-key.
     let m = renamed(&["active", "done"], &[("open", "active")]);
@@ -467,8 +476,11 @@ async fn what_reads_a_renamed_value_is_computed_again_and_an_old_literal_refuses
     let before = store.head().await.must("reading the head")?;
     let m = renamed(&["active", "finished"], &[("done", "finished")]);
     let said = l.cat.migrate_value_type(&l.own, m).await;
-    let words = ["`chore`.`fixed`"];
-    invalid_naming("a rename of a value a derived field yields", said, &words)?;
+    refused_as!(
+        "a rename of a value a derived field yields",
+        said,
+        Case::ComputedHoldsRenamed { ty, field } if ty == "chore" && field == "fixed"
+    )?;
     head_unmoved(store.as_ref(), before, "a refused rename").await
 }
 
@@ -625,11 +637,10 @@ async fn a_proposed_value_rename_is_accepted_only_over_the_fields_it_reported(
         .await?;
     let before = store.head().await.must("reading the head")?;
     let said = l.cat.accept(&l.own, &id).await;
-    let words = ["changed"];
-    invalid_naming(
+    refused_as!(
         "an accept over a field the report did not name",
         said,
-        &words,
+        Case::ValueTypeChangedSinceProposed { value_type } if value_type == "status"
     )?;
     head_unmoved(store.as_ref(), before, "a refused accept").await
 }

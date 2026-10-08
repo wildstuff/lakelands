@@ -193,8 +193,8 @@ impl DeliverConfig {
             if !names.insert(name) {
                 return Err(format!("the endpoint name `{name}` is used twice"));
             }
-            let target =
-                Target::parse(&e.url).map_err(|why| format!("endpoint `{name}`: the url {why}"))?;
+            let target = Target::parse(&e.url)
+                .map_err(|why| format!("endpoint `{name}`: the url is {why}"))?;
             if target.user_info {
                 return Err(format!(
                     "endpoint `{name}`: the url carries user information, which is never sent; \
@@ -293,7 +293,8 @@ pub fn deliverers(
         .filter(|e| e.lakes.iter().any(|l| l == lake.as_str()))
     {
         let name = &e.name;
-        let target = Target::parse(&e.url).map_err(|why| format!("endpoint `{name}`: {why}"))?;
+        let target =
+            Target::parse(&e.url).map_err(|why| format!("endpoint `{name}`: the url is {why}"))?;
         let secret = match &e.secret_file {
             None => None,
             Some(file) => {

@@ -29,18 +29,13 @@ pub mod valid_time;
 pub mod value;
 pub mod versions;
 
-use lakelands_api::error::{Detail, Doing, Flaw, Part, Situation};
-use lakelands_api::{Error, Position, Refusal};
+use lakelands_api::error::{Detail, Doing, Flaw, Part, Said, Situation};
+use lakelands_api::{Error, Position};
 
 /// A refusal of what the caller asked for as not well-formed, naming no
 /// field.
-pub fn invalid(message: impl Into<String>) -> Error {
-    Error::Refused {
-        field: None,
-        reason: Refusal::Invalid {
-            message: message.into(),
-        },
-    }
+pub fn invalid(said: impl Into<Said>) -> Error {
+    Error::invalid(said)
 }
 
 /// Stored or exported events, or the files that hold them, are damaged:

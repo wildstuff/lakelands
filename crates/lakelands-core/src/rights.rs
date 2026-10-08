@@ -24,6 +24,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use lakelands_api::error::Case;
 use lakelands_api::ontology::{Authority, FieldDecl, TypeDecl};
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::record::StoredRecord;
@@ -344,10 +345,8 @@ pub fn check_only(who: &Principal, decl: &TypeDecl) -> Result<(), Error> {
     if own_only(who, &decl.name).iter().all(applies) {
         return Ok(());
     }
-    Err(crate::invalid(format!(
-        "the grant's `only` on `{}` cannot be applied here; the host's grants need fixing",
-        decl.name
-    )))
+    let ty = decl.name.clone();
+    Err(crate::invalid(Case::OnlyUnappliable { ty }))
 }
 
 /// Refuse a read that probes a field the principal may not read, or a
@@ -396,16 +395,15 @@ pub fn check_search(
         return check_probe(who, decl, searched_fields(who, decl).chain(vectors));
     };
     if named.is_empty() {
-        return Err(crate::invalid(
-            "`fields` names no field; leave it out to search every searchable field",
-        ));
+        return Err(crate::invalid(Case::SearchFieldsEmpty));
     }
     let named: BTreeSet<&FieldName> = named.iter().collect();
     for name in named {
         check_probe(who, decl, [name])?;
         if !decl.fields.iter().any(|f| &f.name == name && f.searchable) {
-            let message = format!("`{name}` of `{}` is not searchable", decl.name);
-            return Err(refused(Some(name), Refusal::Invalid { message }));
+            let (field, ty) = (name.clone(), decl.name.clone());
+            let said = Box::new(Case::NotSearchable { field, ty }.into());
+            return Err(refused(Some(name), Refusal::Invalid(said)));
         }
     }
     check_probe(who, decl, vectors)
@@ -476,10 +474,8 @@ pub fn check_write(
 /// computed, never written. Every such door says it in these words.
 pub fn not_a_view(decl: &TypeDecl) -> Result<(), Error> {
     if decl.view.is_some() {
-        return Err(crate::invalid(format!(
-            "`{}` is a view; it is computed, never written",
-            decl.name
-        )));
+        let ty = decl.name.clone();
+        return Err(crate::invalid(Case::IsAView { ty }));
     }
     Ok(())
 }
@@ -498,8 +494,9 @@ fn field_of<'d>(decl: &'d TypeDecl, name: &FieldName) -> Result<&'d FieldDecl, E
 /// The answer for a field `decl` does not declare, which is also the
 /// answer for one the principal may not know of.
 fn no_field(decl: &TypeDecl, name: &FieldName) -> Error {
-    let message = format!("`{}` has no field `{name}`", decl.name);
-    refused(Some(name), Refusal::Invalid { message })
+    let (ty, field) = (decl.name.clone(), name.clone());
+    let said = Box::new(Case::UnknownField { ty, field }.into());
+    refused(Some(name), Refusal::Invalid(said))
 }
 
 /// A migration that is not in force as `who` may know it: the shape it

@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::{Case, Place, Said};
 use crate::expr::Condition;
 use crate::id::{
     Cursor, FieldName, IdempotencyKey, Position, ProposalId, RecordKey, RelationName, SourceId,
@@ -357,21 +358,22 @@ pub enum Declaration {
     Function(FunctionDecl),
 }
 
-/// Why a declaration's annotations cannot be declared.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Why a declaration's annotations cannot be declared, said at the
+/// declaration, where the map sits in it and the annotation.
+#[derive(Clone, Debug, PartialEq)]
 pub enum AnnotationFault {
     /// A key in a reserved namespace (`sys.`, `lakelands.`).
     Reserved {
         /// The key.
         key: String,
-        /// Why, for a person: the declaration and where the key sits.
-        message: String,
+        /// Its case, said where the key sits.
+        said: Said,
     },
     /// A key without a namespace or too long, a `null` value, an integer
     /// beyond ±(2^53 − 1), or more than [`ANNOTATIONS_MAX_BYTES`] in all.
     Invalid {
-        /// Why, for a person: the declaration and where.
-        message: String,
+        /// Its case, said where the annotation sits.
+        said: Said,
     },
 }
 
@@ -390,28 +392,72 @@ impl Declaration {
         format!("the {kind} declaration `{name}`")
     }
 
+    /// The declaration as the place a case is said at: `type `invoice``.
+    pub fn place(&self) -> Place {
+        match self {
+            Declaration::Type(t) => Place::Type {
+                name: t.name.clone(),
+            },
+            Declaration::ValueType(v) => Place::ValueType {
+                name: v.name.clone(),
+            },
+            Declaration::Verb(v) => Place::Verb {
+                name: v.name.clone(),
+            },
+            Declaration::Trigger(t) => Place::Trigger {
+                name: t.name.clone(),
+            },
+            Declaration::ObjectSet(o) => Place::ObjectSet {
+                name: o.name.clone(),
+            },
+            Declaration::Function(f) => Place::Function {
+                name: f.name.clone(),
+            },
+        }
+    }
+
     /// Every annotation map the declaration holds, with where it sits
     /// (empty for the declaration's own): a type's, its fields', its
     /// relations' and their link fields', a verb's payload fields', a
     /// function's inputs'.
     pub fn annotation_maps(&self) -> Vec<(String, &Annotations)> {
-        fn fields<'a>(at: &str, fs: &'a [FieldDecl], out: &mut Vec<(String, &'a Annotations)>) {
+        let maps = self.annotated().into_iter();
+        maps.map(|(at, _, map)| (at, map)).collect()
+    }
+
+    /// Every annotation map with where it sits, as a path and as the
+    /// places inside the declaration.
+    fn annotated(&self) -> Vec<(String, Vec<Place>, &Annotations)> {
+        type Out<'a> = Vec<(String, Vec<Place>, &'a Annotations)>;
+        fn fields<'a>(at: &str, within: &[Place], fs: &'a [FieldDecl], out: &mut Out<'a>) {
             for (i, f) in fs.iter().enumerate() {
-                out.push((format!("{at}[{i}]"), &f.annotations));
+                let field = Place::Field {
+                    name: f.name.clone(),
+                };
+                let places = [within, &[field]].concat();
+                out.push((format!("{at}[{i}]"), places, &f.annotations));
             }
         }
         let mut out = Vec::new();
         match self {
             Declaration::Type(t) => {
-                out.push((String::new(), &t.annotations));
-                fields("fields", &t.fields, &mut out);
+                out.push((String::new(), Vec::new(), &t.annotations));
+                fields("fields", &[], &t.fields, &mut out);
                 for (i, r) in t.relations.iter().enumerate() {
-                    out.push((format!("relations[{i}]"), &r.annotations));
-                    fields(&format!("relations[{i}].fields"), &r.fields, &mut out);
+                    let relation = [Place::Relation {
+                        name: r.name.clone(),
+                    }];
+                    out.push((format!("relations[{i}]"), relation.to_vec(), &r.annotations));
+                    fields(
+                        &format!("relations[{i}].fields"),
+                        &relation,
+                        &r.fields,
+                        &mut out,
+                    );
                 }
             }
-            Declaration::Verb(v) => fields("payload", &v.payload, &mut out),
-            Declaration::Function(f) => fields("inputs", &f.inputs, &mut out),
+            Declaration::Verb(v) => fields("payload", &[], &v.payload, &mut out),
+            Declaration::Function(f) => fields("inputs", &[], &f.inputs, &mut out),
             Declaration::ValueType(_) | Declaration::Trigger(_) | Declaration::ObjectSet(_) => {}
         }
         out
@@ -424,64 +470,47 @@ impl Declaration {
     /// all the maps together hold at most [`ANNOTATIONS_MAX_BYTES`] of
     /// canonical bytes.
     pub fn annotation_fault(&self) -> Option<AnnotationFault> {
-        let what = self.what();
         let mut bytes = 0;
-        for (at, map) in self.annotation_maps() {
+        for (_, places, map) in self.annotated() {
             if map.is_empty() {
                 continue;
             }
-            let at = if at.is_empty() {
-                String::new()
-            } else {
-                format!(" at `{at}`")
-            };
             for (key, value) in map {
+                // The declaration, where the map sits, the annotation.
+                let said = |case: Case| {
+                    let mut said = Said::from(case).within(Place::Annotation { key: key.clone() });
+                    for place in places.iter().rev() {
+                        said = said.within(place.clone());
+                    }
+                    said.within(self.place())
+                };
                 let segments: Vec<&str> = key.split('.').collect();
                 if RESERVED_ANNOTATION_NAMESPACES.contains(&segments[0]) {
-                    return Some(AnnotationFault::Reserved {
-                        key: key.clone(),
-                        message: format!(
-                            "{what} has the annotation `{key}`{at} in the reserved namespace \
-                             `{}.`",
-                            segments[0]
-                        ),
-                    });
+                    let namespace = segments[0].to_owned();
+                    let said = said(Case::AnnotationReserved { namespace });
+                    let key = key.clone();
+                    return Some(AnnotationFault::Reserved { key, said });
                 }
-                let invalid = |why: String| {
-                    Some(AnnotationFault::Invalid {
-                        message: format!("{what} has the annotation `{key}`{at}: {why}"),
-                    })
-                };
+                let invalid = |case| Some(AnnotationFault::Invalid { said: said(case) });
                 if segments.len() < 2 || !segments.iter().all(|s| is_identifier(s)) {
-                    return invalid(
-                        "a key is a namespace and a name, ASCII identifiers joined by `.` \
-                         (`acme.icon`)"
-                            .into(),
-                    );
+                    return invalid(Case::AnnotationKeyForm);
                 }
                 if key.len() > ANNOTATION_KEY_MAX_BYTES {
-                    return invalid(format!("a key is at most {ANNOTATION_KEY_MAX_BYTES} bytes"));
+                    let max = ANNOTATION_KEY_MAX_BYTES;
+                    return invalid(Case::AnnotationKeyLong { max });
                 }
                 if value.is_null() {
-                    return invalid(
-                        "a value is not `null`; an annotation is taken away by leaving its key \
-                         out"
-                        .into(),
-                    );
+                    return invalid(Case::AnnotationNull);
                 }
                 if let Some(n) = too_large(value) {
-                    return invalid(format!(
-                        "{n} is beyond ±(2^53 − 1), the largest integer every reader reads exactly"
-                    ));
+                    return invalid(Case::IntegerTooLarge { n });
                 }
             }
             bytes += crate::canonical::of(map).len();
         }
-        (bytes > ANNOTATIONS_MAX_BYTES).then(|| AnnotationFault::Invalid {
-            message: format!(
-                "{what} holds {bytes} bytes of annotations, over the {ANNOTATIONS_MAX_BYTES} a \
-                 declaration may hold"
-            ),
+        let max = ANNOTATIONS_MAX_BYTES;
+        (bytes > max).then(|| AnnotationFault::Invalid {
+            said: Said::from(Case::AnnotationsTooLarge { bytes, max }).within(self.place()),
         })
     }
 }
@@ -494,10 +523,7 @@ impl From<AnnotationFault> for crate::error::Error {
                 field: Some(key.into()),
                 reason: Refusal::Reserved,
             },
-            AnnotationFault::Invalid { message } => Error::Refused {
-                field: None,
-                reason: Refusal::Invalid { message },
-            },
+            AnnotationFault::Invalid { said } => Error::invalid(said),
         }
     }
 }
@@ -511,12 +537,12 @@ fn is_identifier(s: &str) -> bool {
 }
 
 /// An integer anywhere in a value beyond ±(2^53 − 1), if there is one.
-fn too_large(value: &serde_json::Value) -> Option<String> {
+fn too_large(value: &serde_json::Value) -> Option<serde_json::Number> {
     const MAX: u64 = (1 << 53) - 1;
     match value {
         serde_json::Value::Number(n) => (n.as_u64().is_some_and(|u| u > MAX)
             || n.as_i64().is_some_and(|i| i.unsigned_abs() > MAX))
-        .then(|| n.to_string()),
+        .then(|| n.clone()),
         serde_json::Value::Array(items) => items.iter().find_map(too_large),
         serde_json::Value::Object(m) => m.values().find_map(too_large),
         _ => None,
@@ -562,9 +588,10 @@ impl<'de> Deserialize<'de> for Declaration {
     }
 }
 
-/// The sentence a declaration that cannot be read is refused with: the
-/// declaration, then the member it does not take and where it sits, or
-/// what else is wrong and where.
+/// What a declaration that cannot be read says, as a parse error: the
+/// declaration, and where in it the parser stopped. Which member it does
+/// not take is found by the doors from the parse itself, never from these
+/// words (lakelands#650).
 fn refusal(
     kind: &str,
     name: Option<&str>,
@@ -574,30 +601,9 @@ fn refusal(
         Some(name) => format!("the {kind} declaration `{name}`"),
         None => format!("a {kind} declaration"),
     };
-    let path = e.path().to_string();
-    let inner = e.inner().to_string();
-    if let Some((member, rest)) = inner
-        .strip_prefix("unknown field `")
-        .and_then(|rest| rest.split_once('`'))
-    {
-        let parent = path
-            .strip_suffix(member)
-            .map_or("", |p| p.trim_end_matches('.'));
-        let at = if parent.is_empty() {
-            String::new()
-        } else {
-            format!(" at `{parent}`")
-        };
-        let takes = rest
-            .strip_prefix(", expected ")
-            .map(|t| format!(" (it takes {t})"))
-            .unwrap_or_default();
-        return format!("{what} has no member `{member}`{at}{takes}");
-    }
-    if path == "." {
-        format!("{what}: {inner}")
-    } else {
-        format!("{what}: at `{path}`: {inner}")
+    match e.path().to_string().as_str() {
+        "." => format!("{what}: {}", e.inner()),
+        path => format!("{what}: at `{path}`: {}", e.inner()),
     }
 }
 
@@ -659,40 +665,35 @@ impl Migration {
     /// one of `to`, each once, and frees the old name. A rename moves edges
     /// and changes none: the carrier, the target, the cardinality and, for
     /// a relation carried by link records, its fields and who writes them
-    /// stay. Otherwise the sentence that says why, naming the relation. It
+    /// stay. Otherwise the case that says why, said at the rename. It
     /// lives in the contract so that the mock refuses the same.
     pub fn renamed_relations<'a>(
         &'a self,
         before: &'a TypeDecl,
-    ) -> std::result::Result<Vec<(&'a RelationDecl, &'a RelationDecl)>, String> {
+    ) -> std::result::Result<Vec<(&'a RelationDecl, &'a RelationDecl)>, Said> {
         let mut out = Vec::new();
         for (i, (old, new)) in self.relation_renames.iter().enumerate() {
-            let wrong = |why: &str| format!("renaming relation `{old}` to `{new}`: {why}");
+            let wrong = |case: Case| {
+                let (from, to) = (old.clone(), new.clone());
+                Said::from(case).within(Place::RelationRename { from, to })
+            };
             let of = |t: &'a TypeDecl, n| t.relations.iter().find(|r| &r.name == n);
             let (Some(was), Some(is)) = (of(before, old), of(&self.to, new)) else {
-                return Err(wrong(
-                    "the first names a relation the type has, the second one the new shape has",
-                ));
+                return Err(wrong(Case::RelationRenameNamesNone));
             };
             let again = |(o, n): &(RelationName, RelationName)| o == old || n == new;
             if self.relation_renames[..i].iter().any(again)
                 || of(before, new).is_some()
                 || of(&self.to, old).is_some()
             {
-                return Err(wrong(
-                    "a relation is renamed once, to a name no relation of the type bears, and \
-                     leaves its old name free",
-                ));
+                return Err(wrong(Case::RelationRenameNotOnce));
             }
             let kept = |r: &'a RelationDecl| {
                 let carried = (&r.via, &r.derived, &r.target, r.cardinality);
                 (carried, &r.fields, r.authority)
             };
             if kept(was) != kept(is) {
-                return Err(wrong(
-                    "a rename keeps the relation's carrier, target, cardinality, link fields \
-                     and authority; change them in a migration of their own",
-                ));
+                return Err(wrong(Case::RelationRenameChanges));
             }
             out.push((was, is));
         }
@@ -865,7 +866,7 @@ impl From<ValueTypeDecl> for ValueTypeMigration {
 }
 
 impl ValueTypeMigration {
-    /// Refuse, saying why, renames that cannot be applied to `before`, the
+    /// Refuse, with the case, renames that cannot be applied to `before`, the
     /// declaration in force: of a value type not text; an old value
     /// `before` does not accept, a new one `to` does not, a value renamed
     /// to itself or twice. A merge, a chain and a swap are allowed, unlike
@@ -876,26 +877,27 @@ impl ValueTypeMigration {
         &self,
         before: &ValueTypeDecl,
         accepts: impl Fn(&ValueTypeDecl, &str) -> bool,
-    ) -> std::result::Result<(), String> {
+    ) -> std::result::Result<(), Said> {
         if !self.renames.is_empty() && self.to.kind != StorageKind::Text {
-            return Err(format!(
-                "value type `{}` is not text: only a text value type renames its values",
-                self.to.name
-            ));
+            let value_type = self.to.name.clone();
+            return Err(Case::ValueRenameNotText { value_type }.into());
         }
         for (i, (old, new)) in self.renames.iter().enumerate() {
-            let wrong = |why: &str| Err(format!("renaming `{old}` to `{new}`: {why}"));
+            let wrong = |case: Case| {
+                let (from, to) = (old.clone(), new.clone());
+                Err(Said::from(case).within(Place::ValueRename { from, to }))
+            };
             if old == new {
-                return wrong("a value is renamed to another value");
+                return wrong(Case::ValueRenameSame);
             }
             if self.renames[..i].iter().any(|(o, _)| o == old) {
-                return wrong("a value is renamed once");
+                return wrong(Case::ValueRenameTwice);
             }
             if !accepts(before, old) {
-                return wrong("the old value is one the value type in force accepts");
+                return wrong(Case::ValueRenameOldRefused);
             }
             if !accepts(&self.to, new) {
-                return wrong("the new value is one the new declaration accepts");
+                return wrong(Case::ValueRenameNewRefused);
             }
         }
         Ok(())

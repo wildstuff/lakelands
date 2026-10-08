@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::{Case, Naming, Said};
 use lakelands_api::ontology::{FieldDecl, StorageKind};
 use lakelands_api::query::{Projection, QueryResult, Search, SearchMode};
 use lakelands_api::read::{AggFunc, Direction, OrderBy};
@@ -14,9 +15,10 @@ use serde_json::json;
 use crate::conformance::Failure;
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
-    Lake, Must, agg, aggregate, all_found, derived, describe_type, embedding, field, field_access,
-    field_writer, find_where, get_at, ingest, no_such_field, nobody, order, pattern, read,
-    reads_all, refused_on, searchable, source_record, sourced, step, try_upsert, type_decl,
+    Lake, Must, agg, aggregate, alike_each, alike_renamed, all_found, derived, describe_type,
+    embedding, field, field_access, field_writer, find_where, get_at, ingest, no_such_field,
+    nobody, order, pattern, read, reads_all, refused_alike, refused_on, searchable, source_record,
+    sourced, step, try_upsert, type_decl,
 };
 
 check!(
@@ -50,7 +52,10 @@ fn walked(answer: lakelands_api::Result<lakelands_api::Reply<QueryResult>>) -> S
             .collect(),
         Ok(QueryResult::Graph { nodes, .. }) => nodes.iter().map(|n| n.key.to_string()).collect(),
         Ok(other) => return format!("{other:?}"),
-        Err(e) if e.to_string().contains("has no relation `r`") => return "no relation".into(),
+        Err(e) if matches!(e.case(), Some(Said { case: Case::NoRelationToWalk { relation, .. }, .. }) if relation == "r") =>
+        {
+            return "no relation".into();
+        }
         Err(e) => return e.to_string(),
     };
     keys.sort();
@@ -68,21 +73,31 @@ async fn a_relation_carried_by_a_hidden_field_is_walked_by_no_one_held_from_it(
     l.declare(type_decl("other", vec![field("n", StorageKind::Text)]))
         .await?;
     let to_other = json!({"kind": "reference", "target": "other"});
+    let rows = || Projection::Rows { fields: vec![] };
+    let walk = |ty: &str, key: &str, w| pattern(ty, Some(key), vec![step("r", w)], rows());
+    let both = || vec![step("r", Walk::Both)];
+    let graph = |ty: &str, key: &str| pattern(ty, Some(key), both(), Projection::Graph);
+    // Before `wk` declares `r`: the answer for a relation not declared.
+    l.declare_json(json!({"declare": "type", "name": "wk", "fields": [
+        {"name": "no", "type": {"kind": "text"}}, {"name": "tgt", "type": to_other}]}))
+        .await?;
+    l.upsert("other", "o1", json!({"n": "o"})).await?;
+    l.upsert("wk", "w1", json!({"no": "1", "tgt": "o1"}))
+        .await?;
+    let own = &l.own;
+    let absent = |p| async move { cat.query(own, p).await.must_fail("a walk over no `r`") };
+    let (absent_out, absent_graph) = (
+        absent(walk("wk", "w1", Walk::Out)).await?,
+        absent(graph("wk", "w1")).await?,
+    );
     for (name, via) in [("wk", "tgt"), ("side", "pt")] {
         l.declare_json(json!({"declare": "type", "name": name, "fields": [
             {"name": "no", "type": {"kind": "text"}}, {"name": via, "type": to_other}],
             "relations": [{"name": "r", "target": "other", "via": via}]}))
             .await?;
     }
-    l.upsert("other", "o1", json!({"n": "o"})).await?;
-    l.upsert("wk", "w1", json!({"no": "1", "tgt": "o1"}))
-        .await?;
     l.upsert("side", "s1", json!({"no": "1", "pt": "o1"}))
         .await?;
-    let rows = || Projection::Rows { fields: vec![] };
-    let walk = |ty: &str, key: &str, w| pattern(ty, Some(key), vec![step("r", w)], rows());
-    let both = || vec![step("r", Walk::Both)];
-    let graph = |ty: &str, key: &str| pattern(ty, Some(key), both(), Projection::Graph);
     // From `s1`, `wk`'s `r` comes up only at the second hop, around `o1`.
     let far = |project| {
         let depth = lakelands_api::query::Depth { min: 1, max: 2 };
@@ -99,13 +114,31 @@ async fn a_relation_carried_by_a_hidden_field_is_walked_by_no_one_held_from_it(
         (Access::Masked, ng, ng, ng, ng),
     ] {
         let who = field_access(store.as_ref(), "held", "wk", &[("tgt", access)]);
-        for (what, p, want) in [
-            ("a walk out of `w1`", walk("wk", "w1", Walk::Out), out),
-            ("a walk in to `o1`", walk("other", "o1", Walk::In), inn),
-            ("a graph from `w1`", graph("wk", "w1"), from_wk),
-            ("a graph from `o1`", graph("other", "o1"), from_other),
+        let (a_out, a_graph) = (Some(&absent_out), Some(&absent_graph));
+        for (what, p, want, absent) in [
+            (
+                "a walk out of `w1`",
+                walk("wk", "w1", Walk::Out),
+                out,
+                a_out,
+            ),
+            (
+                "a walk in to `o1`",
+                walk("other", "o1", Walk::In),
+                inn,
+                None,
+            ),
+            ("a graph from `w1`", graph("wk", "w1"), from_wk, a_graph),
+            ("a graph from `o1`", graph("other", "o1"), from_other, None),
         ] {
-            let said = walked(cat.query(&who, p).await);
+            let answer = cat.query(&who, p).await;
+            // Held from `tgt`, the very error of a relation not declared.
+            if let (Access::None, Some(absent), Err(e)) = (access, absent, &answer)
+                && let Err(f) = alike_renamed(what, e, absent, ("", ""))
+            {
+                wrong.push(f.message);
+            }
+            let said = walked(answer);
             if said != want {
                 wrong.push(format!("{what}, `tgt` {access:?}: `{said}`, not `{want}`"));
             }
@@ -147,12 +180,22 @@ async fn a_relation_carried_by_a_hidden_field_is_walked_by_no_one_held_from_it(
         .declare(&l.own, wk(&["no", "tgt"], json!([via, linked])))
         .await;
     let authors = cat.declare(&author, wk(&["no"], json!([linked]))).await;
-    let (owners, authors) = (format!("{owners:?}"), format!("{authors:?}"));
     let relations = l.describe_type("wk").await?.relations.len();
-    if authors != owners || !authors.contains("twice") || relations != 1 {
-        wrong.push(format!(
-            "`r` sent again: {authors}, the owner's: {owners}; {relations}"
-        ));
+    let twice = |e: &lakelands_api::Error| matches!(e.case(), Some(Said { case: Case::DeclaredTwice { what: Naming::Relation, name }, .. }) if name == "r");
+    match (&authors, &owners) {
+        (Err(a), Err(o)) if twice(o) && relations == 1 => {
+            if let Err(f) = alike_renamed(
+                "`r` sent again by an author held from `tgt`",
+                a,
+                o,
+                ("", ""),
+            ) {
+                wrong.push(f.message);
+            }
+        }
+        _ => wrong.push(format!(
+            "`r` sent again: {authors:?}, the owner's: {owners:?}; {relations}"
+        )),
     }
     ensure!(
         wrong.is_empty(),
@@ -245,28 +288,28 @@ async fn a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field
             "describe shows a clerk with `salary` {access:?} the definition of `k` only, and \
              names no field the clerk may not see; it defined {defined:?} in {text}"
         );
+        let filter: fn(&str) -> Find = |n| find_where(&format!("{n} > 0"));
+        let ordered: fn(&str) -> Find = |n| Find {
+            order_by: vec![order(n, OrderBy::Value, Direction::Asc)],
+            ..Find::default()
+        };
+        let sum: fn(&str) -> Find = |n| aggregate(vec![agg("s", AggFunc::Sum, Some(n))]);
         let probes = [
-            ("a filter on `g`", "g", find_where("g > 0")),
-            (
-                "an order by `h`",
-                "h",
-                Find {
-                    order_by: vec![order("h", OrderBy::Value, Direction::Asc)],
-                    ..Find::default()
-                },
-            ),
-            (
-                "a sum of `g`",
-                "g",
-                aggregate(vec![agg("s", AggFunc::Sum, Some("g"))]),
-            ),
+            ("a filter on `g`", "g", filter),
+            ("an order by `h`", "h", ordered),
+            ("a sum of `g`", "g", sum),
         ];
         for (what, name, find) in probes {
-            let r = cat.find(&who, &"emp".into(), find).await;
+            let r = cat.find(&who, &"emp".into(), find(name)).await;
             let answered = match access {
                 Access::None => no_such_field(&r, name),
                 _ => matches!(refused_on(&r), Some((f, Refusal::NotGranted)) if f == name),
             };
+            // Hidden, as `nosuch`, which `emp` does not declare, under its name.
+            if access == Access::None {
+                let absent = cat.find(&who, &"emp".into(), find("nosuch")).await;
+                refused_alike(what, &r, absent, ("nosuch", name))?;
+            }
             ensure!(
                 answered,
                 "{what} by a clerk with `salary` {access:?} is refused naming `{name}`, as not \
@@ -372,7 +415,8 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
          {:?}",
         d.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>()
     );
-    for f in ["plain", "secret", "nosuch"] {
+    let mut undeclared = Vec::new();
+    for f in ["nosuch", "plain", "secret"] {
         let in_fields = lexical("staff", "pp", Some(vec![f.into()]), false);
         let mut start = pattern("staff", None, Vec::new(), Projection::Graph);
         start.start.filter = Some(format!("{f} = 'x'").as_str().into());
@@ -406,12 +450,18 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
                     .map(drop),
             ),
         ];
-        for (what, r) in answers {
+        for (i, (what, r)) in answers.into_iter().enumerate() {
             ensure!(
                 no_such_field(&r, f),
                 "{what} naming `{f}` is answered as for a field `staff` does not declare; it \
                  answered {r:?}"
             );
+            // Word for word, and member for member, as `nosuch` is.
+            let Err(e) = r else { continue };
+            match undeclared.get(i) {
+                Some(absent) => alike_renamed(what, &e, absent, ("nosuch", f))?,
+                None => undeclared.push(e),
+            }
         }
     }
     let feed = vec![source_record("staff", "s2", json!({"feed": "x"}))];
@@ -421,6 +471,9 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
         "an ingest of `feed` is answered as for a field `staff` does not declare; it answered \
          {fed:?}"
     );
+    let nosuch = vec![source_record("staff", "s2", json!({"nosuch": "x"}))];
+    let nosuch = ingest(cat.as_ref(), &by_name, "crm", nosuch).await;
+    refused_alike("an ingest of `feed`", &fed, nosuch, ("nosuch", "feed"))?;
     let unnamed = |who| cat.search(who, lexical("staff", "ss pp ann", None, false));
     let mine = unnamed(own).await.must("the owner's search")?.data;
     let theirs = unnamed(&by_name)
@@ -466,7 +519,7 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
     };
     kept.grants.types.insert(staff.clone(), none);
     for who in [&kept, &nobody(store.as_ref())] {
-        let mut said = Vec::new();
+        let mut said: Vec<[Option<lakelands_api::Error>; 4]> = Vec::new();
         for name in ["staff", "ghost"] {
             let (t, secret) = (TypeName::from(name), json!({"secret": "x"}));
             let answers = [
@@ -475,18 +528,14 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
                 cat.find(who, &t, Find::default()).await.map(drop),
                 (try_upsert(cat.as_ref(), who, name, "s1", secret).await).map(drop),
             ];
-            let why = |a: lakelands_api::Result<()>| a.err().map(|e| e.to_string());
-            said.push(answers.map(why));
+            said.push(answers.map(Result::err));
         }
         let lake = cat.describe(who, ReadAt::default()).await;
         let lake = lake.must("describing the lake")?.data;
-        let ghost = said[1]
-            .clone()
-            .map(|e| e.map(|e| e.replace("ghost", "staff")));
+        // Each answered as on `ghost`, under its name, member for member.
+        let ghost = alike_each(&said[0], &said[1], ("ghost", "staff"));
         ensure!(
-            said[0].iter().all(Option::is_some)
-                && said[0] == ghost
-                && !lake.types.iter().any(|t| t.name == staff),
+            ghost && !lake.types.iter().any(|t| t.name == staff),
             "one whose grants give it nothing of `staff` is answered as on a type that is \
              not declared, whatever `secret` is declared; `{}` was answered {said:?}",
             who.id
@@ -552,6 +601,17 @@ async fn a_read_at_a_valid_time_probes_the_types_valid_time_fields(
                 ("a pattern's start", cat.query(&who, start).await.map(drop)),
             ];
             for (door, r) in answers {
+                // Hidden, as a field `contract` does not declare, member for member.
+                if let (Some(_), Access::None, Err(e)) = (at.valid_at, access, &r) {
+                    let case = Case::UnknownField {
+                        ty: ty.clone(),
+                        field: timed.into(),
+                    };
+                    let reason = Refusal::Invalid(Box::new(case.into()));
+                    let field = Some(timed.into());
+                    let absent = lakelands_api::Error::Refused { field, reason };
+                    alike_renamed(door, e, &absent, ("", ""))?;
+                }
                 let answered = match (at.valid_at, access) {
                     (None, _) | (Some(_), Access::None) => r.is_ok(),
                     (Some(_), _) => {

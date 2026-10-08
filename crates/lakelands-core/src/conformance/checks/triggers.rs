@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::expr::Condition;
 use lakelands_api::location::Limits;
@@ -22,8 +23,8 @@ use lakelands_api::{LakeStore, Outcome, Position, Refusal, TypeName};
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, events_after, field, find_where, head_unmoved, invalid_naming, limits, reactive,
-    reason, try_upsert, type_decl,
+    Lake, Must, events_after, field, find_where, head_unmoved, limits, reactive, reason,
+    refused_like, refused_on, try_upsert, type_decl,
 };
 use crate::conformance::{Failure, Given};
 
@@ -144,7 +145,7 @@ async fn a_transition_guard_fires_on_open_to_closed_only(
             }
         );
     }
-    invalid_naming(
+    refused_as!(
         "`previous` outside a guard",
         cat.find(
             own,
@@ -152,7 +153,7 @@ async fn a_transition_guard_fires_on_open_to_closed_only(
             find_where("previous(status) = 'open'"),
         )
         .await,
-        &["previous"],
+        Case::OnlyInWrite { name } if name == "previous"
     )?;
     Ok(())
 }
@@ -309,38 +310,44 @@ async fn retired_outside_a_triggers_guard_is_refused_naming_it(
     let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
         .await?;
-    for (what, d) in [
+    let guard = json!({"code": "retired_only_in_guard"});
+    for (what, d, case) in [
         (
             "an object set filtering on `retired()`",
             json!({"declare": "object_set", "name": "gone", "of": "job", "where": "retired()"}),
+            &guard,
         ),
         (
             "a verb requiring `not retired()`",
             json!({"declare": "verb", "name": "close", "on": "job", "risk": "low",
                    "requires": "not retired()", "effect": "write",
                    "set": [{"field": "status", "value": "'closed'"}]}),
+            &guard,
         ),
         (
             "a field derived from `retired()`",
             json!({"declare": "type", "name": "task", "fields": [
                 {"name": "gone", "type": {"kind": "boolean"}, "authority": "derived",
                  "derived": "retired()"}]}),
+            &guard,
         ),
         (
             "a guard calling `retired(status)`",
             json!({"declare": "trigger", "name": "t", "on": "job", "when": "retired(status)"}),
+            &json!({"code": "not_parsed", "text": "retired(status)", "why":
+                {"code": "parse_arity_exact", "name": "retired", "takes": 0, "given": 1}}),
         ),
     ] {
         let d: Declaration = serde_json::from_value(d).expect("a declaration");
         let before = store.head().await.must("reading the head")?;
-        invalid_naming(what, cat.declare(own, d).await, &["retired"])?;
+        refused_like(what, cat.declare(own, d).await, case)?;
         head_unmoved(store.as_ref(), before, what).await?;
     }
-    invalid_naming(
+    refused_as!(
         "a find filtering on `retired()`",
         cat.find(own, &TypeName::from("job"), find_where("retired()"))
             .await,
-        &["retired"],
+        Case::RetiredOnlyInGuard
     )
 }
 
@@ -394,10 +401,9 @@ async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(
     let head = store.head().await.must("reading the head")?;
     match write(reactive(2, Some(once_1)), "j2").await {
         Err(e) if matches!(reason(&e), Some(Refusal::TooDeep { max: 1 })) => {
-            let why = e.to_string();
             ensure!(
-                why.contains("once"),
-                "a reaction past `once`'s ceiling must be refused naming it; it said: {why}"
+                matches!(refused_on(&e), Some(("once", _))),
+                "a reaction past `once`'s ceiling must be refused naming it; it said: {e:?}"
             );
         }
         other => {
@@ -433,7 +439,8 @@ async fn a_trigger_max_depth_above_the_lakes_ceiling_is_refused(
     let ceiling = limits().max_reactive_depth;
     let head = store.head().await.must("reading the head")?;
     let deep = || trigger("deep", None, Some(ceiling + 1));
-    let named = ["deep", &(ceiling + 1).to_string(), &ceiling.to_string()];
+    let named = json!({"code": "trigger_too_deep", "depth": ceiling + 1, "max": ceiling,
+                       "at": [{"code": "trigger", "name": "deep"}]});
     for (door, answer) in [
         ("declare", cat.declare(own, deep()).await),
         ("apply", cat.apply(own, vec![deep()]).await),
@@ -453,7 +460,7 @@ async fn a_trigger_max_depth_above_the_lakes_ceiling_is_refused(
             "`{door}`: a max_depth of {} above the lake's {ceiling}",
             ceiling + 1
         );
-        invalid_naming(&what, answer, &named)?;
+        refused_like(&what, answer, &named)?;
     }
     head_unmoved(store.as_ref(), head, "a trigger above the ceiling").await?;
     let pending = cat
@@ -484,12 +491,13 @@ async fn a_trigger_max_depth_above_the_lakes_ceiling_is_refused(
         .await
         .map_err(|e| Failure::new(format!("opening the lake again with a lower ceiling: {e}")))?;
     let l = Lake::of(store.as_ref());
-    invalid_naming(
+    refused_like(
         &format!(
             "accepting `pending` (max_depth {ceiling}) under a ceiling of {}",
             ceiling - 1
         ),
         l.cat.accept(&l.own, &proposal).await,
-        &["pending", &ceiling.to_string(), &(ceiling - 1).to_string()],
+        &json!({"code": "trigger_too_deep", "depth": ceiling, "max": ceiling - 1,
+                "at": [{"code": "trigger", "name": "pending"}]}),
     )
 }

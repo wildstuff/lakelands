@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use lakelands_api::error::{Detail, Error, Result, Situation, Tls};
+use lakelands_api::error::{Case, Detail, Error, Result, Situation, Tls};
 use lakelands_api::location::{PgTls, PgTlsMode, PgTuning};
 use lakelands_api::record::StoredRecord;
 use postgres::types::{FromSql, ToSql};
@@ -82,10 +82,8 @@ impl Target {
     pub(crate) fn quoted_schema(&self) -> Result<String> {
         let s = &self.schema;
         if s.is_empty() || s.len() > 63 || s.contains('\0') {
-            return Err(invalid(format!(
-                "the schema `{s}` cannot be a PostgreSQL identifier: a name of 1 to 63 bytes \
-                 without NUL is needed; name one in the location's `schema`"
-            )));
+            let schema = s.clone();
+            return Err(invalid(Case::SchemaName { schema }));
         }
         Ok(format!("\"{}\"", s.replace('"', "\"\"")))
     }
@@ -292,9 +290,7 @@ fn tls_config_with(tls: &PgTls, bundles: &[&str]) -> Result<rustls::ClientConfig
                 .with_client_auth_cert(chain, key_der)
                 .map_err(|e| tls_failed(Tls::CertUnusable, Some(Detail::scrubbed(e))))
         }
-        _ => Err(invalid(
-            "a client certificate needs both `tls.client_cert` and `tls.client_key`",
-        )),
+        _ => Err(invalid(Case::ClientCertHalf)),
     }
 }
 
@@ -302,23 +298,18 @@ fn tls_config_with(tls: &PgTls, bundles: &[&str]) -> Result<rustls::ClientConfig
 pub(crate) fn connect(target: &Target) -> Result<Db> {
     for key in TLS_KEYS {
         if target.url.contains(&format!("{key}=")) {
-            return Err(invalid(format!(
-                "the location's URL carries `{key}`; TLS is configured by the location's `tls` \
-                 alone, so remove it from the URL"
-            )));
+            let key = key.to_owned();
+            return Err(invalid(Case::LocationUrlTls { key }));
         }
     }
-    let mut config: postgres::Config = target
-        .url
-        .parse()
-        .map_err(|e| invalid(format!("the location's URL is not a PostgreSQL URL: {e}")))?;
+    let mut config: postgres::Config = target.url.parse().map_err(|e| {
+        let detail = Detail::scrubbed(e);
+        invalid(Case::LocationUrlUnparsed { detail })
+    })?;
     // Without a user the driver would take the operating system's: the
     // location names who connects.
     if config.get_user().is_none() {
-        return Err(invalid(
-            "the location's URL names no user; name the one that connects, as \
-             `postgres://<user>@<host>/<database>`",
-        ));
+        return Err(invalid(Case::LocationUrlNoUser));
     }
     config.connect_timeout(Duration::from_secs(u64::from(
         target.tuning.connect_timeout_secs.max(1),

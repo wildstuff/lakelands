@@ -134,10 +134,15 @@ fn a_lake_that_was_never_created_is_unavailable_to_read_and_write() {
 #[test]
 fn a_location_for_another_engine_is_refused() {
     let at = Location::sqlite("elsewhere", "/nowhere");
-    assert!(matches!(
-        MemoryOpener::new().open(&at, OpenMode::Create),
-        Err(Error::Refused { .. })
-    ));
+    let Err(e @ Error::Refused { .. }) = MemoryOpener::new().open(&at, OpenMode::Create) else {
+        panic!("a location for another engine is refused");
+    };
+    let case = lakelands_api::error::Case::EngineOtherLocation {
+        engine: "memory".into(),
+        location: "memory".into(),
+        lake: Box::new("elsewhere".into()),
+    };
+    assert_eq!(e.case().map(|said| &said.case), Some(&case));
 }
 
 #[test]

@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use hyper::header::{AUTHORIZATION, HeaderValue};
-use lakelands_api::error::{Exchange, Remote, Situation};
+use lakelands_api::error::{Case, Exchange, Remote, Situation};
 use lakelands_api::seam::EmbedBackend;
 use lakelands_api::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -127,7 +127,7 @@ impl Embed {
     /// host checks this before it serves anything.
     pub fn new(config: EmbedConfig, dir: &Path) -> std::result::Result<Embed, String> {
         let target = Target::parse(&config.endpoint)
-            .map_err(|why| format!("the embedding endpoint {why}"))?;
+            .map_err(|why| format!("the embedding endpoint is {why}"))?;
         if target.user_info {
             return Err(
                 "the embedding endpoint carries user information, which is never sent; name \
@@ -214,15 +214,8 @@ impl Embed {
                 // Refused for what the request carries: asking with the
                 // same texts again gets the same answer.
                 Failure::Status(status) if matches!(status.as_u16(), 400 | 413 | 422) => {
-                    Error::Refused {
-                        field: None,
-                        reason: lakelands_api::Refusal::Invalid {
-                            message: format!(
-                                "the embedding endpoint {}: it answered {status}",
-                                self.target.shown()
-                            ),
-                        },
-                    }
+                    let (model, status) = (self.config.model.clone(), Some(status.as_u16()));
+                    Error::invalid(Case::EmbeddingRefused { model, status })
                 }
                 other => self.failed(other.exchange()),
             })?;

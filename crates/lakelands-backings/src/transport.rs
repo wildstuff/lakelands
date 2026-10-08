@@ -20,7 +20,7 @@ use http_body_util::{BodyExt, Full, Limited};
 use hyper::header::{ACCEPT, CONTENT_TYPE, HOST, HeaderName, HeaderValue};
 use hyper::{Request, Uri};
 use hyper_util::rt::TokioIo;
-use lakelands_api::error::{Detail, Exchange};
+use lakelands_api::error::{Case, Detail, Exchange};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, ServerName};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -57,16 +57,16 @@ pub(crate) struct Target {
 }
 
 impl Target {
-    /// The target of an `http` or `https` URL. A failure is the end of a
-    /// sentence whose subject is the URL.
-    pub(crate) fn parse(url: &str) -> Result<Target, String> {
-        let uri: Uri = url.parse().map_err(|e| format!("is not a URL: {e}"))?;
+    /// The target of an `http` or `https` URL, or the case of a URL that
+    /// is none, which names no part of it.
+    pub(crate) fn parse(url: &str) -> Result<Target, Case> {
+        let uri: Uri = url.parse().map_err(|_| Case::NotUrl)?;
         let secure = match uri.scheme_str() {
             Some("https") => true,
             Some("http") => false,
-            _ => return Err("is neither an `http` nor an `https` URL".into()),
+            _ => return Err(Case::UrlScheme),
         };
-        let host = uri.host().ok_or("names no host")?.to_owned();
+        let host = uri.host().ok_or(Case::UrlNoHost)?.to_owned();
         let port = uri.port_u16().unwrap_or(if secure { 443 } else { 80 });
         // Built from the host and an explicit port only: the URL's
         // authority may carry user information, which is never sent.
@@ -272,9 +272,8 @@ impl Transport {
             let detail = Detail::scrubbed(e);
             Failure::Refused(Exchange::CannotRequest { detail })
         })?;
-        let host = target.host.as_str();
         let port = target.port;
-        let address = host
+        let address = (target.host.as_str())
             .trim_start_matches('[')
             .trim_end_matches(']')
             .to_owned();
@@ -283,8 +282,8 @@ impl Transport {
         let tls = match target.secure {
             true => {
                 let name = ServerName::try_from(address.clone()).map_err(|e| {
-                    let (host, detail) = (host.to_owned(), Detail::scrubbed(e));
-                    Failure::Refused(Exchange::NotVerifiable { host, detail })
+                    let detail = Detail::scrubbed(e);
+                    Failure::Refused(Exchange::NotVerifiable { detail })
                 })?;
                 let config = self.tls().map_err(Failure::Tls)?;
                 Some((name, tokio_rustls::TlsConnector::from(config)))
@@ -295,14 +294,14 @@ impl Transport {
             let tcp = TcpStream::connect((address.as_str(), port))
                 .await
                 .map_err(|e| {
-                    let (host, detail) = (host.to_owned(), Detail::io(&e));
-                    Failure::Failed(Exchange::CannotConnect { host, port, detail })
+                    let detail = Detail::io(&e);
+                    Failure::Failed(Exchange::CannotConnect { detail })
                 })?;
             match tls {
                 Some((name, connector)) => {
                     let tls = connector.connect(name, tcp).await.map_err(|e| {
-                        let (host, detail) = (host.to_owned(), Detail::io(&e));
-                        Failure::Failed(Exchange::TlsFailed { host, port, detail })
+                        let detail = Detail::io(&e);
+                        Failure::Failed(Exchange::TlsFailed { detail })
                     })?;
                     send(tls, request, limit).await
                 }

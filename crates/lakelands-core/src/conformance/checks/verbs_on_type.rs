@@ -24,8 +24,8 @@ use serde_json::{Value, json};
 use crate::conformance::Failure;
 use crate::conformance::backing::{EXECUTOR, executed};
 use crate::conformance::fixture::{
-    Lake, Must, events_from, field, head_unmoved, invalid_naming, owner, patch, principal,
-    reads_all, reason, reviewer, type_decl,
+    Lake, Must, events_from, field, head_unmoved, owner, patch, principal, reads_all, reason,
+    refused_like, reviewer, type_decl,
 };
 
 check!(
@@ -339,35 +339,33 @@ async fn a_key_that_does_not_fit_the_verbs_scope_is_refused_naming_the_verb(
         expected_version: Some(Version(1)),
         ..WriteOpts::default()
     };
-    for (what, verb, key, opts) in [
+    for (what, verb, key, opts, code) in [
         (
             "a key passed to `issue_payment`, a verb on its type",
             "issue_payment",
             Some("x"),
             WriteOpts::default(),
+            "verb_type_takes_no_key",
         ),
         (
             "no key passed to `register`, a verb on a record",
             "register",
             None,
             WriteOpts::default(),
+            "verb_needs_key",
         ),
         (
             "an expected version passed to `issue_payment` with no key",
             "issue_payment",
             None,
             at_version,
+            "verb_type_no_version",
         ),
     ] {
         let before = store.head().await.must("reading the head")?;
-        let key = key.map(lakelands_api::RecordKey::from);
-        invalid_naming(
-            what,
-            l.cat
-                .call(&reader, &verb.into(), key.as_ref(), patch(json!({})), opts)
-                .await,
-            &[verb],
-        )?;
+        let (key, name) = (key.map(lakelands_api::RecordKey::from), verb.into());
+        let called = (l.cat).call(&reader, &name, key.as_ref(), patch(json!({})), opts);
+        refused_like(what, called.await, &json!({"code": code, "verb": verb}))?;
         head_unmoved(store.as_ref(), before, what).await?;
     }
     Ok(())
@@ -380,24 +378,28 @@ async fn a_verb_on_its_type_with_a_write_effect_or_requires_is_refused(
     l.declare(type_decl("payment", vec![field("ref", StorageKind::Text)]))
         .await?;
     let own = owner(store.as_ref());
-    for (what, verb) in [
+    for (what, verb, code) in [
         (
             "a verb on its type with a write effect",
             json!({"declare": "verb", "name": "stamp", "on": "payment", "scope": "type",
                    "risk": "low", "effect": "write", "set": [{"field": "ref", "value": "'x'"}]}),
+            "type_verb_writes",
         ),
         (
             "a verb on its type with `requires`",
             json!({"declare": "verb", "name": "guarded", "on": "payment", "scope": "type",
                    "risk": "low", "requires": "ref is not null",
                    "effect": "external", "executor": EXECUTOR}),
+            "type_verb_requires",
         ),
     ] {
         let name = verb["name"].as_str().unwrap_or_default().to_owned();
         let d: Declaration = serde_json::from_value(verb)
             .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
         let before = store.head().await.must("reading the head")?;
-        invalid_naming(what, l.cat.declare(&own, d).await, &[&name])?;
+        let case = json!({"code": code, "type": "payment",
+                          "at": [{"code": "verb", "name": name}]});
+        refused_like(what, l.cat.declare(&own, d).await, &case)?;
         head_unmoved(store.as_ref(), before, what).await?;
     }
     Ok(())

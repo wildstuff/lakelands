@@ -219,12 +219,15 @@ fn a_view_change_is_a_shape_change() {
 fn a_view_that_does_not_parse_has_no_hash() {
     let broken = a_view("amount >", "sum(amount)");
     match schema_hash(&broken) {
-        Err(ViewConditionError { at, .. }) => assert_eq!(at, "view.where"),
+        Err(ViewConditionError { at, .. }) => assert_eq!(at, [Place::Where]),
         other => panic!("expected a condition error, got {other:?}"),
     }
     let broken = a_view("amount > 0", "sum(");
     match schema_hash(&broken) {
-        Err(ViewConditionError { at, .. }) => assert_eq!(at, "view.measures.total"),
+        Err(ViewConditionError { at, .. }) => {
+            let name = "total".into();
+            assert_eq!(at, [Place::Measure { name }]);
+        }
         other => panic!("expected a condition error, got {other:?}"),
     }
 }

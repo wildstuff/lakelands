@@ -281,6 +281,7 @@ use std::path::Path;
 
 use serde::de::DeserializeOwned;
 
+use lakelands_api::error::Naming;
 use lakelands_api::tools::{NameProblem, name_problems};
 use lakelands_api::write::Declaration;
 use lakelands_api::{Patch, TypeName, VerbName};
@@ -472,9 +473,9 @@ impl<'a> Reading<'a> {
 
     /// Record that `file` declares `name`; false when the bundle already
     /// declares it, and the document is then left out.
-    fn declare(&mut self, file: &'a str, what: &str, name: &str) -> bool {
+    fn declare(&mut self, file: &'a str, what: Naming, name: &str) -> bool {
         if let Some(fault) = crate::names::fault(what, name) {
-            self.fail(file, Problem::BadName, fault);
+            self.fail(file, Problem::BadName, fault.to_string());
         }
         if let Some(first) = self.declared.get(name) {
             let first = *first;
@@ -499,7 +500,7 @@ impl<'a> Reading<'a> {
                         .value_types
                         .entry(d.name.clone())
                         .or_insert(Some(d.kind));
-                    if self.declare(file, "value type", &d.name) {
+                    if self.declare(file, Naming::ValueType, &d.name) {
                         self.docs.value_types.push((file, d));
                     }
                 }
@@ -517,35 +518,35 @@ impl<'a> Reading<'a> {
                         );
                     }
                     self.known.types.insert(d.name.clone());
-                    if self.declare(file, "type", &d.name) {
+                    if self.declare(file, Naming::Type, &d.name) {
                         self.docs.types.push((file, d));
                     }
                 }
             }
             Lane::Functions => {
                 if let Some(d) = self.doc::<FunctionDoc>(file, text, lane)
-                    && self.declare(file, "function", &d.name)
+                    && self.declare(file, Naming::Function, &d.name)
                 {
                     self.docs.functions.push((file, d));
                 }
             }
             Lane::Verbs => {
                 if let Some(d) = self.doc::<VerbDoc>(file, text, lane)
-                    && self.declare(file, "verb", &d.name)
+                    && self.declare(file, Naming::Verb, &d.name)
                 {
                     self.docs.verbs.push((file, d));
                 }
             }
             Lane::Triggers => {
                 if let Some(d) = self.doc::<TriggerDoc>(file, text, lane)
-                    && self.declare(file, "trigger", &d.name)
+                    && self.declare(file, Naming::Trigger, &d.name)
                 {
                     self.docs.triggers.push((file, d));
                 }
             }
             Lane::ObjectSets => {
                 if let Some(d) = self.doc::<ObjectSetDoc>(file, text, lane)
-                    && self.declare(file, "object set", &d.name)
+                    && self.declare(file, Naming::ObjectSet, &d.name)
                 {
                     self.docs.object_sets.push((file, d));
                 }
@@ -864,12 +865,15 @@ fn tool_error(file: &str, problems: &[NameProblem], other: Option<&str>) -> Bund
         let s = if names.len() == 1 { "" } else { "s" };
         format!("tool name{s} {list}")
     };
-    let mut collisions: BTreeMap<&Vec<String>, Vec<&String>> = BTreeMap::new();
+    let mut collisions: BTreeMap<String, Vec<&String>> = BTreeMap::new();
     let mut too_long = Vec::new();
     let mut parts = Vec::new();
     for p in problems {
         match p {
-            NameProblem::Collision { name, from } => collisions.entry(from).or_default().push(name),
+            NameProblem::Collision { name, from } => {
+                let from: Vec<String> = from.iter().map(ToString::to_string).collect();
+                collisions.entry(from.join(" and ")).or_default().push(name)
+            }
             NameProblem::TooLong { name } => too_long.push(name),
             NameProblem::Empty { from } => {
                 parts.push(format!("{from} leaves nothing to make a tool name of"))
@@ -878,11 +882,7 @@ fn tool_error(file: &str, problems: &[NameProblem], other: Option<&str>) -> Bund
         }
     }
     for (from, names) in collisions {
-        parts.push(format!(
-            "{} would make the same {}",
-            from.join(" and "),
-            quoted(&names)
-        ));
+        parts.push(format!("{from} would make the same {}", quoted(&names)));
     }
     if !too_long.is_empty() {
         parts.push(format!(

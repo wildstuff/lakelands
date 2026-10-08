@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use lakelands_api::error::{Case, Said};
 use lakelands_api::ontology::{ComputedAt, StorageKind};
 use lakelands_api::principal::PrincipalKind;
 use lakelands_api::query::Projection;
@@ -18,8 +19,8 @@ use serde_json::{Value, json};
 use crate::conformance::Failure;
 use crate::conformance::backing::KIND;
 use crate::conformance::fixture::{
-    Lake, Must, agg, aggregate, all_found, field, field_access, find_where, get_at, invalid_naming,
-    log_events, migration, object_set_on, order, pattern, pause, principal, read_at, trigger_on,
+    Lake, Must, agg, aggregate, all_found, field, field_access, find_where, get_at, log_events,
+    migration, object_set_on, order, pattern, pause, principal, read_at, refused_like, trigger_on,
     try_upsert, type_decl, view_of, write_verb,
 };
 
@@ -208,7 +209,15 @@ async fn a_field_computed_at_the_read_means_its_expression_in_every_read(
         order_by: vec![order("overdue", OrderBy::Value, Direction::Asc)],
         ..Find::default()
     };
-    let untold = |e: &lakelands_api::Error| !e.to_string().contains("computed at the read");
+    let untold = |e: &lakelands_api::Error| {
+        !matches!(
+            e.case(),
+            Some(Said {
+                case: Case::OrderAtRead { .. },
+                ..
+            })
+        )
+    };
     for (access, masked) in [(Access::Masked, true), (Access::None, false)] {
         let clerk = field_access(store.as_ref(), "clerk", "invoice", &[("due_on", access)]);
         let r = c.get(&clerk, &"invoice".into(), get_at("i1", None)).await;
@@ -247,21 +256,24 @@ async fn a_field_computed_at_the_read_means_its_expression_in_every_read(
     );
     let only = json!({"default": "read", "types": {"invoice": {"only": {"band": "late"}}}});
     let eve = principal(store.as_ref(), PrincipalKind::Agent, "eve", grants(only)?);
-    invalid_naming(
+    refused_as!(
         "a grant's `only` on `band`, computed at the read",
         c.find(&eve, &"invoice".into(), Find::default()).await,
-        &["`invoice` cannot be applied"],
+        Case::OnlyUnappliable { ty } if ty == "invoice"
     )?;
-    let words = ["overdue", "computed at the read"];
-    invalid_naming(
+    refused_as!(
         "`find` ordered by `overdue`",
         c.find(own, &"invoice".into(), by()).await,
-        &words,
+        Case::OrderAtRead { field, ty } if field == "overdue" && ty == "invoice"
     )?;
     let mut rows = pattern("invoice", None, vec![], Projection::Rows { fields: vec![] });
     rows.order_by = vec![order("invoice.overdue", OrderBy::Value, Direction::Asc)];
     let said = c.query(own, rows).await;
-    invalid_naming("a pattern ordered by `invoice.overdue`", said, &words)?;
+    refused_as!(
+        "a pattern ordered by `invoice.overdue`",
+        said,
+        Case::OrderAtRead { field, ty } if field == "overdue" && ty == "invoice"
+    )?;
     let Ok(Declaration::Type(to)) = serde_json::from_value(invoice("due")) else {
         return Err(Failure::new("the check's type does not read"));
     };
@@ -288,25 +300,26 @@ async fn a_field_computed_at_the_read_means_its_expression_in_every_read(
 /// A declaration of `t` refused, a line each: what it is, what is
 /// changed of the field `late` computed at the read (`-`: no such field;
 /// `null` takes a member away), the other fields, the type's other
-/// members, and what the refusal names.
+/// members, and the case it is refused as, on the wire (the members it
+/// holds, among others).
 const REFUSED: &str = r#"
-a clock not said | {"computed_at": null} | [] | {} | `late`; `computed_at: read`; `computed_at: write`
-a clock through an `expr` function | {"computed_at": null, "derived": null, "function": "aged"} | [] | {} | `late`; `computed_at: read`
-said by a field not computed | {"derived": null, "authority": null} | [] | {} | `late`; only a field derived
-authored | {"authority": "authored"} | [] | {} | `late`; authority `derived`
-backed | {"derived": null, "function": "remote"} | [] | {} | `late`; backing
-reading `previous` | {"derived": "previous(amount) > 0"} | [] | {} | `late`; `previous`
-required | {"required": true} | [] | {} | `late`; `required`
-sensitive | {"sensitive": true} | [] | {} | `late`; `sensitive`
-cleared | {"depends_on": ["due_on"], "on_input_change": "clear"} | [] | {} | `late`; clear
-searchable | {"type": {"kind": "text"}, "derived": "note", "searchable": true} | [] | {} | `late`; searchable
-a key | {} | [] | {"key": ["late"]} | `late`; key
-a validity bound | {"type": {"kind": "date_time"}, "derived": "due_on"} | [] | {"valid_from": "late"} | `late`; `valid_from`
-a derived relation's match | {"type": {"kind": "text"}, "derived": "note"} | [] | {"relations": [{"name": "same", "target": "t", "derived": {"match": [{"from": "late", "to": "note"}]}}]} | `late`; derived relation's match
-a view's | {"type": {"kind": "number"}, "derived": "1"} | [] | {"name": "v", "key": ["note"], "view": {"source": "t", "group_by": ["note"], "measures": []}} | `late`; a view's fields
-a link's | - | [] | {"relations": [{"name": "next", "target": "t", "fields": [{"name": "late", "type": {"kind": "boolean"}, "authority": "derived", "derived": "due_on < now()", "computed_at": "read"}]}]} | relation `next`; `late`; a link's field
-read at the write | {} | [{"name": "flag", "type": {"kind": "boolean"}, "authority": "derived", "derived": "not late"}] | {} | `flag`; reads `late`
-a derived relation's target | {"type": {"kind": "text"}, "derived": "note"} | [] | {"relations": [{"name": "same", "target": "t", "derived": {"match": [{"from": "note", "to": "late"}]}}]} | `t.late`; computed at the read
+a clock not said | {"computed_at": null} | [] | {} | {"code": "clock_unsaid", "at": [{"code": "field", "name": "late"}]}
+a clock through an `expr` function | {"computed_at": null, "derived": null, "function": "aged"} | [] | {} | {"code": "clock_unsaid", "at": [{"code": "field", "name": "late"}]}
+said by a field not computed | {"derived": null, "authority": null} | [] | {} | {"code": "computed_at_uncomputed", "at": [{"code": "field", "name": "late"}]}
+authored | {"authority": "authored"} | [] | {} | {"code": "at_read_authority", "at": [{"code": "field", "name": "late"}]}
+backed | {"derived": null, "function": "remote"} | [] | {} | {"code": "at_read_backed", "at": [{"code": "field", "name": "late"}]}
+reading `previous` | {"derived": "previous(amount) > 0"} | [] | {} | {"code": "at_read_previous", "at": [{"code": "field", "name": "late"}]}
+required | {"required": true} | [] | {} | {"code": "at_read_required", "at": [{"code": "field", "name": "late"}]}
+sensitive | {"sensitive": true} | [] | {} | {"code": "at_read_sensitive", "at": [{"code": "field", "name": "late"}]}
+cleared | {"depends_on": ["due_on"], "on_input_change": "clear"} | [] | {} | {"code": "at_read_cleared", "at": [{"code": "field", "name": "late"}]}
+searchable | {"type": {"kind": "text"}, "derived": "note", "searchable": true} | [] | {} | {"code": "at_read_searchable", "at": [{"code": "field", "name": "late"}]}
+a key | {} | [] | {"key": ["late"]} | {"code": "at_read_key", "at": [{"code": "field", "name": "late"}]}
+a validity bound | {"type": {"kind": "date_time"}, "derived": "due_on"} | [] | {"valid_from": "late"} | {"code": "at_read_valid_from", "at": [{"code": "field", "name": "late"}]}
+a derived relation's match | {"type": {"kind": "text"}, "derived": "note"} | [] | {"relations": [{"name": "same", "target": "t", "derived": {"match": [{"from": "late", "to": "note"}]}}]} | {"code": "at_read_match", "at": [{"code": "field", "name": "late"}]}
+a view's | {"type": {"kind": "number"}, "derived": "1"} | [] | {"name": "v", "key": ["note"], "view": {"source": "t", "group_by": ["note"], "measures": []}} | {"code": "computed_at_in_view", "at": [{"code": "field", "name": "late"}]}
+a link's | - | [] | {"relations": [{"name": "next", "target": "t", "fields": [{"name": "late", "type": {"kind": "boolean"}, "authority": "derived", "derived": "due_on < now()", "computed_at": "read"}]}]} | {"code": "link_field_at_read", "at": [{"code": "relation", "name": "next"}, {"code": "field", "name": "late"}]}
+read at the write | {} | [{"name": "flag", "type": {"kind": "boolean"}, "authority": "derived", "derived": "not late"}] | {} | {"code": "at_write_reads_at_read", "field": "late", "at": [{"code": "field", "name": "flag"}]}
+a derived relation's target | {"type": {"kind": "text"}, "derived": "note"} | [] | {"relations": [{"name": "same", "target": "t", "derived": {"match": [{"from": "note", "to": "late"}]}}]} | {"code": "pair_at_read", "from": "note", "to": "late", "target": "t"}
 "#;
 
 /// `t` with `due_on`, `amount` and `note`, and `more` beside them, and
@@ -368,7 +381,7 @@ async fn when_a_field_is_computed_is_said_and_kept_from_stored_reads(
     let json =
         |s: &str| serde_json::from_str::<Value>(s).map_err(|e| Failure::new(format!("`{s}`: {e}")));
     for row in REFUSED.trim().lines() {
-        let [what, change, more, rest, words] = row.split(" | ").collect::<Vec<_>>()[..] else {
+        let [what, change, more, rest, case] = row.split(" | ").collect::<Vec<_>>()[..] else {
             return Err(Failure::new(format!(
                 "the row `{row}` has not five columns"
             )));
@@ -379,13 +392,9 @@ async fn when_a_field_is_computed_is_said_and_kept_from_stored_reads(
         }
         let d = serde_json::from_value(t(&fields, json(rest)?))
             .map_err(|e| Failure::new(format!("the row `{what}` does not read: {e}")))?;
-        let words: Vec<&str> = words.split("; ").collect();
         let said = l.cat.declare(&l.own, d).await;
-        invalid_naming(
-            &format!("a field computed at the read, {what},"),
-            said,
-            &words,
-        )?;
+        let what = format!("a field computed at the read, {what},");
+        refused_like(&what, said, &json(case)?)?;
     }
     let at = |name: &str, kind: &str, expr: &str, when: &str| {
         json!({"name": name, "type": {"kind": kind}, "authority": "derived", "derived": expr,
@@ -415,15 +424,14 @@ async fn when_a_field_is_computed_is_said_and_kept_from_stored_reads(
     let u = json!({"declare": "type", "name": "u", "fields": [{"name": "code", "type": {"kind": "text"}}],
                    "relations": [relation]});
     l.declare_json(u).await?;
-    let reader =
-        "a trigger, a verb, an object set or another type's derived relation in force reads it";
     for name in ["soon", "tag"] {
         let d = serde_json::from_value(t(&fields(name), json!({})));
         let said = l
             .cat
             .declare(&l.own, d.map_err(|e| Failure::new(e.to_string()))?);
-        let (what, named) = (format!("`{name}` taken to the read"), format!("`{name}`"));
-        invalid_naming(&what, said.await, &[&named, reader])?;
+        let what = format!("`{name}` taken to the read");
+        let case = json!({"code": "read_as_stored", "at": [{"code": "field", "name": name}]});
+        refused_like(&what, said.await, &case)?;
     }
     let p = json!([{"name": "p", "type": {"kind": "text"}, "computed_at": "write"}]);
     for d in [
@@ -434,17 +442,16 @@ async fn when_a_field_is_computed_is_said_and_kept_from_stored_reads(
     ] {
         let d = serde_json::from_value(d).map_err(|e| Failure::new(e.to_string()))?;
         let said = l.cat.declare(&l.own, d).await;
-        invalid_naming(
-            "`computed_at` on a field no record holds",
-            said,
-            &["`p`", "only a field of a record"],
-        )?;
+        let case = json!({"code": "computed_at_no_record", "at": [{"code": "field", "name": "p"}]});
+        refused_like("`computed_at` on a field no record holds", said, &case)?;
     }
     let index = format!("{}t", lakelands_api::seam::SORT_INDEX_SETTING);
     let index = setting(&l, &index, json!(["late"])).await;
-    let words = ["`late`", "computed at the read"];
-    invalid_naming("an order index of `late`", index, &words)?;
-    let words: &[&str] = &["`late`", "computes at the read"];
+    refused_as!(
+        "an order index of `late`",
+        index,
+        Case::OrderIndexAtRead { field } if field == "late"
+    )?;
     for (what, d) in [
         ("a trigger", trigger_on("tr", "t", Some("late"))),
         (
@@ -453,10 +460,10 @@ async fn when_a_field_is_computed_is_said_and_kept_from_stored_reads(
         ),
         ("an object set", object_set_on("st", "t", "late")),
     ] {
-        invalid_naming(
+        refused_as!(
             &format!("{what} that reads `late`"),
             l.cat.declare(&l.own, d).await,
-            words,
+            Case::ReadsAtRead { field, ty } if field == "late" && ty == "t"
         )?;
     }
     let mut kept = view_of(
@@ -473,8 +480,11 @@ async fn when_a_field_is_computed_is_said_and_kept_from_stored_reads(
     l.declare(kept).await?;
     let kept = format!("{}lates", lakelands_api::seam::VIEW_KEPT_SETTING);
     let kept = setting(&l, &kept, json!(true)).await;
-    let words = ["reads `late` of `t`", "computed at the read"];
-    invalid_naming("keeping a view whose `where` reads `late`", kept, &words)?;
+    refused_as!(
+        "keeping a view whose `where` reads `late`",
+        kept,
+        Case::KeptWhereAtRead { field, source } if field == "late" && source == "t"
+    )?;
     let late = json!({"note": "x", "late": true});
     let written = try_upsert(l.cat.as_ref(), &l.own, "t", "k", late).await;
     ensure!(

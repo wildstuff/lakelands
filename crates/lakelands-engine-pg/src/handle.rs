@@ -35,7 +35,7 @@ use lakelands_api::engine::{
     CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
     Reclaimed, VectorIndex,
 };
-use lakelands_api::error::{Act, Error, Part, Result, Situation};
+use lakelands_api::error::{Act, Case, Error, Part, Result, Situation};
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::query::cosine;
@@ -209,16 +209,9 @@ fn shape(db: &mut Db, schema: &str) -> Result<Shape> {
         .filter(|t| !projection::LAKE_TABLES.contains(&t.as_str()))
         .collect();
     if !tables.iter().any(|t| t == "meta") || !foreign.is_empty() {
-        let names: Vec<String> = foreign.iter().map(|t| format!("`{t}`")).collect();
-        return Err(invalid(format!(
-            "the schema `{schema}` holds tables that are not a lake's ({}); a lake needs a \
-             schema of its own",
-            if names.is_empty() {
-                "it has no `meta`".to_owned()
-            } else {
-                names.join(", ")
-            }
-        )));
+        let tables = (!foreign.is_empty()).then(|| foreign.into_iter().collect());
+        let schema = schema.to_owned();
+        return Err(invalid(Case::SchemaNotALake { schema, tables }));
     }
     // The columns the engine reads must be those it wrote.
     let columns: i64 = db
@@ -231,9 +224,8 @@ fn shape(db: &mut Db, schema: &str) -> Result<Shape> {
         .get(0);
     let lease_table = tables.iter().any(|t| t == "lease");
     if columns != if lease_table { 6 } else { 3 } {
-        return Err(invalid(format!(
-            "the schema `{schema}` holds a `meta` or `lease` table that is not a lake's"
-        )));
+        let schema = schema.to_owned();
+        return Err(invalid(Case::SchemaMetaForeign { schema }));
     }
     Ok(Shape::Lake)
 }
@@ -272,9 +264,10 @@ fn check_name(db: &mut Db, names: &Names, schema: &str, lake: &LakeId) -> Result
         .and_then(|r| r.get(0));
     match held {
         Some(name) if name == lake.as_str() => Ok(()),
-        Some(name) => Err(invalid(format!(
-            "the schema `{schema}` holds the lake `{name}`, not `{lake}`"
-        ))),
+        Some(held) => {
+            let (schema, lake) = (Some(schema.to_owned()), Box::new(lake.clone()));
+            Err(invalid(Case::LakeOther { schema, held, lake }))
+        }
         None => Err(Error::unavailable(Situation::Unmade { part: Part::Name })),
     }
 }
@@ -397,7 +390,7 @@ impl ProjectionStore for PgLake {
         let mut transaction = lock(&self.transaction);
         let t = transaction
             .take()
-            .ok_or_else(|| invalid("there is no transaction to commit: call `begin` first"))?;
+            .ok_or_else(|| invalid(Case::CommitUnbegun))?;
         let mut db = lock(&writing.projection);
         // After a page the server refused, this read fails too: the
         // transaction is taken by now, so its session is rolled back here.
@@ -548,9 +541,7 @@ impl ProjectionStore for PgLake {
         let writing = self.writing()?;
         let transaction = lock(&self.transaction);
         if transaction.is_some() {
-            return Err(invalid(
-                "the projection is compacted between appends: a transaction is open",
-            ));
+            return Err(invalid(Case::CompactInTransaction));
         }
         let tables: Vec<&str> = PROJECTION_TABLES.iter().copied().chain(["meta"]).collect();
         let mut db = lock(&writing.projection);
@@ -644,7 +635,7 @@ impl VectorIndex for PgLake {
             let key: String = row.get(0);
             let v = vector_of(&row.get::<_, Vec<u8>>(1));
             if exact && v.len() != query.len() {
-                return Err(engines::dimensions(query.len(), v.len(), ty, field, &key));
+                return Err(engines::dimensions(query.len(), v.len(), ty, field));
             }
             top.push(&RecordKey::from(key), cosine(query, &v));
             Ok(())

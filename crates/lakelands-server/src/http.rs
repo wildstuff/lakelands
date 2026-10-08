@@ -42,7 +42,7 @@ use hyper::body::Incoming;
 use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderValue, ORIGIN};
 use hyper::{HeaderMap, Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use lakelands_api::error::Result;
+use lakelands_api::error::{Case, Result};
 use lakelands_api::id::LakeId;
 use lakelands_api::id::Position;
 use lakelands_api::read::POSITION_HEADER;
@@ -240,38 +240,34 @@ pub(crate) fn header(h: &HeaderMap, name: impl hyper::header::AsHeaderName) -> O
 pub(crate) struct Turned {
     pub(crate) status: StatusCode,
     pub(crate) why: Turn,
-    pub(crate) what: String,
-    pub(crate) todo: String,
 }
 
 /// What kind of turning away.
-#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Turn {
-    /// The caller is not let in: an origin, a key.
-    NotGranted,
+    /// The caller is not let in, an origin or a key: what happened and
+    /// what to do. It names no case; a refusal of `not_granted` says none.
+    NotGranted(&'static str, &'static str),
     /// The request cannot be read as it is.
-    Invalid,
-    /// The body is not JSON.
-    NotJson,
+    Invalid(Case),
 }
 
 impl Turned {
-    fn new(status: StatusCode, why: Turn, what: impl Into<String>, todo: &str) -> Turned {
-        Turned {
-            status,
-            why,
-            what: what.into(),
-            todo: todo.to_owned(),
-        }
+    fn new(status: StatusCode, why: Turn) -> Turned {
+        Turned { status, why }
     }
 
     /// Said as MCP says it.
     fn to_mcp(&self) -> Response<Full<Bytes>> {
-        let code = match self.why {
-            Turn::NotJson => code::PARSE,
-            Turn::NotGranted | Turn::Invalid => code::INVALID_REQUEST,
-        };
-        refuse(self.status, code, &self.what)
+        match &self.why {
+            Turn::NotGranted(what, _) => refuse(self.status, code::INVALID_REQUEST, what),
+            Turn::Invalid(case) => {
+                let code = match case {
+                    Case::BodyNotJson { .. } => code::PARSE,
+                    _ => code::INVALID_REQUEST,
+                };
+                refuse(self.status, code, &case.to_string())
+            }
+        }
     }
 }
 
@@ -283,9 +279,10 @@ pub(crate) fn admit(state: &State, h: &HeaderMap) -> std::result::Result<String,
     {
         return Err(Turned::new(
             StatusCode::FORBIDDEN,
-            Turn::NotGranted,
-            "this origin may not call the server",
-            "call from an origin the server's configuration allows",
+            Turn::NotGranted(
+                "this origin may not call the server",
+                "call from an origin the server's configuration allows",
+            ),
         ));
     }
     header(h, AUTHORIZATION)
@@ -294,9 +291,10 @@ pub(crate) fn admit(state: &State, h: &HeaderMap) -> std::result::Result<String,
         .ok_or_else(|| {
             Turned::new(
                 StatusCode::UNAUTHORIZED,
-                Turn::NotGranted,
-                "present an API key as `Authorization: Bearer <key>`",
-                "send the key the lake's owner gave you",
+                Turn::NotGranted(
+                    "present an API key as `Authorization: Bearer <key>`",
+                    "send the key the lake's owner gave you",
+                ),
             )
         })
 }
@@ -314,9 +312,10 @@ pub(crate) async fn resolve(
         .map_err(|_| {
             Turned::new(
                 StatusCode::UNAUTHORIZED,
-                Turn::NotGranted,
-                "the key is not known for this lake",
-                "send the key the lake's owner gave you",
+                Turn::NotGranted(
+                    "the key is not known for this lake",
+                    "send the key the lake's owner gave you",
+                ),
             )
         })
 }
@@ -332,9 +331,7 @@ pub(crate) async fn read_json(
     {
         return Err(Turned::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            Turn::Invalid,
-            "send the body as application/json",
-            "send the body as JSON",
+            Turn::Invalid(Case::BodyMediaType),
         ));
     }
     let bytes = match Limited::new(body, MAX_BODY).collect().await {
@@ -342,9 +339,7 @@ pub(crate) async fn read_json(
         Err(_) => {
             return Err(Turned::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
-                Turn::Invalid,
-                "the body is too large or was cut off",
-                "send a smaller body; many records go through ingest",
+                Turn::Invalid(Case::BodyTooLarge),
             ));
         }
     };
@@ -352,11 +347,10 @@ pub(crate) async fn read_json(
         return Ok(None);
     }
     serde_json::from_slice(&bytes).map(Some).map_err(|e| {
+        let (fault, row, column) = ((&e).into(), e.line(), e.column());
         Turned::new(
             StatusCode::BAD_REQUEST,
-            Turn::NotJson,
-            format!("the body is not JSON: {e}"),
-            "send the body as JSON",
+            Turn::Invalid(Case::BodyNotJson { fault, row, column }),
         )
     })
 }

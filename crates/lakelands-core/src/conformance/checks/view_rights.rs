@@ -24,11 +24,9 @@ fn names_nothing<T: Debug>(what: &str, answer: lakelands_api::Result<T>) -> Resu
     let no_field = Error::Refused {
         field: None,
         reason: Refusal::NotGranted,
-    }
-    .to_string();
-    let said = answer.as_ref().err().map(ToString::to_string);
+    };
     ensure!(
-        said.as_ref() == Some(&no_field),
+        answer.as_ref().err() == Some(&no_field),
         "{what} must be refused as not granted, naming no field; it answered {answer:?}"
     );
     Ok(())

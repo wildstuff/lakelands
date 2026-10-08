@@ -30,95 +30,9 @@
 //! (`docs/decisions/002-determinism-is-the-boundary.md`). A preflight
 //! report does not even depend on the order the records are scanned in.
 
-use std::fmt;
-
-use lakelands_api::shape::ViewConditionError;
-use lakelands_api::{FieldName, TypeName};
-
-use crate::expr::ParseError;
-
 mod compat;
 mod convert;
 
-pub use compat::{Change, Reason, classify};
+pub use compat::{Change, Reason, classify, reshapes};
 pub use convert::{Conversion, convert, fits, migrate_record, preflight};
 pub use lakelands_api::shape::schema_hash;
-
-/// Why a shape question has no answer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ShapeError {
-    /// A condition inside a view does not parse, so its typed form (the
-    /// form the schema hash covers) does not exist.
-    Condition {
-        /// Where the condition sits: `view.where` or
-        /// `view.measures.<name>`.
-        at: String,
-        /// Why it does not parse.
-        error: ParseError,
-    },
-    /// A migration names a different type than the one it migrates.
-    OtherType {
-        /// The type being migrated.
-        from: TypeName,
-        /// The type the migration declares.
-        to: TypeName,
-    },
-    /// A rename's old name is not a field of the type before.
-    RenameFromUnknown {
-        /// The old name.
-        from: FieldName,
-    },
-    /// A rename's new name is not a field of the type after.
-    RenameToUnknown {
-        /// The new name.
-        to: FieldName,
-    },
-    /// A field is renamed from, or to, twice.
-    RenameRepeated {
-        /// The field named twice.
-        field: FieldName,
-    },
-    /// A rename's new name is a field that already exists and keeps its
-    /// own values, so two fields' values would land in one.
-    RenameCollides {
-        /// The new name.
-        to: FieldName,
-    },
-}
-
-impl fmt::Display for ShapeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ShapeError::Condition { at, error } => {
-                write!(f, "the condition at `{at}` does not parse: {error}")
-            }
-            ShapeError::OtherType { from, to } => {
-                write!(f, "a migration of `{from}` declares the type `{to}`")
-            }
-            ShapeError::RenameFromUnknown { from } => {
-                write!(
-                    f,
-                    "rename from `{from}`: no such field before the migration"
-                )
-            }
-            ShapeError::RenameToUnknown { to } => {
-                write!(f, "rename to `{to}`: no such field after the migration")
-            }
-            ShapeError::RenameRepeated { field } => {
-                write!(f, "the field `{field}` is renamed more than once")
-            }
-            ShapeError::RenameCollides { to } => write!(
-                f,
-                "rename to `{to}`: that field already exists and keeps its values"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ShapeError {}
-
-impl From<ViewConditionError> for ShapeError {
-    fn from(ViewConditionError { at, error }: ViewConditionError) -> Self {
-        ShapeError::Condition { at, error }
-    }
-}

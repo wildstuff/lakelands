@@ -1334,7 +1334,7 @@ fn a_zero_vector_scores_zero_and_a_wrong_length_is_invalid(
     );
     let wrong = index.nearest(&ty, "emb", &[1.0, 0.0, 0.0], 5);
     ensure!(
-        matches!(reason(&wrong), Some(Refusal::Invalid { .. })),
+        matches!(reason(&wrong), Some(Refusal::Invalid(..))),
         "a query of three dimensions against vectors of two answered {wrong:?}; it must be \
          refused as invalid"
     );

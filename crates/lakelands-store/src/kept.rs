@@ -153,11 +153,10 @@ impl Kept {
         let mut settings = BTreeSet::new();
         let mut source =
             |ty: &TypeName, filter: Option<&Condition>, by: &[FieldName], m: &[Measure]| {
-                let filter = filter.map(|w| condition(w, Place::View, "view"));
+                let filter = filter.map(|w| condition(w, Place::View, &[]));
                 let filter = filter.transpose().ok()?;
-                let measured = |m: &Measure| {
-                    Ok((m.name.clone(), condition(&m.expr, Place::Group, "measure")?))
-                };
+                let measured =
+                    |m: &Measure| Ok((m.name.clone(), condition(&m.expr, Place::Group, &[])?));
                 let measures: Result<Vec<(FieldName, Expr)>> = m.iter().map(measured).collect();
                 let measures = measures.ok()?;
                 let read = filter.iter().chain(measures.iter().map(|(_, e)| e));

@@ -8,16 +8,17 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::ontology::{Derived, MatchPair, RelationDecl, StorageKind, TypeDecl, ViewDecl};
 use lakelands_api::query::{Pattern, Projection, QueryResult, Walk};
 use lakelands_api::read::{Find, Found, Get};
-use lakelands_api::{Error, LakeStore, Params, Refusal, Value};
+use lakelands_api::{LakeStore, Params, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, bound, field, find_where, log_events, param, pattern, reason, step, type_decl,
-    view_of,
+    Lake, Must, bound, field, find_where, invalid_case, invalid_like, log_events, param, pattern,
+    step, type_decl, view_of,
 };
 
 check!(
@@ -136,8 +137,9 @@ fn anchor(date: &str) -> Params {
     [("anchor".into(), json!(date))].into()
 }
 
-fn invalid_naming(r: &Result<impl std::fmt::Debug, Error>, name: &str) -> bool {
-    matches!(reason(&r), Some(Refusal::Invalid { message }) if message.contains(name))
+/// The case of a parameter `name`, on the wire: its code and its name.
+fn of_param(code: &str, name: &str) -> Value {
+    json!({"code": code, "name": name})
 }
 
 async fn the_same_view_read_at_two_anchors_answers_two_windows(
@@ -187,12 +189,12 @@ async fn a_missing_unknown_or_wrongly_kinded_parameter_is_refused_naming_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref()).await?;
-    for (what, ty, params, name) in [
+    for (what, ty, params, case) in [
         (
             "leaving `anchor` out",
             "account_window",
             Params::new(),
-            "anchor",
+            of_param("param_missing", "anchor"),
         ),
         (
             "naming `anchr`",
@@ -202,38 +204,37 @@ async fn a_missing_unknown_or_wrongly_kinded_parameter_is_refused_naming_it(
                 ("anchr".into(), json!("2026-06-30")),
             ]
             .into(),
-            "anchr",
+            of_param("param_unknown", "anchr"),
         ),
         (
             "binding `anchor` to 2026-13-01",
             "account_window",
             anchor("2026-13-01"),
-            "anchor",
+            of_param("param_value", "anchor"),
         ),
         (
             "binding `anchor` to a number",
             "account_window",
             [("anchor".into(), json!(20260630))].into(),
-            "anchor",
+            of_param("param_value", "anchor"),
         ),
         (
             "binding `anchor` to null",
             "account_window",
             [("anchor".into(), Value::Null)].into(),
-            "anchor",
+            of_param("param_value", "anchor"),
         ),
         (
             "binding `anchor` on `payment`, which is no view",
             "payment",
             anchor("2026-06-30"),
-            "anchor",
+            json!({"code": "param_unknown", "type": "payment", "name": "anchor"}),
         ),
     ] {
         let r = l.cat.find(&l.own, &ty.into(), bound(params)).await;
         ensure!(
-            invalid_naming(&r, name),
-            "a read of `{ty}` {what} must be refused as invalid, naming `{name}`; it answered \
-             {r:?}"
+            invalid_like(&r, &case),
+            "a read of `{ty}` {what} must be refused as invalid, as {case}; it answered {r:?}"
         );
     }
     Ok(())
@@ -247,14 +248,14 @@ async fn param_outside_a_views_where_and_measures_is_refused(
     let find = find_where(filter);
     let r = l.cat.find(&l.own, &"payment".into(), find).await;
     ensure!(
-        invalid_naming(&r, "param()"),
+        matches!(invalid_case(&r), Some(Case::ParamOutsideView)),
         "a `find` whose `where` calls param() must be refused as invalid, naming it; it \
          answered {r:?}"
     );
     let pattern = start_on("payment", None, Some(filter), Params::new());
     let r = l.cat.query(&l.own, pattern).await;
     ensure!(
-        invalid_naming(&r, "param()"),
+        matches!(invalid_case(&r), Some(Case::ParamOutsideView)),
         "a pattern whose `where` calls param() must be refused as invalid, naming it; it \
          answered {r:?}"
     );
@@ -265,7 +266,7 @@ async fn param_outside_a_views_where_and_measures_is_refused(
     ty.fields.push(derived);
     let r = l.try_declare(ty).await;
     ensure!(
-        invalid_naming(&r, "param()"),
+        matches!(invalid_case(&r), Some(Case::ParamOutsideView)),
         "a derived field that calls param() must be refused as invalid, naming it; declare \
          answered {r:?}"
     );
@@ -278,36 +279,35 @@ async fn a_view_declaring_its_parameters_badly_is_refused(
     let l = Lake::of(store.as_ref());
     l.declare(payment()).await?;
 
-    let cases: [(&str, Change, &str); 4] = [
+    let cases: [(&str, Change, Value); 4] = [
         (
             "reads param('day'), which it does not declare",
             |v| v.r#where = Some("date <= param('day')".into()),
-            "day",
+            json!({"code": "param_undeclared", "name": "day"}),
         ),
         (
             "declares `spare`, which nothing reads",
             |v| v.params.push(param("spare", StorageKind::Text)),
-            "spare",
+            json!({"code": "param_unread", "name": "spare"}),
         ),
         (
             "declares `anchor` twice",
             |v| v.params.push(param("anchor", StorageKind::DateTime)),
-            "anchor",
+            json!({"code": "declared_twice", "what": "parameter", "name": "anchor"}),
         ),
         (
             "declares `anchor` as json",
             |v| v.params[0].kind = StorageKind::Json,
-            "anchor",
+            json!({"code": "param_kind", "name": "anchor", "kind": "json"}),
         ),
     ];
-    for (what, change, name) in cases {
+    for (what, change, case) in cases {
         let mut ty = account_window();
         change(ty.view.as_mut().expect("a view"));
         let r = l.try_declare(ty).await;
         ensure!(
-            invalid_naming(&r, name),
-            "a view that {what} must be refused as invalid, naming `{name}`; declare \
-             answered {r:?}"
+            invalid_like(&r, &case),
+            "a view that {what} must be refused as invalid, as {case}; declare answered {r:?}"
         );
     }
     Ok(())
@@ -340,7 +340,7 @@ async fn a_cursor_continues_only_with_the_parameters_it_was_handed_out_for(
     let p = page("2026-06-12", Some(cursor.clone()));
     let other = l.cat.find(&l.own, &"account_window".into(), p).await;
     ensure!(
-        invalid_naming(&other, "parameters"),
+        matches!(invalid_case(&other), Some(Case::CursorOtherParams)),
         "a cursor handed out for the anchor 2026-06-30 must be refused with the anchor \
          2026-06-12, naming the parameters; it answered {other:?}"
     );
@@ -433,7 +433,7 @@ async fn a_pattern_started_on_a_view_binds_its_parameters(
     let unbound = start_on("account_window", Some("a"), None, Params::new());
     let r = l.cat.query(&l.own, unbound).await;
     ensure!(
-        invalid_naming(&r, "anchor"),
+        invalid_like(&r, &of_param("param_missing", "anchor")),
         "a pattern started on `account_window` without its `anchor` must be refused as \
          invalid, naming it; it answered {r:?}"
     );
@@ -459,7 +459,11 @@ async fn a_step_arriving_at_a_view_with_parameters_is_refused_before_reading(
         for (what, p) in [("rows", rows()), ("a degree", degree())] {
             let r = l.cat.query(&l.own, p).await;
             ensure!(
-                invalid_naming(&r, "account_window") && invalid_naming(&r, "window"),
+                invalid_like(
+                    &r,
+                    &json!({"code": "param_missing", "type": "account_window",
+                                         "unbound": true, "at": [{"relation": "window"}]})
+                ),
                 "a pattern of {what} from `payment` stepping over `window` arrives at the view \
                  `account_window` with no parameters bound, and must be refused as invalid \
                  {when}, naming the view and the relation; it answered {r:?}"

@@ -12,6 +12,7 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 
+use lakelands_api::error::{Case, Place};
 use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Walk};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::{Cursor, Params, RecordKey, RelationName, Result, Value};
@@ -30,38 +31,30 @@ pub(super) fn is_measure(p: &Projection) -> bool {
 /// What a measure refuses: a member it would otherwise ignore, so that an
 /// answer never looks like more than it is.
 pub(super) fn check(p: &Pattern) -> Result<()> {
-    let what = match p.project {
+    let measure = match p.project {
         Projection::Degree => "degree",
         _ => "components",
-    };
-    let refuse = |member: &str| {
-        Err(invalid(format!(
-            "`{what}` is a measure over the steps' relations and takes no {member}"
-        )))
-    };
+    }
+    .to_owned();
     if p.to.is_some() {
-        return refuse("`to`");
+        return Err(invalid(Case::MeasureNoTo { measure }));
     }
     if !p.order_by.is_empty() {
-        return refuse("`order_by`: its rows come in the measure's own order");
+        return Err(invalid(Case::MeasureNoOrder { measure }));
     }
     if p.steps.is_empty() {
-        return Err(invalid(format!(
-            "`{what}` walks the relations its steps name; name at least one"
-        )));
+        return Err(invalid(Case::MeasureNoSteps { measure }));
     }
     for step in &p.steps {
         if step.depth != Depth::default() {
-            return refuse("step `depth`: it reads each record's links, not hops");
+            return Err(invalid(Case::MeasureNoDepth { measure }));
         }
         if step.filter.is_some() {
-            return refuse("step `where`");
+            return Err(invalid(Case::MeasureNoWhere { measure }));
         }
         if p.project == Projection::Components && step.walk != Walk::Both {
-            return Err(invalid(format!(
-                "`components` takes every link both ways; the step over `{}` must walk `both`",
-                step.relation
-            )));
+            let relation = step.relation.clone();
+            return Err(invalid(Case::ComponentsBothWays { relation }));
         }
     }
     Ok(())
@@ -192,7 +185,11 @@ impl Reader<'_> {
             }
             return Ok(());
         }
-        let filter = self.record_filter(&decl, p.start.filter.as_ref(), "start where")?;
+        let filter = self.record_filter(
+            &decl,
+            p.start.filter.as_ref(),
+            &[Place::Start, Place::Where],
+        )?;
         let seed = |r: &StoredRecord| each((r.ty.clone(), r.key.clone()));
         self.each_member(&decl, filter.as_ref(), PAGE, seed)
     }

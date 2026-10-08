@@ -238,13 +238,16 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(
     let mut blank = reviewer(s, true);
     blank.grants.default = Access::None;
     let unnamed = l.cat.accept(&blank, &ids[1]).await;
-    let said = unnamed.as_ref().err().map(ToString::to_string);
+    // Its wire form, the sentence and the report in it.
+    let said = unnamed.as_ref().err().map(|e| json!(e).to_string());
+    let untyped = matches!(reason(&unnamed), Some(Refusal::Migration { report })
+        if report.ty.as_str().is_empty());
     let report = refused(unnamed)?;
     let names = ["account", "holder", "\"2\""]
         .iter()
-        .any(|n| report.contains(n));
+        .any(|n| said.as_deref().unwrap_or_default().contains(n));
     ensure!(
-        said.as_deref() == Some("refused: the migration would lose information") && !names,
+        untyped && !names,
         "one who may not see `account` is refused as a migration without a name, in the \
          sentence and in the report; it is told {said:?} with {report}"
     );

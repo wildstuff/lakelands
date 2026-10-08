@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::principal::WriteContext;
@@ -20,8 +21,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, events_after, field, head_unmoved, ingest, limits, migration, nobody, patch,
-    reactive, reads_all, reason, refused_on, source_record, sourced, trigger_on, try_upsert,
+    Lake, Must, events_after, field, head_unmoved, ingest, invalid_case, limits, migration, nobody,
+    patch, reactive, reads_all, reason, refused_on, source_record, sourced, trigger_on, try_upsert,
     type_decl, upsert, value_type, write_verb,
 };
 
@@ -202,13 +203,13 @@ async fn a_cause_past_the_head_is_refused_and_appends_nothing(
         }
         Err(e) => {
             ensure!(
-                matches!(reason(&e), Some(Refusal::Invalid { .. })),
+                matches!(reason(&e), Some(Refusal::Invalid(..))),
                 "a cause past the head must be refused as invalid; it was refused as {e:?}"
             );
-            let why = e.to_string();
             ensure!(
-                why.contains(&past.to_string()) && why.contains(&head.to_string()),
-                "the refusal must name the cause {past} and the head {head}; it said: {why}"
+                matches!(invalid_case(&e), Some(Case::CausePastHead { cause, head: Some(h) })
+                    if *cause == past && *h == head),
+                "the refusal must name the cause {past} and the head {head}; it said: {e:?}"
             );
         }
     }
@@ -537,7 +538,7 @@ async fn a_triggers_ceiling_is_read_with_the_cause_at_the_append(
     let firing = head.next().next();
     let early = write(own.clone(), reactive(1, Some(firing)), "r1").await;
     ensure!(
-        matches!(reason(&early), Some(Refusal::Invalid { .. })),
+        matches!(reason(&early), Some(Refusal::Invalid(..))),
         "a reaction naming {firing}, past the head {head}, is refused as invalid; it \
          answered {early:?}"
     );

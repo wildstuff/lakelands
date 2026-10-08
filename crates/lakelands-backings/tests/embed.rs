@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use lakelands_api::Error;
+use lakelands_api::error::Case;
 use lakelands_api::seam::EmbedBackend;
 use lakelands_backings::{Embed, EmbedConfig};
 use serde_json::{Value, json};
@@ -382,16 +383,12 @@ async fn a_request_refused_for_what_it_carries_is_invalid() {
             .embed(&[secret.to_owned()])
             .await
         {
-            Err(Error::Refused {
-                reason: lakelands_api::Refusal::Invalid { message },
-                ..
-            }) => {
-                let at = format!("127.0.0.1:{}/v1/embeddings", f.port);
-                assert!(
-                    message.contains(status) && message.contains(&at),
-                    "{message}"
-                );
-                assert!(!message.contains(secret), "{message}");
+            Err(e @ Error::Refused { .. }) => {
+                let model = "tiny".to_owned();
+                let status = status[..3].parse().ok();
+                let case = Case::EmbeddingRefused { model, status };
+                assert_eq!(e.case().map(|said| &said.case), Some(&case), "{e}");
+                assert!(!e.to_string().contains(secret), "{e}");
             }
             other => panic!("{status}: expected `Invalid`, got {other:?}"),
         }
@@ -422,7 +419,7 @@ async fn an_endpoint_nobody_listens_on_is_unavailable() {
     drop(listener);
     let e = client(config(format!("http://127.0.0.1:{port}/v1/embeddings")));
     let why = failure(e.embed(&texts(1)).await);
-    assert!(why.contains("cannot connect"), "{why}");
+    assert!(why.contains("cannot be connected to"), "{why}");
 }
 
 /// A memory lake with the client for `endpoint` bound, holding two
@@ -556,7 +553,7 @@ async fn a_store_ranks_a_hybrid_search_through_the_client() {
     match cat.search(&own, search(hybrid("quayside"))).await {
         Err(Error::Unavailable { situation }) => {
             let message = situation.to_string();
-            assert!(message.contains("cannot connect"), "{message}");
+            assert!(message.contains("cannot be connected to"), "{message}");
             assert!(!message.contains("quayside"), "{message}");
         }
         other => panic!("expected the search to be unavailable, got {other:?}"),

@@ -1061,12 +1061,13 @@ async fn row_16_the_recompute_door_calls_again_for_a_recorded_failure() {
     l.declare(summed("doc")).await.unwrap();
     l.upsert("doc", "a", json!({"title": "A"})).await.unwrap();
     let failed = l.read("doc", "a").await.unwrap();
+    let boom = Some("the storage failed while writing the projection: boom");
     assert_eq!(
         (
             fixture::value(&failed, "sum"),
             failed.meta["sum"].error.as_deref()
         ),
-        (None, Some("writing the projection failed: boom")),
+        (None, boom),
         "row 16, the door: the first call fails and its reason is recorded"
     );
     let head = store.head().await.unwrap();
@@ -1082,7 +1083,7 @@ async fn row_16_the_recompute_door_calls_again_for_a_recorded_failure() {
             stamp.error.as_deref(),
             stamp.position
         ),
-        (None, Some("writing the projection failed: boom"), declared),
+        (None, boom, declared),
         "row 16, the door: as of the `declared` the door appends, no value and the recorded \
          reason, stamped by it"
     );

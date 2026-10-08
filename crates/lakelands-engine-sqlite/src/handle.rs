@@ -29,7 +29,7 @@ use crate::lease::{Held, LeaseFile};
 use crate::log::Log;
 use crate::projection::{self, MEMBERS, OUTPUTS, PROPOSALS};
 use crate::view::SqliteView;
-use lakelands_api::error::{Detail, Doing, Error, Part, Situation};
+use lakelands_api::error::{Case, Detail, Doing, Error, Part, Situation};
 
 use crate::{NAME, invalid, io_error, lock, sql};
 
@@ -225,11 +225,7 @@ impl SqliteLake {
         if let Some((tip, _)) = log.tip()
             && self.lease_file.imported(held)? != Some(tip.0)
         {
-            return Err(invalid(format!(
-                "the lake's log holds events up to position {tip} that were not imported; an \
-                 import goes only into a lake that holds nothing else, and nothing was \
-                 appended"
-            )));
+            return Err(invalid(Case::ImportIntoHeld { tip }));
         }
         let (answer, last) = write(&mut log)?;
         if let Some((position, fence)) = last {
@@ -270,11 +266,10 @@ fn check_name(dir: &std::path::Path, lake: &LakeId, create: bool) -> Result<()> 
     let path = dir.join("lake");
     match std::fs::read_to_string(&path) {
         Ok(name) if name.trim_end() == lake.as_str() => Ok(()),
-        Ok(name) => Err(invalid(format!(
-            "{} holds the lake `{}`, not `{lake}`",
-            dir.display(),
-            name.trim_end()
-        ))),
+        Ok(name) => {
+            let (schema, held, lake) = (None, name.trim_end().to_owned(), Box::new(lake.clone()));
+            Err(invalid(Case::LakeOther { schema, held, lake }))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && create => {
             std::fs::write(&path, format!("{lake}\n"))
                 .map_err(|e| io_error(Doing::Write, Part::File, e))
@@ -417,7 +412,7 @@ impl ProjectionStore for SqliteLake {
         let mut transaction = lock(&self.transaction);
         let t = transaction
             .take()
-            .ok_or_else(|| invalid("there is no transaction to commit: call `begin` first"))?;
+            .ok_or_else(|| invalid(Case::CommitUnbegun))?;
         self.write(|conn| {
             let folded = projection::folded(conn)?;
             if let Some(refused) = engines::commit_refusal(folded, t.latest, through) {
@@ -535,9 +530,7 @@ impl ProjectionStore for SqliteLake {
     fn compact(&self) -> Result<Reclaimed> {
         let transaction = lock(&self.transaction);
         if transaction.is_some() {
-            return Err(invalid(
-                "the projection is compacted between appends: a transaction is open",
-            ));
+            return Err(invalid(Case::CompactInTransaction));
         }
         self.write(|conn| {
             // A transaction a failed commit left open is abandoned, as
@@ -635,7 +628,7 @@ impl VectorIndex for SqliteLake {
             let (key, data) = row.map_err(sql)?;
             let v = vector_of(&data);
             if v.len() != query.len() {
-                return Err(engines::dimensions(query.len(), v.len(), ty, field, &key));
+                return Err(engines::dimensions(query.len(), v.len(), ty, field));
             }
             top.push(
                 &RecordKey::from(key),

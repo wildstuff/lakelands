@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::Case;
 use crate::expr::Condition;
 use crate::id::{Cursor, FieldName, RecordKey, RelationName, TypeName};
 use crate::read::{Aggregate, Order, Params, ReadAt};
@@ -441,32 +442,35 @@ impl SearchMode {
     /// another, so it is above 0 and at most 1 000 000, a vector search
     /// of one field takes none, no field is named twice, and every query
     /// vector has a direction ([`no_direction`]).
-    pub fn misfit(&self) -> Option<(Option<FieldName>, String)> {
+    pub fn misfit(&self) -> Option<(Option<FieldName>, Case)> {
         let terms = self.vectors();
         let lone = matches!(self, SearchMode::Vector { also, .. } if also.is_empty());
         let fits = |w: Option<f64>| w.is_none_or(weight_fits);
-        let range = "must be above 0 and at most 1000000";
         for (i, (field, vector, weight)) in terms.iter().enumerate() {
+            let field = (*field).clone();
             // An empty vector is a hybrid search's that brings none, or
             // one of the wrong length, which the field's check names.
             let aimless = no_direction(vector).filter(|_| !vector.is_empty());
             let fault = if let Some(why) = aimless {
-                format!("`{field}`'s vector {why}")
+                let field = field.clone();
+                Case::VectorAimless { field, why }
             } else if lone && weight.is_some() {
-                "`weight` weighs one vector field's ranking against another's, and the search \
-                 names no other in `also`"
-                    .into()
-            } else if terms[..i].iter().any(|t| t.0 == *field) {
-                format!("`{field}` is named twice; a search ranks a vector field once")
+                Case::WeightAlone
+            } else if terms[..i].iter().any(|t| *t.0 == field) {
+                Case::VectorFieldTwice {
+                    field: field.clone(),
+                }
             } else if !fits(*weight) {
-                format!("the weight of `{field}` {range}")
+                Case::WeightRange {
+                    field: field.clone(),
+                }
             } else {
                 continue;
             };
-            return Some((Some((*field).clone()), fault));
+            return Some((Some(field), fault));
         }
         let text = matches!(self, SearchMode::Hybrid { text_weight, .. } if !fits(*text_weight));
-        text.then(|| (None, format!("`text_weight` {range}")))
+        text.then_some((None, Case::TextWeightRange))
     }
 }
 

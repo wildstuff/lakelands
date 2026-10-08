@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::describe::{FieldDescription, LakeDescription, TypeDescription, VerbDescription};
+use crate::error::{catalog, closed};
 use crate::id::{RelationName, TypeName, VerbName};
 use crate::ontology::{FieldType, StorageKind};
 
@@ -204,68 +205,52 @@ pub fn tool_base(name: &str) -> String {
 
 const DOOR_SUFFIXES: [&str; 4] = ["find", "get", "upsert", "retire"];
 
-/// Why a lake's declarations cannot all become tools. The store refuses
-/// a declaration that would introduce one of these, so [`tools`] never
-/// meets them in a lake the store wrote.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "problem", rename_all = "snake_case")]
-pub enum NameProblem {
-    /// Two declarations produce the same tool name.
-    Collision {
-        /// The tool name.
-        name: String,
-        /// The declarations that produce it.
-        from: Vec<String>,
-    },
-    /// A tool name would be longer than [`MAX_TOOL_NAME`].
-    TooLong {
-        /// The tool name.
-        name: String,
-    },
-    /// A declaration's name has nothing left once made a tool name.
-    Empty {
-        /// The declaration.
-        from: String,
-    },
-    /// A problem this build does not know.
-    #[serde(skip)]
-    Unknown(crate::error::Unknown),
-}
-
-impl crate::error::Closed for NameProblem {
-    const TAG: &'static str = "problem";
-
-    fn unknown(unknown: crate::error::Unknown) -> Self {
-        NameProblem::Unknown(unknown)
-    }
-
-    fn as_unknown(&self) -> Option<&crate::error::Unknown> {
-        match self {
-            NameProblem::Unknown(u) => Some(u),
-            _ => None,
-        }
+catalog! {
+    join = " and ";
+    #[derive(Eq)]
+    /// A declaration a tool name comes from.
+    pub enum NameSource {
+        /// A generic tool, by its name.
+        Generic { tool: String } => "the generic tool `{tool}`",
+        /// A type, whose doors are tools.
+        Type {
+            #[serde(rename = "type")]
+            ty: TypeName,
+        } => "type `{ty}`",
+        /// A verb.
+        Verb { verb: VerbName } => "verb `{verb}`",
+        /// A relation of a type, whose link doors are tools.
+        Link {
+            relation: RelationName,
+            #[serde(rename = "type")]
+            ty: TypeName,
+        } => "relation `{relation}` of type `{ty}`",
     }
 }
 
-impl std::fmt::Display for NameProblem {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NameProblem::Collision { name, from } => {
-                write!(
-                    f,
-                    "the tool name `{name}` would come from {}",
-                    from.join(" and ")
-                )
-            }
-            NameProblem::TooLong { name } => write!(
-                f,
-                "the tool name `{name}` is longer than {MAX_TOOL_NAME} characters"
-            ),
-            NameProblem::Empty { from } => write!(f, "{from} gives an empty tool name"),
-            NameProblem::Unknown(u) => f.write_str(u.message()),
-        }
+catalog! {
+    tag = "problem";
+    #[derive(Eq)]
+    /// Why a lake's declarations cannot all become tools. The store refuses a declaration that would introduce one of these, so [`tools`] never meets them in a lake the store wrote.
+    pub enum NameProblem {
+        /// Two declarations produce the same tool name.
+        Collision {
+            name: String,
+            #[serde(with = "closed::list")]
+            from: Vec<NameSource>,
+        } => "the tool name `{name}` would come from {from}",
+        /// A tool name would be longer than [`MAX_TOOL_NAME`].
+        TooLong { name: String } => "the tool name `{name}` is longer than 64 characters",
+        /// A declaration's name has nothing left once made a tool name.
+        Empty {
+            #[serde(with = "closed")]
+            from: NameSource,
+        } => "{from} gives an empty tool name",
     }
 }
+
+// `NameProblem::TooLong`'s template says the limit.
+const _: () = assert!(MAX_TOOL_NAME == 64);
 
 /// The link doors' tool suffixes.
 const LINK_SUFFIXES: [&str; 2] = ["link", "unlink"];
@@ -287,30 +272,35 @@ fn all_names(
     types: &[TypeName],
     verbs: &[VerbName],
     links: &[(TypeName, RelationName)],
-) -> BTreeMap<String, Vec<String>> {
-    let mut names: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut add = |name: String, from: String| names.entry(name).or_default().push(from);
+) -> BTreeMap<String, Vec<NameSource>> {
+    let mut names: BTreeMap<String, Vec<NameSource>> = BTreeMap::new();
+    let mut add = |name: String, from: NameSource| names.entry(name).or_default().push(from);
     for g in GENERIC_TOOLS {
-        add(g.to_owned(), format!("the generic tool `{g}`"));
+        let tool = g.to_owned();
+        add(g.to_owned(), NameSource::Generic { tool });
     }
     for ty in types {
         let base = tool_base(ty.as_str());
+        let ty = ty.clone();
         if base.is_empty() {
-            add(base, format!("type `{ty}`"));
+            add(base, NameSource::Type { ty });
             continue;
         }
         for s in DOOR_SUFFIXES {
-            add(format!("{base}_{s}"), format!("type `{ty}`"));
+            let ty = ty.clone();
+            add(format!("{base}_{s}"), NameSource::Type { ty });
         }
     }
     for v in verbs {
-        add(tool_base(v.as_str()), format!("verb `{v}`"));
+        let verb = v.clone();
+        add(tool_base(v.as_str()), NameSource::Verb { verb });
     }
     for (ty, relation) in links {
         for s in LINK_SUFFIXES {
+            let (relation, ty) = (relation.clone(), ty.clone());
             add(
-                link_tool(ty, relation, s),
-                format!("relation `{relation}` of type `{ty}`"),
+                link_tool(&ty, &relation, s),
+                NameSource::Link { relation, ty },
             );
         }
     }

@@ -13,8 +13,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, agg, field, field_writer, find_where, no_such_field, order, pattern, refused_on,
-    source_record, sourced, type_decl, windows_reach_head,
+    Lake, Must, agg, alike_renamed, field, field_writer, find_where, no_such_field, order, pattern,
+    refused_on, source_record, sourced, type_decl, windows_reach_head,
 };
 
 check!(
@@ -176,65 +176,84 @@ async fn probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggre
             .fields
             .insert("note".into(), access);
 
-        let probes: [(&str, Find); 3] = [
-            ("a filter", find_where("note = 'secret'")),
-            (
-                "an order",
-                Find {
-                    order_by: vec![order("note", OrderBy::Value, Default::default())],
-                    ..Find::default()
-                },
-            ),
-            (
-                "an aggregate",
-                Find {
-                    aggregate: Some(Aggregate {
-                        measures: vec![agg("n", AggFunc::Count, None)],
-                        group_by: vec!["note".into()],
-                    }),
-                    ..Find::default()
-                },
-            ),
-        ];
-        // A pattern's rows ordered by `line.note`, and summed over it.
-        let mut ordered = pattern(
-            "line",
-            None,
-            Vec::new(),
-            Projection::Rows { fields: vec![] },
-        );
-        ordered.order_by = vec![order("line.note", OrderBy::Value, Default::default())];
-        let summed = Aggregate {
-            measures: vec![agg("s", AggFunc::Sum, Some("line.note"))],
-            group_by: Vec::new(),
+        let probes = |f: &str| -> [(&'static str, Find); 3] {
+            [
+                ("a filter", find_where(&format!("{f} = 'secret'"))),
+                (
+                    "an order",
+                    Find {
+                        order_by: vec![order(f, OrderBy::Value, Default::default())],
+                        ..Find::default()
+                    },
+                ),
+                (
+                    "an aggregate",
+                    Find {
+                        aggregate: Some(Aggregate {
+                            measures: vec![agg("n", AggFunc::Count, None)],
+                            group_by: vec![f.into()],
+                        }),
+                        ..Find::default()
+                    },
+                ),
+            ]
         };
-        let summed = pattern("line", None, Vec::new(), Projection::Aggregate(summed));
+        // A pattern's rows ordered by `line.note`, and summed over it.
+        let ordered = |f: &str| {
+            let mut ordered = pattern(
+                "line",
+                None,
+                Vec::new(),
+                Projection::Rows { fields: vec![] },
+            );
+            ordered.order_by = vec![order(f, OrderBy::Value, Default::default())];
+            ordered
+        };
+        let summed = |f: &str| {
+            let summed = Aggregate {
+                measures: vec![agg("s", AggFunc::Sum, Some(f))],
+                group_by: Vec::new(),
+            };
+            pattern("line", None, Vec::new(), Projection::Aggregate(summed))
+        };
         let answers = [
             (
                 "a pattern's rows ordered by it",
-                cat.query(&reader, ordered).await.map(drop),
+                cat.query(&reader, ordered("line.note")).await.map(drop),
+                cat.query(&reader, ordered("line.nosuch")).await.map(drop),
             ),
             (
                 "a pattern's sum of it",
-                cat.query(&reader, summed).await.map(drop),
+                cat.query(&reader, summed("line.note")).await.map(drop),
+                cat.query(&reader, summed("line.nosuch")).await.map(drop),
             ),
         ];
-        for (how, r) in answers {
+        for (how, r, absent) in answers {
             let answered = match access {
                 lakelands_api::Access::None => no_such_field(&r, "note"),
                 _ => matches!(refused_on(&r), Some(("note", Refusal::NotGranted))),
             };
+            // Hidden, word for word and member for member as `nosuch`.
+            if let (lakelands_api::Access::None, Err(e), Err(absent)) = (access, &r, &absent) {
+                alike_renamed(how, e, absent, ("nosuch", "note"))?;
+            }
             ensure!(
                 answered,
                 "probing `note` ({access:?}) with {how} is refused as `find` refuses it, never \
                  answered as if complete; it answered {r:?}"
             );
         }
-        for (how, find) in probes {
+        for ((how, find), (_, absent)) in probes("note").into_iter().zip(probes("nosuch")) {
             let err = cat
                 .find(&reader, &line, find)
                 .await
                 .must_fail(&format!("probing the unreadable `note` with {how}"))?;
+            // Hidden, word for word and member for member as `nosuch`.
+            if access == lakelands_api::Access::None {
+                let absent = cat.find(&reader, &line, absent).await;
+                let absent = absent.must_fail(&format!("probing `nosuch` with {how}"))?;
+                alike_renamed(how, &err, &absent, ("nosuch", "note"))?;
+            }
             let answered = match access {
                 lakelands_api::Access::None => no_such_field(&err, "note"),
                 _ => matches!(refused_on(&err), Some(("note", Refusal::NotGranted))),

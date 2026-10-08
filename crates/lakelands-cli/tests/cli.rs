@@ -908,8 +908,8 @@ fn export_prints_its_files_and_the_head_it_read_and_refuses_a_directory_in_use()
         }
         fails(
             &sh.run(&["export", "--to", &to]),
-            "error: refused: <root>/out is not empty; an export writes only into an empty or new \
-             directory\n  what to do: export into an empty or new directory\n",
+            "error: refused: the export's directory is not empty; an export writes only into an \
+             empty or new directory\n  what to do: export into an empty or new directory\n",
         );
         let empty = sh.run(&["export", "--to", ""]);
         assert_eq!((empty.code, empty.out.as_str()), (2, ""), "{}", empty.err);

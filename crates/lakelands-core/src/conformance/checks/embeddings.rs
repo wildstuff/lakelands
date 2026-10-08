@@ -1219,7 +1219,7 @@ async fn an_embedding_that_is_not_a_derived_vector_of_its_own_text_fields_is_ref
         ensure!(
             matches!(
                 refused_on(&got),
-                Some(("vec", lakelands_api::Refusal::Invalid { .. }))
+                Some(("vec", lakelands_api::Refusal::Invalid(..)))
             ),
             "declaring `vec` as {what} must be refused as invalid, naming `vec`; it answered {}",
             answered(&got)
@@ -1391,7 +1391,7 @@ async fn weather_fails_every_text_its_request_had_not_answered(
     ensure!(
         calls == 5
             && got[0] == "east"
-            && got[1].contains("cannot be reached")
+            && got[1].contains("refused the texts")
             && got[2..].iter().all(|g| *g == down),
         "`p1`'s text is refused and `p2`'s meets weather: the halves are asked, `p0` is \
          embedded, `p1` holds its refusal, and the weather of `p2`'s request is recorded for \

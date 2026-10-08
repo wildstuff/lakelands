@@ -20,147 +20,15 @@
 //! is `required` stays a choice of each type: an `iban` may be mandatory
 //! on one type and optional on another while staying the same value type.
 
-use std::fmt;
-
+use lakelands_api::error::{Case, Shape};
 use lakelands_api::ontology::{
     FieldDecl, FieldType, StorageKind, ValueTypeDecl, is_vector_component,
 };
-use lakelands_api::{FieldName, Timestamp, Value, ValueTypeName};
+use lakelands_api::{Timestamp, Value};
 
 mod format;
 
 pub use format::ValueFormat;
-
-/// Why a value does not fit its field, or a field its value type.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ValueError {
-    /// The value's JSON shape is not the one its storage kind has.
-    WrongShape {
-        /// The kind the field is stored as.
-        kind: StorageKind,
-        /// What the kind's JSON form is, for a person.
-        expected: &'static str,
-    },
-    /// A decimal string is not `-?[0-9]+(\.[0-9]+)?`.
-    Decimal(String),
-    /// An integer outside ±(2^53 − 1), which not every reader of the log
-    /// reads exactly (`docs/log-format.md` §1.2).
-    TooLarge(String),
-    /// A date-time string is not a UTC instant.
-    DateTime(String),
-    /// A bytes string is not standard base64 with padding.
-    Base64,
-    /// A vector field declares no length.
-    NoDimensions,
-    /// A vector has the wrong length.
-    VectorLength {
-        /// The declared length.
-        expected: u32,
-        /// The length written.
-        found: usize,
-    },
-    /// A geo value is not a GeoJSON geometry object.
-    Geo(String),
-    /// The value is not one of the value type's allowed values.
-    NotOneOf {
-        /// The value written, as JSON text.
-        value: String,
-        /// The allowed values.
-        allowed: Vec<String>,
-    },
-    /// The value fails the value type's format.
-    Format {
-        /// The value type.
-        value_type: ValueTypeName,
-        /// The format it fails.
-        format: ValueFormat,
-    },
-    /// The field names a value type that is not declared, or a different
-    /// one from the declaration given.
-    UnknownValueType(ValueTypeName),
-    /// The value type names a format that does not exist.
-    UnknownFormat {
-        /// The value type.
-        value_type: ValueTypeName,
-        /// The name it gives.
-        format: String,
-    },
-    /// The field is stored as a different kind from its value type.
-    KindMismatch {
-        /// The field.
-        field: FieldName,
-        /// Its value type.
-        value_type: ValueTypeName,
-        /// The value type's kind.
-        expected: StorageKind,
-        /// The field's kind.
-        found: StorageKind,
-    },
-}
-
-impl fmt::Display for ValueError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ValueError::WrongShape { kind, expected } => {
-                write!(f, "a {} value must be {expected}", kind_name(*kind))
-            }
-            ValueError::Decimal(s) => write!(f, "not a decimal: {s:?}"),
-            ValueError::TooLarge(n) => write!(
-                f,
-                "{n} is beyond ±(2^53 − 1), the largest integer every reader reads exactly"
-            ),
-            ValueError::DateTime(s) => write!(f, "not a UTC date-time: {s:?}"),
-            ValueError::Base64 => f.write_str("not standard base64 with padding"),
-            ValueError::NoDimensions => f.write_str("the vector field declares no dimensions"),
-            ValueError::VectorLength { expected, found } => {
-                write!(f, "the vector has {found} numbers, not {expected}")
-            }
-            ValueError::Geo(why) => write!(f, "not a GeoJSON geometry: {why}"),
-            ValueError::NotOneOf { value, allowed } => {
-                write!(f, "{value} is not one of {}", allowed.join(", "))
-            }
-            ValueError::Format { value_type, format } => write!(
-                f,
-                "the value is not a well-formed {} ({value_type})",
-                format.name()
-            ),
-            ValueError::UnknownValueType(name) => write!(f, "no value type named {name}"),
-            ValueError::UnknownFormat { value_type, format } => write!(
-                f,
-                "value type {value_type} names the unknown format `{format}`"
-            ),
-            ValueError::KindMismatch {
-                field,
-                value_type,
-                expected,
-                found,
-            } => write!(
-                f,
-                "field {field} uses value type {value_type}, which is {}, but the field is {}",
-                kind_name(*expected),
-                kind_name(*found)
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ValueError {}
-
-/// A storage kind's name, as declarations spell it.
-pub fn kind_name(kind: StorageKind) -> &'static str {
-    match kind {
-        StorageKind::Text => "text",
-        StorageKind::Number => "number",
-        StorageKind::Decimal => "decimal",
-        StorageKind::Boolean => "boolean",
-        StorageKind::DateTime => "date_time",
-        StorageKind::Bytes => "bytes",
-        StorageKind::Json => "json",
-        StorageKind::Reference => "reference",
-        StorageKind::Vector => "vector",
-        StorageKind::Geo => "geo",
-    }
-}
 
 /// Checks one value against its field's type and returns it in its
 /// canonical form.
@@ -174,7 +42,7 @@ pub fn check(
     value: &Value,
     ty: &FieldType,
     value_type: Option<&ValueTypeDecl>,
-) -> Result<Value, ValueError> {
+) -> Result<Value, Case> {
     let value_type = resolve(ty, value_type)?;
     if value.is_null() {
         return Ok(Value::Null);
@@ -217,14 +85,14 @@ pub(crate) fn at_scale(d: rust_decimal::Decimal, scale: u32) -> rust_decimal::De
 }
 
 /// Refuse an integer anywhere in a value that lies outside ±(2^53 − 1).
-fn check_integers(value: &Value) -> Result<(), ValueError> {
+fn check_integers(value: &Value) -> Result<(), Case> {
     const MAX: u64 = (1 << 53) - 1;
     match value {
         Value::Number(n) => {
             let big = n.as_u64().is_some_and(|u| u > MAX)
                 || n.as_i64().is_some_and(|i| i.unsigned_abs() > MAX);
             if big {
-                return Err(ValueError::TooLarge(n.to_string()));
+                return Err(Case::IntegerTooLarge { n: n.clone() });
             }
             Ok(())
         }
@@ -238,43 +106,45 @@ fn check_integers(value: &Value) -> Result<(), ValueError> {
 fn resolve<'a>(
     ty: &FieldType,
     given: Option<&'a ValueTypeDecl>,
-) -> Result<Option<&'a ValueTypeDecl>, ValueError> {
+) -> Result<Option<&'a ValueTypeDecl>, Case> {
     match (&ty.value_type, given) {
         (None, _) => Ok(None),
         (Some(name), Some(vt)) if vt.name == *name => Ok(Some(vt)),
-        (Some(name), _) => Err(ValueError::UnknownValueType(name.clone())),
+        (Some(name), _) => Err(Case::NoValueType {
+            value_type: name.clone(),
+        }),
     }
 }
 
-fn check_kind(value: &Value, ty: &FieldType) -> Result<Value, ValueError> {
-    let wrong = |expected| ValueError::WrongShape {
+fn check_kind(value: &Value, ty: &FieldType) -> Result<Value, Case> {
+    let wrong = |shape| Case::ValueShape {
         kind: ty.kind,
-        expected,
+        shape,
     };
     match ty.kind {
-        StorageKind::Text | StorageKind::Reference if !value.is_string() => Err(wrong("a string")),
-        StorageKind::Number if !value.is_number() => Err(wrong("a number")),
-        StorageKind::Boolean if !value.is_boolean() => Err(wrong("true or false")),
+        StorageKind::Text | StorageKind::Reference if !value.is_string() => Err(wrong(Shape::Text)),
+        StorageKind::Number if !value.is_number() => Err(wrong(Shape::Number)),
+        StorageKind::Boolean if !value.is_boolean() => Err(wrong(Shape::Boolean)),
         StorageKind::Text | StorageKind::Reference | StorageKind::Boolean => Ok(value.clone()),
         StorageKind::Number | StorageKind::Json => {
             check_integers(value)?;
             Ok(value.clone())
         }
         StorageKind::Decimal => {
-            let s = value.as_str().ok_or_else(|| wrong("a string of digits"))?;
+            let s = value.as_str().ok_or_else(|| wrong(Shape::Digits))?;
             let decimal = is_decimal(s).then(|| value.clone());
-            decimal.ok_or_else(|| ValueError::Decimal(s.to_owned()))
+            let value = s.escape_debug().to_string();
+            decimal.ok_or(Case::NotDecimal { value })
         }
         StorageKind::DateTime => {
-            let s = value.as_str().ok_or_else(|| wrong("a date-time string"))?;
-            let t = Timestamp::parse(s).map_err(|_| ValueError::DateTime(s.to_owned()))?;
+            let s = value.as_str().ok_or_else(|| wrong(Shape::DateTime))?;
+            let value = || s.escape_debug().to_string();
+            let t = Timestamp::parse(s).map_err(|_| Case::NotDateTime { value: value() })?;
             Ok(Value::String(t.to_string()))
         }
         StorageKind::Bytes => {
-            let s = value.as_str().ok_or_else(|| wrong("a base64 string"))?;
-            is_base64(s)
-                .then(|| value.clone())
-                .ok_or(ValueError::Base64)
+            let s = value.as_str().ok_or_else(|| wrong(Shape::Base64))?;
+            is_base64(s).then(|| value.clone()).ok_or(Case::NotBase64)
         }
         StorageKind::Vector => {
             check_integers(value)?;
@@ -326,18 +196,15 @@ fn is_base64(s: &str) -> bool {
     }
 }
 
-fn check_vector(value: &Value, ty: &FieldType) -> Result<Value, ValueError> {
+fn check_vector(value: &Value, ty: &FieldType) -> Result<Value, Case> {
     let numbers = |items: &&Vec<Value>| items.iter().all(is_vector_component);
-    let items = value
-        .as_array()
-        .filter(numbers)
-        .ok_or(ValueError::WrongShape {
-            kind: StorageKind::Vector,
-            expected: "an array of numbers, each finite as a 32-bit float",
-        })?;
-    let expected = ty.dimensions.ok_or(ValueError::NoDimensions)?;
+    let items = value.as_array().filter(numbers).ok_or(Case::ValueShape {
+        kind: StorageKind::Vector,
+        shape: Shape::Numbers,
+    })?;
+    let expected = ty.dimensions.ok_or(Case::VectorNoDimensions)?;
     if items.len() != expected as usize {
-        return Err(ValueError::VectorLength {
+        return Err(Case::VectorLength {
             expected,
             found: items.len(),
         });
@@ -354,20 +221,14 @@ fn check_vector(value: &Value, ty: &FieldType) -> Result<Value, ValueError> {
 /// Empty is allowed at the top only, the same for every type: empty
 /// `coordinates` are the empty geometry of that type, and a collection
 /// may hold no geometries, but a part that is present keeps its shape.
-pub(crate) fn check_geo(value: &Value) -> Result<(), ValueError> {
-    let obj = value
-        .as_object()
-        .ok_or_else(|| ValueError::Geo("not an object".into()))?;
-    let ty = obj
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ValueError::Geo("no string member `type`".into()))?;
+pub(crate) fn check_geo(value: &Value) -> Result<(), Case> {
+    let obj = value.as_object().ok_or(Case::GeoNotObject)?;
+    let ty = obj.get("type").and_then(Value::as_str);
+    let ty = ty.ok_or(Case::GeoNoType)?;
     if ty == "GeometryCollection" {
         return match obj.get("geometries") {
             Some(Value::Array(parts)) => parts.iter().try_for_each(check_geo),
-            _ => Err(ValueError::Geo(
-                "a GeometryCollection needs a `geometries` array".into(),
-            )),
+            _ => Err(Case::GeoNoGeometries),
         };
     }
     let shape: fn(&Value) -> bool = match ty {
@@ -377,15 +238,17 @@ pub(crate) fn check_geo(value: &Value) -> Result<(), ValueError> {
         "MultiLineString" => |c| each(c, is_line),
         "Polygon" => is_polygon,
         "MultiPolygon" => |c| each(c, is_polygon),
-        other => return Err(ValueError::Geo(format!("{other:?} is not a geometry type"))),
+        other => {
+            let name = other.escape_debug().to_string();
+            return Err(Case::GeoUnknownType { name });
+        }
     };
+    let geometry = ty.to_owned();
     match obj.get("coordinates") {
         Some(Value::Array(c)) if c.is_empty() => Ok(()),
         Some(c) if shape(c) => Ok(()),
-        Some(_) => Err(ValueError::Geo(format!(
-            "the `coordinates` are not those of a {ty}"
-        ))),
-        None => Err(ValueError::Geo(format!("a {ty} needs `coordinates`"))),
+        Some(_) => Err(Case::GeoCoordinates { geometry }),
+        None => Err(Case::GeoNoCoordinates { geometry }),
     }
 }
 
@@ -416,34 +279,34 @@ fn is_polygon(v: &Value) -> bool {
     })
 }
 
-fn check_one_of(value: &Value, vt: &ValueTypeDecl) -> Result<(), ValueError> {
+fn check_one_of(value: &Value, vt: &ValueTypeDecl) -> Result<(), Case> {
     if vt.one_of.is_empty() {
         return Ok(());
     }
     match value.as_str() {
         Some(s) if vt.one_of.iter().any(|a| a == s) => Ok(()),
-        _ => Err(ValueError::NotOneOf {
-            value: value.to_string(),
-            allowed: vt.one_of.clone(),
+        _ => Err(Case::NotOneOf {
+            value: value.clone(),
+            allowed: vt.one_of.iter().collect(),
         }),
     }
 }
 
-fn check_format(value: &Value, vt: &ValueTypeDecl) -> Result<(), ValueError> {
+fn check_format(value: &Value, vt: &ValueTypeDecl) -> Result<(), Case> {
     let Some(name) = vt.format.as_deref() else {
         return Ok(());
     };
     let Some(format) = ValueFormat::parse(name) else {
-        return Err(ValueError::UnknownFormat {
+        return Err(Case::ValueTypeFormat {
             value_type: vt.name.clone(),
             format: name.to_owned(),
         });
     };
     match value.as_str() {
         Some(s) if format.matches(s) => Ok(()),
-        _ => Err(ValueError::Format {
+        _ => Err(Case::NotFormat {
+            format: format.name().to_owned(),
             value_type: vt.name.clone(),
-            format,
         }),
     }
 }
@@ -451,16 +314,18 @@ fn check_format(value: &Value, vt: &ValueTypeDecl) -> Result<(), ValueError> {
 /// Holds a field to the value type it names: the value type must be
 /// declared in `value_types`, and the field must be stored as its kind.
 /// A field that names no value type always conforms.
-pub fn conformance(field: &FieldDecl, value_types: &[ValueTypeDecl]) -> Result<(), ValueError> {
+pub fn conformance(field: &FieldDecl, value_types: &[ValueTypeDecl]) -> Result<(), Case> {
     let Some(name) = &field.ty.value_type else {
         return Ok(());
     };
     let vt = value_types
         .iter()
         .find(|vt| vt.name == *name)
-        .ok_or_else(|| ValueError::UnknownValueType(name.clone()))?;
+        .ok_or_else(|| Case::NoValueType {
+            value_type: name.clone(),
+        })?;
     if vt.kind != field.ty.kind {
-        return Err(ValueError::KindMismatch {
+        return Err(Case::ValueTypeKind {
             field: field.name.clone(),
             value_type: vt.name.clone(),
             expected: vt.kind,

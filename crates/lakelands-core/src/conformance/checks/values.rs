@@ -80,7 +80,7 @@ async fn refused_in(store: &dyn LakeStore, ty: &str, v: Value, why: &str) -> Res
     ensure!(
         matches!(
             refused_on(&err),
-            Some(("v", Refusal::Constraint { .. } | Refusal::Invalid { .. }))
+            Some(("v", Refusal::Constraint(..) | Refusal::Invalid(..)))
         ),
         "{what} must be refused on field `v`; it failed with {err:?}"
     );

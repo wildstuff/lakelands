@@ -51,6 +51,7 @@ use std::sync::Arc;
 
 use lakelands_api::describe::{Kept, LakeDescription, NotKept, TypeDescription};
 use lakelands_api::engine::{After, ProjectionView, Scan};
+use lakelands_api::error::{Case, Names, Place, Said};
 use lakelands_api::expr::{CmpOp, Expr, Func, Literal};
 use lakelands_api::ontology::{
     FieldType, MatchPair, RelationDecl, StorageKind, TypeDecl, VerbEffect,
@@ -67,7 +68,7 @@ use lakelands_api::{
     Cursor, Error, FieldName, Missing, Position, Principal, Record, RecordKey, Refusal,
     RelationName, Result, Timestamp, TypeName, Value, VerbName,
 };
-use lakelands_core::expr::{self, Place, RecordScope, aggregate};
+use lakelands_core::expr::{self, Place as Eval, RecordScope, aggregate};
 use lakelands_core::graph::{self, EdgeSource};
 use lakelands_core::{
     canonical, derive as core_derive, describe, engines as core_engines, invalid, rights,
@@ -193,15 +194,24 @@ fn pattern_read(p: &Pattern) -> String {
     })
 }
 
+/// A view's parameter `p` that a read does not give: `unbound` where no
+/// read gives it (018).
+fn unbound(ty: &TypeName, p: &lakelands_api::ontology::ViewParam, unbound: bool) -> Case {
+    let (ty, name, kind) = (ty.clone(), p.name.clone(), p.kind);
+    Case::ParamMissing {
+        ty,
+        name,
+        kind,
+        unbound,
+    }
+}
+
 /// Refuse a cursor handed out for another read through the same door:
 /// another filter, order, search or pattern (018).
 fn same_read(state: &CursorState, of: &str) -> Result<()> {
     if state.of != of {
-        return Err(invalid(format!(
-            "the cursor was handed out for another `{}`; continue it with the read its first \
-             page was read with",
-            state.door
-        )));
+        let door = state.door.clone();
+        return Err(invalid(Case::CursorOtherRead { door }));
     }
     Ok(())
 }
@@ -211,28 +221,24 @@ fn same_read(state: &CursorState, of: &str) -> Result<()> {
 /// any other use is refused, naming what differs (018).
 fn resume(c: &Cursor, door: &str, ty: Option<&TypeName>, params: &Params) -> Result<CursorState> {
     let state = decode(c)?;
-    let on = |door: &str, ty: Option<&TypeName>| match ty {
-        Some(ty) => format!("`{door}` on `{ty}`"),
-        None => format!("`{door}`"),
-    };
     if state.door != door || state.ty.as_ref() != ty {
-        return Err(invalid(format!(
-            "the cursor was handed out for {}, not {}; continue it there",
-            on(&state.door, state.ty.as_ref()),
-            on(door, ty)
-        )));
+        let (was, was_ty) = (state.door.clone(), state.ty.clone().map(Box::new));
+        let (door, ty) = (door.to_owned(), ty.cloned().map(Box::new));
+        return Err(invalid(Case::CursorOtherDoor {
+            was,
+            was_ty,
+            door,
+            ty,
+        }));
     }
     if &state.params != params {
-        return Err(invalid(
-            "the cursor was handed out for other parameters; continue with the parameters \
-             its first page was read with",
-        ));
+        return Err(invalid(Case::CursorOtherParams));
     }
     Ok(state)
 }
 
 fn decode(c: &Cursor) -> Result<CursorState> {
-    let bad = || invalid("the cursor is not one this lake handed out");
+    let bad = || invalid(Case::CursorForeign);
     let bytes: Vec<u8> = (0..c.0.len())
         .step_by(2)
         .map(|i| {
@@ -410,11 +416,8 @@ impl<'a> Reader<'a> {
             .iter()
             .any(|f| f.name.as_str() == field && f.at_read())
         {
-            return Err(invalid(format!(
-                "`order_by` names `{field}` of `{}`, which is computed at the read and moves \
-                 with the clock; a page's order would not hold to the next",
-                decl.name
-            )));
+            let (field, ty) = (field.into(), decl.name.clone());
+            return Err(invalid(Case::OrderAtRead { field, ty }));
         }
         Ok(())
     }
@@ -475,31 +478,26 @@ impl<'a> Reader<'a> {
             .keys()
             .find(|k| !declared.iter().any(|p| &p.name == *k))
         {
-            let names: Vec<String> = declared.iter().map(|p| format!("`{}`", p.name)).collect();
-            return Err(invalid(if names.is_empty() {
-                format!("`{ty}` declares no parameters, so `{k}` binds nothing")
-            } else {
-                format!(
-                    "view `{ty}` declares no parameter `{k}`; its parameters are {}",
-                    names.join(", ")
-                )
-            }));
+            let names: Names = declared.iter().map(|p| &p.name).collect();
+            let declared = (!names.0.is_empty()).then_some(names);
+            let (ty, name) = (ty.clone(), k.clone());
+            return Err(invalid(Case::ParamUnknown { ty, name, declared }));
         }
         let mut canonical = Params::new();
         let mut literals = BTreeMap::new();
         for p in declared {
-            let kind = lakelands_core::value::kind_name(p.kind);
             let Some(v) = given.get(&p.name) else {
-                return Err(invalid(format!(
-                    "view `{ty}` needs parameter `{}` ({kind})",
-                    p.name
-                )));
+                return Err(invalid(unbound(ty, p, false)));
             };
             let wrong = || {
-                invalid(format!(
-                    "parameter `{}` of view `{ty}` is {kind}, and {v} is not one",
-                    p.name
-                ))
+                let (name, ty, kind, value) =
+                    (p.name.clone(), ty.clone(), p.kind, Box::new(v.clone()));
+                invalid(Case::ParamValue {
+                    name,
+                    ty,
+                    kind,
+                    value,
+                })
             };
             let v = lakelands_core::value::check(v, &FieldType::kind(p.kind), None)
                 .ok()
@@ -705,11 +703,11 @@ impl<'a> Reader<'a> {
         &self,
         ty: &TypeName,
         c: &lakelands_api::expr::Condition,
-        at: &str,
+        at: &[Place],
     ) -> Result<Expr> {
         let all = |n: &str| self.shape.ontology.set(n);
         let shown = |s: &&lakelands_api::write::ObjectSetDecl| {
-            let filter = crate::declare::filter(&all, &s.of, &s.filter, Place::Record, at);
+            let filter = crate::declare::filter(&all, &s.of, &s.filter, Eval::Record, at);
             let reads = filter.map(|e| core_derive::reads(&e));
             let of = self.shape.ontology.ty(&s.of);
             of.is_ok_and(|t| {
@@ -717,7 +715,7 @@ impl<'a> Reader<'a> {
             })
         };
         let set = |n: &str| self.shape.ontology.set(n).filter(shown);
-        crate::declare::filter(&set, ty, c, Place::Record, at)
+        crate::declare::filter(&set, ty, c, Eval::Record, at)
     }
 
     /// A read's `where` over one record of `decl`, named `at`, after the
@@ -726,7 +724,7 @@ impl<'a> Reader<'a> {
         &self,
         decl: &TypeDecl,
         c: Option<&lakelands_api::expr::Condition>,
-        at: &str,
+        at: &[Place],
     ) -> Result<Option<Expr>> {
         let Some(c) = c else { return Ok(None) };
         let e = self.named_sets(&decl.name, c, at)?;
@@ -1022,13 +1020,9 @@ impl<'a> Reader<'a> {
             let chain = self.computing.borrow()[at..]
                 .iter()
                 .chain(std::iter::once(&decl.name))
-                .map(|t| format!("`{t}`"))
-                .collect::<Vec<_>>()
-                .join(" reads ");
-            return Err(invalid(format!(
-                "view `{}` reads itself through other views ({chain}), so it has no records",
-                decl.name
-            )));
+                .collect();
+            let ty = decl.name.clone();
+            return Err(invalid(Case::ViewReadsItself { ty, chain }));
         }
         self.computing.borrow_mut().push(decl.name.clone());
         let records = match self.kept_as(decl, v) {
@@ -1239,15 +1233,7 @@ impl<'a> Reader<'a> {
             None if v.params.is_empty() => BTreeMap::new(),
             // A view reached by no read that binds it: a walk's step, a
             // search.
-            None => {
-                return Err(invalid(format!(
-                    "view `{}` needs parameter `{}` ({}), and only a read that names the view \
-                     binds it",
-                    decl.name,
-                    v.params[0].name,
-                    lakelands_core::value::kind_name(v.params[0].kind)
-                )));
-            }
+            None => return Err(invalid(unbound(&decl.name, &v.params[0], true))),
         };
         let (members, measures) = self.view_source(
             &v.source,
@@ -1299,8 +1285,11 @@ impl<'a> Reader<'a> {
                         by: &BTreeMap<FieldName, Value>,
                         measures: &[(FieldName, Expr)],
                         given| {
-            aggregate::measures(folds, by, measures, given, settings, self.now)
-                .map_err(|e| invalid(format!("view `{}`: {e}", decl.name)))
+            aggregate::measures(folds, by, measures, given, settings, self.now).map_err(|e| {
+                invalid(Said::from(e).within(Place::View {
+                    name: decl.name.clone(),
+                }))
+            })
         };
         // Each merged source's measures by key; a key it lacks is measured
         // over its empty group below.
@@ -1459,7 +1448,7 @@ impl<'a> Reader<'a> {
         let bound = |e: Expr| expr::bind_params(&e, literals);
         let mut probed: Vec<FieldName> = group_by.to_vec();
         let where_ = filter
-            .map(|w| condition(w, Place::View, "view").map(bound))
+            .map(|w| condition(w, Eval::View, &[Place::Where]).map(bound))
             .transpose()?;
         if let Some(w) = &where_ {
             probed.extend(core_derive::reads(w));
@@ -1467,7 +1456,10 @@ impl<'a> Reader<'a> {
         let measures: Vec<(FieldName, Expr)> = measures
             .iter()
             .map(|m| {
-                let e = condition(&m.expr, Place::Group, "measure")?;
+                let at = [Place::Measure {
+                    name: m.name.clone(),
+                }];
+                let e = condition(&m.expr, Eval::Group, &at)?;
                 Ok((m.name.clone(), bound(e)))
             })
             .collect::<Result<_>>()?;
@@ -1519,7 +1511,7 @@ impl<'a> Reader<'a> {
         // A read that names no limit asks for nothing out of bounds.
         let l = asked.unwrap_or(limits.default_limit.min(max));
         if l == 0 || l > max {
-            return Err(invalid(format!("a limit is between 1 and {max}")));
+            return Err(invalid(Case::LimitRange { max }));
         }
         Ok(l as usize)
     }
@@ -1529,29 +1521,27 @@ impl<'a> Reader<'a> {
         let decl = self.named_type(ty)?.clone();
         let params = self.bind_params(&decl, &find.params)?;
         for o in &find.order_by {
-            if let Some((field, message)) = o.misfit() {
-                let reason = Refusal::Invalid { message };
+            if let Some((field, case)) = o.misfit() {
+                let reason = Refusal::Invalid(Box::new(case.into()));
                 return Err(Error::Refused { field, reason });
             }
             // A view's records are computed at the read's position; none
             // has an event of its own to order by.
             if o.by == OrderBy::Latest && decl.view.is_some() {
-                return Err(invalid(format!(
-                    "`order_by` `latest` orders records by their latest change, and `{ty}` is a \
-                     view, whose records are computed and have none"
-                )));
+                let ty = Some(ty.clone());
+                return Err(invalid(Case::LatestNoChange { ty }));
             }
         }
         let filter = find
             .filter
             .as_ref()
-            .map(|c| self.named_sets(&decl.name, c, "where"))
+            .map(|c| self.named_sets(&decl.name, c, &[Place::Where]))
             .transpose()?;
         let mut probed: Vec<FieldName> = filter
             .as_ref()
             .map(|e| core_derive::reads(e).into_iter().collect())
             .unwrap_or_default();
-        let mut asked: Vec<(Expr, String)> = Vec::new();
+        let mut asked: Vec<(Expr, Vec<Place>)> = Vec::new();
         probed.extend(
             find.order_by
                 .iter()
@@ -1562,13 +1552,13 @@ impl<'a> Reader<'a> {
             probed.extend(a.measures.iter().filter_map(|m| m.field.clone()));
             // A field key probes its field; a named key, every field its
             // expression reads (024).
-            let keys = aggregate::group_keys(&a.group_by).map_err(|e| invalid(e.to_string()))?;
+            let keys = aggregate::group_keys(&a.group_by).map_err(invalid)?;
             for (name, expr) in keys {
                 match expr {
                     None => probed.push(name),
                     Some(e) => {
                         probed.extend(core_derive::reads(&e));
-                        asked.push((e, format!("group `{name}`")));
+                        asked.push((e, vec![Place::Group { name }]));
                     }
                 }
             }
@@ -1581,7 +1571,7 @@ impl<'a> Reader<'a> {
         // to read the fields it names (028, extended).
         for (e, at) in filter
             .iter()
-            .map(|e| (e.clone(), "where".to_owned()))
+            .map(|e| (e.clone(), vec![Place::Where]))
             .chain(asked)
         {
             crate::declare::evaluates(&e, &decl, &at)?;
@@ -1623,10 +1613,7 @@ impl<'a> Reader<'a> {
                     .as_ref()
                     .is_some_and(|(v, _)| v.len() != find.order_by.len())
                 {
-                    return Err(invalid(
-                        "the cursor was handed out for another order; continue it with the \
-                         `order_by` its first page was read with",
-                    ));
+                    return Err(invalid(Case::CursorOtherOrder));
                 }
                 same_read(&state, &find_read)?;
                 after
@@ -1699,10 +1686,7 @@ impl<'a> Reader<'a> {
     /// (`docs/decisions/045-a-table-reads-a-page-and-its-total.md`).
     fn offset(&self, find: &Find) -> Result<usize> {
         if find.total && find.aggregate.is_some() {
-            return Err(invalid(
-                "`total` counts the records a page lists; an `aggregate` answers groups, so \
-                 give one",
-            ));
+            return Err(invalid(Case::TotalWithAggregate));
         }
         let Some(skip) = find.offset else {
             return Ok(0);
@@ -1713,9 +1697,8 @@ impl<'a> Reader<'a> {
             (find.aggregate.is_some(), "aggregate"),
         ];
         if let Some((_, other)) = beside.iter().find(|(given, _)| *given) {
-            return Err(invalid(format!(
-                "`offset` and `{other}` both say where the answer starts; give one"
-            )));
+            let other = (*other).to_owned();
+            return Err(invalid(Case::OffsetBeside { other }));
         }
         let max = self.lake.limits.max_offset;
         if skip > max {
@@ -1757,40 +1740,34 @@ impl<'a> Reader<'a> {
     /// or with a value the key's field cannot hold.
     fn resume_after(&self, decl: &TypeDecl, find: &Find, a: &ReadAfter) -> Result<SortKey> {
         if find.cursor.is_some() {
-            return Err(invalid(
-                "`after` and `cursor` both name where a page starts; give one",
-            ));
+            return Err(invalid(Case::AfterWithCursor));
         }
         if find.aggregate.is_some() {
-            return Err(invalid(
-                "`after` pages records; an `aggregate` has no pages",
-            ));
+            return Err(invalid(Case::AfterWithAggregate));
         }
         if a.values.len() != find.order_by.len() {
-            return Err(invalid(format!(
-                "`after.values` holds {} value(s) and `order_by` has {} key(s); give one value per key",
-                a.values.len(),
-                find.order_by.len()
-            )));
+            let (values, keys) = (a.values.len(), find.order_by.len());
+            return Err(invalid(Case::AfterCount { values, keys }));
         }
         let mut values = Vec::with_capacity(a.values.len());
         for (i, (v, o)) in a.values.iter().zip(&find.order_by).enumerate() {
-            let unfit = |why: String| {
-                let message = format!("`after.values[{i}]` does not fit `{}`: {why}", o.field);
-                crate::declare::invalid_field(&o.field, message)
+            let unfit = |why: Case| {
+                let (index, field, why) = (i, o.field.clone(), Box::new(why));
+                crate::declare::invalid_field(&o.field, Case::AfterUnfit { index, field, why })
             };
             let v = match (o.by, v) {
                 (_, Value::Null) => Value::Null,
                 (OrderBy::Latest, Value::Number(n)) if n.is_u64() => v.clone(),
                 (OrderBy::Latest, _) => {
-                    return Err(unfit("a position is a non-negative integer".into()));
+                    return Err(unfit(Case::PositionNotInteger));
                 }
                 (OrderBy::KnownAt | OrderBy::SeenAt, Value::String(t)) => {
-                    let t = Timestamp::parse(t).map_err(|e| unfit(e.to_string()))?;
+                    let value = || Case::NotDateTime { value: t.clone() };
+                    let t = Timestamp::parse(t).map_err(|_| unfit(value()))?;
                     Value::String(t.to_string())
                 }
                 (OrderBy::KnownAt | OrderBy::SeenAt, _) => {
-                    return Err(unfit("an instant is given as text".into()));
+                    return Err(unfit(Case::InstantNotText));
                 }
                 (OrderBy::Value, v) => match decl.fields.iter().find(|f| f.name == o.field) {
                     Some(f) => {
@@ -1799,8 +1776,7 @@ impl<'a> Reader<'a> {
                                 .as_ref()
                                 .and_then(|n| self.shape.ontology.value_types.get(n.as_str()))
                                 .map(|e| &e.decl);
-                        lakelands_core::value::check(v, &f.ty, vt)
-                            .map_err(|e| unfit(e.to_string()))?
+                        lakelands_core::value::check(v, &f.ty, vt).map_err(unfit)?
                     }
                     None => v.clone(),
                 },
@@ -1813,7 +1789,11 @@ impl<'a> Reader<'a> {
     /// `find`'s aggregate over the records `filter` holds for, folded into
     /// their groups as they are read.
     fn aggregated(&self, decl: &TypeDecl, filter: Option<&Expr>, a: &Aggregate) -> Result<Found> {
-        let named = |e| invalid(format!("aggregate over `{}`: {e}", decl.name));
+        let named = |e: Said| {
+            invalid(e.within(Place::Aggregate {
+                name: decl.name.clone(),
+            }))
+        };
         let mut grouping = aggregate::grouping(a, self.now).map_err(named)?;
         self.each_member(decl, filter, COUNT_PAGE, |r| {
             grouping.add(&r.fields, Some(&self.shape.settings));
@@ -2127,14 +2107,11 @@ impl<'a> Reader<'a> {
         // A view's records are computed on read and no index holds them, so
         // a search could only answer nothing (018).
         if decl.view.is_some() {
-            return Err(invalid(format!(
-                "`{}` is a view, and a view is not searched: its records are computed on read \
-                 and no index holds them",
-                s.ty
-            )));
+            let ty = s.ty.clone();
+            return Err(invalid(Case::ViewNotSearched { ty }));
         }
-        if let Some((field, message)) = s.mode.misfit() {
-            let reason = Refusal::Invalid { message };
+        if let Some((field, case)) = s.mode.misfit() {
+            let reason = Refusal::Invalid(Box::new(case.into()));
             return Err(Error::Refused { field, reason });
         }
         let vectors = s.mode.vectors();
@@ -2146,7 +2123,20 @@ impl<'a> Reader<'a> {
             SearchMode::Vector { .. } => None,
         };
         rights::check_search(self.who, &decl, text_fields, &vector_fields)?;
-        let filter = self.record_filter(&decl, s.filter.as_ref(), "where")?;
+        // A query vector is judged by the field's declared length, never by
+        // a stored vector, which another may own (024).
+        let embedded = matches!(&s.mode, SearchMode::Hybrid { vector: None, .. });
+        for (field, v, _) in vectors.iter().filter(|_| !embedded) {
+            let f = decl.fields.iter().find(|f| &f.name == *field);
+            if let Some(d) = f.and_then(|f| f.ty.dimensions)
+                && v.len() != d as usize
+            {
+                let (query, declared) = (v.len(), d as usize);
+                let field = field.as_str();
+                return Err(core_engines::dimensions(query, declared, &s.ty, field));
+            }
+        }
+        let filter = self.record_filter(&decl, s.filter.as_ref(), &[Place::Where])?;
         Ok((decl, text_fields, filter))
     }
 
@@ -2552,14 +2542,16 @@ impl<'a> Reader<'a> {
                 self.neighbour_target(i, step)?
             };
             self.probe_derived(&here, Some(&step.relation), step.walk)?;
+            let at = Place::Step {
+                step: i + 1,
+                relation: step.relation.clone(),
+            };
             if let (Some(t), Some(r)) = (&step.ty, &reached)
                 && t != r
             {
-                return Err(invalid(format!(
-                    "step {} over `{}` reaches `{r}`, not `{t}`",
-                    i + 1,
-                    step.relation
-                )));
+                let (reached, ty) = (r.clone(), t.clone());
+                let said = Said::from(Case::StepReaches { reached, ty });
+                return Err(invalid(said.within(at)));
             }
             let reached = reached.or_else(|| step.ty.clone()).unwrap_or(here);
             let decl = self.visible_type(&reached)?.clone();
@@ -2570,16 +2562,12 @@ impl<'a> Reader<'a> {
             if reached != start_decl.name
                 && let Some(param) = decl.view.as_ref().and_then(|v| v.params.first())
             {
-                return Err(invalid(format!(
-                    "step {} over `{}` arrives at view `{reached}`, which needs parameter `{}` \
-                     ({}), and only a read that names the view binds it",
-                    i + 1,
-                    step.relation,
-                    param.name,
-                    lakelands_core::value::kind_name(param.kind)
-                )));
+                return Err(invalid(
+                    Said::from(unbound(&reached, param, true)).within(at),
+                ));
             }
-            filters.push(self.record_filter(&decl, step.filter.as_ref(), "step where")?);
+            let at = [at, Place::Where];
+            filters.push(self.record_filter(&decl, step.filter.as_ref(), &at)?);
             types.push(reached);
         }
         if measure {
@@ -2588,15 +2576,10 @@ impl<'a> Reader<'a> {
         // What a pattern says and an arm cannot honour is refused, not
         // passed over: a path is a graph of one walk from one start.
         if p.to.is_some() && p.project != Projection::Graph {
-            return Err(invalid(
-                "a pattern with `to` answers the walk to it as a graph; ask `project` `graph`",
-            ));
+            return Err(invalid(Case::PatternToNotGraph));
         }
         if p.to.is_some() && chain {
-            return Err(invalid(
-                "a pattern with `to` walks its steps as one walk from its start; every step's \
-                 depth starts at 0",
-            ));
+            return Err(invalid(Case::PatternToChain));
         }
         // A cursor is checked before any arm answers: a path and an
         // aggregate hand out none, so every cursor is another read's there.
@@ -2631,7 +2614,8 @@ impl<'a> Reader<'a> {
                 .filter_map(|k| self.view.get(&p.start.ty, k).ok().flatten());
             self.at_read(&p.start.ty, held.collect())
         } else {
-            let f = self.record_filter(&start_decl, p.start.filter.as_ref(), "start where")?;
+            let at = [Place::Start, Place::Where];
+            let f = self.record_filter(&start_decl, p.start.filter.as_ref(), &at)?;
             self.records(&start_decl, f.as_ref())?
         };
         let from: Vec<lakelands_core::graph::Node> = starts
@@ -2648,10 +2632,8 @@ impl<'a> Reader<'a> {
                         .map_or_else(Default::default, |path| (path.nodes, path.edges))
                 }
                 more => {
-                    return Err(invalid(format!(
-                        "a path has one start, and this pattern's start names {} records",
-                        more.len()
-                    )));
+                    let count = more.len();
+                    return Err(invalid(Case::PathStarts { count }));
                 }
             };
             return self.graph_result(nodes, edges, None);
@@ -2719,15 +2701,12 @@ impl<'a> Reader<'a> {
                 })
                 .collect();
             let refs: Vec<&BTreeMap<FieldName, Value>> = as_fields.iter().collect();
-            let groups = aggregate::aggregate(&refs, a, &self.shape.settings, self.now)
-                .map_err(|e| invalid(e.to_string()))?;
+            let groups =
+                aggregate::aggregate(&refs, a, &self.shape.settings, self.now).map_err(invalid)?;
             return Ok(QueryResult::Groups { rows: groups });
         }
         if p.order_by.iter().any(|o| o.by == OrderBy::Latest) {
-            return Err(invalid(
-                "`order_by` `latest` orders records by their latest change, and a query's rows \
-                 are projections of a walk, not records",
-            ));
+            return Err(invalid(Case::LatestNoChange { ty: None }));
         }
         let order: Vec<Order> = p.order_by.clone();
         let mut keyed: Vec<(SortKey, BTreeMap<String, Value>)> = rows
@@ -2879,12 +2858,11 @@ impl<'a> Reader<'a> {
         }
         match &step.filter {
             None => Ok(None),
-            Some(_) => Err(invalid(format!(
-                "step {} over `{}` reaches several types and reads a `where`; name the step's \
-                 `type`",
-                i + 1,
-                step.relation
-            ))),
+            Some(_) => {
+                let (step, relation) = (i + 1, step.relation.clone());
+                let said = Said::from(Case::StepSeveralTypes);
+                Err(invalid(said.within(Place::Step { step, relation })))
+            }
         }
     }
 
@@ -2912,14 +2890,10 @@ impl<'a> Reader<'a> {
         match found {
             Some(t) => Ok(Some(t)),
             None if lenient && self.out_any(relation) => Ok(None),
-            None => Err(invalid(format!(
-                "`{here}` has no relation `{relation}` to walk {}",
-                match walk {
-                    Walk::Out => "out",
-                    Walk::In => "in",
-                    Walk::Both => "either way",
-                }
-            ))),
+            None => {
+                let (ty, relation) = (here.clone(), relation.clone());
+                Err(invalid(Case::NoRelationToWalk { ty, relation, walk }))
+            }
         }
     }
 
@@ -2982,13 +2956,8 @@ fn ordered_proposals(proposals: Vec<Proposal>, order_by: &[Order]) -> Result<Vec
     }
     for o in order_by {
         if o.by != OrderBy::Value || !PROPOSAL_MEMBERS.contains(&o.field.as_str()) {
-            return Err(invalid(format!(
-                "`order_by` orders proposals by their members ({}) and their values, and `{}` \
-                 by `{}` is not one",
-                PROPOSAL_MEMBERS.join(", "),
-                o.field,
-                serde_json::to_value(o.by).unwrap_or_default()
-            )));
+            let (members, field, by) = (PROPOSAL_MEMBERS.iter().collect(), o.field.clone(), o.by);
+            return Err(invalid(Case::ProposalOrder { members, field, by }));
         }
     }
     let mut keyed: Vec<(core_engines::Place<'_>, Proposal)> = proposals

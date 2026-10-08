@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::ontology::{StorageKind, TypeDecl, ViewParam, ViewSource};
 use lakelands_api::read::Find;
 use lakelands_api::{Access, Error, FieldName, LakeStore, Params, Refusal, Value};
@@ -14,7 +15,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, bound, field, field_access, log_events, measure, param, reason, type_decl, view_of,
+    Lake, bound, field, field_access, invalid_case, invalid_like, log_events, measure, param,
+    type_decl, view_of,
 };
 
 check!(
@@ -140,10 +142,6 @@ async fn rows(l: &Lake, view: &str, params: Params) -> Result<Value, Failure> {
     Ok(json!(found.iter().map(|r| &r.fields).collect::<Vec<_>>()))
 }
 
-fn invalid_naming(r: &Result<impl std::fmt::Debug, Error>, names: &[&str]) -> bool {
-    matches!(reason(&r), Some(Refusal::Invalid { message }) if names.iter().all(|n| message.contains(&format!("`{n}`"))))
-}
-
 async fn a_view_merges_its_sources_on_their_key_and_keeps_a_key_only_one_has(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
@@ -234,40 +232,47 @@ async fn a_merge_declared_badly_is_refused_naming_it(
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref()).await?;
     let base = || energy_balance("bad_balance", Vec::new(), None, None);
-    let mut cases: Vec<(&str, TypeDecl, Vec<&str>)> = Vec::new();
+    let mut cases: Vec<(&str, TypeDecl, Value)> = Vec::new();
     let mut t = base();
     t.view.as_mut().expect("a view").merge[0].source = "sleep_log".into();
-    cases.push(("merges an undeclared type", t, vec!["sleep_log"]));
+    let case = json!({"code": "undeclared", "type": "sleep_log"});
+    cases.push(("merges an undeclared type", t, case));
     let mut t = base();
     t.view.as_mut().expect("a view").merge[0].source = "food_log".into();
-    cases.push(("merges its own source", t, vec!["food_log"]));
+    let case = json!({"code": "source_twice", "source": "food_log"});
+    cases.push(("merges its own source", t, case));
     let mut t = base();
     t.view.as_mut().expect("a view").merge[0]
         .group_by
         .push(FieldName::from("kcal"));
-    cases.push(("groups a merge by two fields", t, vec!["workout_log"]));
+    let twice = json!({"code": "merged_group_count", "given": 2, "view": 1,
+                       "at": [{"code": "merged_source", "name": "workout_log"}]});
+    cases.push(("groups a merge by two fields", t, twice));
     let mut t = base();
     t.view.as_mut().expect("a view").merge[0].group_by = vec![FieldName::from("kcal")];
-    cases.push(("lines up a decimal with a date", t, vec!["kcal", "day"]));
+    let case = json!({"code": "merged_group_kind", "field": "kcal", "view_field": "day"});
+    cases.push(("lines up a decimal with a date", t, case));
     let mut t = base();
     t.view.as_mut().expect("a view").merge[0].measures[0].name = "calories_in".into();
-    cases.push(("names a measure twice", t, vec!["calories_in"]));
+    let case = json!({"code": "measure_twice", "name": "calories_in"});
+    cases.push(("names a measure twice", t, case));
     let mut t = base();
     t.fields.retain(|f| f.name != "hardest");
-    cases.push(("has a merged measure without a field", t, vec!["hardest"]));
+    let case = json!({"code": "view_value_no_field", "field": "hardest"});
+    cases.push(("has a merged measure without a field", t, case));
     let mut t = base();
     t.view.as_mut().expect("a view").merge[0].measures[1].expr = "1".into();
     cases.push((
         "has a merged measure that aggregates nothing",
         t,
-        vec!["workout_log", "hardest"],
+        json!({"code": "measures_nothing", "source": "workout_log",
+               "at": [{"code": "measure", "name": "hardest"}]}),
     ));
-    for (what, t, names) in cases {
+    for (what, t, case) in cases {
         let r = l.try_declare(t).await;
         ensure!(
-            invalid_naming(&r, &names),
-            "a view that {what} must be refused as invalid, naming {names:?}; declare \
-             answered {r:?}"
+            invalid_like(&r, &case),
+            "a view that {what} must be refused as invalid, as {case}; declare answered {r:?}"
         );
     }
     // A view with parameters as a source, main or merged.
@@ -282,7 +287,8 @@ async fn a_merge_declared_badly_is_refused_naming_it(
     t.view.as_mut().expect("a view").merge[0] = merged("energy_until", "day", "over", "count()");
     let r = l.try_declare(t).await;
     ensure!(
-        invalid_naming(&r, &["energy_until", "until"]),
+        matches!(invalid_case(&r), Some(Case::ReadsParamView { source, param })
+            if source == "energy_until" && param == "until"),
         "a view merging `energy_until`, a view with the parameter `until`, must be refused, \
          naming both; declare answered {r:?}"
     );
@@ -301,7 +307,8 @@ async fn a_merge_declared_badly_is_refused_naming_it(
     a.view.as_mut().expect("a view").merge[0] = merged("cycle_b", "day", "calories_out", "count()");
     let r = l.try_declare(a).await;
     ensure!(
-        invalid_naming(&r, &["cycle_a", "cycle_b"]),
+        matches!(invalid_case(&r), Some(Case::ViewCycle { chain })
+            if ["cycle_a", "cycle_b"].iter().all(|v| chain.0.iter().any(|c| c == v))),
         "`cycle_a` merging `cycle_b`, which reads `cycle_a`, closes a cycle and must be \
          refused, naming both; declare answered {r:?}"
     );
@@ -343,8 +350,14 @@ async fn a_merged_sources_fields_are_probed_as_a_read_of_it(
         .cat
         .find(&blind, &"energy_balance".into(), Find::default())
         .await;
-    let unnamed = matches!(&r, Err(e @ Error::Refused { field: None, reason: Refusal::NotGranted })
-        if !e.to_string().contains("kcal") && !e.to_string().contains("workout_log"));
+    // Not granted, no field: an error that has no member to name either in.
+    let unnamed = matches!(
+        &r,
+        Err(Error::Refused {
+            field: None,
+            reason: Refusal::NotGranted
+        })
+    );
     ensure!(
         unnamed,
         "a read of the balance by a principal who may not know of `workout_log.kcal` is \

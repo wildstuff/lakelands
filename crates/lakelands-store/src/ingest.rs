@@ -29,6 +29,7 @@ use std::time::Duration;
 
 use futures_core::Stream;
 use lakelands_api::catalog::{CommitStream, SourceStream};
+use lakelands_api::error::Case;
 use lakelands_api::event::EventId;
 use lakelands_api::principal::WriteContext;
 use lakelands_api::write::Committed;
@@ -90,10 +91,8 @@ pub fn window(
             // A link type no relation carries, its relation renamed or
             // removed, stays declared for its history and takes no link.
             let Some((t, relation)) = links::relation_of(types, &r.ty) else {
-                return Err(lakelands_core::invalid(format!(
-                    "`{}` is the link type of no relation: its relation was renamed or removed",
-                    r.ty
-                )));
+                let ty = r.ty.clone();
+                return Err(lakelands_core::invalid(Case::UnclaimedLinkType { ty }));
             };
             {
                 // The ends from the patch, or from the key's components
@@ -108,7 +107,8 @@ pub fn window(
                         .map(lakelands_api::RecordKey::from)
                 };
                 if let (Some(from), Some(to)) = (end(links::FROM, 0), end(links::TO, 1)) {
-                    crate::writes::cardinality(view.as_ref(), &t.name, relation, &from, &to)?;
+                    let view = view.as_ref();
+                    crate::writes::cardinality(view, who, &t.name, relation, &from, &to)?;
                     crate::writes::cardinality_among(&window_links, &r.ty, relation, &from, &to)?;
                     window_links.push((r.ty.clone(), from, to));
                 }

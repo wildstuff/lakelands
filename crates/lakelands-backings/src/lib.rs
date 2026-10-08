@@ -25,9 +25,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use lakelands_api::error::{Detail, Exchange, Remote, Situation};
+use lakelands_api::Error;
+use lakelands_api::error::{Detail, Exchange, Place, Remote, Said, Situation};
 use lakelands_api::seam::{FunctionBacking, FunctionCall};
-use lakelands_api::{Error, Refusal};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -156,14 +156,11 @@ fn body(call: &FunctionCall) -> Vec<u8> {
     serde_json::to_vec(&v).expect("a JSON value serialises")
 }
 
-/// A call its function's configuration does not allow.
-fn refused(call: &FunctionCall, why: String) -> Error {
-    Error::Refused {
-        field: None,
-        reason: Refusal::Invalid {
-            message: format!("function `{}`: {why}", call.function),
-        },
-    }
+/// A call its function's configuration does not allow, said at the
+/// function.
+fn refused(call: &FunctionCall, said: impl Into<Said>) -> Error {
+    let name = call.function.clone();
+    Error::invalid(said.into().within(Place::Function { name }))
 }
 
 /// A call that could not be answered.

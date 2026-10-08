@@ -25,7 +25,8 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, events_from, field, field_access, head_unmoved, reason, type_decl,
+    Lake, Must, events_from, field, field_access, head_unmoved, invalid_like, reason, refused_on,
+    type_decl,
 };
 
 check!(
@@ -317,36 +318,38 @@ async fn an_unnamespaced_reserved_null_or_oversized_annotation_is_refused_naming
     let Lake { cat, own } = &l;
     // `{"acme.blob":""}` is 16 bytes; the string fills the rest.
     let blob = |n: usize| marks(&[("acme.blob", json!("x".repeat(n - 16)))]);
-    let cases: Vec<(&str, Annotations, bool, &str)> = vec![
+    // A reserved key is named as the refusal's field, an invalid one by its case.
+    let at = |code: &str, key: &str, value: &str| json!([{"code": code, key: value}]);
+    let cases: Vec<(&str, Annotations, bool, Value)> = vec![
         (
             "an unnamespaced key",
             marks(&[("icon", json!("x"))]),
             false,
-            "`icon`",
+            json!({"code": "annotation_key_form", "at": at("annotation", "key", "icon")}),
         ),
         (
             "a `sys.` key",
             marks(&[("sys.icon", json!("x"))]),
             true,
-            "sys.icon",
+            json!("sys.icon"),
         ),
         (
             "a `lakelands.` key",
             marks(&[("lakelands.icon", json!("x"))]),
             true,
-            "lakelands.icon",
+            json!("lakelands.icon"),
         ),
         (
             "a `null` value",
             marks(&[("acme.icon", Value::Null)]),
             false,
-            "`acme.icon`",
+            json!({"code": "annotation_null", "at": at("annotation", "key", "acme.icon")}),
         ),
         (
             "a declaration past the ceiling",
             blob(ANNOTATIONS_MAX_BYTES + 1),
             false,
-            "`tag`",
+            json!({"code": "annotations_too_large", "at": at("type", "name", "tag")}),
         ),
     ];
     for (what, annotations, reserved, named) in cases {
@@ -363,7 +366,7 @@ async fn an_unnamespaced_reserved_null_or_oversized_annotation_is_refused_naming
         };
         let kind_ok = match reason(&e) {
             Some(Refusal::Reserved) => reserved,
-            Some(Refusal::Invalid { .. }) => !reserved,
+            Some(Refusal::Invalid(..)) => !reserved,
             _ => false,
         };
         ensure!(
@@ -371,10 +374,13 @@ async fn an_unnamespaced_reserved_null_or_oversized_annotation_is_refused_naming
             "{what} must be refused as {}; it was refused as {e:?}",
             if reserved { "reserved" } else { "invalid" }
         );
-        let why = e.to_string();
+        let named_so = match named.as_str() {
+            Some(key) => refused_on(&e).is_some_and(|(f, _)| f == key),
+            None => invalid_like(&e, &named),
+        };
         ensure!(
-            why.contains(named),
-            "{what} must be refused naming {named}; it was refused with: {why}"
+            named_so,
+            "{what} must be refused naming {named}; it was refused with: {e:?}"
         );
         head_unmoved(store.as_ref(), before, what).await?;
     }

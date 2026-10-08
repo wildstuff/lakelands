@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
 use lakelands_api::record::Origin;
 use lakelands_api::{
@@ -252,6 +253,11 @@ async fn a_valid_time_names_a_stored_date_time_field(
     let l = Lake::of(store.as_ref());
     l.declare(type_decl("payroll", vec![field("code", StorageKind::Text)]))
         .await?;
+    let not_date_time = |field: &str, axis: &str, kind| Case::ValidTimeNotDateTime {
+        field: field.into(),
+        axis: axis.into(),
+        kind,
+    };
     let typed = |name: &str, at: FieldDecl, valid: (&str, &str)| {
         let mut t = type_decl(name, vec![field("from", StorageKind::DateTime), at]);
         (t.valid_from, t.valid_to) = (Some(valid.0.into()), Some(valid.1.into()));
@@ -268,10 +274,11 @@ async fn a_valid_time_names_a_stored_date_time_field(
             StorageKind::Vector => vector("at", 2),
             _ => field("at", kind),
         };
-        for valid in [("at", "from"), ("from", "at")] {
+        for (valid, axis) in [(("at", "from"), "valid_from"), (("from", "at"), "valid_to")] {
             let answer = l.try_declare(typed("stamped", at.clone(), valid)).await;
-            let said = matches!(refused_on(&answer), Some(("at", Refusal::Invalid { message }))
-                if message.contains("a valid time is a date-time field"));
+            let case = not_date_time("at", axis, kind);
+            let said = matches!(refused_on(&answer), Some(("at", Refusal::Invalid(said)))
+                if said.case == case);
             if !said {
                 wrong.push(format!("`at` of kind {kind:?} as {valid:?}: {answer:?}"));
             }
@@ -323,8 +330,9 @@ async fn a_valid_time_names_a_stored_date_time_field(
         v
     };
     let answer = l.try_declare(view("n")).await;
-    let said = matches!(refused_on(&answer), Some(("n", Refusal::Invalid { message }))
-        if message.contains("a valid time is a date-time field"));
+    let case = not_date_time("n", "valid_from", StorageKind::Number);
+    let said = matches!(refused_on(&answer), Some(("n", Refusal::Invalid(said)))
+        if said.case == case);
     if !said {
         wrong.push(format!("a view valid from its `n`: {answer:?}"));
     }
@@ -366,8 +374,9 @@ async fn a_valid_time_names_a_stored_date_time_field(
                 .map(drop),
         ),
     ] {
-        let said = matches!(refused_on(&answer), Some(("until", Refusal::Invalid { message }))
-            if message.contains("a valid time is a date-time field"));
+        let case = not_date_time("until", "valid_to", StorageKind::Text);
+        let said = matches!(refused_on(&answer), Some(("until", Refusal::Invalid(said)))
+            if said.case == case);
         if !said {
             wrong.push(format!("{door} of `until` as text: {answer:?}"));
         }

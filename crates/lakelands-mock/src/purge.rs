@@ -3,7 +3,7 @@
 //! `record_retired` events; from one type where the purge names one, by
 //! the store's rule for what that reads. The mock computes no reactions.
 
-use lakelands_api::error::{Error, Missing, Refusal, Result};
+use lakelands_api::error::{Case, Error, Missing, RecordName, Result};
 use lakelands_api::event::EventBody;
 use lakelands_api::id::{FieldName, Position, SourceId, TypeName, Version};
 use lakelands_api::ontology::TypeDecl;
@@ -47,13 +47,6 @@ fn id(source: &SourceId, ty: Option<&TypeName>, head: Position) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn invalid(message: String) -> Error {
-    Error::Refused {
-        field: None,
-        reason: Refusal::Invalid { message },
-    }
-}
-
 /// The types a purge from `ty` reads: `ty` and the link types of the
 /// relations it declares. A type that is not declared is not found; a
 /// view, and a type that keeps no per-field provenance, are refused.
@@ -61,14 +54,10 @@ fn named(st: &State, ty: &TypeName) -> Result<Vec<TypeName>> {
     let missing = Missing::Type { name: ty.clone() };
     let decl = &st.types.get(ty).ok_or(Error::NotFound { missing })?.decl;
     if decl.view.is_some() {
-        return Err(invalid(format!(
-            "`{ty}` is a view; it holds no records a purge could take"
-        )));
+        return Err(Error::invalid(Case::IsAView { ty: ty.clone() }));
     }
     if !decl.field_meta {
-        return Err(invalid(format!(
-            "`{ty}` keeps no per-field provenance; a purge cannot read who brought its records in"
-        )));
+        return Err(Error::invalid(Case::NoProvenance { ty: ty.clone() }));
     }
     let links = (decl.relations.iter()).map(|r| crate::links::name(ty, &r.name));
     Ok(links.chain([ty.clone()]).collect())
@@ -112,23 +101,23 @@ fn plan<'s>(
             .filter(|r| &r.ty == name && !r.retired && brought_by(r, source))
         {
             if co_owned(&t.decl, r, source) {
-                others.push(format!("`{}` `{}`", r.ty, r.key));
+                let (ty, key) = (r.ty.clone(), r.key.clone());
+                others.push(RecordName::Of { ty, key });
             } else {
                 purged.push(r);
             }
         }
     }
     if !others.is_empty() {
-        let n = others.len();
+        let count = others.len();
         others.truncate(NAMED);
-        let from = ty.map(|t| format!(" from `{t}`")).unwrap_or_default();
-        return Err(invalid(format!(
-            "the purge of `{source}`{from} is refused whole: {n} record(s) it brought in were \
-             also written by another hand (a principal, or another source), and a purge never \
-             half-removes a record; retire them or clear those fields, then purge again. \
-             First: {}",
-            others.join(", ")
-        )));
+        let (source, ty, first) = (source.clone(), ty.cloned(), others);
+        return Err(Error::invalid(Case::PurgeShared {
+            source,
+            ty,
+            count,
+            first,
+        }));
     }
     for r in &purged {
         match report.types.last_mut() {
@@ -236,8 +225,7 @@ pub(crate) fn run(
 ) -> Result<PurgeReport> {
     let (st, head) = (State::fold(&log.events), Shared::head(log));
     if report_id.is_some_and(|given| given != id(source, ty, head)) {
-        let message = "that report is not of this purge at this head; run the preflight again";
-        return Err(invalid(message.into()));
+        return Err(Error::invalid(Case::PurgeReportStale));
     }
     let (purged, mut report) = plan(&st, head, source, ty)?;
     let mut batch = Batch::at(log);

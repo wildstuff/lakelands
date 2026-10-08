@@ -36,7 +36,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use lakelands_api::engine::{After, CanonicalEvent, Scan};
-use lakelands_api::error::{Detail, Error, Flaw, Part, Refusal, Result};
+use lakelands_api::error::{Case, Detail, Error, Flaw, Part, Place as At, Refusal, Result, Said};
 use lakelands_api::event::SegmentDigest;
 use lakelands_api::expr::Expr;
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
@@ -61,9 +61,7 @@ const NO_CLOCK: Timestamp = Timestamp(0);
 pub fn head_only(name: &TypeName) -> Result<()> {
     match lakelands_api::seam::is_head_only(name) {
         true => Ok(()),
-        false => Err(invalid(format!(
-            "`{name}` is not a head-only name, so it is not ended whole"
-        ))),
+        false => Err(invalid(Case::NotHeadOnly { ty: name.clone() })),
     }
 }
 
@@ -1120,27 +1118,19 @@ pub fn fence_fault(
     event: &lakelands_api::engine::CanonicalEvent,
     lease: Option<u64>,
     floor: u64,
-) -> Option<String> {
-    let fence = event.fence;
-    let at = event.position;
-    match lease {
-        _ if at.0 == 0 => (fence != 0).then(|| {
-            format!(
-                "the event at position 0 carries fence {fence}, and it must carry fence 0; \
-                 nothing was appended"
-            )
+) -> Option<Case> {
+    let (fence, position) = (event.fence, event.position);
+    let wanted = if position.0 == 0 { Some(0) } else { lease };
+    match wanted {
+        Some(wanted) => (fence != wanted).then_some(Case::FenceWrong {
+            position,
+            fence,
+            wanted,
         }),
-        Some(wanted) => (fence != wanted).then(|| {
-            format!(
-                "the event at position {at} carries fence {fence}, and it must carry fence \
-                 {wanted}; nothing was appended"
-            )
-        }),
-        None => (fence < floor).then(|| {
-            format!(
-                "the event at position {at} carries fence {fence}, below the fence {floor} of \
-                 the event before it; fences never fall, and nothing was appended"
-            )
+        None => (fence < floor).then_some(Case::FenceFalls {
+            position,
+            fence,
+            floor,
         }),
     }
 }
@@ -1162,26 +1152,21 @@ pub fn append_fault(
             return Err(invalid(why));
         }
         floor = event.fence;
-        if event.position.0 != expected {
-            return Err(invalid(format!(
-                "the event at position {} does not continue the log, whose next position \
-                 is {expected}; nothing was appended",
-                event.position
-            )));
+        let position = event.position;
+        if position.0 != expected {
+            let next = expected;
+            return Err(invalid(Case::AppendNotNext { position, next }));
         }
         if event.prev != prev {
-            return Err(invalid(format!(
-                "the event at position {} names `{}` as the hash before it, but that hash \
-                 is `{}`; nothing was appended",
-                event.position, event.prev.0, prev.0
-            )));
+            let (named, hash) = (event.prev.0.clone(), prev.0.clone());
+            return Err(invalid(Case::AppendPrev {
+                position,
+                named,
+                hash,
+            }));
         }
         if event.bytes.contains(&b'\n') {
-            return Err(invalid(format!(
-                "the event at position {} holds a line feed in its bytes, which canonical \
-                 bytes never do; nothing was appended",
-                event.position
-            )));
+            return Err(invalid(Case::AppendLineFeed { position }));
         }
         prev = event.hash.clone();
     }
@@ -1197,11 +1182,8 @@ pub fn first_of_next(
 ) -> Result<Vec<CanonicalEvent>> {
     let events = first(sealed)?;
     if events.is_empty() {
-        return Err(invalid(format!(
-            "a seal begins the next segment with its first event, and none was handed for the \
-             one after position {}; nothing was sealed",
-            sealed.last
-        )));
+        let after = sealed.last;
+        return Err(invalid(Case::SealNoFirst { after }));
     }
     Ok(events)
 }
@@ -1213,13 +1195,15 @@ pub fn lease_held(holder: &str, fence: u64) -> Error {
     Error::unavailable(lakelands_api::error::Situation::LeaseHeld { holder, fence })
 }
 
-/// The refusal of a query vector of `query` dimensions where the vector
-/// `ty.field` holds for the record `key` has `held`.
-pub fn dimensions(query: usize, held: usize, ty: &TypeName, field: &str, key: &str) -> Error {
-    invalid(format!(
-        "the query vector has {query} dimensions, but `{ty}.{field}` holds vectors of {held} \
-         (record `{key}`)"
-    ))
+/// The refusal of a query vector of `query` dimensions where `ty.field`
+/// holds vectors of `held`. It names no record: the store refuses it
+/// by the declaration before any engine reads a vector, and an engine's
+/// guard that meets a stored vector of another length says the same.
+pub fn dimensions(query: usize, held: usize, ty: &TypeName, field: &str) -> Error {
+    let case = Case::QueryDimensions { query, held };
+    let (name, field) = (ty.clone(), field.into());
+    let at = Said::from(case).within(At::Field { name: field });
+    invalid(at.within(At::Type { name }))
 }
 
 /// Best first by score, ties by key, at most `k`.
@@ -1419,21 +1403,15 @@ pub fn commit_refusal(
     through: Position,
 ) -> Option<Error> {
     if let Some(folded) = folded.filter(|f| *f > through) {
-        return Some(invalid(format!(
-            "the projection reflects the log through position {folded}; a transaction \
-             cannot commit through the earlier position {through}"
-        )));
+        return Some(invalid(Case::CommitBehind { folded, through }));
     }
     let late = late.filter(|p| *p > through)?;
-    Some(invalid(format!(
-        "a state valid from position {late} cannot be committed through the earlier \
-         position {through}"
-    )))
+    Some(invalid(Case::CommitLate { late, through }))
 }
 
 /// The refusal of a put made outside a transaction of the fold.
 pub fn unstaged() -> Error {
-    invalid("the projection is written inside a transaction: call `begin` first")
+    invalid(Case::NotStaged)
 }
 
 #[cfg(test)]

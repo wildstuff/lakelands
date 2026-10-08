@@ -1,4 +1,5 @@
 use super::*;
+use lakelands_api::error::Case;
 use serde_json::json;
 
 fn kind(k: StorageKind) -> FieldType {
@@ -500,25 +501,25 @@ fn a_malformed_migration_is_refused() {
             relation_renames: Vec::new(),
         }
     };
-    let err = |m: Migration| preflight(&before, &m, vec![]).unwrap_err();
+    let err = |m: Migration| preflight(&before, &m, vec![]).unwrap_err().case;
     assert!(matches!(
         err(renamed("ghost", "total", "total")),
-        ShapeError::RenameFromUnknown { .. }
+        Case::RenameFromUnknown { .. }
     ));
     assert!(matches!(
         err(renamed("amount", "ghost", "total")),
-        ShapeError::RenameToUnknown { .. }
+        Case::RenameToUnknown { .. }
     ));
     assert!(matches!(
         err(renamed("amount", "note", "total")),
-        ShapeError::RenameCollides { .. }
+        Case::RenameCollides { .. }
     ));
     let mut twice = renamed("amount", "total", "total");
     twice.renames.push(("amount".into(), "total".into()));
-    assert!(matches!(err(twice), ShapeError::RenameRepeated { .. }));
+    assert!(matches!(err(twice), Case::RenameRepeated { .. }));
     let mut other = retype();
     other.to.name = "receipt".into();
-    assert!(matches!(err(other), ShapeError::OtherType { .. }));
+    assert!(matches!(err(other), Case::MigrationOtherType { .. }));
 }
 
 #[test]

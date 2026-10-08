@@ -244,11 +244,7 @@ impl LakeEngine for Probed {
             }
             let message = "the append was refused (planted)".to_owned();
             if self.probe.refuse_as_invalid.load(Ordering::SeqCst) {
-                let reason = lakelands_api::Refusal::Invalid { message };
-                return Err(Error::Refused {
-                    field: None,
-                    reason,
-                });
+                return Err(planted());
             }
             return Err(lakelands_api::Error::unavailable(
                 lakelands_api::error::Situation::Storage {
@@ -321,11 +317,7 @@ impl ProjectionStore for Probed {
         if Probe::refused(&self.probe.refuse_begin) {
             let message = "the `begin` was refused (planted)".to_owned();
             if self.probe.refuse_as_invalid.load(Ordering::SeqCst) {
-                let reason = lakelands_api::Refusal::Invalid { message };
-                return Err(Error::Refused {
-                    field: None,
-                    reason,
-                });
+                return Err(planted());
             }
             return Err(lakelands_api::Error::unavailable(
                 lakelands_api::error::Situation::Storage {
@@ -454,4 +446,11 @@ pub fn calls(lake: &lakelands_store::lake::Lake) -> Vec<lakelands_store::backed:
         }
     }
     calls
+}
+
+/// The refusal as invalid a probe plants: of a type named `planted`.
+fn planted() -> Error {
+    Error::invalid(lakelands_api::error::Case::Undeclared {
+        ty: "planted".into(),
+    })
 }

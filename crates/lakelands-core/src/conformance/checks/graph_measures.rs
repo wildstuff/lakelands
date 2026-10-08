@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::{Cardinality, RelationDecl, StorageKind, TypeDecl};
 use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, SearchMode, Step, Walk};
@@ -17,8 +18,8 @@ use lakelands_api::{Catalog, Cursor, LakeStore, Position, Principal, Refusal, Va
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, invalid_naming, order, owner, patch, pattern, reads_all, reason,
-    reference, restrict, searchable, step, type_decl,
+    Lake, Must, doors, field, order, owner, patch, pattern, reads_all, reason, reference, restrict,
+    searchable, step, type_decl,
 };
 use crate::conformance::{Failure, Given};
 
@@ -477,7 +478,7 @@ async fn a_measure_refuses_depth_where_to_order_by_and_one_way_components(
             .await
             .must_fail(&format!("a measure with {what}"))?;
         ensure!(
-            matches!(reason(&err), Some(Refusal::Invalid { .. })),
+            matches!(reason(&err), Some(Refusal::Invalid(..))),
             "a measure with {what} must be refused as invalid; it failed with {err:?}"
         );
     }
@@ -539,8 +540,7 @@ async fn a_measure_is_read_whole_in_one_page_up_to_max_graph_nodes(
         (rows_of_three, 2),
     ] {
         let what = format!("{:?} with `limit` {:?}", p.project, p.limit);
-        let names = format!("between 1 and {max}");
-        invalid_naming(&what, cat.query(&own, p).await, &[&names])?;
+        refused_as!(&what, cat.query(&own, p).await, Case::LimitRange { max: m } if *m == max)?;
     }
     Ok(())
 }

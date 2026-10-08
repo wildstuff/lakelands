@@ -225,20 +225,18 @@ fn a_declaration_refuses_a_member_it_does_not_know_naming_it_and_where() {
             "inputs[0]",
         ),
     ];
+    // The reader names the declaration and the path to the member; which
+    // member it is, the doors find from the parse (lakelands#650).
     for (declaration, member, at) in cases {
         let said = refused(declaration.clone());
+        let path = match at {
+            "" => member.to_owned(),
+            at => format!("{at}.{member}"),
+        };
         assert!(
-            said.contains(&format!("has no member `{member}`")),
+            said.contains(&format!(": at `{path}`: ")),
             "{declaration}: {said}"
         );
-        if at.is_empty() {
-            assert!(!said.contains(" at `"), "{declaration}: {said}");
-        } else {
-            assert!(
-                said.contains(&format!(" at `{at}`")),
-                "{declaration}: {said}"
-            );
-        }
         let name = declaration["name"].as_str().unwrap();
         assert!(said.contains(&format!("`{name}`")), "{declaration}: {said}");
     }
@@ -267,10 +265,7 @@ fn a_proposed_declaration_or_migration_refuses_a_member_it_does_not_know() {
     let said = serde_json::from_value::<ProposedWrite>(declare)
         .unwrap_err()
         .to_string();
-    assert!(
-        said.contains("`u` has no member `format` at `fields[0]`"),
-        "{said}"
-    );
+    assert!(said.contains("`u`: at `fields[0].format`: "), "{said}");
     let migrate = json!({"write": "migrate", "migration": {
         "to": {"name": "t", "fields": [text("a")]}, "renames": [], "reason": "why"}});
     let said = serde_json::from_value::<ProposedWrite>(migrate)
@@ -329,54 +324,64 @@ fn a_strict_declaration_is_read_back_from_what_it_writes() {
 
 #[test]
 fn an_annotation_is_refused_naming_the_declaration_the_key_and_where_it_sits() {
+    use lakelands_api::error::{Case, Place};
     use lakelands_api::write::{AnnotationFault, Declaration};
     let fault = |d: serde_json::Value| {
         serde_json::from_value::<Declaration>(d)
             .unwrap()
             .annotation_fault()
     };
+    let (ty, verb, function) = (
+        Place::Type { name: "t".into() },
+        Place::Verb { name: "v".into() },
+        Place::Function { name: "f".into() },
+    );
+    let field = |name: &str| Place::Field { name: name.into() };
+    let key = |key: &str| Place::Annotation { key: key.into() };
     let long = format!("acme.{}", "k".repeat(124));
     let cases = [
         (
             json!({"declare": "type", "name": "t", "annotations": {long.clone(): 1}}),
-            long.as_str(),
-            "",
+            vec![ty.clone(), key(&long)],
+            Case::AnnotationKeyLong { max: 128 },
         ),
         (
             json!({"declare": "type", "name": "t", "fields": [
                 {"name": "a", "type": {"kind": "text"}, "annotations": {"acme.n": 9007199254740992_u64}}]}),
-            "9007199254740992",
-            "fields[0]",
+            vec![ty.clone(), field("a"), key("acme.n")],
+            Case::IntegerTooLarge {
+                n: 9007199254740992_u64.into(),
+            },
         ),
         (
             json!({"declare": "type", "name": "t", "relations": [{"name": "r", "target": "u",
                 "fields": [{"name": "s", "type": {"kind": "text"}, "annotations": {"acme.": 1}}]}]}),
-            "acme.",
-            "relations[0].fields[0]",
+            vec![
+                ty.clone(),
+                Place::Relation { name: "r".into() },
+                field("s"),
+                key("acme."),
+            ],
+            Case::AnnotationKeyForm,
         ),
         (
             json!({"declare": "verb", "name": "v", "on": "t", "risk": "low", "effect": "write", "set": [],
                 "payload": [{"name": "p", "type": {"kind": "text"}, "annotations": {"1acme.x": 1}}]}),
-            "1acme.x",
-            "payload[0]",
+            vec![verb, field("p"), key("1acme.x")],
+            Case::AnnotationKeyForm,
         ),
         (
             json!({"declare": "function", "name": "f", "backing": "http",
                 "inputs": [{"name": "x", "type": {"kind": "text"}, "annotations": {"acme.x": null}}]}),
-            "acme.x",
-            "inputs[0]",
+            vec![function, field("x"), key("acme.x")],
+            Case::AnnotationNull,
         ),
     ];
-    for (d, named, at) in cases {
-        let Some(AnnotationFault::Invalid { message }) = fault(d.clone()) else {
+    for (d, at, case) in cases {
+        let Some(AnnotationFault::Invalid { said }) = fault(d.clone()) else {
             panic!("{d} must be refused as invalid");
         };
-        let name = d["name"].as_str().unwrap();
-        assert!(message.contains(&format!("`{name}`")), "{message}");
-        assert!(message.contains(named), "{message}");
-        if !at.is_empty() {
-            assert!(message.contains(&format!("at `{at}`")), "{message}");
-        }
+        assert_eq!((said.at, said.case), (at, case), "{d}");
     }
     // A key of exactly 128 bytes is taken, one of 129 is not.
     let at_limit = format!("acme.{}", "k".repeat(123));
@@ -384,10 +389,14 @@ fn an_annotation_is_refused_naming_the_declaration_the_key_and_where_it_sits() {
         fault(json!({"declare": "type", "name": "t", "annotations": {at_limit: 1}})),
         None
     );
-    let Some(AnnotationFault::Reserved { key, .. }) =
+    let Some(AnnotationFault::Reserved { key, said }) =
         fault(json!({"declare": "type", "name": "t", "annotations": {"lakelands.x": 1}}))
     else {
         panic!("`lakelands.` is reserved");
     };
     assert_eq!(key, "lakelands.x");
+    assert_eq!(
+        said.to_string(),
+        "type `t`, annotation `lakelands.x`: the namespace `lakelands.` is reserved"
+    );
 }

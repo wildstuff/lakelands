@@ -95,7 +95,7 @@ use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::Position;
 use sha2::{Digest as _, Sha256};
 
-use lakelands_api::error::{Detail, Doing, Error, Flaw, Left, Part, Situation};
+use lakelands_api::error::{Case, Detail, Doing, Error, Flaw, Left, Part, Situation};
 
 use crate::{damaged as damaged_at, invalid, io_error};
 
@@ -566,11 +566,8 @@ impl Log {
         // An active segment holding nothing is named by the position its
         // first event takes; one named otherwise is not this log's.
         if active.count == 0 && events[0].position.0 != active.first {
-            return Err(invalid(format!(
-                "the active segment is named for position {}, and the event to append is at \
-                 position {}; nothing was appended",
-                active.first, events[0].position
-            )));
+            let (named, position) = (Position(active.first), events[0].position);
+            return Err(invalid(Case::ActiveSegmentNamed { named, position }));
         }
         let (lines, index) = lines_of(events, active.end);
         let written = [(&segment_path, &lines), (&index_path, &index)]

@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use lakelands_api::Result;
-use lakelands_api::error::{Detail, Exchange};
+use lakelands_api::error::{Case, Detail, Exchange};
 use lakelands_api::seam::{FunctionBacking, FunctionCall};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -42,17 +42,11 @@ impl Exec {
     }
 
     async fn run(&self, call: &FunctionCall) -> Result<Value> {
-        let name = call.config["command"].as_str().ok_or_else(|| {
-            refused(
-                call,
-                "an `exec` function names its command as `config.command`".into(),
-            )
-        })?;
+        let name = call.config["command"].as_str();
+        let name = name.ok_or_else(|| refused(call, Case::ExecNoCommand))?;
         let command = self.config.commands.get(name).ok_or_else(|| {
-            refused(
-                call,
-                format!("the command `{name}` is not one the operator allows"),
-            )
+            let command = name.to_owned();
+            refused(call, Case::CommandNotAllowed { command })
         })?;
         let mut child = tokio::process::Command::new(&command.program)
             .args(&command.args)

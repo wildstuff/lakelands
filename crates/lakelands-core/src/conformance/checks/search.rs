@@ -5,7 +5,9 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::ontology::StorageKind;
+use lakelands_api::principal::PrincipalKind;
 use lakelands_api::query::{Hits, Search, SearchMode};
 use lakelands_api::{Access, Error, LakeStore, ReadAt, Refusal, TypeName};
 use serde_json::json;
@@ -13,7 +15,7 @@ use serde_json::json;
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, doors, embedding, field, field_access, field_writer, get_at, no_such_field, owner,
-    read_at, refused_on, restrict, searchable, type_decl, vector,
+    principal, read_at, refused_alike, refused_on, restrict, searchable, type_decl, vector,
 };
 
 check!(
@@ -174,7 +176,7 @@ check!(
 check!(
     /// Vector search cannot probe an unreadable vector field.
     VECTOR_PROBE_REFUSED = a_vector_search_over_an_unreadable_vector_field_is_refused,
-    "024: a vector or hybrid search that names a vector field the principal may not read is refused, naming that field"
+    "024: a vector or hybrid search that names a vector field the principal may not read is refused, naming that field; a query vector of another length than the field declares is refused by the declaration, so a holder of `only` admitted none of the stored vectors is answered the same whole error as over the type while it held none, naming no record"
 );
 
 /// `reader` of `doc`, reading everything but `masked`, which it sees
@@ -267,7 +269,24 @@ async fn a_hybrid_search_over_an_unreadable_searchable_field_is_refused_whole(
 async fn a_vector_search_over_an_unreadable_vector_field_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
+    let only = json!({"default": "read", "types": {"doc": {"only": {"body": "none"}}}});
+    let only = serde_json::from_value(only).expect("grants read");
+    let holder = principal(store.as_ref(), PrincipalKind::Agent, "holder", only);
+    let long = || doc_search(SearchMode::vector("v", vec![1.0, 0.0, 0.0]));
+    let wrong_length = || async { doors(store.as_ref()).search(&holder, long()).await.err() };
+    doc_type(store.as_ref()).await?;
+    let empty = wrong_length().await;
     two_docs(store.as_ref()).await?;
+    let held = wrong_length().await;
+    let json = |e: &Option<Error>| serde_json::to_value(e).ok();
+    let case = held.as_ref().and_then(|e| Some(e.case()?.case.clone()));
+    let declared = Case::QueryDimensions { query: 3, held: 2 };
+    ensure!(
+        empty.is_some() && held == empty && json(&held) == json(&empty) && case == Some(declared),
+        "a vector of 3 dimensions searched over `v`, of 2, by a holder of `only` admitted no \
+         record, is refused by the declaration alike over the type empty and holding vectors; \
+         it answered {empty:?} and {held:?}"
+    );
     let along_a = || SearchMode::vector("v", vec![0.0, 1.0]);
     let own = doors(store.as_ref())
         .search(&owner(store.as_ref()), doc_search(along_a()))
@@ -380,6 +399,9 @@ async fn a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused(
         "a vector search naming `vec` in `also`, by a principal who may not know of `vec`, \
          must be answered as for a field `doc` does not declare; it answered {answer:?}"
     );
+    let nosuch = doc_search(super::fusion::along(None, "nosuch", None));
+    let nosuch = cat.search(&blind, nosuch).await;
+    refused_alike("a search naming `vec`", &answer, nosuch, ("nosuch", "vec"))?;
     Ok(())
 }
 
@@ -706,11 +728,17 @@ async fn a_vector_search_answers_the_brute_force_ranking_to_the_bit(
 
 /// Two documents, each with a text and a vector: `a` matches the text
 /// `quayside` and points north, `b` matches nothing and points east.
-async fn two_docs(store: &dyn LakeStore) -> Result<Lake, Failure> {
+/// `doc`: a searchable `body` and `v`, a vector of 2 dimensions.
+async fn doc_type(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     let v = vector("v", 2);
     l.declare(type_decl("doc", vec![searchable("body"), v]))
         .await?;
+    Ok(l)
+}
+
+async fn two_docs(store: &dyn LakeStore) -> Result<Lake, Failure> {
+    let l = doc_type(store).await?;
     l.upsert("doc", "a", json!({"body": "quayside", "v": [0.0, 1.0]}))
         .await?;
     l.upsert("doc", "b", json!({"body": "harbour", "v": [1.0, 0.0]}))

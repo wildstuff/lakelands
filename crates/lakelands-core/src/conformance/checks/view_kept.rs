@@ -924,9 +924,10 @@ impl Twin {
     async fn named(&mut self, store: &dyn LakeStore) {
         self.row = "a write that names the view".to_owned();
         let l = Lake::of(store);
+        // A refusal by its wire form, its sentence among its members.
         let heard = |answer: lakelands_api::Result<()>| match answer {
             Ok(()) => "taken".to_owned(),
-            Err(e) => e.to_string(),
+            Err(e) => json!(e).to_string(),
         };
         for p in self.pairs.clone() {
             let Some(key) = p.keys.first().filter(|_| p.asked) else {
@@ -1170,12 +1171,13 @@ async fn paged(
     out
 }
 
-/// An answer as a text, or its refusal. A cursor is read as whether there
-/// is one: a view's and its twin's need not be the same text.
+/// An answer as a text, or its refusal by its wire form (its code, places
+/// and parameters and its sentence). A cursor is read as whether there is
+/// one: a view's and its twin's need not be the same text.
 fn told<T: serde::Serialize>(answer: lakelands_api::Result<Reply<T>>) -> String {
     let mut told = match answer {
         Ok(reply) => json!(reply.data),
-        Err(e) => return format!("refused: {e}"),
+        Err(e) => return format!("refused: {}", json!(e)),
     };
     told["next_cursor"] = json!(told.get("next_cursor").is_some_and(|c| !c.is_null()));
     told.to_string()

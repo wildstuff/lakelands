@@ -1,11 +1,13 @@
 //! What a door says when something goes wrong: a sentence on what
 //! happened, and one on what to do. The CLI prints it; the MCP server
-//! returns it as a tool error's text. One mapping, so the two doors
-//! never say different things about the same error.
+//! returns it as a tool error's text, REST beside the error's JSON. One
+//! mapping, so the doors never say different things about the same
+//! error: the advice goes by the kind of error, and by its case where the
+//! case has advice of its own ([`advice`]).
 
 use std::fmt;
 
-use lakelands_api::error::{Error, Refusal, Situation};
+use lakelands_api::error::{Case, Error, Refusal, Said, Situation};
 
 /// A failure, for a person.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,6 +27,12 @@ impl Failure {
         }
     }
 
+    /// A refusal's case, said as it is, with its advice.
+    pub fn of(said: &Said) -> Failure {
+        let todo = advice(&said.case).unwrap_or_else(|| CORRECT.to_owned());
+        Failure::new(said.to_string(), todo)
+    }
+
     /// The same failure, said to be about something in particular.
     pub fn about(mut self, context: impl fmt::Display) -> Failure {
         self.what = format!("{context}: {}", self.what);
@@ -39,8 +47,70 @@ impl fmt::Display for Failure {
     }
 }
 
+/// What to do about an input that does not fit.
+const CORRECT: &str = "correct the input and run the command again; nothing was written";
+
+/// What to do about a case that has advice of its own: a door's request
+/// that does not fit it, or an export into a directory that holds
+/// something.
+fn advice(case: &Case) -> Option<String> {
+    let preflight =
+        "run the preflight at …/schema/migrate, then send its report to …/schema/migrate/apply";
+    let line = "correct that line and send the body again; what came before it is committed, and sending it again appends nothing";
+    let todo = match case {
+        Case::NoArgument { .. } => {
+            "use only the arguments the tool's input schema lists, then call it again"
+        }
+        Case::NoMember { .. } => {
+            "remove the member or correct its name, then call again; nothing was declared or written"
+        }
+        Case::MemberMissing { .. } | Case::ArgumentsUnfit { .. } => {
+            "correct them against the tool's input schema (over REST, the route's in docs/rest.md) and call it again"
+        }
+        Case::NoSessionToPin { .. } => "name `as_of` on each read instead",
+        Case::NoSession { .. } => "read the change feed instead",
+        Case::QueryNotEncoded => "encode the query's parameters and send the request again",
+        Case::NoParameter { .. } => "use only the parameters the route takes",
+        Case::ParameterForm { .. } => "give the parameter in the form it takes",
+        Case::ParameterTwice { .. } => "give each parameter once",
+        Case::RouteMethod { .. } => "send it with a method the route takes",
+        Case::NoRoute => "see the routes in docs/rest.md; MCP is served at /lakes/<id>/mcp",
+        Case::IfMatchBoth => {
+            "give `If-Match: <version>`, or `If-None-Match: *` for a record that must not exist yet"
+        }
+        Case::IfMatchNoVersion { .. } => {
+            "give the record's version as its `ETag` answered it; a weak `W/` one is not taken"
+        }
+        Case::IfNoneMatchNotPut => "give `If-Match: <version>` instead",
+        Case::IfNoneMatchValue { .. } => {
+            "give `If-None-Match: *` for a record that must not exist yet"
+        }
+        Case::VerbTypeHeader { .. } => "send it without the header",
+        Case::NoBody { .. } => "send it without one",
+        Case::BodyObjectOf { argument, .. } => {
+            return Some(format!("send the {argument} as one JSON object"));
+        }
+        Case::BodyNotObject { .. } => "send the arguments as one JSON object",
+        Case::PathNames { argument } => return Some(format!("leave `{argument}` out of the body")),
+        Case::PreflightReportId | Case::ApplyNeedsReportId => preflight,
+        Case::IngestMediaType => "send one record per line as NDJSON",
+        Case::LineTooLong { .. } | Case::LineNotRecord { .. } | Case::BodyCutOff { .. } => line,
+        Case::BodyMediaType | Case::BodyNotJson { .. } => "send the body as JSON",
+        Case::BodyTooLarge => "send a smaller body; many records go through ingest",
+        Case::ExportNotEmpty => "export into an empty or new directory",
+        _ => return None,
+    };
+    Some(todo.to_owned())
+}
+
 impl From<Error> for Failure {
     fn from(e: Error) -> Failure {
+        if let Some(todo) = e.case().and_then(|said| advice(&said.case)) {
+            return Failure {
+                what: e.to_string(),
+                todo,
+            };
+        }
         let todo = match &e {
             Error::Refused { field, reason } => match reason {
                 Refusal::NotGranted => {
@@ -52,10 +122,8 @@ impl From<Error> for Failure {
                         .to_owned()
                 }
                 Refusal::Reserved => "choose a name that does not begin with `sys.`".to_owned(),
-                Refusal::Invalid { .. } | Refusal::Constraint { .. } => {
-                    "correct the input and run the command again; nothing was written".to_owned()
-                }
-                Refusal::Precondition { .. } => {
+                Refusal::Invalid(_) | Refusal::Constraint(_) => CORRECT.to_owned(),
+                Refusal::Precondition(_) => {
                     "change the record so the verb applies, then call it again".to_owned()
                 }
                 Refusal::TooDeep { .. } => {
@@ -81,7 +149,7 @@ impl From<Error> for Failure {
                 }
                 Refusal::Decided => "list the proposals to see how it was decided".to_owned(),
                 // Waiting helps only a call whose executor still runs.
-                Refusal::Unanswered { .. } => {
+                Refusal::Unanswered(_) => {
                     "a retry under this key runs nothing: if the call's executor is still \
                      running, retry once it has answered; if the first answer said its executor \
                      was not handed the call, call the verb again under another key or with \
@@ -89,6 +157,7 @@ impl From<Error> for Failure {
                         .to_owned()
                 }
                 Refusal::OutOfRange { head } => format!("ask for a position at or before {head}"),
+                Refusal::Unknown(_) => "do what the message says".to_owned(),
             },
             Error::NotFound { .. } => {
                 "check the name, or apply the declaration that introduces it first".to_owned()
@@ -105,7 +174,12 @@ impl From<Error> for Failure {
             // A call of an external verb that failed around its hand-out:
             // sent again as it was, it could run twice, or run nothing.
             Error::Unavailable { situation }
-                if matches!(**situation, Situation::Executor { .. }) =>
+                if matches!(
+                    **situation,
+                    Situation::Executor { .. }
+                        | Situation::AnswerHeld { .. }
+                        | Situation::AnswerLost { .. }
+                ) =>
             {
                 "the call is in the log: do what the message says, and call the verb again only \
                  where it says the executor was not handed the call"
@@ -133,16 +207,24 @@ mod tests {
     #[test]
     fn a_call_that_failed_around_its_hand_out_is_not_advised_to_retry() {
         use lakelands_api::error::Retry;
-        for answered in [None, Some(serde_json::Value::Null)] {
-            let cause = Box::new(Error::unavailable(Situation::Moved));
-            let (held, retry) = (false, Retry::Call);
-            let e = Error::unavailable(Situation::Executor {
+        let cause = || Box::new(Error::unavailable(Situation::Moved));
+        let (answered, retry) = (serde_json::Value::Null, Retry::Call);
+        for situation in [
+            Situation::Executor {
+                retry: retry.clone(),
+                cause: cause(),
+            },
+            Situation::AnswerHeld {
+                answered: answered.clone(),
+                retry: retry.resent(),
+                cause: cause(),
+            },
+            Situation::AnswerLost {
                 answered,
-                held,
-                retry,
-                cause,
-            });
-            let todo = Failure::from(e).todo;
+                cause: cause(),
+            },
+        ] {
+            let todo = Failure::from(Error::unavailable(situation)).todo;
             assert!(!todo.contains("retry"), "{todo}");
         }
         let other = Failure::from(Error::unavailable(Situation::Moved));

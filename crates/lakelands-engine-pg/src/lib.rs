@@ -48,7 +48,7 @@ mod vector_index;
 mod view;
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
-use lakelands_api::error::{Detail, Doing, Error, Part, Result, Situation};
+use lakelands_api::error::{Case, Detail, Doing, Error, Part, Result, Situation};
 use lakelands_api::location::{EngineConfig, Location};
 
 pub use connect::MIN_SERVER_VERSION;
@@ -122,11 +122,13 @@ pub(crate) fn target(location: &Location) -> Result<connect::Target> {
         tuning,
     } = &location.engine
     else {
-        return Err(invalid(format!(
-            "the {NAME} engine opens only postgres locations, and lake `{}` is configured for \
-             another engine",
-            location.lake
-        )));
+        let (engine, kind) = (NAME.to_owned(), "postgres".to_owned());
+        let lake = Box::new(location.lake.clone());
+        return Err(invalid(Case::EngineOtherLocation {
+            engine,
+            location: kind,
+            lake,
+        }));
     };
     Ok(connect::Target {
         url: url.clone(),

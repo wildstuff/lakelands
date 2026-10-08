@@ -351,10 +351,7 @@ fn compute(
             },
         )
         .map_err(|e| {
-            let (ty, cause) = (
-                raw.name.clone(),
-                Box::new(lakelands_core::invalid(e.to_string())),
-            );
+            let (ty, cause) = (raw.name.clone(), Box::new(lakelands_core::invalid(e)));
             damaged(Part::Projection, None, Flaw::CannotDerive { ty, cause })
         })?;
         for name in touched {
@@ -408,10 +405,9 @@ pub fn resolve_functions(decl: &TypeDecl, ontology: &Ontology) -> TypeDecl {
 pub fn check_required(decl: &TypeDecl, fields: &BTreeMap<FieldName, Value>) -> Result<()> {
     for f in decl.fields.iter().filter(|f| f.required) {
         if fields.get(&f.name).is_none_or(Value::is_null) {
-            return Err(crate::writes::constraint(
-                Some(f.name.clone()),
-                format!("`{}` requires a value for `{}`", decl.name, f.name),
-            ));
+            let (ty, field) = (decl.name.clone(), f.name.clone());
+            let case = lakelands_api::error::Case::Required { ty, field };
+            return Err(crate::writes::constraint(Some(f.name.clone()), case));
         }
     }
     Ok(())

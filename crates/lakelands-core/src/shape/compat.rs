@@ -29,15 +29,14 @@
 //! so that the values move instead of vanishing.
 
 use std::collections::BTreeMap;
-use std::fmt;
 
-use lakelands_api::ontology::{Cardinality, FieldDecl, FieldType, RelationDecl, TypeDecl};
+use lakelands_api::ontology::{Cardinality, FieldDecl, RelationDecl, TypeDecl};
 use lakelands_api::shape::view_shape;
-use lakelands_api::{FieldName, RelationName, TypeName};
+use lakelands_api::{FieldName, RelationName};
 use serde::Serialize;
 
 /// What a revision of a type needs.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "change", rename_all = "snake_case")]
 pub enum Change {
     /// The revision may be declared: no stored record is reshaped.
@@ -60,216 +59,25 @@ impl Change {
     }
 }
 
-/// One difference between two declarations of a type. A field reason
-/// names the relation when the field is one a relation carries on its
-/// links.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "reason", rename_all = "snake_case")]
-pub enum Reason {
-    /// A field was added. Reshapes when it is required: stored records
-    /// do not carry it.
-    FieldAdded {
-        /// The field.
-        field: FieldName,
-        /// The relation whose links carry it, if any.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        relation: Option<RelationName>,
-        /// Whether it is required.
-        required: bool,
-    },
-    /// A field was removed. Reshapes: its stored values would be lost.
-    FieldRemoved {
-        /// The field.
-        field: FieldName,
-        /// The relation whose links carry it, if any.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        relation: Option<RelationName>,
-    },
-    /// A field's type changed. Reshapes: its stored values must convert.
-    FieldRetyped {
-        /// The field.
-        field: FieldName,
-        /// The relation whose links carry it, if any.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        relation: Option<RelationName>,
-        /// Its type before.
-        from: FieldType,
-        /// Its type after.
-        to: FieldType,
-    },
-    /// An optional field became required. Reshapes: stored records
-    /// without a value would no longer match.
-    FieldRequired {
-        /// The field.
-        field: FieldName,
-        /// The relation whose links carry it, if any.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        relation: Option<RelationName>,
-    },
-    /// A required field became optional. Every stored record still
-    /// matches.
-    FieldOptional {
-        /// The field.
-        field: FieldName,
-        /// The relation whose links carry it, if any.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        relation: Option<RelationName>,
-    },
-    /// The key changed: its fields, or their order. Reshapes: every
-    /// record would be identified differently.
-    KeyChanged {
-        /// The key before.
-        from: Vec<FieldName>,
-        /// The key after.
-        to: Vec<FieldName>,
-    },
-    /// A relation was added.
-    RelationAdded {
-        /// The relation.
-        relation: RelationName,
-    },
-    /// A relation was removed. Reshapes: its stored links would be lost.
-    RelationRemoved {
-        /// The relation.
-        relation: RelationName,
-    },
-    /// A relation points at another type. Reshapes: its stored links
-    /// name records of the old target.
-    RelationRetargeted {
-        /// The relation.
-        relation: RelationName,
-        /// The target before.
-        from: TypeName,
-        /// The target after.
-        to: TypeName,
-    },
-    /// A relation's cardinality changed. Reshapes when a side that
-    /// allowed many now allows one: stored links could exceed it.
-    CardinalityChanged {
-        /// The relation.
-        relation: RelationName,
-        /// The cardinality before.
-        from: Cardinality,
-        /// The cardinality after.
-        to: Cardinality,
-    },
-    /// A view's source, filter, grouping or measures changed. A view
-    /// stores nothing, so nothing is reshaped.
-    ViewChanged,
-    /// A stored type became a view. Reshapes: its stored records would
-    /// no longer be readable as written.
-    BecameView,
-    /// A view became a stored type. It stored nothing, so nothing is
-    /// reshaped.
-    StoppedBeingView,
-}
+/// One difference between two declarations of a type, a field's naming
+/// the relation whose links carry it; each case says whether it reshapes.
+pub use lakelands_api::error::Revision as Reason;
 
-impl Reason {
-    /// Whether this change, on a stored type, reshapes stored records.
-    pub fn reshapes(&self) -> bool {
-        match self {
-            Reason::FieldAdded { required, .. } => *required,
-            Reason::CardinalityChanged { from, to, .. } => !widens(*from, *to),
-            Reason::FieldOptional { .. }
-            | Reason::RelationAdded { .. }
-            | Reason::ViewChanged
-            | Reason::StoppedBeingView => false,
-            Reason::FieldRemoved { .. }
-            | Reason::FieldRetyped { .. }
-            | Reason::FieldRequired { .. }
-            | Reason::KeyChanged { .. }
-            | Reason::RelationRemoved { .. }
-            | Reason::RelationRetargeted { .. }
-            | Reason::BecameView => true,
-        }
+/// Whether this change, on a stored type, reshapes stored records: an
+/// added field when it is required, a cardinality when it narrows.
+pub fn reshapes(reason: &Reason) -> bool {
+    match reason {
+        Reason::FieldAdded { required, .. } => *required,
+        Reason::CardinalityChanged { from, to, .. } => !widens(*from, *to),
+        Reason::FieldRemoved { .. }
+        | Reason::FieldRetyped { .. }
+        | Reason::FieldRequired { .. }
+        | Reason::KeyChanged { .. }
+        | Reason::RelationRemoved { .. }
+        | Reason::RelationRetargeted { .. }
+        | Reason::BecameView => true,
+        _ => false,
     }
-}
-
-impl fmt::Display for Reason {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let on = |relation: &Option<RelationName>| match relation {
-            Some(r) => format!(" of relation `{r}`"),
-            None => String::new(),
-        };
-        match self {
-            Reason::FieldAdded {
-                field,
-                relation,
-                required,
-            } => {
-                let which = if *required { "required" } else { "optional" };
-                write!(f, "{which} field `{field}`{} added", on(relation))
-            }
-            Reason::FieldRemoved { field, relation } => {
-                write!(f, "field `{field}`{} removed", on(relation))
-            }
-            Reason::FieldRetyped {
-                field,
-                relation,
-                from,
-                to,
-            } => write!(
-                f,
-                "field `{field}`{} changes type from {} to {}",
-                on(relation),
-                describe(from),
-                describe(to)
-            ),
-            Reason::FieldRequired { field, relation } => {
-                write!(f, "field `{field}`{} becomes required", on(relation))
-            }
-            Reason::FieldOptional { field, relation } => {
-                write!(f, "field `{field}`{} becomes optional", on(relation))
-            }
-            Reason::KeyChanged { from, to } => {
-                write!(f, "key changes from {} to {}", list(from), list(to))
-            }
-            Reason::RelationAdded { relation } => write!(f, "relation `{relation}` added"),
-            Reason::RelationRemoved { relation } => write!(f, "relation `{relation}` removed"),
-            Reason::RelationRetargeted { relation, from, to } => {
-                write!(
-                    f,
-                    "relation `{relation}` points at `{to}` instead of `{from}`"
-                )
-            }
-            Reason::CardinalityChanged { relation, from, to } => write!(
-                f,
-                "relation `{relation}` changes cardinality from {} to {}",
-                json_name(from),
-                json_name(to)
-            ),
-            Reason::ViewChanged => f.write_str("the view changes"),
-            Reason::BecameView => f.write_str("a stored type becomes a view"),
-            Reason::StoppedBeingView => f.write_str("a view becomes a stored type"),
-        }
-    }
-}
-
-fn json_name<T: Serialize>(v: &T) -> String {
-    match serde_json::to_value(v) {
-        Ok(serde_json::Value::String(s)) => s,
-        Ok(other) => other.to_string(),
-        Err(_) => String::from("?"),
-    }
-}
-
-fn describe(ty: &FieldType) -> String {
-    let mut s = json_name(&ty.kind);
-    if let Some(v) = &ty.value_type {
-        s.push_str(&format!(" ({v})"));
-    }
-    if let Some(t) = &ty.target {
-        s.push_str(&format!(" of `{t}`"));
-    }
-    if let Some(d) = ty.dimensions {
-        s.push_str(&format!("[{d}]"));
-    }
-    s
-}
-
-fn list(names: &[FieldName]) -> String {
-    let inner: Vec<&str> = names.iter().map(FieldName::as_str).collect();
-    format!("[{}]", inner.join(", "))
 }
 
 /// Compare two declarations of one type: may `after` be declared over
@@ -284,8 +92,8 @@ pub fn classify(before: &TypeDecl, after: &TypeDecl) -> Change {
     diff_fields(&before.fields, &after.fields, None, &mut all);
     if before.key != after.key {
         all.push(Reason::KeyChanged {
-            from: before.key.clone(),
-            to: after.key.clone(),
+            from: before.key.iter().collect(),
+            to: after.key.iter().collect(),
         });
     }
     diff_relations(&before.relations, &after.relations, &mut all);
@@ -309,7 +117,7 @@ pub fn classify(before: &TypeDecl, after: &TypeDecl) -> Change {
     let stores_nothing = before.view.is_some();
     let (reasons, changes): (Vec<Reason>, Vec<Reason>) = all
         .into_iter()
-        .partition(|r| !stores_nothing && r.reshapes());
+        .partition(|r| !stores_nothing && reshapes(r));
     if reasons.is_empty() {
         Change::Declare { changes }
     } else {

@@ -347,6 +347,20 @@ fn read_at() -> ReadAt {
     }
 }
 
+/// A case said at places, as a refusal of `invalid`, `constraint`,
+/// `precondition` or `unanswered` carries it.
+fn said() -> Box<lakelands_api::error::Said> {
+    use lakelands_api::error::{Case, Place, Said};
+    let case = Case::UnknownField {
+        ty: "invoice".into(),
+        field: "f".into(),
+    };
+    let at = Place::Type {
+        name: "invoice".into(),
+    };
+    Box::new(Said::from(case).within(at))
+}
+
 fn order() -> Order {
     Order {
         field: "f".into(),
@@ -729,6 +743,13 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             }),
         ),
         ("migration_report", members(&migration_report())),
+        // A case is flattened into its object: its parameters (here `type`
+        // and `field`) are members beside `at`, `code` and `message`, and
+        // the WIT carries them as one JSON text, `params`.
+        (
+            "said",
+            adjusted(members(&said()), &["type", "field"], &["params"]),
+        ),
         (
             "field_conversion",
             members(&migration_report().fields[0].clone()),
@@ -1376,10 +1397,12 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Refusal::Decided
             | Refusal::Unanswered { .. }
             | Refusal::OutOfRange { .. } => {}
+            // A newer lake's refusal, which a component built against this
+            // WIT cannot be sent.
+            Refusal::Unknown(_) => {}
         }
     }
     let _ = refusals;
-    let message = || "m".to_owned();
     checks.push((
         "refusal",
         case_names(
@@ -1387,16 +1410,16 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 Refusal::NotGranted,
                 Refusal::WrongDoor,
                 Refusal::Reserved,
-                Refusal::Invalid { message: message() },
-                Refusal::Constraint { message: message() },
-                Refusal::Precondition { message: message() },
+                Refusal::Invalid(said()),
+                Refusal::Constraint(said()),
+                Refusal::Precondition(said()),
                 Refusal::TooDeep { max: 1 },
                 Refusal::TooLarge { max: 1 },
                 Refusal::Migration {
                     report: Box::new(migration_report()),
                 },
                 Refusal::Decided,
-                Refusal::Unanswered { message: message() },
+                Refusal::Unanswered(said()),
                 Refusal::OutOfRange { head: Position(1) },
             ],
             Some("refusal"),
@@ -1410,6 +1433,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Missing::Verb { .. }
             | Missing::Function { .. }
             | Missing::Proposal { .. } => {}
+            // A newer lake's kind, said by its error's message.
+            Missing::Unknown(_) => {}
         }
     }
     let _ = missings;

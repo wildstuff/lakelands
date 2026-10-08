@@ -14,7 +14,7 @@
 //! a derived field's expression holds. Its report lists no conditions: the
 //! mock reads no expression for a literal.
 
-use lakelands_api::error::{Error, Refusal, Result};
+use lakelands_api::error::{Case, Error, Result};
 use lakelands_api::id::{FieldName, Position, TypeName, ValueTypeName};
 use lakelands_api::ontology::{FieldType, TypeDecl, ValueTypeDecl};
 use lakelands_api::write::{
@@ -23,13 +23,6 @@ use lakelands_api::write::{
 
 use crate::state::State;
 use crate::value;
-
-fn invalid(message: String) -> Error {
-    Error::Refused {
-        field: None,
-        reason: Refusal::Invalid { message },
-    }
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Change {
@@ -66,17 +59,11 @@ pub(crate) fn check_declared(st: &State, new: &ValueTypeDecl) -> Result<()> {
     let Some(current) = st.value_types.iter().find(|v| v.name == new.name) else {
         return Ok(());
     };
+    let value_type = new.name.clone();
     match change(current, new) {
         Change::Same | Change::Loosening => Ok(()),
-        Change::Tightening => Err(invalid(format!(
-            "value type `{}` would accept less than it does; tighten it through `migrate`",
-            new.name
-        ))),
-        Change::Reshaping => Err(invalid(format!(
-            "value type `{}` would change its `kind` or `scale`; that is not a value-type \
-             migration",
-            new.name
-        ))),
+        Change::Tightening => Err(Error::invalid(Case::ValueTypeTightens { value_type })),
+        Change::Reshaping => Err(Error::invalid(Case::ValueTypeReshapes { value_type })),
     }
 }
 
@@ -163,21 +150,21 @@ pub(crate) fn preflight(
         .value_types
         .iter()
         .find(|v| v.name == to.name)
-        .ok_or_else(|| invalid(format!("`{}` is not a declared value type", to.name)))?;
+        .ok_or_else(|| {
+            let value_type = to.name.clone();
+            Error::invalid(Case::NoValueType { value_type })
+        })?;
+    let value_type = to.name.clone();
     match change(current, to) {
         Change::Same if m.renames.is_empty() => {
-            return Err(invalid(format!("`{}`: nothing to migrate", to.name)));
+            return Err(Error::invalid(Case::ValueTypeSame { value_type }));
         }
         Change::Reshaping => {
-            return Err(invalid(format!(
-                "value type `{}` would change its `kind` or `scale`; that is not a value-type \
-                 migration",
-                to.name
-            )));
+            return Err(Error::invalid(Case::ValueTypeReshapes { value_type }));
         }
         _ => {}
     }
-    m.check_renames(current, accepts).map_err(invalid)?;
+    m.check_renames(current, accepts).map_err(Error::invalid)?;
     let mut types: Vec<ValueTypeDecl> = st
         .value_types
         .iter()
@@ -215,11 +202,8 @@ pub(crate) fn preflight(
         for f in uses.iter().filter(|f| reached.contains(&f.name)) {
             let derived = f.derived.as_ref().and_then(|c| crate::expr::typed(c).ok());
             if derived.is_some_and(|e| holds_old(&e, m)) {
-                return Err(invalid(format!(
-                    "`{name}`.`{}` is computed from an expression that holds a value this \
-                     migration renames; change the expression first",
-                    f.name
-                )));
+                let (ty, field) = (name.clone(), f.name.clone());
+                return Err(Error::invalid(Case::ComputedHoldsRenamed { ty, field }));
             }
         }
         let records: Vec<_> = st.records.values().filter(|r| r.ty == name).collect();
@@ -254,13 +238,8 @@ pub(crate) fn preflight(
                 let misfit = match (old(v), reaches) {
                     (Some(o), true) => {
                         if t.decl.key.contains(&f.name) {
-                            return Err(invalid(format!(
-                                "`{name}`.`{}` is part of the key and holds a value this \
-                                 migration renames, which would leave records whose key no \
-                                 longer matches their fields; re-key `{name}` through its \
-                                 migration first",
-                                f.name
-                            )));
+                            let (ty, field) = (name.clone(), f.name.clone());
+                            return Err(Error::invalid(Case::KeyHoldsRenamed { ty, field }));
                         }
                         let pair = used.renamed.iter_mut().find(|p| p.from == o);
                         pair.into_iter().for_each(|p| p.records += 1);

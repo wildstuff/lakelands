@@ -60,7 +60,7 @@ fn a_newer_part_inside_a_known_case_stays_inside_it() {
     assert_eq!((doing.name(), part.name()), ("dredging", "lake_bed"));
     assert_eq!(
         e.to_string(),
-        "the lake is unavailable: `dredging` `lake_bed` failed: d"
+        "the lake is unavailable: the storage failed while `dredging` `lake_bed`: d"
     );
     let back = serde_json::to_value(&e).unwrap();
     assert_eq!(
@@ -236,9 +236,37 @@ fn every_seam_and_lease_says_its_own_sentence() {
             undone: None,
         },
     ];
+    let cause = || Box::new(Error::unavailable(Situation::Moved));
+    let append = |left, cut: bool| Situation::AppendFailed {
+        detail: Detail::scrubbed("d"),
+        left,
+        cut: cut.then(cause),
+    };
+    let answered = Value::Null;
+    let calls = [
+        append(Left::Nothing, false),
+        append(Left::Nothing, true),
+        append(Left::Unsure, false),
+        append(Left::Unsure, true),
+        append(Left::Unknown("unsure".into()), false),
+        Situation::AnswerLost {
+            answered: answered.clone(),
+            cause: cause(),
+        },
+        Situation::AnswerHeld {
+            answered,
+            retry: Retry::OtherKey.resent(),
+            cause: cause(),
+        },
+    ];
+    // An unknown name with a backtick is not said as two names.
+    let names = [Part::Unknown("a` `b".into()), Part::Unknown("a\\".into())];
     let said: Vec<String> = (seams.iter().map(ToString::to_string))
         .chain(leases.iter().map(ToString::to_string))
+        .chain(calls.iter().map(ToString::to_string))
+        .chain(names.iter().map(ToString::to_string))
         .collect();
+    assert_eq!(said[said.len() - 2], "`a\\` \\`b`");
     let distinct: std::collections::BTreeSet<&String> = said.iter().collect();
     assert_eq!(distinct.len(), said.len(), "{said:#?}");
 }

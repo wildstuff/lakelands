@@ -916,14 +916,14 @@ interface types {
     }
 
     /// Why a view is computed at each read: no setting asks for it; it
-    /// cannot be kept (the reason, to a principal shown the view as
-    /// declared); its records are not whole (the groups that are not
+    /// cannot be kept (the case that says why, to a principal shown the
+    /// view as declared); its records are not whole (the groups that are not
     /// exact for this reader); or its records are not kept at this
     /// position, or by this lake; or its reader is admitted only some
     /// records of it or of a type it reads.
     variant not-kept {
         not-asked,
-        cannot-be-kept(option<string>),
+        cannot-be-kept(option<said>),
         not-whole(u64),
         not-kept-here,
         only-some,
@@ -1077,18 +1077,21 @@ interface types {
         proposal(proposal-id),
     }
 
+    /// Why a call was refused. A refusal of `invalid`, `constraint`,
+    /// `precondition` or `unanswered` says its case
+    /// (`lakelands_api::error::Case`) and where it is said.
     variant refusal {
         not-granted,
         wrong-door,
         reserved,
-        invalid(string),
-        constraint(string),
-        precondition(string),
+        invalid(said),
+        constraint(said),
+        precondition(said),
         too-deep(u32),
         too-large(u32),
         migration(migration-report),
         decided,
-        unanswered(string),
+        unanswered(said),
         out-of-range(position),
     }
 

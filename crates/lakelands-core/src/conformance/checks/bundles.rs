@@ -8,13 +8,14 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::ontology::{FieldType, StorageKind};
 use lakelands_api::write::{Declaration, Outcome, ProposedWrite};
-use lakelands_api::{Error, LakeStore, Position};
+use lakelands_api::{LakeStore, Position};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, get_at, type_decl};
+use crate::conformance::fixture::{Lake, Must, field, get_at, invalid_case, said_like, type_decl};
 
 check!(
     /// A bundle with forward references is applied whole or not at all.
@@ -79,11 +80,12 @@ async fn a_bundle_with_forward_references_is_applied_whole_or_not_at_all(
         )
         .await;
     let unmoved = store.head().await.must("reading the head")?;
-    let named_all = match &refused {
-        Err(Error::Refused { .. }) => {
-            let text = format!("{refused:?}");
-            text.contains("orphan") && text.contains("stray")
-        }
+    // The set refused whole, each problem said at the declaration it is in.
+    let at = |name: &str| json!({"at": [{"name": name}]});
+    let named_all = match invalid_case(&refused) {
+        Some(Case::SetRefused { count: 2, problems }) => ["orphan", "stray"]
+            .iter()
+            .all(|n| (problems.iter()).any(|p| p.case().is_some_and(|s| said_like(s, &at(n))))),
         _ => false,
     };
     ensure!(

@@ -39,7 +39,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use lakelands_api::engine::{After, ProjectionView, Scan};
-use lakelands_api::error::{Exchange, Flaw, Part, Remote, Situation};
+use lakelands_api::error::{Case, Exchange, Flaw, Part, Remote, Situation};
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
 use lakelands_api::ontology::{EmbedDecl, FieldDecl, TypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, Patch};
@@ -209,14 +209,20 @@ pub fn read_output(
     let patch: Patch = [(field.name.clone(), output.clone())].into();
     let checked = crate::writes::check_values(ontology, decl, &patch, std::slice::from_ref(field))
         .map_err(|e| {
-            format!(
-                "the output of `{function}` is not a value of `{}`: {e}",
-                field.name
-            )
+            let (function, field, cause) = (function.to_owned(), field.name.clone(), Box::new(e));
+            Case::OutputNotValue {
+                function,
+                field,
+                cause,
+            }
+            .to_string()
         })?;
     match checked.into_iter().next() {
         Some((_, v)) if !v.is_null() => Ok(v),
-        _ => Err(format!("`{function}` answered no value")),
+        _ => Err(Case::NoOutputValue {
+            function: function.to_owned(),
+        }
+        .to_string()),
     }
 }
 
@@ -379,7 +385,7 @@ pub(crate) fn computed_reads(o: &Ontology, f: &FieldDecl) -> Option<BTreeSet<Fie
         return Some(func.decl.inputs.iter().map(|i| i.name.clone()).collect());
     }
     let e = f.derived.as_ref()?;
-    let e = crate::declare::condition(e, lakelands_core::expr::Place::Write, "derived").ok()?;
+    let e = crate::declare::condition(e, lakelands_core::expr::Place::Write, &[]).ok()?;
     Some(lakelands_core::derive::reads(&e))
 }
 
@@ -391,14 +397,14 @@ pub(crate) fn computed_reads(o: &Ontology, f: &FieldDecl) -> Option<BTreeSet<Fie
 pub fn computed_order(
     o: &Ontology,
     t: &TypeDecl,
-) -> std::result::Result<Vec<(FieldName, BTreeSet<FieldName>)>, String> {
+) -> std::result::Result<Vec<(FieldName, BTreeSet<FieldName>)>, Case> {
     let mut waiting: Vec<(FieldName, BTreeSet<FieldName>)> = t
         .fields
         .iter()
         .filter_map(|f| Some((f.name.clone(), computed_reads(o, f)?)))
         .collect();
     if let Some((n, _)) = waiting.iter().find(|(n, reads)| reads.contains(n)) {
-        return Err(format!("the computed field `{n}` reads itself"));
+        return Err(Case::ComputedReadsItself { field: n.clone() });
     }
     let computed: BTreeSet<FieldName> = waiting.iter().map(|(n, _)| n.clone()).collect();
     for (_, reads) in &mut waiting {
@@ -408,11 +414,8 @@ pub fn computed_order(
     let mut out = Vec::new();
     while !waiting.is_empty() {
         let Some(i) = waiting.iter().position(|(_, reads)| reads.is_subset(&done)) else {
-            let cycle: Vec<String> = waiting.iter().map(|(n, _)| format!("`{n}`")).collect();
-            return Err(format!(
-                "computed fields read each other in a cycle: {}",
-                cycle.join(", ")
-            ));
+            let fields = waiting.iter().map(|(n, _)| n).collect();
+            return Err(Case::ComputedCycle { fields });
         };
         let (n, reads) = waiting.remove(i);
         done.insert(n.clone());
@@ -1052,7 +1055,7 @@ async fn embed_each(backend: &dyn EmbedBackend, texts: &[String]) -> Vec<Value> 
             }
             Err(
                 e @ Error::Refused {
-                    reason: Refusal::Invalid { .. },
+                    reason: Refusal::Invalid(_),
                     ..
                 },
             ) => {

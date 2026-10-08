@@ -1,6 +1,7 @@
 use lakelands_api::engine::{EngineOpener, OpenMode};
 use lakelands_api::write::Declaration;
-use lakelands_api::{Error, Location, Refusal};
+use lakelands_api::{Location, error::Case};
+use lakelands_core::conformance::fixture::invalid_case;
 use serde_json::json;
 
 use super::*;
@@ -37,8 +38,7 @@ fn a_system_type_in_the_closure_is_refused() {
     let keyed = vec![(RecordKey::from("1"), Some(RecordKey::from("DE1")))];
     let refused = plan(&after, view.as_ref(), &"account".into(), keyed, &[]);
     assert!(
-        matches!(&refused, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
-                if message.contains("sys.hold")),
+        matches!(invalid_case(&refused), Some(Case::RekeySystem { system, .. }) if system == "sys.hold"),
         "{:?}",
         refused.err()
     );

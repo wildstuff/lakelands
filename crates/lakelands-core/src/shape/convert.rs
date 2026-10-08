@@ -34,12 +34,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use lakelands_api::error::{Case, Said};
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl, is_vector_component};
 use lakelands_api::write::{FieldConversion, Migration, MigrationReport};
 use lakelands_api::{FieldName, RecordKey, Timestamp};
 use serde_json::Value;
 
-use super::{ShapeError, schema_hash};
+use super::schema_hash;
 use crate::canonical;
 use crate::value::{check_geo, is_decimal};
 
@@ -129,7 +130,7 @@ pub fn preflight(
     before: &TypeDecl,
     migration: &Migration,
     records: impl IntoIterator<Item = (RecordKey, BTreeMap<FieldName, Value>)>,
-) -> Result<MigrationReport, ShapeError> {
+) -> Result<MigrationReport, Said> {
     let plan = Plan::new(before, migration)?;
     let mut tallies: Vec<Tally> = plan.checked().map(|_| Tally::default()).collect();
     // Fields of the old declaration no step of the new one reads from:
@@ -209,7 +210,7 @@ pub fn migrate_record(
     before: &TypeDecl,
     migration: &Migration,
     fields: &BTreeMap<FieldName, Value>,
-) -> Result<Option<BTreeMap<FieldName, Value>>, ShapeError> {
+) -> Result<Option<BTreeMap<FieldName, Value>>, Said> {
     let plan = Plan::new(before, migration)?;
     let mut out = BTreeMap::new();
     for step in &plan.steps {
@@ -245,10 +246,10 @@ struct Step<'a> {
 }
 
 impl<'a> Plan<'a> {
-    fn new(before: &'a TypeDecl, migration: &'a Migration) -> Result<Plan<'a>, ShapeError> {
+    fn new(before: &'a TypeDecl, migration: &'a Migration) -> Result<Plan<'a>, Case> {
         let after = &migration.to;
         if after.name != before.name {
-            return Err(ShapeError::OtherType {
+            return Err(Case::MigrationOtherType {
                 from: before.name.clone(),
                 to: after.name.clone(),
             });
@@ -260,23 +261,23 @@ impl<'a> Plan<'a> {
         let mut renamed: BTreeSet<&FieldName> = BTreeSet::new();
         for (from, to) in &migration.renames {
             if !old.contains_key(from) {
-                return Err(ShapeError::RenameFromUnknown { from: from.clone() });
+                return Err(Case::RenameFromUnknown { from: from.clone() });
             }
             if !new.contains(to) {
-                return Err(ShapeError::RenameToUnknown { to: to.clone() });
+                return Err(Case::RenameToUnknown { to: to.clone() });
             }
             if !renamed.insert(from) {
-                return Err(ShapeError::RenameRepeated {
+                return Err(Case::RenameRepeated {
                     field: from.clone(),
                 });
             }
             if sources.insert(to, from).is_some() {
-                return Err(ShapeError::RenameRepeated { field: to.clone() });
+                return Err(Case::RenameRepeated { field: to.clone() });
             }
         }
         for to in sources.keys() {
             if old.contains_key(to) && !renamed.contains(to) {
-                return Err(ShapeError::RenameCollides { to: (*to).clone() });
+                return Err(Case::RenameCollides { to: (*to).clone() });
             }
         }
         let mut steps: Vec<Step<'a>> = after

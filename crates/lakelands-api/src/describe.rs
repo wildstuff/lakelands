@@ -250,7 +250,7 @@ pub struct TypeLineage {
 }
 
 /// A type's version and shape.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TypeLifecycle {
     /// The declaration's version: one more for every change to it.
     pub version: u32,
@@ -280,7 +280,7 @@ pub struct TypeLifecycle {
 
 /// Whether a view's records are kept as its sources are written, or
 /// computed at each read.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Kept {
     /// The view's records are kept and answer its reads.
@@ -293,18 +293,18 @@ pub enum Kept {
 }
 
 /// Why a view is computed at each read.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "because", rename_all = "snake_case")]
 pub enum NotKept {
     /// No `view_kept.<type>` setting holds.
     NotAsked,
     /// The view cannot be kept.
     CannotBeKept {
-        /// Which measure, which call and why: the sentence the setting's
+        /// Which measure, which call and why: the case the setting's
         /// refusal says. It names what the view reads, so it is given to
         /// a principal who is shown the view as declared, and to no other.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        reason: Option<String>,
+        reason: Option<Box<crate::error::Said>>,
     },
     /// Its records are not whole.
     NotWhole {
@@ -337,7 +337,7 @@ impl Kept {
         let why = match crate::expr::keepable(view, declared) {
             _ if !crate::seam::view_kept(setting) => NotKept::NotAsked,
             Err(reason) => NotKept::CannotBeKept {
-                reason: shown.then_some(reason),
+                reason: shown.then(|| Box::new(reason)),
             },
             Ok(()) => NotKept::NotKeptHere,
         };

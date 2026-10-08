@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use lakelands_api::error::Seam;
+use lakelands_api::error::{Case, Seam};
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::write::{ProposalFilter, ProposalState, ProposedWrite};
@@ -17,8 +17,9 @@ use serde_json::json;
 use crate::conformance::Failure;
 use crate::conformance::backing::EXECUTOR;
 use crate::conformance::fixture::{
-    Lake, Must, doors, events_from, field, field_writer, head_unmoved, log_events, outputs_from,
-    owner, patch, reactive, read, reason, refused_on, reviewer, try_upsert, type_decl, value,
+    Lake, Must, doors, events_from, field, field_writer, head_unmoved, invalid_case, log_events,
+    outputs_from, owner, patch, reactive, read, reason, refused_on, reviewer, try_upsert,
+    type_decl, value,
 };
 
 check!(
@@ -219,8 +220,9 @@ async fn a_low_verb_runs_and_a_higher_one_is_proposed(
     ensure!(
         matches!(
             refused_on(&payload),
-            Some(("status", Refusal::Invalid { message }))
-                if message.contains("`approve`") && !message.contains("has no field")
+            Some(("status", Refusal::Invalid(said)))
+                if matches!(&said.case, Case::PayloadUndeclared { verb, member }
+                    if verb == "approve" && member == "status")
         ) && matches!(record, Err(Error::NotFound { .. }))
             && retry.as_ref().ok() == Some(&first),
         "a payload member `approve` does not declare, on a key never written, answered \
@@ -345,7 +347,7 @@ async fn a_riskier_call_that_could_not_run_now_is_not_proposed(
                 (Err(Error::Conflict { expected, actual }), Some(_)) => {
                     *expected == Version(1) && *actual == Version(2)
                 }
-                (other, None) => matches!(reason(other), Some(Refusal::Precondition { .. })),
+                (other, None) => matches!(reason(other), Some(Refusal::Precondition(..))),
                 _ => false,
             };
             if !ok {
@@ -447,12 +449,11 @@ async fn accepting_a_call_after_its_verb_was_declared_differently_is_refused(
         let ok = if applies {
             got.is_ok() && state == Some(ProposalState::Accepted)
         } else {
-            let names = got
-                .as_ref()
-                .err()
-                .is_some_and(|e| e.to_string().contains(&format!("`{name}`")));
-            matches!(reason(&got), Some(Refusal::Invalid { .. }))
-                && names
+            // A verb turned to its type takes no key, whatever its declaration.
+            let names = matches!(invalid_case(&got),
+                Some(Case::VerbRedeclared { verb } | Case::VerbTypeTakesNoKey { verb, .. })
+                    if verb == name.as_str());
+            names
                 && state == Some(ProposalState::Pending)
                 && store.head().await.must("reading the head")? == head
         };
@@ -1151,22 +1152,26 @@ async fn a_call_sent_again_while_its_executor_runs_is_unanswered(
             )));
         };
         // An acceptance is named by its own position, before its call's.
-        let at = match *what {
-            "the call" => format!("at position {position},"),
-            _ => "at position ".to_owned(),
-        };
+        let by_call = *what == "the call";
         for (door, again) in tries {
-            let said = match again {
+            let named = match again {
                 Err(Error::Refused {
-                    reason: Refusal::Unanswered { message },
+                    reason: Refusal::Unanswered(said),
                     ..
-                }) => message,
-                _ => "",
+                }) => match &said.case {
+                    Case::Unanswered {
+                        position: at,
+                        accepted,
+                    } => *accepted != by_call && (!by_call || *at == *position),
+                    _ => false,
+                },
+                _ => false,
             };
             ensure!(
-                said.contains(&at),
+                named,
                 "sent again through `{door}` while the executor runs, {what} is refused as \
-                 `unanswered`, naming its {at}; it answered {again:?}"
+                 `unanswered`, naming its position (the call's: {position}); it answered \
+                 {again:?}"
             );
         }
         let again = match *what {

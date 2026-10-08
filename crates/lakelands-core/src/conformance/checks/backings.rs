@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use lakelands_api::error::Seam;
+use lakelands_api::error::{Case, Seam};
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::write::{Declaration, Recompute};
@@ -25,8 +25,8 @@ use serde_json::{Value, json};
 use crate::conformance::Failure;
 use crate::conformance::backing::{KIND, made, plug, unplug};
 use crate::conformance::fixture::{
-    Lake, Must, computed_by, derived, events_from, field, field_access, head_unmoved, reason,
-    recorded_outputs, trigger_on, type_decl, value,
+    Lake, Must, computed_by, derived, events_from, field, field_access, head_unmoved, invalid_case,
+    reason, recorded_outputs, trigger_on, type_decl, value,
 };
 
 check!(
@@ -129,7 +129,7 @@ async fn a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare(
     let first = cat.declare(own, Declaration::Function(misnamed)).await;
     ensure!(
         matches!(answer.as_ref().err().and_then(Error::seam), Some(Seam::FunctionBacking { kind }) if kind == "nowhere")
-            && matches!(reason(&first), Some(Refusal::Invalid { .. })),
+            && matches!(reason(&first), Some(Refusal::Invalid(..))),
         "no backing of the kind `nowhere` is bound, so declaring a function of that kind \
          must be refused as unbound, naming the kind, and one whose name is no name as \
          invalid first; it answered {answer:?} and {first:?}"
@@ -441,10 +441,8 @@ async fn computed_fields_that_read_each_other_in_a_cycle_are_refused(
             Declaration::Type(type_decl("place", vec![name, label])),
         )
         .await;
-    let named_both = match reason(&answer) {
-        Some(Refusal::Invalid { message }) => message.contains("name") && message.contains("label"),
-        _ => false,
-    };
+    let named_both = matches!(invalid_case(&answer), Some(Case::ComputedCycle { fields })
+        if ["name", "label"].iter().all(|f| fields.0.iter().any(|n| n == f)));
     ensure!(
         named_both,
         "`name` is computed by `lookup` from `label`, and `label` is derived from `name`: \

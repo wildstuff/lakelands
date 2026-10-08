@@ -47,7 +47,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
-use lakelands_api::error::{Error, Result, Situation};
+use lakelands_api::error::{Case, Error, Result, Situation};
 use lakelands_api::id::LakeId;
 use lakelands_api::location::{EngineConfig, Location};
 
@@ -111,11 +111,13 @@ impl EngineOpener for MemoryOpener {
     /// answer `Unavailable`, since there is nothing to open.
     fn open(&self, location: &Location, mode: OpenMode) -> Result<Box<dyn LakeEngine>> {
         if !matches!(location.engine, EngineConfig::Memory) {
-            return Err(invalid(format!(
-                "the {NAME} engine opens only memory locations, and lake `{}` is configured \
-                 for another engine",
-                location.lake
-            )));
+            let lake = Box::new(location.lake.clone());
+            let (engine, location) = (NAME.to_owned(), "memory".to_owned());
+            return Err(invalid(Case::EngineOtherLocation {
+                engine,
+                location,
+                lake,
+            }));
         }
         let mut lakes = lock(&self.lakes);
         let shared = match (lakes.get(&location.lake), mode) {

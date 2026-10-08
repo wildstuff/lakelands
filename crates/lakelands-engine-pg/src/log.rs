@@ -23,7 +23,7 @@ use std::io::Write as _;
 use std::path::Path;
 
 use lakelands_api::engine::{CanonicalEvent, Lease};
-use lakelands_api::error::{Act, Doing, Error, Part, Result, Situation};
+use lakelands_api::error::{Act, Case, Doing, Error, Part, Result, Situation};
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::Position;
 use sha2::{Digest as _, Sha256};
@@ -146,11 +146,7 @@ fn add(
             &[&(at.0 as i64)],
         )?;
         if row.get::<_, Option<i64>>(0) != Some(at.0 as i64) {
-            return Err(invalid(format!(
-                "the lake's log holds events up to position {at} that were not imported; \
-                 an import goes only into a lake that holds nothing else, and nothing was \
-                 appended"
-            )));
+            return Err(invalid(Case::ImportIntoHeld { tip: *at }));
         }
         floor = row.get::<_, Option<i64>>(1).unwrap_or(0) as u64;
     }
