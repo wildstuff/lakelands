@@ -312,11 +312,23 @@ fn ends_held(who: &Principal, decl: &TypeDecl) -> bool {
     !held_ends(who, decl).is_empty()
 }
 
-/// Whether every write that reaches `decl`'s records is refused to `who`:
-/// its grant admits only some records of the type, or of an end type of a
-/// link type. Its writes go through the host.
+/// Whether `who`'s grant admits only some records of `decl`, or of an end
+/// type of a link type: its writes reach those records alone, and none
+/// waits for review (051).
 pub fn only_holder(who: &Principal, decl: &TypeDecl) -> bool {
     !own_only(who, &decl.name).is_empty() || ends_held(who, decl)
+}
+
+/// Whether `who` can make a record of `decl` that its grant admits: it
+/// writes every field its `only` names at the authored door (051).
+pub fn creates(who: &Principal, decl: &TypeDecl) -> bool {
+    own_only(who, &decl.name).iter().all(|(f, _)| {
+        let field = decl.fields.iter().find(|d| &d.name == f);
+        field.is_some_and(|d| {
+            matches!(d.authority, Authority::Authored | Authority::Shared)
+                && field_access(who, decl, d).writes()
+        })
+    })
 }
 
 /// Whether `who`'s grant admits only some records of any type: such a

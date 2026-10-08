@@ -74,8 +74,6 @@ pub fn window(
     let mut duplicates = 0u32;
     for r in records {
         let decl = crate::writes::shown_type(&w.ontology, &r.ty, who)?;
-        // Before the duplicate test, which would tell what the log holds (051).
-        crate::writes::granted(!lakelands_core::rights::only_holder(who, decl))?;
         // The key's form before the door, as `upsert` checks it.
         crate::writes::check_key(&r.key)?;
         // Then the door: a patch that carries a field the source is not
@@ -83,47 +81,29 @@ pub fn window(
         // is the one already stored.
         lakelands_core::rights::check_write(who, decl, Door::Source, &r.fields)?;
         let patch = crate::writes::check_values(&w.ontology, decl, &r.fields, &decl.fields)?;
-        // A link of a relation whose links arrive by ingest holds the
-        // relation's cardinality, over the lake's live links and those
-        // earlier in this window.
-        if links::is_link_type(&r.ty) {
-            let types = w.ontology.types.values().map(|e| &e.decl);
-            // A link type no relation carries, its relation renamed or
-            // removed, stays declared for its history and takes no link.
-            let Some((t, relation)) = links::relation_of(types, &r.ty) else {
-                let ty = r.ty.clone();
-                return Err(lakelands_core::invalid(Case::UnclaimedLinkType { ty }));
-            };
-            {
-                // The ends from the patch, or from the key's components
-                // when the patch leaves them out: the key rule fills them.
-                let parts = lakelands_core::log::key_components(&r.key);
-                let end = |f: &str, at: usize| {
-                    patch
-                        .get(f)
-                        .and_then(|v| v.as_str())
-                        .map(str::to_owned)
-                        .or_else(|| parts.get(at).cloned())
-                        .map(lakelands_api::RecordKey::from)
-                };
-                if let (Some(from), Some(to)) = (end(links::FROM, 0), end(links::TO, 1)) {
-                    let view = view.as_ref();
-                    crate::writes::cardinality(view, who, &t.name, relation, &from, &to)?;
-                    crate::writes::cardinality_among(&window_links, &r.ty, relation, &from, &to)?;
-                    window_links.push((r.ty.clone(), from, to));
-                }
-            }
-        }
         let before = pending.record(view.as_ref(), &r.ty, &r.key)?;
+        // A record a holder of `only` is not admitted is, to it, a key that
+        // is free: it is not compared, and `plan_record` refuses the write
+        // as on a free key with another's owner (051).
+        let own = crate::writes::owned(view.as_ref(), &pending, who, decl, before.clone())?;
+        // A link type no relation carries, its relation renamed or
+        // removed, stays declared for its history and takes no link.
+        let types = w.ontology.types.values().map(|e| &e.decl);
+        let relation = (links::is_link_type(&r.ty)).then(|| links::relation_of(types, &r.ty));
+        if let Some(None) = relation {
+            let ty = r.ty.clone();
+            return Err(lakelands_core::invalid(Case::UnclaimedLinkType { ty }));
+        }
+        let other = own.is_none() && before.is_some();
         let version_before = before.as_ref().map_or(0, |b| b.version.0);
         let id = log::ingest_id(source, &r.ty, &r.key, version_before, &patch);
-        let unchanged = before.as_ref().filter(|b| !b.retired).is_some_and(|b| {
+        let unchanged = own.as_ref().filter(|b| !b.retired).is_some_and(|b| {
             patch.iter().all(|(f, v)| match b.fields.get(f) {
                 Some(stored) => stored == v,
                 None => v.is_null(),
             })
         });
-        if unchanged || seen.contains(&id) || view.applied(&id)?.is_some() {
+        if unchanged || !other && (seen.contains(&id) || view.applied(&id)?.is_some()) {
             duplicates += 1;
             continue;
         }
@@ -141,6 +121,24 @@ pub fn window(
             who,
             &|_| {},
         )?;
+        // A link holds its relation's cardinality, over the lake's live
+        // links and those earlier in this window: judged once
+        // `plan_record` admitted the record its writer leaves, as the
+        // mock judges it, so that it names nothing of another's record
+        // and passes over no link a holder's `only` admits (051).
+        if let Some(Some((t, relation))) = relation {
+            // The ends as the record holds them: the key rule fills
+            // those the patch leaves out.
+            let end = |f: &str| {
+                let end = plan.after.fields.get(f).and_then(|v| v.as_str());
+                end.map(lakelands_api::RecordKey::from)
+            };
+            if let (Some(from), Some(to)) = (end(links::FROM), end(links::TO)) {
+                crate::writes::cardinality(view.as_ref(), who, &t.name, relation, &from, &to)?;
+                crate::writes::cardinality_among(&window_links, &r.ty, relation, &from, &to)?;
+                window_links.push((r.ty.clone(), from, to));
+            }
+        }
         plan.draft.id = Some(id.clone());
         plan.draft.source = Some(source.clone());
         plan.draft.seen_at = r.seen_at;

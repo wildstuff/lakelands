@@ -394,9 +394,10 @@ A host that already has a store of its own moves in four steps.
   `docs/decisions/006-grants-not-roles.md`, extended.
 - **A grant may admit only some records.** `only` on a type, pairs of a
   text or reference field the principal may read and a text value,
-  admits the records that hold every pair at every read door, and
-  refuses that principal every write that reaches the type and every
-  change of shape: its writes go through the host. `only` is a function
+  admits the records that hold every pair at every read door. That
+  principal writes those records alone, another's being to its write a
+  key that is free; a proposal, a verb above low risk and every change
+  of shape still go through the host. `only` is a function
   of `Principal.id` within a lake: give each owner its own id, and never
   give one id `only` on some calls and not on others, since a retry is
   answered its first outcome before the grants are asked. A grant whose

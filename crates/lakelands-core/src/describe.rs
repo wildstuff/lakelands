@@ -21,7 +21,9 @@ use lakelands_api::describe::{
 };
 use lakelands_api::engine::Declared;
 use lakelands_api::expr::{Condition, Expr};
-use lakelands_api::ontology::{Authority, RelationDecl, TypeDecl, VerbDecl, VerbEffect, ViewDecl};
+use lakelands_api::ontology::{
+    Authority, RelationDecl, Risk, TypeDecl, VerbDecl, VerbEffect, ViewDecl,
+};
 use lakelands_api::write::{Declaration, FunctionDecl};
 use lakelands_api::{Access, FieldName, LakeId, Principal, TypeName};
 
@@ -529,16 +531,17 @@ fn type_description(
     // A link type's records are written through its relation's link
     // doors, never through `upsert` or `retire`.
     let is_link = crate::links::is_link_type(&t.name);
-    // A holder of `only` writes nothing that reaches the type (051).
+    // A holder of `only` writes its own records, and makes one only where
+    // it writes every field its `only` names (051).
     let held = only_holder(who, t);
     let may = TypeRights {
         find: true,
         get: true,
-        upsert: !held
+        upsert: crate::rights::creates(who, t)
             && !is_view
             && !is_link
             && fields.iter().any(FieldDescription::authored_writable),
-        retire: !held && !is_link && crate::rights::may_retire(who, t),
+        retire: !is_link && crate::rights::may_retire(who, t),
         link: t
             .relations
             .iter()
@@ -546,7 +549,6 @@ fn type_description(
                 crate::links::carried_by_links(r)
                     && r.authority == Authority::Authored
                     && relation_shown(t, r, find, who)
-                    && !only_holder(who, &crate::links::link_type(&t.name, r))
             })
             .filter(|r| {
                 let lt = crate::links::link_type(&t.name, r);
@@ -567,7 +569,9 @@ fn type_description(
         },
     };
     let verbs = each(declared, |d| match &d.declaration {
-        Declaration::Verb(v) if v.on == t.name && verb_callable(v, t, who) && !held => {
+        Declaration::Verb(v)
+            if v.on == t.name && verb_callable(v, t, who) && (!held || v.risk == Risk::Low) =>
+        {
             Some(v.name.clone())
         }
         _ => None,
@@ -657,7 +661,7 @@ fn verb_description(
     who: &Principal,
 ) -> Option<VerbDescription> {
     let t = find_type(declared, &v.on)?;
-    if !verb_callable(v, t, who) || only_holder(who, t) {
+    if !verb_callable(v, t, who) || (only_holder(who, t) && v.risk != Risk::Low) {
         return None;
     }
     Some(VerbDescription {

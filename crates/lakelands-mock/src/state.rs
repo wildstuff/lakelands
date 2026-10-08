@@ -475,15 +475,26 @@ impl State {
     /// type the grant holds `only` on is admitted by its pairs too. The
     /// mock computes no view, so a view's `only` never reaches a record.
     pub fn admitted(&self, who: &Principal, r: &StoredRecord) -> bool {
-        let Some(t) = self.types.get(&r.ty) else {
+        self.admits_fields(who, &r.ty, &r.fields)
+    }
+
+    /// [`Self::admitted`] for a record of `ty` holding `fields`, as a
+    /// write would leave it.
+    pub fn admits_fields(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        fields: &BTreeMap<FieldName, Value>,
+    ) -> bool {
+        let Some(t) = self.types.get(ty) else {
             return true;
         };
         let pairs = |d: &TypeDecl, fields: &BTreeMap<FieldName, Value>| {
             only_applies(who, d) && admits(who, &d.name, fields)
         };
-        pairs(&t.decl, &r.fields)
+        pairs(&t.decl, fields)
             && held_ends(who, &t.decl).into_iter().all(|(f, end)| {
-                let at = r.fields.get(f).and_then(Value::as_str);
+                let at = fields.get(f).and_then(Value::as_str);
                 let e = at.and_then(|k| self.records.get(&(end.clone(), RecordKey::from(k))));
                 e.zip(self.types.get(end))
                     .is_some_and(|(e, d)| pairs(&d.decl, &e.fields))
@@ -662,10 +673,22 @@ fn held_ends<'d>(who: &Principal, decl: &'d TypeDecl) -> Vec<(&'d FieldName, &'d
     ends.filter(|(_, t)| !own_only(who, t).is_empty()).collect()
 }
 
-/// Whether every write that reaches `decl`'s records is refused to `who`:
-/// its grant holds `only` on the type, or on an end type of a link type.
+/// Whether `who`'s grant holds `only` on `decl`, or on an end type of a
+/// link type: its writes reach those records alone, and none waits for
+/// review.
 pub(crate) fn only_holder(who: &Principal, decl: &TypeDecl) -> bool {
     !own_only(who, &decl.name).is_empty() || !held_ends(who, decl).is_empty()
+}
+
+/// As the store (051): whether `who` can make a record of `decl` that its
+/// grant admits, writing every field its `only` names at the authored door.
+pub(crate) fn creates(who: &Principal, decl: &TypeDecl) -> bool {
+    own_only(who, &decl.name).iter().all(|(f, _)| {
+        field(decl, f).is_some_and(|d| {
+            matches!(d.authority, Authority::Authored | Authority::Shared)
+                && access(who, decl, d).writes()
+        })
+    })
 }
 
 /// Whether `who`'s grant holds `only` on any type: such a principal
