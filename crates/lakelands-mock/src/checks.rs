@@ -245,7 +245,9 @@ macro_rules! door_checks {
             a_valid_time_names_a_date_time_field,
             #[own_principals]
             a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_know_of,
-            a_date_is_kept_as_its_day);
+            a_date_is_kept_as_its_day,
+            #[own_principals]
+            describe_names_no_verb_or_function_its_reader_is_not_shown);
     };
     (@each $at:ident, $new:expr, $block_on:path;
         $($(#[$mark:ident])? $name:ident),* $(,)?) => {
@@ -13118,4 +13120,90 @@ pub async fn a_relation_carried_by_a_hidden_field_answers_nothing_of_it(store: A
         "`r` answers nothing of `tgt`: {}",
         wrong.join("; ")
     );
+}
+
+/// A verb on a type its reader is not shown is not described, nor made a
+/// tool, and is called and proposed as one not declared; a condition its
+/// reviewer is listed names no function `describe` hides from it, nor is
+/// one described that computes a field of a type not shown
+/// (`docs/decisions/006-grants-not-roles.md`, extended, lakelands#770).
+pub async fn describe_names_no_verb_or_function_its_reader_is_not_shown(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    let text = |name: &str| json!({"name": name, "type": {"kind": "text"}});
+    let computed = |name: &str, from: &str| {
+        json!({"name": name, "type": {"kind": "boolean"},
+        "authority": "derived", "function": name, "depends_on": [from]})
+    };
+    for d in [
+        json!({"declare": "function", "name": "shut", "backing": "expr",
+            "inputs": [text("cat")], "expr": "cat = 'open'"}),
+        json!({"declare": "type", "name": "vault", "key": ["code"],
+            "fields": [text("code"), text("cat"), computed("shut", "cat")]}),
+        json!({"declare": "verb", "name": "seal", "on": "vault", "risk": "low", "effect": "write",
+            "set": [{"field": "cat", "value": "'b'"}]}),
+        json!({"declare": "value_type", "name": "status", "kind": "text", "one_of": ["open", "done"]}),
+        json!({"declare": "function", "name": "opens", "backing": "expr",
+            "inputs": [text("note")], "expr": "note = 'open'"}),
+        json!({"declare": "type", "name": "task", "fields": [text("note"),
+            {"name": "state", "type": {"kind": "text", "value_type": "status"}},
+            computed("opens", "note")]}),
+    ] {
+        let d = serde_json::from_value(d).expect("a declaration reads");
+        c.declare(own, d).await.expect("the owner declares");
+    }
+    let p = serde_json::from_value(json!({"code": "v1"})).expect("a patch reads");
+    (c.upsert(own, &ty("vault"), &key("v1"), p, WriteOpts::default())
+        .await)
+        .expect("v1");
+    let to = json!({"name": "status", "kind": "text", "one_of": ["active", "done"]});
+    let write = ProposedWrite::MigrateValueType {
+        to: Box::new(serde_json::from_value(to).expect("a value type reads")),
+        renames: vec![("open".into(), "active".into())],
+        report: Default::default(),
+    };
+    (c.propose(own, write, "a rename".into()).await).expect("the owner proposes");
+    // `code` held at `none` keeps `vault` and `shut`, which only `vault`
+    // uses; `note` held at `none` keeps `opens`.
+    let grants = json!({"default": "write", "review": true, "types": {
+        "vault": {"fields": {"code": "none"}}, "task": {"fields": {"note": "none"}}}});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let who = &principal(store.lake(), PrincipalKind::Agent, "kept", grants);
+    let mut wrong = Vec::new();
+    let d = (c.describe(who, ReadAt::default()).await)
+        .expect("describe")
+        .data;
+    let tools = format!("{:?}", lakelands_api::tools::tools(&d));
+    if !d.verbs.is_empty() || !d.functions.is_empty() || tools.contains("vault") {
+        let verbs: Vec<_> = d.verbs.iter().map(|v| &v.name).collect();
+        let functions: Vec<_> = d.functions.iter().map(|f| &f.name).collect();
+        wrong.push(format!("`kept` is described {verbs:?} and {functions:?}"));
+    }
+    let mut answers = Vec::new();
+    for verb in ["seal", "ghost"] {
+        let (name, k, opts) = (verb.into(), Some(key("v1")), WriteOpts::default);
+        let call = c
+            .call(who, &name, k.as_ref(), Patch::default(), opts())
+            .await;
+        let (key, payload) = (k, Patch::default());
+        let write = ProposedWrite::Call {
+            verb: name,
+            key,
+            payload,
+            opts: opts(),
+        };
+        let proposed = c.propose(who, write, "why".into()).await;
+        answers.push(format!("{call:?} {proposed:?}").replace(verb, "V"));
+    }
+    if answers[0] != answers[1] {
+        wrong.push(format!("`seal` and an undeclared verb answer {answers:?}"));
+    }
+    let listed = (c.proposals(who, ProposalFilter::default()).await)
+        .expect("listed")
+        .data;
+    let conditions = format!("{:?}", listed.iter().map(|p| &p.write).collect::<Vec<_>>());
+    if conditions.contains("`opens`") || conditions.contains("`shut`") {
+        wrong.push(format!("listed {conditions}"));
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("; "));
 }

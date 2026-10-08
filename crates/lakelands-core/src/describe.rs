@@ -179,7 +179,8 @@ pub fn shown(d: &Declaration, declared: &[Declared], who: &Principal) -> bool {
         Declaration::Verb(v) => seen.verbs.iter().any(|s| s.name == v.name),
         Declaration::Trigger(t) => seen.triggers.iter().any(|s| s.name == t.name),
         Declaration::ObjectSet(o) => seen.object_sets.iter().any(|s| s.name == o.name),
-        _ => true,
+        Declaration::Function(f) => seen.functions.iter().any(|s| s.name == f.name),
+        Declaration::ValueType(_) => true,
     }
 }
 
@@ -389,9 +390,9 @@ pub(crate) fn parsed(c: &Condition) -> Option<Expr> {
 }
 
 /// Whether a function may be shown to `who`: it computes at least one
-/// field, and on every type where it does, `who` reads that field and
-/// every input, which the function reads from the fields of the same
-/// names.
+/// field, and every type where it does is shown to `who`, which reads
+/// that field and every input, which the function reads from the fields
+/// of the same names.
 fn function_visible(f: &FunctionDecl, declared: &[Declared], who: &Principal) -> bool {
     if who.grants.schema {
         return true;
@@ -411,12 +412,13 @@ fn function_visible(f: &FunctionDecl, declared: &[Declared], who: &Principal) ->
         .peekable();
     uses.peek().is_some()
         && uses.all(|(t, x)| {
-            reads_all(
-                std::iter::once(&x.name).chain(f.inputs.iter().map(|i| &i.name)),
-                &t.name,
-                declared,
-                who,
-            )
+            type_shown(t, &|n| find_type(declared, n), who)
+                && reads_all(
+                    std::iter::once(&x.name).chain(f.inputs.iter().map(|i| &i.name)),
+                    &t.name,
+                    declared,
+                    who,
+                )
         })
 }
 
@@ -664,9 +666,11 @@ fn verb_description(
 ) -> Option<VerbDescription> {
     let t = find_type(declared, &v.on)?;
     // A verb that waits for review is proposed, and a holder of `only`
-    // proposes none that could move its pairs (051).
+    // proposes none that could move its pairs (051). One on a type not
+    // shown would name it.
     let held = only_holder(who, t) && !pinnable(who, t, Some(v));
-    if !verb_callable(v, t, who) || (held && v.risk != Risk::Low) {
+    let shown = type_shown(t, &|n| find_type(declared, n), who);
+    if !shown || !verb_callable(v, t, who) || (held && v.risk != Risk::Low) {
         return None;
     }
     Some(VerbDescription {
