@@ -346,10 +346,15 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// The records of `ty` with these keys, at this read. A view's come
-    /// from its computation, any other type's from the engine, which keeps
-    /// no view records and would answer none for one.
+    /// The records of `ty` with these keys, at this read. A computed
+    /// view's come from its computation, any other type's and a kept
+    /// view's from the engine.
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
+        // A kept view's records are read by key, never computed whole.
+        let decl = self.shape.ontology.ty(ty).ok();
+        if let Some(kept) = decl.map(|d| self.kept(d)).transpose()?.flatten() {
+            return self.kept_by_key(ty, kept, keys);
+        }
         let Some(all) = self.computed(ty)? else {
             return Ok(self.at_read(ty, self.view.get_many(ty, keys)?));
         };
@@ -879,8 +884,9 @@ impl<'a> Reader<'a> {
     }
 
     /// The records [`Self::records`] would answer, handed to `each` one at
-    /// a time in key order until it fails: a stored type's are read `page`
-    /// at a time and never held together, a view's are computed first.
+    /// a time in key order until it fails: a stored type's and a kept
+    /// view's are read `page` at a time and never held together, a
+    /// computed view's are computed first.
     fn each_member(
         &self,
         decl: &TypeDecl,
@@ -888,13 +894,28 @@ impl<'a> Reader<'a> {
         page: usize,
         mut each: impl FnMut(&StoredRecord) -> Result<()>,
     ) -> Result<()> {
+        if let Some(kept) = self.kept(decl)? {
+            return self.each_kept(&decl.name, kept, filter, page, each);
+        }
         if decl.view.is_some() {
             return self.records(decl, filter)?.iter().try_for_each(each);
         }
+        self.each_stored(decl, filter, page, &mut each)
+    }
+
+    /// [`Self::each_member`] for a stored type or a kept name: its records
+    /// read `page` at a time from the engine.
+    fn each_stored(
+        &self,
+        decl: &TypeDecl,
+        filter: Option<&Expr>,
+        page: usize,
+        each: &mut dyn FnMut(&StoredRecord) -> Result<()>,
+    ) -> Result<()> {
         let mut after = None;
         loop {
             let rows = self.page(decl, filter, &[], after, page)?;
-            rows.iter().try_for_each(&mut each)?;
+            rows.iter().try_for_each(&mut *each)?;
             if rows.len() < page {
                 return Ok(());
             }
@@ -1008,10 +1029,14 @@ impl<'a> Reader<'a> {
             )));
         }
         self.computing.borrow_mut().push(decl.name.clone());
-        let records = match self.kept_view(decl, v) {
-            Ok(Some(mut kept)) => {
-                kept.retain(|r| filter.is_none_or(|e| self.holds(e, &r.fields, None)));
-                Ok(kept)
+        let records = match self.kept_as(decl, v) {
+            Ok(Some(kept)) => {
+                let mut all = Vec::new();
+                let each = |r: &StoredRecord| {
+                    all.push(r.clone());
+                    Ok(())
+                };
+                (self.each_kept(&decl.name, kept, filter, COUNT_PAGE, each)).map(|()| all)
             }
             Ok(None) => self.computed_view(decl, v, filter),
             Err(e) => Err(e),
@@ -1030,34 +1055,67 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// A kept view's records at this read, as the fold keeps them, or
-    /// `None` where the read computes: the fold kept none at this position,
-    /// they are not whole there, a group of the reader's face is not exact,
-    /// or the read names a valid time, which filters the source's records
-    /// and which a kept fold has no axis for. What depends on the reader
-    /// is decided here, as the computation decides it: the probes of every
-    /// source, in its order, and the face. The record's fields are masked
-    /// by the door, as a computed record's are.
-    fn kept_view(
+    /// The records of the kept view `view` that `filter` holds for, as
+    /// this reader reads them, handed to `each` in key order until it
+    /// fails: the kept records read `page` at a time, each shown with the
+    /// reader's face, which a record carries whole, and held there to
+    /// `filter` and the reader's pairs. It never holds the kept type, whose
+    /// records carry the fold's state (lakelands#731). `kept` is what
+    /// [`Self::kept_as`] answers. The record's fields are masked by the
+    /// door, as a computed record's are.
+    fn each_kept(
         &self,
-        decl: &TypeDecl,
-        v: &lakelands_api::ontology::ViewDecl,
-    ) -> Result<Option<Vec<StoredRecord>>> {
-        let Some((stored, whole)) = self.kept_as(decl, v)? else {
-            return Ok(None);
-        };
-        let kept = self.records(&stored, None)?.into_iter();
-        Ok(Some(
-            kept.filter_map(|r| kept::shown(r, &decl.name, whole))
-                .collect(),
-        ))
+        view: &TypeName,
+        (stored, whole): (TypeDecl, bool),
+        filter: Option<&Expr>,
+        page: usize,
+        mut each: impl FnMut(&StoredRecord) -> Result<()>,
+    ) -> Result<()> {
+        let pairs = self.pairs(&stored.name).unwrap_or_default();
+        self.each_stored(
+            &stored,
+            None,
+            page,
+            &mut |r| match kept::shown(r.clone(), view, whole) {
+                Some(r)
+                    if filter.is_none_or(|e| self.holds(e, &r.fields, None))
+                        && rights::admitted(&pairs, &r.fields) =>
+                {
+                    each(&r)
+                }
+                _ => Ok(()),
+            },
+        )
+    }
+
+    /// The records of the kept view `view` with these keys, as this reader
+    /// reads them, `kept` as [`Self::kept_as`] answers it: each read by its
+    /// key from the engine, as `get` reads one.
+    fn kept_by_key(
+        &self,
+        view: &TypeName,
+        (stored, whole): (TypeDecl, bool),
+        keys: &[RecordKey],
+    ) -> Result<Vec<StoredRecord>> {
+        let held = self.view.get_many(&stored.name, keys)?;
+        let pairs = self.pairs(&stored.name).unwrap_or_default();
+        let live = held.into_iter().filter(|r| self.live(&stored, r));
+        let shown = live.filter_map(|r| kept::shown(r, view, whole));
+        Ok(shown
+            .filter(|r| rights::admitted(&pairs, &r.fields))
+            .collect())
     }
 
     /// The stored type a kept view's records are read as at this read, the
     /// computation's probes made, and whether the reader takes each
     /// record's whole face: the reader with the `restricted` grant, while
     /// a group's whole face reads otherwise than its open one. `None` where
-    /// the read computes ([`Self::kept_view`]).
+    /// the read computes: the fold kept none at this position, they are not
+    /// whole there, a group of the reader's face is not exact, or the read
+    /// names a valid time, which filters the source's records and which a
+    /// kept fold has no axis for. What depends on the reader is decided
+    /// here, as the computation decides it: the probes of every source, in
+    /// its order, and the face.
     fn kept_as(
         &self,
         decl: &TypeDecl,
@@ -1800,12 +1858,9 @@ impl<'a> Reader<'a> {
                 key: get.key.clone(),
             },
         };
-        let stored = if let Some((stored, whole)) = self.kept(&decl)? {
-            let held = self.view.get(&stored.name, &get.key)?;
-            let held = held.filter(|r| self.live(&stored, r));
-            let pairs = self.pairs(&stored.name).unwrap_or_default();
-            let shown = held.and_then(|r| kept::shown(r, ty, whole));
-            shown.filter(|r| rights::admitted(&pairs, &r.fields))
+        let stored = if let Some(kept) = self.kept(&decl)? {
+            self.kept_by_key(ty, kept, std::slice::from_ref(&get.key))?
+                .pop()
         } else if decl.view.is_some() {
             self.records(&decl, None)?
                 .into_iter()

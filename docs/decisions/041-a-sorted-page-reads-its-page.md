@@ -362,5 +362,5 @@ hands the head's states, as the disk engines do, for stored types and
 kept names alike.
 
 **Not in it.** An aggregate other than a count and a pattern started over
-a view read every group, a kept view's too (lakelands#731), and a view
-that computes is computed whole.
+a kept view read every group, a page of kept records at a time
+(lakelands#731), and a view that computes is computed whole.

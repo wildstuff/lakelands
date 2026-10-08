@@ -189,8 +189,12 @@ that already walks the type.
   faces differ, the reader with the grant is answered the engine's page
   of the others merged with those groups (below).
 - **Not sub-linear in every read.** A page in another order than the
-  key's, an aggregate and a pattern's start read the whole view for
-  every reader (lakelands#668). A later page of a cursor walk, read as
+  key's reads the whole view for every reader, unless `sort_index.<view>`
+  asks for an order index on its field (lakelands#668, 041). An
+  aggregate other than a count and a pattern's start read every group,
+  a page of the kept records at a time, and the records a pattern
+  reaches are read by their keys: their time goes with the view, their
+  memory with a page (lakelands#731). A later page of a cursor walk, read as
   of its first page's position, finds the differing groups by scanning
   the kept type in key order: its memory is bounded by them, its time
   goes with the view; the text index that finds them serves the head.
