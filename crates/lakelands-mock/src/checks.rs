@@ -209,6 +209,8 @@ macro_rules! door_checks {
             #[host_ops] a_typed_purge_has_an_id_of_its_own_and_refuses_a_type_it_cannot_take_from,
             a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight,
             a_sort_index_setting_names_declared_scalar_fields_and_describe_shows_them,
+            #[own_principals]
+            a_view_names_no_index_to_a_holder_of_only,
             a_vector_index_setting_names_vector_fields_and_search_says_it_ranked_by_the_index,
             a_view_kept_setting_names_a_view_that_can_be_kept_and_describe_says_whether_it_is,
             a_setting_is_judged_by_what_its_writer_is_shown,
@@ -8771,18 +8773,80 @@ pub async fn a_sort_index_setting_names_declared_scalar_fields_and_describe_show
     set("sort_index.totals", json!(["total", "status"]))
         .await
         .expect("a setting naming a view's declared scalar fields applies");
-    let described = f
-        .catalog
-        .describe_type(owner, &ty("totals"), ReadAt::default())
-        .await;
+    // The index is named where the view is kept, or asked to be and can be,
+    // as `kept` tells its reader: not asked, it has no records to index
+    // (lakelands#748).
+    let lifecycle = || {
+        let catalog = f.catalog.clone();
+        async move {
+            let d = catalog
+                .describe_type(owner, &ty("totals"), ReadAt::default())
+                .await;
+            d.expect("the view is described").data.lifecycle
+        }
+    };
+    let l = lifecycle().await;
+    let not_asked = Kept::Computed {
+        why: NotKept::NotAsked,
+    };
+    assert!(
+        l.sorted.is_empty() && l.kept == Some(not_asked),
+        "a view not asked to be kept names no index: {l:?}"
+    );
+    set("view_kept.totals", json!(true))
+        .await
+        .expect("the view is asked to be kept");
     assert_eq!(
-        described
-            .expect("the view is described")
-            .data
-            .lifecycle
-            .sorted,
+        lifecycle().await.sorted,
         vec![FieldName::from("total"), FieldName::from("status")],
-        "`describe_type` names a view's indexed fields"
+        "`describe_type` names a kept view's indexed fields"
+    );
+}
+
+/// To a holder of `only` on a view's source the view is its own records,
+/// and whether it is kept is not told (051), so `describe_type` names no
+/// order index of it, though the lake keeps one (lakelands#748).
+pub async fn a_view_names_no_index_to_a_holder_of_only(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let totals = by_status("totals", &[("total", StorageKind::Decimal, "sum(amount)")]);
+    f.catalog
+        .declare(owner, totals)
+        .await
+        .expect("the owner declares `totals`");
+    for (k, value) in [
+        ("sort_index.totals", json!(["total", "status"])),
+        ("view_kept.totals", json!(true)),
+    ] {
+        let patch = patch(&[("key", json!(k)), ("value", value)]);
+        let (setting, k) = (ty("sys.setting"), key(k));
+        let wrote = f
+            .catalog
+            .upsert(owner, &setting, &k, patch, WriteOpts::default());
+        wrote.await.expect("the owner writes the setting");
+    }
+    let grants = json!({"default": "read", "types": {"invoice": {"only": {"status": "open"}}}});
+    let holder = Principal {
+        id: "holder".into(),
+        grants: serde_json::from_value(grants).expect("grants"),
+        ..owner.clone()
+    };
+    let mut told = Vec::new();
+    for who in [owner, &holder] {
+        let totals = ty("totals");
+        let d = f
+            .catalog
+            .describe_type(who, &totals, ReadAt::default())
+            .await;
+        let l = d.expect("the view is described").data.lifecycle;
+        told.push((l.sorted, l.kept));
+    }
+    let only_some = Kept::Computed {
+        why: NotKept::OnlySome,
+    };
+    assert!(
+        !told[0].0.is_empty() && told[1] == (Vec::new(), Some(only_some)),
+        "the owner is told the view's index and the holder of `only` none: {told:?}"
     );
 }
 

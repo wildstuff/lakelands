@@ -785,22 +785,20 @@ impl<'a> Reader<'a> {
             let (setting, shown) = (settings.get(&key), t.view.is_some());
             let declared = |ty: &TypeName| self.shape.ontology.ty(ty).ok();
             t.lifecycle.kept = Some(Kept::by_declaration(view, setting, shown, declared));
+            // What the declarations leave open, the view's state at this
+            // read answers: the store keeps views.
+            let open = Kept::Computed {
+                why: NotKept::NotKeptHere,
+            };
             // To a holder of `only` a view is its own records, never every
             // owner's groups: whether those are exact is not told (051).
             if !self.whole(decl) || self.computes(&t.name) {
                 t.lifecycle.kept = Some(Kept::Computed {
                     why: NotKept::OnlySome,
                 });
-                return;
-            }
-            // What the declarations leave open, the view's state at this
-            // read answers: the store keeps views.
-            let open = Kept::Computed {
-                why: NotKept::NotKeptHere,
-            };
             // Told to one the view's read would answer, of that reader's
             // face: a number of groups says something of their records.
-            if t.lifecycle.kept.as_ref() == Some(&open) && self.probe_view(view).is_ok() {
+            } else if t.lifecycle.kept.as_ref() == Some(&open) && self.probe_view(view).is_ok() {
                 let face = usize::from(self.who.grants.restricted);
                 t.lifecycle.kept = Some(match self.kept_read(&t.name, view, face) {
                     Ok(Some((_, 0))) => Kept::Kept,
@@ -809,6 +807,15 @@ impl<'a> Reader<'a> {
                     },
                     _ => open,
                 });
+            }
+            // An index is named where the view is kept, or asked to be and
+            // can be, as `kept` tells this reader (lakelands#748).
+            if t.lifecycle
+                .kept
+                .as_ref()
+                .is_some_and(|k| !k.names_its_index())
+            {
+                t.lifecycle.sorted.clear();
             }
         }
     }
