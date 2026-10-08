@@ -151,13 +151,21 @@ impl Session {
         match method {
             "initialize" => vec![result(id, self.initialize(params))],
             "ping" => vec![result(id, json!({}))],
-            "tools/list" => match self.tools().await {
-                Ok(t) => vec![result(
-                    id,
-                    json!({"tools": t.iter().map(listing).collect::<Vec<_>>()}),
-                )],
-                Err(e) => vec![error(id, code::INTERNAL, e)],
-            },
+            "tools/list" => {
+                // Counted before the tools are read: a change queued
+                // meanwhile stays owed to the next stream.
+                let made = self.watch.tools_made();
+                match self.tools().await {
+                    Ok(t) => {
+                        self.watch.listed(made);
+                        vec![result(
+                            id,
+                            json!({"tools": t.iter().map(listing).collect::<Vec<_>>()}),
+                        )]
+                    }
+                    Err(e) => vec![error(id, code::INTERNAL, e)],
+                }
+            }
             "tools/call" => self.call(id, params).await,
             other => vec![error(
                 id,
