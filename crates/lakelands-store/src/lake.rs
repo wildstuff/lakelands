@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use lakelands_api::engine::{CanonicalEvent, LakeEngine, Lease, OpenMode, ProjectionView};
+use lakelands_api::error::{Detail, Flaw, Part, Seam, Situation};
 use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_BASE, SegmentDigest};
 use lakelands_api::location::{EngineConfig, Limits, Location};
 use lakelands_api::ontology::{StorageKind, TypeDecl};
@@ -40,7 +41,7 @@ use lakelands_api::{
     Error, FieldName, LakeId, Position, Principal, ProposalId, RecordKey, Refusal, Result,
     Timestamp, TypeName, Value, ValueTypeName, WriteContext,
 };
-use lakelands_core::{shape, unavailable};
+use lakelands_core::{damaged, shape};
 
 use crate::backed::{Due, Of, Outputs, Owed, Recorded};
 use crate::kept;
@@ -147,7 +148,10 @@ pub(crate) const OWN_SEAM: &str = "sys:";
 fn renames_in(recorded: Option<Value>) -> Result<Vec<Renamed>> {
     let list = recorded.map(serde_json::from_value).transpose();
     Ok(list
-        .map_err(|e| unavailable(e.to_string()))?
+        .map_err(|e| {
+            let (what, detail) = ("the lake's renames".to_owned(), Detail::json(&e));
+            damaged(Part::Projection, None, Flaw::Unreadable { what, detail })
+        })?
         .unwrap_or_default())
 }
 
@@ -208,8 +212,10 @@ pub(crate) fn opener(
         .iter()
         .find(|e| e.name() == name)
         .cloned()
-        .ok_or_else(|| Error::Unbound {
-            seam: format!("the engine `{name}` (no opener for it was passed in)"),
+        .ok_or_else(|| {
+            Error::unbound(Seam::Engine {
+                name: name.to_owned(),
+            })
         })
 }
 
@@ -336,10 +342,9 @@ impl Lake {
             types.retain(|t| !w.ontology.types.contains_key(&t.name));
             for t in types {
                 let hash = shape::schema_hash(&t).map_err(|e| {
-                    unavailable(format!(
-                        "the system type `{}` has no schema hash: {e}",
-                        t.name
-                    ))
+                    let _ = e;
+                    let flaw = Flaw::NoSchemaHash { ty: t.name.clone() };
+                    damaged(Part::Projection, None, flaw)
                 })?;
                 drafts.push(Draft::system(
                     now,
@@ -459,14 +464,11 @@ impl Lake {
             return Ok(());
         }
         if w.lease.is_none() {
-            return Err(unavailable(NO_LEASE));
+            return Err(no_lease());
         }
         self.refold(w).map_err(|e| {
-            unavailable(format!(
-                "the lake's projection is behind its log and could not catch up; nothing was \
-                 appended ({})",
-                crate::backed::why(&e)
-            ))
+            let cause = Some(Box::new(e));
+            Error::unavailable(Situation::Behind { cause })
         })
     }
 
@@ -717,15 +719,12 @@ impl Lake {
         drafts: Vec<Draft>,
     ) -> Result<(Lease, u32, Vec<Event>, Vec<CanonicalEvent>)> {
         let Some(lease) = w.lease.clone() else {
-            return Err(unavailable(NO_LEASE));
+            return Err(no_lease());
         };
         // Nothing is appended while the projection is behind the log, and
         // nothing is folded this late: the drafts were decided already.
         if w.behind {
-            return Err(unavailable(
-                "this write was decided while the lake's projection was behind its log; \
-                 nothing was appended",
-            ));
+            return Err(Error::unavailable(Situation::DecidedBehind));
         }
         // A host's cause names an event the log holds: at or below the
         // head (021). What it names is the host's business.
@@ -792,12 +791,8 @@ impl Lake {
         // told as that, so that it is not read as a write that did not land.
         self.fold_all(w, &events, reads, false).map_err(|e| {
             let at = events.first().map_or(0, |e| e.position.0);
-            unavailable(format!(
-                "what was appended is in the log from position {at} and is not folded yet; the \
-                 next write folds it, and a write is sent again only under its idempotency key \
-                 ({})",
-                crate::backed::why(&e)
-            ))
+            let (from, cause) = (Position(at), Box::new(e));
+            Error::unavailable(Situation::NotFolded { from, cause })
         })?;
         // A shape holds over what is committed now unless an event ends a
         // range; it is carried only from where it stands, so a fold that
@@ -881,11 +876,7 @@ impl Lake {
             // Only a damaged log ends inside a set: an append holds its set
             // whole, and a page of the log never ends inside one.
             if open_set(events) {
-                return Err(unavailable(format!(
-                    "the log ends inside a set of declarations, at position {}: the set's \
-                     last declaration is missing",
-                    last.position
-                )));
+                return Err(damaged(Part::Log, Some(last.position), Flaw::EndsInsideSet));
             }
             // A `begin` that is refused leaves the writer behind like any
             // other failure of the fold: the events are in the log.
@@ -1024,11 +1015,12 @@ impl Lake {
         let listed = (step.moves.iter()).flat_map(|(ty, m)| m.keys().map(move |from| (ty, from)));
         for (ty, from) in listed {
             if !applied.contains(&(ty.clone(), from.clone())) {
-                return Err(unavailable(format!(
-                    "the migration at position {} moves `{ty}` `{from}`, which the lake does \
-                     not hold",
-                    step.at
-                )));
+                let (ty, key) = (ty.clone(), from.clone());
+                return Err(damaged(
+                    Part::Log,
+                    Some(step.at),
+                    Flaw::MovesUnheld { ty, key },
+                ));
             }
         }
         // Object-set membership moves with the record: the new key is in
@@ -1281,11 +1273,8 @@ impl Lake {
         // store's own, and a view's records are computed: no door declares,
         // writes or records under the one, nor writes the other, so only a
         // log another build wrote names them, and such a log is not folded.
-        if let Some(why) = foreign(&w.ontology, &e.body) {
-            return Err(unavailable(format!(
-                "the event at position {} {why}, and the log is not folded past it",
-                e.position
-            )));
+        if let Some(flaw) = foreign(&w.ontology, &e.body) {
+            return Err(damaged(Part::Log, Some(e.position), flaw));
         }
         projection.mark_applied(&e.id, e.position)?;
         match &e.body {
@@ -1425,11 +1414,9 @@ impl Lake {
                 // Only an imported or damaged log names other types than
                 // those that use the value type: the writer named them.
                 if using_types(&w.ontology, &declaration.name) != *types {
-                    return Err(unavailable(format!(
-                        "the event at position {} renames values of `{}` in other types than \
-                         those that use it, and the log is not folded past it",
-                        e.position, declaration.name
-                    )));
+                    let value_type = declaration.name.to_string();
+                    let flaw = Flaw::RenamesOtherTypes { value_type };
+                    return Err(damaged(Part::Log, Some(e.position), flaw));
                 }
                 let decl = Declaration::ValueType(declaration.clone());
                 w.ontology.put(decl.clone(), *version, None);
@@ -1634,7 +1621,7 @@ impl Lake {
     pub fn rebuild(&self) -> Result<Position> {
         let mut w = self.writer();
         if w.lease.is_none() {
-            return Err(unavailable(NO_LEASE));
+            return Err(no_lease());
         }
         // No shape is kept from here until the fold is whole again.
         self.rebuilds.fetch_add(1, Ordering::SeqCst);
@@ -1687,22 +1674,21 @@ impl Lake {
                 log::check_link(before.as_ref().map(|(p, h)| (p, h)), &e)?;
                 // Versions go only upward (`docs/log-format.md` §6).
                 if e.v < last_v {
-                    return Err(unavailable(format!(
-                        "the log is damaged at position {}: it is written in format {} after \
-                         an event in format {last_v}",
-                        e.position, e.v
-                    )));
+                    let (v, before) = (e.v.into(), last_v.into());
+                    return Err(damaged(
+                        Part::Log,
+                        Some(e.position),
+                        Flaw::FormatBack { v, before },
+                    ));
                 }
                 last_v = e.v;
                 // `known_at` never goes back (`docs/log-format.md` §1.3).
                 if let Some(k) = known
                     && e.known_at < k
                 {
-                    return Err(unavailable(format!(
-                        "the log is damaged at position {}: its known_at {} is before the \
-                             {k} of the event before it",
-                        e.position, e.known_at
-                    )));
+                    let (known_at, before) = (e.known_at, k);
+                    let flaw = Flaw::KnownAtBack { known_at, before };
+                    return Err(damaged(Part::Log, Some(e.position), flaw));
                 }
                 known = Some(e.known_at);
                 if let EventBody::Checkpoint {
@@ -1714,11 +1700,7 @@ impl Lake {
                     check_checkpoint(&e, *through, hash, listed)?;
                     check_segments(listed, &segments, e.position)?;
                 } else if begins.contains(&e.position) {
-                    return Err(unavailable(format!(
-                        "the log is damaged at position {}: a segment begins there, and its \
-                         first event is no checkpoint (`docs/log-format.md` §4.2)",
-                        e.position
-                    )));
+                    return Err(damaged(Part::Log, Some(e.position), Flaw::NoCheckpoint));
                 }
                 before = Some((e.position, e.hash.clone()));
                 last = Some(e);
@@ -1739,15 +1721,18 @@ impl Lake {
     /// along the log (`docs/log-format.md` §1.3).
     pub fn position_at(&self, t: Timestamp) -> Result<Option<Position>> {
         let head = self.head();
-        let known_at =
-            |p: u64| -> Result<Timestamp> {
-                self.read_events(Position(p), 1)?
+        let known_at = |p: u64| -> Result<Timestamp> {
+            self.read_events(Position(p), 1)?
                 .first()
                 .map(|e| e.known_at)
-                .ok_or_else(|| unavailable(format!(
-                        "the log ends before position {p}, which is at or before the head {head}"
-                    )))
-            };
+                .ok_or_else(|| {
+                    let _ = head;
+                    let flaw = Flaw::EndsBefore {
+                        position: Position(p),
+                    };
+                    damaged(Part::Log, None, flaw)
+                })
+        };
         if known_at(0)? > t {
             return Ok(None);
         }
@@ -1824,10 +1809,7 @@ impl Lake {
     pub fn checkpoint(&self) -> Result<Position> {
         // A segment is sealed only over events the projection has folded.
         let mut w = self.for_write()?;
-        let lease = w
-            .lease
-            .clone()
-            .ok_or_else(|| unavailable("this lake is open read-only here"))?;
+        let lease = w.lease.clone().ok_or_else(read_only)?;
         let Some((through, hash)) = w.tip.clone() else {
             return Ok(Position::GENESIS);
         };
@@ -1862,7 +1844,7 @@ impl Lake {
     pub fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
         let w = self.writer();
         if w.lease.is_none() {
-            return Err(unavailable("this lake is open read-only here"));
+            return Err(read_only());
         }
         let reclaimed = self.engine.projection().compact()?;
         Ok(lakelands_api::write::CompactReport {
@@ -1921,43 +1903,36 @@ fn check_checkpoint(
     listed: &[SegmentDigest],
 ) -> Result<()> {
     let at = e.position;
-    let broken =
-        |what: &str| unavailable(format!("the checkpoint at position {at} is broken: {what}"));
+    let broken = |flaw: Flaw| damaged(Part::Checkpoint, Some(at), flaw);
     if e.position.0 != through.0 + 1 {
-        return Err(broken(&format!("it says it follows position {through}")));
+        return Err(broken(Flaw::CheckpointFollows { through }));
     }
     if *hash != e.prev {
-        return Err(broken("its hash is not the hash of the event before it"));
+        return Err(broken(Flaw::CheckpointHash));
     }
     let mut next = 0u64;
     for s in listed {
         if s.first.0 != next || s.last < s.first {
-            return Err(broken(&format!(
-                "its segment list has the range {}..={} where one starting at {next} belongs",
-                s.first, s.last
-            )));
+            let (first, last) = (s.first, s.last);
+            return Err(broken(Flaw::CheckpointRange { first, last, next }));
         }
         next = s.last.0 + 1;
     }
     if next != through.0 + 1 {
-        return Err(broken(&format!(
-            "its segment list does not end at position {through}"
-        )));
+        return Err(broken(Flaw::CheckpointEnd { through }));
     }
     Ok(())
 }
 
 fn check_segments(listed: &[SegmentDigest], kept: &[SegmentDigest], at: Position) -> Result<()> {
     for s in listed {
-        let why = match kept.iter().find(|k| k.first == s.first) {
+        let first = s.first;
+        let flaw = match kept.iter().find(|k| k.first == s.first) {
             Some(k) if k == s => continue,
-            Some(_) => format!("differs from what the checkpoint at {at} recorded"),
-            None => format!("is missing; the checkpoint at {at} records it"),
+            Some(_) => Flaw::SegmentDiffers { first, at },
+            None => Flaw::SegmentMissing { first, at },
         };
-        return Err(unavailable(format!(
-            "the segment from position {} {why}",
-            s.first
-        )));
+        return Err(damaged(Part::Segment, Some(first), flaw));
     }
     Ok(())
 }
@@ -1979,7 +1954,22 @@ pub fn find_proposal(view: &dyn ProjectionView, id: &ProposalId) -> Result<Propo
 const PAGE: u32 = 1024;
 
 /// What a write is answered on a handle that does not hold the lease.
-const NO_LEASE: &str = "this lake is open read-only here; another process holds its writer lease";
+fn no_lease() -> Error {
+    let (lake, leased_elsewhere) = (None, true);
+    Error::unavailable(Situation::ReadOnly {
+        lake,
+        leased_elsewhere,
+    })
+}
+
+/// What a seal or a compaction is answered on a handle opened read-only.
+fn read_only() -> Error {
+    let (lake, leased_elsewhere) = (None, false);
+    Error::unavailable(Situation::ReadOnly {
+        lake,
+        leased_elsewhere,
+    })
+}
 
 /// The log read a page at a time (`Lake::pages`): each item is up to
 /// `PAGE` events, or more to finish a set of declarations, ending with it
@@ -2138,11 +2128,11 @@ pub(crate) fn walk(
 /// refusal says it: a type of the kept form, an output under a seam of
 /// the store's own, or a record of a view. `None` for every event a door
 /// appends.
-fn foreign(o: &Ontology, body: &EventBody) -> Option<String> {
+fn foreign(o: &Ontology, body: &EventBody) -> Option<Flaw> {
     let (ty, declares) = match body {
         EventBody::OutputRecorded { seam, .. } => {
-            let own = format!("a seam that begins `{OWN_SEAM}` is the store's own");
-            return (seam.starts_with(OWN_SEAM)).then(|| format!("records under `{seam}`: {own}"));
+            let seam = seam.clone();
+            return (seam.starts_with(OWN_SEAM)).then_some(Flaw::OwnSeam { seam });
         }
         EventBody::Declared {
             declaration: Declaration::Type(TypeDecl { name, .. }),
@@ -2156,14 +2146,12 @@ fn foreign(o: &Ontology, body: &EventBody) -> Option<String> {
         | EventBody::ObjectSetChanged { ty, .. } => (ty, false),
         _ => return None,
     };
+    let ty = ty.clone();
     if ty.as_str().starts_with(OWN_SEAM) {
-        return Some(format!(
-            "declares or writes the type `{ty}`: a name that begins `{OWN_SEAM}` is the store's \
-             own, for what it keeps of a view"
-        ));
+        return Some(Flaw::OwnType { ty });
     }
-    let view = !declares && o.ty(ty).is_ok_and(|t| t.view.is_some());
-    view.then(|| format!("writes a record of `{ty}`, a view, whose records are computed"))
+    let view = !declares && o.ty(&ty).is_ok_and(|t| t.view.is_some());
+    view.then_some(Flaw::ViewRecord { ty })
 }
 
 /// Whether `events` end inside a set of declarations: their last
@@ -2446,14 +2434,13 @@ impl Migrated {
     /// it. Its version and its flags are never touched.
     fn apply(&self, mut r: StoredRecord) -> Result<StoredRecord> {
         if r.ty == self.migration.to.name {
+            let cannot = || {
+                let (ty, key) = (r.ty.clone(), r.key.clone());
+                damaged(Part::Log, Some(self.at), Flaw::CannotConvert { ty, key })
+            };
             let converted = shape::migrate_record(&self.before, &self.migration, &r.fields)
-                .map_err(|err| unavailable(err.to_string()))?
-                .ok_or_else(|| {
-                    unavailable(format!(
-                        "the migration at position {} cannot convert `{}` `{}`",
-                        self.at, r.ty, r.key
-                    ))
-                })?;
+                .map_err(|_| cannot())?
+                .ok_or_else(cannot)?;
             let renames = &self.migration.renames;
             let renamed = |old: FieldName| match renames.iter().find(|(from, _)| *from == old) {
                 Some((_, to)) => to.clone(),

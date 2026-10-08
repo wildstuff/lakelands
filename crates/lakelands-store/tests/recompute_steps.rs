@@ -1030,9 +1030,13 @@ impl FunctionBacking for Flaky {
 
     async fn call(&self, _: &FunctionCall) -> lakelands_api::Result<Value> {
         match self.0.fetch_add(1, Ordering::SeqCst) {
-            0 => Err(Error::Unavailable {
-                message: "boom".into(),
-            }),
+            0 => Err(Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed("boom"),
+                },
+            )),
             _ => Ok(json!("again")),
         }
     }
@@ -1062,7 +1066,7 @@ async fn row_16_the_recompute_door_calls_again_for_a_recorded_failure() {
             fixture::value(&failed, "sum"),
             failed.meta["sum"].error.as_deref()
         ),
-        (None, Some("boom")),
+        (None, Some("writing the projection failed: boom")),
         "row 16, the door: the first call fails and its reason is recorded"
     );
     let head = store.head().await.unwrap();
@@ -1078,7 +1082,7 @@ async fn row_16_the_recompute_door_calls_again_for_a_recorded_failure() {
             stamp.error.as_deref(),
             stamp.position
         ),
-        (None, Some("boom"), declared),
+        (None, Some("writing the projection failed: boom"), declared),
         "row 16, the door: as of the `declared` the door appends, no value and the recorded \
          reason, stamped by it"
     );
@@ -1709,7 +1713,7 @@ fn row_25_a_log_that_ends_inside_a_set_is_not_folded() {
         .expect_err("the fold refuses a log that ends inside a set")
         .to_string();
     assert!(
-        why.contains("the log ends inside a set of declarations"),
+        why.contains("it ends inside a set of declarations"),
         "row 25: the refusal says why: {why}"
     );
 }

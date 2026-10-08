@@ -85,9 +85,13 @@ fn a_newer_format_is_refused_by_name() {
     let known = lakelands_api::event::LOG_FORMAT_VERSION;
     v["v"] = json!(known + 1);
     stored.bytes = canonical::to_vec(&v);
-    let e = open(&stored).unwrap_err().to_string();
+    let e = open(&stored).unwrap_err();
+    let (v, highest) = (u64::from(known) + 1, u64::from(known));
     assert!(
-        e.contains(&format!("format {}", known + 1)) && e.contains(&format!("format {known}")),
+        matches!(e.situation(), Some(lakelands_api::error::Situation::Damaged {
+            flaw: lakelands_api::error::Flaw::FormatOutside { v: found, highest: h, .. },
+            ..
+        }) if *found == v && *h == highest),
         "{e}"
     );
 }

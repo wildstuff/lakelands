@@ -101,3 +101,62 @@ read is. Accepting a proposal answers what the write it applied set off.
 An ingest window's answer already names the window's last event, its
 reactions included, and gains nothing: a host follows reactions in the
 feed.
+
+## Extended: why a lake cannot answer, and the seam a call needs, are cases (lakelands#650)
+
+A host renders a failure in its users' language, and its assistant acts
+on what failed. Neither can do that from an English sentence. So
+`unavailable` carries a `Situation` and `unbound` a `Seam`. Each is a
+closed set of cases with their parameters as data: which lease and who
+holds it, which part of the log is damaged and how (a closed `Flaw`),
+which remote end failed and in what exchange, which seam and which name.
+
+- **One sentence source.** A case's sentence is its `Display`, and no
+  sentence is built anywhere else. The store, the engines, the mock, the
+  backings and the client build the case. A door that advises what to do
+  decides by the case, never by the words.
+- **On the wire** a case is an object: its `code`, its parameters, and
+  the `message` its sentence makes. An error carries its own `message`
+  beside its data too. A code a reader does not know, from a newer lake,
+  is read as `Unknown`, keeping the code, the parameters and the
+  message, and written back as it came. Every closed set has that
+  fallback, the error's kinds, a remote end and a tool name's problem
+  included, and whether a code is known is decided by the codes the set
+  declares, never by the words of a parse failure. What a reader does
+  not know stays where it is: a known case keeps its code and the
+  parameters it knows around it.
+- **A plain name it does not know** (a part, a doing, an act) is kept as
+  it came and written back so. It is said as itself in backticks, which
+  no known name's sentence is. A known case around it is said again from
+  its parts, so a client older than the lake shows the name in backticks
+  where the lake's own sentence has words.
+- **A sentence names one case.** No two cases, or one case with other
+  parameters, render the same sentence. A case is split later only where
+  its sentence splits too.
+- **Foreign words are scrubbed at their source.** The only free text a
+  failure carries is a `Detail`: what an operating system, a database, a
+  TLS library, an HTTP client or a parser said. It is made by
+  `Detail::io` (the error's kind and the system's own text), by
+  `Detail::json` (what kind of parse failure and where, never the text
+  the parser quotes, which may be a record's value), or by
+  `Detail::scrubbed`. The last is called only in the files the
+  `detail-sources` gate lists, each with why its words are safe: a
+  PostgreSQL error as its severity, SQLSTATE and primary message, never
+  its `DETAIL`; SQLite's messages, which name columns, never a row's
+  values.
+- **A `Detail` is read from JSON only by the client,** which reads a
+  lake's answer. The `detail-sources` gate refuses a read of an `Error`,
+  a `Situation` or a `Detail` by name anywhere else. A read whose type
+  is only inferred is not seen by a gate and is the reviewer's to catch.
+- **No path on the host reaches a caller from an outage.** A situation
+  names a part of a lake (the log, its index, a segment, the lease file,
+  an export), never the file. The operator, who reads the location,
+  knows where it is. A remote end is named by its model, its function or
+  its lake, never by an address or a path, which may carry a secret. Two
+  refusals still quote a path (the SQLite engine's lake directory and an
+  import's source); they become cases with the refusals.
+
+This is a change for a host: an `unavailable` or `unbound` answer is an
+object with a code, not a string, every error carries a `message`, and
+some sentences changed their words. A client and a lake on either side
+of this change cannot read each other's errors.

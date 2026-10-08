@@ -35,7 +35,7 @@ use lakelands_api::engine::{
     CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
     Reclaimed, VectorIndex,
 };
-use lakelands_api::error::Result;
+use lakelands_api::error::{Act, Error, Part, Result, Situation};
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::query::cosine;
@@ -47,7 +47,7 @@ use crate::connect::{self, Db, Target};
 use crate::projection::{self, Buffer, HeadTypes, Names, PROJECTION_TABLES};
 use crate::vector_index::{self, Pgvector};
 use crate::view::PgView;
-use crate::{NAME, invalid, lease, lock, log, unavailable};
+use crate::{NAME, invalid, lease, lock, log};
 
 /// The open transaction of the fold: the latest position a put in it
 /// names, which the commit must reach, the head declarations it read, and
@@ -101,10 +101,8 @@ impl PgLake {
         let mut reader = connect::connect(&target)?;
         let exists = matches!(shape(&mut reader, &target.schema)?, Shape::Lake);
         if !exists && mode != OpenMode::Create {
-            return Err(unavailable(format!(
-                "there is no lake in the schema `{}`; open it with `create` to make it",
-                target.schema
-            )));
+            let (lake, schema) = (lake.to_string(), Some(target.schema.clone()));
+            return Err(Error::unavailable(Situation::NoLake { lake, schema }));
         }
         let (writing, pgvector) = match mode {
             OpenMode::Read => (None, vector_index::find(&mut reader, false).ok()),
@@ -146,23 +144,24 @@ impl PgLake {
 
     fn writing(&self) -> Result<&Writing> {
         self.writing.as_ref().ok_or_else(|| {
-            unavailable(format!(
-                "lake `{}` is open read-only here; open it for writing to take the lease, append \
-                 or write its projection",
-                self.lake
-            ))
+            let (lake, leased_elsewhere) = (Some(self.lake.to_string()), false);
+            Error::unavailable(Situation::ReadOnly {
+                lake,
+                leased_elsewhere,
+            })
         })
     }
 
     /// The lease connection, when this handle holds `lease`; otherwise
-    /// nothing was `what`.
-    fn holding(&self, lease: &Lease, what: &str) -> Result<MutexGuard<'_, Db>> {
+    /// it is `undone`.
+    fn holding(&self, lease: &Lease, undone: Act) -> Result<MutexGuard<'_, Db>> {
         let writing = self.writing()?;
         if lock(&self.held).as_ref() != Some(lease) {
-            return Err(unavailable(format!(
-                "the lease with fence {} is not held by this handle; nothing was {what}",
-                lease.fence
-            )));
+            let (fence, undone) = (Some(lease.fence), Some(undone));
+            return Err(Error::unavailable(Situation::LeaseNotHeld {
+                fence,
+                undone,
+            }));
         }
         Ok(lock(&writing.lease))
     }
@@ -276,9 +275,7 @@ fn check_name(db: &mut Db, names: &Names, schema: &str, lake: &LakeId) -> Result
         Some(name) => Err(invalid(format!(
             "the schema `{schema}` holds the lake `{name}`, not `{lake}`"
         ))),
-        None => Err(unavailable(format!(
-            "the schema `{schema}` holds no lake's name; it was not created by this engine"
-        ))),
+        None => Err(Error::unavailable(Situation::Unmade { part: Part::Name })),
     }
 }
 
@@ -338,12 +335,12 @@ impl LakeEngine for PgLake {
     }
 
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        let mut db = self.holding(lease, "appended")?;
+        let mut db = self.holding(lease, Act::Appended)?;
         log::append(&mut db, &self.names, lease, events, false)
     }
 
     fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        let mut db = self.holding(lease, "appended")?;
+        let mut db = self.holding(lease, Act::Appended)?;
         log::append(&mut db, &self.names, lease, events, true)
     }
 
@@ -357,7 +354,7 @@ impl LakeEngine for PgLake {
         imported: bool,
         first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
     ) -> Result<Option<SegmentDigest>> {
-        let mut db = self.holding(lease, "sealed")?;
+        let mut db = self.holding(lease, Act::Sealed)?;
         log::seal(&mut db, &self.names, lease, imported, first)
     }
 

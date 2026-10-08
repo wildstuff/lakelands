@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use hyper::header::{AUTHORIZATION, HeaderValue};
+use lakelands_api::error::{Exchange, Remote, Situation};
 use lakelands_api::seam::EmbedBackend;
 use lakelands_api::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -186,10 +187,11 @@ impl Embed {
         })
     }
 
-    fn failed(&self, why: impl std::fmt::Display) -> Error {
-        Error::Unavailable {
-            message: format!("the embedding endpoint {}: {why}", self.target.shown()),
-        }
+    fn failed(&self, exchange: Exchange) -> Error {
+        let remote = Remote::Embedding {
+            model: self.config.model.clone(),
+        };
+        Error::unavailable(Situation::Remote { remote, exchange })
     }
 
     /// One request: the vectors for `texts`, in their order.
@@ -209,9 +211,6 @@ impl Embed {
             .post(&self.target, &headers, body)
             .await
             .map_err(|f| match f {
-                Failure::Refused(why) | Failure::Failed(why) | Failure::Body(why) => {
-                    self.failed(why)
-                }
                 // Refused for what the request carries: asking with the
                 // same texts again gets the same answer.
                 Failure::Status(status) if matches!(status.as_u16(), 400 | 413 | 422) => {
@@ -225,51 +224,33 @@ impl Embed {
                         },
                     }
                 }
-                Failure::Status(status) => {
-                    self.failed(Failure::status_sentence(status, "the embedding client"))
-                }
-                // The reason may name a bundle's path on the server, which
-                // is the operator's to read, not every caller's.
-                Failure::Tls(_) => self.failed(
-                    "TLS cannot be set up: no usable certificate bundle; the operator names one \
-                     as `ca_file`",
-                ),
-                Failure::TimedOut(t) => {
-                    self.failed(format_args!("it did not answer within {}s", t.as_secs()))
-                }
+                other => self.failed(other.exchange()),
             })?;
         // The reply's text is never quoted: it may echo the input.
         let reply: Reply = serde_json::from_slice(&reply)
-            .map_err(|_| self.failed("its reply is not an embeddings answer"))?;
+            .map_err(|_| self.failed(Exchange::NotTheContract { status: None }))?;
         let want = self.config.dimensions as usize;
         let mut out: Vec<Option<Vec<f32>>> = vec![None; texts.len()];
         if reply.data.len() != texts.len() {
-            return Err(self.failed(format_args!(
-                "it answered {} vectors for {} texts",
-                reply.data.len(),
-                texts.len()
-            )));
+            let (answered, asked) = (reply.data.len() as u64, texts.len() as u64);
+            return Err(self.failed(Exchange::Vectors { answered, asked }));
         }
         for item in reply.data {
             let Some(slot) = out.get_mut(item.index) else {
-                return Err(self.failed(format_args!(
-                    "it answered the index {} for {} texts",
-                    item.index,
-                    texts.len()
-                )));
+                let (index, texts) = (item.index as u64, texts.len() as u64);
+                return Err(self.failed(Exchange::IndexOut { index, texts }));
             };
             if slot.is_some() {
-                return Err(self.failed(format_args!("it answered the index {} twice", item.index)));
+                let index = item.index as u64;
+                return Err(self.failed(Exchange::IndexTwice { index }));
             }
             if item.embedding.len() != want {
-                return Err(self.failed(format_args!(
-                    "it answered a vector of {} dimensions, not {want}",
-                    item.embedding.len()
-                )));
+                let (answered, want) = (item.embedding.len() as u64, want as u64);
+                return Err(self.failed(Exchange::Dimensions { answered, want }));
             }
             let vector: Vec<f32> = item.embedding.iter().map(|&x| x as f32).collect();
             if vector.iter().any(|x| !x.is_finite()) {
-                return Err(self.failed("it answered a vector with a value that is not finite"));
+                return Err(self.failed(Exchange::NotFinite));
             }
             *slot = Some(vector);
         }

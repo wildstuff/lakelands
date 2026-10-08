@@ -11,6 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use lakelands_api::error::Situation;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::{Error, LakeStore, Position, Refusal};
@@ -393,9 +394,9 @@ async fn an_export_into_a_directory_that_holds_anything_is_refused(
 /// Fails unless verifying `dir` is refused naming `position`.
 fn refused_at(dir: &Path, position: Position, damage: &str) -> Result<(), Failure> {
     let said = export::verify(dir);
-    let at = format!("at position {position}:");
     ensure!(
-        matches!(&said, Err(Error::Unavailable { message }) if message.contains(&at)),
+        matches!(said.as_ref().err().and_then(Error::situation), Some(Situation::Damaged { position: Some(p), .. })
+            if *p == position),
         "verifying an export with {damage} is refused naming position {position}, and it \
          answered {said:?}"
     );

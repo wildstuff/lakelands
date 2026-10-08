@@ -106,7 +106,13 @@ impl FunctionBacking for Counting {
     async fn call(&self, _: &FunctionCall) -> lakelands_api::Result<Value> {
         self.hand().await;
         match self.fails.swap(false, Ordering::SeqCst) {
-            true => Err(lakelands_core::unavailable("the backing is down")),
+            true => Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed("the backing is down"),
+                },
+            )),
             false => Ok(json!(7)),
         }
     }
@@ -196,7 +202,7 @@ fn applied(outcome: lakelands_api::Result<Outcome>) -> (Position, Option<Version
 /// The sentence of a write answered `unavailable`.
 fn unavailable<T: std::fmt::Debug>(outcome: lakelands_api::Result<T>) -> String {
     match outcome {
-        Err(Error::Unavailable { message }) => message,
+        Err(Error::Unavailable { situation }) => situation.to_string(),
         other => panic!("the write must be answered `unavailable`: {other:?}"),
     }
 }
@@ -333,8 +339,8 @@ async fn a_write_after_a_failed_fold_is_decided_over_what_the_log_holds() {
     );
     let sentence = format!(
         "what was appended is in the log from position {} and is not folded yet; the next \
-         write folds it, and a write is sent again only under its idempotency key (the commit \
-         through {} was refused (planted))",
+         write folds it, and a write is sent again only under its idempotency key (writing the \
+         projection failed: the commit through {} was refused (planted))",
         at.0, at.0
     );
     assert_eq!(told, sentence);

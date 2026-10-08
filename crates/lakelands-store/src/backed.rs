@@ -39,6 +39,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use lakelands_api::engine::{After, ProjectionView, Scan};
+use lakelands_api::error::{Exchange, Flaw, Part, Remote, Situation};
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
 use lakelands_api::ontology::{EmbedDecl, FieldDecl, TypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, Patch};
@@ -47,7 +48,6 @@ use lakelands_api::write::FunctionDecl;
 use lakelands_api::{
     FieldName, LakeId, Position, RecordKey, Result, Timestamp, TypeName, Value, WriteContext,
 };
-use lakelands_core::unavailable;
 use serde_json::json;
 
 use crate::backing::EXPR;
@@ -456,10 +456,8 @@ pub fn settle_fields(
         return Ok(changed);
     }
     let order = computed_order(ontology, decl).map_err(|why| {
-        unavailable(format!(
-            "the fold cannot order the computed fields of `{}`: {why}",
-            decl.name
-        ))
+        let (ty, cause) = (decl.name.clone(), Box::new(lakelands_core::invalid(why)));
+        lakelands_core::damaged(Part::Projection, None, Flaw::CannotOrder { ty, cause })
     })?;
     let mut waiting: BTreeSet<FieldName> = BTreeSet::new();
     for (name, reads) in order {
@@ -983,7 +981,7 @@ async fn make(lake: &Arc<Lake>, batch: Batch) -> Result<()> {
             match lake.seams.backings.iter().find(|b| b.kind() == kind) {
                 Some(b) => {
                     let output =
-                        (b.call(call).await).unwrap_or_else(|e| json!({ "error": why(&e) }));
+                        (b.call(call).await).unwrap_or_else(|e| json!({ "error": e.said() }));
                     vec![(key(ask[0]), output)]
                 }
                 None => Vec::new(),
@@ -1039,12 +1037,12 @@ async fn embed_each(backend: &dyn EmbedBackend, texts: &[String]) -> Vec<Value> 
             if v.len() == to - from {
                 return Ok(v);
             }
-            Err(unavailable(format!(
-                "the embedding backend `{}` answered {} vectors for {} texts",
-                backend.model(),
-                v.len(),
-                to - from
-            )))
+            let remote = Remote::Embedding {
+                model: backend.model().to_owned(),
+            };
+            let (answered, asked) = (v.len() as u64, (to - from) as u64);
+            let exchange = Exchange::Vectors { answered, asked };
+            Err(Error::unavailable(Situation::Remote { remote, exchange }))
         });
         match answer {
             Ok(vectors) => {
@@ -1060,13 +1058,13 @@ async fn embed_each(backend: &dyn EmbedBackend, texts: &[String]) -> Vec<Value> 
             ) => {
                 let half = from + (to - from) / 2;
                 if half == from {
-                    out[from] = Some(json!({ "error": why(&e) }));
+                    out[from] = Some(json!({ "error": e.said() }));
                 } else {
                     spans.extend([half..to, from..half]);
                 }
             }
             Err(e) => {
-                weather = json!({ "error": why(&e) });
+                weather = json!({ "error": e.said() });
                 break;
             }
         }
@@ -1074,19 +1072,6 @@ async fn embed_each(backend: &dyn EmbedBackend, texts: &[String]) -> Vec<Value> 
     out.into_iter()
         .map(|o| o.unwrap_or_else(|| weather.clone()))
         .collect()
-}
-
-/// A backing's failure, in its own words.
-pub(crate) fn why(e: &lakelands_api::Error) -> String {
-    use lakelands_api::{Error, Refusal};
-    match e {
-        Error::Unavailable { message }
-        | Error::Refused {
-            reason: Refusal::Invalid { message } | Refusal::Constraint { message },
-            ..
-        } => message.clone(),
-        other => other.to_string(),
-    }
 }
 
 /// Record one output for the field it fills, with what the fill causes:

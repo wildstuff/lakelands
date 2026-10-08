@@ -150,7 +150,7 @@ fn texts(n: usize) -> Vec<String> {
 
 fn failure(r: lakelands_api::Result<Vec<Vec<f32>>>) -> String {
     match r {
-        Err(Error::Unavailable { message }) => message,
+        Err(Error::Unavailable { situation }) => situation.to_string(),
         other => panic!("expected the embedding to fail, got {other:?}"),
     }
 }
@@ -275,7 +275,7 @@ fn an_https_endpoint_is_refused_at_open_when_tls_cannot_be_set_up_for_it() {
 
 /// Each way an endpoint can answer wrongly, and what the failure says.
 #[tokio::test]
-async fn every_wrong_answer_is_unavailable_naming_the_host_and_the_kind_only() {
+async fn every_wrong_answer_is_unavailable_naming_the_model_and_the_kind_only() {
     type Case = (&'static str, Box<Answer>);
     let secret = "secret-query";
     let cases: Vec<Case> = vec![
@@ -298,9 +298,9 @@ async fn every_wrong_answer_is_unavailable_naming_the_host_and_the_kind_only() {
             "429",
             Box::new(|_| Some(("429 Too Many Requests", String::new()))),
         ),
-        ("within 1s", Box::new(|_| None)),
+        ("within 1 seconds", Box::new(|_| None)),
         (
-            "not an embeddings answer",
+            "not the contract's",
             Box::new(|_| Some(("200 OK", "{\"echo\": \"secret-query\"}".into()))),
         ),
         (
@@ -355,9 +355,10 @@ async fn every_wrong_answer_is_unavailable_naming_the_host_and_the_kind_only() {
         let why = failure(e.embed(&[secret.to_owned()]).await);
         assert!(why.contains(kind), "{kind}: {why}");
         assert!(
-            why.contains(&format!("127.0.0.1:{}/v1/embeddings", f.port)),
+            why.contains("the embedding backend `tiny`"),
             "{kind}: {why}"
         );
+        assert!(!why.contains(&f.port.to_string()), "{kind}: {why}");
         assert!(!why.contains(secret), "{kind}: {why}");
         assert!(started.elapsed().as_secs() < 4, "{kind}: the timeout holds");
     }
@@ -553,7 +554,8 @@ async fn a_store_ranks_a_hybrid_search_through_the_client() {
     let cat = store.catalog(WriteContext::default());
     let own = owner(store.as_ref());
     match cat.search(&own, search(hybrid("quayside"))).await {
-        Err(Error::Unavailable { message }) => {
+        Err(Error::Unavailable { situation }) => {
+            let message = situation.to_string();
             assert!(message.contains("cannot connect"), "{message}");
             assert!(!message.contains("quayside"), "{message}");
         }

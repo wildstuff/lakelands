@@ -487,8 +487,9 @@ async fn serve(
     ticker::start(root.config.aging.as_ref(), &held);
     root.mirror(&held, open).await?;
     let lookup = move |lake: &LakeId| -> Result<Arc<dyn LakeStore>> {
-        lakes.get(lake).cloned().ok_or_else(|| Error::Unavailable {
-            message: format!("this server serves no lake `{lake}`"),
+        lakes.get(lake).cloned().ok_or_else(|| {
+            let lake = lake.to_string();
+            Error::unavailable(lakelands_api::error::Situation::NotServed { lake })
         })
     };
     let resolver = Arc::new(lakelands_server::resolver::StaticResolver::new(

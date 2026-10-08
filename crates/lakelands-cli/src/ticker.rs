@@ -372,9 +372,11 @@ mod tests {
         }
         async fn age(&self, _: Timestamp) -> lakelands_api::Result<AgeReport> {
             self.tries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Err(lakelands_api::Error::Unavailable {
-                message: "the lake is busy for a moment".into(),
-            })
+            // Another writer holds the lake for a moment.
+            let (holder, fence) = ("another writer".to_owned(), 1);
+            Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::LeaseHeld { holder, fence },
+            ))
         }
         async fn purge_source(
             &self,

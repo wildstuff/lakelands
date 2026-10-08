@@ -114,13 +114,19 @@ fn answer(result: &Value) -> &Value {
 
 /// A refused call's two parts, as the agent read them: the text (what and
 /// what to do) and the error as JSON, which an argument fault has not.
+/// The JSON's `message` is the text's first line, and is left out of what
+/// is answered.
 fn refused(result: &Value) -> (&str, Option<Value>) {
     assert_eq!(result["isError"], true, "{result}");
     let content = result["content"].as_array().unwrap();
     let text = content[0]["text"].as_str().unwrap();
-    let json = content
-        .get(1)
-        .map(|c| serde_json::from_str(c["text"].as_str().unwrap()).unwrap());
+    let json = content.get(1).map(|c| {
+        let mut e: Value = serde_json::from_str(c["text"].as_str().unwrap()).unwrap();
+        let message = e.as_object_mut().unwrap().remove("message");
+        let said = text.lines().next().unwrap().strip_prefix("error: ");
+        assert_eq!(message.as_ref().and_then(Value::as_str), said, "{result}");
+        e
+    });
     (text, json)
 }
 
@@ -284,7 +290,10 @@ fn a_blind_agent_works_the_shop_through_mcp_alone() {
             refused(&r[i]),
             (
                 UNBOUND,
-                Some(json!({"error": "unbound", "seam": "the verb executor `ledger`"}))
+                Some(
+                    json!({"error": "unbound", "seam": {"code": "executor", "name": "ledger",
+                            "message": "the verb executor `ledger`"}})
+                )
             )
         );
     }
@@ -461,7 +470,10 @@ fn a_blind_agent_works_the_shop_through_mcp_alone() {
         refused(&r[13]),
         (
             UNBOUND,
-            Some(json!({"error": "unbound", "seam": "the verb executor `ledger`"}))
+            Some(
+                json!({"error": "unbound", "seam": {"code": "executor", "name": "ledger",
+                        "message": "the verb executor `ledger`"}})
+            )
         )
     );
     let needs = "view `revenue_7d` needs parameter `anchor` (date_time)";

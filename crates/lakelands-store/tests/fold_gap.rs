@@ -73,9 +73,15 @@ impl LakeEngine for Failing {
     }
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
         if from.0 >= self.read_fail_from.load(Ordering::SeqCst) {
-            return Err(Error::Unavailable {
-                message: format!("the log could not be read from position {from} (planted)"),
-            });
+            return Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed(format!(
+                        "the log could not be read from position {from} (planted)"
+                    )),
+                },
+            ));
         }
         self.inner.read(from, limit)
     }
@@ -133,21 +139,31 @@ impl ProjectionStore for Failing {
     }
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
         if record.position.0 >= self.fail_from.load(Ordering::SeqCst) {
-            return Err(Error::Unavailable {
-                message: format!(
-                    "the projection refused a record at position {} (planted)",
-                    record.position
-                ),
-            });
+            return Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed(format!(
+                        "the projection refused a record at position {} (planted)",
+                        record.position
+                    )),
+                },
+            ));
         }
         let armed = self.armed.load(Ordering::SeqCst);
         if armed > 0 {
             if armed != ALWAYS {
                 self.armed.store(armed - 1, Ordering::SeqCst);
             }
-            return Err(Error::Unavailable {
-                message: "the projection refused a record (planted)".into(),
-            });
+            return Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed(
+                        "the projection refused a record (planted)",
+                    ),
+                },
+            ));
         }
         self.inner.projection().put_record(record)
     }

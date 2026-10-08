@@ -36,7 +36,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use lakelands_api::engine::{After, CanonicalEvent, Scan};
-use lakelands_api::error::{Error, Refusal, Result};
+use lakelands_api::error::{Detail, Error, Flaw, Part, Refusal, Result};
 use lakelands_api::event::SegmentDigest;
 use lakelands_api::expr::Expr;
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
@@ -1209,10 +1209,8 @@ pub fn first_of_next(
 /// The refusal of the writer lease to a taker while `holder` holds it
 /// under `fence`.
 pub fn lease_held(holder: &str, fence: u64) -> Error {
-    crate::unavailable(format!(
-        "the lake's writer lease is held by `{holder}` (fence {fence}); it must be released \
-         before another writer can take it"
-    ))
+    let holder = holder.to_owned();
+    Error::unavailable(lakelands_api::error::Situation::LeaseHeld { holder, fence })
 }
 
 /// The refusal of a query vector of `query` dimensions where the vector
@@ -1374,8 +1372,10 @@ pub fn proposals<'a>(
 /// A state an engine's projection stored as JSON, read back; `what`
 /// names it (`a record`) in the fault of one that cannot be read.
 pub fn decode<T: serde::de::DeserializeOwned>(state: &str, what: &str) -> Result<T> {
-    serde_json::from_str(state)
-        .map_err(|e| crate::unavailable(format!("the projection holds {what} it cannot read: {e}")))
+    serde_json::from_str(state).map_err(|e| {
+        let (what, detail) = (what.to_owned(), Detail::json(&e));
+        crate::damaged(Part::Projection, None, Flaw::Unreadable { what, detail })
+    })
 }
 
 /// A vector as an index stores it: its components as little-endian

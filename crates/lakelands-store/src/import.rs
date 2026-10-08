@@ -45,11 +45,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lakelands_api::engine::{CanonicalEvent, Lease, OpenMode};
+use lakelands_api::error::{Detail, Doing, Flaw, Part, Situation};
 use lakelands_api::event::Digest;
 use lakelands_api::location::Location;
 use lakelands_api::seam::Seams;
 use lakelands_api::{Error, LakeId, Position, Result};
-use lakelands_core::unavailable;
 use sha2::{Digest as _, Sha256};
 
 use crate::lake::Lake;
@@ -81,8 +81,10 @@ fn precondition(message: String) -> Error {
     crate::writes::refused(lakelands_api::Refusal::Precondition { message })
 }
 
-fn io(what: &str, path: &Path, e: std::io::Error) -> Error {
-    unavailable(format!("cannot {what} {}: {e}", path.display()))
+/// The export's files failed `doing`; the path is the operator's, not
+/// the answer's.
+fn io(doing: Doing, _: &Path, e: std::io::Error) -> Error {
+    lakelands_core::io_failed(doing, Part::Export, &e)
 }
 
 /// What an import reads of a line beyond its bytes; the whole export was
@@ -110,14 +112,14 @@ struct Body {
 /// Each line of `path` as the event the store would append, with its
 /// envelope, in order.
 fn events(path: &Path) -> Result<impl Iterator<Item = Result<(CanonicalEvent, Envelope)>> + '_> {
-    let file = fs::File::open(path).map_err(|e| io("open", path, e))?;
+    let file = fs::File::open(path).map_err(|e| io(Doing::Open, path, e))?;
     Ok(BufReader::new(file).split(b'\n').map(move |line| {
-        let line = line.map_err(|e| io("read", path, e))?;
+        let line = line.map_err(|e| io(Doing::Read, path, e))?;
+        // The parser's own words, which name the member it does not know:
+        // an import's caller is the operator, and the export is its own.
         let e: Envelope = serde_json::from_slice(&line).map_err(|err| {
-            unavailable(format!(
-                "{} holds a line that is not an event: {err}",
-                path.display()
-            ))
+            let detail = Detail::scrubbed(err);
+            lakelands_core::damaged(Part::Export, None, Flaw::NotAnEvent { detail })
         })?;
         let stored = CanonicalEvent {
             position: e.position,
@@ -140,8 +142,8 @@ fn check(files: &[PathBuf], lake: &LakeId) -> Result<Vec<Digest>> {
     for path in files {
         // Hashed as it is read, so a segment is never held whole.
         let mut hasher = Sha256::new();
-        let mut file = fs::File::open(path).map_err(|e| io("open", path, e))?;
-        std::io::copy(&mut file, &mut hasher).map_err(|e| io("read", path, e))?;
+        let mut file = fs::File::open(path).map_err(|e| io(Doing::Open, path, e))?;
+        std::io::copy(&mut file, &mut hasher).map_err(|e| io(Doing::Read, path, e))?;
         digests.push(Digest(lakelands_core::canonical::hex(&hasher.finalize())));
         for event in events(path)? {
             let (_, event) = event?;
@@ -161,13 +163,13 @@ fn check(files: &[PathBuf], lake: &LakeId) -> Result<Vec<Digest>> {
                 fence = taken;
             }
             if event.fence != fence {
-                return Err(unavailable(format!(
-                    "the export is damaged in {} at position {}: the event carries fence {}, and \
-                     its writer's lease had fence {fence}; nothing was imported",
-                    path.display(),
-                    event.position,
-                    event.fence
-                )));
+                let (carried, lease) = (event.fence, fence);
+                let flaw = Flaw::FenceMismatch { carried, lease };
+                return Err(lakelands_core::damaged(
+                    Part::Export,
+                    Some(event.position),
+                    flaw,
+                ));
             }
         }
     }
@@ -194,10 +196,8 @@ pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported>
         carry(engine.as_ref(), &lease, &files, &digests, location)?;
         let lake = Lake::assemble(location, seams, engine.clone(), Some(lease.clone()));
         lake.catch_up().map_err(|e| {
-            unavailable(format!(
-                "every event was imported, and folding the projection failed: {e}; a writer's \
-                 open folds it again"
-            ))
+            let cause = Box::new(e);
+            Error::unavailable(Situation::ImportNotFolded { cause })
         })
     })();
     let released = engine.release_lease(&lease);
@@ -223,14 +223,13 @@ fn carry(
     location: &Location,
 ) -> Result<()> {
     let mut reached = Position::GENESIS;
-    let stopped = |path: &Path, reached: Position, e: Error| {
-        unavailable(format!(
-            "the import stopped in {} at position {reached}: {e}; the lake `{}` holds the \
-             export's events before that position, a true prefix that is not the exported lake, \
-             and refuses another import; remove it (its file or schema) and import again",
-            path.display(),
-            location.lake
-        ))
+    let stopped = |_: &Path, reached: Position, e: Error| {
+        let (lake, cause) = (location.lake.to_string(), Box::new(e));
+        Error::unavailable(Situation::ImportStopped {
+            reached,
+            lake,
+            cause,
+        })
     };
     for (i, path) in files.iter().enumerate() {
         // A file after the first begins a segment: its first events enter
@@ -246,15 +245,13 @@ fn carry(
                 if &sealed.digest == before {
                     return Ok(batch.to_vec());
                 }
-                Err(unavailable(format!(
-                    "the engine digests the segment before it as `{}`, and the file's is `{}`; \
-                     nothing of this file was imported",
-                    sealed.digest.0, before.0
-                )))
+                let (engine, file) = (sealed.digest.0.clone(), before.0.clone());
+                let flaw = Flaw::DigestDiffers { engine, file };
+                Err(lakelands_core::damaged(Part::Export, None, flaw))
             })?;
-            sealed.map(drop).ok_or_else(|| {
-                unavailable("the engine holds no event of the segment before it to seal")
-            })
+            sealed
+                .map(drop)
+                .ok_or_else(|| lakelands_core::damaged(Part::Log, None, Flaw::NothingToSeal))
         };
         let mut batch = Vec::with_capacity(BATCH);
         for event in events(path)? {

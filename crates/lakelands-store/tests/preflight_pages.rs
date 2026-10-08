@@ -351,7 +351,7 @@ async fn a_page_that_cannot_be_read_fails_the_preflight() {
     *probe.fail.lock().unwrap() = Some(("item".into(), 2));
     let failed = l.cat.migrate(&l.own, m).await;
     assert!(
-        matches!(&failed, Err(Error::Unavailable { message }) if message.contains("planted")),
+        matches!(&failed, Err(Error::Unavailable { situation }) if situation.to_string().contains("planted")),
         "the preflight answers the failed read: {failed:?}"
     );
 }

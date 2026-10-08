@@ -874,6 +874,7 @@ fn tool_error(file: &str, problems: &[NameProblem], other: Option<&str>) -> Bund
             NameProblem::Empty { from } => {
                 parts.push(format!("{from} leaves nothing to make a tool name of"))
             }
+            NameProblem::Unknown(u) => parts.push(u.message().to_owned()),
         }
     }
     for (from, names) in collisions {

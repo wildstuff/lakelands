@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use lakelands_api::error::Result;
+use lakelands_api::error::{Detail, Error, Result, Situation, Tls};
 use lakelands_api::location::{PgTls, PgTlsMode, PgTuning};
 use lakelands_api::record::StoredRecord;
 use postgres::types::{FromSql, ToSql};
@@ -49,7 +49,7 @@ use postgres::{Client, NoTls, Row, SimpleQueryMessage, Statement};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
-use crate::{invalid, sql, unavailable};
+use crate::{invalid, sql};
 
 /// The oldest server the engine supports, as `server_version_num` says it.
 pub const MIN_SERVER_VERSION: i32 = 160_000;
@@ -244,16 +244,22 @@ impl Db {
     }
 }
 
-/// A PEM file's certificates.
-fn certificates(path: &Path, what: &str) -> Result<Vec<CertificateDer<'static>>> {
+/// TLS cannot be set up, for this reason.
+fn tls_failed(problem: Tls, detail: Option<Detail>) -> Error {
+    Error::unavailable(Situation::Tls { problem, detail })
+}
+
+/// A PEM file's certificates: the client's, or the authority's.
+fn certificates(path: &Path, client: bool) -> Result<Vec<CertificateDer<'static>>> {
+    let (unreadable, empty) = match client {
+        true => (Tls::CertUnreadable, Tls::CertEmpty),
+        false => (Tls::CaUnreadable, Tls::CaEmpty),
+    };
     let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
         .and_then(|i| i.collect::<std::result::Result<_, _>>())
-        .map_err(|e| unavailable(format!("the {what} {} cannot be read: {e}", path.display())))?;
+        .map_err(|e| tls_failed(unreadable, Some(Detail::scrubbed(e))))?;
     if certs.is_empty() {
-        return Err(unavailable(format!(
-            "the {what} {} holds no certificate",
-            path.display()
-        )));
+        return Err(tls_failed(empty, None));
     }
     Ok(certs)
 }
@@ -267,34 +273,24 @@ fn tls_config_with(tls: &PgTls, bundles: &[&str]) -> Result<rustls::ClientConfig
             .iter()
             .map(PathBuf::from)
             .find(|p| p.is_file())
-            .ok_or_else(|| {
-                unavailable(
-                    "no certificate bundle was found at a well-known path; name one as the \
-                     location's `tls.ca_file`, or set `tls.mode` to `disable` for a server you \
-                     reach without TLS",
-                )
-            })?,
+            .ok_or_else(|| tls_failed(Tls::NoBundle, None))?,
     };
     let mut roots = rustls::RootCertStore::empty();
-    roots.add_parsable_certificates(certificates(&bundle, "certificate bundle")?);
+    roots.add_parsable_certificates(certificates(&bundle, false)?);
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
-        .map_err(|e| unavailable(format!("TLS cannot be set up: {e}")))?
+        .map_err(|e| tls_failed(Tls::Setup, Some(Detail::scrubbed(e))))?
         .with_root_certificates(roots);
     match (&tls.client_cert, &tls.client_key) {
         (None, None) => Ok(builder.with_no_client_auth()),
         (Some(cert), Some(key)) => {
-            let chain = certificates(cert, "client certificate")?;
-            let key_der = PrivateKeyDer::from_pem_file(key).map_err(|e| {
-                unavailable(format!(
-                    "the client key {} cannot be read: {e}",
-                    key.display()
-                ))
-            })?;
+            let chain = certificates(cert, true)?;
+            let key_der = PrivateKeyDer::from_pem_file(key)
+                .map_err(|e| tls_failed(Tls::KeyUnreadable, Some(Detail::scrubbed(e))))?;
             builder
                 .with_client_auth_cert(chain, key_der)
-                .map_err(|e| unavailable(format!("the client certificate cannot be used: {e}")))
+                .map_err(|e| tls_failed(Tls::CertUnusable, Some(Detail::scrubbed(e))))
         }
         _ => Err(invalid(
             "a client certificate needs both `tls.client_cert` and `tls.client_key`",
@@ -356,12 +352,8 @@ pub(crate) fn connect(target: &Target) -> Result<Db> {
         .query_one("SELECT current_setting('server_version_num')::int4", &[])?
         .get(0);
     if version < MIN_SERVER_VERSION {
-        return Err(unavailable(format!(
-            "the server is PostgreSQL {}.{}; the engine needs PostgreSQL 16 or newer, and \
-             nothing was created",
-            version / 10_000,
-            version % 10_000
-        )));
+        let (major, minor) = ((version / 10_000) as u32, (version % 10_000) as u32);
+        return Err(Error::unavailable(Situation::ServerTooOld { major, minor }));
     }
     if target.tuning.statement_timeout_secs > 0 {
         db.batch(&format!(
@@ -384,30 +376,23 @@ pub(crate) fn session_keeping_state(target: &Target) -> Result<Db> {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let mark = format!("probe-{}-{nanos}", std::process::id());
-    let refuse = |what: &str| {
-        unavailable(format!(
-            "the connection does not keep its session ({what}); a transaction-mode connection \
-             pooler seems to sit in front of the server. The writer lease is a session lock, \
-             which such a pooler loses or hands to another client, so the lake was not opened \
-             for writing. Connect directly or through a session-mode pooler."
-        ))
-    };
+    let refuse = || Error::unavailable(Situation::Pooler);
     let mut probe = connect(target)?;
     probe.batch(&format!("SET lakelands.probe = '{mark}'"))?;
     let kept: Option<String> = probe
         .query_one("SELECT current_setting('lakelands.probe', true)", &[])?
         .get(0);
     if kept.as_deref() != Some(mark.as_str()) {
-        return Err(refuse("a setting was gone by the next statement"));
+        // A setting was gone by the next statement.
+        return Err(refuse());
     }
     for _ in 0..2 {
         let seen: Option<String> = connect(target)?
             .query_one("SELECT current_setting('lakelands.probe', true)", &[])?
             .get(0);
         if seen.as_deref() == Some(mark.as_str()) {
-            return Err(refuse(
-                "a fresh connection inherited another session's setting",
-            ));
+            // A fresh connection inherited another session's setting.
+            return Err(refuse());
         }
     }
     Ok(probe)

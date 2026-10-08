@@ -8,7 +8,7 @@
 //! nested runtime, no thread that parks the caller.
 
 use lakelands_api::Result;
-use lakelands_core::unavailable;
+use lakelands_api::error::{Detail, Error, Situation};
 
 /// Run `work` on the blocking pool and answer its result. A panic inside
 /// the work is reported as the lake being unavailable, never propagated
@@ -20,8 +20,17 @@ where
 {
     match tokio::task::spawn_blocking(work).await {
         Ok(answer) => answer,
-        Err(e) => Err(unavailable(format!(
-            "the store's work on this lake stopped unexpectedly: {e}"
-        ))),
+        Err(e) => Err(stopped(&e)),
     }
+}
+
+/// The store's work stopped: whether it panicked or was cancelled, never
+/// what a panic said, which may quote a record.
+pub(crate) fn stopped(e: &tokio::task::JoinError) -> Error {
+    let detail = Detail::scrubbed(if e.is_panic() {
+        "it panicked"
+    } else {
+        "it was cancelled"
+    });
+    Error::unavailable(Situation::Stopped { detail })
 }

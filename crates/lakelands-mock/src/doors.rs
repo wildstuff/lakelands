@@ -8,7 +8,7 @@ use lakelands_api::describe::{
     ExecutorDescription, FieldDescription, Kept, LakeDescription, LakeRights, NotKept, TypeAccess,
     TypeDescription, TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
 };
-use lakelands_api::error::{Error, Missing, Refusal, Result};
+use lakelands_api::error::{Error, Missing, Refusal, Result, Seam};
 use lakelands_api::event::{Event, EventBody, EventId};
 use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::id::{
@@ -676,15 +676,13 @@ fn embeddings(t: &lakelands_api::ontology::TypeDecl) -> Result<()> {
         return Err(on(&field, Refusal::Invalid { message }));
     }
     if let Some((f, e)) = t.fields.iter().find_map(|f| Some((f, f.embed.as_ref()?))) {
-        return Err(Error::Unbound {
-            seam: format!(
-                "the embedding model `{}` with {} dimensions, for `{}.{}` (none is bound)",
-                e.model,
-                f.ty.dimensions.unwrap_or(0),
-                t.name,
-                f.name
-            ),
-        });
+        return Err(Error::unbound(Seam::Embedding {
+            model: e.model.clone(),
+            dimensions: f.ty.dimensions.unwrap_or(0),
+            ty: t.name.clone(),
+            field: f.name.to_string(),
+            bound: None,
+        }));
     }
     Ok(())
 }
@@ -743,12 +741,9 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
     match d {
         // The mock binds no function backing; `expr` is computed inside.
         Declaration::Function(f) if f.backing != "expr" => {
-            return Err(Error::Unbound {
-                seam: format!(
-                    "the `{}` function backing (the host bound none of that kind)",
-                    f.backing
-                ),
-            });
+            return Err(Error::unbound(Seam::FunctionBacking {
+                kind: f.backing.clone(),
+            }));
         }
         Declaration::Type(t) => {
             if reserved(t.name.as_str(), who) {
@@ -2099,9 +2094,9 @@ fn check_call<'a>(
     // is refused, as the store refuses one whose executor its host did not
     // bind: before the payload, and whether it runs or is proposed (013).
     if let VerbEffect::External { executor } = &v.effect {
-        return Err(Error::Unbound {
-            seam: format!("the verb executor `{executor}`"),
-        });
+        return Err(Error::unbound(Seam::Executor {
+            name: executor.clone(),
+        }));
     }
     // As the store: a member the verb does not declare before any value.
     let declared = |n: &&FieldName| v.payload.iter().any(|f| &f.name == *n);
@@ -2169,9 +2164,9 @@ fn plan_run(
     let set = match &v.effect {
         VerbEffect::Write { set } => set,
         VerbEffect::External { executor } => {
-            return Err(Error::Unbound {
-                seam: format!("the verb executor `{executor}`"),
-            });
+            return Err(Error::unbound(Seam::Executor {
+                name: executor.clone(),
+            }));
         }
     };
     let rec = st.live(&v.on, key).ok_or_else(|| no_record(&v.on, key))?;

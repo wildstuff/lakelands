@@ -349,6 +349,7 @@ fn the_walks_commands_move_mirror_and_measure_the_network() {
     );
     assert_eq!(
         serde_json::from_str::<Value>(capped[1]["content"][1]["text"].as_str().unwrap()).unwrap(),
-        json!({"error": "refused", "reason": {"max": 5, "refusal": "too_large"}})
+        json!({"error": "refused", "reason": {"max": 5, "refusal": "too_large"},
+            "message": "refused: a graph measure may reach 5 records, no more"})
     );
 }

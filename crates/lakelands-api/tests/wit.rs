@@ -1,5 +1,5 @@
 //! The drift check between this crate and the WIT package in `wit/`
-//! (`lakelands:data@0.11.0`). The crate is the source; the WIT mirrors it,
+//! (`lakelands:data@0.12.0`). The crate is the source; the WIT mirrors it,
 //! and this test fails as soon as the two disagree.
 //!
 //! Three things are compared:
@@ -1333,6 +1333,9 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Error::Conflict { .. }
             | Error::Unbound { .. }
             | Error::Unavailable { .. } => {}
+            // A newer lake's kind, which a component built against this
+            // WIT cannot be sent.
+            Error::Unknown(_) => {}
         }
     }
     let _ = errors;
@@ -1352,10 +1355,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     expected: Version(1),
                     actual: Version(2),
                 },
-                Error::Unbound { seam: "s".into() },
-                Error::Unavailable {
-                    message: "m".into(),
-                },
+                Error::unbound(lakelands_api::error::Seam::VectorIndex),
+                Error::unavailable(lakelands_api::error::Situation::Moved),
             ],
             Some("error"),
         ),

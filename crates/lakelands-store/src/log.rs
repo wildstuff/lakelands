@@ -8,13 +8,14 @@
 //! link, so an engine that altered a byte is caught at the first read.
 
 use lakelands_api::engine::CanonicalEvent;
+use lakelands_api::error::{Detail, Flaw, Part};
 use lakelands_api::event::{
     Digest, Event, EventBody, EventId, LOG_FORMAT_BASE, LOG_FORMAT_VERSION, Procedure,
 };
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::Origin;
 use lakelands_api::{Error, IdempotencyKey, LakeId, Position, Result, SourceId, Timestamp};
-use lakelands_core::{canonical, unavailable};
+use lakelands_core::canonical;
 
 /// Everything about an event the writer decides; the store fills in the
 /// rest (format version, lake, position, id, link, fence, hash).
@@ -141,8 +142,8 @@ pub fn seal_at(
     (event, stored)
 }
 
-fn corrupt(position: Position, why: impl std::fmt::Display) -> Error {
-    unavailable(format!("the log is damaged at position {position}: {why}"))
+fn corrupt(position: Position, flaw: Flaw) -> Error {
+    lakelands_core::damaged(Part::Log, Some(position), flaw)
 }
 
 /// Parse a stored event and verify it: the bytes are canonical, the hash
@@ -151,38 +152,38 @@ fn corrupt(position: Position, why: impl std::fmt::Display) -> Error {
 /// does not know rather than guessing.
 pub fn open(stored: &CanonicalEvent) -> Result<Event> {
     let at = stored.position;
-    let value: serde_json::Value =
-        serde_json::from_slice(&stored.bytes).map_err(|e| corrupt(at, format!("not JSON: {e}")))?;
+    let value: serde_json::Value = serde_json::from_slice(&stored.bytes).map_err(|e| {
+        let detail = Detail::json(&e);
+        corrupt(at, Flaw::NotJson { detail })
+    })?;
     let v = value
         .get("v")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     if v > u64::from(LOG_FORMAT_VERSION) {
-        return Err(corrupt(
-            at,
-            format!(
-                "written in log format {v}, and this reader knows format {LOG_FORMAT_VERSION} at most"
-            ),
-        ));
+        let (lowest, highest) = (0, LOG_FORMAT_VERSION.into());
+        return Err(corrupt(at, Flaw::FormatOutside { v, lowest, highest }));
     }
     if canonical::to_vec(&value) != stored.bytes {
-        return Err(corrupt(at, "the bytes are not canonical"));
+        return Err(corrupt(at, Flaw::NotCanonical));
     }
-    let event: Event =
-        serde_json::from_value(value).map_err(|e| corrupt(at, format!("not an event: {e}")))?;
+    let event: Event = serde_json::from_value(value).map_err(|e| {
+        let detail = Detail::json(&e);
+        corrupt(at, Flaw::NotAnEvent { detail })
+    })?;
     // Members read leniently (a date-time in another form) would print
     // differently: the event must re-serialise to exactly its bytes.
     if canonical::of(&event) != stored.bytes {
-        return Err(corrupt(at, "a member is not in its one written form"));
+        return Err(corrupt(at, Flaw::NotOneForm));
     }
     // A member or a call a version does not have is refused, never read.
-    if let Some(why) = lakelands_core::versions::below(&event)
+    if let Some(flaw) = lakelands_core::versions::below(&event)
         .or_else(|| lakelands_core::versions::misplaced(&event))
     {
-        return Err(corrupt(at, why));
+        return Err(corrupt(at, flaw));
     }
     if hash_without_hash(&event) != event.hash {
-        return Err(corrupt(at, "the hash does not match the event"));
+        return Err(corrupt(at, Flaw::HashMismatch));
     }
     if event.position != stored.position
         || event.id != stored.id
@@ -190,10 +191,7 @@ pub fn open(stored: &CanonicalEvent) -> Result<Event> {
         || event.hash != stored.hash
         || event.fence != stored.fence
     {
-        return Err(corrupt(
-            at,
-            "the engine's record of the event disagrees with its bytes",
-        ));
+        return Err(corrupt(at, Flaw::Disagrees));
     }
     Ok(event)
 }
@@ -207,13 +205,11 @@ pub fn check_link(before: Option<(&Position, &Digest)>, event: &Event) -> Result
     };
     let at = event.position;
     if event.position != want_pos {
-        return Err(corrupt(at, format!("expected position {want_pos}")));
+        let (expected, found) = (want_pos, None);
+        return Err(corrupt(at, Flaw::Position { expected, found }));
     }
     if event.prev != want_prev {
-        return Err(corrupt(
-            at,
-            "it does not name the hash of the event before it",
-        ));
+        return Err(corrupt(at, Flaw::PrevHash));
     }
     Ok(())
 }

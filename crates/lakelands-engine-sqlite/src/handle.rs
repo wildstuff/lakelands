@@ -29,7 +29,9 @@ use crate::lease::{Held, LeaseFile};
 use crate::log::Log;
 use crate::projection::{self, MEMBERS, OUTPUTS, PROPOSALS};
 use crate::view::SqliteView;
-use crate::{NAME, invalid, io_error, lock, sql, unavailable};
+use lakelands_api::error::{Detail, Doing, Error, Part, Situation};
+
+use crate::{NAME, invalid, io_error, lock, sql};
 
 /// The open transaction of the fold: the latest position a put in it
 /// names, which the commit must reach.
@@ -109,12 +111,10 @@ impl SqliteLake {
         let create = mode == OpenMode::Create;
         if !dir.join("log").is_dir() {
             if !create {
-                return Err(unavailable(format!(
-                    "there is no lake in {}; open it with `create` to make it",
-                    dir.display()
-                )));
+                let (lake, schema) = (lake.to_string(), None);
+                return Err(Error::unavailable(Situation::NoLake { lake, schema }));
             }
-            std::fs::create_dir_all(&dir).map_err(|e| io_error("creating", &dir, e))?;
+            std::fs::create_dir_all(&dir).map_err(|e| io_error(Doing::Create, Part::File, e))?;
         }
         check_name(&dir, &lake, create)?;
         let log = Log::open(&dir, create)?;
@@ -124,10 +124,8 @@ impl SqliteLake {
         let writer = match mode {
             OpenMode::Read => {
                 if !path.is_file() {
-                    return Err(unavailable(format!(
-                        "the lake in {} has no projection yet; open it for writing first",
-                        dir.display()
-                    )));
+                    let lake = lake.to_string();
+                    return Err(Error::unavailable(Situation::NoProjection { lake }));
                 }
                 None
             }
@@ -161,22 +159,23 @@ impl SqliteLake {
         let writer = lock(&self.writer);
         match writer.as_ref() {
             Some(conn) => f(conn),
-            None => Err(unavailable(format!(
-                "lake `{}` is open read-only here; its projection is written by the handle \
-                 that holds the lease",
-                self.lake
-            ))),
+            None => Err(self.read_only()),
         }
+    }
+
+    /// The refusal of a write through a handle opened read-only.
+    fn read_only(&self) -> Error {
+        let (lake, leased_elsewhere) = (Some(self.lake.to_string()), false);
+        Error::unavailable(Situation::ReadOnly {
+            lake,
+            leased_elsewhere,
+        })
     }
 
     /// Refuses a write to the log through a handle opened read-only.
     fn writable(&self) -> Result<()> {
         match self.mode {
-            OpenMode::Read => Err(unavailable(format!(
-                "lake `{}` is open read-only here; open it for writing to take the lease or \
-                 append",
-                self.lake
-            ))),
+            OpenMode::Read => Err(self.read_only()),
             OpenMode::Write | OpenMode::Create => Ok(()),
         }
     }
@@ -198,17 +197,12 @@ impl SqliteLake {
         if held.as_ref().is_some_and(|h| h.lease == *lease) && fence == lease.fence {
             return Ok(held);
         }
-        Err(unavailable(if holder.is_empty() {
-            format!(
-                "the lease with fence {} is stale: no one holds the lake's writer lease",
-                lease.fence
-            )
-        } else {
-            format!(
-                "the lease with fence {} is stale: `{holder}` holds the lake's writer lease with \
-                 fence {fence}",
-                lease.fence
-            )
+        let named = !holder.is_empty();
+        Err(Error::unavailable(Situation::LeaseStale {
+            fence: lease.fence,
+            holder: named.then_some(holder),
+            current: named.then_some(fence),
+            undone: None,
         }))
     }
 
@@ -222,9 +216,10 @@ impl SqliteLake {
         write: impl FnOnce(&mut Log) -> Result<(R, Option<(u64, u64)>)>,
     ) -> Result<R> {
         let mut held = self.check_lease(lease)?;
-        let held = held
-            .as_mut()
-            .ok_or_else(|| unavailable("the lease is not held by this handle"))?;
+        let held = held.as_mut().ok_or_else(|| {
+            let (fence, undone) = (None, None);
+            Error::unavailable(Situation::LeaseNotHeld { fence, undone })
+        })?;
         let mut log = lock(&self.log);
         log.refresh()?;
         if let Some((tip, _)) = log.tip()
@@ -252,7 +247,7 @@ impl SqliteLake {
             .try_fold(0, |sum, p| match std::fs::metadata(p) {
                 Ok(m) => Ok(sum + m.len()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(sum),
-                Err(e) => Err(io_error("measuring", p, e)),
+                Err(e) => Err(io_error(Doing::Measure, Part::File, e)),
             })
     }
 
@@ -281,9 +276,10 @@ fn check_name(dir: &std::path::Path, lake: &LakeId, create: bool) -> Result<()> 
             name.trim_end()
         ))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && create => {
-            std::fs::write(&path, format!("{lake}\n")).map_err(|e| io_error("writing", &path, e))
+            std::fs::write(&path, format!("{lake}\n"))
+                .map_err(|e| io_error(Doing::Write, Part::File, e))
         }
-        Err(e) => Err(io_error("reading", &path, e)),
+        Err(e) => Err(io_error(Doing::Read, Part::File, e)),
     }
 }
 
@@ -549,18 +545,12 @@ impl ProjectionStore for SqliteLake {
             abandon(conn)?;
             let before = self.size()?;
             if !truncate_journal(conn)? {
-                return Err(unavailable(format!(
-                    "lake `{}` could not be compacted: a reader holds a snapshot of its \
-                     projection; nothing a read answers has changed, so compact again when the \
-                     reader is done",
-                    self.lake
-                )));
+                let lake = self.lake.to_string();
+                return Err(Error::unavailable(Situation::Busy { lake }));
             }
             conn.execute_batch("VACUUM").map_err(|e| {
-                unavailable(format!(
-                    "lake `{}` could not be compacted, and its projection is as it was: {e}",
-                    self.lake
-                ))
+                let (lake, detail) = (self.lake.to_string(), Detail::scrubbed(crate::told(&e)));
+                Error::unavailable(Situation::CompactFailed { lake, detail })
             })?;
             // The rewrite is committed. A reader that holds a snapshot now
             // keeps the journal from being truncated: the compact is done

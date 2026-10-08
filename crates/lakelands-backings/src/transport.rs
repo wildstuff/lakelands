@@ -20,6 +20,7 @@ use http_body_util::{BodyExt, Full, Limited};
 use hyper::header::{ACCEPT, CONTENT_TYPE, HOST, HeaderName, HeaderValue};
 use hyper::{Request, Uri};
 use hyper_util::rt::TokioIo;
+use lakelands_api::error::{Detail, Exchange};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, ServerName};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -94,10 +95,10 @@ impl Target {
 }
 
 /// Why a request was not answered.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Failure {
     /// Nothing was sent: the request cannot be made as configured.
-    Refused(String),
+    Refused(Exchange),
     /// Nothing was sent: TLS cannot be set up. The reason may name a
     /// certificate bundle's path on the server.
     Tls(String),
@@ -108,10 +109,10 @@ pub(crate) enum Failure {
     Status(hyper::StatusCode),
     /// The host answered `2xx`, and its body could not be read within the
     /// limit. The status has been given; what the body says is lost.
-    Body(String),
+    Body(Exchange),
     /// The exchange failed, or its answer is not a `2xx` reply within the
     /// limit.
-    Failed(String),
+    Failed(Exchange),
 }
 
 /// The client: its trust, its timeout and its reply limit.
@@ -125,13 +126,29 @@ pub(crate) struct Transport {
 }
 
 impl Failure {
-    /// A status as the sentence a caller's failure carries: `who` names
-    /// the caller, for a redirect ("the http backing").
-    pub(crate) fn status_sentence(status: hyper::StatusCode, who: &str) -> String {
+    /// A status as the exchange a caller's failure carries.
+    pub(crate) fn status(status: hyper::StatusCode) -> Exchange {
+        let status_code = status.as_u16();
         if status.is_redirection() {
-            format!("it answered a redirect ({status}), which {who} does not follow")
+            Exchange::Redirect {
+                status: status_code,
+            }
         } else {
-            format!("it answered {status}")
+            Exchange::Status {
+                status: status_code,
+            }
+        }
+    }
+
+    /// The failure as the exchange a caller's failure carries: TLS that
+    /// cannot be set up as a bundle the operator names, since the reason
+    /// may name a bundle's path on the server.
+    pub(crate) fn exchange(self) -> Exchange {
+        match self {
+            Failure::Refused(x) | Failure::Body(x) | Failure::Failed(x) => x,
+            Failure::Tls(_) => Exchange::NoBundle,
+            Failure::TimedOut(t) => Exchange::TimedOut { secs: t.as_secs() },
+            Failure::Status(s) => Failure::status(s),
         }
     }
 }
@@ -251,9 +268,10 @@ impl Transport {
         for (name, value) in headers {
             request = request.header(name, value);
         }
-        let request = request
-            .body(Full::new(Bytes::from(body)))
-            .map_err(|e| Failure::Refused(format!("{} cannot be requested: {e}", target.shown)))?;
+        let request = request.body(Full::new(Bytes::from(body))).map_err(|e| {
+            let detail = Detail::scrubbed(e);
+            Failure::Refused(Exchange::CannotRequest { detail })
+        })?;
         let host = target.host.as_str();
         let port = target.port;
         let address = host
@@ -265,7 +283,8 @@ impl Transport {
         let tls = match target.secure {
             true => {
                 let name = ServerName::try_from(address.clone()).map_err(|e| {
-                    Failure::Refused(format!("`{host}` is not a name TLS can verify: {e}"))
+                    let (host, detail) = (host.to_owned(), Detail::scrubbed(e));
+                    Failure::Refused(Exchange::NotVerifiable { host, detail })
                 })?;
                 let config = self.tls().map_err(Failure::Tls)?;
                 Some((name, tokio_rustls::TlsConnector::from(config)))
@@ -275,11 +294,15 @@ impl Transport {
         let exchange = async {
             let tcp = TcpStream::connect((address.as_str(), port))
                 .await
-                .map_err(|e| Failure::Failed(format!("cannot connect to {host}:{port}: {e}")))?;
+                .map_err(|e| {
+                    let (host, detail) = (host.to_owned(), Detail::io(&e));
+                    Failure::Failed(Exchange::CannotConnect { host, port, detail })
+                })?;
             match tls {
                 Some((name, connector)) => {
                     let tls = connector.connect(name, tcp).await.map_err(|e| {
-                        Failure::Failed(format!("TLS with {host}:{port} failed: {e}"))
+                        let (host, detail) = (host.to_owned(), Detail::io(&e));
+                        Failure::Failed(Exchange::TlsFailed { host, port, detail })
                     })?;
                     send(tls, request, limit).await
                 }
@@ -300,14 +323,17 @@ where
 {
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(io))
         .await
-        .map_err(|e| Failure::Failed(format!("HTTP failed: {e}")))?;
+        .map_err(|e| {
+            let detail = Detail::scrubbed(e);
+            Failure::Failed(Exchange::Http { detail })
+        })?;
     tokio::spawn(async move {
         let _ = connection.await;
     });
-    let reply = sender
-        .send_request(request)
-        .await
-        .map_err(|e| Failure::Failed(format!("HTTP failed: {e}")))?;
+    let reply = sender.send_request(request).await.map_err(|e| {
+        let detail = Detail::scrubbed(e);
+        Failure::Failed(Exchange::Http { detail })
+    })?;
     let status = reply.status();
     if !status.is_success() {
         return Err(Failure::Status(status));
@@ -318,8 +344,8 @@ where
         .await
         .map(|b| b.to_bytes())
         .map_err(|e| {
-            Failure::Body(format!(
-                "its reply could not be read (at most {limit} bytes): {e}"
-            ))
+            Failure::Body(Exchange::Body {
+                detail: Detail::scrubbed(format_args!("at most {limit} bytes: {e}")),
+            })
         })
 }

@@ -40,9 +40,10 @@ async fn a_fold_whose_begin_is_busy_is_folded_before_the_next_write() {
     other.execute_batch("BEGIN IMMEDIATE").unwrap();
     let refused = try_upsert(l.cat.as_ref(), &l.own, "doc", "b", json!({"n": 2})).await;
     other.execute_batch("ROLLBACK").unwrap();
-    let Err(Error::Unavailable { message }) = refused else {
+    let Err(Error::Unavailable { situation }) = refused else {
         panic!("the write's fold cannot begin: {refused:?}");
     };
+    let message = situation.to_string();
 
     let c = l.upsert("doc", "c", json!({"n": 3})).await.unwrap();
     let Outcome::Applied { position: c, .. } = c else {

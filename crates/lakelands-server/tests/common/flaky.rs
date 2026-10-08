@@ -93,9 +93,10 @@ fn fail(n: &AtomicUsize) -> Result<()> {
     if !take(n) {
         return Ok(());
     }
-    Err(Error::Unavailable {
-        message: "the lake is busy for a moment".into(),
-    })
+    let lake = "flaky".to_owned();
+    Err(Error::unavailable(lakelands_api::error::Situation::Busy {
+        lake,
+    }))
 }
 
 pub struct Store {

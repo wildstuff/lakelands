@@ -108,7 +108,7 @@ async fn a_write_that_waited_behind_a_rename_is_sent_again() {
 
     let answer = waiting.await.expect("the upsert ends");
     assert!(
-        matches!(&answer, Err(Error::Unavailable { message }) if message.contains("send it again")),
+        matches!(&answer, Err(Error::Unavailable { situation }) if situation.to_string().contains("send it again")),
         "a write that waited behind a rename is refused to be sent again: {answer:?}"
     );
     let again = cat
@@ -200,7 +200,7 @@ async fn a_link_that_waited_behind_a_relations_rename_is_sent_again() {
     renames.await.expect("the rename ends");
     let answer = waiting.await.expect("the link ends");
     assert!(
-        matches!(&answer, Err(Error::Unavailable { message }) if message.contains("send it again")),
+        matches!(&answer, Err(Error::Unavailable { situation }) if situation.to_string().contains("send it again")),
         "a link that waited behind its relation's rename is refused to be sent again: {answer:?}"
     );
     let again = link("quotes").await;

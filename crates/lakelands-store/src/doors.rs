@@ -31,7 +31,8 @@ use lakelands_api::{
     VerbName, Verification,
 };
 
-use lakelands_core::{invalid, rights, unavailable};
+use lakelands_api::error::{Exchange, Remote, Seam, Situation};
+use lakelands_core::{invalid, rights};
 
 use crate::exec;
 use crate::ingest;
@@ -184,8 +185,7 @@ impl Doors {
             let made = doors.write(&who, |c| owing(|| f(c))).await?;
             doors.handed(&who, made, by).await
         });
-        let stopped = |e| unavailable(format!("the store's work on this call stopped: {e}"));
-        task.await.unwrap_or_else(|e| Err(stopped(e)))
+        task.await.unwrap_or_else(|e| Err(exec::stopped(&e)))
     }
 
     /// A write whose outcome is [`Doors::handed`]'s.
@@ -248,12 +248,12 @@ impl Doors {
         // The executor ran: where its answer reached the log or is held, a
         // retry answers it; where neither, it is lost but for this sentence.
         let at = at.map_err(|(e, held)| match e {
-            Error::Unavailable { message } => unavailable(format!(
-                "{} answered this call with {recorded}, and recording its answer failed: \
-                 {message}{}",
-                lakelands_api::error::THE_EXECUTOR,
-                writes::held(by, held)
-            )),
+            e @ Error::Unavailable { .. } => Error::unavailable(Situation::Executor {
+                answered: Some(recorded.clone()),
+                held,
+                retry: by.retry(),
+                cause: Box::new(e),
+            }),
             e => e,
         })?;
         Ok((at, recorded))
@@ -417,39 +417,43 @@ impl Catalog for Doors {
             if let Some((model, dimensions)) = declared
                 && (model != embed.model() || dimensions != embed.dimensions())
             {
-                return Err(Error::Unbound {
-                    seam: format!(
-                        "the embedding model `{model}` with {dimensions} dimensions that \
-                         `{}.{field}` is declared with (the bound one is `{}` with {})",
-                        search.ty,
-                        embed.model(),
-                        embed.dimensions()
-                    ),
+                let bound = Some(lakelands_api::error::Bound {
+                    model: embed.model().to_owned(),
+                    dimensions: embed.dimensions(),
                 });
+                let (ty, field) = (search.ty.clone(), field.to_string());
+                return Err(Error::unbound(Seam::Embedding {
+                    model,
+                    dimensions,
+                    ty,
+                    field,
+                    bound,
+                }));
             }
             let mut vectors =
                 embed
                     .embed(std::slice::from_ref(text))
                     .await
                     .map_err(|e| match e {
-                        Error::Unavailable { message } => Error::Unavailable { message },
-                        other => unavailable(format!(
-                            "the embedding backend `{}` failed: {other}",
-                            embed.model()
-                        )),
+                        e @ Error::Unavailable { .. } => e,
+                        other => {
+                            let cause = Box::new(other);
+                            backend_failed(embed.model(), Exchange::Failed { cause })
+                        }
                     })?;
             // A vector the backend made with no direction is its fault, not
             // the caller's: weather, as a wrong count of vectors is.
-            let fault = match &vectors[..] {
-                [one] => lakelands_api::query::no_direction(one)
-                    .map(|why| format!("a vector that {why}")),
-                _ => Some(format!("{} vectors for one text", vectors.len())),
+            let exchange = match &vectors[..] {
+                [one] => {
+                    lakelands_api::query::no_direction(one).map(|why| Exchange::NoDirection { why })
+                }
+                _ => {
+                    let (answered, asked) = (vectors.len() as u64, 1);
+                    Some(Exchange::Vectors { answered, asked })
+                }
             };
-            if let Some(fault) = fault {
-                let model = embed.model();
-                return Err(unavailable(format!(
-                    "the embedding backend `{model}` answered {fault}"
-                )));
+            if let Some(exchange) = exchange {
+                return Err(backend_failed(embed.model(), exchange));
             }
             *vector = vectors.pop();
         }
@@ -834,3 +838,11 @@ impl ChangeFeed for Feed {
 
 #[cfg(test)]
 mod tests;
+
+/// An exchange with the embedding backend of `model` that failed.
+fn backend_failed(model: &str, exchange: Exchange) -> Error {
+    let remote = Remote::Embedding {
+        model: model.to_owned(),
+    };
+    Error::unavailable(Situation::Remote { remote, exchange })
+}

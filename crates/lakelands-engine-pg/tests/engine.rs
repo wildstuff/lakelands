@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
+use lakelands_api::error::Situation;
 use lakelands_api::location::EngineConfig;
 use lakelands_api::seam::Seams;
 use lakelands_api::write::Declaration;
@@ -192,12 +193,12 @@ fn a_fence_raised_in_the_lease_row_refuses_the_holders_next_append_and_seal() {
     let more = chain(2, 1, &events[1].hash, &lease);
     let refused = engine.append(&lease, &more);
     assert!(
-        matches!(&refused, Err(Error::Unavailable { message }) if message.contains("stale")),
+        matches!(&refused, Err(Error::Unavailable { situation }) if situation.to_string().contains("stale")),
         "{refused:?}"
     );
     let sealed = lakelands_core::conformance::engine::seal(engine.as_ref(), &lease, &more);
     assert!(
-        matches!(&sealed, Err(Error::Unavailable { message }) if message.contains("another")),
+        matches!(&sealed, Err(Error::Unavailable { situation }) if situation.to_string().contains("another")),
         "{sealed:?}"
     );
     assert_eq!(engine.tip().unwrap().map(|t| t.0.0), Some(1));
@@ -222,7 +223,7 @@ fn the_next_writer_takes_over_from_a_session_that_died() {
     let second = PgOpener.open(&location, OpenMode::Write).unwrap();
     let held = second.take_lease("second");
     assert!(
-        matches!(&held, Err(Error::Unavailable { message }) if message.contains("`first`") && message.contains("hashes to the same lock")),
+        matches!(held.as_ref().err().and_then(Error::situation), Some(Situation::LeaseLocked { holder: Some(h), .. }) if h == "first"),
         "while the first session lives, its lease holds: {held:?}"
     );
 

@@ -171,11 +171,14 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
         ),
         (
             501,
-            Error::Unbound {
-                seam: "executor `mailer`".into(),
-            },
+            Error::unbound(lakelands_api::error::Seam::Executor {
+                name: "mailer".into(),
+            }),
         ),
-        (503, Error::Unavailable { message: message() }),
+        (
+            503,
+            Error::unavailable(lakelands_api::error::Situation::Moved),
+        ),
     ];
     let answers = errors
         .iter()
@@ -197,7 +200,7 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
 }
 
 /// An answer that is not the contract's is `Unavailable`, naming the
-/// host, the port and the path, and never the key.
+/// lake, and never its address, the path or the key.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_answer_that_is_not_the_contracts_is_unavailable_naming_where() {
     let (addr, _) = fake(vec![
@@ -213,12 +216,16 @@ async fn an_answer_that_is_not_the_contracts_is_unavailable_naming_where() {
             .get(&owner(&lake), &"invoice".into(), get("INV 1"))
             .await
             .unwrap_err();
-        let Error::Unavailable { message } = &e else {
+        let Error::Unavailable { situation } = &e else {
             panic!("expected unavailable, got {e:?}");
         };
-        assert!(message.contains(&addr.to_string()), "{message}");
+        let message = situation.to_string();
         assert!(
-            message.contains("/lakes/finance/types/invoice/records/INV%201"),
+            message.contains("the REST door of lake `finance`"),
+            "{message}"
+        );
+        assert!(
+            !message.contains(&addr.to_string()) && !message.contains("INV"),
             "{message}"
         );
         assert!(message.contains(status), "{message}");
@@ -524,8 +531,11 @@ async fn every_host_operation_is_unbound_naming_it() {
     ];
     for (op, answer) in answers {
         match answer {
-            Err(Error::Unbound { seam }) => {
-                assert!(seam.contains(&format!("`{op}`")), "{op}: {seam}");
+            Err(e) if e.seam().is_some() => {
+                let Some(lakelands_api::error::Seam::Operation { op: named }) = e.seam() else {
+                    panic!("{op}: {e:?}");
+                };
+                assert_eq!(named, op, "{op}");
             }
             other => panic!("{op}: expected unbound, got {other:?}"),
         }
@@ -605,7 +615,7 @@ async fn a_who_without_a_key_is_refused_before_anything_is_sent() {
 }
 
 /// A key is in no `Debug` and in no failure: the connection refused
-/// names the host, the port and the path, and not the key.
+/// names the lake, and not its address, the path or the key.
 #[tokio::test(flavor = "multi_thread")]
 async fn no_key_shows_in_debug_or_in_a_failure() {
     let closed = {
@@ -622,15 +632,19 @@ async fn no_key_shows_in_debug_or_in_a_failure() {
         .get(&owner(&lake), &"invoice".into(), get("INV-1"))
         .await
         .unwrap_err();
-    let Error::Unavailable { message } = &e else {
+    let Error::Unavailable { situation } = &e else {
         panic!("expected unavailable, got {e:?}");
     };
-    assert!(message.contains(&closed.to_string()), "{message}");
+    let message = situation.to_string();
     assert!(
-        message.contains("/lakes/finance/types/invoice/records/INV-1"),
+        message.contains("the REST door of lake `finance`"),
         "{message}"
     );
-    for text in [&shown, message] {
+    assert!(
+        !message.contains(&closed.to_string()) && !message.contains("INV-1"),
+        "{message}"
+    );
+    for text in [&shown, &message] {
         assert!(!text.contains("k-owner"), "{text}");
     }
 }
@@ -702,7 +716,8 @@ fn capped(addr: std::net::SocketAddr) -> RemoteLake {
 
 fn too_long(e: Error, what: &str) {
     match e {
-        Error::Unavailable { message } => {
+        Error::Unavailable { situation } => {
+            let message = situation.to_string();
             assert!(
                 message.contains("more than 65536 bytes"),
                 "{what}: {message}"

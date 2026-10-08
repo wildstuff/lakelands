@@ -1,4 +1,4 @@
-package lakelands:data@0.11.0;
+package lakelands:data@0.12.0;
 
 /// The types every interface of the package shares: the contract of
 /// `lakelands-api`, type for type.
@@ -1102,12 +1102,27 @@ interface types {
         actual: version,
     }
 
+    /// A case of a closed set, as the crate's serde form writes it: the
+    /// places it is said at as JSON text (a list, `[]` where it names
+    /// none), its code, its parameters as JSON text (an object), and the
+    /// sentence its parameters make. A code a caller does not know is
+    /// rendered by its message.
+    record said {
+        at: string,
+        code: string,
+        params: string,
+        message: string,
+    }
+
     variant error {
         refused(refused),
         not-found(missing),
         conflict(conflict),
-        unbound(string),
-        unavailable(string),
+        /// The seam the call needs (`lakelands_api::error::Seam`).
+        unbound(said),
+        /// Why the lake cannot answer now
+        /// (`lakelands_api::error::Situation`).
+        unavailable(said),
     }
 
     // ------------------------------------------------------------------

@@ -29,6 +29,7 @@ what it counts.
 | `dco` | every commit is signed off |
 | `no-external-decisions` | no citation of the platform's decision records, planning threads or issue numbers, in files or commit messages |
 | `doc-heads-its-item` | a new item is never inserted between another item and its doc comment: no added `fn`, `struct`, `enum`, `const`, `static`, `type`, `trait`, `impl` or `mod` whose doc block is headed by an unchanged `///` line |
+| `detail-sources` | an error's foreign words (`scrubbed`, by any path or alias) are made only in the product files the gate lists, each with why its words quote no record and no host path, and no product file outside the client reads an `Error`, a `Situation` or a `Detail` from JSON by name |
 
 The three budget gates (`core-size`, `seam-width`, `cfg-budget`) let a
 number go down by itself. A ceiling or a ratchet base that is higher

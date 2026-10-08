@@ -691,7 +691,7 @@ impl From<Oops> for String {
 /// A client door's error: `unavailable` is the server not answering.
 fn remote_oops(e: lakelands_api::Error) -> Oops {
     match e {
-        lakelands_api::Error::Unavailable { message } => Oops::Stall(message),
+        e @ lakelands_api::Error::Unavailable { .. } => Oops::Stall(e.said()),
         other => Oops::Wrong(format!("{other:?}")),
     }
 }

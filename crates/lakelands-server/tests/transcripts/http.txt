@@ -70,7 +70,7 @@
 > {"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"invoice_upsert","arguments":{"key":"INV-1","fields":{"verdict":"ok"}}}}
 < 200
 < content-type: application/json
-< {"id":32,"jsonrpc":"2.0","result":{"content":[{"text":"error: refused on `verdict`: you hold no grant for this\n  what to do: act as a principal whose grants allow it, or ask the lake's owner for a grant\n","type":"text"},{"text":"{\"error\":\"refused\",\"field\":\"verdict\",\"reason\":{\"refusal\":\"not_granted\"}}","type":"text"}],"isError":true}}
+< {"id":32,"jsonrpc":"2.0","result":{"content":[{"text":"error: refused on `verdict`: you hold no grant for this\n  what to do: act as a principal whose grants allow it, or ask the lake's owner for a grant\n","type":"text"},{"text":"{\"error\":\"refused\",\"field\":\"verdict\",\"message\":\"refused on `verdict`: you hold no grant for this\",\"reason\":{\"refusal\":\"not_granted\"}}","type":"text"}],"isError":true}}
 
 # A misspelled argument is refused before anything runs, so a
 # compare-and-set never becomes an unconditional write.

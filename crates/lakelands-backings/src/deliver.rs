@@ -545,9 +545,8 @@ impl Deliverer {
             Err(Failure::TimedOut(t)) => {
                 Answer::Retry(format!("it did not answer within {}s", t.as_secs()))
             }
-            Err(Failure::Failed(why) | Failure::Refused(why) | Failure::Tls(why)) => {
-                Answer::Retry(why)
-            }
+            Err(Failure::Failed(why) | Failure::Refused(why)) => Answer::Retry(why.to_string()),
+            Err(Failure::Tls(why)) => Answer::Retry(why),
         }
     }
 

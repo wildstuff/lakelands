@@ -38,6 +38,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use lakelands_api::engine::ProjectionView;
+use lakelands_api::error::{Flaw, Part, Retry, Seam, Situation};
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
 use lakelands_api::ontology::{
     Authority, FieldDecl, RelationDecl, Risk, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl,
@@ -162,8 +163,10 @@ pub fn check_context(lake: &Lake, context: &WriteContext) -> Result<()> {
 /// not bound is refused.
 pub(crate) fn bound_executor<'a>(lake: &'a Lake, name: &str) -> Result<&'a Arc<dyn VerbExecutor>> {
     let bound = lake.seams.executors.iter().find(|e| e.name() == name);
-    bound.ok_or_else(|| Error::Unbound {
-        seam: format!("the verb executor `{name}`"),
+    bound.ok_or_else(|| {
+        Error::unbound(Seam::Executor {
+            name: name.to_owned(),
+        })
     })
 }
 
@@ -1743,8 +1746,10 @@ impl Call<'_> {
         // A stored proposal holds its write; a row without one is a
         // projection the store cannot use.
         let Some(write) = p.write.as_ref() else {
-            let what = format!("the projection holds proposal `{proposal}` without its write");
-            return Err(lakelands_core::unavailable(what));
+            let flaw = Flaw::ProposalWithoutWrite {
+                proposal: proposal.clone(),
+            };
+            return Err(lakelands_core::damaged(Part::Projection, None, flaw));
         };
         granted(!write.is_schema() || self.who.grants.schema)?;
         let now = self.lake.clock(&mut w);
@@ -1964,9 +1969,9 @@ impl Call<'_> {
     pub(crate) fn writer(&self) -> Result<std::sync::MutexGuard<'_, crate::lake::Writer>> {
         let w = self.lake.for_write()?;
         match self.followed {
-            Some(n) if self.lake.renames(None)?.len() != n => Err(lakelands_core::unavailable(
-                "the lake's names moved while this write waited; send it again",
-            )),
+            Some(n) if self.lake.renames(None)?.len() != n => {
+                Err(Error::unavailable(Situation::Moved))
+            }
             _ => Ok(w),
         }
     }
@@ -2037,12 +2042,9 @@ impl Call<'_> {
             && crate::backed::is_backed(f)
             && !backings.iter().any(|b| b.kind() == f.backing)
         {
-            return Err(Error::Unbound {
-                seam: format!(
-                    "the `{}` function backing (the host bound none of that kind)",
-                    f.backing
-                ),
-            });
+            return Err(Error::unbound(Seam::FunctionBacking {
+                kind: f.backing.clone(),
+            }));
         }
         if let Declaration::Type(t) = d {
             self.check_embeddings(t, in_force)?;
@@ -2080,20 +2082,17 @@ impl Call<'_> {
             if kept.is_some_and(|k| k.embed == f.embed && k.ty.dimensions == f.ty.dimensions) {
                 continue;
             }
-            let found = match bound {
-                None => "none is bound".to_owned(),
-                Some(b) => format!(
-                    "the bound one is `{}` with {} dimensions",
-                    b.model(),
-                    b.dimensions()
-                ),
-            };
-            return Err(Error::Unbound {
-                seam: format!(
-                    "the embedding model `{}` with {dimensions} dimensions, for `{}.{}` ({found})",
-                    e.model, t.name, f.name
-                ),
+            let bound = bound.map(|b| lakelands_api::error::Bound {
+                model: b.model().to_owned(),
+                dimensions: b.dimensions(),
             });
+            return Err(Error::unbound(Seam::Embedding {
+                model: e.model.clone(),
+                dimensions,
+                ty: t.name.clone(),
+                field: f.name.to_string(),
+                bound,
+            }));
         }
         Ok(())
     }
@@ -3941,15 +3940,15 @@ pub(crate) enum MadeDue {
     Accepted,
 }
 
-/// What a call whose executor's answer is `held` says after the answer.
-pub(crate) fn held(by: MadeDue, held: bool) -> String {
-    let again = match by {
-        MadeDue::Call { keyed: false } => "",
-        MadeDue::Call { keyed: true } => "; sent again under its key, the call answers it",
-        MadeDue::Accepted => "; accepted again, the proposal answers it",
-    };
-    let said = format!("; the answer is held and recorded before the next write{again}");
-    if held { said } else { String::new() }
+impl MadeDue {
+    /// How such a call is sent again.
+    pub(crate) fn retry(self) -> Retry {
+        match self {
+            MadeDue::Call { keyed: false } => Retry::Call,
+            MadeDue::Call { keyed: true } => Retry::OtherKey,
+            MadeDue::Accepted => Retry::Propose,
+        }
+    }
 }
 
 /// The answer to a call of an external verb, or to its acceptance, that
@@ -3962,26 +3961,15 @@ pub(crate) fn held(by: MadeDue, held: bool) -> String {
 /// call again. A failure that is not `unavailable` (the record retired
 /// since the call) is said in the same words.
 pub(crate) fn not_handed(e: Error, not_run: bool, by: MadeDue) -> Error {
-    let what = match by {
-        MadeDue::Call { keyed: false } => ": call the verb again",
-        MadeDue::Call { keyed: true } => {
-            ", and sending it again under its key will not run it: call the verb again under \
-             another key or with none"
-        }
-        MadeDue::Accepted => {
-            ", and the proposal is decided, so accepting it again will not run it: propose \
-             the call again"
-        }
-    };
-    let message = match e {
-        e if !not_run => return e,
-        Error::Unavailable { message } => message,
-        e => e.to_string(),
-    };
-    let executor = lakelands_api::error::THE_EXECUTOR;
-    lakelands_core::unavailable(format!(
-        "{message}; {executor} was not handed this call{what}"
-    ))
+    if !not_run {
+        return e;
+    }
+    Error::unavailable(Situation::Executor {
+        answered: None,
+        held: false,
+        retry: by.retry(),
+        cause: Box::new(e),
+    })
 }
 
 /// A retry of a call of an external verb made due at `at`, or of its

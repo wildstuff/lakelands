@@ -103,6 +103,8 @@ fn status_of(e: &Error) -> StatusCode {
         Error::Conflict { .. } => StatusCode::PRECONDITION_FAILED,
         Error::Unbound { .. } => StatusCode::NOT_IMPLEMENTED,
         Error::Unavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
+        // The store says no error of a kind its build does not know.
+        Error::Unknown(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
@@ -849,10 +851,9 @@ async fn door(
                 .describe(who, Default::default())
                 .await
                 .map_err(contract)?;
-            let specs = tools(&d.data).map_err(|p| {
-                contract(Error::Unavailable {
-                    message: format!("the lake's names cannot all become tools: {}", to_json(&p)),
-                })
+            let specs = tools(&d.data).map_err(|problems| {
+                let names = lakelands_api::error::Situation::ToolNames { problems };
+                contract(Error::unavailable(names))
             })?;
             if let Some(spec) = specs.iter().find(|s| s.door == r.door)
                 && let Some(fault) = unknown_argument(spec, &a)
