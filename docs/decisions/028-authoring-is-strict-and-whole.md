@@ -233,3 +233,22 @@ own fields; compare the reference's key, or walk to the record it names
 in a pattern. Reading through a reference in a condition is not built
 (lakelands#567). A declaration in force that holds such a path stays in
 force until it is declared again.
+
+## Extended: a valid time is a date-time field (lakelands#714)
+
+`valid_from` and `valid_to` had to name a field of the type, of any
+kind. A read at `valid_at` anchored a record by any string value that
+reads as an instant, so a `text` or a `decimal` field, or a reference
+whose key looks like a date, set a record's validity by coincidence. A
+value that did not read as one left the record valid at no instant, with
+nothing said, and a migration could turn the valid time into `text`.
+
+Each now names a field of kind `date_time`, stored or derived, on a type
+or a view. A field of any other kind is refused as `invalid` on it,
+naming the member and the kind, by `declare`, `apply`, a proposal and a
+migration's `to`, and by the mock in the same words. A write holds a
+`date_time` value to a UTC instant, so a valid time is an instant or
+absent, and the read anchors only those. A declaration in force is not
+checked again until it is declared again, and then it is checked as any
+other is.
+

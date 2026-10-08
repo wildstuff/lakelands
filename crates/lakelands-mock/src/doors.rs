@@ -2843,20 +2843,34 @@ fn authored(st: &State, who: &Principal, m: &mut Migration) -> Result<()> {
     }
 }
 
-/// As the store: a key and a valid time name fields of their type, in the
-/// store's words.
+/// As the store: a key and a valid time name fields of their type, and a
+/// valid time a date-time field, in the store's words.
 fn shape_names(t: &TypeDecl) -> Result<()> {
     let has = |f: &FieldName| t.fields.iter().any(|d| &d.name == f);
-    match (t.key.iter().chain(&t.valid_from).chain(&t.valid_to)).find(|k| !has(k)) {
-        Some(k) => {
-            let message = format!(
-                "type `{}` names `{k}`, which is not one of its fields",
-                t.name
-            );
-            Err(on(k, Refusal::Invalid { message }))
-        }
-        None => Ok(()),
+    if let Some(k) = (t.key.iter().chain(&t.valid_from).chain(&t.valid_to)).find(|k| !has(k)) {
+        let message = format!(
+            "type `{}` names `{k}`, which is not one of its fields",
+            t.name
+        );
+        return Err(on(k, Refusal::Invalid { message }));
     }
+    for (at, k) in [("valid_from", &t.valid_from), ("valid_to", &t.valid_to)] {
+        let field = k
+            .as_ref()
+            .and_then(|k| t.fields.iter().find(|f| &f.name == k));
+        if let Some(f) =
+            field.filter(|f| f.ty.kind != lakelands_api::ontology::StorageKind::DateTime)
+        {
+            let is = serde_json::to_value(f.ty.kind).unwrap_or_default();
+            let is = is.as_str().unwrap_or_default();
+            let message = format!(
+                "type `{}` names `{}` as its `{at}`, a {is} field; a valid time is a date-time field",
+                t.name, f.name
+            );
+            return Err(on(&f.name, Refusal::Invalid { message }));
+        }
+    }
+    Ok(())
 }
 
 /// As the store: a declaration reads only what its author may read. The

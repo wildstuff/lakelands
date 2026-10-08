@@ -624,6 +624,22 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             ));
         }
     }
+    // A valid time is a stored instant (028, extended): a field of another
+    // kind would set a record's validity by a value that only reads as one.
+    for (at, k) in [("valid_from", &t.valid_from), ("valid_to", &t.valid_to)] {
+        let kind = |k: &FieldName| t.fields.iter().find(|f| &f.name == k).map(|f| f.ty.kind);
+        if let Some((k, kind)) = k.as_ref().and_then(|k| Some((k, kind(k)?)))
+            && kind != StorageKind::DateTime
+        {
+            let is = value::kind_name(kind);
+            return Err(invalid_field(
+                k,
+                format!(
+                    "{owner} names `{k}` as its `{at}`, a {is} field; a valid time is a date-time field"
+                ),
+            ));
+        }
+    }
     // Before any relation is judged: one its author is not shown, put back
     // under a name the author sends again, is refused as any relation
     // declared twice, and nothing else is said of it (024, extended).

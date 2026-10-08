@@ -231,7 +231,8 @@ macro_rules! door_checks {
             #[own_principals]
             a_relation_carried_by_a_hidden_field_answers_nothing_of_it,
             #[own_principals]
-            a_shape_names_no_field_its_author_may_not_know_of);
+            a_shape_names_no_field_its_author_may_not_know_of,
+            a_valid_time_names_a_date_time_field);
     };
     (@each $at:ident, $new:expr, $block_on:path;
         $($(#[$mark:ident])? $name:ident),* $(,)?) => {
@@ -11300,6 +11301,56 @@ pub async fn a_shape_names_no_field_its_author_may_not_know_of(store: Arc<dyn La
     assert!(
         said[0] == said[1] && said[2] == said[3] && !said.iter().any(|s| s == "taken"),
         "`paid` sent to the hidden `payroll` must answer as to `zzt`: {said:?}"
+    );
+}
+
+/// A valid time names a `date_time` field: one of any other kind is
+/// refused as invalid on it, by `declare` and by a migration, in the
+/// store's words (lakelands#714).
+pub async fn a_valid_time_names_a_date_time_field(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    let kind = |name: &str, kind: &str| json!({"name": name, "type": {"kind": kind}});
+    let stamped = |at: Value, valid: (&str, &str)| {
+        let d = json!({"declare": "type", "name": "stamped", "fields": [kind("from", "date_time"), at],
+            "valid_from": valid.0, "valid_to": valid.1});
+        serde_json::from_value::<Declaration>(d).expect("a declaration reads")
+    };
+    let refused = |answer: &Result<(), Error>, at: &str| {
+        matches!(answer, Err(Error::Refused { field: Some(f), reason: Refusal::Invalid { message } })
+            if f.as_str() == at && message.contains("a valid time is a date-time field"))
+    };
+    let mut wrong = Vec::new();
+    for k in ["text", "number", "decimal", "boolean", "json"] {
+        for valid in [("at", "from"), ("from", "at")] {
+            let answer = c
+                .declare(own, stamped(kind("at", k), valid))
+                .await
+                .map(drop);
+            if !refused(&answer, "at") {
+                wrong.push(format!("`at` of kind {k} as {valid:?}: {answer:?}"));
+            }
+        }
+    }
+    let ok = stamped(kind("at", "date_time"), ("at", "from"));
+    c.declare(own, ok)
+        .await
+        .expect("a date-time valid time is declared");
+    let Declaration::Type(to) = stamped(kind("at", "text"), ("at", "from")) else {
+        unreachable!("a type")
+    };
+    let m = Migration {
+        to,
+        renames: Vec::new(),
+        relation_renames: Vec::new(),
+    };
+    let answer = c.migrate(own, m).await.map(drop);
+    if !refused(&answer, "at") {
+        wrong.push(format!("a migration of `at` to text: {answer:?}"));
+    }
+    assert!(
+        wrong.is_empty(),
+        "a valid time names a date-time field: {wrong:?}"
     );
 }
 

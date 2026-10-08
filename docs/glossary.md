@@ -20,7 +20,8 @@ about the rest of the lake.
 
 **valid_at** — business time: the instant in the world a read asks
 about. A record of a valid-timed type holds between its `valid_from` and
-`valid_to`; `valid_at` selects the records valid at that instant. It
+`valid_to`, each a `date_time` field; `valid_at` selects the records
+valid at that instant. It
 combines with `as_of` and never replaces it: `as_of` asks what the lake
 knew, `valid_at` asks what was true.
 
