@@ -131,6 +131,10 @@ struct Inner {
     next: Position,
     /// The next position whose declarations are told of.
     declared: Position,
+    /// The tools changes the pump has queued.
+    tools_made: u64,
+    /// How many of them the session's last answered `tools/list` covers.
+    tools_listed: u64,
 }
 
 /// One session's subscription and positions, shared with its pump.
@@ -150,6 +154,8 @@ impl Watch {
                 generation: 0,
                 next: Position::GENESIS,
                 declared: Position::GENESIS,
+                tools_made: 0,
+                tools_listed: 0,
             }),
             wake: Notify::new(),
         })
@@ -211,6 +217,28 @@ impl Watch {
     /// always, a change only while its subscription holds.
     pub fn current(&self, q: &Queued) -> bool {
         q.generation.is_none_or(|g| g == self.inner().generation)
+    }
+
+    /// The tools changes queued so far; read before the tools a
+    /// `tools/list` answers, so a change made meanwhile stays owed.
+    pub(crate) fn tools_made(&self) -> u64 {
+        self.inner().tools_made
+    }
+
+    /// The session answered `tools/list` with the tools as they stood
+    /// after `made` changes: those changes are no longer owed.
+    pub(crate) fn listed(&self, made: u64) {
+        let mut i = self.inner();
+        i.tools_listed = i.tools_listed.max(made);
+    }
+
+    /// Whether a tools change was queued that no `tools/list` has
+    /// answered since. A tools change has no position to resume from, and
+    /// a stream that took it may have closed before its client read it:
+    /// only the session listing its tools again shows the change arrived.
+    pub fn tools_owed(&self) -> bool {
+        let i = self.inner();
+        i.tools_made > i.tools_listed
     }
 
     fn snapshot(&self) -> (u64, Option<Subscription>, Position, Position) {
@@ -338,6 +366,7 @@ pub async fn pump(
             }
             let queued = match e.body.kind() {
                 "declared" | "migrated" | "value_type_migrated" if e.position >= declared => {
+                    watch.inner().tools_made += 1;
                     Some(Queued {
                         generation: None,
                         message: json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}),

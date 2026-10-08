@@ -122,7 +122,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   connection stands and why a type stopped (`docs/seams.md`, the
   mirror). An agent on MCP is told of changes without polling:
   every session receives `notifications/tools/list_changed` when the
-  lake's declarations change. After the `subscribe` tool, it also
+  lake's declarations change. Until the session lists its tools again,
+  each stream it opens begins with that notification, so one taken by a
+  stream that closed before its client read it is not lost
+  (lakelands#744). After the `subscribe` tool, it also
   receives `notifications/lakelands/changed` for each change of a record
   its principal may read. Without a list of types, the types are the ones
   it may read when each change happens, so a type declared later is
