@@ -728,7 +728,7 @@ fn fill_key_fields(
 }
 
 /// Refuse a write whose `reference` values name no live record of their
-/// target type.
+/// target type that its writer is answered.
 fn check_references(
     view: &dyn ProjectionView,
     pending: &Pending,
@@ -749,10 +749,11 @@ fn check_references(
         if target == ty && to == *key {
             continue;
         }
-        // A record a holder of `only` is not admitted is, to it, not there.
+        // A record a holder of `only` is not admitted, or one restricted, is
+        // to it not there.
         let only = rights::own_only(who, target);
         let exists = (pending.record(view, target, &to)?)
-            .is_some_and(|r| !r.retired && rights::admitted(&only, &r.fields));
+            .is_some_and(|r| !r.retired && answered(who, &r) && rights::admitted(&only, &r.fields));
         if !exists {
             let (field, ty, key) = (name.clone(), target.clone(), to);
             return Err(constraint(
@@ -818,7 +819,8 @@ pub(crate) fn provisional(lake: &Lake, position: Position, d: &Draft) -> Event {
 }
 
 /// The record at a key as `who`'s write judges it: `before`, retired or
-/// not, where `who`'s grant admits it, and else none (051).
+/// not, where `who`'s grant admits it and it is answered, and else none
+/// (051, 006).
 pub(crate) fn owned(
     view: &dyn ProjectionView,
     pending: &Pending,
@@ -827,9 +829,41 @@ pub(crate) fn owned(
     before: Option<StoredRecord>,
 ) -> Result<Option<StoredRecord>> {
     match before {
-        Some(b) if !owns(view, pending, who, decl, &b.fields)? => Ok(None),
+        Some(b)
+            if !answered(who, &b)
+                || !ends_answered(view, pending, who, decl, &b.fields)?
+                || !owns(view, pending, who, decl, &b.fields)? =>
+        {
+            Ok(None)
+        }
         b => Ok(b),
     }
+}
+
+/// Whether `who` is answered each end of a link of `decl` holding
+/// `fields`: a link with a restricted end is not there to a writer
+/// without the grant (006).
+fn ends_answered(
+    view: &dyn ProjectionView,
+    pending: &Pending,
+    who: &Principal,
+    decl: &TypeDecl,
+    fields: &BTreeMap<FieldName, Value>,
+) -> Result<bool> {
+    let link = links::link_type_parts(&decl.name).is_some();
+    for f in
+        (decl.fields.iter()).filter(|f| link && [links::FROM, links::TO].contains(&f.name.as_str()))
+    {
+        let k = fields.get(&f.name).and_then(Value::as_str);
+        if let Some((end, k)) = f.ty.target.as_ref().zip(k)
+            && pending
+                .record(view, end, &k.into())?
+                .is_some_and(|e| !answered(who, &e))
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Whether `who`'s grant admits a record of `decl` holding `fields`: its
@@ -859,16 +893,26 @@ fn owns(
 
 /// The live record of `decl` at `key` that `who`'s write may reach, the
 /// one read of a record a write makes: a retired one is not found, and to
-/// a holder of `only` another's is not found, as a missing one is (051).
+/// a holder of `only` another's is not found, as a missing one is (051);
+/// so is a restricted one, or a link with a restricted end, to a writer
+/// without the grant (006).
 fn own_record(
     view: &dyn ProjectionView,
     decl: &TypeDecl,
     key: &RecordKey,
     who: &Principal,
 ) -> Result<StoredRecord> {
-    let r = view.get(&decl.name, key)?.filter(|r| !r.retired);
+    let r = view
+        .get(&decl.name, key)?
+        .filter(|r| !r.retired && answered(who, r));
+    let none = &Pending::default();
     match r {
-        Some(r) if owns(view, &Pending::default(), who, decl, &r.fields)? => Ok(r),
+        Some(r)
+            if ends_answered(view, none, who, decl, &r.fields)?
+                && owns(view, none, who, decl, &r.fields)? =>
+        {
+            Ok(r)
+        }
         _ => Err(Error::NotFound {
             missing: Missing::Record {
                 ty: decl.name.clone(),
@@ -876,6 +920,36 @@ fn own_record(
             },
         }),
     }
+}
+
+/// Whether a proposal logged at `at` reached a record restricted then: the
+/// record it writes, or one an upsert's reference names.
+fn held_then(lake: &Lake, o: &Ontology, at: Position, write: &ProposedWrite) -> Result<bool> {
+    let (ty, key, patch) = match write {
+        ProposedWrite::Upsert { ty, key, patch, .. } => (ty, Some(key), Some(patch)),
+        ProposedWrite::Retire { ty, key, .. } => (ty, Some(key), None),
+        ProposedWrite::Call { verb, key, .. } => (&o.verb(verb)?.on, key.as_ref(), None),
+        _ => return Ok(false),
+    };
+    let decl = o.ty(ty)?;
+    let refs = (patch.iter().flat_map(|p| p.iter())).filter_map(|(n, v)| {
+        let f = decl.fields.iter().find(|f| &f.name == n)?;
+        Some((f.ty.target.as_ref()?, RecordKey::from(v.as_str()?)))
+    });
+    let then = lake.engine.view(Some(at))?;
+    for (ty, key) in key.map(|k| (ty, k.clone())).into_iter().chain(refs) {
+        if then.get(ty, &key)?.is_some_and(|r| r.restricted) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Whether `who` is answered the record `r`: a restricted record is not
+/// there to a principal without the `restricted` grant, at a write door
+/// as at a read (006).
+fn answered(who: &Principal, r: &StoredRecord) -> bool {
+    who.grants.restricted || !r.restricted
 }
 
 /// Whether a migration changes nothing: its `to` is the type in force and
@@ -1018,7 +1092,12 @@ impl Call<'_> {
         // (051).
         let own = owned(view, pending, who, decl, before.clone())?;
         let live = own.as_ref().filter(|b| !b.retired);
-        let other = live.is_none() && before.as_ref().is_some_and(|b| !b.retired);
+        // A retired record the writer is not answered is another's too: its
+        // hold is not written into (006).
+        let other = live.is_none()
+            && before
+                .as_ref()
+                .is_some_and(|b| !b.retired || !answered(who, b));
         if live.is_none() {
             fill_key_fields(w, decl, key, &mut patch, door, who)?;
         }
@@ -1824,9 +1903,24 @@ impl Call<'_> {
 
     /// Refuse a reviewer holding `only` a proposal it is not listed whole:
     /// a change of shape, which it never makes, and a write to a type it
-    /// holds `only` on that its listing would trim or withhold (051). It is
-    /// judged before the reviewer is told whether the proposal is decided.
+    /// holds `only` on that its listing would trim or withhold (051); and
+    /// one without `restricted` a write to a held record, which it is not
+    /// answered (006). It is judged before the reviewer is told whether the
+    /// proposal is decided.
     fn decides(&self, o: &Ontology, p: &lakelands_api::write::Proposal) -> Result<()> {
+        let at = match p.write.as_ref() {
+            Some(ProposedWrite::Upsert { ty, key, .. } | ProposedWrite::Retire { ty, key, .. }) => {
+                Some((ty, Some(key)))
+            }
+            Some(ProposedWrite::Call { verb, key, .. }) => {
+                o.verb(verb).ok().map(|v| (&v.on, key.as_ref()))
+            }
+            _ => None,
+        };
+        if let Some((ty, Some(key))) = at.filter(|_| !self.who.grants.restricted) {
+            let view = self.lake.engine.view(None)?;
+            granted(!view.get(ty, key)?.is_some_and(|r| r.restricted))?;
+        }
         let Some(write) = p.write.as_ref().filter(|_| rights::holds_only(self.who)) else {
             return Ok(());
         };
@@ -1930,7 +2024,11 @@ impl Call<'_> {
         let now = self.lake.clock(&mut w);
         // The write was checked under the proposer's grants when it was
         // proposed; it is applied as the proposer, with what was checked.
-        let proposer = self.lake.system(p.proposer.clone());
+        // Its `restricted` grant is not logged: it held it where the write
+        // reached a record restricted then, and else a record restricted
+        // since is not there to the accept (006).
+        let mut proposer = self.lake.system(p.proposer.clone());
+        proposer.grants.restricted = held_then(self.lake, &w.ontology, p.position, write)?;
         let accepted = Draft {
             id: Some(log::accepted_id(&self.lake.id, proposal)),
             ..self.draft(

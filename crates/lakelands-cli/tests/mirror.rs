@@ -607,13 +607,35 @@ async fn a_mirror_reads_on_past_a_bounded_poll() {
     );
 }
 
+/// A mirror that reads held records writes their copies only with a
+/// writer that holds `restricted` in the target: it is refused before
+/// anything is copied, naming the writer and the grant (042).
+#[tokio::test]
+async fn a_mirror_that_reads_held_records_needs_a_writer_that_may_hold_them() {
+    let mut two = Two::new("held-writer", &Engine::Memory).await;
+    two.restricted = true;
+    two.upsert("customer", "c1", json!({"code": "c1", "name": "Ada"}))
+        .await;
+    let Err(refused) = two.mirror().await else {
+        panic!("a mirror whose writer may not hold held records is refused");
+    };
+    assert!(
+        refused.contains("`mirror`") && refused.contains("no `restricted` grant"),
+        "{refused}"
+    );
+    assert!(
+        two.copy("customer", "c1").await.is_none(),
+        "nothing is copied"
+    );
+}
+
 #[tokio::test]
 async fn a_held_record_crosses_only_to_a_mirror_that_may_see_held_records() {
     for engine in engines() {
         let engine = &engine;
         for restricted in [false, true] {
             let mut two = Two::new(&format!("held-{restricted}"), engine).await;
-            two.restricted = restricted;
+            (two.restricted, two.grants.restricted) = (restricted, restricted);
             two.upsert("customer", "c1", json!({"code": "c1", "name": "Ada"}))
                 .await;
             let mut m = two.mirror().await.unwrap();
