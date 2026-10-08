@@ -206,3 +206,31 @@ A record's vector is not held to a direction. A record may have nothing
 to say along a field, and a vector of zeros scores 0 against every
 query. Its components must be finite 32-bit floats, as every value's
 JSON form says (`docs/log-format.md` §5).
+
+## Extended: a vector ranking reads a vector field (lakelands#743)
+
+A vector search over a text or a number field answered no hits and said
+nothing, and so did an `also` term over one. A hybrid search over such a
+field ranked by its text alone, yet said `hybrid`. A hybrid search
+without a vector over a vector field no model fills had its text
+embedded by whatever backend was bound, and ranked the result against
+vectors its writers made, in a space the lake knows nothing of; over
+one of other dimensions it spent the call and was then refused.
+
+- **A vector ranking reads a vector field.** A vector search, each
+  `also` term and a hybrid search, with a vector or without, whose field
+  is not of kind `vector` is refused as invalid on that field, naming
+  its kind (`search_not_vector`). The caller named a ranking, and an
+  answer that drops it says something the store did not do.
+- **A hybrid search without a vector reads a field a model fills.** Over
+  a vector field without `embed` it is refused as invalid on that field
+  (`search_needs_vector`), whether or not a backend is bound: the fault
+  is in the request read against the declaration, not in the host's
+  configuration, and the mock, which binds none, says the same. Its
+  writers chose the space; the search brings its own vector there.
+- **Both come after the caller's rights and before any embedding
+  call.** A hidden field answers as an absent one and a masked one as
+  not granted, as lakelands#741 orders them; a refused search costs no
+  call. A field declared with `embed` keeps its comparison with the
+  bound backend and its fallback to the text where none is bound, and a
+  caller's vector over a plain vector field is ranked as before.

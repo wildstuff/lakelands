@@ -4563,6 +4563,28 @@ impl Catalog for MockCatalog {
         for name in searched.iter().copied().chain(probed) {
             readable(&st, who, t, name)?;
         }
+        // As the store: a vector ranking reads a vector field, and a hybrid
+        // search without a vector reads one a model fills.
+        for (name, ..) in &vectors {
+            if let Some(f) = field(&t.decl, name)
+                .filter(|f| f.ty.kind != lakelands_api::ontology::StorageKind::Vector)
+            {
+                let (field, kind) = ((*name).clone(), f.ty.kind);
+                return Err(invalid_field(name, Case::SearchNotVector { field, kind }));
+            }
+        }
+        if let SearchMode::Hybrid {
+            field: name,
+            vector: None,
+            ..
+        } = &search.mode
+            && field(&t.decl, name).is_some_and(|f| f.embed.is_none())
+        {
+            let case = Case::SearchNeedsVector {
+                field: name.clone(),
+            };
+            return Err(invalid_field(name, case));
+        }
         // As the store: a query vector is judged by the field's declared
         // length, never by a stored vector.
         let embedded = matches!(&search.mode, SearchMode::Hybrid { vector: None, .. });

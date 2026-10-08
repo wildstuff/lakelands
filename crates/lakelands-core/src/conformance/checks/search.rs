@@ -12,11 +12,12 @@ use lakelands_api::query::{Hits, Search, SearchMode};
 use lakelands_api::{Access, Error, LakeStore, ReadAt, Refusal, TypeName};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, embedding, field, field_access, field_writer, get_at, no_such_field, owner,
-    principal, read_at, refused_alike, refused_on, restrict, searchable, type_decl, vector,
+    Lake, Must, doors, embedding, field, field_access, field_writer, get_at, invalid_like,
+    no_such_field, owner, principal, read_at, refused_alike, refused_on, restrict, searchable,
+    type_decl, vector,
 };
+use crate::conformance::{Failure, Reopen, backing};
 
 check!(
     /// Words match by the one pipeline: case, stem and diacritics fold.
@@ -420,7 +421,8 @@ check!(
 check!(
     /// Without a backend, hybrid search is lexical and says so.
     HYBRID_WITHOUT_BACKEND = a_hybrid_search_without_a_vector_or_a_backend_ranks_lexically_and_says_so,
-    "the embedding seam (docs/seams.md): with no embedding backend bound, a hybrid search that brings no vector ranks by its text alone, and its answer says it ranked lexically"
+    "the embedding seam (docs/seams.md): with no embedding backend bound, a hybrid search that brings no vector over a field a model fills ranks by its text alone, and its answer and its one axis say it ranked lexically",
+    reopens
 );
 
 check!(
@@ -746,6 +748,38 @@ async fn two_docs(store: &dyn LakeStore) -> Result<Lake, Failure> {
     Ok(l)
 }
 
+/// [`two_docs`], with `e`, the embedding of `body` by the suite's model: a
+/// hybrid search without a vector reads a field a model fills
+/// (lakelands#743). It is declared, and its records written, where the
+/// suite's backend is bound; a check searching without one reopens the
+/// lake after.
+async fn two_embedded_docs(store: &dyn LakeStore) -> Result<Lake, Failure> {
+    let l = Lake::of(store);
+    let e = embedding("e", 2, &["body"], crate::conformance::backing::EMBED_MODEL);
+    l.declare(type_decl(
+        "doc",
+        vec![searchable("body"), vector("v", 2), e],
+    ))
+    .await?;
+    l.upsert("doc", "a", json!({"body": "quayside", "v": [0.0, 1.0]}))
+        .await?;
+    l.upsert("doc", "b", json!({"body": "harbour", "v": [1.0, 0.0]}))
+        .await?;
+    Ok(l)
+}
+
+/// A hybrid search for `text` over the embedding `e`, without a vector.
+fn over_e(text: &str) -> SearchMode {
+    SearchMode::Hybrid {
+        text: text.into(),
+        field: "e".into(),
+        vector: None,
+        fields: None,
+        weight: None,
+        text_weight: None,
+    }
+}
+
 pub(super) fn doc_search(mode: SearchMode) -> Search {
     Search {
         ty: TypeName::from("doc"),
@@ -771,15 +805,27 @@ fn hybrid(text: &str, vector: Option<Vec<f32>>) -> SearchMode {
 
 async fn a_hybrid_search_without_a_vector_or_a_backend_ranks_lexically_and_says_so(
     store: Arc<dyn LakeStore>,
+    reopen: Reopen,
 ) -> Result<(), Failure> {
-    two_docs(store.as_ref()).await?;
+    use super::embeddings::{reopen_failed, with_embedder};
+    // `e` is declared, and its records written, where the suite's backend
+    // is bound; the search is made where none is.
+    let store = reopen(store, with_embedder(Some(backing::embedder())))
+        .await
+        .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
+    two_embedded_docs(store.as_ref()).await?;
+    let store = reopen(store, with_embedder(None))
+        .await
+        .map_err(|e| reopen_failed("with no embedding backend", e))?;
     let got = doors(store.as_ref())
-        .search(&owner(store.as_ref()), doc_search(hybrid("quayside", None)))
+        .search(&owner(store.as_ref()), doc_search(over_e("quayside")))
         .await
         .must("a hybrid search for \"quayside\" without a vector, and no backend bound")?
         .data;
+    let lexical =
+        got.axes.len() == 1 && got.axes[0].axis == "lexical" && got.axes[0].field.is_none();
     ensure!(
-        keys(&got) == ["a"] && got.ranked_by.starts_with("lexical"),
+        keys(&got) == ["a"] && got.ranked_by.starts_with("lexical") && lexical,
         "with no embedding backend bound, a hybrid search for \"quayside\" without a \
          vector must rank by its text alone, finding only `a`, and say `lexical`; it \
          found {:?}, ranked by {:?}",
@@ -793,13 +839,15 @@ async fn a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_els
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     use crate::conformance::backing::{NOWHERE, UNREACHABLE, embed_calls};
-    let l = two_docs(store.as_ref()).await?;
+    let l = two_embedded_docs(store.as_ref()).await?;
     let Lake { cat, own } = &l;
-    // The backend makes every text (1, 0), which only `b` points along:
-    // `b` is a hit only if the search ranked over the backend's vector.
+    // The backend makes every text (1, 0), so both records' `e` point
+    // along it: `b`, whose text does not match, is a hit only if the
+    // search ranked over the backend's vector. The calls are counted from
+    // after the records' own embedding.
     let before = embed_calls();
     let got = cat
-        .search(own, doc_search(hybrid("quayside", None)))
+        .search(own, doc_search(over_e("quayside")))
         .await
         .must("a hybrid search for \"quayside\" without a vector, a backend bound")?
         .data;
@@ -834,7 +882,7 @@ async fn a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_els
         format!("{UNREACHABLE} quayside"),
         format!("{NOWHERE} quayside"),
     ] {
-        match cat.search(own, doc_search(hybrid(&text, None))).await {
+        match cat.search(own, doc_search(over_e(&text))).await {
             Err(Error::Unavailable { .. }) => {}
             other => Err(Failure::new(format!(
                 "a hybrid search for {text:?} whose bound embedding backend fails or \
@@ -844,6 +892,198 @@ async fn a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_els
                 other.map(|r| (keys(&r.data).join(","), r.data.ranked_by))
             )))?,
         }
+    }
+    Ok(())
+}
+
+check!(
+    /// A vector ranking reads a vector field, and makes no call it cannot use.
+    SEARCH_READS_A_VECTOR_FIELD = a_vector_ranking_reads_a_vector_field_and_makes_no_call_it_cannot_use,
+    "046, extended (lakelands#743): a vector search, an `also` term or a hybrid search over a field that holds no vectors is refused as invalid on that field, naming its kind; a hybrid search without a vector over a vector field no model fills is refused as invalid on that field, with a backend bound or not; neither asks the backend for a vector, and the caller's rights come first: a hidden field answers as an absent one, a masked one as not granted; a vector, or a hybrid search's own, over a vector field is answered as before",
+    reopens
+);
+
+async fn a_vector_ranking_reads_a_vector_field_and_makes_no_call_it_cannot_use(
+    store: Arc<dyn LakeStore>,
+    reopen: Reopen,
+) -> Result<(), Failure> {
+    use super::embeddings::{reopen_failed, with_embedder};
+    use crate::conformance::backing::embedded;
+    use lakelands_api::query::VectorTerm;
+    let store = reopen(store, with_embedder(Some(backing::embedder())))
+        .await
+        .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
+    let l = Lake::of(store.as_ref());
+    let fields = vec![
+        searchable("title"),
+        searchable("secret"),
+        field("n", StorageKind::Number),
+        vector("plain", 2),
+        vector("wide", 3),
+    ];
+    l.declare(type_decl("doc", fields)).await?;
+    let a = json!({"title": "harbour", "n": 1, "plain": [1.0, 0.0], "wide": [1.0, 0.0, 0.0]});
+    l.upsert("doc", "a", a).await?;
+    let hybrid = |field: &str, text: &str, vector: Option<Vec<f32>>| SearchMode::Hybrid {
+        text: text.into(),
+        field: field.into(),
+        vector,
+        fields: None,
+        weight: None,
+        text_weight: None,
+    };
+    let along = |field: &str, also: &[&str]| SearchMode::Vector {
+        field: field.into(),
+        vector: vec![1.0, 0.0],
+        weight: None,
+        also: (also.iter())
+            .map(|f| VectorTerm {
+                field: (*f).into(),
+                vector: vec![1.0, 0.0],
+                weight: None,
+            })
+            .collect(),
+    };
+    // Each row: what, the search, its text if it has one, and the
+    // refusal's case as said on the wire.
+    let not_vector = |field: &str, kind: &str| json!({"code": "search_not_vector", "field": field, "kind": kind});
+    let needs = |field: &str| json!({"code": "search_needs_vector", "field": field});
+    let mut rows = vec![
+        (
+            "a vector search over `title`",
+            along("title", &[]),
+            None,
+            not_vector("title", "text"),
+        ),
+        (
+            "a vector search over `n`",
+            along("n", &[]),
+            None,
+            not_vector("n", "number"),
+        ),
+        (
+            "an `also` term over `title`",
+            along("plain", &["title"]),
+            None,
+            not_vector("title", "text"),
+        ),
+        (
+            "a hybrid search over `title` with a vector",
+            hybrid("title", "vr-with", Some(vec![1.0, 0.0])),
+            Some("vr-with"),
+            not_vector("title", "text"),
+        ),
+        (
+            "a hybrid search over `title` without one",
+            hybrid("title", "vr-without", None),
+            Some("vr-without"),
+            not_vector("title", "text"),
+        ),
+        (
+            "a hybrid search over `plain` without a vector, a backend bound",
+            hybrid("plain", "vr-plain", None),
+            Some("vr-plain"),
+            needs("plain"),
+        ),
+        (
+            "a hybrid search over `wide` without a vector, a backend bound",
+            hybrid("wide", "vr-wide", None),
+            Some("vr-wide"),
+            needs("wide"),
+        ),
+    ];
+    let mut wrong = Vec::new();
+    let judge = |store: &Arc<dyn LakeStore>,
+                 rows: Vec<(
+        &'static str,
+        SearchMode,
+        Option<&'static str>,
+        serde_json::Value,
+    )>| {
+        let store = store.clone();
+        async move {
+            let mut wrong = Vec::new();
+            for (what, mode, text, says) in rows {
+                let answer = doors(store.as_ref())
+                    .search(&owner(store.as_ref()), doc_search(mode))
+                    .await;
+                let on = says["field"].as_str().unwrap_or_default();
+                let called = text.map_or(0, embedded);
+                if refused_on(&answer).map(|(f, _)| f) != Some(on)
+                    || !invalid_like(&answer, &says)
+                    || called != 0
+                {
+                    let answer = answer.map(|r| keys(&r.data).join(","));
+                    wrong.push(format!("{what}: {answer:?}, {called} calls"));
+                }
+            }
+            wrong
+        }
+    };
+    wrong.extend(judge(&store, std::mem::take(&mut rows)).await);
+    // Where no backend is bound, the same.
+    let store = reopen(store, with_embedder(None))
+        .await
+        .map_err(|e| reopen_failed("with no embedding backend", e))?;
+    let unbound = vec![
+        (
+            "a hybrid search over `plain` without a vector, no backend",
+            hybrid("plain", "vr-plain-none", None),
+            None,
+            needs("plain"),
+        ),
+        (
+            "a hybrid search over `wide` without a vector, no backend",
+            hybrid("wide", "vr-wide-none", None),
+            None,
+            needs("wide"),
+        ),
+    ];
+    wrong.extend(judge(&store, unbound).await);
+    ensure!(
+        wrong.is_empty(),
+        "a vector ranking reads a vector field: {wrong:?}"
+    );
+    // The caller's rights first: `secret` hidden answers as `nosuch`, which
+    // the type does not have; `plain` masked is not granted.
+    let blind = field_access(
+        store.as_ref(),
+        "blind",
+        "doc",
+        &[("secret", Access::None), ("plain", Access::Masked)],
+    );
+    let cat = doors(store.as_ref());
+    let hidden = cat.search(&blind, doc_search(along("secret", &[]))).await;
+    let absent = cat.search(&blind, doc_search(along("nosuch", &[]))).await;
+    refused_alike(
+        "a vector search over the hidden `secret`",
+        &hidden,
+        absent,
+        ("nosuch", "secret"),
+    )?;
+    let masked = cat
+        .search(&blind, doc_search(hybrid("plain", "vr-masked", None)))
+        .await;
+    ensure!(
+        matches!(refused_on(&masked), Some((f, Refusal::NotGranted)) if f == "plain"),
+        "a hybrid search over the masked `plain` must be refused as not granted first; it \
+         answered {:?}",
+        masked.map(|r| keys(&r.data).join(","))
+    );
+    // A caller's vector over a vector field is answered as before.
+    for (what, mode) in [
+        ("a vector search over `plain`", along("plain", &[])),
+        (
+            "a hybrid search over `plain` with a vector",
+            hybrid("plain", "harbour", Some(vec![1.0, 0.0])),
+        ),
+    ] {
+        let got = cat.search(&owner(store.as_ref()), doc_search(mode)).await;
+        ensure!(
+            got.as_ref().is_ok_and(|r| keys(&r.data) == ["a"]),
+            "{what} must find `a`; it answered {:?}",
+            got.map(|r| keys(&r.data).join(","))
+        );
     }
     Ok(())
 }

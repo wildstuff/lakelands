@@ -11,15 +11,16 @@ use lakelands_api::{Error, LakeStore, Principal, Refusal};
 use serde_json::json;
 
 use super::search::{doc_search, keys, masking, refused};
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, doors, embedding, field, owner, searchable, type_decl, vector,
 };
+use crate::conformance::{Failure, Reopen, backing};
 
 check!(
     /// Named fields narrow the match and the ranking.
     FIELDS_NARROW_THE_MATCH = a_search_limited_to_named_fields_matches_and_ranks_in_those_only,
-    "024 and 025: a lexical or hybrid search that names `fields` matches, scores and ties over those searchable fields only, the same on every engine; without `fields` it searches every searchable field"
+    "024 and 025: a lexical or hybrid search that names `fields` matches, scores and ties over those searchable fields only, the same on every engine; without `fields` it searches every searchable field; a hybrid search without a vector or a backend, over a field a model fills, falls back to its text in those fields",
+    reopens
 );
 
 check!(
@@ -117,6 +118,7 @@ async fn answer(
 
 async fn a_search_limited_to_named_fields_matches_and_ranks_in_those_only(
     store: Arc<dyn LakeStore>,
+    reopen: Reopen,
 ) -> Result<(), Failure> {
     accounts(store.as_ref()).await?;
     let own = owner(store.as_ref());
@@ -157,10 +159,30 @@ async fn a_search_limited_to_named_fields_matches_and_ranks_in_those_only(
         "searching \"harbour quayside\" in `secret` answered {:?}",
         scored(&secret)
     );
+    // Without a vector, over `e`, the embedding of `note`: declared where
+    // the suite's backend is bound, searched where none is (lakelands#743).
+    use super::embeddings::{reopen_failed, with_embedder};
+    let store = reopen(store, with_embedder(Some(backing::embedder())))
+        .await
+        .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
+    let e = embedding("e", 2, &["note"], backing::EMBED_MODEL);
+    let fields = vec![
+        searchable("note"),
+        searchable("secret"),
+        field("label", StorageKind::Text),
+        vector("w", 2),
+        e,
+    ];
+    Lake::of(store.as_ref())
+        .declare(type_decl("doc", fields))
+        .await?;
+    let store = reopen(store, with_embedder(None))
+        .await
+        .map_err(|e| reopen_failed("with no embedding backend", e))?;
     let fallback = answer(
         store.as_ref(),
         &own,
-        hybrid_in("harbour quayside", "w", None, &["note"]),
+        hybrid_in("harbour quayside", "e", None, &["note"]),
         "a hybrid search in `note` without a vector",
     )
     .await?;

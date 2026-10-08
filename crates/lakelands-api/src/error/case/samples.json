@@ -953,6 +953,15 @@
    "code": "search_fields_empty"
   },
   {
+   "code": "search_needs_vector",
+   "field": "f"
+  },
+  {
+   "code": "search_not_vector",
+   "field": "f",
+   "kind": "text"
+  },
+  {
    "code": "step_reaches",
    "reached": "t",
    "type": "t"

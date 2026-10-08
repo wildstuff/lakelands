@@ -1035,7 +1035,16 @@ async fn a_hybrid_search_embeds_its_text_through_the_bound_backend() {
     body.searchable = true;
     let mut v = field("v", StorageKind::Vector);
     v.ty.dimensions = Some(2);
-    cat.declare(&o, Declaration::Type(ty("doc", vec![body, v])))
+    // A hybrid search without a vector reads a field a model fills
+    // (lakelands#743): `e`, the embedding of `body` by `axis`.
+    let mut e = field("e", StorageKind::Vector);
+    e.ty.dimensions = Some(2);
+    e.authority = lakelands_api::ontology::Authority::Derived;
+    e.embed = Some(lakelands_api::ontology::EmbedDecl {
+        from: vec!["body".into()],
+        model: "axis".into(),
+    });
+    cat.declare(&o, Declaration::Type(ty("doc", vec![body, v, e])))
         .await
         .unwrap();
     cat.upsert(
@@ -1054,7 +1063,7 @@ async fn a_hybrid_search_embeds_its_text_through_the_bound_backend() {
                 ty: "doc".into(),
                 mode: SearchMode::Hybrid {
                     text: "apple".into(),
-                    field: "v".into(),
+                    field: "e".into(),
                     vector: None,
                     fields: None,
                     weight: None,

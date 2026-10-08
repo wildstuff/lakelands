@@ -634,7 +634,7 @@ async fn a_rekey_while_a_type_is_embedded_leaves_every_record_embedded_once(
     each_once(store.as_ref(), &texts).await
 }
 
-fn with_embedder(embed: Option<Arc<dyn lakelands_api::seam::EmbedBackend>>) -> Seams {
+pub(super) fn with_embedder(embed: Option<Arc<dyn lakelands_api::seam::EmbedBackend>>) -> Seams {
     Seams {
         backings: backing::backings(),
         embed,
@@ -642,7 +642,7 @@ fn with_embedder(embed: Option<Arc<dyn lakelands_api::seam::EmbedBackend>>) -> S
     }
 }
 
-fn reopen_failed(what: &str, e: Error) -> Failure {
+pub(super) fn reopen_failed(what: &str, e: Error) -> Failure {
     Failure::new(format!("opening the lake again {what} failed: {e} ({e:?})"))
 }
 

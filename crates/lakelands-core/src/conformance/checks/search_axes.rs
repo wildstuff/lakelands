@@ -100,7 +100,6 @@ const SAID: &str = r#"
     own | {"mode": "vector", "field": "v", "vector": [1, 0], "also": [{"field": "w", "vector": [1, 0]}]} | vector(v):5 vector(w):0
     own | {"mode": "lexical", "text": "harbour"} | lexical
     own | {"mode": "vector", "field": "v", "vector": [1, 0]} | vector(v)
-    own | {"mode": "hybrid", "text": "harbour", "field": "v"} | lexical
 "#;
 
 const READERS: &str = r#"

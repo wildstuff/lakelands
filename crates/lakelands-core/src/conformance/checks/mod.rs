@@ -385,6 +385,7 @@ pub const ALL: &[Check] = &[
     search::VECTOR_TOP_K,
     vector_index::VECTOR_INDEX_RECALL,
     search::HYBRID_WITHOUT_BACKEND,
+    search::SEARCH_READS_A_VECTOR_FIELD,
     search::HYBRID_THROUGH_BACKEND,
     embeddings::EMBED_WRITE,
     embeddings::VECTOR_COVERAGE,
