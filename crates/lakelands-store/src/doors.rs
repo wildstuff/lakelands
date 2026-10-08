@@ -16,7 +16,7 @@ use lakelands_api::event::EventBody;
 use lakelands_api::location::Location;
 use lakelands_api::ontology::FieldDecl;
 use lakelands_api::principal::WriteContext;
-use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
+use lakelands_api::query::{Hits, Pattern, QueryResult, Search, SearchMode};
 use lakelands_api::seam::{
     ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter, Seams, VerbInvocation,
 };
@@ -369,31 +369,51 @@ impl Catalog for Doors {
     }
 
     async fn search(&self, who: &Principal, mut search: Search) -> Result<Reply<Hits>> {
+        let at = cursor_at(search.at, search.cursor.as_ref())?;
         // A hybrid search without a caller's vector embeds its text through
         // the bound embedding backend, if the host bound one. This is a
-        // read: nothing is recorded.
+        // read: nothing is recorded. It is judged for its caller first, by
+        // the read's shape, as the read below judges it again: one refused
+        // calls nothing and names no model.
+        let unvectored = matches!(search.mode, SearchMode::Hybrid { vector: None, .. });
+        let (embed, mut judged) = (self.lake.embed().filter(|_| unvectored), None);
+        if embed.is_some() {
+            let s = search.clone();
+            // The engines index the head's vectors only, so a search at any
+            // position embeds by the head's declaration (`Reader::indexed`).
+            let head = move |r: &Reader<'_>| {
+                r.searched(&s)?;
+                let shape = match r.at_head {
+                    true => r.shape.clone(),
+                    false => r.lake.shape(r.lake.engine.view(None)?.as_ref())?,
+                };
+                Ok(shape.ontology.ty(&s.ty).ok().cloned())
+            };
+            judged = Some(self.read(who, at, head).await?.data);
+        }
         if let (
-            lakelands_api::query::SearchMode::Hybrid {
+            SearchMode::Hybrid {
                 text,
                 field,
                 vector: vector @ None,
                 ..
             },
             Some(embed),
-        ) = (&mut search.mode, self.lake.embed())
+            Some(decl),
+        ) = (&mut search.mode, embed, judged)
         {
             // A field declared as the embedding of a model is searched with
             // that model's vectors only: another bound model, or one making
             // vectors of other dimensions, is a configuration to fix, not
             // weather.
-            let declared = {
-                let w = self.lake.writer();
-                w.ontology.ty(&search.ty).ok().and_then(|t| {
-                    let f = t.fields.iter().find(|f| &f.name == field)?;
-                    let e = f.embed.as_ref()?;
-                    Some((e.model.clone(), f.ty.dimensions.unwrap_or(0)))
-                })
-            };
+            let declared = decl
+                .iter()
+                .flat_map(|t| &t.fields)
+                .find(|f| &f.name == field);
+            let declared = declared.and_then(|f| {
+                let e = f.embed.as_ref()?;
+                Some((e.model.clone(), f.ty.dimensions.unwrap_or(0)))
+            });
             if let Some((model, dimensions)) = declared
                 && (model != embed.model() || dimensions != embed.dimensions())
             {
@@ -427,7 +447,6 @@ impl Catalog for Doors {
             }
             *vector = vectors.pop();
         }
-        let at = cursor_at(search.at, search.cursor.as_ref())?;
         self.read(who, at, move |r| r.search(&search)).await
     }
 

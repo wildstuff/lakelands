@@ -131,6 +131,10 @@ type SortKey = (Vec<Value>, RecordKey);
 /// candidates best first, with their scores.
 type Ranking<'a> = Box<dyn Fn(u32) -> Result<Vec<(RecordKey, f64)>> + 'a>;
 
+/// A search as judged: its type, the fields its text is matched in if it
+/// names them, and its `where`.
+type Searched<'s> = (TypeDecl, Option<&'s [FieldName]>, Option<Expr>);
+
 /// The state a cursor carries.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CursorState {
@@ -2052,8 +2056,11 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// `search`.
-    pub fn search(&self, s: &Search) -> Result<Hits> {
+    /// What `search` refuses before it ranks: the type its principal is
+    /// shown, a view, a misfit, the fields it probes, the `where`. A
+    /// hybrid search's text is embedded only once this answers (024): one
+    /// refused calls nothing, and names no model.
+    pub fn searched<'s>(&self, s: &'s Search) -> Result<Searched<'s>> {
         let decl = self.named_type(&s.ty)?.clone();
         // A view's records are computed on read and no index holds them, so
         // a search could only answer nothing (018).
@@ -2077,6 +2084,15 @@ impl<'a> Reader<'a> {
             SearchMode::Vector { .. } => None,
         };
         rights::check_search(self.who, &decl, text_fields, &vector_fields)?;
+        let filter = self.record_filter(&decl, s.filter.as_ref(), "where")?;
+        Ok((decl, text_fields, filter))
+    }
+
+    /// `search`.
+    pub fn search(&self, s: &Search) -> Result<Hits> {
+        let (decl, text_fields, filter) = self.searched(s)?;
+        let vectors = s.mode.vectors();
+        let vector_fields: Vec<&FieldName> = vectors.iter().map(|v| v.0).collect();
         // A search that names no fields reads only the searchable fields
         // the principal reads (024); none hidden or masked, it reads them all.
         let known: Vec<FieldName>;
@@ -2089,7 +2105,6 @@ impl<'a> Reader<'a> {
             }
             named => named,
         };
-        let filter = self.record_filter(&decl, s.filter.as_ref(), "where")?;
         let search_read = read_of((&s.mode, &s.filter, s.at.valid_at));
         let offset = match &s.cursor {
             Some(c) => {
