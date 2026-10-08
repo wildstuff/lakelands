@@ -1897,6 +1897,12 @@ impl<'a> Reader<'a> {
             .into_iter()
             .filter(|p| self.who.grants.review || p.proposer == me)
             .filter(|p| !rights::holds_only(self.who) || !migration(p))
+            // A proposal on a type its reader is not shown is not there to
+            // it, as its accept answers (lakelands#762).
+            .filter(|p| {
+                let hidden = |w| crate::writes::hidden_by_type(&self.shape.ontology, self.who, w);
+                !p.write.as_ref().is_some_and(hidden)
+            })
             .collect();
         let verb_on = |v: &VerbName| self.shape.ontology.verb(v).ok().map(|d| d.on.clone());
         // The lake as its reader is described it, read once for the

@@ -147,6 +147,8 @@ macro_rules! door_checks {
             a_call_that_could_not_run_now_is_neither_run_nor_proposed,
             a_rejected_proposal_writes_nothing_and_stays_decided,
             only_a_reviewer_decides_proposals,
+            #[own_principals]
+            a_reviewer_not_shown_a_type_finds_no_proposal_on_it,
             sys_types_cannot_be_declared,
             add_field_without_the_schema_grant_tells_nothing_of_the_type,
             a_type_its_proposer_is_not_shown_is_a_type_that_is_not_declared,
@@ -4766,6 +4768,229 @@ pub async fn only_a_reviewer_decides_proposals(store: Arc<dyn LakeStore>) {
             missing: Missing::Proposal { .. }
         }
     ));
+}
+
+/// As the store (lakelands#762): to a reviewer not shown a proposal's
+/// type, the proposal is not listed, and `accept` and `reject` answer as
+/// for a proposal that does not exist, pending or decided, and append
+/// nothing; one that restates a type related to it as it stands is listed
+/// and decided.
+pub async fn a_reviewer_not_shown_a_type_finds_no_proposal_on_it(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    f.write(&f.cast.clerk, "INV-1", &[("status", json!("approved"))])
+        .await;
+    let (pay, inv, opts) = (VerbName::from("pay"), key("INV-1"), WriteOpts::default);
+    let o = f
+        .catalog
+        .call(&f.cast.clerk, &pay, Some(&inv), Patch::new(), opts());
+    let Outcome::Proposed { proposal, .. } = o.await.unwrap() else {
+        panic!("a call of `pay` is proposed");
+    };
+    let grants = Grants {
+        default: Access::Read,
+        review: true,
+        types: [(
+            ty(INVOICE),
+            TypeGrants {
+                default: Some(Access::None),
+                ..Default::default()
+            },
+        )]
+        .into(),
+        ..Grants::default()
+    };
+    let kept = principal(f.store.lake(), PrincipalKind::Agent, "kept", grants);
+    let absent = |id: &lakelands_api::ProposalId| {
+        let missing = Missing::Proposal { id: id.clone() };
+        Err::<(), _>(Error::NotFound { missing })
+    };
+    let mut wrong = Vec::new();
+    let filter = ProposalFilter::default;
+    let listed = f.catalog.proposals(&kept, filter()).await.unwrap().data;
+    if listed.iter().any(|p| p.id == proposal) {
+        wrong.push(format!("the listing holds the call: {listed:?}"));
+    }
+    // A bundle that refers a new type to `invoice` is not there either.
+    let stub = json!({"declare": "type", "name": "stub",
+                      "fields": [{"name": "i", "type": {"kind": "reference", "target": INVOICE}}]});
+    let declarations = vec![serde_json::from_value(stub).unwrap()];
+    let write = ProposedWrite::Declare { declarations };
+    let o = f
+        .catalog
+        .propose(&f.cast.owner, write, "a stub".into())
+        .await;
+    let Outcome::Proposed {
+        proposal: referring,
+        ..
+    } = o.unwrap()
+    else {
+        panic!("a bundle is proposed");
+    };
+    let listed = f.catalog.proposals(&kept, filter()).await.unwrap().data;
+    let accept = f.catalog.accept(&kept, &referring).await.map(|_| ());
+    if listed.iter().any(|p| p.id == referring) || accept != absent(&referring) {
+        wrong.push(format!(
+            "the bundle referring to `invoice`: listed {listed:?}, accept {accept:?}"
+        ));
+    }
+    let head = f.head().await;
+    for state in ["pending", "decided"] {
+        let accept = f.catalog.accept(&kept, &proposal).await.map(|_| ());
+        let reject = f.catalog.reject(&kept, &proposal, "no".into()).await;
+        for (door, said) in [("accept", accept), ("reject", reject.map(|_| ()))] {
+            if said != absent(&proposal) {
+                wrong.push(format!("{door} of the {state} call answered {said:?}"));
+            }
+        }
+        if state == "pending" {
+            assert_eq!(f.head().await, head, "nothing was appended");
+            f.catalog
+                .accept(&f.cast.reviewer, &proposal)
+                .await
+                .expect("a reviewer shown `invoice` accepts the call");
+        }
+    }
+    // A migration proposed while `xx` is keyed by a reference to `hh`, and
+    // listed once `xx` refers to `vv`: the reader judged as it stands now,
+    // its report trimmed by its grants then, and no door fails.
+    let text = json!([{"name": "n", "type": {"kind": "text"}}]);
+    let keyed = |to: &str| json!([{"name": "f", "type": {"kind": "reference", "target": to}}]);
+    for (name, fields) in [("hh", text.clone()), ("vv", text), ("xx", keyed("hh"))] {
+        let mut d = json!({"declare": "type", "name": name, "fields": fields});
+        if name == "xx" {
+            d["key"] = json!(["f"]);
+        }
+        let declared = f
+            .catalog
+            .declare(&f.cast.owner, serde_json::from_value(d).unwrap());
+        declared.await.expect("the owner declares");
+    }
+    let xx = |fields: serde_json::Value| Migration {
+        to: serde_json::from_value(json!({"name": "xx", "key": ["f"], "fields": fields})).unwrap(),
+        renames: Vec::new(),
+        relation_renames: Vec::new(),
+    };
+    let migration = Box::new(xx(keyed("vv")));
+    let write = ProposedWrite::Migrate {
+        migration,
+        report: Default::default(),
+    };
+    let o = f
+        .catalog
+        .propose(&f.cast.owner, write, "to vv".into())
+        .await;
+    let Outcome::Proposed {
+        proposal: retargeted,
+        ..
+    } = o.unwrap()
+    else {
+        panic!("a migration is proposed");
+    };
+    let mut wider = keyed("vv");
+    wider
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name": "m", "type": {"kind": "text"}}));
+    let m = xx(wider);
+    let report = f
+        .catalog
+        .migrate(&f.cast.owner, m.clone())
+        .await
+        .unwrap()
+        .data;
+    let applied = f
+        .catalog
+        .migrate_apply(&f.cast.owner, m, &report.report_id)
+        .await;
+    applied.expect("the owner migrates `xx`");
+    let hidden = TypeGrants {
+        default: Some(Access::None),
+        ..Default::default()
+    };
+    let grants = Grants {
+        default: Access::Read,
+        review: true,
+        types: [(ty("hh"), hidden)].into(),
+        ..Grants::default()
+    };
+    let kept_hh = principal(f.store.lake(), PrincipalKind::Agent, "kept_hh", grants);
+    let listed = f
+        .catalog
+        .proposals(&kept_hh, filter())
+        .await
+        .map(|r| r.data);
+    let rejected = f.catalog.reject(&kept_hh, &retargeted, "no".into()).await;
+    // Listed whole as the store lists it: its write the migration of `xx`,
+    // and `more`, its report trimmed by the reader's grants then.
+    let to_xx = |w: &Option<ProposedWrite>| {
+        matches!(w, Some(ProposedWrite::Migrate { migration, .. })
+            if migration.to.name.as_str() == "xx")
+    };
+    let held = listed
+        .as_ref()
+        .is_ok_and(|l| (l.iter()).any(|p| p.id == retargeted && to_xx(&p.write) && p.more));
+    if !held || rejected.is_err() {
+        wrong.push(format!(
+            "the migration of `xx` to `vv`, to one kept from `hh`: listed {listed:?}, rejected {rejected:?}"
+        ));
+    }
+    // `fare` relates to `invoice` through a link field and one computed
+    // from it: restated as it stands with a field added, as a bundle and as
+    // a migration, it names no `invoice`, the shapes compared completed.
+    let link = json!([{"name": "amt", "type": {"kind": "number"}},
+                      {"name": "big", "type": {"kind": "boolean"}, "authority": "derived",
+                       "derived": "amt > 10"}]);
+    let fare = |more: Option<&str>| {
+        let mut fields = vec![json!({"name": "n", "type": {"kind": "text"}})];
+        fields.extend(more.map(|m| json!({"name": m, "type": {"kind": "text"}})));
+        json!({"name": "fare", "fields": fields,
+               "relations": [{"name": "of_invoice", "target": INVOICE, "fields": link}]})
+    };
+    let mut d = fare(None);
+    d["declare"] = json!("type");
+    let declared = f
+        .catalog
+        .declare(&f.cast.owner, serde_json::from_value(d).unwrap());
+    declared.await.expect("the owner declares `fare`");
+    let mut again = fare(Some("extra"));
+    again["declare"] = json!("type");
+    let writes = [
+        ProposedWrite::Declare {
+            declarations: vec![serde_json::from_value(again).unwrap()],
+        },
+        ProposedWrite::Migrate {
+            migration: Box::new(Migration {
+                to: serde_json::from_value(fare(Some("more"))).unwrap(),
+                renames: Vec::new(),
+                relation_renames: Vec::new(),
+            }),
+            report: Default::default(),
+        },
+    ];
+    for write in writes {
+        let o = f
+            .catalog
+            .propose(&f.cast.owner, write, "`fare` again".into())
+            .await;
+        let Outcome::Proposed {
+            proposal: restated, ..
+        } = o.unwrap()
+        else {
+            panic!("a restatement is proposed");
+        };
+        let listed = f.catalog.proposals(&kept, filter()).await.map(|r| r.data);
+        let rejected = f.catalog.reject(&kept, &restated, "no".into()).await;
+        let held = (listed.as_ref()).is_ok_and(|l| l.iter().any(|p| p.id == restated));
+        if !held || rejected.is_err() {
+            wrong.push(format!(
+                "`fare` restated, to one not shown `invoice`: listed {listed:?}, rejected {rejected:?}"
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "to a reviewer not shown `invoice`: {wrong:?}"
+    );
 }
 
 /// Retiring removes every field of a record, so it needs a write grant
@@ -12534,8 +12759,10 @@ pub async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not
             apart.push(format!("`{ty}` | `ghost`: {answers:?}"));
         }
     }
-    // A bundle declaring a type that refers to `payroll`, and a migration
-    // of `ticket`, are listed to a reviewer kept from it without `payee`.
+    // A bundle declaring a type that refers to `payroll` is not there to a
+    // reviewer kept from it: it adds a reference to a hidden type
+    // (lakelands#762). A migration of `ticket` restates `payee` and is
+    // listed without it.
     let pay = typed(json!({"declare": "type", "name": "pay",
         "fields": [kind("no", "text"), to("payee", "payroll")]}));
     let Declaration::Type(to_ticket) = typed(json!({"declare": "type", "name": "ticket",
@@ -12570,9 +12797,11 @@ pub async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not
     let mut reviewer = kept.clone();
     reviewer.grants.review = true;
     let listed = c.proposals(&reviewer, ProposalFilter::default()).await;
-    let listed = format!("{:?}", listed.map(|r| r.data));
-    if !listed.contains("pay") || listed.contains("payee") {
-        apart.push(format!("the reviewer lists {listed}"));
+    let listed = listed.expect("the reviewer lists").data;
+    let whys: Vec<&str> = listed.iter().map(|p| p.why.as_str()).collect();
+    let shown = format!("{listed:?}");
+    if whys.contains(&"a bundle") || !whys.contains(&"a migration") || shown.contains("payee") {
+        apart.push(format!("the reviewer lists {shown}"));
     }
     // To retire a record removes every field, `payee` too.
     let retired = c

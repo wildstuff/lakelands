@@ -754,7 +754,10 @@ pub fn holds(t: &TypeDecl, name: &FieldName) -> bool {
 /// where `described`, the lake as `describe` shows it to the reader,
 /// names it, asked only for a report that carries one. The totals stay;
 /// `more` says that something was left out. The hashes are
-/// [`shown_hashes`]'s, and the id is made again over what is shown.
+/// [`shown_hashes`]'s, and the id is made again over what is shown. The
+/// reader is shown the migrated type: one that is not is answered no
+/// migration at all, by every door that would answer a report
+/// (lakelands#762).
 pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDescription>>(
     who: &Principal,
     was: &TypeDecl,
@@ -764,20 +767,6 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
     sees: impl Fn(&TypeName) -> Option<&'a TypeDecl>,
     answered: impl Fn(&TypeName, &RecordKey) -> bool,
 ) {
-    // One who may not see the migrated type is answered no name at all:
-    // the totals, the hashes, and that there is more.
-    if sees(&m.to.name).is_none() {
-        (report.ty, report.more) = (TypeName::default(), true);
-        report.fields.clear();
-        report.dropped.clear();
-        report.relations.clear();
-        report.carried.clear();
-        report.rekeyed.clear();
-        report.references.clear();
-        report.sample_collisions.clear();
-        report.restated.clear();
-        return;
-    }
     let whole = report.clone();
     let (stands, mut was, mut to) = (was, was.clone(), m.to.clone());
     known_fields(who, &mut was, &sees);

@@ -24,13 +24,13 @@ use crate::conformance::fixture::{
 check!(
     /// A proposed shape names only what its reader may know of.
     NAMES_AS_THE_READERS_VIEW = a_proposed_shape_names_only_what_its_reader_may_know_of,
-    "013, 024 and 027, extended (lakelands#499): `proposals` shows of a proposed migration the renames, the dropped fields and link fields, the re-keyed types and the rewritten references only where its reader may see the type and know of the field, the totals whole; of a proposed bundle each declaration `describe` would show its reader once in force, a verb by the fields it names; an entry that holds more says `more` and names nothing else, and a bundle with nothing left shows no write; a valid time over a field its reader may not know of is named neither in a listed declaration nor in a migration's `to` and report (lakelands#726)"
+    "013, 024 and 027, extended (lakelands#499): `proposals` shows of a proposed migration the renames, the dropped fields and link fields, the re-keyed types and the rewritten references only where its reader may see the type and know of the field, the totals whole; of a proposed bundle each declaration `describe` would show its reader once in force, a verb by the fields it names; an entry that holds more says `more` and names nothing else, and a bundle with nothing left shows no write; a migration or a bundle that names a type its reader may not see is not listed (lakelands#762); a valid time over a field its reader may not know of is named neither in a listed declaration nor in a migration's `to` and report (lakelands#726)"
 );
 
 check!(
     /// A listing is filtered on what it shows, and an accept names no hidden field.
     LISTED_AS_SHOWN = a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_field,
-    "013 and 024, extended (lakelands#499): a proposal on a type its reader may not see, or on a restricted record without the grant, is listed without its write and says `more`; `type` and `kind` are answered on the entry as shown, so a hidden type answers what an undeclared one answers and an entry without a write is of no kind, while the unfiltered listing and `state` hold it; an accept refused because a declaration reads a field the migration takes away names neither to an accepter who may not know of the field"
+    "013 and 024, extended (lakelands#499): a proposal on a restricted record without the grant is listed without its write and says `more`, and one on a type its reader may not see is not listed (lakelands#762); `type` and `kind` are answered on the entry as shown, so a hidden type answers what an undeclared one answers and an entry without a write is of no kind, while the unfiltered listing and `state` hold it; an accept refused because a declaration reads a field the migration takes away names neither to an accepter who may not know of the field"
 );
 
 /// The lake of the re-key checks with a type `doc`, and the proposals of
@@ -198,7 +198,7 @@ async fn a_proposed_shape_names_only_what_its_reader_may_know_of(
     let all = all.map(|n| format!("\"name\":\"{n}\""));
     let all: Vec<&str> = all.iter().map(String::as_str).collect();
     let gone = [all[0], all[2], all[3], all[4], "holder"];
-    let rows: [Row; 10] = [
+    let rows: [Row; 9] = [
         (&reads, "rekey", &rekey, &[], false),
         (&hid, "rekey", &["\"sys.link.account.owner\""], &rekey, true),
         (&reads, "rename", &rename, &[], false),
@@ -206,7 +206,6 @@ async fn a_proposed_shape_names_only_what_its_reader_may_know_of(
         (&hid, "drop", &["\"title\""], &["\"secret\""], true),
         (&hid, "bundle", &all, &[], false),
         (&plain, "bundle", &[all[1], all[5]], &gone, true),
-        (&unseeing, "bundle", &[all[5]], &["account"], true),
         // A valid time over a field its reader may not know of is not
         // named (lakelands#726).
         (
@@ -234,16 +233,21 @@ async fn a_proposed_shape_names_only_what_its_reader_may_know_of(
             red.push(format!("`{who}` must read of `{why}` {shows:?} and not {hides:?}, `more` {more}; it reads `more` {says} and {write}"));
         }
     }
-    for (who, why) in [
-        (&plain, "hidden"),
-        (&unseeing, "rekey"),
-        (&unseeing, "hidden"),
-    ] {
+    for (who, why) in [(&plain, "hidden")] {
         let got = entry(&l, who, why).await?;
         if got != (None, true) {
             let who = &who.id;
             red.push(format!(
                 "`{who}` must read no write of `{why}`, and `more`; it reads {got:?}"
+            ));
+        }
+    }
+    // One that names `account` is not there to `unseeing` (lakelands#762).
+    let theirs = listed(&l, &unseeing, json!({})).await?;
+    for why in ["bundle", "rekey", "hidden"] {
+        if theirs.iter().any(|p| p.why == why) {
+            red.push(format!(
+                "`unseeing` must not be listed `{why}`, which names `account`"
             ));
         }
     }
@@ -266,7 +270,6 @@ async fn a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_fi
         (&plain, "restricted", false),
         (&plain, "retire restricted", false),
         (&l.own, "restricted", true),
-        (&unseeing, "upsert", false),
     ] {
         let (write, more) = entry(&l, who, why).await?;
         let (who, with) = (&who.id, if shown { "with" } else { "without" });
@@ -275,6 +278,16 @@ async fn a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_fi
             "`{who}` must list `{why}` {with} its write; it reads {write:?}, `more` {more}"
         );
     }
+    // A proposal on a type its reader may not see is not listed at all
+    // (lakelands#762).
+    let theirs = listed(&l, &unseeing, json!({})).await?;
+    let named = ["upsert", "restricted", "retire restricted"];
+    let listed_to = |why: &&str| theirs.iter().any(|p| p.why == *why);
+    ensure!(
+        !named.iter().any(listed_to),
+        "`unseeing` must list no proposal on `account`; it lists {:?}",
+        theirs.iter().map(|p| &p.why).collect::<Vec<_>>()
+    );
     // The filters are answered on the entry as its reader is shown it.
     let mut counts = Vec::new();
     for (who, filter) in [
@@ -288,10 +301,11 @@ async fn a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_fi
         counts.push(listed(&l, who, filter).await?.len());
     }
     ensure!(
-        counts == [0, 0, 0, 10, 6, 2],
+        counts == [0, 0, 0, 4, 6, 2],
         "`type` and `kind` are answered on what the reader is shown: one who may not see \
-         `account` must list nothing by it, as by an undeclared type, no upsert, and all ten \
-         by state, and the owner six by the type and two upserts; they list {counts:?}"
+         `account` must list nothing by it, as by an undeclared type, no upsert, and by state \
+         the four that name no `account`, and the owner six by the type and two upserts; they \
+         list {counts:?}"
     );
     // The accept: a trigger declared since reads the field the migration drops.
     let watch = trigger_on("watch", "doc", Some("secret = 'x'"));

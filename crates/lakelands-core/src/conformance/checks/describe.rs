@@ -385,7 +385,7 @@ async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) -> Re
 check!(
     /// A description says only what its reader is shown.
     DESCRIBED_AS_SHOWN = a_description_says_only_what_its_reader_is_shown,
-    "006 and 024, extended (lakelands#662): a type's `searchable` and `sourced` are said of the fields its reader is described, and a field it sees masked is searchable to it no more; a relation is described, listed in a proposal, named by a migration's refusal, offered to `link` and its link type shown only to a reader shown both its ends and, of a derived one, every field its match pairs, which a field it sees masked still is"
+    "006 and 024, extended (lakelands#662): a type's `searchable` and `sourced` are said of the fields its reader is described, and a field it sees masked is searchable to it no more; a relation is described, listed in a proposal, named by a migration's refusal, offered to `link` and its link type shown only to a reader shown both its ends and, of a derived one, every field its match pairs, which a field it sees masked still is; a reader not shown a relation's target proposes the type as it is shown it, its declaration and its migration, and lists and rejects its own proposal (lakelands#762)"
 );
 
 async fn a_description_says_only_what_its_reader_is_shown(
@@ -412,6 +412,7 @@ async fn a_description_says_only_what_its_reader_is_shown(
     let again = ProposedWrite::Declare {
         declarations: vec![Declaration::Type(invoice.clone())],
     };
+    let invoice_as_declared = invoice.clone();
     for t in [
         type_decl(
             "salary",
@@ -427,6 +428,26 @@ async fn a_description_says_only_what_its_reader_is_shown(
     }
     let proposed = l.cat.propose(&l.own, again, "again".into()).await;
     proposed.must("proposing `invoice` again")?;
+    // `invoice` as `far` is shown it: its author's declaration carries the
+    // relations it is not shown back as they stand.
+    let mut mine = invoice_as_declared.clone();
+    mine.relations.clear();
+    mine.description = Some("far's".into());
+    let mut wider = mine.clone();
+    wider.fields.push(field("extra", StorageKind::Text));
+    let theirs = [
+        ProposedWrite::Declare {
+            declarations: vec![Declaration::Type(mine)],
+        },
+        ProposedWrite::Migrate {
+            migration: Box::new(Migration {
+                to: wider,
+                renames: Vec::new(),
+                relation_renames: Vec::new(),
+            }),
+            report: Default::default(),
+        },
+    ];
     // `far` writes everything but `salary`, which it is kept from.
     let mut grants = Grants {
         default: Access::Write,
@@ -443,6 +464,27 @@ async fn a_description_says_only_what_its_reader_is_shown(
     hidden.grants.schema = true;
     let masked = field_access(s, "masked", "invoice", &[("note", Access::Masked)]);
     let mut red = Vec::new();
+    // `far` proposes `invoice` as it is shown it, and finds and rejects its
+    // own proposals: the relations restated name nothing it is not shown
+    // (lakelands#762).
+    for (write, why) in theirs.into_iter().zip(["far's", "far's migration"]) {
+        let proposed = l.cat.propose(&far, write, why.into()).await;
+        let proposed = proposed.must(&format!("`far` proposing {why}"))?;
+        let lakelands_api::Outcome::Proposed { proposal, .. } = proposed else {
+            return Err(Failure::new(format!(
+                "{why} must be proposed: {proposed:?}"
+            )));
+        };
+        let listed = l.cat.proposals(&far, ProposalFilter::default()).await;
+        let listed = listed.must("listing the proposals as `far`")?.data;
+        let rejected = l.cat.reject(&far, &proposal, "mine".into()).await;
+        if !listed.iter().any(|p| p.id == proposal) || rejected.is_err() {
+            red.push(format!(
+                "`far` must list and reject {why}; it lists {} and rejecting answered {rejected:?}",
+                json!(listed)
+            ));
+        }
+    }
     for (who, want) in [
         (&l.own, (true, true, "paid same", true, "paid")),
         (&far, (true, true, "", false, "")),
@@ -476,7 +518,8 @@ async fn a_description_says_only_what_its_reader_is_shown(
     // A proposed declaration is listed as it would be described.
     let listed = l.cat.proposals(&far, ProposalFilter::default()).await;
     let listed = listed.must("listing the proposals as `far`")?.data;
-    let relations = (listed.iter().filter_map(|p| p.write.as_ref())).find_map(|w| match w {
+    let again = listed.iter().find(|p| p.why == "again");
+    let relations = again.and_then(|p| match p.write.as_ref()? {
         ProposedWrite::Declare { declarations } => match declarations.first() {
             Some(Declaration::Type(t)) => Some(t.relations.len()),
             _ => None,

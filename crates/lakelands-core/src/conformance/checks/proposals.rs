@@ -8,12 +8,14 @@ use std::sync::Arc;
 use lakelands_api::error::{Case, Seam};
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind;
-use lakelands_api::write::{ProposalFilter, ProposalState, ProposedWrite};
+use lakelands_api::write::{Proposal, ProposalFilter, ProposalState, ProposedWrite};
 use lakelands_api::{
-    Error, LakeStore, Outcome, Position, ProposalId, RecordKey, Refusal, Version, WriteOpts,
+    Error, LakeStore, Missing, Outcome, Position, Principal, ProposalId, RecordKey, Refusal,
+    Version, WriteOpts,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 
+use super::only::{alice, claim_with, claims, de, holder};
 use crate::conformance::Failure;
 use crate::conformance::backing::EXECUTOR;
 use crate::conformance::fixture::{
@@ -62,6 +64,12 @@ check!(
     /// Reviewers decide; proposers see their own.
     WHO_DECIDES = only_a_reviewer_decides_and_a_proposer_sees_its_own_proposals,
     "006, 013 and Catalog::proposals: accept and reject need the review grant, checked before the proposal is looked up (013, extended); without it, `proposals` lists only the principal's own"
+);
+
+check!(
+    /// A proposal on a type its reviewer is not shown is not there to it.
+    NOT_SHOWN_NOT_DECIDED = a_proposal_on_a_type_its_reviewer_is_not_shown_is_not_there,
+    "006 and 013, extended (lakelands#762): to a reviewer not shown a type a proposal names, or for a link type either end type, the proposal is not there: `proposals` does not list it, and `accept` and `reject` answer as for a proposal id that does not exist, word for word, before anything else of it is told: an upsert, a call on a link, a pinned one whose hidden end moved since, a migration, a bundle that redeclares the type, puts a verb on it, or relates or refers a new type to it, and a migration that drops a relation to it, pending or decided; a restatement of a type related to it through a computed link field, as a bundle and as a migration, is listed and decided; nothing is appended; every other proposal is listed as to a reviewer shown everything, and decided; a reviewer shown the type decides it"
 );
 
 check!(
@@ -654,6 +662,204 @@ async fn only_a_reviewer_decides_and_a_proposer_sees_its_own_proposals(
          all of them: the clerk listed {clerk_sees:?} (own {mine}), another principal \
          {other_sees:?}, the owner {owner_sees:?}"
     );
+    Ok(())
+}
+
+async fn a_proposal_on_a_type_its_reviewer_is_not_shown_is_not_there(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    claims(&l, false).await?;
+    // Kept from `trip`, so from `claim`'s link type over `on_trip` too.
+    let kept = holder(
+        s,
+        "kept",
+        json!({"default": "read", "review": true, "schema": true,
+               "types": {"trip": {"default": "none"}}}),
+    );
+    let on_trip = crate::links::link_type_name(&"claim".into(), &"on_trip".into());
+    let set = json!([{"field": "label", "value": "'x'"}]);
+    l.declare_json(
+        json!({"declare": "verb", "name": "relabel", "on": on_trip.as_str(),
+                          "risk": "high", "effect": "write", "set": set}),
+    )
+    .await?;
+    let link = crate::links::link_key(&"c1".into(), &"t1".into());
+    let relabel = async |who: &Principal| {
+        let (verb, none, opts) = ("relabel".into(), Default::default(), Default::default());
+        let called = l.cat.call(who, &verb, Some(&link), none, opts).await;
+        proposal(&called.must("a `relabel` of `c1:t1`")?).map(|(_, id)| id)
+    };
+    let propose = async |write: Value| {
+        let proposed = l.cat.propose(&l.own, de(write), "the owner's".into()).await;
+        proposal(&proposed.must("the owner's proposal")?).map(|(_, id)| id)
+    };
+    let upsert = propose(json!({"write": "upsert", "type": "trip", "key": "t1",
+                                "patch": {"name": "paris"}}))
+    .await?;
+    let call = relabel(&l.own).await?;
+    // Hers is pinned: once `t1`, its hidden end, moves, its accept would
+    // name the link type and its key.
+    let pinned = relabel(&alice(s, json!({"default": "write"}))).await?;
+    let text = StorageKind::Text;
+    let wider = type_decl("trip", vec![field("name", text), field("extra", text)]);
+    let migrate = propose(json!({"write": "migrate", "migration": {"to": wider}})).await?;
+    // `claim` without its relation to `trip`: a relation dropped.
+    let mut unlinked = claim_with("owner");
+    unlinked.relations.clear();
+    let dropping = propose(json!({"write": "migrate", "migration": {"to": unlinked}})).await?;
+    // Bundles: `trip` redeclared, a verb on it, a new type related to it.
+    let declare = async |d: Value| propose(json!({"write": "declare", "declarations": [d]})).await;
+    let fields = |kind: &str| {
+        json!([{"name": "name", "type": {"kind": "text"}},
+               {"name": "extra3", "type": {"kind": kind}}])
+    };
+    let redeclared =
+        declare(json!({"declare": "type", "name": "trip", "fields": fields("text")})).await?;
+    let verb = declare(
+        json!({"declare": "verb", "name": "rename", "on": "trip", "risk": "low",
+                              "effect": "write", "set": [{"field": "name", "value": "'x'"}]}),
+    )
+    .await?;
+    let related = declare(json!({"declare": "type", "name": "leg",
+                                 "fields": [{"name": "n", "type": {"kind": "text"}}],
+                                 "relations": [{"name": "of_trip", "target": "trip"}]}))
+    .await?;
+    let referring = declare(json!({"declare": "type", "name": "stop",
+                                   "fields": [{"name": "t", "type": {"kind": "reference",
+                                                                     "target": "trip"}}]}))
+    .await?;
+    // The redeclaration no longer fits: its refusal would name `extra3`.
+    l.declare_json(json!({"declare": "type", "name": "trip", "fields": fields("number")}))
+        .await?;
+    l.upsert("trip", "t1", json!({"name": "rome"})).await?;
+    let decided = propose(json!({"write": "upsert", "type": "trip", "key": "t1",
+                                 "patch": {"name": "oslo"}}))
+    .await?;
+    let accepted = l.cat.accept(&l.own, &decided).await;
+    accepted.must("the owner accepting an upsert of `t1`")?;
+    // `fare` relates to `trip` through a link field and one computed from
+    // it: restated as it stands, with a field added, it names no `trip`,
+    // the computed field's `depends_on` as the lake keeps it or not.
+    let link = json!([{"name": "amt", "type": {"kind": "number"}},
+                      {"name": "big", "type": {"kind": "boolean"}, "authority": "derived",
+                       "derived": "amt > 10"}]);
+    let fare = |more: Option<&str>| {
+        let mut fields = vec![json!({"name": "n", "type": {"kind": "text"}})];
+        fields.extend(more.map(|m| json!({"name": m, "type": {"kind": "text"}})));
+        json!({"name": "fare", "fields": fields,
+               "relations": [{"name": "of_trip", "target": "trip", "fields": link}]})
+    };
+    let mut declared = fare(None);
+    declared["declare"] = json!("type");
+    l.declare_json(declared).await?;
+    let mut again = fare(Some("extra"));
+    again["declare"] = json!("type");
+    let restating = [
+        declare(again).await?,
+        propose(json!({"write": "migrate", "migration": {"to": fare(Some("more"))}})).await?,
+    ];
+    let other = propose(json!({"write": "upsert", "type": "claim", "key": "c3",
+                               "patch": {"note": "late"}}))
+    .await?;
+    // Its listing is the one of a lake without those proposals: every
+    // entry a reviewer shown everything lists but theirs, each whole.
+    let shown = reviewer(s, true);
+    let hidden = [
+        &upsert,
+        &call,
+        &pinned,
+        &migrate,
+        &redeclared,
+        &verb,
+        &related,
+        &referring,
+        &dropping,
+        &decided,
+    ];
+    let listed = async |who: &Principal| {
+        let all = l.cat.proposals(who, ProposalFilter::default()).await;
+        Ok::<_, Failure>(all.must("listing proposals")?.data)
+    };
+    let mut want = listed(&shown).await?;
+    want.retain(|p| !hidden.contains(&&p.id));
+    let got = listed(&kept).await?;
+    // The same entries; each whole but `fare` restated, whose relation to
+    // `trip` is trimmed from it, as a relation not shown is (lakelands#662).
+    let ids = |l: &[Proposal]| l.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+    let whole = |l: &[Proposal]| {
+        let whole = l.iter().filter(|p| !restating.contains(&p.id));
+        whole.map(|p| json!(p)).collect::<Vec<_>>()
+    };
+    let trimmed = (got.iter().filter(|p| restating.contains(&p.id)))
+        .all(|p| p.more && !json!(p.write).to_string().contains("\"trip\""));
+    ensure!(
+        ids(&got) == ids(&want)
+            && whole(&got) == whole(&want)
+            && trimmed
+            && [&other, &restating[0], &restating[1]]
+                .iter()
+                .all(|id| want.iter().any(|p| &p.id == *id)),
+        "a reviewer not shown `trip` lists no proposal on it, and every other as one shown \
+         everything does, `fare` restated without its relation to `trip`: it lists {}, where \
+         {} is due",
+        json!(got),
+        json!(want)
+    );
+    let absent = |id: &ProposalId| -> lakelands_api::Result<()> {
+        let missing = Missing::Proposal { id: id.clone() };
+        Err(Error::NotFound { missing })
+    };
+    let none = ProposalId::from("none");
+    let mut wrong = Vec::new();
+    let before = store.head().await.must("reading the head")?;
+    for (what, id) in [
+        ("an id that does not exist", &none),
+        ("an upsert of `t1`", &upsert),
+        ("a call on the link `c1:t1`", &call),
+        ("a pinned call on `c1:t1`, `t1` moved since", &pinned),
+        ("a migration of `trip`", &migrate),
+        (
+            "a bundle redeclaring `trip`, which no longer fits",
+            &redeclared,
+        ),
+        ("a bundle declaring a verb on `trip`", &verb),
+        ("a bundle declaring a type related to `trip`", &related),
+        (
+            "a bundle declaring a type with a reference to `trip`",
+            &referring,
+        ),
+        (
+            "a migration of `claim` dropping its relation to `trip`",
+            &dropping,
+        ),
+        ("a decided upsert of `t1`", &decided),
+    ] {
+        let accept = l.cat.accept(&kept, id).await.map(|_| ());
+        let reject = l.cat.reject(&kept, id, "no".into()).await.map(|_| ());
+        for (door, said) in [("accept", accept), ("reject", reject)] {
+            if said != absent(id) {
+                wrong.push(format!("{door} of {what} answered {said:?}"));
+            }
+        }
+    }
+    ensure!(
+        wrong.is_empty(),
+        "to a reviewer not shown `trip`, a proposal on it or on a link to it is one that does \
+         not exist: {}",
+        wrong.join("; ")
+    );
+    head_unmoved(s, before, "deciding a proposal on a hidden type").await?;
+    let rejected = l.cat.reject(&kept, &other, "no".into()).await;
+    rejected.must("the reviewer not shown `trip` rejecting an upsert of `claim`")?;
+    for id in &restating {
+        let rejected = l.cat.reject(&kept, id, "no".into()).await;
+        rejected.must("the reviewer not shown `trip` rejecting `fare` restated")?;
+    }
+    let accepted = l.cat.accept(&shown, &call).await;
+    accepted.must("a reviewer shown `trip` accepting the call")?;
+    let rejected = l.cat.reject(&shown, &upsert, "no".into()).await;
+    rejected.must("a reviewer shown `trip` rejecting the upsert")?;
     Ok(())
 }
 

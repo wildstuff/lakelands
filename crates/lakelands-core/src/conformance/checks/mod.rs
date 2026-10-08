@@ -254,6 +254,7 @@ pub const ALL: &[Check] = &[
     proposals::ACCEPT_APPLIES,
     proposals::REJECT_AND_DECIDED,
     proposals::WHO_DECIDES,
+    proposals::NOT_SHOWN_NOT_DECIDED,
     readers_view::VALUES_AS_THE_READERS_VIEW,
     proposal_names::NAMES_AS_THE_READERS_VIEW,
     proposal_names::LISTED_AS_SHOWN,
