@@ -356,42 +356,35 @@ Each is said where the same fault of a name the lake does not have is
 said (lakelands#750): the migration as its author sent it is judged
 against the type as its author is shown it, by the rule and at the step
 that judge the type's own names, so a second fault in the migration
-comes first or after alike, and the order tells nothing. An
-unchanged reference field to a type its author is not shown stands as
-declared, where the author may know of the field; a new or changed one
-names a type the author is not shown, and is refused as one that is not
-declared. So is one the author is held from (lakelands#716): it is not
-taken for unchanged, so naming its target in force answers as naming any
-other hidden type or no type, never as a field declared twice, and the
-author learns nothing of the target. A masked or a write-only field is
-shown to the principal, and stays its to remove.
+comes first or after alike, and the order tells nothing. A reference
+field to a type its author is not shown is a field it may not know of
+(024, extended, lakelands#718), kept the same way; one the author sends
+names a type it is not shown, and is refused as one that is not
+declared, so naming its target in force answers as naming any other
+hidden type or no type, and the author learns nothing of the target
+(lakelands#716). A masked or a write-only field is shown to the
+principal, and stays its to remove.
 
 What a type's shape names stands as declared only where it stands
 (lakelands#726). A valid time left out where the one in force names a
 field outside the author's view, which `describe` does not name to it
-(024), stays as declared. One the author sends, the one in force
-restated too, is judged by its name first, as on a type with no valid
-time: a name no field has, or a field the author may not know of,
-answers word for word as there (lakelands#692). A field the author may
-name is refused at the type: the bound is taken, as a name a hidden
-field holds is, and it stands.
-
-A relation the author is shown that equals the one in force whole,
-apart from a rename the migration states, stands as declared when its
-`via` names such a field; one changed in any other part is read as
-sent, so a retarget answers as one to a type that does not exist. What
-stands is left out of the author check and checked whole at apply, so
-no new member can name that field through it, and a valid time left out
-is put back with the hidden fields. A relation changed only in its
-description is read as sent too, and refused on its `via`: a refusal of
-a change the author may make, which tells it nothing. The key keeps its
-fields at their place, since a key never names a field its reader may
-not know of (006). A valid time, a key or a `via` its author gives anew
-is read against the author's view, where such a field is no field. A
-hidden field's name is therefore answered word for word as a name no
-field has, by `declare` and by `migrate`, and the type in force is not
-changed. Before, such a member was taken because the field existed in
-the lake, and the difference told the author the name.
+(024), stays as declared: it is left out of the author check and
+checked whole at apply, so no new member can name that field through
+it, and it is put back with the hidden fields. One the author sends,
+the one in force restated too, is judged by its name first, as on a
+type with no valid time: a name no field has, or a field the author may
+not know of, answers word for word as there (lakelands#692). A field
+the author may name is refused at the type: the bound is taken, as a
+name a hidden field holds is, and it stands. A key and a relation's
+`via` never name such a field: a type keyed by one is not shown (006),
+nor a relation carried by one (lakelands#727), and since lakelands#718
+nor is a reference to a type the author is not shown known to it. A key
+or a `via` its author gives anew is read against the author's view,
+where such a field is no field. A hidden field's name is therefore
+answered word for word as a name no field has, by `declare` and by
+`migrate`, and the type in force is not changed. Before, such a member
+was taken because the field existed in the lake, and the difference
+told the author the name.
 
 ## Extended: a proposed migration is listed as its reader may know it (lakelands#499)
 

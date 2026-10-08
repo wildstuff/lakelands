@@ -28,7 +28,7 @@ check!(
 check!(
     /// No refusal of a change of shape names a hidden field.
     HIDDEN_NAME_NOT_LEARNED = a_change_of_shape_never_names_a_field_its_author_may_not_know_of,
-    "027 and 024, extended: a type declared again from its author's view is taken, keeping the fields and the link fields hidden from the author, and the relations it is not shown, its reference to a type it is not shown as declared (lakelands#662), where it may know of the field: one held from it names its target in vain, the target answered as one no type is (lakelands#716); a shape that names a hidden field is refused as a field declared twice; one that removes a field a hidden field or relation reads is refused on that field and names no other part; a rename from a hidden field is a rename from no field, and one from a hidden relation from no relation"
+    "027 and 024, extended: a type declared again from its author's view is taken, keeping the fields and the link fields hidden from the author, and the relations it is not shown, a reference to a type it is not shown kept as a field it may not know of (lakelands#718), whose target it names in vain, answered as one no type is (lakelands#716); a shape that names a hidden field is refused as a field declared twice; one that removes a field a hidden field or relation reads is refused on that field and names no other part; a rename from a hidden field is a rename from no field, and one from a hidden relation from no relation"
 );
 
 fn invoice(fields: &[&str]) -> TypeDecl {
@@ -144,22 +144,24 @@ fn approved_by(fields: &[&str]) -> RelationDecl {
 }
 
 /// `invoice` with `fields` as its author sees it: `payee` refers to
-/// `payroll`, which the author is not shown, nor `paid` and `matched`,
-/// which `ref` is read by.
+/// `payroll`, which the author is not shown, so it is a field the author
+/// may not know of (lakelands#718), and so are `paid` and `matched`, which
+/// `ref` is read by.
 fn seen(fields: &[&str]) -> TypeDecl {
     let mut t = invoice(fields);
-    t.fields.push(reference("payee", "payroll"));
     t.relations = vec![approved_by(&["since"])];
     t
 }
 
 /// Declare `invoice` whole, with what its author may not know of: `salary`,
-/// `net`, which is built from it and `gross`, the link field `grade`, and
-/// the relations `paid` and `matched`; and answer that author, `schemer`.
+/// `net`, which is built from it and `gross`, the link field `grade`, the
+/// reference `payee`, and the relations `paid` and `matched`; and answer
+/// that author, `schemer`.
 async fn hiding(l: &Lake, store: &dyn LakeStore) -> Result<Principal, Failure> {
     l.declare(type_of("payroll", &[("code", StorageKind::Text)]))
         .await?;
     let mut whole = seen(&["no", "gross", "salary", "ref"]);
+    whole.fields.push(reference("payee", "payroll"));
     let net = derived("net", StorageKind::Text, "gross", &["gross", "salary"]);
     whole.fields.push(net);
     let pairs = vec![MatchPair {
@@ -211,7 +213,7 @@ async fn a_change_of_shape_never_names_a_field_its_author_may_not_know_of(
         .flat_map(|r| r.fields.iter().map(|f| f.name.as_str()))
         .collect();
     ensure!(
-        fields == ["no", "gross", "salary", "ref", "memo", "net", "payee"]
+        fields == ["no", "gross", "salary", "ref", "payee", "net", "memo"]
             && relations == ["approved_by", "paid", "matched"]
             && link_fields == ["since", "grade"],
         "the type declared again from its author's view must keep `salary`, `net`, `payee`, the \
@@ -443,7 +445,7 @@ async fn a_migrations_faults_come_in_one_order_for_a_hidden_name_and_an_absent_o
 check!(
     /// A shape names no field its author may not know of.
     HIDDEN_NAME_NOT_IN_THE_SHAPE = a_shape_names_no_field_its_author_may_not_know_of,
-    "027 and 024, extended (lakelands#726): a valid time, a key or a relation's `via` its author gives anew names a field of its view, so a field it may not know of answers word for word as a name no field has, by `declare` and by `migrate`, and the type in force is unmoved; what stands as declared is taken, valid times left out as `describe` gives them and a relation whole but for its rename, while one retargeted answers as to a type that does not exist, and a rename from a relation the author is not shown answers as one from no relation; a valid time sent where one over such a field stands, the one in force restated too, is judged by its name first, answering as on a type with none, and only a field its author may name is refused, as the bound taken (lakelands#692); a valid-time bound over a field its reader may not know of is not described, and a read at a `valid_at`, its total and a `get` answer by the bounds shown, as on a type declared with those alone"
+    "027 and 024, extended (lakelands#726): a valid time, a key or a relation's `via` its author gives anew names a field of its view, so a field it may not know of answers word for word as a name no field has, by `declare` and by `migrate`, and the type in force is unmoved; what stands as declared is taken, valid times left out as `describe` gives them, and a rename from a relation the author is not shown, or a relation of that name sent to a hidden type, answers as for no relation and no type; a valid time sent where one over such a field stands, the one in force restated too, is judged by its name first, answering as on a type with none, and only a field its author may name is refused, as the bound taken (lakelands#692); a valid-time bound over a field its reader may not know of is not described, and a read at a `valid_at`, its total and a `get` answer by the bounds shown, as on a type declared with those alone"
 );
 
 async fn a_shape_names_no_field_its_author_may_not_know_of(
@@ -451,10 +453,10 @@ async fn a_shape_names_no_field_its_author_may_not_know_of(
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
     let Lake { cat, .. } = &l;
-    // `veiled` and `cloak` are hidden from the author, and so is `payroll`:
-    // `goes`, carried by `cloak`, is not shown to it (lakelands#727), and
-    // `pays` is carried by `payee`, which refers to `payroll`. `stamped` is
-    // valid from `veiled` to `cloak`.
+    // `veiled` and `cloak` are hidden from the author, and so is `payroll`,
+    // so `payee`, which refers to it, is too (lakelands#718): `goes` and
+    // `pays`, carried by them, are not shown to it (lakelands#727).
+    // `stamped` is valid from `veiled` to `cloak`.
     fn goes(name: &str, via: &str) -> RelationDecl {
         let via = Some(via.into());
         RelationDecl {
@@ -463,13 +465,10 @@ async fn a_shape_names_no_field_its_author_may_not_know_of(
         }
     }
     let seen = || {
-        let mut t = type_of(
+        type_of(
             "ev",
             &[("no", StorageKind::Text), ("from", StorageKind::DateTime)],
-        );
-        t.fields.push(reference("payee", "payroll"));
-        t.relations = vec![goes("pays", "payee")];
-        t
+        )
     };
     let stamped = |more: (&str, StorageKind)| {
         let mut t = type_of("stamped", &[("no", StorageKind::Text), more]);
@@ -478,8 +477,10 @@ async fn a_shape_names_no_field_its_author_may_not_know_of(
     };
     let mut whole = seen();
     whole.fields.push(field("veiled", StorageKind::DateTime));
-    whole.fields.push(reference("cloak", "other"));
-    whole.relations.insert(0, goes("goes", "cloak"));
+    whole
+        .fields
+        .extend([reference("cloak", "other"), reference("payee", "payroll")]);
+    whole.relations = vec![goes("goes", "cloak"), goes("pays", "payee")];
     let mut timed = stamped(("veiled", StorageKind::DateTime));
     timed.fields.push(field("cloak", StorageKind::DateTime));
     // `plain` is `stamped` with no valid time.
@@ -598,9 +599,9 @@ async fn a_shape_names_no_field_its_author_may_not_know_of(
         "a valid time with one bound hidden reads as the other alone:\n{}",
         apart.join("\n")
     );
-    // What stands as declared is taken: `pays`, and the valid times left
-    // out, as `stamped` is described. Restated, a valid time answers as on
-    // `plain` (below, lakelands#692).
+    // What stands as declared is taken: the valid times left out, as
+    // `stamped` is described. Restated, a valid time answers as on `plain`
+    // (below, lakelands#692).
     let described = TypeDecl {
         valid_from: None,
         valid_to: None,
@@ -771,69 +772,38 @@ async fn a_shape_names_no_field_its_author_may_not_know_of(
         ev.relations,
         timed.access
     );
-    // A relation renamed keeps its `via`, which stands as declared; one
-    // the author is not shown is renamed as no relation.
-    let renamed = |from: &str, to: &str, via: &str| {
+    // A rename from a relation the author is not shown is one from no
+    // relation, and one sent to the hidden `payroll` answers as to `zzt`.
+    let mut answers = Vec::new();
+    for from in ["goes", "pays", "nothing"] {
         let mut t = seen();
-        t.relations.push(goes(to, via));
-        let relation_renames = vec![(from.into(), to.into())];
-        Migration {
+        t.relations.push(goes("went", "from"));
+        let relation_renames = vec![(from.into(), "went".into())];
+        let renamed = Migration {
             relation_renames,
             ..migration(t)
-        }
-    };
-    let mut answers = Vec::new();
-    for from in ["goes", "nothing"] {
-        let answer = cat.migrate(&who, renamed(from, "went", "cloak")).await;
-        let answer = answer.map_or_else(|e| e.to_string(), |_| "taken".into());
-        answers.push(answer.replace(from, "N"));
+        };
+        let answer = cat.migrate(&who, renamed).await;
+        answers.push(
+            answer
+                .map_or_else(|e| e.to_string(), |_| "taken".into())
+                .replace(from, "N"),
+        );
+    }
+    for target in ["payroll", "zzt"] {
+        let mut t = seen();
+        t.relations = vec![RelationDecl::to("pays", target)];
+        let answer = cat.declare(&who, Declaration::Type(t)).await;
+        answers.push(
+            answer
+                .map_or_else(|e| e.to_string(), |_| "taken".into())
+                .replace(target, "N"),
+        );
     }
     ensure!(
-        answers[0] == answers[1],
-        "a rename from `goes`, which the author is not shown, must answer as one from no \
-         relation: {answers:?}"
-    );
-    let mut paid = renamed("pays", "paid", "payee");
-    paid.to.relations.remove(0);
-    let report = cat.migrate(&who, paid.clone()).await;
-    let report = report.must("renaming `pays`, carried by `payee`")?.data;
-    let applied = cat.migrate_apply(&who, paid, &report.report_id).await;
-    applied.must("applying the rename of `pays`")?;
-    let ev = l.describe_type("ev").await?;
-    ensure!(
-        ev.relations
-            .iter()
-            .any(|r| r.name.as_str() == "paid" && r.via == Some("payee".into())),
-        "`pays` renamed to `paid` must be carried by `payee` still; `ev` holds {:?}",
-        ev.relations
-    );
-    // `paid` sent to another target stands no more: the hidden `payroll`
-    // answers as `zzt`, which is no type.
-    let mut answers = Vec::new();
-    for door in ["declare", "migrate"] {
-        for target in ["payroll", "zzt"] {
-            let mut t = seen();
-            t.relations = vec![RelationDecl {
-                via: Some("payee".into()),
-                ..RelationDecl::to("paid", target)
-            }];
-            let answer = match door {
-                "declare" => cat.declare(&who, Declaration::Type(t)).await.map(drop),
-                _ => cat.migrate(&who, migration(t)).await.map(drop),
-            };
-            answers.push(
-                answer
-                    .map_or_else(|e| e.to_string(), |()| "taken".into())
-                    .replace(target, "N"),
-            );
-        }
-    }
-    ensure!(
-        answers[0] == answers[1]
-            && answers[2] == answers[3]
-            && !answers.iter().any(|a| a == "taken"),
-        "`paid` sent to the hidden `payroll` must answer as to `zzt`, by `declare` and by \
-         `migrate`: {answers:?}"
+        answers[0] == answers[2] && answers[1] == answers[2] && answers[3] == answers[4],
+        "a rename from `goes` or `pays`, which the author is not shown, must answer as one from \
+         no relation, and `pays` sent to `payroll` as to `zzt`: {answers:?}"
     );
     Ok(())
 }

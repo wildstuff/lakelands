@@ -912,6 +912,8 @@ catalog! {
         NotFolded { from: Position, cause: Box<Error> } => "what was appended is in the log from position {from} and is not folded yet; the next write folds it, and a write is sent again only under its idempotency key ({cause})",
         /// The lake's names moved while the write waited; send it again.
         Moved => "the lake's names moved while this write waited; send it again",
+        /// The types a write reads, or what its principal is shown of them, moved while the write waited; send it again.
+        TypesMoved => "the lake's types moved while this write waited; send it again",
         /// A call of a verb that reaches outside the lake failed before its executor was handed it.
         Executor { retry: Retry, cause: Box<Error> } => "the verb's executor was not handed this call ({cause}); {retry}",
         /// A call's executor answered, recording its answer failed, and the answer is held and recorded before the next write; what sending it again answers, unless it has no key.

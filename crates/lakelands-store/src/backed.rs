@@ -1137,6 +1137,7 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
                 who: &host,
                 context,
                 followed: None,
+                shown: None,
             };
             drafts = call.reactions(
                 &w,

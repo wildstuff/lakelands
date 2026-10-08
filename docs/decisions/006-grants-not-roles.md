@@ -355,3 +355,16 @@ For a host: a principal that is not to list a type's records is granted
 nothing of the type. Holding a key field at `none` now hides the type;
 before lakelands#715 it hid the field and answered its value as the
 key.
+
+## Extended: a type kept from a principal hides what refers to it (lakelands#718)
+
+A reference to a type its principal is not shown is a field it may not
+know of (024, extended), so the made-of rule follows it: a type keyed by
+such a reference is not shown (lakelands#715), nor a view grouped by one,
+nor a type keyed by a reference to either, to a fixed point, and a
+relation carried by one is not shown (lakelands#727). A host that keeps
+an agent from a type keeps it, by that alone, from every type made of
+it through a key. To show such a type, it grants the target type, its
+key fields at least masked; an unkeyed type can be granted with nothing
+else.
+

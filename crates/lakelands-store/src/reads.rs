@@ -1910,13 +1910,21 @@ impl<'a> Reader<'a> {
             // A proposed migration's reader, of a type or a value type, its
             // grants followed to the position it was proposed at: what it
             // names, it named then.
+            // A bundle's reader is the one asking, its grants followed
+            // here, to be shown references as the bundle in force would.
             let mut then = None;
-            if let Some(ProposedWrite::Migrate { .. } | ProposedWrite::MigrateValueType { .. }) =
-                &shown
-            {
-                let mut who = asked.clone();
-                (who.grants).follow(&self.shape.renames, Some(p.position));
-                then = Some(who);
+            match &shown {
+                Some(ProposedWrite::Migrate { .. } | ProposedWrite::MigrateValueType { .. }) => {
+                    let mut who = asked.clone();
+                    (who.grants).follow(&self.shape.renames, Some(p.position));
+                    then = Some(who);
+                }
+                Some(ProposedWrite::Declare { .. }) => {
+                    let mut who = asked.clone();
+                    (who.grants).follow(&self.shape.renames, None);
+                    then = Some(who);
+                }
+                _ => {}
             }
             let listing = (&lake, then.as_ref().unwrap_or(self.who), p.position);
             p.write = shown.and_then(|mut w| self.known_shape(&mut w, listing).then_some(w));
@@ -2047,6 +2055,10 @@ impl<'a> Reader<'a> {
                     .as_ref()
                     .and_then(|o| o.ty(&migration.to.name).ok());
                 let made = made.unwrap_or(was);
+                // Its references held as the type it was proposed against
+                // shows them (024, extended).
+                let shown = proposed.as_ref().unwrap_or(&self.shape.ontology);
+                let then = &crate::lake::Lake::hidden(then.clone(), shown).0;
                 let sees = |ty: &TypeName| self.visible_type(ty).ok();
                 let all = || describe::lake(&self.who.lake, self.declared(), self.who);
                 let described = || lake.get_or_init(all);
@@ -2068,10 +2080,14 @@ impl<'a> Reader<'a> {
                     .iter()
                     .for_each(|d| after.put(d.clone(), 0, None));
                 let declared = after.declared();
-                declarations.retain(|d| describe::listed(d, &declared, self.who));
+                // The reader as the bundle in force would show it its
+                // references (024, extended), from its grants as asked: a
+                // reference hidden by the lake as it stands may be shown.
+                let who = &crate::lake::Lake::hidden(then.clone(), &after).0;
+                declarations.retain(|d| describe::listed(d, &declared, who));
                 for d in declarations.iter_mut() {
                     if let Declaration::Type(t) = d {
-                        rights::described_fields(self.who, t, &|n| after.ty(n).ok());
+                        rights::described_fields(who, t, &|n| after.ty(n).ok());
                     }
                 }
                 !declarations.is_empty()
@@ -2097,9 +2113,12 @@ impl<'a> Reader<'a> {
                         .map(|(o, n)| (o.as_str(), n.as_str()))
                         .collect();
                     let view = self.lake.engine.view(Some(before));
+                    // Its references held as that lake shows them (024,
+                    // extended).
                     let judged = view.and_then(|v| {
                         let o = Ontology::at(v.as_ref())?;
-                        crate::writes::conditions(&o, v.as_ref(), then, report, &old)
+                        let then = crate::lake::Lake::hidden(then.clone(), &o).0;
+                        crate::writes::conditions(&o, v.as_ref(), &then, report, &old)
                     });
                     if judged.is_err() {
                         report.conditions.clear();

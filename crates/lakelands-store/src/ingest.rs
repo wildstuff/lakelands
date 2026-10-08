@@ -55,14 +55,17 @@ pub fn window(
 ) -> Result<Committed> {
     crate::writes::check_context(lake, &context)?;
     let mut w = lake.for_write()?;
-    // Under the writer, so through every rename the lake has folded.
+    // Under the writer, so through every rename the lake has folded, and
+    // with its references as the head's types show them (024, extended).
     let (who, _) = lake.followed(who.clone(), None, None)?;
+    let (who, _) = Lake::hidden(who, &w.ontology);
     let (who, followed) = (&who, None);
     let call = Call {
         lake,
         who,
         context,
         followed,
+        shown: None,
     };
     let view = lake.engine.view(None)?;
     let now = lake.clock(&mut w);

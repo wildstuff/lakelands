@@ -656,6 +656,19 @@ impl Lake {
         Ok((who, Some(list.len())))
     }
 
+    /// `who` as the shape `o` shows it: each reference to a type it is not
+    /// shown held at `none` (`rights::hide_unshown_references`), with the
+    /// fields so hidden.
+    pub(crate) fn hidden(
+        mut who: Principal,
+        o: &Ontology,
+    ) -> (Principal, Vec<(TypeName, FieldName)>) {
+        let types: Vec<&TypeDecl> = o.types.values().map(|e| &e.decl).collect();
+        let find = |n: &TypeName| o.ty(n).ok();
+        let set = lakelands_core::rights::hide_unshown_references(&mut who, &types, &find);
+        (who, set)
+    }
+
     /// The log from a position, a page at a time, opened and checked: a
     /// caller holds one page, never the range (`Pages`).
     pub fn pages(&self, from: Position) -> Pages<'_> {

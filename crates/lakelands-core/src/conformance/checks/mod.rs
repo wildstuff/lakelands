@@ -567,4 +567,5 @@ pub const ALL: &[Check] = &[
     describe::DESCRIBED_AS_SHOWN,
     made_of::KEYED_BY_HIDDEN,
     backings::OUTPUT_NOT_A_VALUE,
+    made_of::REFERENCE_TO_UNSHOWN,
 ];

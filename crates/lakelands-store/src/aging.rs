@@ -168,6 +168,7 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
             depth: 0,
         },
         followed: None,
+        shown: None,
     };
     let all = every(false);
     let mut w = lake.for_write()?;

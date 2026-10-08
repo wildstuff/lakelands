@@ -1062,6 +1062,45 @@ async fn a_target_type_the_source_does_not_own_whole_is_refused_at_start() {
     }
 }
 
+/// A connection's principal held at `none` on `partner.name` in the
+/// source is not shown `partner`, which is keyed by it, so neither is
+/// `customer.partner`, which refers to it (lakelands#718): the mirror is
+/// refused at start, naming the field, and does not stall.
+#[tokio::test]
+async fn a_reference_its_principal_may_not_know_of_in_the_source_is_refused_at_start() {
+    for engine in engines() {
+        let two = Two::with("kept-partner", &engine, source_types(), target_types()).await;
+        let mut kept = reader(two.crm.as_ref(), false);
+        let held = TypeGrants {
+            fields: [("name".into(), Access::None)].into(),
+            ..Default::default()
+        };
+        kept.grants.types.insert(TypeName::from("partner"), held);
+        let config = two.config(Start::Snapshot);
+        config.check().expect("the configuration reads");
+        let mut writer = writer(two.main.as_ref());
+        writer.grants = two.grants.clone();
+        let made = Mirror::new(
+            &config,
+            &config.connections[0],
+            &two.dir,
+            two.crm.clone(),
+            two.main.clone(),
+            kept,
+            writer,
+        )
+        .await;
+        let Err(why) = made else {
+            panic!("the mirror is refused");
+        };
+        assert!(
+            why.contains("`customer` has no field `partner` the principal may read"),
+            "{}: {why}",
+            engine.name()
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_target_this_process_does_not_write_is_refused() {
     for engine in engines() {
