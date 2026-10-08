@@ -12219,11 +12219,8 @@ pub async fn a_shape_names_no_field_its_author_may_not_know_of(store: Arc<dyn La
         }),
         _ => unreachable!("a type"),
     };
-    for d in [
-        seen(json!({}), Vec::new()),
-        stamped(kind("memo", "text")),
-        described,
-    ] {
+    // As the store: restated, a valid time answers as on `plain` (below).
+    for d in [seen(json!({}), Vec::new()), described] {
         c.declare(author, d)
             .await
             .expect("declaring again what the author is shown");
@@ -12276,6 +12273,105 @@ pub async fn a_shape_names_no_field_its_author_may_not_know_of(store: Arc<dyn La
     }
     if said[0] != said[1] {
         apart.push(format!("a rename: {} | {}", said[0], said[1]));
+    }
+    // As the store: a valid time sent where one over a field the author may
+    // not know of stands is judged by its name first, as on `plain`, which
+    // has none; only a field the author may name is refused, as the bound
+    // taken (lakelands#692).
+    let send = |d: Declaration, door: &'static str| {
+        let c = c.clone();
+        async move {
+            match door {
+                "declare" => c.declare(author, d).await.map(drop),
+                _ => c.migrate(author, migration(d, Vec::new())).await.map(drop),
+            }
+        }
+    };
+    let shape = |name: &str, axis: &str, to: Option<&str>| {
+        let mut d = json!({"declare": "type", "name": name,
+            "fields": [kind("no", "text"), kind("memo", "text"), kind("d2", "date_time")]});
+        if let Some(to) = to {
+            d[axis] = json!(to);
+        }
+        typed(d)
+    };
+    let wire = |r: &lakelands_api::Result<()>| match r {
+        Err(e) => serde_json::to_string(e).expect("an error prints"),
+        Ok(()) => "taken".into(),
+    };
+    // Each axis: another hidden field, and the bound's own, restated.
+    for (axis, hidden, own) in [
+        ("valid_from", "cloak", "veiled"),
+        ("valid_to", "veiled", "cloak"),
+    ] {
+        for door in ["declare", "migrate"] {
+            for to in ["zz", hidden, own] {
+                let on_stamped = wire(&send(shape("stamped", axis, Some(to)), door).await);
+                let on_plain = wire(&send(shape("plain", axis, Some(to)), door).await);
+                assert!(
+                    on_stamped != "taken" && on_stamped == on_plain.replace("plain", "stamped"),
+                    "`{axis}: {to}` sent by `{door}` on `stamped` is refused as on `plain`: \
+                     {on_stamped} | {on_plain}"
+                );
+            }
+        }
+        let left = wire(&send(shape("stamped", axis, None), "migrate").await);
+        let plain = wire(&send(shape("plain", axis, None), "migrate").await);
+        assert!(
+            left == "taken" && plain == "taken",
+            "`{axis}` left out is taken on `stamped` as on `plain`: {left} | {plain}"
+        );
+        for door in ["declare", "migrate"] {
+            let answer = wire(&send(shape("stamped", axis, Some("d2")), door).await);
+            assert!(
+                answer.contains("\"code\":\"valid_time_stands\""),
+                "`{axis}: d2` sent by `{door}` on `stamped` is refused as the bound taken: {answer}"
+            );
+        }
+        let plain = wire(&send(shape("plain", axis, Some("d2")), "migrate").await);
+        assert_eq!(plain, "taken", "`{axis}: d2` on `plain` is taken");
+    }
+    // As the store: a field of its own named like a hidden one, sent as a
+    // valid time, is a field declared twice, as on `plain`.
+    for axis in ["valid_from", "valid_to"] {
+        for door in ["declare", "migrate"] {
+            let mut said = Vec::new();
+            for name in ["stamped", "plain"] {
+                let mut d = json!({"declare": "type", "name": name, "fields": [kind("no", "text"),
+                    kind("memo", "text"), kind("d2", "date_time"), kind("veiled", "date_time")]});
+                d[axis] = json!("veiled");
+                said.push(wire(&send(typed(d), door).await));
+            }
+            assert!(
+                said[0] != "taken" && said[0] == said[1].replace("plain", "stamped"),
+                "its own `veiled` as `{axis}` by `{door}` on `stamped` is refused as on `plain`: \
+                 {said:?}"
+            );
+        }
+    }
+    // As the store: with one bound hidden, its restatement answers as on the
+    // type with the other bound alone.
+    let held = json!({"fields": {"veiled": "masked", "cloak": "none"}});
+    let grants = json!({"default": "write", "schema": true, "types": {
+        "half": held, "halfplain": held}});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let halfer = &principal(store.lake(), PrincipalKind::Agent, "halfer", grants);
+    for door in ["declare", "migrate"] {
+        let mut said = Vec::new();
+        for name in ["half", "halfplain"] {
+            let d = typed(json!({"declare": "type", "name": name, "fields": [
+                kind("no", "text"), kind("from", "date_time"), kind("veiled", "date_time"),
+                kind("cloak", "date_time")], "valid_from": "from", "valid_to": "cloak"}));
+            let answer = match door {
+                "declare" => c.declare(halfer, d).await.map(drop),
+                _ => c.migrate(halfer, migration(d, Vec::new())).await.map(drop),
+            };
+            said.push(wire(&answer));
+        }
+        assert!(
+            said[0] != "taken" && said[0] == said[1].replace("halfplain", "half"),
+            "`half`'s `valid_to: cloak` restated by `{door}` is refused as on `halfplain`: {said:?}"
+        );
     }
     let described = |ty: &'static str| {
         let c = c.clone();

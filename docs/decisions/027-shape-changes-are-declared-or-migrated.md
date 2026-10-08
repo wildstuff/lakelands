@@ -367,25 +367,31 @@ author learns nothing of the target. A masked or a write-only field is
 shown to the principal, and stays its to remove.
 
 What a type's shape names stands as declared only where it stands
-(lakelands#726). A valid time equal to the one in force, or left out
-where the one in force names a field outside the author's view, which
-`describe` does not name to it (024), stays as declared. So does a
-relation the author is shown that equals the one in force whole, apart
-from a rename the migration states, when its `via` names such a field;
-one changed in any other part is read as sent, so a retarget answers
-as one to a type that does not exist. What stands is left out of the
-author check and checked whole at apply, so no new member can name that
-field through it, and a valid time left out is put back with the hidden
-fields. A relation changed only in its description is read as sent too,
-and refused on its `via`: a refusal of a change the author may make,
-which tells it nothing. The key keeps its fields at their place, since a
-key never names a field its reader may not know of (006). A valid time, a key or a
-`via` its author gives anew is read against the author's view, where
-such a field is no field. A hidden field's name is therefore answered
-word for word as a name no field has, by `declare` and by `migrate`, and
-the type in force is not changed. Before, such a member was taken
-because the field existed in the lake, and the difference told the
-author the name.
+(lakelands#726). A valid time left out where the one in force names a
+field outside the author's view, which `describe` does not name to it
+(024), stays as declared. One the author sends, the one in force
+restated too, is judged by its name first, as on a type with no valid
+time: a name no field has, or a field the author may not know of,
+answers word for word as there (lakelands#692). A field the author may
+name is refused at the type: the bound is taken, as a name a hidden
+field holds is, and it stands.
+
+A relation the author is shown that equals the one in force whole,
+apart from a rename the migration states, stands as declared when its
+`via` names such a field; one changed in any other part is read as
+sent, so a retarget answers as one to a type that does not exist. What
+stands is left out of the author check and checked whole at apply, so
+no new member can name that field through it, and a valid time left out
+is put back with the hidden fields. A relation changed only in its
+description is read as sent too, and refused on its `via`: a refusal of
+a change the author may make, which tells it nothing. The key keeps its
+fields at their place, since a key never names a field its reader may
+not know of (006). A valid time, a key or a `via` its author gives anew
+is read against the author's view, where such a field is no field. A
+hidden field's name is therefore answered word for word as a name no
+field has, by `declare` and by `migrate`, and the type in force is not
+changed. Before, such a member was taken because the field existed in
+the lake, and the difference told the author the name.
 
 ## Extended: a proposed migration is listed as its reader may know it (lakelands#499)
 

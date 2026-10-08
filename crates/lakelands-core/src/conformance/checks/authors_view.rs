@@ -443,7 +443,7 @@ async fn a_migrations_faults_come_in_one_order_for_a_hidden_name_and_an_absent_o
 check!(
     /// A shape names no field its author may not know of.
     HIDDEN_NAME_NOT_IN_THE_SHAPE = a_shape_names_no_field_its_author_may_not_know_of,
-    "027 and 024, extended (lakelands#726): a valid time, a key or a relation's `via` its author gives anew names a field of its view, so a field it may not know of answers word for word as a name no field has, by `declare` and by `migrate`, and the type in force is unmoved; what stands as declared is taken, valid times restated or left out as `describe` gives them and a relation whole but for its rename, while one retargeted answers as to a type that does not exist, and a rename from a relation the author is not shown answers as one from no relation; a valid-time bound over a field its reader may not know of is not described, and a read at a `valid_at`, its total and a `get` answer by the bounds shown, as on a type declared with those alone"
+    "027 and 024, extended (lakelands#726): a valid time, a key or a relation's `via` its author gives anew names a field of its view, so a field it may not know of answers word for word as a name no field has, by `declare` and by `migrate`, and the type in force is unmoved; what stands as declared is taken, valid times left out as `describe` gives them and a relation whole but for its rename, while one retargeted answers as to a type that does not exist, and a rename from a relation the author is not shown answers as one from no relation; a valid time sent where one over such a field stands, the one in force restated too, is judged by its name first, answering as on a type with none, and only a field its author may name is refused, as the bound taken (lakelands#692); a valid-time bound over a field its reader may not know of is not described, and a read at a `valid_at`, its total and a `get` answer by the bounds shown, as on a type declared with those alone"
 );
 
 async fn a_shape_names_no_field_its_author_may_not_know_of(
@@ -598,15 +598,15 @@ async fn a_shape_names_no_field_its_author_may_not_know_of(
         "a valid time with one bound hidden reads as the other alone:\n{}",
         apart.join("\n")
     );
-    // What stands as declared is taken: `pays`, the valid times restated,
-    // and the valid times left out, as `stamped` is described.
-    let memo = stamped(("memo", StorageKind::Text));
+    // What stands as declared is taken: `pays`, and the valid times left
+    // out, as `stamped` is described. Restated, a valid time answers as on
+    // `plain` (below, lakelands#692).
     let described = TypeDecl {
         valid_from: None,
         valid_to: None,
-        ..memo.clone()
+        ..stamped(("memo", StorageKind::Text))
     };
-    for t in [seen(), memo, described] {
+    for t in [seen(), described] {
         let what = format!("declaring `{}` again as its author is shown it", t.name);
         cat.declare(&who, Declaration::Type(t)).await.must(&what)?;
     }
@@ -636,6 +636,122 @@ async fn a_shape_names_no_field_its_author_may_not_know_of(
             answers.push(answer.replace(n, "N"));
         }
         said.push(answers);
+    }
+    // A valid time sent where one over a field its author may not know of
+    // stands is judged by its name first, as on `plain`, which has none:
+    // `zz` and a hidden field answer word for word as there, and so does
+    // leaving it out. Only a field the author may name is refused, as the
+    // bound taken, as a name a hidden field holds is (lakelands#692).
+    let send = |t: TypeDecl, door: &'static str| {
+        let (cat, who) = (cat.clone(), who.clone());
+        async move {
+            match door {
+                "declare" => cat.declare(&who, Declaration::Type(t)).await.map(drop),
+                _ => cat.migrate(&who, migration(t)).await.map(drop),
+            }
+        }
+    };
+    let shape = |name: &str, axis: &str, to: Option<&str>| {
+        let mut t = TypeDecl {
+            name: name.into(),
+            valid_from: None,
+            valid_to: None,
+            ..stamped(("memo", StorageKind::Text))
+        };
+        t.fields.push(field("d2", StorageKind::DateTime));
+        *match axis {
+            "valid_from" => &mut t.valid_from,
+            _ => &mut t.valid_to,
+        } = to.map(Into::into);
+        t
+    };
+    // Each axis: another hidden field, and the bound's own, restated.
+    for (axis, hidden, own) in [
+        ("valid_from", "cloak", "veiled"),
+        ("valid_to", "veiled", "cloak"),
+    ] {
+        for door in ["declare", "migrate"] {
+            for to in ["zz", hidden, own] {
+                let (on_stamped, on_plain) = (
+                    send(shape("stamped", axis, Some(to)), door).await,
+                    send(shape("plain", axis, Some(to)), door).await,
+                );
+                let what = format!("`{axis}: {to}` sent by `{door}` on `stamped`");
+                match (&on_stamped, &on_plain) {
+                    (Err(a), Err(b)) => alike_renamed(&what, a, b, ("plain", "stamped"))?,
+                    _ => {
+                        return Err(Failure::new(format!(
+                            "{what} must be refused as on `plain`; they answered {on_stamped:?} \
+                             and {on_plain:?}"
+                        )));
+                    }
+                }
+            }
+        }
+        let left = send(shape("stamped", axis, None), "migrate").await;
+        let plain = send(shape("plain", axis, None), "migrate").await;
+        ensure!(
+            left.is_ok() && plain.is_ok(),
+            "`{axis}` left out is taken on `stamped` as on `plain`: {left:?} | {plain:?}"
+        );
+        let says = json!({"code": "valid_time_stands", "axis": axis});
+        for door in ["declare", "migrate"] {
+            let answer = send(shape("stamped", axis, Some("d2")), door).await;
+            ensure!(
+                invalid_like(&answer, &says),
+                "`{axis}: d2` sent by `{door}` on `stamped` must be refused as {says}; it \
+                 answered {answer:?}"
+            );
+        }
+        let plain = send(shape("plain", axis, Some("d2")), "migrate").await;
+        ensure!(plain.is_ok(), "`{axis}: d2` on `plain` is taken: {plain:?}");
+    }
+    // A field of its own named like a hidden one, sent as a valid time, is
+    // a field declared twice, as on `plain`, and never the bound taken: the
+    // answer does not tell which hidden field a bound names (lakelands#692).
+    for axis in ["valid_from", "valid_to"] {
+        for door in ["declare", "migrate"] {
+            let named = |name: &str| {
+                let mut t = shape(name, axis, Some("veiled"));
+                t.fields.push(field("veiled", StorageKind::DateTime));
+                t
+            };
+            let (on_stamped, on_plain) = (
+                send(named("stamped"), door).await,
+                send(named("plain"), door).await,
+            );
+            let what = format!("its own `veiled` as `{axis}`, by `{door}`, on `stamped`");
+            match (&on_stamped, &on_plain) {
+                (Err(a), Err(b)) => alike_renamed(&what, a, b, ("plain", "stamped"))?,
+                _ => {
+                    return Err(Failure::new(format!(
+                        "{what} must be refused as on `plain`; they answered {on_stamped:?} \
+                         and {on_plain:?}"
+                    )));
+                }
+            }
+        }
+    }
+    // With one bound hidden, its restatement answers as on the type with the
+    // other bound alone.
+    for door in ["declare", "migrate"] {
+        let mut said = Vec::new();
+        for name in ["half", "halfplain"] {
+            let t = bounded(name, "from", Some("cloak"));
+            said.push(match door {
+                "declare" => cat.declare(&half, Declaration::Type(t)).await.map(drop),
+                _ => cat.migrate(&half, migration(t)).await.map(drop),
+            });
+        }
+        let what = format!("`half`'s `valid_to: cloak` restated by `{door}`");
+        match (&said[0], &said[1]) {
+            (Err(a), Err(b)) => alike_renamed(&what, a, b, ("halfplain", "half"))?,
+            _ => {
+                return Err(Failure::new(format!(
+                    "{what} must be refused as on `halfplain`; they answered {said:?}"
+                )));
+            }
+        }
     }
     let (ev, timed) = (
         l.describe_type("ev").await?,

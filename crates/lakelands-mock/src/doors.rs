@@ -2808,12 +2808,19 @@ fn as_author(
         v.as_ref()
             .is_some_and(|v| unknown.iter().any(|f| &f.name == v))
     };
-    for (sent, held) in [
-        (&mut to.valid_from, &before.valid_from),
-        (&mut to.valid_to, &before.valid_to),
+    for (axis, sent, held) in [
+        ("valid_from", &mut to.valid_from, &before.valid_from),
+        ("valid_to", &mut to.valid_to, &before.valid_to),
     ] {
         if sent.is_none() && unseen(held) {
             sent.clone_from(held);
+        } else if *sent != *held && unseen(held) && !unseen(sent) {
+            // As the store: a field the author may name, sent where a bound
+            // it may not know of stands, is refused as the bound taken.
+            // A hidden field's name is left to the declaration.
+            let (name, axis) = (to.name.clone(), axis.to_owned());
+            let said = Said::from(Case::ValidTimeStands { axis });
+            return Err(invalid(said.within(Place::Type { name })));
         }
     }
     for r in &mut to.relations {
@@ -2952,10 +2959,11 @@ fn reads_as_author(
         for fields in [&mut t.fields, &mut e.decl.fields] {
             fields.retain(|f| !unchanged.contains(f));
         }
-        // As the store: a valid time, or a relation the author is shown, as
-        // it stands (whole but for a rename) and naming a field outside the
-        // author's view, is left out of both sides; one given anew is read
-        // against the view.
+        // As the store: a valid time left out where the one in force names a
+        // field outside the author's view, and a relation the author is
+        // shown as it stands (whole but for a rename) naming such a field,
+        // are left out of both sides; a valid time sent, the one in force
+        // too, is read against the view.
         let held = &was.decl;
         let view: Vec<FieldName> = e.decl.fields.iter().map(|f| f.name.clone()).collect();
         let unseen = |f: &Option<FieldName>| f.as_ref().is_some_and(|f| !view.contains(f));
@@ -2963,7 +2971,7 @@ fn reads_as_author(
             (&mut t.valid_from, &mut e.decl.valid_from, &held.valid_from),
             (&mut t.valid_to, &mut e.decl.valid_to, &held.valid_to),
         ] {
-            if (sent == was || sent.is_none()) && unseen(was) {
+            if sent.is_none() && unseen(was) {
                 (*sent, *kept) = (None, None);
             }
         }

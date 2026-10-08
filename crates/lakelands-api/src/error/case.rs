@@ -785,6 +785,9 @@ catalog! {
         Undeclared { #[serde(rename = "type")] ty: TypeName } => "`{ty}` is not a declared type",
         /// A valid time over a field that is not a date-time.
         ValidTimeNotDateTime { field: FieldName, axis: String, kind: StorageKind } => "it names `{field}` as its `{axis}`, a {kind} field; a valid time is a date-time field",
+        /// A field its author may name, sent as a valid time where one over
+        /// a field it may not know of stands: the bound is taken.
+        ValidTimeStands { axis: String } => "its `{axis}` names a field you may not know of, and stands as declared",
         /// A value type naming a format that does not exist.
         ValueTypeFormat { value_type: ValueTypeName, format: String } => "value type `{value_type}` names the unknown format `{format}`",
         /// A field stored as another kind than its value type.
