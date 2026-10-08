@@ -201,7 +201,7 @@ pub trait ProjectionStore: Send + Sync {
     /// End every key of the head-only name `name` ([`crate::seam::is_head_only`])
     /// at once, at `at`: whatever its keys held, put earlier in the
     /// transaction or before it, is deleted, and a key put after it in the
-    /// same transaction is kept.
+    /// same transaction is kept. Any other name is refused as invalid.
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()>;
 
     /// Store a proposal's state as of its latest event, at `at`; earlier

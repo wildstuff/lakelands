@@ -218,6 +218,7 @@ impl ProjectionStore for MemoryLake {
     }
 
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
+        lakelands_core::engines::head_only(name)?;
         let ty = name.clone();
         self.stage(Put::HeadsEnded { ty, at })
     }

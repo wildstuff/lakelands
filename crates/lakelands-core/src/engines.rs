@@ -55,6 +55,18 @@ use crate::invalid;
 /// only filters that do not read the clock, so any fixed instant will do.
 const NO_CLOCK: Timestamp = Timestamp(0);
 
+/// `name`, when it is a head-only name ([`lakelands_api::seam::is_head_only`])
+/// an engine may end whole; otherwise a refusal. Ending a stored type's
+/// name would delete its rows and leave its indexes behind.
+pub fn head_only(name: &TypeName) -> Result<()> {
+    match lakelands_api::seam::is_head_only(name) {
+        true => Ok(()),
+        false => Err(invalid(format!(
+            "`{name}` is not a head-only name, so it is not ended whole"
+        ))),
+    }
+}
+
 /// A declaration's identity: its kind and its name. A later declaration
 /// with the same identity supersedes an earlier one.
 pub fn declaration_key(d: &Declaration) -> String {
