@@ -379,6 +379,7 @@ What a refusal is about.
 | `type_verb_writes` | `type` (TypeName) | it is declared on the type `{type}`, and a write effect sets fields of a record it does not have | A verb on its type with a write effect. |
 | `undeclared` | `type` (TypeName) | `{type}` is not a declared type | A type named that is not declared. |
 | `valid_time_not_date_time` | `field` (FieldName), `axis` (String), `kind` (StorageKind) | it names `{field}` as its `{axis}`, a {kind} field; a valid time is a date-time field | A valid time over a field that is not a date-time. |
+| `valid_time_stands` | `axis` (String) | its `{axis}` names a field you may not know of, and stands as declared | A field its author may name, sent as a valid time where one over a field it may not know of stands: the bound is taken. |
 | `value_type_format` | `value_type` (ValueTypeName), `format` (String) | value type `{value_type}` names the unknown format `{format}` | A value type naming a format that does not exist. |
 | `value_type_kind` | `field` (FieldName), `value_type` (ValueTypeName), `expected` (StorageKind), `found` (StorageKind) | field `{field}` uses value type `{value_type}`, which is {expected}, but the field is {found} | A field stored as another kind than its value type. |
 | `vector_dimensions` | — | a vector names its dimensions, more than zero | A vector with no dimensions. |

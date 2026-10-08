@@ -2398,12 +2398,13 @@ impl Call<'_> {
             for fields in [&mut t.fields, &mut e.decl.fields] {
                 fields.retain(|f| !unchanged.contains(f));
             }
-            // A valid time, or a relation its author is shown, as it stands,
-            // whole but for a rename, and naming a field outside its
-            // author's view, is left out of both sides and checked whole at
-            // apply. One its author gives
-            // anew is read against its view, where such a field is no field
-            // (027, extended, lakelands#726).
+            // A valid time left out where the one in force names a field
+            // outside its author's view, and a relation its author is shown
+            // as it stands, whole but for a rename, naming such a field, are
+            // left out of both sides and checked whole at apply. A valid time
+            // its author sends, the one in force too, is read against its
+            // view, where such a field is no field (027, extended,
+            // lakelands#726, lakelands#692).
             let held = o.ty(&t.name)?;
             let view: Vec<FieldName> = e.decl.fields.iter().map(|f| f.name.clone()).collect();
             let unseen = |f: &Option<FieldName>| f.as_ref().is_some_and(|f| !view.contains(f));
@@ -2411,7 +2412,7 @@ impl Call<'_> {
                 (&mut t.valid_from, &mut e.decl.valid_from, &held.valid_from),
                 (&mut t.valid_to, &mut e.decl.valid_to, &held.valid_to),
             ] {
-                if (sent == was || sent.is_none()) && unseen(was) {
+                if sent.is_none() && unseen(was) {
                     (*sent, *kept) = (None, None);
                 }
             }
@@ -3825,12 +3826,23 @@ fn as_author<'a>(
         v.as_ref()
             .is_some_and(|v| unknown.iter().any(|f| &f.name == v))
     };
-    for (sent, held) in [
-        (&mut to.valid_from, &before.valid_from),
-        (&mut to.valid_to, &before.valid_to),
+    for (axis, sent, held) in [
+        ("valid_from", &mut to.valid_from, &before.valid_from),
+        ("valid_to", &mut to.valid_to, &before.valid_to),
     ] {
         if sent.is_none() && unseen(held) {
             sent.clone_from(held);
+        } else if *sent != *held && unseen(held) && !unseen(sent) {
+            // A field its author may name, sent where a bound over a field
+            // it may not know of stands: the bound is taken, as a name a
+            // hidden field holds is (027), and stands (lakelands#692). A
+            // name it may not give was refused before, as on any type.
+            // A hidden field's name sent there is the author's own field
+            // named like it, which the declaration refuses as declared
+            // twice, as on any type.
+            let (name, axis) = (to.name.clone(), axis.to_owned());
+            let said = Said::from(Case::ValidTimeStands { axis });
+            return Err(invalid(said.within(Place::Type { name })));
         }
     }
     for r in &mut to.relations {

@@ -199,8 +199,9 @@ async fn a_declaration_reads_only_what_its_author_may_read(
     );
     // What a type's shape names stands as declared: an author kept from
     // its valid time or a relation's `via` field declares the type again
-    // from its view, with one more field, and migrates it; the relation it
-    // is not shown is not in its view, and is kept (lakelands#727). One
+    // from its view, with one more field, and migrates it; the valid time
+    // over that field is not in its view (lakelands#726, lakelands#692),
+    // nor the relation it is not shown, and both are kept (lakelands#727). One
     // kept from its key field is not shown the type (lakelands#715): its
     // declaration is not granted and its migration finds no type.
     let reference = json!({"kind": "reference", "target": "account"});
@@ -231,7 +232,10 @@ async fn a_declaration_reads_only_what_its_author_may_read(
         let mut author = field_access(store.as_ref(), "author", &name, &[(hidden, Access::None)]);
         author.grants.schema = true;
         let mut seen = shape.clone();
-        seen.as_object_mut().map(|s| s.remove("relations"));
+        if let Some(s) = seen.as_object_mut() {
+            s.remove("relations");
+            s.remove("valid_from");
+        }
         let view = |a: &str| over(seen.clone(), json!({"fields": [text(a), text("more")]}));
         let again = decl(over(view("a"), json!({"declare": "type"})));
         let mut to = migration(serde_json::from_value(view("a2")).expect("a type"));

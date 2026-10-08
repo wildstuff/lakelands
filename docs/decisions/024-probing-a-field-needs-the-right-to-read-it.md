@@ -514,8 +514,13 @@ says a hidden thing exists, and remains on purpose:
   `valid_at` filters by the bounds the reader is shown and probes only
   those: with both hidden it answers as for a type with no valid time,
   with one hidden as for a type declared with the other alone, word for
-  word. A refusal, or a filter by the hidden bound, would tell the reader
-  that a valid time it is not shown exists;
+  word. A refusal of such a read, or a filter by the hidden bound, would
+  tell the reader that a valid time it is not shown exists;
+- a valid time sent where one the author may not know of stands, which
+  is refused as taken, as a field named like a hidden one is (027,
+  lakelands#692). A name no field has, or a hidden one, sent there
+  answers as on a type with no valid time: only a field the author may
+  name tells it, as only a taken name does;
 - a reference field's target, which is its type: hiding it would make a
   field's access depend on another type at every read. A host that
   hides a type grants `none` on the reference fields to it;

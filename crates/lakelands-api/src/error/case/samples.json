@@ -392,6 +392,10 @@
    "kind": "text"
   },
   {
+   "axis": "s",
+   "code": "valid_time_stands"
+  },
+  {
    "code": "value_type_format",
    "format": "s",
    "value_type": "vt"
