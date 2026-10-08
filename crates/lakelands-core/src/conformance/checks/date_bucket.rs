@@ -11,16 +11,18 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::read::{AggFunc, Aggregate, GroupKey};
 use lakelands_api::write::Declaration;
-use lakelands_api::{Find, Found, LakeStore, Refusal, TypeName, Value};
+use lakelands_api::{Find, Found, LakeStore, TypeName, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, agg, dec, decimal, doors, find_where, log_events, owner, reason, type_of,
+    Lake, Must, agg, dec, decimal, doors, find_where, invalid_case, invalid_like, log_events,
+    owner, type_of,
 };
 
 check!(
@@ -231,7 +233,7 @@ async fn a_where_selects_the_records_of_one_date_bucket(
     let fortnight = find_where("date_bucket(on, 'fortnight') is not null");
     let refused = cat.find(own, &TypeName::from("entry"), fortnight).await;
     ensure!(
-        matches!(reason(&refused), Some(Refusal::Invalid { message }) if message.contains("fortnight")),
+        matches!(invalid_case(&refused), Some(Case::BucketUnit { unit }) if unit == "fortnight"),
         "a unit outside the five is refused as invalid, naming it; find answered {refused:?}"
     );
     Ok(())
@@ -327,16 +329,21 @@ async fn find_groups_records_by_windows_of_a_width_from_an_origin(
         "grouped by windows of 30d from 2028-01-01, find answered\n  {got:?}\nand expected are\n  \
          {want:?}"
     );
-    for (bucket, names) in [
-        ("date_bucket(on, 30d)", "date_bucket(t, 30d, origin)"),
-        ("date_bucket(on, 0d, on)", "a width above zero"),
-        ("date_bucket(on, '30d', on)", "a width is written unquoted"),
-        ("date_bucket(on, 'month', on)", "and no origin"),
+    // Each case's sentence says how a call is written.
+    let arguments = json!({"code": "bucket_arguments"});
+    for (bucket, case) in [
+        ("date_bucket(on, 30d)", &arguments),
+        ("date_bucket(on, 0d, on)", &arguments),
+        (
+            "date_bucket(on, '30d', on)",
+            &json!({"code": "bucket_unit", "unit": "30d"}),
+        ),
+        ("date_bucket(on, 'month', on)", &arguments),
     ] {
         let refused = cat.find(own, &TypeName::from("entry"), keyed(bucket)).await;
         ensure!(
-            matches!(reason(&refused), Some(Refusal::Invalid { message }) if message.contains(names)),
-            "`{bucket}` is refused as invalid, naming \"{names}\"; find answered {refused:?}"
+            invalid_like(&refused, case),
+            "`{bucket}` is refused as invalid, as {case}; find answered {refused:?}"
         );
     }
     // A declaration may call it, written in format 11 as the lake's

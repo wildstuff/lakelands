@@ -188,7 +188,7 @@ finishes the task on its own. The session's lease is at 24.
 error: refused on `state`: `order` has no field `state`
   what to do: correct the input and run the command again; nothing was written
 
-{"error":"refused","field":"state","reason":{"message":"`order` has no field `state`","refusal":"invalid"}}
+{"error":"refused","field":"state","reason":{"code":"unknown_field","field":"state","message":"`order` has no field `state`","refusal":"invalid","type":"order"}}
 ```
 
 Next it sent `status: shipped`, which was applied at 25, version 2.
@@ -202,8 +202,10 @@ walk's criterion this is not a finding.
 `payment_upsert` with `fields` only (and `amount: 80`):
 
 ```
-error: the arguments do not fit `payment_upsert`: missing field `key`
-  what to do: correct them against the tool's input schema and call it again
+error: the arguments of `payment_upsert`: the member `key` is missing
+  what to do: correct them against the tool's input schema (over REST, the route's in docs/rest.md) and call it again
+
+{"error":"refused","reason":{"at":[{"code":"arguments","message":"the arguments of `payment_upsert`","tool":"payment_upsert"}],"code":"member_missing","member":"key","message":"the member `key` is missing","refusal":"invalid"}}
 ```
 
 The agent listed the payments (none, at 25) and described `payment`,
@@ -273,7 +275,7 @@ other changes to O-1 since then"), and retried at version 2: applied at
 error: refused: verb `create_payment` is called on the type `payment`, not on a record: it takes no key
   what to do: correct the input and run the command again; nothing was written
 
-{"error":"refused","reason":{"message":"verb `create_payment` is called on the type `payment`, not on a record: it takes no key","refusal":"invalid"}}
+{"error":"refused","reason":{"code":"verb_type_takes_no_key","message":"verb `create_payment` is called on the type `payment`, not on a record: it takes no key","refusal":"invalid","type":"payment","verb":"create_payment"}}
 ```
 
 It dropped the key and added an idempotency key (**first try right**),
@@ -287,7 +289,7 @@ and then met the executor that is not bound, as in run 1 (#349).
 error: refused: view `revenue_7d` needs parameter `anchor` (date_time)
   what to do: correct the input and run the command again; nothing was written
 
-{"error":"refused","reason":{"message":"view `revenue_7d` needs parameter `anchor` (date_time)","refusal":"invalid"}}
+{"error":"refused","reason":{"code":"param_missing","kind":"date_time","message":"view `revenue_7d` needs parameter `anchor` (date_time)","name":"anchor","refusal":"invalid","type":"revenue_7d","unbound":false}}
 ```
 
 It retried with `{"params": {"anchor": "2026-10-07"}}`. The answer, at
@@ -305,7 +307,7 @@ lease is at 28.
 error: refused on `amount`: a decimal value must be a string of digits
   what to do: correct the input and run the command again; nothing was written
 
-{"error":"refused","field":"amount","reason":{"message":"a decimal value must be a string of digits","refusal":"constraint"}}
+{"error":"refused","field":"amount","reason":{"code":"value_shape","kind":"decimal","message":"a decimal value must be a string of digits","refusal":"constraint","shape":"digits"}}
 ```
 
 The agent sent `"120.00"` and changed nothing else: applied at 29,

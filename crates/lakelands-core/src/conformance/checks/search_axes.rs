@@ -20,8 +20,8 @@ use serde_json::{Value, json};
 
 use super::fusion::docs;
 use crate::conformance::fixture::{
-    Lake, Must, field, field_access, field_writer, is_invalid, limits, no_such_field, restrict,
-    searchable, try_upsert, type_decl, vector,
+    Lake, Must, alike_renamed, field, field_access, field_writer, is_invalid, limits,
+    no_such_field, restrict, searchable, try_upsert, type_decl, vector,
 };
 use crate::conformance::{Failure, Given};
 
@@ -207,7 +207,8 @@ const WEIGHED: &str = r#"
     own | {"mode": "vector", "field": "v", "vector": [1, 0]} | vector(v)
 "#;
 
-/// `who`'s search along `v` and, in `also`, `w`, as it is answered.
+/// `who`'s search along `v` and, in `also`, `w`, as it is answered: a
+/// refusal by its wire form, its sentence with it.
 async fn naming_w(l: &Lake, who: &Principal) -> String {
     let also = json!([{"field": "w", "vector": [1, 0]}]);
     let s = json!({"type": "doc", "mode": "vector", "field": "v", "vector": [1, 0], "also": also});
@@ -215,7 +216,7 @@ async fn naming_w(l: &Lake, who: &Principal) -> String {
         .cat
         .search(who, serde_json::from_value(s).expect("a search reads"));
     match answer.await {
-        Err(e) if no_such_field(&e, "w") => e.to_string(),
+        Err(e) if no_such_field(&e, "w") => json!(e).to_string(),
         other => format!("{other:?}"),
     }
 }
@@ -287,8 +288,15 @@ async fn a_types_setting_weighs_what_a_search_does_not(
     }
     // To a writer not shown it, `w` was a field `doc` does not declare.
     let undeclared = weigh(&l, &l.own, &json!({"fields": {"w": 1}})).await;
-    if format!("{hidden:?}") != format!("{undeclared:?}") {
-        wrong.push(format!("not shown `w`, its setting: {hidden:?}"));
+    match (&hidden, &undeclared) {
+        (Err(h), Err(u)) => {
+            if let Err(f) = alike_renamed("not shown `w`, its setting", h, u, ("", "")) {
+                wrong.push(f.message);
+            }
+        }
+        _ => wrong.push(format!(
+            "not shown `w`, its setting: {hidden:?}; undeclared: {undeclared:?}"
+        )),
     }
     for value in [
         json!({"fields": {"w": 1}}),

@@ -1,0 +1,1995 @@
+{
+ "Case": [
+  {
+   "code": "unknown_field",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "not_live",
+   "field": "f",
+   "key": "k",
+   "type": "t"
+  },
+  {
+   "code": "annotation_key_form"
+  },
+  {
+   "code": "annotation_key_long",
+   "max": 1
+  },
+  {
+   "code": "annotation_null"
+  },
+  {
+   "code": "annotation_reserved",
+   "namespace": "s"
+  },
+  {
+   "bytes": 1,
+   "code": "annotations_too_large",
+   "max": 1
+  },
+  {
+   "code": "at_read_authority"
+  },
+  {
+   "code": "at_read_backed"
+  },
+  {
+   "code": "at_read_cleared"
+  },
+  {
+   "code": "link_field_at_read"
+  },
+  {
+   "code": "at_read_key"
+  },
+  {
+   "code": "at_read_match"
+  },
+  {
+   "code": "at_read_previous"
+  },
+  {
+   "code": "at_read_required"
+  },
+  {
+   "code": "at_read_searchable"
+  },
+  {
+   "code": "at_read_sensitive"
+  },
+  {
+   "code": "at_read_valid_from"
+  },
+  {
+   "code": "at_read_valid_to"
+  },
+  {
+   "code": "at_read_via"
+  },
+  {
+   "code": "at_write_reads_at_read",
+   "field": "f"
+  },
+  {
+   "code": "carrier_changed",
+   "from": "via",
+   "to": "via"
+  },
+  {
+   "code": "clock_unsaid"
+  },
+  {
+   "code": "computed_at_in_view"
+  },
+  {
+   "code": "computed_at_no_record"
+  },
+  {
+   "code": "computed_at_uncomputed"
+  },
+  {
+   "code": "computed_cycle",
+   "fields": [
+    "a"
+   ]
+  },
+  {
+   "code": "computed_reads_itself",
+   "field": "f"
+  },
+  {
+   "code": "declared_twice",
+   "name": "s",
+   "what": "type"
+  },
+  {
+   "code": "derived_and_function"
+  },
+  {
+   "code": "derived_cycle",
+   "fields": [
+    "a"
+   ]
+  },
+  {
+   "code": "derived_no_pair"
+  },
+  {
+   "code": "derived_reads_itself",
+   "field": "f"
+  },
+  {
+   "code": "derived_stores_edge"
+  },
+  {
+   "code": "dimensions_not_vector"
+  },
+  {
+   "code": "embed_also_computed"
+  },
+  {
+   "code": "embed_depends_on"
+  },
+  {
+   "code": "embed_from_itself"
+  },
+  {
+   "code": "embed_from_not_text",
+   "field": "f"
+  },
+  {
+   "code": "embed_from_sensitive",
+   "field": "f"
+  },
+  {
+   "code": "embed_from_twice",
+   "field": "f"
+  },
+  {
+   "code": "embed_no_from"
+  },
+  {
+   "code": "embed_no_model"
+  },
+  {
+   "code": "embed_not_derived"
+  },
+  {
+   "code": "embed_not_vector"
+  },
+  {
+   "code": "expr_no_expression"
+  },
+  {
+   "backing": "s",
+   "code": "expression_not_expr"
+  },
+  {
+   "code": "function_input_kind",
+   "function": "s",
+   "held": "text",
+   "input": "f",
+   "kind": "text",
+   "type": "t"
+  },
+  {
+   "code": "function_not_derived"
+  },
+  {
+   "code": "function_undeclared",
+   "name": "s"
+  },
+  {
+   "code": "group_unkeyable",
+   "field": "f"
+  },
+  {
+   "code": "initial_cleared"
+  },
+  {
+   "code": "initial_in_view"
+  },
+  {
+   "code": "initial_key"
+  },
+  {
+   "code": "initial_not_authored"
+  },
+  {
+   "code": "initial_not_of_type"
+  },
+  {
+   "code": "initial_reference"
+  },
+  {
+   "code": "json_named_as_type"
+  },
+  {
+   "code": "key_unkeyable",
+   "field": "f"
+  },
+  {
+   "authority": "authored",
+   "code": "link_authority"
+  },
+  {
+   "authority": "authored",
+   "code": "link_field_authority",
+   "field": "f"
+  },
+  {
+   "code": "link_field_is_end",
+   "field": "f"
+  },
+  {
+   "code": "measure_twice",
+   "name": "f"
+  },
+  {
+   "code": "measures_nothing",
+   "source": "t"
+  },
+  {
+   "code": "merged_group_count",
+   "given": 1,
+   "view": 1
+  },
+  {
+   "code": "merged_group_kind",
+   "field": "f",
+   "view_field": "f"
+  },
+  {
+   "code": "name_empty",
+   "what": "type"
+  },
+  {
+   "code": "name_not_identifier",
+   "name": "s",
+   "what": "type"
+  },
+  {
+   "code": "never_lands",
+   "duration": true,
+   "holds": "text",
+   "kind": "boolean"
+  },
+  {
+   "code": "no_value_type",
+   "value_type": "vt"
+  },
+  {
+   "code": "one_of_not_text"
+  },
+  {
+   "code": "pair_at_read",
+   "from": "f",
+   "target": "t",
+   "to": "f"
+  },
+  {
+   "code": "pair_kinds",
+   "from": "f",
+   "left": "text",
+   "right": "text",
+   "to": "f"
+  },
+  {
+   "code": "pair_twice",
+   "from": "f",
+   "to": "f"
+  },
+  {
+   "code": "pair_unkeyable",
+   "from": "f",
+   "kind": "text",
+   "to": "f"
+  },
+  {
+   "code": "pair_unknown",
+   "from": "f",
+   "target": "t",
+   "to": "f",
+   "type": "t"
+  },
+  {
+   "code": "param_kind",
+   "kind": "text",
+   "name": "p"
+  },
+  {
+   "code": "param_undeclared",
+   "declared": [
+    "a"
+   ],
+   "name": "s"
+  },
+  {
+   "code": "param_unread",
+   "name": "p"
+  },
+  {
+   "code": "payload_no_member",
+   "member": "f"
+  },
+  {
+   "code": "read_as_stored"
+  },
+  {
+   "code": "reads_at_read",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "reads_no_input",
+   "field": "f"
+  },
+  {
+   "code": "reads_param_view",
+   "param": "p",
+   "source": "t"
+  },
+  {
+   "code": "reference_no_target"
+  },
+  {
+   "code": "scale_not_decimal"
+  },
+  {
+   "code": "set_of_view",
+   "type": "t"
+  },
+  {
+   "code": "set_retyped",
+   "type": "t",
+   "was": "t"
+  },
+  {
+   "code": "source_twice",
+   "source": "t"
+  },
+  {
+   "code": "target_not_reference"
+  },
+  {
+   "code": "tool_names",
+   "problems": [
+    {
+     "from": [
+      {
+       "code": "generic",
+       "tool": "s"
+      }
+     ],
+     "name": "s",
+     "problem": "collision"
+    }
+   ]
+  },
+  {
+   "code": "type_name_form",
+   "name": "s"
+  },
+  {
+   "code": "type_verb_requires",
+   "type": "t"
+  },
+  {
+   "code": "type_verb_writes",
+   "type": "t"
+  },
+  {
+   "code": "undeclared",
+   "type": "t"
+  },
+  {
+   "axis": "s",
+   "code": "valid_time_not_date_time",
+   "field": "f",
+   "kind": "text"
+  },
+  {
+   "code": "value_type_format",
+   "format": "s",
+   "value_type": "vt"
+  },
+  {
+   "code": "value_type_kind",
+   "expected": "text",
+   "field": "f",
+   "found": "text",
+   "value_type": "vt"
+  },
+  {
+   "code": "vector_dimensions"
+  },
+  {
+   "code": "verb_on_view",
+   "type": "t"
+  },
+  {
+   "code": "via_with_fields"
+  },
+  {
+   "chain": [
+    "a"
+   ],
+   "code": "view_cycle"
+  },
+  {
+   "code": "view_field_unfilled",
+   "field": "f"
+  },
+  {
+   "carrier": "via",
+   "code": "view_relation",
+   "type": "t"
+  },
+  {
+   "code": "view_searched",
+   "embedded": true,
+   "searchable": true
+  },
+  {
+   "code": "view_value_no_field",
+   "field": "f"
+  },
+  {
+   "code": "vocabulary_reserved",
+   "link": true,
+   "type": "t"
+  },
+  {
+   "code": "watches_via_links",
+   "owner": "t",
+   "relation": "r",
+   "type": "t",
+   "via": "f"
+  },
+  {
+   "code": "watches_view",
+   "type": "t"
+  },
+  {
+   "code": "writes_nothing"
+  },
+  {
+   "code": "aggregate_here",
+   "name": "s"
+  },
+  {
+   "code": "aggregate_needs_field",
+   "name": "s"
+  },
+  {
+   "code": "bucket_arguments"
+  },
+  {
+   "code": "bucket_unit",
+   "unit": "s"
+  },
+  {
+   "code": "bucket_unit_text",
+   "value": {
+    "kind": "null"
+   }
+  },
+  {
+   "code": "call_arity",
+   "given": 1,
+   "name": "s"
+  },
+  {
+   "code": "call_takes_field",
+   "name": "s"
+  },
+  {
+   "code": "call_takes_quoted",
+   "name": "s"
+  },
+  {
+   "code": "division_by_zero"
+  },
+  {
+   "code": "in_empty"
+  },
+  {
+   "code": "in_set_here"
+  },
+  {
+   "code": "kind_negates",
+   "expr": "s",
+   "kind": "boolean"
+  },
+  {
+   "code": "kind_sides",
+   "expr": "s",
+   "left": "boolean",
+   "right": "boolean"
+  },
+  {
+   "code": "kind_takes_number",
+   "expr": "s",
+   "kind": "boolean"
+  },
+  {
+   "code": "minus_no_meaning",
+   "left": {
+    "kind": "null"
+   },
+   "right": {
+    "kind": "null"
+   }
+  },
+  {
+   "code": "not_a_number",
+   "value": {
+    "kind": "null"
+   }
+  },
+  {
+   "code": "not_aggregate",
+   "name": "s"
+  },
+  {
+   "code": "not_exact",
+   "number": "s"
+  },
+  {
+   "code": "not_i_regexp",
+   "pattern": "s",
+   "why": {
+    "c": "c",
+    "code": "bad_escape"
+   }
+  },
+  {
+   "code": "not_multiplied",
+   "left": {
+    "kind": "null"
+   },
+   "right": {
+    "kind": "null"
+   }
+  },
+  {
+   "code": "not_parsed",
+   "text": "s",
+   "why": {
+    "code": "unknown_field",
+    "field": "f",
+    "type": "t"
+   }
+  },
+  {
+   "code": "not_position",
+   "number": "s"
+  },
+  {
+   "code": "not_shiftable",
+   "value": {
+    "kind": "null"
+   }
+  },
+  {
+   "code": "only_in_write",
+   "name": "s"
+  },
+  {
+   "code": "overflow"
+  },
+  {
+   "code": "param_outside_view"
+  },
+  {
+   "code": "param_takes_name",
+   "value": {
+    "kind": "null"
+   }
+  },
+  {
+   "code": "parse_arity_at_least",
+   "given": 1,
+   "min": 1,
+   "name": "s",
+   "offset": 1
+  },
+  {
+   "code": "parse_arity_exact",
+   "given": 1,
+   "name": "s",
+   "offset": 1,
+   "takes": 1
+  },
+  {
+   "code": "parse_arity_range",
+   "given": 1,
+   "max": 1,
+   "min": 1,
+   "name": "s",
+   "offset": 1
+  },
+  {
+   "code": "parse_empty_in",
+   "offset": 1
+  },
+  {
+   "code": "parse_ends_early",
+   "offset": 1
+  },
+  {
+   "code": "parse_expected",
+   "offset": 1,
+   "token": "s"
+  },
+  {
+   "code": "parse_is_null",
+   "offset": 1
+  },
+  {
+   "code": "parse_keyword",
+   "keyword": "s",
+   "offset": 1
+  },
+  {
+   "code": "parse_name_after_dot",
+   "offset": 1
+  },
+  {
+   "code": "parse_no_duration",
+   "offset": 1,
+   "raw": "s"
+  },
+  {
+   "code": "parse_no_function",
+   "name": "s",
+   "offset": 1
+  },
+  {
+   "code": "parse_number_into_name",
+   "offset": 1
+  },
+  {
+   "code": "parse_param_name",
+   "offset": 1
+  },
+  {
+   "code": "parse_setting_key",
+   "offset": 1
+  },
+  {
+   "code": "parse_takes_field",
+   "name": "s",
+   "offset": 1
+  },
+  {
+   "code": "parse_trailing",
+   "offset": 1
+  },
+  {
+   "code": "parse_unclosed",
+   "offset": 1
+  },
+  {
+   "code": "parse_unexpected",
+   "found": "c",
+   "offset": 1
+  },
+  {
+   "code": "path_empty"
+  },
+  {
+   "code": "regex_unmatchable",
+   "limit": 1,
+   "pattern": "s"
+  },
+  {
+   "code": "retired_only_in_guard"
+  },
+  {
+   "code": "set_cycle",
+   "set": "s",
+   "through": [
+    "a"
+   ]
+  },
+  {
+   "code": "set_of_other_type",
+   "of": "t",
+   "set": "s",
+   "type": "t"
+  },
+  {
+   "code": "set_undeclared",
+   "set": "s"
+  },
+  {
+   "code": "setting_takes_key",
+   "value": {
+    "kind": "null"
+   }
+  },
+  {
+   "code": "steps_into_reference",
+   "expr": "s",
+   "field": "f"
+  },
+  {
+   "code": "steps_into_scalar",
+   "expr": "s",
+   "field": "f"
+  },
+  {
+   "code": "sum_not_number",
+   "value": {
+    "kind": "null"
+   }
+  },
+  {
+   "call": "s",
+   "code": "kept_adds_kind",
+   "kind": "boolean"
+  },
+  {
+   "call": "s",
+   "code": "kept_adds_uncertain"
+  },
+  {
+   "code": "kept_at_read",
+   "field": "f",
+   "source": "t"
+  },
+  {
+   "code": "kept_clock"
+  },
+  {
+   "call": "s",
+   "code": "kept_extreme_grouped_by",
+   "field": "f"
+  },
+  {
+   "call": "s",
+   "code": "kept_extreme_ungrouped"
+  },
+  {
+   "code": "kept_group_at_read",
+   "field": "f",
+   "source": "t"
+  },
+  {
+   "call": "s",
+   "code": "kept_no_argument"
+  },
+  {
+   "call": "s",
+   "code": "kept_orders_kind",
+   "kind": "boolean"
+  },
+  {
+   "call": "s",
+   "code": "kept_orders_uncertain"
+  },
+  {
+   "code": "kept_param",
+   "name": "p"
+  },
+  {
+   "code": "kept_where_at_read",
+   "field": "f",
+   "source": "t"
+  },
+  {
+   "code": "kept_where_clock",
+   "source": "t"
+  },
+  {
+   "code": "after_count",
+   "keys": 1,
+   "values": 1
+  },
+  {
+   "code": "after_unfit",
+   "field": "f",
+   "index": 1,
+   "why": {
+    "code": "unknown_field",
+    "field": "f",
+    "type": "t"
+   }
+  },
+  {
+   "code": "after_with_aggregate"
+  },
+  {
+   "code": "after_with_cursor"
+  },
+  {
+   "code": "components_both_ways",
+   "relation": "r"
+  },
+  {
+   "code": "cursor_foreign"
+  },
+  {
+   "code": "cursor_other_door",
+   "door": "s",
+   "type": "t",
+   "was": "s",
+   "was_ty": "t"
+  },
+  {
+   "code": "cursor_other_order"
+  },
+  {
+   "code": "cursor_other_params"
+  },
+  {
+   "code": "cursor_other_read",
+   "door": "s"
+  },
+  {
+   "code": "depth_empty",
+   "max": 1,
+   "min": 1
+  },
+  {
+   "code": "group_key_twice",
+   "name": "f"
+  },
+  {
+   "code": "instant_not_text"
+  },
+  {
+   "code": "latest_no_change",
+   "type": "t"
+  },
+  {
+   "code": "latest_takes_no_field",
+   "field": "f"
+  },
+  {
+   "code": "limit_range",
+   "max": 1
+  },
+  {
+   "code": "measure_no_depth",
+   "measure": "s"
+  },
+  {
+   "code": "measure_no_order",
+   "measure": "s"
+  },
+  {
+   "code": "measure_no_steps",
+   "measure": "s"
+  },
+  {
+   "code": "measure_no_to",
+   "measure": "s"
+  },
+  {
+   "code": "measure_no_where",
+   "measure": "s"
+  },
+  {
+   "code": "no_relation_to_walk",
+   "relation": "r",
+   "type": "t",
+   "walk": "out"
+  },
+  {
+   "code": "not_searchable",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "offset_beside",
+   "other": "s"
+  },
+  {
+   "code": "only_unappliable",
+   "type": "t"
+  },
+  {
+   "code": "order_at_read",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "order_names_no_field"
+  },
+  {
+   "code": "param_missing",
+   "kind": "text",
+   "name": "p",
+   "type": "t",
+   "unbound": true
+  },
+  {
+   "code": "param_unknown",
+   "declared": [
+    "a"
+   ],
+   "name": "p",
+   "type": "t"
+  },
+  {
+   "code": "param_value",
+   "kind": "text",
+   "name": "p",
+   "type": "t",
+   "value": 1
+  },
+  {
+   "code": "path_starts",
+   "count": 1
+  },
+  {
+   "code": "pattern_to_chain"
+  },
+  {
+   "code": "pattern_to_not_graph"
+  },
+  {
+   "code": "position_not_integer"
+  },
+  {
+   "by": "value",
+   "code": "proposal_order",
+   "field": "f",
+   "members": [
+    "a"
+   ]
+  },
+  {
+   "code": "query_dimensions",
+   "held": 1,
+   "query": 1
+  },
+  {
+   "code": "search_fields_empty"
+  },
+  {
+   "code": "step_reaches",
+   "reached": "t",
+   "type": "t"
+  },
+  {
+   "code": "step_several_types"
+  },
+  {
+   "asked": 1,
+   "code": "step_too_deep",
+   "max": 1
+  },
+  {
+   "code": "text_weight_range"
+  },
+  {
+   "code": "total_with_aggregate"
+  },
+  {
+   "code": "vector_aimless",
+   "field": "f",
+   "why": "not_finite"
+  },
+  {
+   "code": "vector_field_twice",
+   "field": "f"
+  },
+  {
+   "code": "view_not_searched",
+   "type": "t"
+  },
+  {
+   "chain": [
+    "a"
+   ],
+   "code": "view_reads_itself",
+   "type": "t"
+  },
+  {
+   "code": "weight_alone"
+  },
+  {
+   "code": "weight_range",
+   "field": "f"
+  },
+  {
+   "cause": 1,
+   "code": "cause_past_head",
+   "head": 1
+  },
+  {
+   "code": "changed_since_proposed",
+   "type": "t"
+  },
+  {
+   "code": "field_exists",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "field_read_elsewhere",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "is_a_view",
+   "type": "t"
+  },
+  {
+   "code": "key_component_kind",
+   "field": "f",
+   "kind": "text",
+   "part": "s"
+  },
+  {
+   "code": "key_components",
+   "fields": 1,
+   "key": "k",
+   "parts": 1,
+   "type": "t"
+  },
+  {
+   "code": "key_disagrees",
+   "derived": "k",
+   "key": "k",
+   "type": "t"
+  },
+  {
+   "code": "key_empty"
+  },
+  {
+   "code": "link_end_as_field",
+   "end": "f"
+  },
+  {
+   "cardinality": "one_to_one",
+   "code": "linked_already_from",
+   "from": "k",
+   "relation": "r",
+   "to": "k"
+  },
+  {
+   "cardinality": "one_to_one",
+   "code": "linked_already_to",
+   "from": "k",
+   "relation": "r",
+   "to": "k"
+  },
+  {
+   "code": "no_link_relation",
+   "relation": "r",
+   "type": "t"
+  },
+  {
+   "code": "no_provenance",
+   "type": "t"
+  },
+  {
+   "code": "nothing_computed_outside",
+   "type": "t"
+  },
+  {
+   "code": "patch_empty"
+  },
+  {
+   "code": "payload_required",
+   "member": "f",
+   "verb": "v"
+  },
+  {
+   "code": "payload_undeclared",
+   "member": "f",
+   "verb": "v"
+  },
+  {
+   "code": "purge_report_stale"
+  },
+  {
+   "code": "purge_shared",
+   "count": 1,
+   "first": [
+    {
+     "code": "of",
+     "key": "k",
+     "type": "t"
+    }
+   ],
+   "source": "src",
+   "type": "t"
+  },
+  {
+   "code": "required",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "requires_unmet",
+   "key": "k",
+   "type": "t",
+   "verb": "v"
+  },
+  {
+   "already": true,
+   "code": "restriction",
+   "key": "k",
+   "type": "t"
+  },
+  {
+   "code": "set_declares_twice"
+  },
+  {
+   "code": "set_empty"
+  },
+  {
+   "code": "set_refused",
+   "count": 1,
+   "problems": [
+    {
+     "error": "refused",
+     "reason": {
+      "refusal": "not_granted"
+     }
+    }
+   ]
+  },
+  {
+   "code": "trigger_too_deep",
+   "depth": 1,
+   "max": 1
+  },
+  {
+   "accepted": true,
+   "code": "unanswered",
+   "position": 1
+  },
+  {
+   "code": "unclaimed_link_type",
+   "type": "t"
+  },
+  {
+   "code": "value_constraint",
+   "value_type": "vt"
+  },
+  {
+   "code": "verb_cannot_compute",
+   "field": "f",
+   "verb": "v",
+   "why": {
+    "code": "unknown_field",
+    "field": "f",
+    "type": "t"
+   }
+  },
+  {
+   "code": "verb_needs_key",
+   "type": "t",
+   "verb": "v"
+  },
+  {
+   "code": "verb_redeclared",
+   "verb": "v"
+  },
+  {
+   "code": "verb_type_no_version",
+   "type": "t",
+   "verb": "v"
+  },
+  {
+   "code": "verb_type_takes_no_key",
+   "type": "t",
+   "verb": "v"
+  },
+  {
+   "code": "verb_value_unfit",
+   "field": "f",
+   "verb": "v"
+  },
+  {
+   "cardinality": "one_to_one",
+   "code": "window_links_already",
+   "from": "k",
+   "relation": "r",
+   "to": "k"
+  },
+  {
+   "code": "aging_authority",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "aging_key",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "aging_no_value",
+   "member": "f"
+  },
+  {
+   "code": "aging_not_a_date",
+   "today": "2026-01-01T00:00:00Z"
+  },
+  {
+   "cause": {
+    "error": "refused",
+    "reason": {
+     "refusal": "not_granted"
+    }
+   },
+   "code": "aging_not_a_value",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "aging_not_text",
+   "member": "f"
+  },
+  {
+   "code": "aging_same_value"
+  },
+  {
+   "code": "aging_system_type",
+   "type": "t"
+  },
+  {
+   "code": "no_stored_type",
+   "type": "t"
+  },
+  {
+   "code": "no_stored_type_or_view",
+   "type": "t"
+  },
+  {
+   "code": "no_view",
+   "type": "t"
+  },
+  {
+   "code": "not_vector_field",
+   "field": "f"
+  },
+  {
+   "code": "order_index_at_read",
+   "field": "f"
+  },
+  {
+   "code": "order_index_kind",
+   "field": "f",
+   "kind": "text"
+  },
+  {
+   "code": "setting_field_names",
+   "value": 1
+  },
+  {
+   "code": "setting_index_shape",
+   "type": "t"
+  },
+  {
+   "code": "setting_kept_holds"
+  },
+  {
+   "code": "setting_weights_shape"
+  },
+  {
+   "code": "vector_index_at_read",
+   "field": "f"
+  },
+  {
+   "code": "vector_index_kind",
+   "field": "f",
+   "kind": "text"
+  },
+  {
+   "code": "view_not_keepable",
+   "type": "t"
+  },
+  {
+   "code": "computed_holds_renamed",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "key_field_required",
+   "field": "f"
+  },
+  {
+   "code": "key_holds_renamed",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "migration_of_view",
+   "type": "t"
+  },
+  {
+   "code": "migration_other_type",
+   "from": "t",
+   "to": "t"
+  },
+  {
+   "code": "migration_stale"
+  },
+  {
+   "code": "migration_takes_key",
+   "type": "t"
+  },
+  {
+   "code": "migration_takes_read",
+   "field": "f",
+   "renamed": "f",
+   "type": "t",
+   "unnamed": true
+  },
+  {
+   "code": "migration_to_view",
+   "type": "t"
+  },
+  {
+   "code": "migration_view_to_stored",
+   "type": "t"
+  },
+  {
+   "cardinality": "one_to_one",
+   "code": "narrowing_breaks_links",
+   "count": 1,
+   "relation": "r"
+  },
+  {
+   "code": "no_longer_declarable",
+   "type": "t"
+  },
+  {
+   "code": "reads_taken_away"
+  },
+  {
+   "code": "rekey_ring",
+   "ring": [
+    "a"
+   ],
+   "type": "t"
+  },
+  {
+   "code": "rekey_system",
+   "system": "t",
+   "type": "t"
+  },
+  {
+   "code": "rekey_view",
+   "type": "t",
+   "view": "t"
+  },
+  {
+   "code": "relation_rename_changes"
+  },
+  {
+   "code": "relation_rename_names_none"
+  },
+  {
+   "code": "relation_rename_not_once"
+  },
+  {
+   "code": "rename_collides",
+   "to": "f"
+  },
+  {
+   "code": "rename_from_unknown",
+   "from": "f"
+  },
+  {
+   "code": "rename_name_held"
+  },
+  {
+   "code": "rename_referred_links",
+   "links": "t",
+   "type": "t"
+  },
+  {
+   "code": "rename_repeated",
+   "field": "f"
+  },
+  {
+   "code": "rename_to_unknown",
+   "to": "f"
+  },
+  {
+   "code": "rename_while_rekeying"
+  },
+  {
+   "code": "reshapes",
+   "reasons": [
+    {
+     "field": "f",
+     "reason": "field_added",
+     "relation": "r",
+     "required": true
+    }
+   ],
+   "type": "t"
+  },
+  {
+   "code": "reshapes_links",
+   "links": "t",
+   "reasons": [
+    {
+     "field": "f",
+     "reason": "field_added",
+     "relation": "r",
+     "required": true
+    }
+   ],
+   "type": "t"
+  },
+  {
+   "code": "value_rename_new_refused"
+  },
+  {
+   "code": "value_rename_not_text",
+   "value_type": "vt"
+  },
+  {
+   "code": "value_rename_old_refused"
+  },
+  {
+   "code": "value_rename_same"
+  },
+  {
+   "code": "value_rename_twice"
+  },
+  {
+   "code": "value_type_changed_since_proposed",
+   "value_type": "vt"
+  },
+  {
+   "code": "value_type_not_tightened",
+   "first": [
+    {
+     "code": "of",
+     "key": "k",
+     "type": "t"
+    }
+   ],
+   "misfits": 1,
+   "value_type": "vt"
+  },
+  {
+   "code": "value_type_reshapes",
+   "value_type": "vt"
+  },
+  {
+   "code": "value_type_same",
+   "value_type": "vt"
+  },
+  {
+   "code": "value_type_tightens",
+   "value_type": "vt"
+  },
+  {
+   "code": "geo_coordinates",
+   "geometry": "s"
+  },
+  {
+   "code": "geo_no_coordinates",
+   "geometry": "s"
+  },
+  {
+   "code": "geo_no_geometries"
+  },
+  {
+   "code": "geo_no_type"
+  },
+  {
+   "code": "geo_not_object"
+  },
+  {
+   "code": "geo_unknown_type",
+   "name": "s"
+  },
+  {
+   "code": "integer_too_large",
+   "n": 1
+  },
+  {
+   "code": "not_base64"
+  },
+  {
+   "code": "not_date_time",
+   "value": "s"
+  },
+  {
+   "code": "not_decimal",
+   "value": "s"
+  },
+  {
+   "code": "not_format",
+   "format": "s",
+   "value_type": "vt"
+  },
+  {
+   "allowed": [
+    "a"
+   ],
+   "code": "not_one_of",
+   "value": 1
+  },
+  {
+   "code": "value_shape",
+   "kind": "text",
+   "shape": "text"
+  },
+  {
+   "code": "vector_length",
+   "expected": 1,
+   "found": 1
+  },
+  {
+   "code": "vector_no_dimensions"
+  },
+  {
+   "code": "call_not_sent",
+   "exchange": {
+    "code": "cannot_request",
+    "detail": "d"
+   }
+  },
+  {
+   "code": "command_not_allowed",
+   "command": "s"
+  },
+  {
+   "code": "embedding_refused",
+   "model": "s",
+   "status": 1
+  },
+  {
+   "code": "exec_no_command"
+  },
+  {
+   "code": "expr_config",
+   "fault": "syntax"
+  },
+  {
+   "code": "host_not_allowed",
+   "host": "s",
+   "port": 1
+  },
+  {
+   "code": "http_no_url"
+  },
+  {
+   "code": "inputs_not_object",
+   "value": 1
+  },
+  {
+   "code": "no_output_value",
+   "function": "s"
+  },
+  {
+   "code": "not_url"
+  },
+  {
+   "cause": {
+    "error": "refused",
+    "reason": {
+     "refusal": "not_granted"
+    }
+   },
+   "code": "output_not_value",
+   "field": "f",
+   "function": "s"
+  },
+  {
+   "code": "url_no_host"
+  },
+  {
+   "code": "url_scheme"
+  },
+  {
+   "code": "active_segment_named",
+   "named": 1,
+   "position": 1
+  },
+  {
+   "code": "append_line_feed",
+   "position": 1
+  },
+  {
+   "code": "append_not_next",
+   "next": 1,
+   "position": 1
+  },
+  {
+   "code": "append_prev",
+   "hash": "s",
+   "named": "s",
+   "position": 1
+  },
+  {
+   "code": "client_cert_half"
+  },
+  {
+   "code": "commit_behind",
+   "folded": 1,
+   "through": 1
+  },
+  {
+   "code": "commit_late",
+   "late": 1,
+   "through": 1
+  },
+  {
+   "code": "commit_unbegun"
+  },
+  {
+   "code": "compact_in_transaction"
+  },
+  {
+   "code": "engine_other_location",
+   "engine": "s",
+   "lake": "lake",
+   "location": "s"
+  },
+  {
+   "code": "export_not_empty"
+  },
+  {
+   "code": "fence_falls",
+   "fence": 1,
+   "floor": 1,
+   "position": 1
+  },
+  {
+   "code": "fence_wrong",
+   "fence": 1,
+   "position": 1,
+   "wanted": 1
+  },
+  {
+   "code": "import_into_held",
+   "tip": 1
+  },
+  {
+   "code": "import_not_empty",
+   "head": 1,
+   "lake": "lake"
+  },
+  {
+   "code": "import_other_lake",
+   "held": "lake",
+   "lake": "lake",
+   "position": 1
+  },
+  {
+   "code": "lake_other",
+   "held": "s",
+   "lake": "lake",
+   "schema": "s"
+  },
+  {
+   "code": "location_url_no_user"
+  },
+  {
+   "code": "location_url_tls",
+   "key": "s"
+  },
+  {
+   "code": "location_url_unparsed",
+   "detail": "d"
+  },
+  {
+   "code": "not_head_only",
+   "type": "t"
+  },
+  {
+   "code": "not_staged"
+  },
+  {
+   "code": "schema_meta_foreign",
+   "schema": "s"
+  },
+  {
+   "code": "schema_name",
+   "schema": "s"
+  },
+  {
+   "code": "schema_not_a_lake",
+   "schema": "s",
+   "tables": [
+    "a"
+   ]
+  },
+  {
+   "after": 1,
+   "code": "seal_no_first"
+  },
+  {
+   "code": "apply_needs_report_id"
+  },
+  {
+   "code": "arguments_unfit",
+   "fault": "syntax"
+  },
+  {
+   "code": "body_cut_off",
+   "line": 1
+  },
+  {
+   "code": "body_media_type"
+  },
+  {
+   "code": "body_not_json",
+   "column": 1,
+   "fault": "syntax",
+   "row": 1
+  },
+  {
+   "code": "body_not_object",
+   "route": "s"
+  },
+  {
+   "argument": "s",
+   "code": "body_object_of",
+   "route": "s"
+  },
+  {
+   "code": "body_too_large"
+  },
+  {
+   "code": "filter_key_empty"
+  },
+  {
+   "code": "find_where_text"
+  },
+  {
+   "code": "idempotency_key_header"
+  },
+  {
+   "code": "if_match_both"
+  },
+  {
+   "code": "if_match_no_version",
+   "value": "s"
+  },
+  {
+   "code": "if_none_match_not_put"
+  },
+  {
+   "code": "if_none_match_value",
+   "value": "s"
+  },
+  {
+   "code": "ingest_media_type"
+  },
+  {
+   "code": "line_not_record",
+   "column": 1,
+   "fault": "syntax",
+   "line": 1
+  },
+  {
+   "code": "line_too_long",
+   "line": 1,
+   "max": 1
+  },
+  {
+   "code": "member_missing",
+   "member": "s"
+  },
+  {
+   "code": "migration_both"
+  },
+  {
+   "code": "migration_neither"
+  },
+  {
+   "argument": "s",
+   "code": "no_argument",
+   "tool": "s"
+  },
+  {
+   "code": "no_body",
+   "route": "s"
+  },
+  {
+   "code": "no_member",
+   "member": "s",
+   "takes": [
+    "a"
+   ]
+  },
+  {
+   "code": "no_parameter",
+   "parameter": "s",
+   "route": "s",
+   "takes": [
+    "a"
+   ]
+  },
+  {
+   "code": "no_route"
+  },
+  {
+   "code": "no_session",
+   "tool": "s"
+  },
+  {
+   "code": "no_session_to_pin",
+   "tool": "s"
+  },
+  {
+   "code": "parameter_form",
+   "form": "whole",
+   "parameter": "s",
+   "value": "s"
+  },
+  {
+   "code": "parameter_twice",
+   "parameter": "s"
+  },
+  {
+   "argument": "s",
+   "code": "path_names"
+  },
+  {
+   "code": "preflight_report_id"
+  },
+  {
+   "code": "query_not_encoded"
+  },
+  {
+   "allow": [
+    "a"
+   ],
+   "code": "route_method",
+   "method": "s"
+  },
+  {
+   "code": "segment_empty",
+   "part": "type"
+  },
+  {
+   "code": "value_type_no_relations"
+  },
+  {
+   "code": "verb_type_header",
+   "header": "s",
+   "verb": "v"
+  },
+  {
+   "code": "mock_cannot",
+   "what": "rekey"
+  },
+  {
+   "code": "mock_unevaluated",
+   "name": "s"
+  }
+ ],
+ "Place": [
+  {
+   "code": "type",
+   "name": "t"
+  },
+  {
+   "code": "view",
+   "name": "t"
+  },
+  {
+   "code": "field",
+   "name": "f"
+  },
+  {
+   "code": "relation",
+   "name": "r"
+  },
+  {
+   "code": "verb",
+   "name": "v"
+  },
+  {
+   "code": "value_type",
+   "name": "vt"
+  },
+  {
+   "code": "trigger",
+   "name": "g"
+  },
+  {
+   "code": "object_set",
+   "name": "s"
+  },
+  {
+   "code": "function",
+   "name": "s"
+  },
+  {
+   "code": "function_config",
+   "key": "s"
+  },
+  {
+   "code": "merged_source",
+   "name": "t"
+  },
+  {
+   "code": "measure",
+   "name": "f"
+  },
+  {
+   "code": "where"
+  },
+  {
+   "code": "annotation",
+   "key": "s"
+  },
+  {
+   "code": "setting",
+   "key": "s"
+  },
+  {
+   "code": "relation_rename",
+   "from": "r",
+   "to": "r"
+  },
+  {
+   "code": "value_rename",
+   "from": "s",
+   "to": "s"
+  },
+  {
+   "code": "group",
+   "name": "f"
+  },
+  {
+   "code": "payload"
+  },
+  {
+   "code": "input"
+  },
+  {
+   "code": "requires"
+  },
+  {
+   "code": "constraint"
+  },
+  {
+   "code": "initial"
+  },
+  {
+   "code": "links",
+   "name": "t"
+  },
+  {
+   "code": "start"
+  },
+  {
+   "code": "step",
+   "relation": "r",
+   "step": 1
+  },
+  {
+   "code": "aggregate",
+   "name": "t"
+  },
+  {
+   "code": "after_migration",
+   "name": "t"
+  },
+  {
+   "code": "arguments",
+   "tool": "s"
+  },
+  {
+   "code": "declaration",
+   "name": "s",
+   "what": "type"
+  },
+  {
+   "code": "member",
+   "path": "s"
+  }
+ ]
+}

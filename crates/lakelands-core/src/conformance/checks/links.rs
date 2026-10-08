@@ -12,9 +12,11 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::ontology::{
     Authority, Cardinality, FieldDecl, RelationDecl, StorageKind, TypeDecl,
 };
+use lakelands_api::principal::PrincipalKind;
 use lakelands_api::query::{Edge, Projection, QueryResult, Walk};
 use lakelands_api::write::{Outcome, WriteOpts};
 use lakelands_api::{Catalog, Error, LakeStore, Position, Principal, Refusal};
@@ -22,8 +24,9 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all, doors, field, field_writer, head_unmoved, migration, no_such_field, patch,
-    pattern, reads_all, reason, reference, refused_on, restrict, source_record, step, type_decl,
+    Lake, Must, all, doors, field, field_writer, head_unmoved, invalid_case, migration,
+    no_such_field, patch, pattern, principal, reads_all, reason, reference, refused_on, restrict,
+    source_record, step, type_decl,
 };
 use crate::links::{link_key, link_type_name};
 
@@ -48,7 +51,7 @@ check!(
 check!(
     /// Cardinality holds over live links.
     CARDINALITY = a_link_that_would_break_the_relations_cardinality_is_refused,
-    "§2.3 and 024, extended: many_to_one allows one live link per `from`; a second is refused as a constraint and nothing is appended, and a principal without write on the link type is refused not_granted before the links are read"
+    "§2.3 and 024, extended: many_to_one allows one live link per `from`; a second is refused as a constraint and nothing is appended, and a principal without write on the link type is refused not_granted before the links are read; the record already linked is named only to a caller shown it, so a writer without `restricted`, or a holder of `only` not admitted to it, finds no key of it in the whole error (051)"
 );
 
 check!(
@@ -332,10 +335,7 @@ async fn a_link_that_would_break_the_relations_cardinality_is_refused(
     let before = store.head().await.must("reading the head")?;
     let second = link(cat.as_ref(), own, "i1", "p2", json!({})).await;
     ensure!(
-        matches!(
-            refused_on(&second),
-            Some(("to", Refusal::Constraint { .. }))
-        ),
+        matches!(refused_on(&second), Some(("to", Refusal::Constraint(..)))),
         "`approved_by` is many_to_one: i1 already links to p1, so linking it to p2 is \
          refused as a constraint on `to`; it answered {second:?}"
     );
@@ -349,6 +349,36 @@ async fn a_link_that_would_break_the_relations_cardinality_is_refused(
          not know of; it answered {ungranted:?}"
     );
     head_unmoved(store.as_ref(), before, "a link against the cardinality").await?;
+    // p1 withheld: a writer not shown it, or not admitted to it, is not
+    // told which record i1 links to.
+    restrict(store.as_ref(), "partner", "p1", "withheld").await?;
+    let before = store.head().await.must("reading the head")?;
+    let writes = json!({"default": "write"});
+    let only = json!({"default": "write", "types": {"partner": {"only": {"name": "p2"}}}});
+    for (who, grants, constrained) in [("writer", writes, true), ("holder", only, false)] {
+        let grants = serde_json::from_value(grants).expect("grants read");
+        let who = principal(store.as_ref(), PrincipalKind::Agent, who, grants);
+        let second = link(cat.as_ref(), &who, "i1", "p2", json!({})).await;
+        let said = second
+            .as_ref()
+            .err()
+            .map(|e| serde_json::to_string(e).unwrap_or_default());
+        let named = said.as_deref().is_none_or(|s| s.contains("p1"));
+        let held =
+            !constrained || matches!(refused_on(&second), Some(("to", Refusal::Constraint(..))));
+        ensure!(
+            !named && held,
+            "`{}` links i1 to p2, and i1 links to p1 (restricted, not `name` p2) already: it is \
+             refused{}, and the whole error names no key of p1; it answered {second:?}",
+            who.id,
+            if constrained {
+                " as a constraint on `to`"
+            } else {
+                ""
+            }
+        );
+    }
+    head_unmoved(store.as_ref(), before, "a link against a withheld link").await?;
     Ok(())
 }
 
@@ -429,7 +459,7 @@ async fn link_records_go_through_the_link_doors_and_ingest_only(
         .await;
     ensure!(
         retry.as_ref().ok() == Some(&first)
-            && matches!(refused_on(&named), Some(("from", Refusal::Invalid { .. })))
+            && matches!(refused_on(&named), Some(("from", Refusal::Invalid(..))))
             && matches!(reason(&upsert), Some(Refusal::WrongDoor)),
         "a retry of a link without grants answers {retry:?} (the first was {first:?}); one \
          naming `from` answers {named:?}; an upsert of its link record under its key \
@@ -523,7 +553,7 @@ async fn a_relation_cannot_move_between_via_and_link_records(
     moved.fields.push(reference("approver", "partner"));
     let answer = l.try_declare(moved).await;
     ensure!(
-        matches!(reason(&answer), Some(Refusal::Invalid { .. })),
+        matches!(reason(&answer), Some(Refusal::Invalid(..))),
         "`approved_by` is carried by link records; giving it `via` would move its links, and \
          is refused as invalid; it answered {answer:?}"
     );
@@ -571,7 +601,7 @@ async fn a_relations_fields_are_declared_when_added_and_migrated_when_retyped(
     // was not: the links would reshape, so declaring is refused.
     let refused = l.try_declare(with(StorageKind::Text)).await;
     ensure!(
-        matches!(reason(&refused), Some(Refusal::Invalid { .. })),
+        matches!(reason(&refused), Some(Refusal::Invalid(..))),
         "retyping a link field reshapes the link records; declaring it is refused as a \
          migration; it answered {refused:?}"
     );
@@ -652,10 +682,7 @@ async fn a_relation_that_allows_one_link_per_target_refuses_a_second(
     let before = store.head().await.must("reading the head")?;
     let second = handle("i2").await;
     ensure!(
-        matches!(
-            refused_on(&second),
-            Some(("to", Refusal::Constraint { .. }))
-        ),
+        matches!(refused_on(&second), Some(("to", Refusal::Constraint(..)))),
         "`handled_by` is one_to_many: p1 is already handled by i1, so i2 cannot link to it; \
          the refusal is a constraint on `to`; it answered {second:?}"
     );
@@ -736,7 +763,7 @@ async fn ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_windo
         )
         .await;
     ensure!(
-        matches!(reason(&window), Some(Refusal::Constraint { .. })),
+        matches!(reason(&window), Some(Refusal::Constraint(..))),
         "two links from i1 in one window break `vouched_by`'s many_to_one; it answered \
          {window:?}"
     );
@@ -746,7 +773,7 @@ async fn ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_windo
     // Against the lake, with the ends only in the key.
     let keyed = l.ingest("registry", vec![record("i1", "p2", false)]).await;
     ensure!(
-        matches!(reason(&keyed), Some(Refusal::Constraint { .. })),
+        matches!(reason(&keyed), Some(Refusal::Constraint(..))),
         "i1 already links to p1; a record keyed i1:p2 with no fields breaks the \
          cardinality too, its ends read from the key; it answered {keyed:?}"
     );
@@ -784,7 +811,7 @@ async fn a_relation_declared_again_with_another_target_is_a_migration(
     let before = store.head().await.must("reading the head")?;
     let answer = l.try_declare(invoice(vec![retargeted])).await;
     ensure!(
-        matches!(reason(&answer), Some(Refusal::Invalid { message }) if message.contains(LT)),
+        matches!(invalid_case(&answer), Some(Case::ReshapesLinks { links, .. }) if links == LT),
         "declaring `approved_by` again with another target would reshape the links \
          `{LT}` keeps; it is refused naming it; it answered {answer:?}"
     );
@@ -845,7 +872,7 @@ async fn narrowing_a_relations_cardinality_is_refused_while_links_would_break(
         .migrate(own, migration(with(Cardinality::ManyToOne)))
         .await;
     ensure!(
-        matches!(reason(&preflight), Some(Refusal::Constraint { .. })),
+        matches!(reason(&preflight), Some(Refusal::Constraint(..))),
         "i1 links to two partners, so narrowing `approved_by` to many_to_one would break \
          them; the preflight refuses it; it answered {preflight:?}"
     );

@@ -54,7 +54,9 @@ impl Kept {
     fn m(&self) -> Answer {
         let (by, given) = (Row::new(), Row::new());
         let answer = (self.keeping).measures(&self.folds, &by, &self.named, given, None);
-        answer.map(|mut r| r.remove("m").unwrap()).map_err(|e| e.0)
+        answer
+            .map(|mut r| r.remove("m").unwrap())
+            .map_err(|e| e.to_string())
     }
 
     fn text(&self) -> String {
@@ -73,7 +75,9 @@ fn computed(members: &[(&str, Value)], expr: &str) -> Answer {
     members.iter().for_each(|(_, v)| group.add(&row(v), None));
     let (by, folds) = group.groups().pop().unwrap_or_default();
     let answer = super::super::measures(&folds, &by, &named, Row::new(), None, Timestamp(0));
-    answer.map(|mut r| r.remove("m").unwrap()).map_err(|e| e.0)
+    answer
+        .map(|mut r| r.remove("m").unwrap())
+        .map_err(|e| e.to_string())
 }
 
 #[test]

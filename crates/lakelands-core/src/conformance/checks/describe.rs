@@ -12,6 +12,7 @@
 //! the `schema` grant, as they stand at the read position.
 
 use lakelands_api::describe::{FieldDescription, LakeDescription, TypeDescription};
+use lakelands_api::error::Case;
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
     Authority, Derived, EmbedDecl, FieldDecl, FieldType, MatchPair, RelationDecl, StorageKind,
@@ -29,8 +30,8 @@ use serde_json::json;
 use crate::conformance::Failure;
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
-    Lake, Must, all, describe_type, doors, field, field_access, owner, principal, type_decl,
-    upsert, view_of,
+    Lake, Must, all, describe_type, doors, field, field_access, invalid_case, owner, principal,
+    type_decl, upsert, view_of,
 };
 
 check!(
@@ -495,9 +496,13 @@ async fn a_description_says_only_what_its_reader_is_shown(
         relation_renames: Vec::new(),
     };
     let dropped = l.cat.migrate(&hidden, m).await.map(drop);
-    let said = format!("{dropped:?}");
-    if !said.contains("a declaration reads `note`") || said.contains("invoice") {
-        red.push(format!("`hidden` drops `salary.note`: {said}"));
+    // No member of its wire form, its sentence among them, names `invoice`.
+    let said = dropped.as_ref().err().map(|e| json!(e).to_string());
+    let unnamed = matches!(invalid_case(&dropped),
+        Some(Case::MigrationTakesRead { unnamed: true, field, ty, .. })
+            if field == "note" && ty == "salary");
+    if !unnamed || said.as_deref().unwrap_or_default().contains("invoice") {
+        red.push(format!("`hidden` drops `salary.note`: {dropped:?}"));
     }
     ensure!(
         red.is_empty(),

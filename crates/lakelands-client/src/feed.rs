@@ -12,7 +12,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use http_body_util::BodyExt;
 use hyper::Method;
-use lakelands_api::error::{Detail, Error, Exchange, Result};
+use lakelands_api::error::{Case, Detail, Error, Exchange, Result};
 use lakelands_api::event::Event;
 use lakelands_api::id::Position;
 use lakelands_api::seam::{ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter};
@@ -152,9 +152,7 @@ impl ChangeFeed for RemoteFeed {
         if filter.keys.iter().any(|k| k.as_str().is_empty()) {
             return Err(Error::Refused {
                 field: Some("keys".into()),
-                reason: lakelands_api::Refusal::Invalid {
-                    message: "a feed filter names an empty key".into(),
-                },
+                reason: lakelands_api::Refusal::Invalid(Box::new(Case::FilterKeyEmpty.into())),
             });
         }
         let key = wire.feed_key()?;

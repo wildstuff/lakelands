@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use async_trait::async_trait;
-use lakelands_api::error::{Exchange, Remote, Situation};
+use lakelands_api::error::{Case, Exchange, Remote, Situation};
 use lakelands_api::seam::{EmbedBackend, FunctionBacking, FunctionCall};
 use lakelands_api::{Error, Result, Value};
 
@@ -170,12 +170,8 @@ impl EmbedBackend for Embedder {
             hold(held).await;
         }
         if refused {
-            return Err(Error::Refused {
-                field: None,
-                reason: lakelands_api::Refusal::Invalid {
-                    message: format!("`{}` cannot be reached", self.model),
-                },
-            });
+            let (model, status) = (self.model.clone(), None);
+            return Err(Error::invalid(Case::EmbeddingRefused { model, status }));
         }
         if texts.iter().any(|t| t.starts_with(WEATHER)) {
             let model = self.model.clone();

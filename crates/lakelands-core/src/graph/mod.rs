@@ -62,6 +62,7 @@ use lakelands_api::query::{Depth, Edge, Step, Walk};
 use lakelands_api::{RecordKey, RelationName, Result, TypeName};
 
 use crate::invalid;
+use lakelands_api::error::Case;
 
 /// A record's identity: its type and its key. Ordered by type, then key.
 pub type Node = (TypeName, RecordKey);
@@ -160,16 +161,12 @@ fn edges_of<S: EdgeSource + ?Sized>(
 /// over the lake's `max_depth`, or one that is empty (`min > max`).
 pub fn check_depth(depth: Depth, max_depth: u32) -> Result<()> {
     if depth.max > max_depth {
-        return Err(invalid(format!(
-            "a step may walk at most {max_depth} hops; this one asks for {}",
-            depth.max
-        )));
+        let (max, asked) = (max_depth, depth.max);
+        return Err(invalid(Case::StepTooDeep { max, asked }));
     }
     if depth.min > depth.max {
-        return Err(invalid(format!(
-            "a step's depth range {}..={} is empty",
-            depth.min, depth.max
-        )));
+        let (min, max) = (depth.min, depth.max);
+        return Err(invalid(Case::DepthEmpty { min, max }));
     }
     Ok(())
 }

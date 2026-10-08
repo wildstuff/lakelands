@@ -237,7 +237,7 @@ async fn invalid(
     match doors(store).search(who, doc_search(mode)).await {
         Err(Error::Refused {
             field: f,
-            reason: Refusal::Invalid { .. },
+            reason: Refusal::Invalid(..),
         }) if f.as_ref().map(|f| f.as_str()) == field => Ok(()),
         Err(e) => Err(Failure::new(format!(
             "{what} must be refused as invalid, naming {field:?}; it failed with {e:?}"

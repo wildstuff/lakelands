@@ -12,16 +12,16 @@
 # extended). Red when a product file (under a crate's `src/`, tests and
 # the conformance suite aside) names `scrubbed` outside a comment, by
 # any path or alias, and is not listed, or a listed file no longer does;
-# and when one outside the client reads an `Error`, a `Situation` or a
-# `Detail` from JSON by name, which would make free text of whatever the
-# JSON says. (A read whose type is only inferred is not seen here; 015
+# and when one outside the client reads a closed set (an `Error`, a
+# `Situation`, a `Detail`, a case or a place of any set) from JSON by
+# name, which would make free text of whatever the JSON says. (A read whose type is only inferred is not seen here; 015
 # states that limit.)
 . "$(dirname "$0")/lib.sh"
 
 # file|why its words are safe
 ALLOWED='
 crates/lakelands-engine-pg/src/lib.rs|a server error as its severity, SQLSTATE and primary message, never DETAIL, HINT or WHERE
-crates/lakelands-engine-pg/src/connect.rs|TLS and PEM setup errors, about certificates the location names
+crates/lakelands-engine-pg/src/connect.rs|TLS and PEM setup errors, about certificates the location names; an error of the URL parser, which names a parameter of the URL the operator wrote, never its value
 crates/lakelands-engine-sqlite/src/lib.rs|SQLite messages name a failed constraint by its columns or its check, never a row
 crates/lakelands-engine-sqlite/src/handle.rs|a failed VACUUM, in SQLite words that name no row
 crates/lakelands-store/src/exec.rs|only whether the work panicked or was cancelled, never what a panic said
@@ -40,7 +40,7 @@ product=(':(exclude)**/tests.rs' ':(exclude)**/tests/**' ':(exclude)**/conforman
 calls=$(git grep -l -P '^(?!\s*//).*\bscrubbed\b' -- 'crates/*/src/**' \
     ':(exclude)crates/lakelands-api/src/error/**' "${product[@]}" || true)
 
-reads=$(git grep -n -E 'from_(value|str|slice|reader)::<[^>]*\b(Error|Situation|Detail)>' \
+reads=$(git grep -n -E 'from_(value|str|slice|reader)::<[^>]*\b(Error|Situation|Detail|Seam|Exchange|Flaw|Remote|Case|Place|Said|Refusal|Missing|NameProblem|NameSource)>' \
     -- 'crates/*/src/**' ':(exclude)crates/lakelands-client/src/**' "${product[@]}" || true)
 while IFS= read -r line; do
     [ -n "$line" ] || continue

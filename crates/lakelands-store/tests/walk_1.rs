@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lakelands_api::engine::OpenMode;
+use lakelands_api::error::{Case, Place, Said};
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Find, Found};
 use lakelands_api::seam::Seams;
 use lakelands_api::{
@@ -217,8 +218,18 @@ async fn declaring_the_bundle_one_by_one_in_the_loaders_order_is_refused() {
         }
     }
     let refused = refused.expect("one declaration of the bundle is refused");
-    assert!(
-        refused.to_string().contains("not a declared type"),
+    let partner = Said::from(Case::Undeclared {
+        ty: "partner".into(),
+    })
+    .within(Place::Field {
+        name: "partner".into(),
+    })
+    .within(Place::Type {
+        name: "invoice".into(),
+    });
+    assert_eq!(
+        refused.case(),
+        Some(&partner),
         "refused for another reason: {refused}"
     );
 }

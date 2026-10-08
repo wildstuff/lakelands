@@ -734,10 +734,8 @@ impl Lake {
             .filter_map(|d| d.context.cause)
             .find(|c| Some(*c) > head)
         {
-            return Err(lakelands_core::invalid(format!(
-                "the cause {cause} is past the lake's head {}",
-                head.map_or_else(|| "(none)".to_owned(), |h| h.to_string())
-            )));
+            let case = lakelands_api::error::Case::CausePastHead { cause, head };
+            return Err(lakelands_core::invalid(case));
         }
         // A reaction that names a trigger's firing as its cause is bound by
         // that trigger's own ceiling too, as the head declares it (021).

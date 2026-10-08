@@ -2,6 +2,12 @@
 //! `purge`, `rebuild`, `compact`, `export` and `serve`. Each calls the library
 //! in-process and prints the position of every answer that has one.
 //! `import` makes a lake instead of opening one.
+//!
+//! What a command says of its operator's own files and terminal (a file it
+//! cannot read, a CSV that does not parse, a map naming a column the file
+//! lacks) is no refusal of the catalog: it is said to the operator at the
+//! terminal, never answered by a lake. What the lake answers, and what the
+//! lake shows a map to name, is said by its case.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -11,6 +17,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
+use lakelands_api::error::Case;
 use lakelands_api::id::{FieldName, Position, RecordKey, SourceId, TypeName};
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::read::ReadAt;
@@ -396,9 +403,12 @@ async fn csv(
     let seen_col = map.seen_at.as_deref().map(column).transpose()?;
     let mut cols = Vec::new();
     for (col, f) in &map.fields {
+        // A field hidden from the principal is said as one the type lacks.
         let kind = *kinds.get(f).ok_or_else(|| {
+            let ty = map.ty.clone();
+            let field = f.clone();
             Failure::new(
-                format!("`{}` has no field `{f}` you may see", map.ty),
+                Case::UnknownField { ty, field }.to_string(),
                 "correct the map, or ask for a grant on the field",
             )
         })?;
@@ -637,15 +647,7 @@ pub async fn compact(out: Out<'_>, store: &Arc<dyn LakeStore>) -> Result<(), Fai
 /// into a directory that is empty or absent, through the head the export
 /// read when it began; a write landing during the export is not in it.
 pub async fn export(out: Out<'_>, store: &Arc<dyn LakeStore>, to: &Path) -> Result<(), Failure> {
-    let manifest = export::write(store.as_ref(), to)
-        .await
-        .map_err(|e| match e {
-            lakelands_api::Error::Refused {
-                reason: lakelands_api::Refusal::Precondition { .. },
-                ..
-            } => Failure::new(e.to_string(), "export into an empty or new directory"),
-            e => e.into(),
-        })?;
+    let manifest = export::write(store.as_ref(), to).await?;
     for s in &manifest.segments {
         put(
             out,

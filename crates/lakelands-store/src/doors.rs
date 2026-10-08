@@ -248,12 +248,17 @@ impl Doors {
         // The executor ran: where its answer reached the log or is held, a
         // retry answers it; where neither, it is lost but for this sentence.
         let at = at.map_err(|(e, held)| match e {
-            e @ Error::Unavailable { .. } => Error::unavailable(Situation::Executor {
-                answered: Some(recorded.clone()),
-                held,
-                retry: by.retry(),
-                cause: Box::new(e),
-            }),
+            e @ Error::Unavailable { .. } => {
+                let (answered, cause) = (recorded.clone(), Box::new(e));
+                Error::unavailable(match held {
+                    true => Situation::AnswerHeld {
+                        answered,
+                        retry: by.retry().resent(),
+                        cause,
+                    },
+                    false => Situation::AnswerLost { answered, cause },
+                })
+            }
             e => e,
         })?;
         Ok((at, recorded))
@@ -608,7 +613,7 @@ fn cursor_at(mut at: ReadAt, cursor: Option<&lakelands_api::Cursor>) -> Result<R
         .collect();
     let a = bytes.and_then(|b| serde_json::from_slice::<At>(&b).ok());
     at.as_of = Some(
-        a.ok_or_else(|| invalid("the cursor is not one this lake handed out"))?
+        a.ok_or_else(|| invalid(lakelands_api::error::Case::CursorForeign))?
             .at,
     );
     Ok(at)

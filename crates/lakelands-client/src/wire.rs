@@ -15,7 +15,9 @@ use hyper::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use hyper::{Method, Request, Response, Uri};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
-use lakelands_api::error::{Detail, Error, Exchange, Refusal, Remote, Result, Situation};
+use lakelands_api::error::{
+    Case, Detail, Error, Exchange, Refusal, Remote, Result, Segment, Situation,
+};
 use lakelands_api::id::{LakeId, Position};
 use lakelands_api::principal::Principal;
 use lakelands_api::read::POSITION_HEADER;
@@ -33,7 +35,8 @@ pub(crate) struct Wire {
     client: Client<Connector, Body>,
     /// `<scheme>://<authority><prefix>/lakes/<lake>`.
     base: String,
-    /// The host and port, as a failure names them.
+    /// The host and port, for the handle's `Debug` only: a failure names
+    /// the lake's REST door, never its address.
     pub(crate) place: String,
     pub(crate) lake: LakeId,
     keys: BTreeMap<String, ApiKey>,
@@ -129,24 +132,12 @@ pub(crate) fn query_of(v: &Value) -> String {
         .join("&")
 }
 
-/// A request that does not fit REST, refused before anything is sent.
-pub(crate) fn invalid(message: impl Into<String>) -> Error {
-    Error::Refused {
-        field: None,
-        reason: Refusal::Invalid {
-            message: message.into(),
-        },
-    }
-}
-
 /// One path segment, encoded. An empty one would name another route
 /// (the server drops empty segments: `get` would become `find`), so it is
 /// refused before anything is sent.
-pub(crate) fn seg(value: &str, what: &str) -> Result<String> {
+pub(crate) fn seg(value: &str, part: Segment) -> Result<String> {
     if value.is_empty() {
-        return Err(invalid(format!(
-            "{what} is empty; over REST it is a path segment, and an empty one names another route"
-        )));
+        return Err(Error::invalid(Case::SegmentEmpty { part }));
     }
     Ok(enc(value))
 }

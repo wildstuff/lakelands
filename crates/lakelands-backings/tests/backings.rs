@@ -6,8 +6,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use lakelands_api::Error;
+use lakelands_api::error::{Case, Place, Said};
 use lakelands_api::seam::{FunctionBacking, FunctionCall};
-use lakelands_api::{Error, Refusal};
 use lakelands_backings::{Command, Config, ExecConfig, HttpConfig, backings};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -22,14 +23,16 @@ fn call(config: Value) -> FunctionCall {
     }
 }
 
-fn is_refused(r: &lakelands_api::Result<Value>) -> bool {
-    matches!(
-        r,
-        Err(Error::Refused {
-            reason: Refusal::Invalid { .. },
-            ..
-        })
-    )
+/// What a call was refused as invalid for, said at its function.
+fn refused(r: &lakelands_api::Result<Value>) -> Said {
+    let said = match r {
+        Err(e @ Error::Refused { .. }) => e.case().cloned(),
+        _ => None,
+    };
+    let said = said.unwrap_or_else(|| panic!("expected the call to be refused, got {r:?}"));
+    let name = "lookup".to_owned();
+    assert_eq!(said.at.first(), Some(&Place::Function { name }), "{said}");
+    said
 }
 
 fn failure(r: lakelands_api::Result<Value>) -> String {
@@ -79,10 +82,11 @@ async fn exec_sends_the_call_on_stdin_and_reads_the_output_from_stdout() {
 #[tokio::test]
 async fn exec_runs_only_the_commands_the_operator_named() {
     let b = exec(&[("echo", "/bin/cat", &[])], 5);
-    assert!(is_refused(&b.call(&call(json!({"command": "rm"}))).await));
-    assert!(is_refused(
-        &b.call(&call(json!({"program": "/bin/cat"}))).await
-    ));
+    let command = "rm".to_owned();
+    let said = refused(&b.call(&call(json!({"command": "rm"}))).await);
+    assert_eq!(said.case, Case::CommandNotAllowed { command });
+    let said = refused(&b.call(&call(json!({"program": "/bin/cat"}))).await);
+    assert_eq!(said.case, Case::ExecNoCommand);
 }
 
 #[tokio::test]
@@ -205,13 +209,21 @@ async fn http_reaches_only_the_hosts_the_operator_named() {
     // Allowed on another port only: refused before connecting.
     let b = http(&["127.0.0.1:1"], 5);
     let url = format!("http://127.0.0.1:{port}/");
-    assert!(is_refused(&b.call(&call(json!({"url": url}))).await));
+    let not_allowed = Case::HostNotAllowed {
+        host: "127.0.0.1".into(),
+        port,
+    };
+    let said = refused(&b.call(&call(json!({"url": url}))).await);
+    assert_eq!(said.case, not_allowed);
     let b = http(&["geo.example"], 5);
-    assert!(is_refused(&b.call(&call(json!({"url": url}))).await));
-    assert!(is_refused(
-        &b.call(&call(json!({"url": "ftp://geo.example/"}))).await
-    ));
-    assert!(is_refused(&b.call(&call(json!({}))).await));
+    let said = refused(&b.call(&call(json!({"url": url}))).await);
+    assert_eq!(said.case, not_allowed);
+    let said = refused(&b.call(&call(json!({"url": "ftp://geo.example/"}))).await);
+    let key = "url".to_owned();
+    assert_eq!(said.at.get(1), Some(&Place::FunctionConfig { key }));
+    assert_eq!(said.case, Case::UrlScheme);
+    let said = refused(&b.call(&call(json!({}))).await);
+    assert_eq!(said.case, Case::HttpNoUrl);
     assert!(
         requests.try_recv().is_err(),
         "no request reached the responder"

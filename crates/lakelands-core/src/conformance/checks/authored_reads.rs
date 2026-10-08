@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use lakelands_api::Refusal;
+use lakelands_api::error::{Case, RecordName};
 use lakelands_api::write::{Declaration, Outcome, ProposedWrite};
 use lakelands_api::{Access, LakeStore};
 use serde_json::{Value, json};
@@ -13,8 +14,8 @@ use serde_json::{Value, json};
 use crate::conformance::Failure;
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
-    Lake, Must, field_access, migration, object_set_on, reason, refused_on, trigger_on, try_upsert,
-    write_verb,
+    Lake, Must, alike_each, alike_renamed, field_access, invalid_case, migration, object_set_on,
+    reason, refused_on, trigger_on, try_upsert, write_verb,
 };
 
 check!(
@@ -137,11 +138,16 @@ async fn a_declaration_reads_only_what_its_author_may_read(
             l.cat.apply(&partial, hidden).await,
             l.cat.apply(&partial, absent).await,
         );
-        let said = |a: &lakelands_api::Result<Outcome>| a.as_ref().err().map(|e| e.to_string());
-        if hidden.is_ok() || said(&hidden) != said(&absent).map(|e| e.replace("nope", "b")) {
-            red.push(format!(
+        // Member for member and word for word, as over `nope`.
+        match (&hidden, &absent) {
+            (Err(h), Err(a)) => {
+                if let Err(f) = alike_renamed(&format!("{way} over `b`"), h, a, ("nope", "b")) {
+                    red.push(f.message);
+                }
+            }
+            _ => red.push(format!(
                 "{way}: over `b` {hidden:?}, over `nope` {absent:?}"
-            ));
+            )),
         }
         let masked = l.cat.apply(&partial, masked).await;
         if !matches!(refused_on(&masked), Some(("m", Refusal::NotGranted))) {
@@ -183,9 +189,8 @@ async fn a_declaration_reads_only_what_its_author_may_read(
             why(c.declare(&partial, target).await),
         ]);
     }
-    let absent = said[1].clone().map(|e| e.map(|e| e.replace("nope", "b")));
     ensure!(
-        said[0].iter().all(Option::is_some) && said[0] == absent,
+        alike_each(&said[0], &said[1], ("nope", "b")),
         "`declare`, `add_field`, `migrate`, a proposal of a set and of a migration, and a verb \
          that sets the field answer a field their author may not know of as one the type does \
          not have; over `b` {:?}, over `nope` {:?}",
@@ -240,8 +245,15 @@ async fn a_declaration_reads_only_what_its_author_may_read(
         "`doc` keeps its relation `owner`; it holds {doc} relations"
     );
     let hidden = (
-        Some("refused: you hold no grant for this".to_owned()),
-        Some("there is no type `keyed`".to_owned()),
+        Some(lakelands_api::Error::Refused {
+            field: None,
+            reason: Refusal::NotGranted,
+        }),
+        Some(lakelands_api::Error::NotFound {
+            missing: lakelands_api::Missing::Type {
+                name: "keyed".into(),
+            },
+        }),
     );
     ensure!(
         kept.iter().all(|k| match k.0.as_str() {
@@ -340,9 +352,9 @@ async fn a_declaration_reads_only_what_its_author_may_read(
     Ok(())
 }
 
-/// Why an answer is refused, as text.
-fn why<T>(a: lakelands_api::Result<T>) -> Option<String> {
-    a.err().map(|e| e.to_string())
+/// Why an answer is refused.
+fn why<T>(a: lakelands_api::Result<T>) -> Option<lakelands_api::Error> {
+    a.err()
 }
 
 async fn a_type_its_author_is_not_shown_is_a_type_that_is_not_declared(
@@ -395,10 +407,8 @@ async fn a_type_its_author_is_not_shown_is_a_type_that_is_not_declared(
         }
         said.push(answers);
     }
-    let named = |e: &Option<String>| e.as_ref().map(|e| e.replace("ghost", "account"));
-    let undeclared: Vec<_> = said[1].iter().map(named).collect();
     ensure!(
-        said[0].iter().all(Option::is_some) && said[0] == undeclared,
+        alike_each(&said[0], &said[1], ("ghost", "account")),
         "a type its author is not shown answers as one that is not declared, at `add_field`, \
          a migration, its apply and its proposal, a proposed bundle, and a trigger, a verb \
          and an object set on it; on `account` and on `ghost` {said:?}"
@@ -434,7 +444,9 @@ async fn a_type_its_author_is_not_shown_is_a_type_that_is_not_declared(
         let preview = c.migrate_value_type(who, to().into()).await;
         let report = preview.must("the preview")?.data;
         let applied = c.migrate_value_type_apply(who, to().into(), &report.report_id);
-        let named = why(applied.await).is_some_and(|e| e.contains("account"));
+        let named = matches!(invalid_case(&applied.await),
+            Some(Case::ValueTypeNotTightened { first, .. }) if first.iter().any(|r| matches!(r,
+                RecordName::Of { ty, .. } | RecordName::FieldOf { ty, .. } if ty == "account")));
         let (uses, first) = (report.fields.len(), report.first.len());
         shown.push((uses, first, report.misfits, named));
     }

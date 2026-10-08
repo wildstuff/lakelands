@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use lakelands_api::engine::OpenMode;
+use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::location::Limits;
 use lakelands_api::seam::{FeedFilter, Seams};
@@ -401,8 +402,8 @@ async fn a_narrowed_relation_counts_live_links_across_pages() {
     probe.most.store(0, Ordering::SeqCst);
     let refused = l.cat.migrate(&l.own, narrowed.clone()).await;
     assert!(
-        matches!(&refused, Err(Error::Refused { reason: Refusal::Constraint { message }, .. })
-            if message.contains("would break the links of 1 record(s)")),
+        matches!(&refused, Err(Error::Refused { reason: Refusal::Constraint(said), .. })
+            if matches!(said.case, Case::NarrowingBreaksLinks { count: 1, .. })),
         "two live links to `q`, a page apart, break the narrower rule: {refused:?}"
     );
     assert!(probe.most.load(Ordering::SeqCst) <= 1_024);

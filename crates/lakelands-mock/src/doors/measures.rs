@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::error::{Refusal, Result};
+use lakelands_api::error::{Case, Refusal, Result};
 use lakelands_api::id::{RecordKey, RelationName, TypeName};
 use lakelands_api::principal::Principal;
 use lakelands_api::query::{Depth, Pattern, Projection, Walk};
@@ -19,17 +19,33 @@ use crate::state::State;
 type Node = (TypeName, RecordKey);
 type EdgeId = (Node, RelationName, Node);
 
-/// What a measure refuses, as the store does.
+/// What a measure refuses, as the store does: a member it would otherwise
+/// ignore.
 pub(super) fn check(p: &Pattern) -> Result<()> {
-    if p.to.is_some() || !p.order_by.is_empty() || p.steps.is_empty() {
-        return Err(invalid("a measure takes steps, no `to` and no `order_by`"));
+    let measure = match p.project {
+        Projection::Degree => "degree",
+        _ => "components",
+    }
+    .to_owned();
+    if p.to.is_some() {
+        return Err(invalid(Case::MeasureNoTo { measure }));
+    }
+    if !p.order_by.is_empty() {
+        return Err(invalid(Case::MeasureNoOrder { measure }));
+    }
+    if p.steps.is_empty() {
+        return Err(invalid(Case::MeasureNoSteps { measure }));
     }
     for s in &p.steps {
-        if s.depth != Depth::default() || s.filter.is_some() {
-            return Err(invalid("a measure's steps take no `depth` and no `where`"));
+        if s.depth != Depth::default() {
+            return Err(invalid(Case::MeasureNoDepth { measure }));
+        }
+        if s.filter.is_some() {
+            return Err(invalid(Case::MeasureNoWhere { measure }));
         }
         if p.project == Projection::Components && s.walk != Walk::Both {
-            return Err(invalid("`components` walks every step `both`"));
+            let relation = s.relation.clone();
+            return Err(invalid(Case::ComponentsBothWays { relation }));
         }
     }
     Ok(())

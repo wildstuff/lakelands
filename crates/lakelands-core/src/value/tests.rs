@@ -45,7 +45,7 @@ fn field(name: &str, ty: FieldType) -> FieldDecl {
 
 /// Whether `check` refuses `v` as too large to hold exactly.
 fn too_large(v: &serde_json::Value, ty: &FieldType, value_type: Option<&ValueTypeDecl>) -> bool {
-    matches!(check(v, ty, value_type), Err(ValueError::TooLarge(_)))
+    matches!(check(v, ty, value_type), Err(Case::IntegerTooLarge { .. }))
 }
 
 fn iban() -> ValueTypeDecl {
@@ -112,7 +112,7 @@ fn a_decimal_is_kept_exactly_as_written() {
     for bad in ["", "-", "1.", ".5", "1e3", "+1", "1,5", "1.2.3", " 1"] {
         assert_eq!(
             check(&json!(bad), &ty, None),
-            Err(ValueError::Decimal(bad.into())),
+            Err(Case::NotDecimal { value: bad.into() }),
             "{bad:?}"
         );
     }
@@ -127,7 +127,7 @@ fn a_vector_has_its_declared_length_of_numbers() {
     assert!(check(&json!([0.1, 0.2, 0.3]), &ty, None).is_ok());
     assert_eq!(
         check(&json!([0.1, 0.2]), &ty, None),
-        Err(ValueError::VectorLength {
+        Err(Case::VectorLength {
             expected: 3,
             found: 2
         })
@@ -135,7 +135,7 @@ fn a_vector_has_its_declared_length_of_numbers() {
     assert!(check(&json!([0.1, "x", 0.3]), &ty, None).is_err());
     assert_eq!(
         check(&json!([1]), &kind(StorageKind::Vector), None),
-        Err(ValueError::NoDimensions)
+        Err(Case::VectorNoDimensions)
     );
 }
 
@@ -184,9 +184,9 @@ fn a_known_format_is_enforced() {
     assert!(check(&json!("DE89370400440532013000"), &ty, Some(&vt)).is_ok());
     assert_eq!(
         check(&json!("bogus"), &ty, Some(&vt)),
-        Err(ValueError::Format {
+        Err(Case::NotFormat {
+            format: ValueFormat::Iban.name().into(),
             value_type: "iban".into(),
-            format: ValueFormat::Iban,
         })
     );
 }
@@ -197,7 +197,7 @@ fn a_format_on_a_non_text_value_type_refuses_what_is_not_a_string() {
     let ty = typed(StorageKind::Number, "odd");
     assert!(matches!(
         check(&json!(42), &ty, Some(&vt)),
-        Err(ValueError::Format { .. })
+        Err(Case::NotFormat { .. })
     ));
 }
 
@@ -230,14 +230,16 @@ fn an_unknown_format_name_is_refused_never_ignored() {
     let ty = typed(StorageKind::Decimal, "money");
     assert!(matches!(
         check(&json!("12.50"), &ty, Some(&vt)),
-        Err(ValueError::UnknownFormat { .. })
+        Err(Case::ValueTypeFormat { .. })
     ));
 }
 
 #[test]
 fn a_named_value_type_must_be_the_one_given() {
     let ty = typed(StorageKind::Text, "iban");
-    let unknown = Err(ValueError::UnknownValueType("iban".into()));
+    let unknown = Err(Case::NoValueType {
+        value_type: "iban".into(),
+    });
     assert_eq!(check(&json!("x"), &ty, None), unknown);
     let other = value_type("email", StorageKind::Text);
     assert_eq!(check(&json!("x"), &ty, Some(&other)), unknown);
@@ -263,7 +265,7 @@ fn a_field_of_another_kind_does_not_conform() {
     let f = field("creditor_iban", typed(StorageKind::Number, "iban"));
     assert_eq!(
         conformance(&f, &[iban()]),
-        Err(ValueError::KindMismatch {
+        Err(Case::ValueTypeKind {
             field: "creditor_iban".into(),
             value_type: "iban".into(),
             expected: StorageKind::Text,
@@ -277,7 +279,9 @@ fn a_field_naming_an_undeclared_value_type_does_not_conform() {
     let f = field("creditor_iban", typed(StorageKind::Text, "iban"));
     assert_eq!(
         conformance(&f, &[]),
-        Err(ValueError::UnknownValueType("iban".into()))
+        Err(Case::NoValueType {
+            value_type: "iban".into()
+        })
     );
 }
 

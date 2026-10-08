@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::engine::EngineOpener;
-use crate::error::Result;
+use crate::error::{Case, Place, Refusal, Result, Said};
 use crate::event::Event;
 use crate::id::{LakeId, Position, TypeName, VerbName};
 use crate::ontology::TypeDecl;
@@ -323,7 +323,8 @@ pub fn view_kept(value: Option<&Value>) -> bool {
 /// `describe_type` answers it to the writer: the judge tells a writer
 /// nothing its description does not, so a type or a field it is not shown
 /// is answered as one that is not declared. A refusal names the member it
-/// is about (a named field, else `key` or `value`) and why.
+/// is about (a named field, else `key` or `value`) as its field, and why,
+/// said at the setting.
 ///
 /// - `sort_index.<type>` and `vector_index.<type>` name a declared stored
 ///   type and hold an array of the names of fields it declares with a
@@ -346,150 +347,119 @@ pub fn check_setting<'a>(
     value: Option<&Value>,
     declared: &dyn Fn(&crate::TypeName) -> Option<&'a TypeDecl>,
     shown: &dyn Fn(&crate::TypeName) -> Option<crate::describe::TypeDescription>,
-) -> std::result::Result<(), (crate::id::FieldName, String)> {
+) -> Result<()> {
+    let at = || Place::Setting {
+        key: key.to_owned(),
+    };
+    let refused = |member: &str, said: Said| {
+        let reason = Refusal::Invalid(Box::new(said.within(at())));
+        let field = Some(member.into());
+        Err(crate::Error::Refused { field, reason })
+    };
     let known = |ty: &str| Some((shown(&ty.into())?, declared(&ty.into())?));
     if let Some(ty) = key.strip_prefix(VIEW_KEPT_SETTING) {
-        let asks = format!("`{key}` asks for the view `{ty}` to be kept");
         let Some((seen, view)) = known(ty).and_then(|(s, d)| Some((s, d.view.as_deref()?))) else {
-            return Err((
-                "key".into(),
-                format!("{asks}, and `{ty}` is no declared view"),
-            ));
+            return refused("key", Case::NoView { ty: ty.into() }.into());
         };
         return match value {
-            Some(Value::Bool(true)) => crate::expr::keepable(view, declared).map_err(|why| {
-                let why = seen.view.map_or_else(String::new, |_| format!(": {why}"));
-                ("key".into(), format!("{asks}, and it cannot be{why}"))
-            }),
+            Some(Value::Bool(true)) => match crate::expr::keepable(view, declared) {
+                Ok(()) => Ok(()),
+                Err(why) if seen.view.is_some() => refused("key", why),
+                Err(_) => refused("key", Case::ViewNotKeepable { ty: ty.into() }.into()),
+            },
             None | Some(Value::Null | Value::Bool(false)) => Ok(()),
-            Some(_) => Err((
-                "value".into(),
-                format!("`{key}` holds `true` for a view that is kept, or `false`"),
-            )),
+            Some(_) => refused("value", Case::SettingKeptHolds.into()),
         };
     }
     if let Some(ty) = key.strip_prefix(SEARCH_WEIGHTS_SETTING) {
         let Some((seen, _)) = known(ty).filter(|(_, d)| d.view.is_none()) else {
-            return Err((
-                "key".into(),
-                format!("`{key}` weighs the searches of `{ty}`, which is no declared stored type"),
-            ));
+            return refused("key", Case::NoStoredType { ty: ty.into() }.into());
         };
-        let shape = || {
-            let holds = "an object of `fields` (vector fields and their weights) and \
-                         `text_weight`, one at least, or null";
-            ("value".into(), format!("`{key}` holds {holds}"))
-        };
-        let weighs = |member: &str, w: &Value| match w.as_f64() {
+        let shape = || refused("value", Case::SettingWeightsShape.into());
+        let weighs = |member: &str, w: &Value, case: Case| match w.as_f64() {
             Some(w) if crate::query::weight_fits(w) => Ok(()),
-            _ => Err((
-                member.into(),
-                format!("`{key}` weighs `{member}` {w}; a weight is above 0 and at most 1000000"),
-            )),
+            _ => refused(member, case.into()),
         };
         let members = match value {
             None | Some(Value::Null) => return Ok(()),
             Some(Value::Object(o)) if !o.is_empty() => o,
-            Some(_) => return Err(shape()),
+            Some(_) => return shape(),
         };
         for (member, w) in members {
             match (member.as_str(), w.as_object()) {
-                ("text_weight", _) => weighs(member, w)?,
+                ("text_weight", _) => weighs(member, w, Case::TextWeightRange)?,
                 ("fields", Some(fields)) if !fields.is_empty() => {
                     for (name, w) in fields {
-                        let f = seen.fields.iter().find(|f| f.name.as_str() == name);
-                        let fault = match f {
-                            None => {
-                                format!("`{key}` names `{name}`, which `{ty}` does not declare")
-                            }
-                            Some(f) if !indexable(&f.ty.kind) => {
-                                format!("`{key}` names `{name}`, which is no vector field")
-                            }
+                        let field = crate::id::FieldName::from(name.as_str());
+                        let fault = match seen.fields.iter().find(|f| f.name == field) {
+                            None => Case::UnknownField {
+                                ty: ty.into(),
+                                field,
+                            },
+                            Some(f) if !indexable(&f.ty.kind) => Case::NotVectorField { field },
                             Some(_) => {
-                                weighs(name, w)?;
+                                weighs(name, w, Case::WeightRange { field })?;
                                 continue;
                             }
                         };
-                        return Err((name.as_str().into(), fault));
+                        return refused(name, fault.into());
                     }
                 }
-                _ => return Err(shape()),
+                _ => return shape(),
             }
         }
         return Ok(());
     }
-    let (ty, index, keeps, kinds, of): (_, _, fn(&crate::ontology::StorageKind) -> bool, _, _) =
+    let (ty, order, keeps): (_, _, fn(&crate::ontology::StorageKind) -> bool) =
         if let Some(ty) = key.strip_prefix(SORT_INDEX_SETTING) {
-            (
-                ty,
-                "an order index",
-                sortable,
-                "text, number, decimal, boolean, date-time and reference fields",
-                "stored type or view",
-            )
+            (ty, true, sortable)
         } else if let Some(ty) = key.strip_prefix(VECTOR_INDEX_SETTING) {
-            (
-                ty,
-                "a vector index",
-                indexable,
-                "vector fields",
-                "stored type",
-            )
+            (ty, false, indexable)
         } else {
             return Ok(());
         };
-    let views = key.starts_with(SORT_INDEX_SETTING);
-    let Some((seen, _)) = known(ty).filter(|(_, d)| views || d.view.is_none()) else {
-        return Err((
-            "key".into(),
-            format!("`{key}` asks for {index} of `{ty}`, which is no declared {of}"),
-        ));
+    // An order index keeps a view's rows too; a vector index only a stored
+    // type's.
+    let Some((seen, _)) = known(ty).filter(|(_, d)| order || d.view.is_none()) else {
+        let ty = ty.into();
+        let case = match order {
+            true => Case::NoStoredTypeOrView { ty },
+            false => Case::NoStoredType { ty },
+        };
+        return refused("key", case.into());
     };
     let names = match value {
         None | Some(Value::Null) => return Ok(()),
         Some(Value::Array(names)) => names,
-        Some(_) => {
-            return Err((
-                "value".into(),
-                format!("`{key}` holds an array of field names of `{ty}`, or null for no index"),
-            ));
-        }
+        Some(_) => return refused("value", Case::SettingIndexShape { ty: ty.into() }.into()),
     };
     for name in names {
         let Some(name) = name.as_str() else {
-            return Err((
-                "value".into(),
-                format!("`{key}` holds field names, and {name} is not one"),
-            ));
+            let value = name.clone();
+            return refused("value", Case::SettingFieldNames { value }.into());
         };
-        match seen.fields.iter().find(|f| f.name.as_str() == name) {
-            None => {
-                return Err((
-                    name.into(),
-                    format!("`{key}` names `{name}`, which `{ty}` does not declare"),
-                ));
-            }
+        let field = crate::id::FieldName::from(name);
+        let fault = match seen.fields.iter().find(|f| f.name == field) {
+            None => Case::UnknownField {
+                ty: ty.into(),
+                field,
+            },
             Some(f) if !keeps(&f.ty.kind) => {
-                return Err((
-                    name.into(),
-                    format!(
-                        "`{key}` names `{name}`, of kind {}; {index} keeps {kinds}",
-                        serde_json::to_value(f.ty.kind).unwrap_or_default()
-                    ),
-                ));
+                let kind = f.ty.kind;
+                match order {
+                    true => Case::OrderIndexKind { field, kind },
+                    false => Case::VectorIndexKind { field, kind },
+                }
             }
             // As it is shown: one told nothing of how a field is computed
             // is not told so here either.
-            Some(f) if f.computed_at == Some(crate::ontology::ComputedAt::Read) => {
-                return Err((
-                    name.into(),
-                    format!(
-                        "`{key}` names `{name}`, which is computed at the read; {index} keeps stored values"
-                    ),
-                ));
-            }
-            Some(_) => {}
-        }
+            Some(f) if f.computed_at == Some(crate::ontology::ComputedAt::Read) => match order {
+                true => Case::OrderIndexAtRead { field },
+                false => Case::VectorIndexAtRead { field },
+            },
+            Some(_) => continue,
+        };
+        return refused(name, fault.into());
     }
     Ok(())
 }

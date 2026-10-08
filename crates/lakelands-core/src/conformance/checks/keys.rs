@@ -68,7 +68,7 @@ async fn a_key_that_disagrees_with_its_key_fields_is_refused(
         .await
         .must_fail("writing `line` `INV%3A7%251:3` with key fields that make `…:2`")?;
     ensure!(
-        matches!(reason(&err), Some(Refusal::Invalid { .. })),
+        matches!(reason(&err), Some(Refusal::Invalid(..))),
         "a key that disagrees with its key fields must be refused as invalid; it failed with {err:?}"
     );
     head_unmoved(

@@ -45,7 +45,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lakelands_api::engine::{CanonicalEvent, Lease, OpenMode};
-use lakelands_api::error::{Detail, Doing, Flaw, Part, Situation};
+use lakelands_api::error::{Case, Detail, Doing, Flaw, Part, Said, Situation};
 use lakelands_api::event::Digest;
 use lakelands_api::location::Location;
 use lakelands_api::seam::Seams;
@@ -77,8 +77,9 @@ pub struct Imported {
 
 /// A refusal of the import as asked: the export or the target is not
 /// one it can make a lake from, and asking again changes nothing.
-fn precondition(message: String) -> Error {
-    crate::writes::refused(lakelands_api::Refusal::Precondition { message })
+fn precondition(said: impl Into<Said>) -> Error {
+    let said = Box::new(said.into());
+    crate::writes::refused(lakelands_api::Refusal::Precondition(said))
 }
 
 /// The export's files failed `doing`; the path is the operator's, not
@@ -148,14 +149,14 @@ fn check(files: &[PathBuf], lake: &LakeId) -> Result<Vec<Digest>> {
         for event in events(path)? {
             let (_, event) = event?;
             if event.lake != *lake {
-                return Err(precondition(format!(
-                    "{} holds at position {} an event of the lake `{}`, and the import makes \
-                     `{lake}`; a lake's name is inside every hash, so an export opens only as \
-                     the lake it came from; nothing was imported",
-                    path.display(),
-                    event.position,
-                    event.lake
-                )));
+                let (position, held) = (event.position, Box::new(event.lake.clone()));
+                let lake = Box::new(lake.clone());
+                let case = Case::ImportOtherLake {
+                    position,
+                    held,
+                    lake,
+                };
+                return Err(precondition(case));
             }
             if event.body.kind == "lease_taken"
                 && let Some(taken) = event.body.fence
@@ -187,11 +188,8 @@ pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported>
     let lease = engine.take_lease(&format!("lakelands import {}", std::process::id()))?;
     let written = (|| {
         if let Some((head, _)) = engine.tip()? {
-            return Err(precondition(format!(
-                "the lake `{}` already holds events through position {head}; an import makes a \
-                 new lake and goes only into one that holds nothing",
-                location.lake
-            )));
+            let lake = Box::new(location.lake.clone());
+            return Err(precondition(Case::ImportNotEmpty { lake, head }));
         }
         carry(engine.as_ref(), &lease, &files, &digests, location)?;
         let lake = Lake::assemble(location, seams, engine.clone(), Some(lease.clone()));

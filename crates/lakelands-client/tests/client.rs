@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use lakelands_api::error::{Error, Missing, Refusal};
+use lakelands_api::error::{Case, Error, Missing, Place, Refusal, Said};
 use lakelands_api::id::{Position, RecordKey, SourceId, TypeName, Version};
 use lakelands_api::location::Limits;
 use lakelands_api::read::Get;
@@ -90,7 +90,12 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
         field: field.map(Into::into),
         reason,
     };
-    let message = || "what it was".to_owned();
+    let (ty, field) = (TypeName::from("invoice"), "status".into());
+    let case = Case::UnknownField { ty, field };
+    let place = Place::Type {
+        name: "invoice".into(),
+    };
+    let said = || Box::new(Said::from(case.clone()).within(place.clone()));
     let report = MigrationReport {
         ty: "invoice".into(),
         from_schema_hash: "a".into(),
@@ -113,18 +118,9 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
         (403, refused(Some("amount"), Refusal::NotGranted)),
         (403, refused(Some("amount"), Refusal::WrongDoor)),
         (403, refused(None, Refusal::Reserved)),
-        (
-            422,
-            refused(Some("status"), Refusal::Invalid { message: message() }),
-        ),
-        (
-            422,
-            refused(Some("partner"), Refusal::Constraint { message: message() }),
-        ),
-        (
-            422,
-            refused(None, Refusal::Precondition { message: message() }),
-        ),
+        (422, refused(Some("status"), Refusal::Invalid(said()))),
+        (422, refused(Some("partner"), Refusal::Constraint(said()))),
+        (422, refused(None, Refusal::Precondition(said()))),
         (422, refused(None, Refusal::TooDeep { max: 4 })),
         (422, refused(None, Refusal::TooLarge { max: 5 })),
         (
@@ -137,10 +133,7 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
             ),
         ),
         (409, refused(None, Refusal::Decided)),
-        (
-            409,
-            refused(None, Refusal::Unanswered { message: message() }),
-        ),
+        (409, refused(None, Refusal::Unanswered(said()))),
         (
             422,
             refused(None, Refusal::OutOfRange { head: Position(7) }),

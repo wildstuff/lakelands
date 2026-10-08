@@ -18,7 +18,7 @@ use hyper::header::HeaderValue;
 use lakelands_api::Catalog;
 use lakelands_api::catalog::{CommitStream, SourceStream};
 use lakelands_api::describe::{LakeDescription, TypeDescription};
-use lakelands_api::error::{Detail, Error, Exchange, Refusal, Result};
+use lakelands_api::error::{Case, Detail, Error, Exchange, Result, Segment};
 use lakelands_api::expr::Condition;
 use lakelands_api::id::{
     LakeId, ProposalId, RecordKey, RelationName, SourceId, TypeName, VerbName,
@@ -34,7 +34,7 @@ use lakelands_api::write::{
 };
 use serde_json::{Value, json};
 
-use crate::wire::{Call, Wire, invalid, query_of, seg};
+use crate::wire::{Call, Wire, query_of, seg};
 
 /// The doors of a lake another process serves.
 pub(crate) struct RemoteCatalog {
@@ -55,8 +55,8 @@ impl RemoteCatalog {
 fn record(ty: &TypeName, key: &RecordKey) -> Result<String> {
     Ok(format!(
         "types/{}/records/{}",
-        seg(ty.as_str(), "the type")?,
-        seg(key.as_str(), "the key")?
+        seg(ty.as_str(), Segment::Type)?,
+        seg(key.as_str(), Segment::Key)?
     ))
 }
 
@@ -64,8 +64,8 @@ fn link(ty: &TypeName, key: &RecordKey, relation: &RelationName, to: &RecordKey)
     Ok(format!(
         "{}/links/{}/{}",
         record(ty, key)?,
-        seg(relation.as_str(), "the relation")?,
-        seg(to.as_str(), "the key linked to")?
+        seg(relation.as_str(), Segment::Relation)?,
+        seg(to.as_str(), Segment::To)?
     ))
 }
 
@@ -93,9 +93,7 @@ fn write_headers(mut call: Call, opts: &WriteOpts, put: bool) -> Result<Call> {
     }
     if let Some(k) = &opts.idempotency_key {
         if HeaderValue::from_str(k.as_str()).is_err() {
-            return Err(invalid(
-                "the idempotency key holds a character a header cannot carry, such as a line break",
-            ));
+            return Err(Error::invalid(Case::IdempotencyKeyHeader));
         }
         call = call.header("idempotency-key", k.as_str().to_owned());
     }
@@ -125,7 +123,7 @@ impl Catalog for RemoteCatalog {
     ) -> Result<Reply<TypeDescription>> {
         let call = Call::new(
             Method::GET,
-            format!("describe/{}", seg(ty.as_str(), "the type")?),
+            format!("describe/{}", seg(ty.as_str(), Segment::Type)?),
         )
         .query(at_query(&at));
         self.go(who, call).await
@@ -137,17 +135,11 @@ impl Catalog for RemoteCatalog {
     /// lake refuses.
     async fn find(&self, who: &Principal, ty: &TypeName, find: Find) -> Result<Reply<Found>> {
         if let Some(Condition::Expr(_)) = find.filter {
-            return Err(Error::Refused {
-                field: None,
-                reason: Refusal::Invalid {
-                    message: "over REST, `find` takes `where` in its text form only; give the condition as text"
-                        .into(),
-                },
-            });
+            return Err(Error::invalid(Case::FindWhereText));
         }
         let call = Call::new(
             Method::GET,
-            format!("types/{}/records", seg(ty.as_str(), "the type")?),
+            format!("types/{}/records", seg(ty.as_str(), Segment::Type)?),
         )
         .query(query_of(&members(&find, &[])));
         self.go(who, call).await
@@ -220,9 +212,9 @@ impl Catalog for RemoteCatalog {
     ) -> Result<Outcome> {
         // A verb on its type takes the keyless route. Whether the verb
         // takes a key is the server's to say, not the client's.
-        let verb = seg(verb.as_str(), "the verb")?;
+        let verb = seg(verb.as_str(), Segment::Verb)?;
         let path = match key {
-            Some(key) => format!("verbs/{verb}/{}", seg(key.as_str(), "the key")?),
+            Some(key) => format!("verbs/{verb}/{}", seg(key.as_str(), Segment::Key)?),
             None => format!("verbs/{verb}"),
         };
         let call = Call::new(Method::POST, path).json(&members(&payload, &[]));
@@ -248,7 +240,7 @@ impl Catalog for RemoteCatalog {
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome> {
         let path = format!(
             "proposals/{}/accept",
-            seg(proposal.as_str(), "the proposal")?
+            seg(proposal.as_str(), Segment::Proposal)?
         );
         self.go(who, Call::new(Method::POST, path)).await
     }
@@ -261,7 +253,7 @@ impl Catalog for RemoteCatalog {
     ) -> Result<Outcome> {
         let path = format!(
             "proposals/{}/reject",
-            seg(proposal.as_str(), "the proposal")?
+            seg(proposal.as_str(), Segment::Proposal)?
         );
         let call = Call::new(Method::POST, path).json(&json!({ "reason": reason }));
         self.go(who, call).await
@@ -364,7 +356,7 @@ impl Catalog for RemoteCatalog {
         records: SourceStream,
     ) -> Result<CommitStream> {
         let key = self.wire.key_of(who)?;
-        let path = format!("ingest/{}", seg(source.as_str(), "the source")?);
+        let path = format!("ingest/{}", seg(source.as_str(), Segment::Source)?);
         let upload = Arc::new(Upload::default());
         let body = Ndjson {
             records,

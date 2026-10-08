@@ -10,7 +10,8 @@
 //! with the kinds its expressions certainly compute ([`super::kind`]).
 
 use super::kind::{self, Kind};
-use super::{Condition, Expr, Func, Literal, children, parse, print, rewrite};
+use super::{Expr, Func, Literal, children, print, rewrite};
+use crate::error::{Case, Place, Said};
 use crate::ontology::{FieldDecl, StorageKind, TypeDecl, ViewDecl};
 use crate::{FieldName, TypeName};
 
@@ -21,53 +22,51 @@ use crate::{FieldName, TypeName};
 /// is certainly a number or an instant, and that only under group fields
 /// that are all text or references, of which there is one at least, so
 /// that a group whose extreme left is found again by its fields' values.
-/// Otherwise why not: which measure, which call, and what of it. Whether
-/// a source that is itself a view is kept is not said here.
+/// Otherwise why not, said at the measure where it is one's: which call,
+/// and what of it. Whether a source that is itself a view is kept is not
+/// said here.
 pub fn keepable<'a>(
     view: &ViewDecl,
     declared: impl Fn(&TypeName) -> Option<&'a TypeDecl>,
-) -> Result<(), String> {
+) -> Result<(), Said> {
     if let Some(p) = view.params.first() {
-        return Err(format!(
-            "it declares the parameter `{}`, and a kept record is the same for every read",
-            p.name
-        ));
+        let name = p.name.clone();
+        return Err(Case::KeptParam { name }.into());
     }
     let own = (&view.source, &view.r#where, &view.group_by, &view.measures);
     let merged = (view.merge.iter()).map(|s| (&s.source, &s.r#where, &s.group_by, &s.measures));
     for (source, filter, group_by, measures) in std::iter::once(own).chain(merged) {
         let fields = declared(source).map_or(&[][..], |t| &t.fields);
-        let clock = "reads the clock, and a kept record is computed when its source is written";
         // A field computed at the read moves with the clock as well.
         let moving = |e: &Expr| {
             (e.fields_read().into_iter())
                 .find(|n| at_read(fields, n))
                 .cloned()
         };
-        let read = |n: FieldName| {
-            format!(
-                "reads `{n}` of `{source}`, which is computed at the read, and a kept record is computed when its source is written"
-            )
-        };
-        if let Some(n) = group_by.iter().find(|n| at_read(fields, n)) {
-            return Err(format!("it groups by what {}", read(n.clone())));
+        let source = source.clone();
+        if let Some(field) = group_by.iter().find(|n| at_read(fields, n)).cloned() {
+            return Err(Case::KeptGroupAtRead { field, source }.into());
         }
-        for e in filter.iter().filter_map(|c| typed(c).ok()) {
+        for e in filter.iter().filter_map(|c| c.typed().ok()) {
             if e.reads_clock() {
-                return Err(format!("its `where` over `{source}` {clock}"));
+                return Err(Case::KeptWhereClock { source }.into());
             }
-            if let Some(n) = moving(&e) {
-                return Err(format!("its `where` {}", read(n)));
+            if let Some(field) = moving(&e) {
+                return Err(Case::KeptWhereAtRead { field, source }.into());
             }
         }
         for m in measures {
-            let named = |why: String| format!("measure `{}`: {why}", m.name);
-            let e = typed(&m.expr).map_err(named)?;
+            let at = || Place::Measure {
+                name: m.name.clone(),
+            };
+            let said = |case: Case| Said::from(case).within(at());
+            let e = m.expr.typed().map_err(|e| said(e.into()))?;
             if e.reads_clock() {
-                return Err(named(format!("it {clock}")));
+                return Err(said(Case::KeptClock));
             }
-            if let Some(n) = moving(&e) {
-                return Err(named(format!("it {}", read(n))));
+            if let Some(field) = moving(&e) {
+                let source = source.clone();
+                return Err(said(Case::KeptAtRead { field, source }));
             }
             let mut made = Vec::new();
             calls(&e, &mut made);
@@ -75,19 +74,11 @@ pub fn keepable<'a>(
                 let Expr::Call { func, args } = call else {
                     continue;
                 };
-                let said = |why: String| named(format!("`{}` {why}", print(call)));
-                folds(*func, args.first(), fields, group_by).map_err(said)?;
+                folds(*func, print(call), args.first(), fields, group_by).map_err(said)?;
             }
         }
     }
     Ok(())
-}
-
-fn typed(c: &Condition) -> Result<Expr, String> {
-    match c {
-        Condition::Expr(e) => Ok(e.clone()),
-        Condition::Text(t) => parse(t).map_err(|e| format!("`{t}` does not parse: {e}")),
-    }
 }
 
 fn at_read(fields: &[FieldDecl], n: &FieldName) -> bool {
@@ -102,39 +93,33 @@ fn calls<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
     }
 }
 
-/// Whether one aggregate call is a function of its values, over a source
-/// with these fields grouped by `group_by`; or what of it is not.
+/// Whether one aggregate call, printed `call`, is a function of its
+/// values, over a source with these fields grouped by `group_by`; or what
+/// of it is not.
 fn folds(
     func: Func,
+    call: String,
     arg: Option<&Expr>,
     fields: &[FieldDecl],
     group_by: &[FieldName],
-) -> Result<(), String> {
+) -> Result<(), Case> {
     let declared = |f: &FieldName| fields.iter().find(|d| d.name == *f).map(|d| d.ty.kind);
     let certain = match (func, arg) {
         (Func::Count, _) => return Ok(()),
-        (_, None) => return Err("has no argument".into()),
+        (_, None) => return Err(Case::KeptNoArgument { call }),
         (_, Some(arg)) => folded_kind(arg, &declared),
     };
     let extreme = matches!(func, Func::Min | Func::Max);
-    match certain {
-        Some(Kind::Number) => {}
-        Some(Kind::Instant) if extreme => {}
-        other => {
-            let met = other.map_or("what is of no certain kind", Kind::name);
-            let (does, needs) = match extreme {
-                true => ("orders", "a number or an instant"),
-                false => ("adds", "a number"),
-            };
-            return Err(format!(
-                "{does} {met}; it is kept where its argument is certainly {needs}"
-            ));
-        }
+    match (certain, extreme) {
+        (Some(Kind::Number), _) | (Some(Kind::Instant), true) => {}
+        (Some(kind), true) => return Err(Case::KeptOrdersKind { call, kind }),
+        (None, true) => return Err(Case::KeptOrdersUncertain { call }),
+        (Some(kind), false) => return Err(Case::KeptAddsKind { call, kind }),
+        (None, false) => return Err(Case::KeptAddsUncertain { call }),
     }
     if !extreme {
         return Ok(());
     }
-    let by = "is kept only in a view grouped by text or reference fields";
     let other = |f: &&FieldName| {
         !matches!(
             declared(f),
@@ -142,8 +127,11 @@ fn folds(
         )
     };
     match group_by.iter().find(other) {
-        Some(f) => Err(format!("{by}, and `{f}` is neither")),
-        None if group_by.is_empty() => Err(format!("{by}, and this one has no group field")),
+        Some(field) => Err(Case::KeptExtremeGroupedBy {
+            call,
+            field: field.clone(),
+        }),
+        None if group_by.is_empty() => Err(Case::KeptExtremeUngrouped { call }),
         None => Ok(()),
     }
 }

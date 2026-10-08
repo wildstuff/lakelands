@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::StorageKind::{self, *};
 use lakelands_api::principal::Access;
@@ -20,8 +21,8 @@ use serde_json::json;
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, agg, computed_by, dec, decimal, derived, field, field_access, find_where,
-    invalid_naming, log_events, migration, no_such_field, object_set_on, pattern, refused_on,
-    trigger_on, type_decl, value, view_of, write_verb,
+    log_events, migration, no_such_field, object_set_on, pattern, refused_alike, refused_like,
+    refused_on, trigger_on, type_decl, value, view_of, write_verb,
 };
 
 check!(
@@ -169,12 +170,13 @@ async fn a_derived_field_its_expression_can_never_fill_is_refused(
     // Nothing of a certain kind lands in a `geo` or a `bytes` field.
     let exact = StorageKind::Decimal;
     let pairs: [(&str, &str, &[StorageKind]); 5] = [
-        (duration, "a duration", &[Number, exact, Boolean, DateTime]),
-        ("paid_on > due_on", "a boolean", &[Number, exact, DateTime]),
-        ("paid_on + 1d", "an instant", &[Number, exact, Boolean]),
-        ("n * 2", "a number", &[Boolean, DateTime, Geo]),
-        ("upper(code)", "a text", &[Boolean, Bytes]),
+        (duration, "duration", &[Number, exact, Boolean, DateTime]),
+        ("paid_on > due_on", "boolean", &[Number, exact, DateTime]),
+        ("paid_on + 1d", "instant", &[Number, exact, Boolean]),
+        ("n * 2", "number", &[Boolean, DateTime, Geo]),
+        ("upper(code)", "text", &[Boolean, Bytes]),
     ];
+    let lands = |kind, holds| json!({"code": "never_lands", "kind": kind, "holds": holds});
     for (expr, is, kinds) in pairs {
         for kind in kinds.iter().copied() {
             let d = derived("d", kind, expr, &[]);
@@ -184,7 +186,7 @@ async fn a_derived_field_its_expression_can_never_fill_is_refused(
                 refused_on(&refused).is_some_and(|(f, _)| f == "d"),
                 "{what} is refused on the field; add_field answered {refused:?}"
             );
-            invalid_naming(&what, refused, &[is, "never holds"])?;
+            refused_like(&what, refused, &lands(is, json!(kind)))?;
         }
     }
     // Every door a declaration comes through holds it, and says how a
@@ -192,10 +194,11 @@ async fn a_derived_field_its_expression_can_never_fill_is_refused(
     let dates = vec![field("due_on", DateTime), field("paid_on", DateTime)];
     let mut to = type_decl(TYPE, dates);
     to.fields.push(derived("d", Number, duration, &[]));
-    let unit = ["a duration", "/ 1d"];
-    invalid_naming("declaring it", l.try_declare(to.clone()).await, &unit)?;
+    let unit =
+        json!({"code": "never_lands", "kind": "duration", "holds": "number", "duration": true});
+    refused_like("declaring it", l.try_declare(to.clone()).await, &unit)?;
     let migrated = cat.migrate(own, migration(to)).await;
-    invalid_naming("migrating to it", migrated, &unit)?;
+    refused_like("migrating to it", migrated, &unit)?;
     let now = store.head().await.must("reading the head")?;
     ensure!(
         now == head,
@@ -222,24 +225,26 @@ async fn what_can_never_be_evaluated_is_refused_and_a_records_own_failure_is_not
     let Lake { cat, own } = &l;
     let ty = TypeName::from(TYPE);
     let kept = field_access(store.as_ref(), "kept", TYPE, &[("due_on", Access::None)]);
-    for (expr, names) in [
-        ("due_on + paid_on", "an instant and an instant"),
-        ("(due_on < paid_on) * 2", "a boolean and a number"),
-        ("(paid_on - due_on) + 1", "a duration and a number"),
-        ("n / 1d", "a number and a duration"),
-        ("abs(paid_on - due_on)", "a number, not a duration"),
-        ("-due_on", "negates an instant"),
+    let sides = |left, right| json!({"code": "kind_sides", "left": left, "right": right});
+    let one = |code, kind| json!({"code": code, "kind": kind});
+    let abs = one("kind_takes_number", "duration");
+    for (expr, case) in [
+        ("due_on + paid_on", sides("instant", "instant")),
+        ("(due_on < paid_on) * 2", sides("boolean", "number")),
+        ("(paid_on - due_on) + 1", sides("duration", "number")),
+        ("n / 1d", sides("number", "duration")),
+        ("abs(paid_on - due_on)", abs),
+        ("-due_on", one("kind_negates", "instant")),
     ] {
-        let names = ["has no meaning", names];
         let filter = format!("{expr} is null");
         let asked = cat.find(own, &ty, find_where(&filter)).await;
-        invalid_naming(&format!("a where `{filter}`"), asked, &names)?;
+        refused_like(&format!("a where `{filter}`"), asked, &case)?;
         let asked = cat.find(own, &ty, keyed(expr)).await;
-        invalid_naming(&format!("a group key `{expr}`"), asked, &names)?;
+        refused_like(&format!("a group key `{expr}`"), asked, &case)?;
         let mut walk = pattern(TYPE, None, Vec::new(), Projection::Graph);
         walk.start.filter = Some(filter.as_str().into());
         let asked = cat.query(own, walk).await;
-        invalid_naming(&format!("a pattern's where `{filter}`"), asked, &names)?;
+        refused_like(&format!("a pattern's where `{filter}`"), asked, &case)?;
         let mut requires = write_verb("v", TYPE, "code", "'x'");
         if let lakelands_api::write::Declaration::Verb(v) = &mut requires {
             v.requires = Some(filter.as_str().into());
@@ -251,7 +256,7 @@ async fn what_can_never_be_evaluated_is_refused_and_a_records_own_failure_is_not
             ("a verb's value", write_verb("v", TYPE, "code", expr)),
         ] {
             let declared = cat.declare(own, d).await;
-            invalid_naming(&format!("{what} `{filter}`"), declared, &names)?;
+            refused_like(&format!("{what} `{filter}`"), declared, &case)?;
         }
     }
     // The refusal tells nothing of a field its reader is kept from.
@@ -262,6 +267,11 @@ async fn what_can_never_be_evaluated_is_refused_and_a_records_own_failure_is_not
         "a reader kept from `due_on` is answered as for a field the type lacks; find answered \
          {asked:?}"
     );
+    let absent = cat
+        .find(&kept, &ty, find_where("nosuch + paid_on is null"))
+        .await;
+    let names = ("nosuch", "due_on");
+    refused_alike("a filter on `due_on`", &asked, absent, names)?;
     // A failure of one record's value is that record's: `i1` divides by a
     // duration of zero and multiplies a text that is no number.
     for expr in ["(paid_on - due_on) / (paid_on - paid_on)", "code * 2"] {
@@ -285,9 +295,9 @@ async fn a_view_value_its_field_never_holds_is_refused_and_a_function_names_both
         let fields = vec![field("code", by), field("last", last)];
         view_of("late", TYPE, &["code"], fields, &[("last", "max(due_on)")])
     };
-    for (view, on, names) in [
-        (late(Text, Number), "last", ["an instant", "never holds"]),
-        (late(Boolean, DateTime), "code", ["a text", "never holds"]),
+    for (view, on, kind, holds) in [
+        (late(Text, Number), "last", "instant", Number),
+        (late(Boolean, DateTime), "code", "text", Boolean),
     ] {
         let refused = l.try_declare(view).await;
         let what = format!("a view whose `{on}` never lands");
@@ -295,7 +305,8 @@ async fn a_view_value_its_field_never_holds_is_refused_and_a_function_names_both
             refused_on(&refused).is_some_and(|(f, _)| f == on),
             "{what} is refused on the field; declaring it answered {refused:?}"
         );
-        invalid_naming(&what, refused, &names)?;
+        let case = json!({"code": "never_lands", "kind": kind, "holds": holds});
+        refused_like(&what, refused, &case)?;
     }
     let now = store.head().await.must("reading the head")?;
     ensure!(
@@ -309,10 +320,10 @@ async fn a_view_value_its_field_never_holds_is_refused_and_a_function_names_both
     l.declare_json(fee).await?;
     let mut bill = type_decl("bill", vec![field("n", Number)]);
     bill.fields.push(computed_by("fee", Decimal, "fee", &["n"]));
-    let names = ["`n` as a decimal", "`bill` holds it as a number"];
-    invalid_naming(
+    refused_as!(
         "a function's input of another kind",
         l.try_declare(bill).await,
-        &names,
+        Case::FunctionInputKind { function, input, kind: StorageKind::Decimal, ty, held: Number }
+            if function == "fee" && input == "n" && ty == "bill"
     )
 }

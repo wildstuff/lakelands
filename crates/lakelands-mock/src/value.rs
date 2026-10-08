@@ -1,5 +1,6 @@
 //! Values against their declared types, and the mock's stable ids.
 
+use lakelands_api::error::{Case, Shape};
 use lakelands_api::id::{IdempotencyKey, Position};
 use lakelands_api::ontology::{FieldType, StorageKind, ValueTypeDecl, is_vector_component};
 use lakelands_api::principal::Principal;
@@ -7,8 +8,9 @@ use lakelands_api::record::Value;
 use lakelands_api::time::Timestamp;
 use sha2::{Digest as _, Sha256};
 
-/// Why a value does not fit its field, for a person; `None` when it fits.
-pub(crate) fn misfit(ty: &FieldType, v: &Value, value_types: &[ValueTypeDecl]) -> Option<String> {
+/// Why a value does not fit its field, as the store says it; `None` when
+/// it fits.
+pub(crate) fn misfit(ty: &FieldType, v: &Value, value_types: &[ValueTypeDecl]) -> Option<Case> {
     let is_decimal = |s: &str| {
         let s = s.strip_prefix('-').unwrap_or(s);
         let mut parts = s.splitn(2, '.');
@@ -18,24 +20,45 @@ pub(crate) fn misfit(ty: &FieldType, v: &Value, value_types: &[ValueTypeDecl]) -
             && whole.bytes().all(|b| b.is_ascii_digit())
             && frac.is_none_or(|f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()))
     };
-    let fits = match ty.kind {
-        StorageKind::Text | StorageKind::Reference | StorageKind::Bytes => v.is_string(),
-        StorageKind::Number => v.is_number(),
-        StorageKind::Decimal => v.as_str().is_some_and(is_decimal),
-        StorageKind::Boolean => v.is_boolean(),
-        StorageKind::DateTime => v.as_str().is_some_and(|s| Timestamp::parse(s).is_ok()),
-        StorageKind::Json => true,
-        StorageKind::Vector => v.as_array().is_some_and(|a| {
-            a.iter().all(is_vector_component) && ty.dimensions.is_none_or(|d| a.len() == d as usize)
-        }),
-        StorageKind::Geo => v.get("type").is_some_and(Value::is_string),
+    let shape = |shape| {
+        Some(Case::ValueShape {
+            kind: ty.kind,
+            shape,
+        })
     };
-    if !fits {
-        let kind = serde_json::to_value(ty.kind).unwrap_or_default();
-        return Some(format!(
-            "the value is not a valid {}",
-            kind.as_str().unwrap_or("value")
-        ));
+    let text = || v.as_str().map(|s| s.escape_debug().to_string());
+    match ty.kind {
+        StorageKind::Text | StorageKind::Reference if !v.is_string() => return shape(Shape::Text),
+        StorageKind::Bytes if !v.is_string() => return shape(Shape::Base64),
+        StorageKind::Number if !v.is_number() => return shape(Shape::Number),
+        StorageKind::Boolean if !v.is_boolean() => return shape(Shape::Boolean),
+        StorageKind::Decimal => match v.as_str() {
+            None => return shape(Shape::Digits),
+            Some(s) if !is_decimal(s) => return text().map(|value| Case::NotDecimal { value }),
+            Some(_) => {}
+        },
+        StorageKind::DateTime => match v.as_str() {
+            None => return shape(Shape::DateTime),
+            Some(s) if Timestamp::parse(s).is_err() => {
+                return text().map(|value| Case::NotDateTime { value });
+            }
+            Some(_) => {}
+        },
+        StorageKind::Vector => {
+            let numbers = v.as_array().filter(|a| a.iter().all(is_vector_component));
+            let Some(items) = numbers else {
+                return shape(Shape::Numbers);
+            };
+            if let Some(expected) = ty.dimensions.filter(|d| items.len() != *d as usize) {
+                let found = items.len();
+                return Some(Case::VectorLength { found, expected });
+            }
+        }
+        StorageKind::Geo if !v.is_object() => return Some(Case::GeoNotObject),
+        StorageKind::Geo if !v.get("type").is_some_and(Value::is_string) => {
+            return Some(Case::GeoNoType);
+        }
+        _ => {}
     }
     let vt = ty
         .value_type
@@ -43,7 +66,10 @@ pub(crate) fn misfit(ty: &FieldType, v: &Value, value_types: &[ValueTypeDecl]) -
         .and_then(|n| value_types.iter().find(|d| &d.name == n))?;
     match v.as_str() {
         Some(s) if !vt.one_of.is_empty() && !vt.one_of.iter().any(|o| o == s) => {
-            Some(format!("`{s}` is not one of {}", vt.one_of.join(", ")))
+            Some(Case::NotOneOf {
+                value: v.clone(),
+                allowed: vt.one_of.iter().collect(),
+            })
         }
         _ => None,
     }

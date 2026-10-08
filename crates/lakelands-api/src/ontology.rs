@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::{Case, Place, Said};
 use crate::expr::{Condition, Func};
 use crate::id::{
     FieldName, ParamName, RelationName, TriggerName, TypeName, ValueTypeName, VerbName,
@@ -85,6 +86,24 @@ impl StorageKind {
 /// that enters a lake goes through this, written or computed.
 pub fn is_vector_component(v: &serde_json::Value) -> bool {
     v.as_f64().is_some_and(|x| (x as f32).is_finite())
+}
+
+/// The kind as a declaration names it: `text`, `date_time`.
+impl std::fmt::Display for StorageKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            StorageKind::Text => "text",
+            StorageKind::Number => "number",
+            StorageKind::Decimal => "decimal",
+            StorageKind::Boolean => "boolean",
+            StorageKind::DateTime => "date_time",
+            StorageKind::Bytes => "bytes",
+            StorageKind::Json => "json",
+            StorageKind::Reference => "reference",
+            StorageKind::Vector => "vector",
+            StorageKind::Geo => "geo",
+        })
+    }
 }
 
 /// A value type: what a value means and what it must satisfy, declared
@@ -328,25 +347,29 @@ impl TypeDecl {
     }
 
     /// The first of this type's embeddings declared against the rules,
-    /// with why: an embedding is a `derived` vector with dimensions,
-    /// neither derived from an expression nor computed by a function,
-    /// with no `depends_on` beside its `from`; `from` names, each once,
-    /// text fields of the type other than itself, sensitive only where
-    /// the embedding is; and it names its model. `None` when every
-    /// embedding keeps them. Every door checks this before it asks
-    /// whether a backend is bound.
-    pub fn embedding_problem(&self) -> Option<(FieldName, String)> {
+    /// with why, said at the type and the field: an embedding is a
+    /// `derived` vector with dimensions, neither derived from an
+    /// expression nor computed by a function, with no `depends_on` beside
+    /// its `from`; `from` names, each once, text fields of the type other
+    /// than itself, sensitive only where the embedding is; and it names
+    /// its model. `None` when every embedding keeps them. Every door
+    /// checks this before it asks whether a backend is bound.
+    pub fn embedding_problem(&self) -> Option<(FieldName, Said)> {
         self.fields.iter().find_map(|f| {
-            let why = embedding_problem(self, f)?;
-            Some((
-                f.name.clone(),
-                format!("type `{}`, field `{}`: {why}", self.name, f.name),
-            ))
+            let case = embedding_problem(self, f)?;
+            let field = Place::Field {
+                name: f.name.clone(),
+            };
+            let ty = Place::Type {
+                name: self.name.clone(),
+            };
+            Some((f.name.clone(), Said::from(case).within(field).within(ty)))
         })
     }
 
     /// The first of this type's fields that says when it is computed
-    /// against the rules, with why. A computed field whose expression, or
+    /// against the rules, with why, said at the type, the relation if a
+    /// link's, and the field. A computed field whose expression, or
     /// `expr` function, reads the clock says when. One computed at the
     /// read is computed at every read from the record as stored, so no
     /// write gives it and nothing that reads stored records names it: it
@@ -358,30 +381,37 @@ impl TypeDecl {
     pub fn computed_at_problem<'f>(
         &self,
         function: impl Fn(&str) -> Option<&'f crate::write::FunctionDecl>,
-    ) -> Option<(FieldName, String)> {
-        let owner = format!("type `{}`", self.name);
-        let said = |at: &str, f: &FieldDecl, why: &str| {
-            Some((f.name.clone(), format!("{at}, field `{}`: {why}", f.name)))
+    ) -> Option<(FieldName, Said)> {
+        let ty = || Place::Type {
+            name: self.name.clone(),
+        };
+        let said = |at: &[Place], f: &FieldDecl, case: Case| {
+            let mut said = Said::from(case).within(Place::Field {
+                name: f.name.clone(),
+            });
+            for place in at.iter().rev() {
+                said = said.within(place.clone());
+            }
+            Some((f.name.clone(), said))
         };
         let view = self
             .view
             .as_ref()
             .and(self.fields.iter().find(|f| f.computed_at.is_some()));
         if let Some(f) = view {
-            let why =
-                "a view's fields say no `computed_at`; its records are computed at every read";
-            return said(&owner, f, why);
+            return said(&[ty()], f, Case::ComputedAtInView);
         }
         for r in &self.relations {
-            let at = format!("{owner}, relation `{}`", r.name);
+            let relation = Place::Relation {
+                name: r.name.clone(),
+            };
+            let at = [ty(), relation];
             for f in &r.fields {
                 if f.at_read() {
-                    let why =
-                        "a link's field is computed at the write; a walk reads links as stored";
-                    return said(&at, f, why);
+                    return said(&at, f, Case::LinkFieldAtRead);
                 }
-                if let Some(why) = computed_at_problem(&r.fields, f, &function) {
-                    return said(&at, f, &why);
+                if let Some(case) = computed_at_problem(&r.fields, f, &function) {
+                    return said(&at, f, case);
                 }
             }
         }
@@ -389,24 +419,23 @@ impl TypeDecl {
             .relations
             .iter()
             .flat_map(|r| r.derived.iter().flat_map(|d| &d.pairs));
-        let named = (self.key.iter().map(|n| (n, "key")))
-            .chain(self.valid_from.iter().map(|n| (n, "`valid_from`")))
-            .chain(self.valid_to.iter().map(|n| (n, "`valid_to`")))
+        let named = (self.key.iter().map(|n| (n, Case::AtReadKey)))
+            .chain(self.valid_from.iter().map(|n| (n, Case::AtReadValidFrom)))
+            .chain(self.valid_to.iter().map(|n| (n, Case::AtReadValidTo)))
             .chain(
                 self.relations
                     .iter()
-                    .filter_map(|r| Some((r.via.as_ref()?, "`via`"))),
+                    .filter_map(|r| Some((r.via.as_ref()?, Case::AtReadVia))),
             )
-            .chain(pairs.map(|p| (&p.from, "derived relation's match")));
-        for (n, what) in named {
+            .chain(pairs.map(|p| (&p.from, Case::AtReadMatch)));
+        for (n, case) in named {
             if let Some(f) = self.fields.iter().find(|f| &f.name == n && f.at_read()) {
-                let why = format!("computed at the read, it is no {what}, which is read as stored");
-                return said(&owner, f, &why);
+                return said(&[ty()], f, case);
             }
         }
         self.fields.iter().find_map(|f| {
-            let why = computed_at_problem(&self.fields, f, &function)?;
-            said(&owner, f, &why)
+            let case = computed_at_problem(&self.fields, f, &function)?;
+            said(&[ty()], f, case)
         })
     }
 }
@@ -416,7 +445,7 @@ fn computed_at_problem<'f>(
     fields: &[FieldDecl],
     f: &FieldDecl,
     function: &dyn Fn(&str) -> Option<&'f crate::write::FunctionDecl>,
-) -> Option<String> {
+) -> Option<Case> {
     let called = f.function.as_deref().and_then(function);
     let backed = called.is_some_and(|func| func.backing != "expr");
     let expr = match (&f.derived, called) {
@@ -433,97 +462,77 @@ fn computed_at_problem<'f>(
     let at_read = |n: &&FieldName| fields.iter().any(|d| &d.name == *n && d.at_read());
     match f.computed_at {
         Some(_) if f.derived.is_none() && f.function.is_none() => {
-            return Some(
-                "only a field derived from an expression or computed by a function says \
-                 `computed_at`"
-                    .into(),
-            );
+            return Some(Case::ComputedAtUncomputed);
         }
         None if expr.as_ref().is_some_and(crate::expr::Expr::reads_clock) => {
-            return Some(
-                "its expression reads the clock: say `computed_at: read` for a value of the day \
-                 it is read, or `computed_at: write` for the instant of its last write"
-                    .into(),
-            );
+            return Some(Case::ClockUnsaid);
         }
         Some(ComputedAt::Read) => {}
         _ => {
-            let n = reads.into_iter().find(at_read)?;
-            return Some(format!(
-                "computed at the write, it reads `{n}`, which is computed at the read and never \
-                 stored"
-            ));
+            let field = reads.into_iter().find(at_read)?.clone();
+            return Some(Case::AtWriteReadsAtRead { field });
         }
     }
     let write = expr.is_some_and(|e| e.calls(&[Func::Previous, Func::Changed]));
-    let why = if f.authority != Authority::Derived {
-        "it has the authority `derived`: no door writes it"
+    Some(if f.authority != Authority::Derived {
+        Case::AtReadAuthority
     } else if backed {
-        "an expression computes it; a function's backing is called at a write"
+        Case::AtReadBacked
     } else if write {
-        "it reads no `previous` or `changed`, which a write has and a read has not"
+        Case::AtReadPrevious
     } else if f.required {
-        "it is not `required`: no write gives it a value"
+        Case::AtReadRequired
     } else if f.sensitive {
-        "it is not `sensitive` by itself, but as what it is computed from"
+        Case::AtReadSensitive
     } else if f.on_input_change == OnInputChange::Clear {
-        "no value of it is kept to clear"
+        Case::AtReadCleared
     } else if f.searchable {
-        "it is not searchable: an index holds stored values only"
+        Case::AtReadSearchable
     } else {
         return None;
-    };
-    Some(format!("computed at the read, {why}"))
+    })
 }
 
-fn embedding_problem(t: &TypeDecl, f: &FieldDecl) -> Option<String> {
+fn embedding_problem(t: &TypeDecl, f: &FieldDecl) -> Option<Case> {
     let e = f.embed.as_ref()?;
     if f.ty.kind != StorageKind::Vector || f.ty.dimensions.is_none() {
-        return Some("only a vector with dimensions is the embedding of text".into());
+        return Some(Case::EmbedNotVector);
     }
     if f.derived.is_some() || f.function.is_some() {
-        return Some(
-            "a field is an embedding, derived from an expression or computed by a function, \
-             only one"
-                .into(),
-        );
+        return Some(Case::EmbedAlsoComputed);
     }
     if f.authority != Authority::Derived {
-        return Some("an embedding has the authority `derived`".into());
+        return Some(Case::EmbedNotDerived);
     }
     if !f.depends_on.is_empty() {
-        return Some(
-            "an embedding depends on its `from` fields; `depends_on` is not written beside it"
-                .into(),
-        );
+        return Some(Case::EmbedDependsOn);
     }
     if e.from.is_empty() {
-        return Some("an embedding names the fields it is made `from`".into());
+        return Some(Case::EmbedNoFrom);
     }
     if e.model.trim().is_empty() {
-        return Some("an embedding names its model".into());
+        return Some(Case::EmbedNoModel);
     }
     let mut seen = std::collections::BTreeSet::new();
     for name in &e.from {
+        let field = name.clone();
         if !seen.insert(name) {
-            return Some(format!("it names `{name}` in `from` twice"));
+            return Some(Case::EmbedFromTwice { field });
         }
         if name == &f.name {
-            return Some("it cannot be made from itself".into());
+            return Some(Case::EmbedFromItself);
         }
+        // Not one of the type's fields: as one it does not have.
         let Some(source) = t.fields.iter().find(|d| &d.name == name) else {
-            return Some(format!(
-                "it is made from `{name}`, which is not one of its fields"
-            ));
+            let ty = t.name.clone();
+            return Some(Case::UnknownField { ty, field });
         };
         if source.ty.kind != StorageKind::Text {
-            return Some(format!("it is made from `{name}`, which is not text"));
+            return Some(Case::EmbedFromNotText { field });
         }
         // A vector gives its text away to whoever may read it.
         if source.sensitive && !f.sensitive {
-            return Some(format!(
-                "it is made from the sensitive field `{name}` and is not sensitive itself"
-            ));
+            return Some(Case::EmbedFromSensitive { field });
         }
     }
     None

@@ -15,7 +15,7 @@
 
 use async_trait::async_trait;
 use lakelands_api::Result;
-use lakelands_api::error::{Error, Remote, Situation};
+use lakelands_api::error::{Case, Error, Place, Remote, Said, Situation};
 use lakelands_api::seam::{FunctionBacking, FunctionCall};
 use serde_json::Value;
 
@@ -60,20 +60,15 @@ impl Http {
     }
 
     async fn post(&self, call: &FunctionCall) -> Result<Value> {
-        let url = call.config["url"].as_str().ok_or_else(|| {
-            refused(
-                call,
-                "an `http` function names its URL as `config.url`".into(),
-            )
+        let url = call.config["url"].as_str();
+        let url = url.ok_or_else(|| refused(call, Case::HttpNoUrl))?;
+        let target = Target::parse(url).map_err(|case| {
+            let key = "url".to_owned();
+            refused(call, Said::from(case).within(Place::FunctionConfig { key }))
         })?;
-        let target =
-            Target::parse(url).map_err(|why| refused(call, format!("`config.url` {why}")))?;
-        let (host, port) = (target.host.as_str(), target.port);
-        if !self.allows(host, port) {
-            return Err(refused(
-                call,
-                format!("the host `{host}` (port {port}) is not one the operator allows"),
-            ));
+        let (host, port) = (target.host.clone(), target.port);
+        if !self.allows(&host, port) {
+            return Err(refused(call, Case::HostNotAllowed { host, port }));
         }
         // What a failure names: never the URL as declared, which may carry
         // user information and reaches every reader of the field's error.
@@ -82,7 +77,10 @@ impl Http {
             .post(&target, &[], body(call))
             .await
             .map_err(|f| match f {
-                Failure::Refused(why) => refused(call, why.to_string()),
+                Failure::Refused(exchange) => {
+                    let exchange = Box::new(exchange);
+                    refused(call, Case::CallNotSent { exchange })
+                }
                 other => {
                     let remote = Remote::Function {
                         function: call.function.clone(),

@@ -113,9 +113,9 @@ fn answer(result: &Value) -> &Value {
 }
 
 /// A refused call's two parts, as the agent read them: the text (what and
-/// what to do) and the error as JSON, which an argument fault has not.
-/// The JSON's `message` is the text's first line, and is left out of what
-/// is answered.
+/// what to do) and the error as JSON. The JSON's `message` is the text's
+/// first line (an argument fault's text leaves out its `refused: `), and
+/// is left out of what is answered.
 fn refused(result: &Value) -> (&str, Option<Value>) {
     assert_eq!(result["isError"], true, "{result}");
     let content = result["content"].as_array().unwrap();
@@ -124,7 +124,9 @@ fn refused(result: &Value) -> (&str, Option<Value>) {
         let mut e: Value = serde_json::from_str(c["text"].as_str().unwrap()).unwrap();
         let message = e.as_object_mut().unwrap().remove("message");
         let said = text.lines().next().unwrap().strip_prefix("error: ");
-        assert_eq!(message.as_ref().and_then(Value::as_str), said, "{result}");
+        let message = message.as_ref().and_then(Value::as_str);
+        let bare = message.map(|m| m.strip_prefix("refused: ").unwrap_or(m));
+        assert!(message == said || bare == said, "{result}");
         e
     });
     (text, json)
@@ -149,7 +151,8 @@ const NOT_GRANTED: &str = "error: refused on `paid_on`: you hold no grant for th
                            the lake's owner for a grant\n";
 const CORRECT: &str =
     "what to do: correct the input and run the command again; nothing was written\n";
-const FIT: &str = "what to do: correct them against the tool's input schema and call it again\n";
+const FIT: &str = "what to do: correct them against the tool's input schema (over REST, the \
+                   route's in docs/rest.md) and call it again\n";
 
 #[test]
 fn a_blind_agent_works_the_shop_through_mcp_alone() {
@@ -385,14 +388,19 @@ fn a_blind_agent_works_the_shop_through_mcp_alone() {
             ),
         ],
     );
-    let invalid = |message: &str| json!({"error": "refused", "reason": {"message": message, "refusal": "invalid"}});
+    // A refusal's reason: its case's code and parameters, and its sentence.
+    let invalid = |message: &str, mut reason: Value| {
+        (reason["message"], reason["refusal"]) = (message.into(), "invalid".into());
+        json!({"error": "refused", "reason": reason})
+    };
     assert_eq!(
         refused(&r[0]),
         (
             format!("error: refused on `state`: `order` has no field `state`\n  {CORRECT}")
                 .as_str(),
             Some(json!({"error": "refused", "field": "state",
-                        "reason": {"message": "`order` has no field `state`", "refusal": "invalid"}}))
+                        "reason": {"code": "unknown_field", "field": "state", "type": "order",
+                                   "message": "`order` has no field `state`", "refusal": "invalid"}}))
         )
     );
     assert_eq!(
@@ -403,10 +411,15 @@ fn a_blind_agent_works_the_shop_through_mcp_alone() {
         refused(&r[2]),
         (
             format!(
-                "error: the arguments do not fit `payment_upsert`: missing field `key`\n  {FIT}"
+                "error: the arguments of `payment_upsert`: the member `key` is missing\n  {FIT}"
             )
             .as_str(),
-            None
+            Some(invalid(
+                "the member `key` is missing",
+                json!({"code": "member_missing", "member": "key",
+                       "at": [{"code": "arguments", "tool": "payment_upsert",
+                               "message": "the arguments of `payment_upsert`"}]})
+            ))
         )
     );
     assert_eq!(
@@ -429,16 +442,25 @@ fn a_blind_agent_works_the_shop_through_mcp_alone() {
     assert_eq!(refused(&r[6]), (NOT_GRANTED, not_granted.clone()));
     // A proposed write refuses a member it does not take, naming it
     // (lakelands#563); the walk's page shows what the lake said then.
-    let unknown = "remove the member or correct its name, then call again; nothing was declared";
+    let unknown =
+        "remove the member or correct its name, then call again; nothing was declared or written";
+    let no_member = "there is no member `fields`; it takes `type`, `key`, `patch`, `opts`";
     assert_eq!(
         refused(&r[7]),
         (
             format!(
-                "error: the arguments do not fit `propose` at `write`: unknown field `fields`, \
-                 expected one of `type`, `key`, `patch`, `opts`\n  what to do: {unknown}\n"
+                "error: the arguments of `propose`, at `write`: {no_member}\n  what to do: \
+                 {unknown}\n"
             )
             .as_str(),
-            None
+            Some(invalid(
+                no_member,
+                json!({"code": "no_member", "member": "fields",
+                       "takes": ["type", "key", "patch", "opts"],
+                       "at": [{"code": "arguments", "tool": "propose",
+                               "message": "the arguments of `propose`"},
+                              {"code": "member", "path": "write", "message": "at `write`"}]})
+            ))
         )
     );
     assert_eq!(refused(&r[8]), (NOT_GRANTED, not_granted));
@@ -463,7 +485,11 @@ fn a_blind_agent_works_the_shop_through_mcp_alone() {
         refused(&r[12]),
         (
             format!("error: refused: {no_key}\n  {CORRECT}").as_str(),
-            Some(invalid(no_key))
+            Some(invalid(
+                no_key,
+                json!({"code": "verb_type_takes_no_key",
+                                        "verb": "create_payment", "type": "payment"})
+            ))
         )
     );
     assert_eq!(
@@ -481,7 +507,11 @@ fn a_blind_agent_works_the_shop_through_mcp_alone() {
         refused(&r[14]),
         (
             format!("error: refused: {needs}\n  {CORRECT}").as_str(),
-            Some(invalid(needs))
+            Some(invalid(
+                needs,
+                json!({"code": "param_missing", "type": "revenue_7d",
+                                       "name": "anchor", "kind": "date_time", "unbound": false})
+            ))
         )
     );
     assert_eq!(
@@ -515,7 +545,8 @@ fn a_blind_agent_works_the_shop_through_mcp_alone() {
         (
             format!("error: refused on `amount`: {kind}\n  {CORRECT}").as_str(),
             Some(json!({"error": "refused", "field": "amount",
-                        "reason": {"message": kind, "refusal": "constraint"}}))
+                        "reason": {"code": "value_shape", "kind": "decimal", "shape": "digits",
+                                   "message": kind, "refusal": "constraint"}}))
         )
     );
     assert_eq!(

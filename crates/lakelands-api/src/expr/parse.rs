@@ -18,19 +18,27 @@ use std::fmt;
 
 use super::{ArithOp, CmpOp, Expr, Func, Literal};
 use crate::FieldName;
+use crate::error::Case;
 
-/// Why a text expression does not parse.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Why a text expression does not parse: its case, which names the
+/// character offset where parsing stopped, and that offset.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ParseError {
     /// The character offset where parsing stopped.
     pub at: usize,
-    /// What was wrong, for a person.
-    pub message: String,
+    /// What was wrong.
+    pub case: Case,
 }
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} (at character {})", self.message, self.at)
+        self.case.fmt(f)
+    }
+}
+
+impl From<ParseError> for Case {
+    fn from(e: ParseError) -> Case {
+        e.case
     }
 }
 
@@ -47,7 +55,7 @@ pub fn parse(text: &str) -> Result<Expr> {
     let e = p.or()?;
     p.ws();
     if p.pos != p.chars.len() {
-        return Err(p.err("unexpected input after the end of the expression"));
+        return Err(p.err(|offset| Case::ParseTrailing { offset }));
     }
     Ok(e)
 }
@@ -144,11 +152,11 @@ struct Parser {
 }
 
 impl Parser {
-    fn err(&self, message: impl Into<String>) -> ParseError {
-        ParseError {
-            at: self.pos,
-            message: message.into(),
-        }
+    /// The case `said` makes of the offset where parsing stopped.
+    fn err(&self, said: impl FnOnce(usize) -> Case) -> ParseError {
+        let at = self.pos;
+        let case = said(at);
+        ParseError { at, case }
     }
 
     fn ws(&mut self) {
@@ -187,7 +195,8 @@ impl Parser {
         if self.eat(s) {
             Ok(())
         } else {
-            Err(self.err(format!("expected `{s}`")))
+            let token = s.to_owned();
+            Err(self.err(|offset| Case::ParseExpected { token, offset }))
         }
     }
 
@@ -230,7 +239,7 @@ impl Parser {
             self.expect("(")?;
             let list = self.list(")")?;
             if list.is_empty() {
-                return Err(self.err("`in` needs at least one value"));
+                return Err(self.err(|offset| Case::ParseEmptyIn { offset }));
             }
             return Ok(Expr::In {
                 arg: Box::new(lhs),
@@ -240,7 +249,7 @@ impl Parser {
         if self.keyword("is") {
             let negated = self.keyword("not");
             if !self.keyword("null") {
-                return Err(self.err("expected `null` after `is`"));
+                return Err(self.err(|offset| Case::ParseIsNull { offset }));
             }
             let test = Expr::IsNull { arg: Box::new(lhs) };
             return Ok(if negated {
@@ -319,8 +328,8 @@ impl Parser {
             Some('\'') => self.string(),
             Some(c) if c.is_ascii_digit() => self.number(),
             Some(c) if c.is_ascii_alphabetic() || c == '_' => self.word(),
-            Some(c) => Err(self.err(format!("unexpected `{c}`"))),
-            None => Err(self.err("the expression ends too early")),
+            Some(found) => Err(self.err(|offset| Case::ParseUnexpected { found, offset })),
+            None => Err(self.err(|offset| Case::ParseEndsEarly { offset })),
         }
     }
 
@@ -329,7 +338,7 @@ impl Parser {
         let mut s = String::new();
         loop {
             match self.peek() {
-                None => return Err(self.err("a string is not closed with `'`")),
+                None => return Err(self.err(|offset| Case::ParseUnclosed { offset })),
                 Some('\'') if self.chars.get(self.pos + 1) == Some(&'\'') => {
                     s.push('\'');
                     self.pos += 2;
@@ -372,16 +381,16 @@ impl Parser {
             after_unit.is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_'),
         ) {
             self.pos += 1;
-            let micros = duration_micros(&raw, secs).ok_or_else(|| {
-                self.err(format!("`{raw}` is not a duration this grammar can hold"))
-            })?;
+            let Some(micros) = duration_micros(&raw, secs) else {
+                return Err(self.err(|offset| Case::ParseNoDuration { raw, offset }));
+            };
             return Ok(lit(Literal::Duration(micros)));
         }
         if self
             .peek()
             .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         {
-            return Err(self.err("a number runs into a name"));
+            return Err(self.err(|offset| Case::ParseNumberIntoName { offset }));
         }
         Ok(lit(Literal::Number(raw)))
     }
@@ -401,7 +410,8 @@ impl Parser {
             "null" => return Ok(lit(Literal::Null)),
             kw if KEYWORDS.contains(&kw) => {
                 self.pos = start;
-                return Err(self.err(format!("`{kw}` cannot start a value")));
+                let keyword = kw.to_owned();
+                return Err(self.err(|offset| Case::ParseKeyword { keyword, offset }));
             }
             _ => {}
         }
@@ -409,26 +419,45 @@ impl Parser {
         if self.peek() == Some('(') {
             let Some(func) = func_by_name(&first) else {
                 self.pos = start;
-                return Err(self.err(format!("there is no function `{first}`")));
+                return Err(self.err(|offset| Case::ParseNoFunction {
+                    name: first,
+                    offset,
+                }));
             };
             self.pos += 1;
             let args = self.list(")")?;
             let (min, max) = arity(func);
             if args.len() < min || max.is_some_and(|m| args.len() > m) {
                 self.pos = start;
-                let want = match max {
-                    Some(m) if m == min => format!("{min}"),
-                    Some(m) => format!("{min} to {m}"),
-                    None => format!("at least {min}"),
-                };
-                return Err(self.err(format!(
-                    "`{first}` takes {want} argument(s), not {}",
-                    args.len()
-                )));
+                let (name, given) = (first, args.len());
+                return Err(self.err(|offset| match max {
+                    Some(takes) if takes == min => Case::ParseArityExact {
+                        name,
+                        takes,
+                        given,
+                        offset,
+                    },
+                    Some(max) => Case::ParseArityRange {
+                        name,
+                        min,
+                        max,
+                        given,
+                        offset,
+                    },
+                    None => Case::ParseArityAtLeast {
+                        name,
+                        min,
+                        given,
+                        offset,
+                    },
+                }));
             }
             if takes_field(func) && !matches!(args.first(), Some(Expr::Path { .. })) {
                 self.pos = start;
-                return Err(self.err(format!("`{first}` takes a field name")));
+                return Err(self.err(|offset| Case::ParseTakesField {
+                    name: first,
+                    offset,
+                }));
             }
             if matches!(func, Func::Setting | Func::Param)
                 && !matches!(
@@ -439,10 +468,9 @@ impl Parser {
                 )
             {
                 self.pos = start;
-                return Err(self.err(if func == Func::Param {
-                    "`param` takes a quoted name, as in param('anchor')"
-                } else {
-                    "`setting` takes a quoted key, as in setting('vat_rate')"
+                return Err(self.err(|offset| match func {
+                    Func::Param => Case::ParseParamName { offset },
+                    _ => Case::ParseSettingKey { offset },
                 }));
             }
             return Ok(Expr::Call { func, args });
@@ -452,7 +480,7 @@ impl Parser {
             self.pos += 1;
             let next = self.ident();
             if next.is_empty() {
-                return Err(self.err("expected a name after `.`"));
+                return Err(self.err(|offset| Case::ParseNameAfterDot { offset }));
             }
             path.push(FieldName::from(next));
         }

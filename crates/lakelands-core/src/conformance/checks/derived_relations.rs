@@ -17,8 +17,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, field_access, head_unmoved, invalid_naming, is_invalid, owner, patch,
-    pattern, refused_on, step, type_decl, type_of,
+    Lake, Must, doors, field, field_access, head_unmoved, is_invalid, owner, patch, pattern,
+    refused_alike, refused_like, refused_on, step, type_decl, type_of,
 };
 
 check!(
@@ -307,14 +307,19 @@ async fn a_principal_without_read_on_a_matched_field_is_refused_naming_it(
     ];
     for (who, p, field) in cases {
         let (relation, what) = (p.steps[0].relation.to_string(), format!("{:?}", p.project));
+        // The same walk over `ghost`, which the type does not declare.
+        let mut ghost = p.clone();
+        ghost.steps[0].relation = "ghost".into();
+        let ghost = cat.query(&who, ghost).await;
         let r = cat.query(&who, p).await;
-        let said = format!("{r:?}");
         ensure!(
-            is_invalid(&r) && said.contains(&relation) && !said.contains(field),
+            is_invalid(&r),
             "{what} over `{relation}` by a principal who may not know of `{field}` is answered \
              as for a relation the type does not declare, naming only the relation; it \
              answered {r:?}"
         );
+        let what = format!("{what} over `{relation}`, held from `{field}`,");
+        refused_alike(&what, &r, ghost, ("ghost", &relation))?;
     }
     let masked = [("customer_no", Access::Masked)];
     let masked = field_access(store.as_ref(), "masked", "invoice", &masked);
@@ -471,7 +476,9 @@ async fn a_derived_relation_is_declared_not_migrated_and_never_moves_carrier(
         ),
     ] {
         let head = store.head().await.must("reading the head")?;
-        invalid_naming(what, l.try_declare(t).await, &["customer", "carrier"])?;
+        let case = json!({"code": "carrier_changed",
+                          "at": [{"code": "relation", "name": "customer"}]});
+        refused_like(what, l.try_declare(t).await, &case)?;
         head_unmoved(store.as_ref(), head, what).await?;
     }
     Ok(())
@@ -506,20 +513,21 @@ async fn a_match_pair_of_two_kinds_is_refused_naming_both(
         via: Some("customer_no".into()),
         ..derived("customer", "customer", vec![pair("customer_no", "no")])
     }];
-    for (what, t, named) in [
+    for (what, t, case) in [
         (
             "a pair of a text and a number field",
             two_kinds,
-            vec!["account_no", "number"],
+            json!({"code": "pair_kinds", "from": "account_no", "to": "number"}),
         ),
         (
             "a derived relation with `via`",
             with_via,
-            vec!["customer", "via"],
+            json!({"code": "derived_stores_edge",
+                   "at": [{"code": "relation", "name": "customer"}]}),
         ),
     ] {
         let head = store.head().await.must("reading the head")?;
-        invalid_naming(what, l.try_declare(t).await, &named)?;
+        refused_like(what, l.try_declare(t).await, &case)?;
         head_unmoved(store.as_ref(), head, what).await?;
     }
     Ok(())

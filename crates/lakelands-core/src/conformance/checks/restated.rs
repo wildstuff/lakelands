@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::id::ProposalId;
 use lakelands_api::ontology::{FieldDecl, RelationDecl, TypeDecl};
 use lakelands_api::principal::TypeGrants;
@@ -18,7 +19,7 @@ use super::report_names::{preview, refused};
 use crate::conformance::Failure;
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
-    Lake, Must, describe_type, field_access, is_invalid, log_events,
+    Lake, Must, describe_type, field_access, invalid_case, is_invalid, log_events,
 };
 use crate::links::link_type_name;
 
@@ -566,11 +567,11 @@ async fn what_a_migration_restates_is_shown_as_its_fields_are_and_holds_at_the_a
     sensitive["sensitive"] = json!(true);
     declare(memo(text("title"), sensitive)).await?;
     let stale = l.cat.accept(&l.own, &ids[2]).await;
-    let said = stale.as_ref().err().map(ToString::to_string);
-    let said = said.unwrap_or_default().contains("changed since");
+    let said =
+        matches!(invalid_case(&stale), Some(Case::ChangedSinceProposed { ty }) if ty == "memo");
     let after = json!(describe_type(l.cat.as_ref(), &l.own, "memo").await?).to_string();
     ensure!(
-        is_invalid(&stale) && said && after.contains("\"sensitive\":true"),
+        said && after.contains("\"sensitive\":true"),
         "the accept of a migration proposed before `note` was declared sensitive is refused \
          as one of a type changed since, and the mark stays; it answered {stale:?}, and \
          `memo` is {after}"

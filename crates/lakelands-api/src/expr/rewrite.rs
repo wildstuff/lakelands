@@ -1,14 +1,15 @@
 //! An expression rewritten: one node put in another's place.
 
 use super::{Expr, Func, Literal};
+use crate::error::{Case, Said};
 
 /// `e` with every `in_set('name')` replaced by that set's filter, itself
 /// expanded: a set is its filter, bound when the condition is read. `set`
 /// answers a set's filter, or why the set cannot be named here. A set that
 /// names itself through others is refused, naming them.
-pub fn expand(e: &Expr, set: &dyn Fn(&str) -> Result<Expr, String>) -> Result<Expr, String> {
-    type Named<'a> = &'a dyn Fn(&str) -> Result<Expr, String>;
-    fn within(e: &Expr, set: Named<'_>, path: &[&str]) -> Result<Expr, String> {
+pub fn expand(e: &Expr, set: &dyn Fn(&str) -> Result<Expr, Said>) -> Result<Expr, Said> {
+    type Named<'a> = &'a dyn Fn(&str) -> Result<Expr, Said>;
+    fn within(e: &Expr, set: Named<'_>, path: &[&str]) -> Result<Expr, Said> {
         let failed = std::cell::RefCell::new(None);
         let out = rewrite(e, &|x| {
             let Expr::Call {
@@ -25,10 +26,9 @@ pub fn expand(e: &Expr, set: &dyn Fn(&str) -> Result<Expr, String>) -> Result<Ex
                 return None;
             };
             let inner = if path.contains(&name.as_str()) {
-                Err(format!(
-                    "in_set('{name}') names a set that names it in turn, through {}",
-                    path.join(", ")
-                ))
+                let through = path.iter().collect();
+                let set = name.clone();
+                Err(Case::SetCycle { set, through }.into())
             } else {
                 set(name).and_then(|f| within(&f, set, &[path, &[name.as_str()]].concat()))
             };

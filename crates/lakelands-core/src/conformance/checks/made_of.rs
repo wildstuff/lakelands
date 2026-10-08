@@ -17,8 +17,8 @@ use serde_json::json;
 use super::links::{SEPT, lake, link_ok};
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, agg, aggregate, field, field_access, get_at, object_set_on, order, patch, pattern,
-    principal, step, trigger_on, view_of,
+    Lake, Must, agg, aggregate, alike_renamed, field, field_access, get_at, object_set_on, order,
+    patch, pattern, principal, step, trigger_on, view_of,
 };
 
 const LINKS: &str = "sys.link.invoice.approved_by";
@@ -147,8 +147,7 @@ async fn a_type_made_of_another_is_shown_only_with_it(
             with_meta: false,
             at: Default::default(),
         };
-        // A walk's answer; "no relation" where it is, to the letter, the
-        // answer for a relation the type does not have.
+        // A walk's answer; "no relation" where it is the answer for none, alike.
         let walk = |from: &'static str, key: &'static str, by: &'static str| async move {
             let over = |by| {
                 pattern(
@@ -158,14 +157,12 @@ async fn a_type_made_of_another_is_shown_only_with_it(
                     Projection::Graph,
                 )
             };
-            let ghost = c
-                .query(who, over("ghost"))
-                .await
-                .err()
-                .map(|e| e.to_string());
+            let ghost = c.query(who, over("ghost")).await.err();
             match c.query(who, over(by)).await {
                 Err(e @ lakelands_api::Error::Refused { .. })
-                    if Some(e.to_string().replace(by, "ghost")) == ghost =>
+                    if ghost
+                        .as_ref()
+                        .is_some_and(|g| alike_renamed("", &e, g, ("ghost", by)).is_ok()) =>
                 {
                     "no relation"
                 }
@@ -185,15 +182,14 @@ async fn a_type_made_of_another_is_shown_only_with_it(
             }
         };
         let (from, to, opts) = ("i2".into(), "p2".into(), WriteOpts::default());
-        // "no relation" where it is, to the letter, the link doors' answer
-        // for a relation the type does not carry.
-        let nothing = link("invoice", "nothing")
-            .await
-            .err()
-            .map(|e| e.to_string());
+        // "no relation" where it is, member for member, the answer for none.
+        let ghost = link("invoice", "ghost").await.err();
+        let renamed = ("ghost", "approved_by");
         let carried = |answer: lakelands_api::Result<_>| match answer {
             Err(e @ lakelands_api::Error::Refused { .. })
-                if Some(e.to_string().replace("approved_by", "nothing")) == nothing =>
+                if ghost
+                    .as_ref()
+                    .is_some_and(|g| alike_renamed("", &e, g, renamed).is_ok()) =>
             {
                 "no relation"
             }
@@ -296,9 +292,14 @@ async fn a_type_made_of_another_is_shown_only_with_it(
 /// Each door that reads `ty`'s records, at `key` and at a key no record
 /// holds, and on a type that is not made of another its writes: each
 /// answer.
-async fn doors(c: &dyn Catalog, who: &Principal, ty: &str, key: &str) -> Vec<String> {
-    fn said<T>(r: lakelands_api::Result<T>) -> String {
-        format!("{:?}", r.map(drop))
+async fn doors(
+    c: &dyn Catalog,
+    who: &Principal,
+    ty: &str,
+    key: &str,
+) -> Vec<lakelands_api::Result<()>> {
+    fn said<T>(r: lakelands_api::Result<T>) -> lakelands_api::Result<()> {
+        r.map(drop)
     }
     let (t, opts) = (TypeName::from(ty), WriteOpts::default);
     let total: Find = serde_json::from_value(json!({"total": true})).expect("a find");
@@ -324,6 +325,22 @@ async fn doors(c: &dyn Catalog, who: &Principal, ty: &str, key: &str) -> Vec<Str
         said_to.push(said(linked.await));
     }
     said_to
+}
+
+/// `there`, to `what`, must be answered as `none`, at the same door of
+/// the type named `ghost` for `ledger`: an error alike in every member.
+fn answered_alike(
+    what: &str,
+    there: &lakelands_api::Result<()>,
+    none: &lakelands_api::Result<()>,
+) -> Result<(), Failure> {
+    match (there, none) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(a), Err(b)) => alike_renamed(what, a, b, ("ghost", "ledger")),
+        _ => Err(Failure::new(format!(
+            "{what}: {there:?}; under the name `ghost`: {none:?}"
+        ))),
+    }
 }
 
 async fn a_type_kept_from_its_reader_is_kept_at_every_door(
@@ -416,12 +433,10 @@ async fn a_type_kept_from_its_reader_is_kept_at_every_door(
             let ghost = ty.replace("ledger", "ghost");
             let there = doors(l.cat.as_ref(), who, ty, key).await;
             let none = doors(l.cat.as_ref(), who, &ghost, key).await;
-            for (n, (a, b)) in there.iter().zip(none).enumerate() {
-                if *a != b.replace(&ghost, ty) {
-                    apart.push(format!(
-                        "{} on `{ty}`, door {n}: {a}; on `{ghost}`: {b}",
-                        who.id
-                    ));
+            for (n, (a, b)) in there.iter().zip(&none).enumerate() {
+                let what = format!("{} on `{ty}`, door {n}", who.id);
+                if let Err(f) = answered_alike(&what, a, b) {
+                    apart.push(f.message);
                 }
             }
         }
@@ -578,9 +593,9 @@ async fn a_type_keyed_by_a_field_its_reader_may_not_know_of_is_not_shown(
         let ghost = ty.replace("ledger", "ghost");
         let there = doors(l.cat.as_ref(), &hidden, ty, key).await;
         let none = doors(l.cat.as_ref(), &hidden, &ghost, key).await;
-        for (n, (a, b)) in there.iter().zip(none).enumerate() {
-            if *a != b.replace(&ghost, ty) {
-                apart.push(format!("on `{ty}`, door {n}: {a}; on `{ghost}`: {b}"));
+        for (n, (a, b)) in there.iter().zip(&none).enumerate() {
+            if let Err(f) = answered_alike(&format!("on `{ty}`, door {n}"), a, b) {
+                apart.push(f.message);
             }
         }
     }

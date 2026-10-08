@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::StorageKind::{self, Boolean, Text};
@@ -12,8 +13,7 @@ use lakelands_api::{Error, LakeStore, Outcome, Position, Refusal};
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, events_from, head_unmoved, invalid_naming, limits, migration, object_set_on,
-    refused_on, type_of,
+    Lake, Must, events_from, head_unmoved, limits, migration, object_set_on, refused_on, type_of,
 };
 use crate::conformance::{Failure, Given};
 
@@ -167,10 +167,10 @@ async fn a_migration_decides_the_membership_of_the_records_it_migrates(
     l.upsert("item", "C", c("maybe")).await?;
     let preflight = |m| async { Ok(l.cat.migrate(&l.own, m).await.must("the preflight")?.data) };
     let stale = l.cat.migrate_apply(&l.own, m.clone(), "stale").await;
-    invalid_naming(
+    refused_as!(
         "a stale report past the ceiling",
         stale,
-        &["the lake moved"],
+        Case::MigrationStale
     )?;
     let report = preflight(m.clone()).await?;
     let r = l

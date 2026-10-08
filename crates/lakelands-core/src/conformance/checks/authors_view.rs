@@ -5,17 +5,17 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::ontology::{Derived, MatchPair, RelationDecl, StorageKind, TypeDecl};
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::write::{Declaration, Migration, ProposalFilter, ProposedWrite};
-use lakelands_api::{
-    Access, Catalog, FieldName, LakeStore, Outcome, Principal, ProposalId, Refusal,
-};
+use lakelands_api::{Access, Catalog, FieldName, LakeStore, Outcome, Principal, ProposalId};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, derived, field, field_access, migration, reference, refused_on, type_of, value,
+    Lake, Must, alike_renamed, derived, field, field_access, invalid_case, invalid_like, migration,
+    reference, refused_on, type_of, value,
 };
 use crate::links::link_type_name;
 
@@ -224,19 +224,19 @@ async fn a_change_of_shape_never_names_a_field_its_author_may_not_know_of(
             "naming the hidden `salary`",
             shape(seen(&["no", "gross", "ref", "memo", "salary"]), &[]),
             Some("salary"),
-            "twice",
+            json!({"code": "declared_twice", "what": "field", "name": "salary"}),
         ),
         (
             "removing `gross`, which the hidden `net` is built from",
             shape(seen(&["no", "ref", "memo"]), &[]),
             Some("gross"),
-            "read by another part",
+            json!({"code": "field_read_elsewhere", "field": "gross"}),
         ),
         (
             "removing `ref`, which the hidden `matched` reads",
             shape(seen(&["no", "gross", "memo"]), &[]),
             Some("ref"),
-            "read by another part",
+            json!({"code": "field_read_elsewhere", "field": "ref"}),
         ),
         (
             "renaming the hidden `salary`",
@@ -245,28 +245,26 @@ async fn a_change_of_shape_never_names_a_field_its_author_may_not_know_of(
                 &[("salary", "pay")],
             ),
             None,
-            "no such field before the migration",
+            json!({"code": "rename_from_unknown", "from": "salary"}),
         ),
         (
             "renaming the hidden `paid`",
             settled,
             None,
-            "the first names a relation the type has",
+            json!({"code": "relation_rename_names_none"}),
         ),
     ] {
         let answer = cat.migrate(&who, m).await;
         let named = refused_on(&answer).map(|(f, _)| f);
-        let message = match &answer {
-            Err(lakelands_api::Error::Refused {
-                reason: Refusal::Invalid { message },
-                ..
-            }) => message.as_str(),
-            _ => "",
-        };
+        // No member of its wire form, its sentence among them, names one.
+        let wire = answer.as_ref().err().map(|e| json!(e).to_string());
+        let wire = wire.unwrap_or_default();
         let hidden = ["net", "matched", "payroll"];
         ensure!(
-            named == field && message.contains(says) && !hidden.iter().any(|h| message.contains(h)),
-            "a migration {what} must be refused as invalid on {field:?}, saying \"{says}\" and \
+            named == field
+                && invalid_like(&answer, &says)
+                && !hidden.iter().any(|h| wire.contains(h)),
+            "a migration {what} must be refused as invalid on {field:?}, as {says} and \
              naming none of {hidden:?}; it answered {answer:?}"
         );
     }
@@ -281,19 +279,22 @@ async fn a_change_of_shape_never_names_a_field_its_author_may_not_know_of(
     let held = blind.grants.types.entry("invoice".into()).or_default();
     held.fields.insert("payee".into(), Access::None);
     let mut said = Vec::new();
-    for target in ["payroll", "ledger", "ghost"] {
+    for target in ["ghost", "payroll", "ledger"] {
         let mut t = seen(&["no", "gross", "ref", "memo"]);
         t.fields.retain(|f| f.name.as_str() != "payee");
         t.fields.push(reference("payee", target));
-        let answer = cat.declare(&blind, Declaration::Type(t)).await;
-        said.push(
-            answer
-                .map_or_else(|e| e.to_string(), |_| "taken".into())
-                .replace(target, "T"),
-        );
+        said.push((target, cat.declare(&blind, Declaration::Type(t)).await));
     }
+    // Member for member and word for word as for `ghost`, under its name.
+    let alike = |(target, answer): &(&str, lakelands_api::Result<_>)| match (answer, &said[0].1) {
+        (Err(e), Err(ghost)) => {
+            let twice = matches!(invalid_case(e), Some(Case::DeclaredTwice { .. }));
+            !twice && alike_renamed("", e, ghost, ("ghost", target)).is_ok()
+        }
+        _ => false,
+    };
     ensure!(
-        said.iter().all(|s| s == &said[2] && !s.contains("twice")),
+        said.iter().all(alike),
         "an author held from `payee` must be answered alike for `payroll`, another hidden type and \
          no type, never as a field declared twice; it was answered {said:?}"
     );

@@ -707,8 +707,9 @@ A host that already has a store of its own moves in four steps.
   what exchange), with the English sentence beside them for logs. A host
   renders the case in its users' language from its own catalog, and
   acts on it without reading words: a call of a verb that reaches
-  outside the lake failed around its hand-out is `Situation::Executor`,
-  whose `retry` says how to send it again. Over REST and MCP the error's
+  outside the lake failed around its hand-out is `Situation::Executor`
+  (not handed, with a `retry` that says how to send it again),
+  `AnswerHeld` or `AnswerLost`. Over REST and MCP the error's
   JSON carries `code`, the parameters and `message`, and the error its
   own `message`; a code the host does not know yet, from a newer lake, is
   read as `Unknown` and shown by its message, and a plain name it does
@@ -717,6 +718,18 @@ A host that already has a store of its own moves in four steps.
   together. The only free text is a `Detail`, an operating system's,
   database's or library's own words, scrubbed where they arise: never a
   record's key or values, and never a path on the host. See
+  `docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
+  extended.
+- **A refusal is a case too (lakelands#650).** A refusal of `invalid`,
+  `constraint`, `precondition` or `unanswered` carries its case as data:
+  `code`, its parameters, `at` (the places it is said at, outermost
+  first: a type, a field, a verb, …) and `message`. The catalog of every
+  code, its parameters and its English sentence is
+  [`docs/refusals.md`](refusals.md), generated from the code; a host
+  renders from it, matches codes rather than words, and shows a code it
+  does not know by its `message`. A code a release has shipped keeps its
+  meaning and its parameters. A thing the caller may not see is refused
+  exactly as an absent one, case and parameters alike. See
   `docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
   extended.
 - **A declaration that recomputes a type is a step for a quiet moment.**

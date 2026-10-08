@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
+use lakelands_api::error::{Case, Said};
 use lakelands_api::ontology::{
     Authority, EmbedDecl, FieldDecl, Measure, StorageKind, TypeDecl, ViewDecl, ViewParam,
 };
@@ -78,36 +79,135 @@ pub fn refused_on(a: &impl Answer) -> Option<(&str, &Refusal)> {
 /// naming `name`: also the answer for a field the principal may not know
 /// of (`docs/decisions/006-grants-not-roles.md`).
 pub fn no_such_field(a: &impl Answer, name: &str) -> bool {
-    matches!(refused_on(a), Some((f, Refusal::Invalid { message }))
-        if f == name && message.contains("has no field"))
+    matches!(refused_on(a), Some((f, Refusal::Invalid(said)))
+        if f == name && matches!(&said.case, Case::UnknownField { field, .. } if field == name))
 }
 
 /// Whether an answer is a refusal as invalid.
 pub fn is_invalid(a: &impl Answer) -> bool {
-    matches!(reason(a), Some(Refusal::Invalid { .. }))
+    matches!(reason(a), Some(Refusal::Invalid(..)))
 }
 
-/// `answer`, to `what`, must be a refusal as invalid whose text names each
-/// of `names`.
-pub fn invalid_naming<T: Debug>(
+/// What an answer's refusal as invalid says, if it is one.
+pub fn invalid_said(a: &impl Answer) -> Option<&Said> {
+    match reason(a) {
+        Some(Refusal::Invalid(said)) => Some(said),
+        _ => None,
+    }
+}
+
+/// The case of an answer's refusal as invalid, if it is one.
+pub fn invalid_case(a: &impl Answer) -> Option<&Case> {
+    invalid_said(a).map(|said| &said.case)
+}
+
+/// `answer`, to `what`, must be a refusal as invalid that `fits` holds for,
+/// `expected` saying which: what the suite's `refused_as!` writes.
+pub fn refused_as<T: Debug>(
     what: &str,
     answer: lakelands_api::Result<T>,
-    names: &[&str],
+    expected: &str,
+    fits: impl FnOnce(&Said) -> bool,
 ) -> Result<(), Failure> {
-    match answer {
-        Err(e) if is_invalid(&e) => {
-            let why = e.to_string();
-            if names.iter().all(|n| why.contains(n)) {
-                return Ok(());
-            }
-            Err(Failure::new(format!(
-                "{what} must be refused naming {names:?}; it said: {why}"
-            )))
-        }
-        other => Err(Failure::new(format!(
-            "{what} must be refused as invalid; it answered {other:?}"
+    match invalid_said(&answer) {
+        Some(said) if fits(said) => Ok(()),
+        Some(said) => Err(Failure::new(format!(
+            "{what} must be refused as {expected}; it said {said:?} (\"{said}\")"
+        ))),
+        None => Err(Failure::new(format!(
+            "{what} must be refused as invalid ({expected}); it answered {answer:?}"
         ))),
     }
+}
+
+/// `answer`, to `what`, must be a refusal as invalid whose case and places,
+/// on the wire, hold every member `expected` holds: `{"code": …}` and the
+/// parameters a row names, `"at": [{"code": "field", …}]` for places it
+/// is said at, in their order (the others are not compared).
+pub fn refused_like<T: Debug>(
+    what: &str,
+    answer: lakelands_api::Result<T>,
+    expected: &Value,
+) -> Result<(), Failure> {
+    let shown = expected.to_string();
+    refused_as(what, answer, &shown, |said| said_like(said, expected))
+}
+
+/// Whether `said`, on the wire, holds `expected` as [`refused_like`] reads it.
+pub fn said_like(said: &Said, expected: &Value) -> bool {
+    serde_json::to_value(said).is_ok_and(|wire| holds(&wire, expected))
+}
+
+/// Whether an answer is refused as invalid as [`refused_like`] reads `expected`.
+pub fn invalid_like(a: &impl Answer, expected: &Value) -> bool {
+    invalid_said(a).is_some_and(|said| said_like(said, expected))
+}
+
+/// Whether `got` holds `expected`: every member of an object, each item
+/// of a list in its order among others, any other value as it is.
+fn holds(got: &Value, expected: &Value) -> bool {
+    match (got, expected) {
+        (Value::Object(g), Value::Object(e)) => {
+            e.iter().all(|(k, v)| g.get(k).is_some_and(|g| holds(g, v)))
+        }
+        (Value::Array(g), Value::Array(e)) => {
+            let mut g = g.iter();
+            e.iter().all(|e| g.any(|g| holds(g, e)))
+        }
+        _ => got == expected,
+    }
+}
+
+/// `hidden`, to `what`, must be refused as `absent` is once its name
+/// `from` is `to`, as [`alike_renamed`] reads them; `absent` must be refused.
+pub fn refused_alike<T: Debug, U: Debug>(
+    what: &str,
+    hidden: &lakelands_api::Result<T>,
+    absent: lakelands_api::Result<U>,
+    names: (&str, &str),
+) -> Result<(), Failure> {
+    let absent = absent.must_fail(&format!("{what}, as `{}`", names.0))?;
+    match hidden {
+        Err(e) => alike_renamed(what, e, &absent, names),
+        Ok(v) => Err(Failure::new(format!("{what} must be refused: {v:?}"))),
+    }
+}
+
+/// Whether each of `hidden` is refused as `absent`'s beside it ([`alike_renamed`]).
+pub fn alike_each(hidden: &[Option<Error>], absent: &[Option<Error>], names: (&str, &str)) -> bool {
+    let alike = |(h, a): (&Option<Error>, &Option<Error>)| {
+        (h.iter().zip(a)).any(|(h, a)| alike_renamed("", h, a, names).is_ok())
+    };
+    hidden.len() == absent.len() && hidden.iter().zip(absent).all(alike)
+}
+
+/// `hidden`, to `what`, must be the very error `absent` is (its code, places
+/// and parameters, and its wire form, `message` among them) once the name
+/// `from` that `absent` was asked by is `to` in each text of it: a hidden
+/// thing is answered as an absent one of its name. `from` is used nowhere
+/// else; `("", "")` renames nothing.
+pub fn alike_renamed(
+    what: &str,
+    hidden: &Error,
+    absent: &Error,
+    (from, to): (&str, &str),
+) -> Result<(), Failure> {
+    let wire = |e: &Error| serde_json::to_string(e).map_err(|e| Failure::new(e.to_string()));
+    let (h, a) = (wire(hidden)?, wire(absent)?);
+    // `from` and `to` are names, so no escape in the wire text holds them.
+    let a = if from.is_empty() {
+        a
+    } else {
+        a.replace(from, to)
+    };
+    let read = serde_json::from_str::<Error>(&a);
+    if h == a && read.as_ref().is_ok_and(|a| a == hidden) {
+        return Ok(());
+    }
+    Err(Failure::new(format!(
+        "{what} must be answered as the absent one is, alike in every member: it answered \
+         {h}, and the absent one {a}"
+    )))
 }
 
 /// Turns the result of a contract call into the check's own result.

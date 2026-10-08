@@ -25,24 +25,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use lakelands_api::error::{Case, Place, Said};
 use lakelands_api::expr::Expr;
 use lakelands_api::ontology::{FieldDecl, OnInputChange, TypeDecl, ValueTypeDecl};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::{FieldName, Timestamp, Value};
 
 use crate::expr::{WriteScope, eval, eval::to_json, parse};
-
-/// Why a type's derived fields cannot be ordered or parsed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DeriveError(pub String);
-
-impl std::fmt::Display for DeriveError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for DeriveError {}
 
 /// The fields an expression reads: the first segment of every path, and
 /// the field named by `known_at`, `seen_at`, `previous` and `changed`.
@@ -81,15 +70,13 @@ pub fn verb_reads(e: &Expr) -> (BTreeSet<FieldName>, BTreeSet<FieldName>) {
     )
 }
 
-fn typed(field: &FieldDecl) -> Result<Option<Expr>, DeriveError> {
+fn typed(field: &FieldDecl) -> Result<Option<Expr>, Said> {
     match &field.derived {
         None => Ok(None),
         Some(lakelands_api::expr::Condition::Expr(e)) => Ok(Some(e.clone())),
         Some(lakelands_api::expr::Condition::Text(t)) => parse(t).map(Some).map_err(|e| {
-            DeriveError(format!(
-                "`{}` is derived from `{t}`, which does not parse: {e}",
-                field.name
-            ))
+            let name = field.name.clone();
+            Said::from(e.case).within(Place::Field { name })
         }),
     }
 }
@@ -97,7 +84,7 @@ fn typed(field: &FieldDecl) -> Result<Option<Expr>, DeriveError> {
 /// The derived fields of a type in the order the fold computes them: each
 /// after every derived field it reads; among fields free to go at the same
 /// point, declaration order. A cycle is an error naming its fields.
-pub fn order(ty: &TypeDecl) -> Result<Vec<(FieldName, Expr)>, DeriveError> {
+pub fn order(ty: &TypeDecl) -> Result<Vec<(FieldName, Expr)>, Said> {
     let mut derived: Vec<(FieldName, Expr)> = Vec::new();
     for f in &ty.fields {
         if let Some(e) = typed(f)? {
@@ -117,7 +104,7 @@ pub fn order(ty: &TypeDecl) -> Result<Vec<(FieldName, Expr)>, DeriveError> {
         })
         .collect();
     if let Some((n, _, _)) = waiting.iter().find(|(n, e, _)| reads(e).contains(n)) {
-        return Err(DeriveError(format!("derived field `{n}` reads itself")));
+        return Err(Case::DerivedReadsItself { field: n.clone() }.into());
     }
     let mut done: BTreeSet<FieldName> = BTreeSet::new();
     let mut out = Vec::new();
@@ -126,11 +113,8 @@ pub fn order(ty: &TypeDecl) -> Result<Vec<(FieldName, Expr)>, DeriveError> {
             .iter()
             .position(|(_, _, deps)| deps.is_subset(&done))
         else {
-            let cycle: Vec<String> = waiting.iter().map(|(n, _, _)| n.to_string()).collect();
-            return Err(DeriveError(format!(
-                "derived fields read each other in a cycle: {}",
-                cycle.join(", ")
-            )));
+            let fields = waiting.iter().map(|(n, _, _)| n).collect();
+            return Err(Case::DerivedCycle { fields }.into());
         };
         let (n, e, _) = waiting.remove(i);
         done.insert(n.clone());
@@ -159,7 +143,7 @@ pub fn apply(
     value_types: &[ValueTypeDecl],
     fields: &mut BTreeMap<FieldName, Value>,
     write: &Write<'_>,
-) -> Result<BTreeSet<FieldName>, DeriveError> {
+) -> Result<BTreeSet<FieldName>, Said> {
     let mut changed: BTreeSet<FieldName> = write.written.clone();
     let mut touched = BTreeSet::new();
 

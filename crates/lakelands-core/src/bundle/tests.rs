@@ -7,7 +7,6 @@ use lakelands_api::ontology::{
 use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl};
 use lakelands_api::{FieldName, RelationName, TypeName, ValueTypeName, VerbName};
 
-use super::lower::kind_name;
 use super::{Bundle, BundleError, Problem, load_dir, parse};
 
 fn files(files: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -695,7 +694,7 @@ fn the_documented_examples_load() {
 fn the_documented_kinds_are_the_storage_kinds() {
     let doc = include_str!("mod.rs");
     for k in StorageKind::ALL {
-        assert!(doc.contains(&format!("`{}`", kind_name(k))), "{k:?}");
+        assert!(doc.contains(&format!("`{k}`")), "{k:?}");
     }
 }
 

@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::{Case, RecordName};
 use lakelands_api::event::EventBody;
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind};
@@ -21,8 +22,8 @@ use serde_json::{Value, json};
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, computed_by, count_view, derived, events_after, field, get_at, head_unmoved,
-    ingest, invalid_naming, pattern, reason, refused_on, source_record, sourced, step, trigger_on,
-    type_decl,
+    ingest, invalid_case, pattern, refused_like, refused_on, source_record, sourced, step,
+    trigger_on, type_decl,
 };
 use crate::links::{link_key, link_type_name};
 
@@ -85,6 +86,25 @@ check!(
     CLEARED_STAYS = a_record_whose_values_from_the_source_were_all_cleared_stays,
     "039: whose a record is, is read over the fields that hold a value: a record whose values from the source were all cleared holds nothing of it and stays, whether the source brought it in or set and cleared a value on another source's record, while a record still holding one is purged"
 );
+
+/// The key a record named by a refusal has.
+fn key_of(r: &RecordName) -> &str {
+    match r {
+        RecordName::Of { key, .. } | RecordName::FieldOf { key, .. } => key.as_str(),
+        _ => "",
+    }
+}
+
+/// What a purge refused whole as shared with another hand names: how
+/// many records, and the keys of the first.
+fn shared(e: &Error) -> Option<(usize, Vec<&str>)> {
+    match invalid_case(e) {
+        Some(Case::PurgeShared { count, first, .. }) => {
+            Some((*count, first.iter().map(key_of).collect()))
+        }
+        _ => None,
+    }
+}
 
 /// `partner` (a sourced `name`, an authored `note`) and `invoice` (a
 /// sourced `amount`, a shared `status`, a derived `gross`, and the source
@@ -319,12 +339,11 @@ async fn a_record_another_hand_also_wrote_refuses_the_whole_purge(
         .purge_source(&SourceId::from("crm"), None, None)
         .await
         .must_fail("purging `crm` while two of its records are co-owned")?;
-    let named = |m: &str| m.contains("p1") && m.contains("c1") && !m.contains("p2");
+    let named = shared(&e).is_some_and(|(_, first)| {
+        first.contains(&"p1") && first.contains(&"c1") && !first.contains(&"p2")
+    });
     ensure!(
-        matches!(
-            &e,
-            Error::Refused { field: None, reason: Refusal::Invalid { message } } if named(message)
-        ),
+        matches!(&e, Error::Refused { field: None, .. }) && named,
         "the purge was refused as {e:?}; invalid, naming `p1` and `c1` and not `p2`, was \
          expected"
     );
@@ -597,21 +616,17 @@ async fn a_co_owned_purge_names_the_count_and_the_first_ten(
         .purge_source(&SourceId::from("bulk"), None, None)
         .await
         .must_fail("purging `bulk`, all twelve of whose records a person also wrote")?;
-    let Some(Refusal::Invalid { message }) = reason(&e) else {
+    let Some((count, named)) = shared(&e) else {
         return Err(Failure::new(format!(
-            "the purge was refused as {e:?}; invalid was expected"
+            "the purge was refused as {e:?}; invalid, the purge shared, was expected"
         )));
     };
     // The store finds them in key order, so the first ten are b00 to b09.
-    let named: Vec<&String> = keys
-        .iter()
-        .filter(|k| message.contains(k.as_str()))
-        .collect();
-    let first_ten: Vec<&String> = keys.iter().take(10).collect();
+    let first_ten: Vec<&str> = keys.iter().take(10).map(String::as_str).collect();
     ensure!(
-        message.contains("12 record(s)") && named == first_ten,
+        count == 12 && named == first_ten,
         "twelve records are co-owned: the refusal names the count, 12, and the first ten \
-         in the store's order, b00 to b09; it names {named:?}: {message}"
+         in the store's order, b00 to b09; it names {count} and {named:?}: {e:?}"
     );
     Ok(())
 }
@@ -681,8 +696,7 @@ async fn a_field_that_declares_initial_makes_no_owner(
     let typed = typed.must("the purge of `crm` from `order`")?;
     let erp = SourceId::from("erp");
     let refused = store.purge_source(&erp, None, None).await;
-    let whole = matches!(reason(&refused), Some(Refusal::Invalid { message })
-        if message.contains("1 record(s)") && message.contains("`o3`"));
+    let whole = refused.as_ref().err().and_then(shared) == Some((1, vec!["o3"]));
     l.upsert("order", "o3", json!({"note": null})).await?;
     let before = store.purge_preflight(&erp, None).await;
     let before = before.must("the preflight")?;
@@ -780,7 +794,7 @@ async fn a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_on
         let e = store.purge_source(&crm, None, Some(id.as_str())).await;
         let e = e.must_fail(&format!("a purge under a {why} id"))?;
         ensure!(
-            matches!(reason(&e), Some(Refusal::Invalid { message }) if message.contains("not of this purge at this head")),
+            matches!(invalid_case(&e), Some(Case::PurgeReportStale)),
             "a purge under a {why} preflight id must be refused as invalid, saying the report \
              is not of this purge at this head; it was refused as {e:?}"
         );
@@ -803,7 +817,7 @@ async fn a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_on
     let e = store.purge_preflight(&erp, None).await;
     let e = e.must_fail("a preflight of `erp`, whose invoice a principal also wrote,")?;
     ensure!(
-        matches!(reason(&e), Some(Refusal::Invalid { message }) if message.contains("i1")),
+        shared(&e).is_some_and(|(_, first)| first.contains(&"i1")),
         "the preflight of a co-owned source must be refused as invalid, naming `i1`; it was \
          refused as {e:?}"
     );
@@ -973,10 +987,11 @@ async fn a_co_owned_record_refuses_a_typed_purge_only_in_the_named_type(
     let l = Lake::of(store.as_ref());
     l.upsert("partner", "p1", json!({"note": "kept"})).await?;
     let before = store.head().await.must("reading the head")?;
-    invalid_naming(
+    refused_as!(
         "a purge of `crm` from `partner`, whose `p1` a person also wrote,",
         purge_from(store.as_ref(), "crm", "partner").await,
-        &["`p1`", "from `partner`"],
+        Case::PurgeShared { ty: Some(ty), first, .. }
+            if ty == "partner" && first.iter().any(|r| key_of(r) == "p1")
     )?;
     head_unmoved(store.as_ref(), before, "a purge from the co-owned type").await?;
     let report = purge_from(store.as_ref(), "crm", "invoice").await;
@@ -1063,7 +1078,7 @@ async fn a_preflight_of_a_type_and_one_of_the_source_whole_answer_ids_of_their_o
         let what = format!("a purge of `crm` from {ty:?} under the other preflight's id");
         let id = Some(id.report_id.as_str());
         let answer = store.purge_source(&crm, ty, id).await;
-        invalid_naming(&what, answer, &["not of this purge at this head"])?;
+        refused_as!(&what, answer, Case::PurgeReportStale)?;
         head_unmoved(store.as_ref(), before, &what).await?;
     }
     let done = store
@@ -1089,16 +1104,14 @@ async fn a_purge_from_a_type_it_cannot_take_from_is_refused(
     l.declare(count_view("by_name", "partner", "name")).await?;
     let before = store.head().await.must("reading the head")?;
     let crm = SourceId::from("crm");
-    for (ty, why) in [
-        ("log_line", "keeps no per-field provenance"),
-        ("by_name", "is a view"),
-    ] {
+    for (ty, why) in [("log_line", "no_provenance"), ("by_name", "is_a_view")] {
         let name = TypeName::from(ty);
         let what = format!("a purge of `crm` from `{ty}`");
+        let case = json!({"code": why, "type": ty});
         let done = purge_from(store.as_ref(), "crm", ty).await;
-        invalid_naming(&what, done, &[ty, why])?;
+        refused_like(&what, done, &case)?;
         let seen = store.purge_preflight(&crm, Some(&name)).await;
-        invalid_naming(&format!("the preflight of {what}"), seen, &[ty, why])?;
+        refused_like(&format!("the preflight of {what}"), seen, &case)?;
     }
     let none = purge_from(store.as_ref(), "crm", "nothing").await;
     ensure!(

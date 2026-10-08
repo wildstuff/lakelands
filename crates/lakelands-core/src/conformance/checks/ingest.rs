@@ -100,7 +100,7 @@ async fn the_same_content_ingested_twice_appends_nothing_the_second_time(
             && matches!(
                 new,
                 Err(Error::Refused {
-                    reason: Refusal::Invalid { .. },
+                    reason: Refusal::Invalid(..),
                     ..
                 })
             ),
@@ -202,7 +202,7 @@ async fn an_ingested_record_carrying_a_field_the_source_does_not_write_is_refuse
         matches!(
             &err,
             Err(Error::Refused {
-                reason: Refusal::Invalid { .. },
+                reason: Refusal::Invalid(..),
                 field: None
             })
         ),

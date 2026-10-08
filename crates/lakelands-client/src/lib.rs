@@ -18,8 +18,8 @@
 //!   error or in a message.
 //! - **Errors.** A refusal comes back as the contract's own [`Error`];
 //!   a failure below it (connecting, TLS, no answer in time, a reply that
-//!   is not the contract's) is `Unavailable`, naming the host, the port,
-//!   the path and what failed.
+//!   is not the contract's) is `Unavailable`, naming the lake's REST door
+//!   and what failed, never its address.
 //! - **Host operations** — `verify`, `rebuild`, `restrict`, `unrestrict`,
 //!   `checkpoint`, `age`, `purge_source` — belong to the host that holds
 //!   the store, and no network door offers them: each is `Unbound`,
@@ -119,7 +119,10 @@ pub struct RemoteConfig {
     pub limits: Limits,
 }
 
-/// Why a configuration cannot make a client. It never holds a key.
+/// Why a configuration cannot make a client. It never holds a key. It is
+/// the host's own configuration, said to the host when the client is
+/// made, never a lake's answer to a call, so it is not a case of the
+/// refusal catalog.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConfigError(pub String);
 

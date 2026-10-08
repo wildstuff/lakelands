@@ -13,7 +13,7 @@ use lakelands_api::engine::{
     CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
     Reclaimed, VectorIndex,
 };
-use lakelands_api::error::{Act, Error, Result, Situation};
+use lakelands_api::error::{Act, Case, Error, Result, Situation};
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::record::{StoredRecord, Value};
@@ -77,9 +77,7 @@ impl MemoryLake {
                 puts.push(put);
                 Ok(())
             }
-            None => Err(invalid(
-                "the projection is written inside a transaction: call `begin` first",
-            )),
+            None => Err(lakelands_core::engines::unstaged()),
         }
     }
 }
@@ -182,7 +180,7 @@ impl ProjectionStore for MemoryLake {
     fn commit(&self, through: Position) -> Result<()> {
         let puts = lock(&self.pending)
             .take()
-            .ok_or_else(|| invalid("there is no transaction to commit: call `begin` first"))?;
+            .ok_or_else(|| invalid(Case::CommitUnbegun))?;
         lock(&self.shared).projection.commit(puts, through)
     }
 

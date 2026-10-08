@@ -31,7 +31,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write as _};
 use std::path::{Path, PathBuf};
 
 use lakelands_api::catalog::Verification;
-use lakelands_api::error::{Detail, Doing, Flaw, Part};
+use lakelands_api::error::{Case, Detail, Doing, Flaw, Part};
 use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_BASE, LOG_FORMAT_VERSION};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::{Error, LakeStore, Position, Result};
@@ -95,14 +95,10 @@ pub async fn write(store: &dyn LakeStore, dir: &Path) -> Result<Manifest> {
     let existed = match fs::read_dir(dir) {
         Ok(mut entries) => {
             if entries.next().is_some() {
+                let said = Box::new(Case::ExportNotEmpty.into());
                 return Err(Error::Refused {
                     field: None,
-                    reason: lakelands_api::Refusal::Precondition {
-                        message: format!(
-                            "{} is not empty; an export writes only into an empty or new directory",
-                            dir.display()
-                        ),
-                    },
+                    reason: lakelands_api::Refusal::Precondition(said),
                 });
             }
             true

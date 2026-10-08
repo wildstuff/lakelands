@@ -41,7 +41,7 @@
 //!   read.
 //!
 //! An expression that cannot be evaluated — a type misuse, an overflow, a
-//! function used where it has no meaning — is an [`EvalError`]. What an
+//! function used where it has no meaning — is a [`Case`]. What an
 //! error means is the caller's posture, stated where each caller lives: a
 //! record its filter fails for does not match, a group key that fails is
 //! null, a trigger guard does not fire, a derived field is cleared. One
@@ -51,9 +51,9 @@
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::fmt;
 use std::str::FromStr;
 
+use lakelands_api::error::{Case, Operand};
 use lakelands_api::expr::{ArithOp, CmpOp, Expr, Func, Literal};
 use lakelands_api::{FieldMeta, FieldName, Timestamp};
 use rust_decimal::prelude::ToPrimitive;
@@ -79,23 +79,11 @@ pub enum Val {
     Json(Value),
 }
 
-/// Why an expression could not be evaluated.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvalError(pub String);
+/// The result of an evaluation: a value, or the case of why it has none.
+pub type Result<T> = std::result::Result<T, Case>;
 
-impl fmt::Display for EvalError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for EvalError {}
-
-/// The result of an evaluation.
-pub type Result<T> = std::result::Result<T, EvalError>;
-
-pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T> {
-    Err(EvalError(msg.into()))
+pub(crate) fn err<T>(case: Case) -> Result<T> {
+    Err(case)
 }
 
 /// What an expression can see: the record in scope and the context of the
@@ -338,7 +326,7 @@ fn bucket_start(t: Timestamp, unit: &str) -> Result<Timestamp> {
         "month" => first(m),
         "quarter" => first((m - 1) / 3 * 3 + 1),
         "year" => first(1),
-        other => err(format!("date_bucket() knows no unit '{other}'")),
+        other => err(Case::BucketUnit { unit: other.into() }),
     }
 }
 
@@ -352,7 +340,7 @@ fn bucket_start(t: Timestamp, unit: &str) -> Result<Timestamp> {
 pub fn check(e: &Expr, place: Place) -> Result<()> {
     match e {
         Expr::Lit { value } => literal(value).map(|_| ()),
-        Expr::Path { path } if path.is_empty() => err("a path names at least one field"),
+        Expr::Path { path } if path.is_empty() => err(Case::PathEmpty),
         Expr::Path { .. } => Ok(()),
         Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => {
             check(lhs, place)?;
@@ -362,24 +350,27 @@ pub fn check(e: &Expr, place: Place) -> Result<()> {
         Expr::And { args } | Expr::Or { args } => args.iter().try_for_each(|a| check(a, place)),
         Expr::In { arg, list } => {
             if list.is_empty() {
-                return err("`in` needs at least one value");
+                return err(Case::InEmpty);
             }
             check(arg, place)?;
             list.iter().try_for_each(|a| check(a, place))
         }
         Expr::Call { func, args } => {
-            let name = super::func_name(*func);
+            let name = super::func_name(*func).to_owned();
             let (min, max) = super::arity(*func);
             if args.len() < min || max.is_some_and(|m| args.len() > m) {
-                return err(format!("{name}() does not take {} argument(s)", args.len()));
+                return err(Case::CallArity {
+                    name,
+                    given: args.len(),
+                });
             }
             match func {
                 Func::KnownAt | Func::SeenAt | Func::Previous | Func::Changed if !matches!(args.first(), Some(Expr::Path { path }) if path.len() == 1) =>
                 {
-                    return err(format!("{name}() takes one field name"));
+                    return err(Case::CallTakesField { name });
                 }
                 Func::Setting | Func::Param | Func::InSet if quoted(args.first()).is_none() => {
-                    return err(format!("{name}() takes a quoted name"));
+                    return err(Case::CallTakesQuoted { name });
                 }
                 // A calendar unit, quoted, starts where the calendar says and
                 // takes no origin; a width is a duration above zero, with
@@ -390,36 +381,21 @@ pub fn check(e: &Expr, place: Place) -> Result<()> {
                         Some(Expr::Lit { value: Literal::Duration(w) }) if *w > 0);
                     let known = |u: &&String| BUCKET_UNITS.contains(&u.as_str());
                     if let Some(u) = unit.filter(|u| !known(u)) {
-                        return err(format!(
-                            "date_bucket() knows no unit '{u}'; the units are 'day', 'week', \
-                             'month', 'quarter' and 'year', and a width is written unquoted, as \
-                             in date_bucket(t, 30d, origin)"
-                        ));
+                        return err(Case::BucketUnit { unit: u.clone() });
                     }
                     if (unit.is_some(), width) != (args.len() == 2, args.len() == 3) {
-                        return err(
-                            "date_bucket() takes a calendar unit quoted ('day', 'week', 'month', \
-                             'quarter' or 'year') and no origin, or a width above zero and the \
-                             origin its windows are counted from, as in date_bucket(t, 30d, origin)",
-                        );
+                        return err(Case::BucketArguments);
                     }
                 }
                 Func::Previous | Func::Changed if !matches!(place, Place::Write | Place::Guard) => {
-                    return err(format!("{name}() has meaning only in a guard over a write"));
+                    return err(Case::OnlyInWrite { name });
                 }
-                Func::Retired if place != Place::Guard => {
-                    return err("retired() has meaning only in a trigger's guard");
-                }
+                Func::Retired if place != Place::Guard => return err(Case::RetiredOnlyInGuard),
                 f if f.is_aggregate() && place != Place::Group => {
-                    return err(format!(
-                        "{name}() folds a set of records and has no meaning here"
-                    ));
+                    return err(Case::AggregateHere { name });
                 }
                 Func::Param if !matches!(place, Place::View | Place::Group) => {
-                    return err(
-                        "param() is read only in a view's `where` and `measures`, where the \
-                         view declares its parameters",
-                    );
+                    return err(Case::ParamOutsideView);
                 }
                 _ => {}
             }
@@ -485,19 +461,17 @@ fn truthy(v: &Val) -> bool {
     *v == Val::Bool(true)
 }
 
-fn overflow() -> EvalError {
-    EvalError("the number is too large for exact arithmetic".into())
+fn overflow() -> Case {
+    Case::Overflow
 }
 
 fn literal(l: &Literal) -> Result<Val> {
     Ok(match l {
         Literal::Null => Val::Null,
         Literal::Bool(b) => Val::Bool(*b),
-        Literal::Number(n) => Val::Num(Decimal::from_str(n).or_else(|_| {
-            err(format!(
-                "`{n}` is not a number this evaluator can hold exactly"
-            ))
-        })?),
+        Literal::Number(n) => {
+            Val::Num(Decimal::from_str(n).or_else(|_| err(Case::NotExact { number: n.clone() }))?)
+        }
         Literal::Text(t) => Val::Text(t.clone()),
         Literal::Duration(d) => Val::Duration(*d),
     })
@@ -513,7 +487,7 @@ pub(crate) fn as_number(v: &Val) -> Option<Decimal> {
 }
 
 fn number(v: &Val) -> Result<Decimal> {
-    as_number(v).map_or_else(|| err(format!("{} is not a number", describe(v))), Ok)
+    as_number(v).ok_or_else(|| Case::NotANumber { value: operand(v) })
 }
 
 /// A value as an instant, if it reads as one.
@@ -525,16 +499,21 @@ pub(crate) fn as_time(v: &Val) -> Option<Timestamp> {
     }
 }
 
-fn describe(v: &Val) -> String {
-    match v {
-        Val::Null => "null".into(),
-        Val::Bool(b) => format!("the boolean {b}"),
-        Val::Num(d) => format!("the number {d}"),
-        Val::Text(s) => format!("the text '{s}'"),
-        Val::Time(t) => format!("the instant {t}"),
-        Val::Duration(d) => format!("a duration of {d} microseconds"),
-        Val::Json(_) => "a JSON value".into(),
-    }
+/// A value as a case names it.
+pub(crate) fn operand(v: &Val) -> Box<Operand> {
+    Box::new(match v {
+        Val::Null => Operand::Null,
+        Val::Bool(value) => Operand::Boolean { value: *value },
+        Val::Num(d) => Operand::Number {
+            value: d.to_string(),
+        },
+        Val::Text(value) => Operand::Text {
+            value: value.clone(),
+        },
+        Val::Time(value) => Operand::Instant { value: *value },
+        Val::Duration(micros) => Operand::Duration { micros: *micros },
+        Val::Json(_) => Operand::Json,
+    })
 }
 
 /// The order of two non-null values, when they have one: numbers (and
@@ -602,7 +581,7 @@ fn arith_op(op: ArithOp, l: Val, r: Val) -> Result<Val> {
         ArithOp::Mul => a.checked_mul(b),
         ArithOp::Div => {
             if b.is_zero() {
-                return err("division by zero");
+                return err(Case::DivisionByZero);
             }
             a.checked_div(b)
         }
@@ -628,15 +607,14 @@ fn time_arith(op: ArithOp, l: &Val, r: &Val) -> Result<Val> {
         | (ArithOp::Add, Val::Duration(d), t)
         | (ArithOp::Sub, t, Val::Duration(d)) => match as_time(t) {
             Some(t) => shift(t, *d, if op == ArithOp::Sub { -1 } else { 1 }),
-            None => err(format!("{} cannot be shifted by a duration", describe(t))),
+            None => err(Case::NotShiftable { value: operand(t) }),
         },
         (ArithOp::Sub, a, b) => match (as_time(a), as_time(b)) {
             (Some(x), Some(y)) => x.0.checked_sub(y.0).map(Val::Duration).ok_or_else(overflow),
-            _ => err(format!(
-                "{} minus {} has no meaning",
-                describe(a),
-                describe(b)
-            )),
+            _ => err(Case::MinusNoMeaning {
+                left: operand(a),
+                right: operand(b),
+            }),
         },
         // A duration by a duration is how many of the one the other holds;
         // a duration by or times a number is a duration, to the microsecond.
@@ -644,25 +622,24 @@ fn time_arith(op: ArithOp, l: &Val, r: &Val) -> Result<Val> {
             let n = Decimal::from(*a).checked_div(Decimal::from(*b));
             n.map(Val::Num).ok_or_else(overflow)
         }
-        (ArithOp::Div, Val::Duration(_), Val::Duration(_)) => err("division by zero"),
+        (ArithOp::Div, Val::Duration(_), Val::Duration(_)) => err(Case::DivisionByZero),
         (ArithOp::Mul | ArithOp::Div, Val::Duration(d), n)
         | (ArithOp::Mul, n, Val::Duration(d))
             if as_number(n).is_some() =>
         {
             let n = number(n)?;
             let scaled = match op {
-                ArithOp::Div if n.is_zero() => return err("division by zero"),
+                ArithOp::Div if n.is_zero() => return err(Case::DivisionByZero),
                 ArithOp::Div => Decimal::from(*d).checked_div(n),
                 _ => Decimal::from(*d).checked_mul(n),
             };
             let micros = scaled.and_then(|m| m.trunc().to_i64());
             micros.map(Val::Duration).ok_or_else(overflow)
         }
-        (_, a, b) => err(format!(
-            "{} and {} cannot be multiplied or divided",
-            describe(a),
-            describe(b)
-        )),
+        (_, a, b) => err(Case::NotMultiplied {
+            left: operand(a),
+            right: operand(b),
+        }),
     }
 }
 
@@ -683,15 +660,17 @@ fn text(v: &Val) -> Option<String> {
 fn usize_of(v: &Val) -> Result<usize> {
     let d = number(v)?;
     if d.is_sign_negative() || !d.fract().is_zero() {
-        return err(format!("{d} is not a position or a length"));
+        return err(Case::NotPosition {
+            number: d.to_string(),
+        });
     }
     d.to_usize().ok_or_else(overflow)
 }
 
-fn field_arg(args: &[Expr]) -> Result<&FieldName> {
+fn field_arg<'a>(name: &str, args: &'a [Expr]) -> Result<&'a FieldName> {
     match args.first() {
         Some(Expr::Path { path }) if path.len() == 1 => Ok(&path[0]),
-        _ => err("this function takes one field name"),
+        _ => err(Case::CallTakesField { name: name.into() }),
     }
 }
 
@@ -701,7 +680,8 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
     let (min, max) = super::arity(func);
     let name = super::func_name(func);
     if args.len() < min || max.is_some_and(|m| args.len() > m) {
-        return err(format!("{name}() does not take {} argument(s)", args.len()));
+        let (name, given) = (name.into(), args.len());
+        return err(Case::CallArity { name, given });
     }
     // The functions that decide which arguments to evaluate, or read a
     // field's name rather than its value.
@@ -723,7 +703,7 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
             return Ok(Val::Null);
         }
         Func::KnownAt | Func::SeenAt => {
-            let meta = scope.meta(field_arg(args)?);
+            let meta = scope.meta(field_arg(name, args)?);
             return Ok(match (func, meta) {
                 (Func::KnownAt, Some(m)) => Val::Time(m.known_at),
                 (Func::SeenAt, Some(m)) => m.seen_at.map_or(Val::Null, Val::Time),
@@ -732,9 +712,9 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         }
         Func::Previous | Func::Changed => {
             if !scope.in_write() {
-                return err(format!("{name}() has meaning only in a guard over a write"));
+                return err(Case::OnlyInWrite { name: name.into() });
             }
-            let field = field_arg(args)?;
+            let field = field_arg(name, args)?;
             let before = scope.previous(field).map_or(Val::Null, |v| from_json(&v));
             if func == Func::Previous {
                 return Ok(before);
@@ -751,7 +731,7 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         }
         Func::Retired => {
             if !scope.in_write() {
-                return err("retired() has meaning only in a trigger's guard");
+                return err(Case::RetiredOnlyInGuard);
             }
             return Ok(Val::Bool(scope.retiring()));
         }
@@ -759,9 +739,7 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
             if let Some(v) = scope.aggregate(func, args) {
                 return v;
             }
-            return err(format!(
-                "{name}() folds a set of records and has no meaning over one record"
-            ));
+            return err(Case::AggregateHere { name: name.into() });
         }
         _ => {}
     }
@@ -781,19 +759,24 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         }
         Func::Setting => match &vals[0] {
             Val::Text(key) => scope.setting(key).map_or(Val::Null, |v| from_json(&v)),
-            other => return err(format!("setting() takes a key, not {}", describe(other))),
+            other => {
+                return err(Case::SettingTakesKey {
+                    value: operand(other),
+                });
+            }
         },
         // A set's filter stands in the call's place before a condition is
         // evaluated ([`expand`]); a call that is left names no place for it.
         Func::InSet => {
-            return err(
-                "in_set() has meaning in an object set's `where`, a trigger's `when` \
-                        and a read's `where`",
-            );
+            return err(Case::InSetHere);
         }
         Func::Param => match &vals[0] {
             Val::Text(name) => scope.param(name).map_or(Val::Null, |v| from_json(&v)),
-            other => return err(format!("param() takes a name, not {}", describe(other))),
+            other => {
+                return err(Case::ParamTakesName {
+                    value: operand(other),
+                });
+            }
         },
         Func::Lower => Val::Text(s(0).to_lowercase()),
         Func::Upper => Val::Text(s(0).to_uppercase()),
@@ -837,10 +820,9 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
             },
             (None, _) => Val::Null,
             (_, other) => {
-                return err(format!(
-                    "date_bucket() takes its unit as text, not {}",
-                    describe(other)
-                ));
+                return err(Case::BucketUnitText {
+                    value: operand(other),
+                });
             }
         },
         Func::Round => {
@@ -871,9 +853,22 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
 /// An I-Regexp pattern (RFC 9485), matched against the whole text; see
 /// `iregexp` for what is refused and how it is translated.
 fn i_regexp(pattern: &str) -> Result<regex::Regex> {
-    let translated = super::iregexp::translate(pattern)
-        .or_else(|why| err(format!("`{pattern}` is not an I-Regexp: {why}")))?;
-    regex::Regex::new(&translated).or_else(|e| err(format!("`{pattern}` cannot be matched: {e}")))
+    let p = || pattern.to_owned();
+    let not = |why| Case::NotIRegexp {
+        pattern: p(),
+        why: Box::new(why),
+    };
+    let translated = super::iregexp::translate(pattern).map_err(not)?;
+    regex::Regex::new(&translated).map_err(|e| {
+        let limit = match e {
+            regex::Error::CompiledTooBig(limit) => Some(limit),
+            _ => None,
+        };
+        Case::RegexUnmatchable {
+            pattern: p(),
+            limit,
+        }
+    })
 }
 
 /// Land a computed value in a field's JSON form (`docs/log-format.md` §5):

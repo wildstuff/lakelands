@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::read::{Aggregate, Direction, Order, OrderBy};
 use lakelands_api::{
@@ -18,7 +19,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all_found, read_at, reason, refused_on, type_of, upsert, value,
+    Lake, Must, all_found, invalid_like, read_at, refused_on, type_of, upsert, value,
 };
 
 check!(
@@ -265,18 +266,21 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
         ),
         ..whole.clone()
     };
-    for (what, find) in [
+    let codes = ["after_with_cursor", "after_count", "after_with_aggregate"];
+    let finds = [
         ("`after` beside `cursor`", beside_cursor),
         ("one `after` value for two `order_by` keys", one_value),
         ("`after` beside `aggregate`", aggregated),
-    ] {
+    ];
+    for ((what, find), code) in finds.into_iter().zip(codes) {
+        let case = json!({"code": code});
         let refused = cat
             .find(own, &TypeName::from("item"), find)
             .await
             .must_fail(what)?;
         ensure!(
-            matches!(reason(&refused), Some(Refusal::Invalid { message }) if message.contains("`after")),
-            "{what} must be refused as invalid, naming `after`; it answered {refused:?}"
+            invalid_like(&refused, &case),
+            "{what} must be refused as invalid, as {case}; it answered {refused:?}"
         );
     }
     let unfit = Find {
@@ -291,7 +295,8 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
         .await
         .must_fail("a text `after` value for the number `n`")?;
     ensure!(
-        matches!(refused_on(&refused), Some(("n", Refusal::Invalid { message })) if message.contains("`after")),
+        matches!(refused_on(&refused), Some(("n", Refusal::Invalid(said)))
+            if matches!(&said.case, Case::AfterUnfit { field, .. } if field == "n")),
         "a text `after` value for the number `n` must be refused as invalid on `n`, \
          naming `after`; it answered {refused:?}"
     );

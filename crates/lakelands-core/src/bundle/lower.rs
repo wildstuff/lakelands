@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use lakelands_api::error::Naming;
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
     Assignment, EmbedDecl, FieldDecl, FieldType, Measure, RelationDecl, StorageKind, TriggerDecl,
@@ -38,10 +39,8 @@ pub(super) struct Known {
     pub types: BTreeSet<String>,
 }
 
-pub(super) use crate::value::kind_name;
-
 fn kind_named(name: &str) -> Option<StorageKind> {
-    StorageKind::ALL.into_iter().find(|k| kind_name(*k) == name)
+    StorageKind::ALL.into_iter().find(|k| k.to_string() == name)
 }
 
 /// The lowering of one file.
@@ -66,9 +65,9 @@ impl<'a> Lower<'a> {
             .push(BundleError::new(self.file, problem, message));
     }
 
-    fn name(&mut self, what: &str, name: &str) {
+    fn name(&mut self, what: Naming, name: &str) {
         if let Some(fault) = crate::names::fault(what, name) {
-            self.fail(Problem::BadName, fault);
+            self.fail(Problem::BadName, fault.to_string());
         }
     }
 
@@ -106,7 +105,7 @@ impl<'a> Lower<'a> {
             .0
             .into_iter()
             .map(|(name, expr)| {
-                self.name("measure", &name);
+                self.name(Naming::Measure, &name);
                 let expr = self.cond(&format!("{at}measure `{name}`"), expr);
                 Measure {
                     name: FieldName::new(name),
@@ -116,11 +115,11 @@ impl<'a> Lower<'a> {
             .collect()
     }
 
-    fn names<T: From<String>>(&mut self, what: &str, names: Vec<String>) -> Vec<T> {
+    fn names<T: From<String>>(&mut self, what: Naming, names: Vec<String>) -> Vec<T> {
         names
             .into_iter()
             .map(|n| {
-                self.name(what, &n);
+                self.name(what.clone(), &n);
                 T::from(n)
             })
             .collect()
@@ -135,7 +134,7 @@ impl<'a> Lower<'a> {
     }
 
     fn field(&mut self, owner: &str, name: String, doc: FieldDoc) -> FieldDecl {
-        self.name(owner, &name);
+        self.name(Naming::Field, &name);
         let at = format!("{owner} `{name}`");
         let body = match doc {
             StrOr::Str(short) => {
@@ -150,9 +149,9 @@ impl<'a> Lower<'a> {
         };
         let ty = self.field_type(&at, body.ty);
         let derived = self.opt_cond(&format!("{at}, `derived`"), body.derived);
-        let depends_on = self.names("field", body.depends_on.0);
+        let depends_on = self.names(Naming::Field, body.depends_on.0);
         let embed = body.embed.map(|e| EmbedDecl {
-            from: self.names("field", e.from.0),
+            from: self.names(Naming::Field, e.from.0),
             model: e.model,
         });
         FieldDecl {
@@ -179,10 +178,12 @@ impl<'a> Lower<'a> {
     /// in a reserved namespace, or one the contract refuses.
     fn annotated(&mut self, d: &Declaration) {
         match d.annotation_fault() {
-            Some(AnnotationFault::Reserved { message, .. }) => {
-                self.fail(Problem::ReservedName, message);
+            Some(AnnotationFault::Reserved { said, .. }) => {
+                self.fail(Problem::ReservedName, said.to_string());
             }
-            Some(AnnotationFault::Invalid { message }) => self.fail(Problem::Malformed, message),
+            Some(AnnotationFault::Invalid { said }) => {
+                self.fail(Problem::Malformed, said.to_string())
+            }
             None => {}
         }
     }
@@ -211,8 +212,7 @@ impl<'a> Lower<'a> {
                     Problem::BadFieldType,
                     format!(
                         "{at}: value type `{vt}` is declared over `{}`, the field says `{}`",
-                        kind_name(*kind),
-                        kind_name(doc.kind)
+                        kind, doc.kind
                     ),
                 ),
                 Some(_) => {}
@@ -336,8 +336,7 @@ pub(super) fn value_type(l: &mut Lower<'_>, doc: ValueTypeDoc) -> ValueTypeDecl 
             Problem::Contradiction,
             format!(
                 "`one_of` lists text values; value type `{}` is `{}`",
-                doc.name,
-                kind_name(doc.kind)
+                doc.name, doc.kind
             ),
         );
     }
@@ -346,8 +345,7 @@ pub(super) fn value_type(l: &mut Lower<'_>, doc: ValueTypeDoc) -> ValueTypeDecl 
             Problem::Contradiction,
             format!(
                 "`scale` keeps decimals at a number of digits; value type `{}` is `{}`",
-                doc.name,
-                kind_name(doc.kind)
+                doc.name, doc.kind
             ),
         );
     }
@@ -381,14 +379,14 @@ pub(super) fn value_type(l: &mut Lower<'_>, doc: ValueTypeDoc) -> ValueTypeDecl 
 
 /// A type, with its fields, relations and view.
 pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
-    let key = l.names("key field", doc.key.0);
+    let key = l.names(Naming::Field, doc.key.0);
     let fields = l.fields("field", doc.fields);
     let relations = doc
         .relations
         .0
         .into_iter()
         .map(|(name, r)| {
-            l.name("relation", &name);
+            l.name(Naming::Relation, &name);
             let at = format!("relation `{name}`");
             let target = l.type_ref(&at, &r.target);
             let fields = l.fields(&format!("{at}, field"), r.fields);
@@ -413,7 +411,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
             .0
             .into_iter()
             .filter_map(|(name, kind)| {
-                l.name("parameter", &name);
+                l.name(Naming::Parameter, &name);
                 let Some(kind) = kind_named(&kind) else {
                     l.fail(
                         Problem::BadFieldType,
@@ -428,7 +426,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
             })
             .collect();
         let filter = l.opt_cond("view, `where`", v.filter);
-        let group_by = l.names("group_by field", v.group_by.0);
+        let group_by = l.names(Naming::Field, v.group_by.0);
         let measures = l.measures("", v.measures);
         let merge = v
             .merge
@@ -438,7 +436,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
                 ViewSource {
                     source: l.type_ref(&at, &m.source),
                     r#where: l.opt_cond(&format!("{at}, `where`"), m.filter),
-                    group_by: l.names("group_by field", m.group_by.0),
+                    group_by: l.names(Naming::Field, m.group_by.0),
                     measures: l.measures(&format!("{at}, "), m.measures),
                 }
             })
@@ -482,7 +480,7 @@ pub(super) fn verb(l: &mut Lower<'_>, doc: VerbDoc) -> VerbDecl {
                 .0
                 .into_iter()
                 .map(|(field, value)| {
-                    l.name("field", &field);
+                    l.name(Naming::Field, &field);
                     let value = l.cond(&format!("`set` of `{field}`"), value);
                     Assignment {
                         field: FieldName::new(field),
@@ -492,7 +490,7 @@ pub(super) fn verb(l: &mut Lower<'_>, doc: VerbDoc) -> VerbDecl {
                 .collect(),
         },
         (None, Some(executor)) => {
-            l.name("executor", &executor);
+            l.name(Naming::Executor, &executor);
             VerbEffect::External { executor }
         }
         (set, _) => {
@@ -547,7 +545,7 @@ pub(super) fn object_set(l: &mut Lower<'_>, doc: ObjectSetDoc) -> ObjectSetDecl 
 /// alone can retune them; the lake checks `on`, `field`, `from` and `to`
 /// when the rule is written.
 pub(super) fn aging_rule(l: &mut Lower<'_>, doc: AgingRuleDoc) -> Patch {
-    l.name("aging rule", &doc.name);
+    l.name(Naming::AgingRule, &doc.name);
     l.cond("`when`", Cond(Condition::Text(doc.when.clone())));
     let mut p: Patch = [
         ("name", doc.name.into()),
@@ -571,7 +569,7 @@ pub(super) fn aging_rule(l: &mut Lower<'_>, doc: AgingRuleDoc) -> Patch {
 /// carries none, so a function never has two definitions.
 pub(super) fn function(l: &mut Lower<'_>, doc: FunctionDoc) -> FunctionDecl {
     let backing = doc.backing.unwrap_or_else(|| EXPR_BACKING.to_owned());
-    l.name("backing", &backing);
+    l.name(Naming::Backing, &backing);
     let inputs = l.fields("input", doc.inputs);
     let expr = l.opt_cond("`expr`", doc.expr);
     match (backing == EXPR_BACKING, expr.is_some()) {

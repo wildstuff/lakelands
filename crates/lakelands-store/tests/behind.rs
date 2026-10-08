@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use lakelands_api::engine::OpenMode;
+use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::ontology::{Authority, Risk, TypeDecl, VerbDecl, VerbEffect};
@@ -339,8 +340,8 @@ async fn a_write_after_a_failed_fold_is_decided_over_what_the_log_holds() {
     );
     let sentence = format!(
         "what was appended is in the log from position {} and is not folded yet; the next \
-         write folds it, and a write is sent again only under its idempotency key (writing the \
-         projection failed: the commit through {} was refused (planted))",
+         write folds it, and a write is sent again only under its idempotency key (the storage \
+         failed while writing the projection: the commit through {} was refused (planted))",
         at.0, at.0
     );
     assert_eq!(told, sentence);
@@ -447,7 +448,7 @@ async fn a_write_that_cannot_catch_up_is_unavailable_whatever_the_fold_answered(
     *probe.refuse_begin.lock().unwrap() = Some(1);
     let told = unavailable(write(&l, "c", 3, None).await);
     let sentence = "the lake's projection is behind its log and could not catch up; nothing was \
-                    appended (the `begin` was refused (planted))";
+                    appended (`planted` is not a declared type)";
     assert_eq!(told, sentence);
     let (c, _) = applied(write(&l, "c", 3, None).await);
     assert_eq!(log(&store, "c").await.0, [c.0], "`c` is in the log once");
@@ -596,25 +597,24 @@ fn ran(outcome: lakelands_api::Result<Outcome>) -> (u64, Option<Value>) {
     }
 }
 
-/// The sentence of a retry refused as `unanswered`.
-fn unanswered<T: std::fmt::Debug>(outcome: lakelands_api::Result<T>) -> String {
+/// The case of a retry refused as `unanswered`.
+fn unanswered<T: std::fmt::Debug>(outcome: lakelands_api::Result<T>) -> Case {
     match outcome {
         Err(Error::Refused {
-            reason: Refusal::Unanswered { message },
+            reason: Refusal::Unanswered(said),
             ..
-        }) => message,
+        }) => said.case,
         other => panic!("the retry must be refused as `unanswered`: {other:?}"),
     }
 }
 
-/// What the store says of an external verb whose executor it did not hand
-/// the call: by a call under a key, and by an acceptance.
-const NOT_HANDED: &str = "the verb's executor was not handed this call, and sending it again \
-                          under its key will not run it: call the verb again under another key \
-                          or with none";
-const NOT_HANDED_ACCEPTED: &str = "the verb's executor was not handed this call, and the \
-                                   proposal is decided, so accepting it again will not run it: \
-                                   propose the call again";
+/// How the store's sentence of an external verb whose executor it did not
+/// hand the call ends, after its cause: by a call under a key, and by an
+/// acceptance.
+const NOT_HANDED: &str = "); sending it again under its key will not run it: call the verb \
+                          again under another key or with none";
+const NOT_HANDED_ACCEPTED: &str = "); the proposal is decided, so accepting it again will not \
+                                   run it: propose the call again";
 
 /// Row 10. The call of an external verb whose fold failed is in the log
 /// and its executor was not handed it: the store's sentence says so, that
@@ -638,9 +638,9 @@ async fn a_call_of_an_external_verb_whose_fold_failed_says_its_executor_was_not_
         .split("from position ")
         .nth(1)
         .and_then(|s| s.split(' ').next());
-    let at = format!(
-        "at position {},",
-        at.expect("the sentence names the position")
+    let at = Position(
+        at.and_then(|at| at.parse().ok())
+            .expect("the sentence names the position"),
     );
     let (doc, a) = ("doc".into(), "a".into());
     let k1 = WriteOpts {
@@ -653,8 +653,14 @@ async fn a_call_of_an_external_verb_whose_fold_failed_says_its_executor_was_not_
         l.cat.retire(&l.own, &doc, &a, k1).await,
     ] {
         let said = unanswered(again);
-        let what = "call the verb again under another key or with none";
-        assert!(said.contains(&at) && said.ends_with(what), "{said}");
+        let accepted = false;
+        assert_eq!(
+            said,
+            Case::Unanswered {
+                position: at,
+                accepted
+            }
+        );
     }
     *probe.refuse_commit.lock().unwrap() = Some(1);
     let (pay_verb, unkeyed) = ("pay".into(), WriteOpts::default());
@@ -662,7 +668,7 @@ async fn a_call_of_an_external_verb_whose_fold_failed_says_its_executor_was_not_
         .cat
         .call(&l.own, &pay_verb, Some(&a), patch(json!({})), unkeyed);
     let said = unavailable(called.await);
-    let not_handed = "the verb's executor was not handed this call: call the verb again";
+    let not_handed = "); call the verb again";
     assert!(said.ends_with(not_handed), "a call without a key: {said}");
 
     let (store, probe, _) = bound("behind-accept", counting.clone()).await;
@@ -675,7 +681,10 @@ async fn a_call_of_an_external_verb_whose_fold_failed_says_its_executor_was_not_
     let said = unavailable(l.cat.accept(&l.own, &proposal).await);
     assert!(said.ends_with(NOT_HANDED_ACCEPTED), "an acceptance: {said}");
     let said = unanswered(l.cat.accept(&l.own, &proposal).await);
-    assert!(said.ends_with("propose the call again"), "{said}");
+    assert!(
+        matches!(said, Case::Unanswered { accepted: true, .. }),
+        "{said}"
+    );
     assert_eq!(
         counting.handed.load(Ordering::SeqCst),
         0,
@@ -1447,7 +1456,7 @@ async fn an_answer_refused_otherwise_is_not_held() {
     refuses_its_append(&counting, &probe);
     let said = format!("{:?}", pay(&l).await);
     assert!(
-        said.contains("refused (planted)") && !said.contains(HELD),
+        said.contains("Undeclared") && said.contains("planted") && !said.contains(HELD),
         "{said}"
     );
     applied(write(&l, "b", 2, None).await);
