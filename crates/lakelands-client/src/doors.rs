@@ -620,7 +620,13 @@ mod tests {
 
     use crate::{DEFAULT_MAX_ANSWER_BYTES, RemoteConfig, RemoteLake};
 
-    const SILENCE: Duration = Duration::from_millis(300);
+    /// The silence bound of these tests. A server's line may come nine
+    /// tenths of it late before the client gives up, which a loaded
+    /// machine's scheduling does not reach (lakelands#757).
+    const SILENCE: Duration = Duration::from_secs(1);
+
+    /// How often a working server sends an empty line: a tenth of the bound.
+    const ALIVE: Duration = Duration::from_millis(100);
 
     /// A server that answers an ingest's head at once. With `answer`, it
     /// reads the whole upload and then sends that line and ends; without,
@@ -833,9 +839,10 @@ mod tests {
             let head = "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\n\
                         lakelands-position: 3\r\ntransfer-encoding: chunked\r\n\r\n";
             s.write_all(head.as_bytes()).await.unwrap();
-            // A window commits: nothing is read, an empty line is sent.
-            for _ in 0..12 {
-                tokio::time::sleep(SILENCE / 3).await;
+            // A window commits for three bounds: nothing is read, an empty
+            // line is sent.
+            for _ in 0..30 {
+                tokio::time::sleep(ALIVE).await;
                 s.write_all(b"1\r\n\n\r\n").await.unwrap();
             }
             // Then the rest of the upload is read, and answered. The
@@ -845,7 +852,7 @@ mod tests {
             // a slow machine that takes longer than the bound.
             let mut buf = vec![0u8; 64 << 10];
             let mut tail = Vec::new();
-            let mut alive = tokio::time::interval(SILENCE / 3);
+            let mut alive = tokio::time::interval(ALIVE);
             loop {
                 tokio::select! {
                     n = s.read(&mut buf) => {
@@ -883,7 +890,7 @@ mod tests {
         let addr = fake(Some(r#"{"position":5,"records":1,"duplicates":0}"#)).await;
         let lake = remote(addr);
         let slow = Slow {
-            wait: Box::pin(tokio::time::sleep(SILENCE * 3)),
+            wait: Box::pin(tokio::time::sleep(SILENCE * 2)),
             record: Some(record()),
         };
         let mut commits = lake
