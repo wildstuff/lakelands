@@ -497,6 +497,8 @@ What a refusal is about.
 | `proposal_order` | `members` (Names), `field` (FieldName), `by` (OrderBy) | `order_by` orders proposals by their members ({members}) and their values, and `{field}` by `{by}` is not one | An order of proposals by what is not one of their members. |
 | `query_dimensions` | `query` (usize), `held` (usize) | the query vector has {query} dimensions, and the field holds vectors of {held} | A query vector of another length than the field declares. |
 | `search_fields_empty` | — | `fields` names no field; leave it out to search every searchable field | A search's `fields` that names none. |
+| `search_needs_vector` | `field` (FieldName) | `{field}` holds vectors its writers make, in a space the lake does not know; a hybrid search over it brings its own query vector | A hybrid search without a vector over a vector field no model fills: its writers chose the space, so no bound model may stand in for one. |
+| `search_not_vector` | `field` (FieldName), `kind` (StorageKind) | `{field}` is a {kind} field; a vector ranking reads a vector field | A vector ranking over a field that holds no vectors. |
 | `step_reaches` | `reached` (TypeName), `type` (TypeName) | it reaches `{reached}`, not `{type}` | A step that reaches another type than it names. |
 | `step_several_types` | — | it reaches several types and reads a `where`; name the step's `type` | A step reaching several types that reads a `where`. |
 | `step_too_deep` | `max` (u32), `asked` (u32) | a step may walk at most {max} hops; this one asks for {asked} | A step deeper than the lake walks. |

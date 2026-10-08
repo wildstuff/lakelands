@@ -459,7 +459,10 @@ async fn lake_with(endpoint: String) -> Arc<dyn lakelands_api::LakeStore> {
         },
         ..field("v", StorageKind::Text)
     };
-    cat.declare(&own, Declaration::Type(type_decl("doc", vec![body, v])))
+    // A hybrid search without a vector reads a field a model fills
+    // (lakelands#743): `e`, the embedding of `body` by `tiny`.
+    let e = lakelands_core::conformance::fixture::embedding("e", 2, &["body"], "tiny");
+    cat.declare(&own, Declaration::Type(type_decl("doc", vec![body, v, e])))
         .await
         .unwrap();
     for (key, body, v) in [("a", "quayside", [0.0, 1.0]), ("b", "harbour", [1.0, 0.0])] {
@@ -491,7 +494,7 @@ fn search(mode: lakelands_api::query::SearchMode) -> lakelands_api::query::Searc
 fn hybrid(text: &str) -> lakelands_api::query::SearchMode {
     lakelands_api::query::SearchMode::Hybrid {
         text: text.into(),
-        field: "v".into(),
+        field: "e".into(),
         vector: None,
         fields: None,
         weight: None,
@@ -508,7 +511,8 @@ async fn a_store_ranks_a_hybrid_search_through_the_client() {
     use lakelands_api::query::SearchMode;
     use lakelands_core::conformance::fixture::owner;
 
-    // Every text is (1, 0), which only `b` points along.
+    // Every text is (1, 0), so both records' `e` point along it: `b`,
+    // whose text does not match, is a hit only by the vector.
     let f = fake(Box::new(|body| {
         let data: Vec<Value> = (0..body["input"].as_array().unwrap().len())
             .map(|i| json!({"index": i, "embedding": [1.0, 0.0]}))
@@ -519,6 +523,9 @@ async fn a_store_ranks_a_hybrid_search_through_the_client() {
     let store = lake_with(f.endpoint()).await;
     let cat = store.catalog(WriteContext::default());
     let own = owner(store.as_ref());
+    // The records' own `e` was embedded at their writes; the search's
+    // requests are the ones after.
+    let before = f.requests().len();
     let got = cat
         .search(&own, search(hybrid("quayside")))
         .await
@@ -528,7 +535,7 @@ async fn a_store_ranks_a_hybrid_search_through_the_client() {
     keys.sort();
     assert_eq!((keys, got.ranked_by.as_str()), (vec!["a", "b"], "hybrid"));
     assert_eq!(
-        f.bodies(),
+        f.bodies()[before..],
         [json!({"model": "tiny", "input": ["quayside"]})]
     );
     cat.search(
@@ -542,7 +549,11 @@ async fn a_store_ranks_a_hybrid_search_through_the_client() {
     )
     .await
     .unwrap();
-    assert_eq!(f.requests().len(), 1, "a vector search sends nothing");
+    assert_eq!(
+        f.requests().len(),
+        before + 1,
+        "a vector search sends nothing"
+    );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();

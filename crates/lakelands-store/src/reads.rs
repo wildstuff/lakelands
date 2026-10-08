@@ -2123,6 +2123,29 @@ impl<'a> Reader<'a> {
             SearchMode::Vector { .. } => None,
         };
         rights::check_search(self.who, &decl, text_fields, &vector_fields)?;
+        // A vector ranking reads a vector field, and a hybrid search without
+        // a vector reads one a model fills: one that cannot use its ranking
+        // is refused here, before any embedding is asked for (lakelands#743).
+        let declared = |n: &FieldName| decl.fields.iter().find(|f| &f.name == n);
+        for field in &vector_fields {
+            if let Some(f) = declared(field).filter(|f| f.ty.kind != StorageKind::Vector) {
+                let (field, kind) = ((*field).clone(), f.ty.kind);
+                let case = Case::SearchNotVector { field, kind };
+                return Err(crate::declare::invalid_field(&f.name, case));
+            }
+        }
+        if let SearchMode::Hybrid {
+            field,
+            vector: None,
+            ..
+        } = &s.mode
+            && declared(field).is_some_and(|f| f.embed.is_none())
+        {
+            let case = Case::SearchNeedsVector {
+                field: field.clone(),
+            };
+            return Err(crate::declare::invalid_field(field, case));
+        }
         // A query vector is judged by the field's declared length, never by
         // a stored vector, which another may own (024).
         let embedded = matches!(&s.mode, SearchMode::Hybrid { vector: None, .. });

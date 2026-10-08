@@ -224,6 +224,8 @@ macro_rules! door_checks {
             a_trigger_watches_a_link_type_and_not_a_reference_relations,
             degree_and_components_answer_the_graph_in_one_order,
             a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_mode,
+            #[own_principals]
+            a_vector_ranking_reads_a_vector_field,
             a_search_limited_to_named_fields_matches_and_probes_only_those,
             a_hybrid_search_fuses_its_text_and_vector_ranks,
             #[own_principals]
@@ -10789,6 +10791,163 @@ pub async fn degree_and_components_answer_the_graph_in_one_order(store: Arc<dyn 
     );
 }
 
+/// As the store: a vector search, an `also` term or a hybrid search over a
+/// field that holds no vectors is refused as invalid on that field, naming
+/// its kind; a hybrid search without a vector over a vector field no model
+/// fills is refused on it, though no backend is bound; the caller's rights
+/// come first; a caller's vector over a vector field is answered
+/// (lakelands#743).
+pub async fn a_vector_ranking_reads_a_vector_field(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    let d = json!({"declare": "type", "name": "doc", "fields": [
+        {"name": "title", "type": {"kind": "text"}, "searchable": true},
+        {"name": "secret", "type": {"kind": "text"}, "searchable": true},
+        {"name": "n", "type": {"kind": "number"}},
+        {"name": "plain", "type": {"kind": "vector", "dimensions": 2}},
+        {"name": "wide", "type": {"kind": "vector", "dimensions": 3}}]});
+    let d = serde_json::from_value(d).expect("a declaration reads");
+    c.declare(own, d).await.expect("the owner declares `doc`");
+    let a = json!({"title": "harbour", "n": 1, "plain": [1.0, 0.0], "wide": [1.0, 0.0, 0.0]});
+    let a = serde_json::from_value(a).expect("fields read");
+    let (doc, key) = (TypeName::from("doc"), RecordKey::from("a"));
+    let wrote = c.upsert(own, &doc, &key, a, WriteOpts::default());
+    wrote.await.expect("the owner writes `a`");
+    let search = |mode| Search {
+        ty: "doc".into(),
+        mode,
+        k: 10,
+        cursor: None,
+        filter: None,
+        with_meta: false,
+        at: ReadAt::default(),
+    };
+    let hybrid = |field: &str, vector: Option<Vec<f32>>| SearchMode::Hybrid {
+        text: "harbour".into(),
+        field: field.into(),
+        vector,
+        fields: None,
+        weight: None,
+        text_weight: None,
+    };
+    let along = |field: &str, also: &[&str]| SearchMode::Vector {
+        field: field.into(),
+        vector: vec![1.0, 0.0],
+        weight: None,
+        also: (also.iter())
+            .map(|f| VectorTerm {
+                field: (*f).into(),
+                vector: vec![1.0, 0.0],
+                weight: None,
+            })
+            .collect(),
+    };
+    let not_vector = |field: &str, kind: &str| json!({"code": "search_not_vector", "field": field, "kind": kind});
+    let needs = |field: &str| json!({"code": "search_needs_vector", "field": field});
+    for (what, mode, on, says) in [
+        (
+            "a vector search over `title`",
+            along("title", &[]),
+            "title",
+            not_vector("title", "text"),
+        ),
+        (
+            "a vector search over `n`",
+            along("n", &[]),
+            "n",
+            not_vector("n", "number"),
+        ),
+        (
+            "an `also` term over `title`",
+            along("plain", &["title"]),
+            "title",
+            not_vector("title", "text"),
+        ),
+        (
+            "a hybrid search over `title` with a vector",
+            hybrid("title", Some(vec![1.0, 0.0])),
+            "title",
+            not_vector("title", "text"),
+        ),
+        (
+            "a hybrid search over `title` without one",
+            hybrid("title", None),
+            "title",
+            not_vector("title", "text"),
+        ),
+        (
+            "a hybrid search over `plain` without a vector",
+            hybrid("plain", None),
+            "plain",
+            needs("plain"),
+        ),
+        (
+            "a hybrid search over `wide` without a vector",
+            hybrid("wide", None),
+            "wide",
+            needs("wide"),
+        ),
+    ] {
+        let e = c.search(own, search(mode)).await.map(|r| r.data.hits.len());
+        let Err(e) = e else {
+            panic!("{what} is refused; it answered {e:?}");
+        };
+        let (field, reason) = refusal(&e);
+        let wire = serde_json::to_value(&e).expect("an error prints");
+        assert!(
+            field.as_ref().map(FieldName::as_str) == Some(on)
+                && matches!(reason, Refusal::Invalid { .. })
+                && says
+                    .as_object()
+                    .expect("an object")
+                    .iter()
+                    .all(|(k, v)| &wire["reason"][k] == v),
+            "{what} is refused as {says} on `{on}`; it answered {wire}"
+        );
+    }
+    // The caller's rights first: the hidden `secret` answers as `nosuch`,
+    // and the masked `plain` is not granted.
+    let grants = json!({"default": "read", "types": {"doc": {"fields": {
+        "secret": "none", "plain": "masked"}}}});
+    let blind = Principal {
+        id: "blind".into(),
+        grants: serde_json::from_value(grants).expect("grants"),
+        ..own.clone()
+    };
+    let wire = |r: lakelands_api::Result<usize>| match r {
+        Err(e) => serde_json::to_string(&e).expect("an error prints"),
+        Ok(n) => format!("answered {n}"),
+    };
+    let hits = |r: lakelands_api::Result<_>| {
+        r.map(|r: lakelands_api::Reply<lakelands_api::query::Hits>| r.data.hits.len())
+    };
+    let hidden = wire(hits(c.search(&blind, search(along("secret", &[]))).await));
+    let absent = wire(hits(c.search(&blind, search(along("nosuch", &[]))).await));
+    assert_eq!(
+        hidden,
+        absent.replace("nosuch", "secret"),
+        "the hidden `secret` answers as `nosuch`"
+    );
+    let masked = c.search(&blind, search(hybrid("plain", None))).await;
+    assert!(
+        matches!(&masked, Err(e) if matches!(refusal(e), (Some(f), Refusal::NotGranted) if f.as_str() == "plain")),
+        "a hybrid search over the masked `plain` is refused as not granted first: {:?}",
+        masked.map(|r| r.data.hits.len())
+    );
+    // A caller's vector over a vector field is answered.
+    for mode in [along("plain", &[]), hybrid("plain", Some(vec![1.0, 0.0]))] {
+        let got = c
+            .search(own, search(mode))
+            .await
+            .expect("the search answers");
+        assert_eq!(
+            got.data.hits.len(),
+            1,
+            "a caller's vector over `plain` finds `a`"
+        );
+    }
+}
+
 /// A search probes what it searches: the searchable fields it names, or
 /// those its caller reads, and the vector field it names. A named field
 /// the caller may not read refuses the search whole, naming the field, in
@@ -10883,6 +11042,17 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
         ]
     };
     for (what, mode) in modes(None) {
+        // A hybrid search without a vector over `v`, which no model fills,
+        // brings its own vector (lakelands#743).
+        if matches!(mode, SearchMode::Hybrid { vector: None, .. }) {
+            let e = f.catalog.search(owner, search(mode)).await.map(drop);
+            assert!(
+                matches!(&e, Err(Error::Refused { reason: Refusal::Invalid(said), .. })
+                    if matches!(said.case, Case::SearchNeedsVector { .. })),
+                "the owner's {what} search over `v` is refused as needing a vector: {e:?}"
+            );
+            continue;
+        }
         let hits = f
             .catalog
             .search(owner, search(mode))
@@ -10922,6 +11092,9 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
     }
     // Naming none, it searches no field: only the vector half answers.
     for ((what, mode), want) in modes(None).into_iter().zip([&[][..], &[], &["a"]]) {
+        if matches!(mode, SearchMode::Hybrid { vector: None, .. }) {
+            continue;
+        }
         let found = f.catalog.search(&f.cast.clerk, search(mode)).await;
         let found = found.unwrap_or_else(|e| panic!("the clerk's {what} search answers: {e:?}"));
         let keys: Vec<&str> = found

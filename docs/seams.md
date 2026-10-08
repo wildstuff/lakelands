@@ -999,7 +999,12 @@ may make has its field's model compared and its text embedded, so a search
 refused for its caller calls nothing and names no model. The model is the
 head's declaration even for a search as of an earlier position, since the
 engines index the head's vectors. A vector search, and a hybrid search
-that brings its own vector, never call the backend.
+that brings its own vector, never call the backend. A hybrid search
+without a vector embeds only over a field declared with `embed`: over a
+vector field its writers fill, whose space the lake does not know, it is
+refused as invalid on the field, with a backend bound or not, and over
+a field that holds no vectors as any vector ranking is
+(lakelands#743). Either refusal is made before any call.
 
 **A search that fuses rankings** weighs each as it asks
 (`docs/decisions/046-a-hybrid-search-fuses-the-ranks-a-read-may-see.md`):
