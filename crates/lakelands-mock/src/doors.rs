@@ -3115,8 +3115,9 @@ fn holds(t: &TypeDecl, name: &FieldName) -> bool {
 /// As the store: a migration's report as `who` may know it, wherever one
 /// is answered. An entry is shown where the reader may see the type and
 /// know of the field, a member restated beyond the shape where it reads
-/// the field in `to` and in the type it was made against (`made`, a listed
-/// proposal's, else the type as it stands); the totals stay, and `more`
+/// the field in `to` and in the type it was made against (`stands`, a
+/// listed proposal's as it stood, else the type as it stands, judged shown
+/// by the caller as the store judges it); the totals stay, and `more`
 /// says that something was left out ([`shown_hashes`] sets the hashes and
 /// the id after it). The mock restricts no record, so every sample key is
 /// of a record its reader is answered.
@@ -3124,24 +3125,9 @@ fn shown_report(
     st: &State,
     who: &Principal,
     m: &Migration,
-    (report, made): (&mut MigrationReport, Option<&TypeDecl>),
+    (report, stands): (&mut MigrationReport, &TypeDecl),
 ) {
-    // As the store: one who may not see the migrated type is answered no
-    // name at all.
-    let Some(was) = st.visible(who, &m.to.name) else {
-        (report.ty, report.more) = (TypeName::default(), true);
-        report.fields.clear();
-        report.dropped.clear();
-        report.relations.clear();
-        report.carried.clear();
-        report.rekeyed.clear();
-        report.references.clear();
-        report.sample_collisions.clear();
-        report.restated.clear();
-        return;
-    };
     let whole = report.clone();
-    let stands = made.unwrap_or(&was.decl);
     let (mut was, mut to) = (stands.clone(), m.to.clone());
     known_fields((st, who), &mut was);
     known_fields((st, who), &mut to);
@@ -3206,8 +3192,8 @@ fn shown(
     head: Position,
     mut report: MigrationReport,
 ) -> MigrationReport {
-    shown_report(st, who, m, (&mut report, None));
     let made = st.types.get(&m.to.name).map_or(&m.to, |t| &t.decl);
+    shown_report(st, who, m, (&mut report, made));
     shown_hashes((st, who), made, m, (&mut report, head));
     report
 }
@@ -3286,7 +3272,7 @@ fn known_shape(
             let Some(was) = st.visible(who, &migration.to.name) else {
                 return false;
             };
-            shown_report(st, then, migration, (report, made));
+            shown_report(st, then, migration, (report, made.unwrap_or(&was.decl)));
             let before = Position(at.0.saturating_sub(1));
             shown_hashes(
                 (st, then),
@@ -5024,6 +5010,13 @@ impl Catalog for MockCatalog {
             // A migration's report counts every owner's records: a holder
             // of `only` is listed none (051).
             .filter(|p| !holds_only(who) || !p.write.as_ref().is_some_and(migrates))
+            // As the store (lakelands#762): one on a type its reader is not
+            // shown is not there to it.
+            .filter(|p| {
+                !p.write
+                    .as_ref()
+                    .is_some_and(|w| hidden_by_type(&st, who, w))
+            })
             .cloned()
             .collect();
         // Proposals are made in log order, so `proposed_at` and
@@ -5768,14 +5761,58 @@ fn migrates(w: &ProposedWrite) -> bool {
     )
 }
 
+/// As the store (lakelands#762): whether a proposed write names a type
+/// `who` is not shown, one the lake declares: the type it writes or a
+/// called verb is on; of a migration's `to` and of each type a bundle
+/// declares, what [`TypeDecl::names_against`] names against the type in force,
+/// the shape completed as the mock keeps it; and the type each verb,
+/// trigger and object set of a bundle is on.
+fn hidden_by_type(st: &State, who: &Principal, write: &ProposedWrite) -> bool {
+    let shape = |t: &TypeDecl| {
+        let mut t = t.clone();
+        st.complete(&mut t);
+        let held = st.types.get(&t.name).map(|d| &d.decl);
+        t.names_against(held)
+    };
+    let mut named: Vec<TypeName> = Vec::new();
+    match write {
+        ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => {
+            named.push(ty.clone())
+        }
+        ProposedWrite::Call { verb, .. } => named.extend(st.verbs.get(verb).map(|v| v.on.clone())),
+        ProposedWrite::Migrate { migration, .. } => named.extend(shape(&migration.to)),
+        ProposedWrite::Declare { declarations } => {
+            for d in declarations {
+                match d {
+                    Declaration::Type(t) => named.extend(shape(t)),
+                    Declaration::Verb(v) => named.push(v.on.clone()),
+                    Declaration::Trigger(t) => named.push(t.on.clone()),
+                    Declaration::ObjectSet(s) => named.push(s.of.clone()),
+                    Declaration::ValueType(_) | Declaration::Function(_) => {}
+                }
+            }
+        }
+        ProposedWrite::MigrateValueType { .. } => {}
+    }
+    named
+        .iter()
+        .any(|ty| st.types.contains_key(ty) && st.visible(who, ty).is_none())
+}
+
 /// A pending proposal a reviewer may decide.
 fn decidable<'a>(st: &'a State, who: &Principal, id: &ProposalId) -> Result<&'a Proposal> {
     if !who.grants.review {
         return Err(refused(Refusal::NotGranted));
     }
-    let p = st.proposals.get(id).ok_or_else(|| Error::NotFound {
+    let absent = || Error::NotFound {
         missing: Missing::Proposal { id: id.clone() },
-    })?;
+    };
+    let p = st.proposals.get(id).ok_or_else(absent)?;
+    // As the store (lakelands#762): a proposal on a type its reviewer is
+    // not shown is not there.
+    if p.write.as_ref().is_some_and(|w| hidden_by_type(st, who, w)) {
+        return Err(absent());
+    }
     // Before it is told decided: a holder of `only` decides only what its
     // listing shows it whole (051).
     if p.write

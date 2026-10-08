@@ -21,7 +21,7 @@ use crate::conformance::fixture::{
 check!(
     /// A holder of `only` proposes its own records' writes, pinned to them.
     ONLY_PROPOSES = a_holder_of_only_proposes_its_own_records,
-    "051: a holder of `only` proposes an upsert, a retirement and a high-risk call on its own records, each logged `pinned`, another's proposals not; on another's record a proposal that would pass is not granted and one that reads the record is not found; a proposal is refused where a field its `only` names is derived or backed, or where the verb assigns one, and neither `describe` nor `describe_type` lists it such a verb; the accept of a pinned proposal applies while its record and type stand as proposed, and is refused once a rederive, a backed output, a record made again at the key, a redeclaration of the type that leaves its records as they are, a migration or a re-key moved them"
+    "051: a holder of `only` proposes an upsert, a retirement and a high-risk call on its own records, each logged `pinned`, another's proposals not; on another's record a proposal that would pass is not granted and one that reads the record is not found; a proposal is refused where a field its `only` names is derived or backed, or where the verb assigns one, and neither `describe` nor `describe_type` lists it such a verb; the accept of a pinned proposal applies while its record and type stand as proposed, and is refused once a rederive, a backed output, a record made again at the key, a redeclaration of the type that leaves its records as they are, a migration or a re-key moved them, or, for a link, once either end record moved"
 );
 
 check!(

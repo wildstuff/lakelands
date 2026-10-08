@@ -341,6 +341,38 @@ pub struct EmbedDecl {
 }
 
 impl TypeDecl {
+    /// The types this declared shape names against the one in force,
+    /// `held` (lakelands#762): itself and, of a view, its sources; and the
+    /// target of each relation and reference field it adds, changes or
+    /// drops. Both are compared completed, as a lake keeps a type (each
+    /// computed field's `depends_on` filled), so a relation or a field
+    /// restated as it stands names nothing the type in force does not. The
+    /// store and the mock judge a proposal's types by it.
+    pub fn names_against(&self, held: Option<&TypeDecl>) -> Vec<TypeName> {
+        let (rels, fields) = held.map_or((&[][..], &[][..]), |h| (&h.relations[..], &h.fields[..]));
+        let moved = |a: &[RelationDecl], b: &[RelationDecl]| {
+            let moved = a.iter().filter(|r| !b.contains(r));
+            moved.map(|r| r.target.clone()).collect::<Vec<_>>()
+        };
+        let refs = |a: &[FieldDecl], b: &[FieldDecl]| {
+            let moved = a.iter().filter(|f| !b.contains(f));
+            moved
+                .filter_map(|f| f.ty.target.clone())
+                .collect::<Vec<_>>()
+        };
+        let view = self
+            .view
+            .iter()
+            .flat_map(|v| std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source)));
+        std::iter::once(self.name.clone())
+            .chain(view.cloned())
+            .chain(moved(&self.relations, rels))
+            .chain(moved(rels, &self.relations))
+            .chain(refs(&self.fields, fields))
+            .chain(refs(fields, &self.fields))
+            .collect()
+    }
+
     /// A type with no field yet, every other member at its default:
     /// build one as `TypeDecl { fields: …, ..TypeDecl::named(name) }`, so a
     /// member added later does not break the literal.

@@ -198,12 +198,13 @@ applied in part.
 more than its reader is shown, and says nothing else of it: no name and
 no count, since a count would say how many names are hidden. Where the
 reader may see nothing of the write, the entry has no write at all: a
-write to a type it may not see, to a record it is not answered (one
-restricted, without the grant), a call of a verb on such a type, a
-bundle none of whose declarations it would be shown. The entry keeps its
-id, its proposer, its times, its state and the proposer's `why`, so a
-reviewer without a read grant still finds what it is asked to decide,
-and accepts it by its id.
+write to a record it is not answered (one restricted, without the
+grant), a call of a verb on such a record, a bundle none of whose
+declarations it would be shown. The entry keeps its id, its proposer,
+its times, its state and the proposer's `why`, so a reviewer without a
+read grant on the record still finds what it is asked to decide, and
+accepts it by its id. A proposal that names a type its reader is not
+shown is not listed at all (below, lakelands#762).
 
 The absent write is a form of the answer and of nothing else. A stored
 proposal and a logged `write_proposed` hold the write whole, and
@@ -215,7 +216,7 @@ logged.
 entry as its reader is shown it. A type the reader may not see answers
 what a type that is not declared answers, an empty listing; an entry
 without a write is of no kind. The unfiltered listing and `state` hold
-every entry. Ordering and paging were already over the entry as shown.
+every entry the reader is listed. Ordering and paging were already over the entry as shown.
 
 **A proposed bundle** shows each declaration `describe` would show its
 reader once the bundle is in force: a type it could see, with the fields
@@ -239,6 +240,66 @@ the fresh report as the accepter may know it, by the rule of the
 listing, and says `more` where that is less than the whole
 (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 extended, lakelands#531).
+
+## Extended: a proposal on a type its reader is not shown is not there (lakelands#762)
+
+A proposal that names a type its reader is not shown is not there to
+that reader. `proposals` does not list it, and `accept` and `reject`
+answer as for a proposal id that does not exist, word for word. The
+types a proposal names are:
+
+- the type an upsert or a retirement writes, and the type of a called
+  verb;
+- of a migration's `to` and of each type a bundle declares: the type
+  itself and, of a view, its sources; and the target of each relation
+  and reference field it adds, changes or drops against the type in
+  force, both compared completed, as the lake keeps a type (each
+  computed field's `depends_on` filled, a link field's among them);
+- the type each verb, trigger and object set of a bundle is on.
+
+A link type is shown only with both its ends
+(`docs/decisions/006-grants-not-roles.md`, extended), so a write to a
+link with a hidden end is among them, and so is a bundle that adds a
+relation or a reference to a hidden type. A relation or a reference
+restated as it stands names nothing the type in force does not. "As it
+stands" is equal as declared, in order (link fields and `depends_on`
+included), as the lake judges a declaration in force: a restatement that
+reorders them counts as a change, and errs toward hiding. An
+author's declaration carries back the relations it is not shown, so a
+reader not shown a relation's target still proposes, lists and decides
+its own redeclaration and migration of the type, which it may author
+directly. Only a type the lake declares counts: a bundle may declare a
+new type its reader would not be shown once in force, and is listed
+without that declaration, as above.
+
+A listed migration is judged by its reader as it stands; its report is
+then trimmed, as above, by the reader's grants at the proposal, against
+the type as it stood. An accept or a reject judges this as soon as the
+proposal is found,
+before anything else of it is told: whether it is decided, whether a
+pinned record moved since it was proposed, whether its write or its
+bundle would apply. Nothing is appended. A proposal hidden only by a
+record, one restricted or outside a holder's `only`, stays listed
+without its write, as above. A reviewer shown every type it names
+decides it as before, what its grants hide of a record or a field
+included.
+
+So no answer that reports on a type's migration is given to one not
+shown the type, and its report needs no form with the type taken out:
+`propose`, the preview `migrate` and `migrate_apply` answer that the
+type is not declared (027, extended), and the accept and the listing
+answer as here.
+
+**Why.** An accept is a write to what the proposal names, and its answer
+tells what it judged. If it applied, it wrote to a type its reviewer may
+not read, or reshaped one. If it was refused, it named the type, a key
+of it, a field and its kind, or that a hidden record moved. A listed
+entry whose id the accept then calls absent would tell a proposal hidden
+by its type from one hidden by a record. To a principal not shown a
+type, the type is one that is not declared
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+extended), and a proposal on a type that is not there is not there
+either: not in the listing, and not at the accept.
 
 ## Extended: a value type's tightening is proposed like a migration (lakelands#476)
 

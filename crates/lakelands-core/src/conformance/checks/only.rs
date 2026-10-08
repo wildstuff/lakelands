@@ -143,7 +143,7 @@ async fn get(
 }
 
 /// `claim` as [`claims`] declares it, its owner field named `owner`.
-fn claim_with(owner: &str) -> lakelands_api::ontology::TypeDecl {
+pub(super) fn claim_with(owner: &str) -> lakelands_api::ontology::TypeDecl {
     let fields = vec![
         field(owner, Text),
         field("amount", Number),

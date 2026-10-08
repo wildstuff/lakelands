@@ -972,6 +972,46 @@ impl Scope for VerbScope<'_> {
     }
 }
 
+/// Whether a proposed write names a type `who` is not shown, one `o`
+/// declares: the type it writes or a called verb is on; of a migration's
+/// `to` and of each type a bundle declares, what
+/// [`TypeDecl::names_against`] names against the type in force, the shape
+/// completed as `o` keeps it; and the type each verb, trigger and object
+/// set of a bundle is on. A link type is shown only with both its ends, so
+/// a write to one with a hidden end is among them. Such a proposal is not
+/// there to `who`: not listed, and not found by `accept` or `reject`
+/// (lakelands#762).
+pub(crate) fn hidden_by_type(o: &Ontology, who: &Principal, write: &ProposedWrite) -> bool {
+    let shape = |t: &TypeDecl| {
+        let mut t = t.clone();
+        o.complete(&mut t);
+        t.names_against(o.ty(&t.name).ok())
+    };
+    let mut named: Vec<TypeName> = Vec::new();
+    match write {
+        ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => {
+            named.push(ty.clone())
+        }
+        ProposedWrite::Call { verb, .. } => named.extend(o.verb(verb).ok().map(|v| v.on.clone())),
+        ProposedWrite::Migrate { migration, .. } => named.extend(shape(&migration.to)),
+        ProposedWrite::Declare { declarations } => {
+            for d in declarations {
+                match d {
+                    Declaration::Type(t) => named.extend(shape(t)),
+                    Declaration::Verb(v) => named.push(v.on.clone()),
+                    Declaration::Trigger(t) => named.push(t.on.clone()),
+                    Declaration::ObjectSet(s) => named.push(s.of.clone()),
+                    Declaration::ValueType(_) | Declaration::Function(_) => {}
+                }
+            }
+        }
+        ProposedWrite::MigrateValueType { .. } => {}
+    }
+    named
+        .iter()
+        .any(|ty| o.ty(ty).is_ok() && shown_type(o, ty, who).is_err())
+}
+
 /// The type `ty` for `who`: one it is not shown is answered as a type that
 /// is not declared, at every door that writes a record or authors a type
 /// (024, 027 and 028, extended). A refusal would tell that the type is
@@ -1822,6 +1862,23 @@ impl Call<'_> {
         Ok(pinned)
     }
 
+    /// A proposal hidden from its reviewer by a type it names
+    /// ([`hidden_by_type`]) is not there to it: answered as an id that does
+    /// not exist, as its listing leaves it out, before anything else of the
+    /// proposal is told or done (lakelands#762).
+    fn shown_to_reviewer(&self, o: &Ontology, p: &lakelands_api::write::Proposal) -> Result<()> {
+        if !p
+            .write
+            .as_ref()
+            .is_some_and(|w| hidden_by_type(o, self.who, w))
+        {
+            return Ok(());
+        }
+        Err(Error::NotFound {
+            missing: Missing::Proposal { id: p.id.clone() },
+        })
+    }
+
     /// Refuse a reviewer holding `only` a proposal it is not listed whole:
     /// a change of shape, which it never makes, and a write to a type it
     /// holds `only` on that its listing would trim or withhold (051). It is
@@ -1908,6 +1965,7 @@ impl Call<'_> {
         let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
         let p = find_proposal(view.as_ref(), proposal)?;
+        self.shown_to_reviewer(&w.ontology, &p)?;
         // Before a retry is answered: an accept sent again would hand a
         // holder of `only` what an earlier accepter was answered (051).
         self.decides(&w.ontology, &p)?;
@@ -2194,6 +2252,7 @@ impl Call<'_> {
         let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
         let p = find_proposal(view.as_ref(), proposal)?;
+        self.shown_to_reviewer(&w.ontology, &p)?;
         self.decides(&w.ontology, &p)?;
         if p.state != ProposalState::Pending {
             return Err(refused(Refusal::Decided));

@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::write::{ProposalFilter, ProposedWrite};
-use lakelands_api::{Access, LakeStore, Outcome, Principal, ProposalId, TypeName, WriteOpts};
+use lakelands_api::{
+    Access, Error, LakeStore, Missing, Outcome, Principal, ProposalId, TypeName, WriteOpts,
+};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
@@ -18,7 +20,7 @@ use crate::conformance::fixture::{Lake, Must, field_access, patch, type_of, valu
 check!(
     /// A proposal shows its reader the values it may read, and is accepted whole.
     VALUES_AS_THE_READERS_VIEW = a_proposal_shows_its_reader_the_values_it_may_read_and_is_accepted_whole,
-    "013 and 024, extended (lakelands#499): `proposals` shows a proposed value where a read of the record would: a field its reader may not know of and a masked one are not in a proposed patch, a proposed call's payload is whole only to a reader who may read every field the verb sets, or see the type of a verb that reaches outside, and a write to a type the reader may not see is listed without its write; every entry that holds more than its reader is shown says `more`, and no other does; the proposer reads its own proposal by the same rule; the accept applies the logged write whole, what its reviewer was not shown too"
+    "013 and 024, extended (lakelands#499): `proposals` shows a proposed value where a read of the record would: a field its reader may not know of and a masked one are not in a proposed patch, a proposed call's payload is whole only to a reader who may read every field the verb sets, or see the type of a verb that reaches outside, and a write to a type the reader may not see is not listed (lakelands#762); every entry that holds more than its reader is shown says `more`, and no other does; the proposer reads its own proposal by the same rule; the accept applies the logged write whole, what its reviewer was not shown too, and one not shown the type is answered as for a proposal that does not exist (lakelands#762)"
 );
 
 /// The agent `id` holding `review`, reading `invoice` but for its `salary`,
@@ -106,13 +108,9 @@ async fn a_proposal_shows_its_reader_the_values_it_may_read_and_is_accepted_whol
     let mut unseeing = reviewer(s, "unseeing", Access::Read);
     let none = Some(Access::None);
     (unseeing.grants.types.values_mut()).for_each(|t| (t.default, t.fields) = (none, [].into()));
-    // What an entry lists: the whole, a part with `more`, or no write.
+    // What an entry lists: the whole, or a part with `more`.
     let (all, part) = (|v: &Value| json!([v, false]), |v: Value| json!([v, true]));
-    let (note, empty, none) = (
-        || part(json!({"note": "raise"})),
-        || part(json!({})),
-        || part(Value::Null),
-    );
+    let (note, empty) = (|| part(json!({"note": "raise"})), || part(json!({})));
     let who = [
         "a reader of `salary`",
         "one who may not know of `salary`",
@@ -131,7 +129,8 @@ async fn a_proposal_shows_its_reader_the_values_it_may_read_and_is_accepted_whol
             reviewer(s, "masked", Access::Masked),
             vec![all(&told), empty(), note()],
         ),
-        (unseeing.clone(), vec![none(), none(), none()]),
+        // Not shown `invoice`, it is listed none of them (lakelands#762).
+        (unseeing.clone(), vec![]),
         (clerk, vec![all(&sent), all(&whole)]),
         (demoted, vec![empty(), note()]),
     ];
@@ -155,8 +154,16 @@ async fn a_proposal_shows_its_reader_the_values_it_may_read_and_is_accepted_whol
     let by_blind = l.cat.accept(&blind, &raise).await;
     by_blind.must("the reviewer who may not know of `salary` accepting the upsert")?;
     let raised = l.read("invoice", "i1").await?;
-    let by_unseeing = l.cat.accept(&unseeing, &call).await;
-    by_unseeing.must("the reviewer who may not see `invoice` accepting the call")?;
+    // One not shown `invoice` is not shown the proposal (lakelands#762).
+    let by_unseeing = l.cat.accept(&unseeing, &call).await.map(|_| ());
+    let missing = Missing::Proposal { id: call.clone() };
+    ensure!(
+        by_unseeing == Err(Error::NotFound { missing }),
+        "the reviewer who may not see `invoice` accepting the call must be answered as for a \
+         proposal that does not exist; it answered {by_unseeing:?}"
+    );
+    let by_blind = l.cat.accept(&blind, &call).await;
+    by_blind.must("the reviewer who may not know of `salary` accepting the call")?;
     let called = l.read("invoice", "i1").await?;
     ensure!(
         raised.fields == patch(json!({"no": "1", "note": "raise", "salary": "250"}))
