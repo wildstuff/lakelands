@@ -335,7 +335,11 @@ as it does for a stored type's (lakelands#668).
   the store holds every row it is handed to the reader's grants
   (`restricted`, `only`) as before, and at an earlier position the engine
   reads the head's index and the keys changed since, as above.
-  `describe_type` names a view's indexed fields in its lifecycle.
+  `describe_type` names a view's indexed fields in its lifecycle where
+  the view is kept, or asked to be and can be, as its `kept` tells that
+  reader (lakelands#748). A view that computes for want of `view_kept`,
+  or cannot be kept, has no records to index, and to a holder of `only`
+  an index would say whether the view is kept, which 051 keeps from it.
 
 **The cost.** 200 000 records in 100 000 groups of two, a kept view of
 `count()` and `sum(v)`, a page of 10, medians of five:

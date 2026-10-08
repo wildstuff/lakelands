@@ -839,7 +839,8 @@ A host that already has a store of its own moves in four steps.
     write that changes a kept group writes its rows too: some 5 to 8 %
     more on an ingest. The setting's write builds the index in one pass,
     0.8 s and 3.9 s at that size. A view that computes has no records
-    to index.
+    to index, so `describe_type` names no indexed field for it
+    (lakelands#748).
   - **Not every view can be kept:** only counts, sums and averages of
     what is certainly a number, and a `min` or `max` of a number or an
     instant under text or reference group fields. The setting's write is

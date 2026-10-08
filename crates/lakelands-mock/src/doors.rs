@@ -1138,6 +1138,12 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
         );
         Kept::by_declaration(v, value, shown, |t| st.types.get(t).map(|t| &t.decl))
     });
+    // As the store: an index is named where the view is kept, or asked to
+    // be and can be, as `kept` tells this reader.
+    let sorted = match &kept {
+        Some(k) if !k.names_its_index() => Vec::new(),
+        _ => sorted,
+    };
     TypeDescription {
         annotations: d.annotations.clone(),
         name: d.name.clone(),

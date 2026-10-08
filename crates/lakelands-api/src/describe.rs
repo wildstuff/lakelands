@@ -323,6 +323,20 @@ pub enum NotKept {
 }
 
 impl Kept {
+    /// Whether a view so described names its order index
+    /// (`sort_index.<view>`): where its records are kept, or asked to be
+    /// and can be, as told to its reader. One that computes for want of the
+    /// setting, or that cannot be kept, has no records to index, and to a
+    /// holder of `only` an index would say what is kept from it (051).
+    pub fn names_its_index(&self) -> bool {
+        !matches!(
+            self,
+            Kept::Computed {
+                why: NotKept::NotAsked | NotKept::CannotBeKept { .. } | NotKept::OnlySome
+            }
+        )
+    }
+
     /// What a view's lifecycle says by its declaration and its
     /// `view_kept.<type>` setting alone, where nothing keeps it: not asked
     /// for, unable to be kept and why, or not kept here. `shown` is
