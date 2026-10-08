@@ -164,6 +164,21 @@ check!(
     "022: a derived field that names a function is computed by that function's declaration in force; a new version of the function recomputes it and names that version as its procedure"
 );
 
+check!(
+    SAME_INPUTS_NEW_BODY = a_function_declared_again_with_the_same_inputs_computes_by_its_new_body,
+    "022: a function declared again with the same inputs and another body computes by the new body, and so do the derived fields that read what it computes: a record it recomputes, at the head and as of the declaration, and one written after it; as of before, the old body's values stand"
+);
+
+/// The function `scaled` of one decimal input `net`, computing `expr`.
+fn scaled(expr: &str) -> Result<Declaration, Failure> {
+    serde_json::from_value(json!({
+        "declare": "function", "name": "scaled", "backing": "expr",
+        "inputs": [{"name": "net", "type": {"kind": "decimal"}}],
+        "expr": expr
+    }))
+    .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))
+}
+
 async fn a_derived_field_accepts_no_value_from_a_source_or_a_verb_either(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -223,20 +238,12 @@ async fn a_derived_field_reading_a_function_is_recomputed_when_the_function_chan
     store: Store,
 ) -> Held {
     let l = Lake::of(store.as_ref());
-    let function = |expr: &str| -> Result<Declaration, Failure> {
-        serde_json::from_value(json!({
-            "declare": "function", "name": "scaled", "backing": "expr",
-            "inputs": [{"name": "net", "type": {"kind": "decimal"}}],
-            "expr": expr
-        }))
-        .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))
-    };
-    l.declare_as(function("net * 2")?, "declaring `scaled` as net * 2")
+    l.declare_as(scaled("net * 2")?, "declaring `scaled` as net * 2")
         .await?;
-    let scaled = computed_by("scaled", StorageKind::Decimal, "scaled", &["net"]);
+    let scaled_by = computed_by("scaled", StorageKind::Decimal, "scaled", &["net"]);
     l.declare(type_decl(
         "bill",
-        vec![field("net", StorageKind::Decimal), scaled],
+        vec![field("net", StorageKind::Decimal), scaled_by],
     ))
     .await?;
     l.upsert("bill", "b", json!({"net": "3"})).await?;
@@ -247,7 +254,7 @@ async fn a_derived_field_reading_a_function_is_recomputed_when_the_function_chan
         value(&r, "scaled")
     );
 
-    l.declare_as(function("net * 3")?, "declaring `scaled` as net * 3")
+    l.declare_as(scaled("net * 3")?, "declaring `scaled` as net * 3")
         .await?;
     let r = l.read("bill", "b").await?;
     let meta = r
@@ -261,5 +268,49 @@ async fn a_derived_field_reading_a_function_is_recomputed_when_the_function_chan
          version {meta:?}",
         value(&r, "scaled")
     );
+    Ok(())
+}
+
+async fn a_function_declared_again_with_the_same_inputs_computes_by_its_new_body(
+    store: Store,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare_as(scaled("net * 2")?, "declaring `scaled` as net * 2")
+        .await?;
+    let total = derived(
+        "total",
+        StorageKind::Decimal,
+        "scaled + net",
+        &["scaled", "net"],
+    );
+    let half = derived("half", StorageKind::Decimal, "net / 2", &["net"]);
+    let net = field("net", StorageKind::Decimal);
+    let scaled_by = computed_by("scaled", StorageKind::Decimal, "scaled", &["net"]);
+    l.declare(type_decl("bill", vec![net, scaled_by, total, half]))
+        .await?;
+    let written = l.upsert("bill", "a", json!({"net": "4"})).await?;
+    let again = scaled("net * 3")?;
+    let again = l
+        .declare_as(again, "declaring `scaled` again as net * 3")
+        .await?;
+    l.upsert("bill", "b", json!({"net": "4"})).await?;
+    let old = ["8", "12", "2"].map(|v| Some(dec(v)));
+    let new = ["12", "16", "2"].map(|v| Some(dec(v)));
+    for (key, at, want, when) in [
+        ("a", None, &new, "at the head"),
+        ("a", Some(again.position()), &new, "as of the declaration"),
+        ("a", Some(written.position()), &old, "as of its write"),
+        ("b", None, &new, "written after the declaration"),
+    ] {
+        let got = cat.get(own, &TypeName::from("bill"), get_at(key, at)).await;
+        let got = got.must(&format!("reading `{key}` {when}"))?.data;
+        let got = ["scaled", "total", "half"].map(|f| decimal(got.fields.get(f)));
+        ensure!(
+            &got == want,
+            "`scaled` was declared again with the same inputs as net * 3; `{key}` {when} must \
+             read scaled, total and half as {want:?}, by the body in force there; it reads {got:?}"
+        );
+    }
     Ok(())
 }

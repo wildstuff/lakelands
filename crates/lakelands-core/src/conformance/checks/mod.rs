@@ -338,6 +338,7 @@ pub const ALL: &[Check] = &[
     values::GEO_JSON_ORDER,
     derived_fields::NO_DOOR_AT_ALL,
     derived_fields::FUNCTION_VERSION_RECOMPUTES,
+    derived_fields::SAME_INPUTS_NEW_BODY,
     migrate::VIA_REMOVAL_REFUSED,
     migrate::DROPPED_REPORTED,
     migrate::VIEW_NOT_MIGRATED,

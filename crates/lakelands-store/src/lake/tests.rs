@@ -271,6 +271,7 @@ fn the_entries_of_a_recomputation_mirror_the_writers_ontology() {
             before: None,
             due: None,
             waiting: false,
+            plans: &record::Plans::default(),
         };
         record::rederive(o, &r, &event, &BTreeMap::new(), &mut outputs).unwrap()
     };
@@ -308,6 +309,120 @@ fn the_entries_of_a_recomputation_mirror_the_writers_ontology() {
         (entries.functions["f"].version, o.functions["f"].version),
         (1, 2)
     );
+}
+
+/// A plan stands while the ontology holds the entries it was made from,
+/// and a step's entries are the same; it is made again when a function, a
+/// value type or the type it reads is declared again, and only then. It
+/// holds what it read: an ontology dropped and made again with another
+/// body for `f` computes by that body, wherever its entries are allocated.
+#[test]
+fn a_plan_stands_until_what_it_was_made_from_is_declared_again() {
+    let plans = record::Plans::default();
+    let doc = |o: &Ontology| o.types[&TypeName::from("doc")].decl.clone();
+    let kept = |a: &Ontology, b: &Ontology| {
+        let first = plans.get(a, &doc(a));
+        Arc::ptr_eq(&first, &plans.get(b, &doc(b)))
+    };
+    let o = computing_doc();
+    assert!(kept(&o, &o) && kept(&o, &o.computing(&["doc".into()])));
+    let again = [
+        json!({"declare": "function", "name": "f", "backing": "expr", "expr": "n * 3",
+               "inputs": [{"name": "n", "type": {"kind": "decimal"}}]}),
+        json!({"declare": "value_type", "name": "money", "kind": "decimal", "scale": 2}),
+        json!({"declare": "type", "name": "doc", "fields": [{"name": "n", "type": {"kind": "decimal"}}]}),
+        json!({"declare": "value_type", "name": "other", "kind": "decimal", "scale": 2}),
+        json!({"declare": "function", "name": "h", "backing": "expr", "expr": "n * 3"}),
+    ];
+    let made_again = again.map(|d| {
+        let mut changed = o.clone();
+        changed.put(declaration(d), 2, None);
+        !kept(&o, &changed)
+    });
+    assert_eq!(made_again, [true, true, true, false, false]);
+
+    let engine = lakelands_engine_mem::MemoryOpener::new()
+        .open(&Location::memory("plans"), OpenMode::Create)
+        .unwrap();
+    let view = engine.view(None).unwrap();
+    let (event, r) = (declared_at(7), record("doc", "a", json!({"n": "1.26"}), 2));
+    let twice = |o: &Ontology| {
+        let mut outputs = Outputs {
+            view: view.as_ref(),
+            staged: None,
+            before: None,
+            due: None,
+            waiting: false,
+            plans: &plans,
+        };
+        let r = record::rederive(o, &r, &event, &BTreeMap::new(), &mut outputs).unwrap();
+        r.unwrap().fields["twice"].clone()
+    };
+    let lone = |twice: &str| {
+        let mut o = Ontology::default();
+        let f = json!({"declare": "function", "name": "f", "backing": "expr", "expr": twice,
+                       "inputs": [{"name": "n", "type": {"kind": "decimal"}}]});
+        let doc = json!({"declare": "type", "name": "doc", "fields": [
+            {"name": "n", "type": {"kind": "decimal"}},
+            {"name": "twice", "type": {"kind": "decimal"}, "authority": "derived", "function": "f"}]});
+        o.put(declaration(f), 1, None);
+        o.put(declaration(doc), 1, None);
+        o
+    };
+    assert_eq!(twice(&lone("n * 2")), json!("2.52"));
+    assert_eq!(twice(&lone("n * 3")), json!("3.78"));
+}
+
+/// A type whose fields cannot be ordered (the declaration that makes one
+/// is refused, so only a log can hold it) fails when a live record of it
+/// is computed, and only then: a retired one is left as it is.
+#[test]
+fn a_type_that_cannot_be_ordered_fails_only_at_a_live_record() {
+    let mut o = Ontology::default();
+    let d = |n: &str, more: serde_json::Value| {
+        let mut f = json!({"name": n, "type": {"kind": "decimal"}, "authority": "derived"});
+        f.as_object_mut()
+            .unwrap()
+            .extend(more.as_object().unwrap().clone());
+        f
+    };
+    for t in [
+        json!({"declare": "function", "name": "g", "backing": "remote",
+               "inputs": [{"name": "y", "type": {"kind": "decimal"}}]}),
+        json!({"declare": "type", "name": "backed", "fields": [
+            d("x", json!({"function": "g"})), d("y", json!({"derived": "x + 1"}))]}),
+        json!({"declare": "type", "name": "derived", "fields": [
+            d("a", json!({"derived": "b + 1"})), d("b", json!({"derived": "a + 1"}))]}),
+    ] {
+        o.put(declaration(t), 1, None);
+    }
+    let engine = lakelands_engine_mem::MemoryOpener::new()
+        .open(&Location::memory("unordered"), OpenMode::Create)
+        .unwrap();
+    let view = engine.view(None).unwrap();
+    let event = declared_at(7);
+    let flaw = |ty: &str, retired: bool| {
+        let mut outputs = Outputs {
+            view: view.as_ref(),
+            staged: None,
+            before: None,
+            due: None,
+            waiting: false,
+            plans: &record::Plans::default(),
+        };
+        let r = StoredRecord {
+            retired,
+            ..record(ty, "k", json!({}), 2)
+        };
+        let answer = record::rederive(&o, &r, &event, &BTreeMap::new(), &mut outputs);
+        let named =
+            |e: Error| ["CannotOrder", "CannotDerive"].map(|f| format!("{e:?}").contains(f));
+        answer.map(|r| r.is_some()).map_err(named)
+    };
+    assert_eq!(flaw("backed", true), Ok(false));
+    assert_eq!(flaw("derived", true), Ok(false));
+    assert_eq!(flaw("backed", false), Err([true, false]));
+    assert_eq!(flaw("derived", false), Err([false, true]));
 }
 
 /// A value type's step renames an old value in every field of the value

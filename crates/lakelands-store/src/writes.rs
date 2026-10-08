@@ -1310,6 +1310,7 @@ impl Call<'_> {
                 before: None,
                 due: None,
                 waiting: false,
+                plans: &w.plans,
             },
         )?
         .expect("a record event makes a record");
@@ -1432,6 +1433,7 @@ impl Call<'_> {
             before: None,
             due: None,
             waiting: false,
+            plans: &w.plans,
         };
         let after = record::apply(&w.ontology, Some(before), &event, &w.settings, outputs)?
             .expect("a retire makes a record");
@@ -3921,6 +3923,7 @@ impl Call<'_> {
                     before: None,
                     due: None,
                     waiting: false,
+                    plans: &w.plans,
                 };
                 let is = record::rederive(&computing, &is, &event, &w.settings, &mut outputs)?
                     .unwrap_or(is);
