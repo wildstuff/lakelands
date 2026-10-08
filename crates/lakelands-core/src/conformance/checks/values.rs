@@ -5,7 +5,7 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, ValueTypeDecl};
+use lakelands_api::ontology::{ComputedAt, FieldDecl, FieldType, StorageKind, ValueTypeDecl};
 use lakelands_api::read::{Direction, OrderBy};
 use lakelands_api::write::Declaration;
 use lakelands_api::{Find, LakeStore, Record, Refusal};
@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, head_unmoved, order, owner, refused_on, try_upsert, type_decl, value,
-    value_type,
+    Lake, Must, derived, doors, field, head_unmoved, order, owner, refused_on, try_upsert,
+    type_decl, value, value_type,
 };
 use crate::expr::order::cmp_values;
 
@@ -31,9 +31,9 @@ check!(
 );
 
 check!(
-    /// A vector has its declared length.
-    VECTOR_LENGTH = a_vector_of_the_wrong_length_is_refused,
-    "011: a vector field declares its dimensions, and a value of another length does not fit it"
+    /// A vector has its declared length and finite components.
+    VECTOR_LENGTH = a_vector_of_the_wrong_length_or_an_infinite_component_is_refused,
+    "011 and the log format §5: a vector field declares its dimensions, and a value of another length does not fit it, nor one with a component that is not finite as an `f32` (`1e300`); a vector of zeros fits; a vector derived from a `json` field, written or computed at the read, holding what no vector of the field is (`[1e300, 0, 0]`, `[\"a\", \"b\", \"c\"]`, two numbers) holds no value"
 );
 
 check!(
@@ -133,7 +133,9 @@ async fn bytes_are_padded_standard_base64_and_nothing_else(
     Ok(())
 }
 
-async fn a_vector_of_the_wrong_length_is_refused(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_vector_of_the_wrong_length_or_an_infinite_component_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
     let ty = FieldType {
         dimensions: Some(3),
         ..FieldType::kind(StorageKind::Vector)
@@ -153,7 +155,35 @@ async fn a_vector_of_the_wrong_length_is_refused(store: Arc<dyn LakeStore>) -> R
         "four numbers for three",
     )
     .await?;
-    refused(store.as_ref(), json!([0.1, "x", 0.3]), "not all numbers").await
+    refused(store.as_ref(), json!([0.1, "x", 0.3]), "not all numbers").await?;
+    refused(store.as_ref(), json!([1e300, 0, 0]), "infinite as an f32").await?;
+    for zeros in [json!([0, 0, 0]), json!([1e-200, 0, 0])] {
+        l.upsert("thing", "k", json!({ "v": zeros })).await?;
+    }
+    let mut v = derived("v", StorageKind::Vector, "raw", &["raw"]);
+    v.ty.dimensions = Some(3);
+    let w = FieldDecl {
+        name: "w".into(),
+        computed_at: Some(ComputedAt::Read),
+        ..v.clone()
+    };
+    let fields = vec![field("raw", StorageKind::Json), v, w];
+    l.declare(type_decl("from_raw", fields)).await?;
+    for raw in [json!([1e300, 0, 0]), json!(["a", "b", "c"]), json!([1, 2])] {
+        l.upsert("from_raw", "k", json!({ "raw": [1, 2, 3] }))
+            .await?;
+        l.upsert("from_raw", "k", json!({ "raw": raw })).await?;
+        let r = l.read("from_raw", "k").await?;
+        ensure!(
+            value(&r, "v").is_none() && value(&r, "w").is_none(),
+            "`v` and `w` (computed at the read) are vectors of three derived from `raw`, \
+             which holds {raw}: no vector of theirs, so they must hold no value; they read \
+             {:?} and {:?}",
+            value(&r, "v"),
+            value(&r, "w")
+        );
+    }
+    Ok(())
 }
 
 async fn typed(store: &dyn LakeStore, ty: &str, vt: ValueTypeDecl) -> Result<(), Failure> {

@@ -171,3 +171,38 @@ setting `search_weights.<type>` says it once:
   carries a grant through a field's rename (lakelands#527) does not reach
   a setting: a host that renames a weighed field writes the setting
   again.
+
+## Extended: a query vector has a direction (lakelands#696)
+
+A vector search along `(0, 0)` answered every record at a score of 0,
+in key order, and a hybrid search fused that key order as if it were a
+ranking. Near a vector of no direction is nothing. And a query vector
+of `(1e300, 0)` is infinite once read as the 32-bit floats a search
+ranks by, so every hit scored `NaN`.
+
+- **Every query vector a search names has a direction:** each component
+  a finite 32-bit float, and one at least not 0. That holds for
+  `vector`, each entry of `also`, and a hybrid search's vector. A JSON
+  number is read as a 32-bit float first, so `1e-200` is 0 and `1e300`
+  is not finite.
+- **Anything else is refused as invalid, naming the field,** with the
+  other faults of the mode above, before the principal's rights: "`v`'s
+  vector has no direction: every component is 0", or "has a component
+  that is not a finite number".
+- **A vector the embedding backend makes for a hybrid search is held to
+  the same rule,** and one without a direction makes the search
+  unavailable, as a backend that fails does: the caller did not write
+  it.
+
+A query vector is always the caller's: the store makes no model call of
+its own accord, and a hybrid search without one falls back to its text
+or to the bound backend. So a vector with no direction is the caller's
+mistake, and a refusal that names the field says so. An axis that
+ranked nothing would answer no hits for a lone search, which reads as
+"nothing is near". The rule is exact: a cosine over finite 32-bit
+floats, summed in doubles, neither overflows nor underflows.
+
+A record's vector is not held to a direction. A record may have nothing
+to say along a field, and a vector of zeros scores 0 against every
+query. Its components must be finite 32-bit floats, as every value's
+JSON form says (`docs/log-format.md` §5).

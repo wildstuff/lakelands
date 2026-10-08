@@ -10708,8 +10708,9 @@ pub async fn a_search_limited_to_named_fields_matches_and_probes_only_those(
 /// `b` alone holds the word and is the vector's third, so it ranks first
 /// at 1/60 + 1/62, above `a` (the vector's first, 1/60) and `c` (1/61).
 /// Each ranking is weighed as the search asks, a vector search over a
-/// second field fuses the same way, and a weight that cannot weigh, or a
-/// field named twice, is refused as invalid.
+/// second field fuses the same way, and a weight that cannot weigh, a
+/// field named twice, or a query vector of zeros, is refused as invalid.
+/// A record's vector with a component no `f32` holds is refused too.
 pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let owner = &f.cast.owner;
@@ -10843,6 +10844,7 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
         (fields(None, "w", Some(1_000_001.0)), Some("w")),
         (fields(None, "v", None), Some("v")),
         (hybrid(Some(-1.0), None), None),
+        (SearchMode::vector("v", vec![0.0, 0.0]), Some("v")),
     ] {
         let what = format!("{mode:?}");
         match f.catalog.search(owner, search(mode)).await {
@@ -10859,6 +10861,15 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
             other => panic!("{what} must be refused as invalid; it answered {other:?}"),
         }
     }
+    let huge = patch(&[("v", json!([1e300, 0]))]);
+    let e = (f.catalog)
+        .upsert(owner, &ty("doc"), &key("a"), huge, WriteOpts::default())
+        .await
+        .expect_err("a record's `v` of [1e300, 0] is refused");
+    assert!(
+        matches!(&e, Error::Refused { field: Some(f), reason: Refusal::Constraint { .. } } if f.as_str() == "v"),
+        "a record's `v` of [1e300, 0] is refused as a constraint naming `v`; it answered {e:?}"
+    );
 }
 
 /// A grant's `only` admits its holder the records whose fields hold its

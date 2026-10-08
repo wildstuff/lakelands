@@ -438,11 +438,17 @@ impl Catalog for Doors {
                             embed.model()
                         )),
                     })?;
-            if vectors.len() != 1 {
+            // A vector the backend made with no direction is its fault, not
+            // the caller's: weather, as a wrong count of vectors is.
+            let fault = match &vectors[..] {
+                [one] => lakelands_api::query::no_direction(one)
+                    .map(|why| format!("a vector that {why}")),
+                _ => Some(format!("{} vectors for one text", vectors.len())),
+            };
+            if let Some(fault) = fault {
+                let model = embed.model();
                 return Err(unavailable(format!(
-                    "the embedding backend `{}` answered {} vectors for one text",
-                    embed.model(),
-                    vectors.len()
+                    "the embedding backend `{model}` answered {fault}"
                 )));
             }
             *vector = vectors.pop();

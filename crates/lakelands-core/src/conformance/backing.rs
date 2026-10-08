@@ -17,7 +17,8 @@
 //!
 //! The suite's embedding backend, [`embedder`], is bound in the lakes of
 //! the checks that ask for it. Its model is [`EMBED_MODEL`], its vectors
-//! have two dimensions, and every text becomes `(1, 0)`. A call fails
+//! have two dimensions, and every text becomes `(1, 0)`, but one starting
+//! with [`NOWHERE`], which becomes the vector of zeros. A call fails
 //! when one of its texts starts with [`UNREACHABLE`], or was unplugged
 //! ([`unplug_text`], until [`plug_text`]): it refuses the request as
 //! `Invalid`, so the store asks again in halves until the text is alone.
@@ -114,6 +115,9 @@ pub const UNREACHABLE: &str = "unreachable";
 /// A text the suite's embedding backend answers `Unavailable` for.
 pub const WEATHER: &str = "weather";
 
+/// A text the suite's embedding backend makes the vector of zeros.
+pub const NOWHERE: &str = "nowhere";
+
 #[derive(Default)]
 struct Embeds {
     calls: usize,
@@ -176,9 +180,9 @@ impl EmbedBackend for Embedder {
         let dimensions = self.dimensions as usize;
         Ok(texts
             .iter()
-            .map(|_| {
+            .map(|t| {
                 let mut v = vec![0.0; dimensions];
-                if let Some(first) = v.first_mut() {
+                if let (Some(first), false) = (v.first_mut(), t.starts_with(NOWHERE)) {
                     *first = 1.0;
                 }
                 v

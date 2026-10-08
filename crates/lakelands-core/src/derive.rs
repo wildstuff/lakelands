@@ -247,7 +247,9 @@ pub fn at_read(
 }
 
 /// What `expr` computes for the field `decl` over `scope`, landed in its
-/// kind at its value type's scale; null when it cannot be.
+/// kind at its value type's scale; null when it cannot be, or when the
+/// field's type would not take it: a JSON value is not checked when it is
+/// written, so a vector or a geometry computed from one is checked here.
 fn computed(
     decl: &FieldDecl,
     expr: &Expr,
@@ -260,6 +262,7 @@ fn computed(
     eval(expr, scope)
         .ok()
         .and_then(|v| to_json(&v, decl.ty.kind, scale))
+        .filter(|v| v.is_null() || crate::shape::fits(&decl.ty, v))
         .unwrap_or(Value::Null)
 }
 

@@ -79,6 +79,14 @@ impl StorageKind {
     ];
 }
 
+/// Whether `v` is a component of a vector value: a number whose `f32`
+/// is finite. A search reads a vector as `f32`s, so a number beyond their
+/// range would be infinite there and score every hit `NaN`. Every vector
+/// that enters a lake goes through this, written or computed.
+pub fn is_vector_component(v: &serde_json::Value) -> bool {
+    v.as_f64().is_some_and(|x| (x as f32).is_finite())
+}
+
 /// A value type: what a value means and what it must satisfy, declared
 /// in the bundle over a storage kind. The set is open; adding one needs
 /// no engine change.
