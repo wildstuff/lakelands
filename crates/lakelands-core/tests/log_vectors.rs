@@ -771,7 +771,7 @@ fn the_version_12_line_recomputes_and_written_as_version_11_is_refused() {
 }
 
 #[test]
-fn the_version_13_line_recomputes_and_written_as_version_12_is_refused() {
+fn the_version_13_lines_recompute_and_written_as_version_12_are_refused() {
     let v13 = read_json("v13.json");
     let mut prev = read_json("v12.json")["hashes"][2]
         .as_str()
@@ -790,8 +790,11 @@ fn the_version_13_line_recomputes_and_written_as_version_12_is_refused() {
         body.as_object_mut().unwrap().remove("hash");
         assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
         assert_eq!(event.prev.0, prev, "it follows the event before it");
+        // A pinned proposal and a declaration that names a date need 13;
+        // a record holding a date is written in the lake's version.
         let needed = lakelands_core::versions::needed(&event.body, false);
-        assert_eq!((event.v, needed), (13, 13));
+        let added = !matches!(event.body, EventBody::RecordUpserted { .. });
+        assert_eq!((event.v, added), (13, needed == 13));
         prev = event.hash.0;
     }
     let hashes = v13["hashes"].as_array().unwrap();

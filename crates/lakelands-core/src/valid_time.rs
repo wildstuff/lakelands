@@ -1,10 +1,11 @@
 //! When a record holds in the world: the one `valid_at` rule.
 //!
-//! A valid-timed type names a `date_time` field holding when a record
-//! became true (`valid_from`) and optionally one holding when it stopped
-//! (`valid_to`). A field of any other kind is refused at the declaration
-//! (028, extended), so a value that only reads as an instant never sets a
-//! record's validity.
+//! A valid-timed type names a `date_time` or a `date` field holding when a
+//! record became true (`valid_from`) and optionally one holding when it
+//! stopped (`valid_to`). A field of any other kind is refused at the
+//! declaration (028, extended), so a value that only reads as an instant
+//! never sets a record's validity; a date is the instant at its UTC
+//! midnight.
 //! A read at `valid_at = t` sees a record when
 //!
 //! ```text
@@ -15,8 +16,10 @@
 //! where one ends exactly when the next begins never both hold at that
 //! instant.
 //!
-//! A write holds a `date_time` value to a UTC instant, so a valid time is
-//! an instant or absent. A record whose `valid_from` is absent is **not**
+//! A write holds a `date_time` value to a UTC instant and a `date` to a
+//! calendar date, so a valid time is an instant, a date or absent; this
+//! module still reads any string that parses as an instant, since it is
+//! handed values, not their field's kind. A record whose `valid_from` is absent is **not**
 //! valid at any `valid_at`: a record that cannot say when it became true
 //! cannot claim to have been true at a given moment. Such a record is
 //! still read by a query without `valid_at`. An absent `valid_to` means
@@ -30,8 +33,8 @@ use lakelands_api::ontology::TypeDecl;
 use lakelands_api::{FieldName, Timestamp, Value};
 use std::collections::BTreeMap;
 
-/// A valid-time field's value as an instant: a date-time field holds one
-/// as a write stored it. Anything else, an absent value, is no anchor.
+/// A value as an instant: any string that parses as one, a date as its
+/// UTC midnight. A value that does not, or none, is no anchor.
 pub fn anchor(value: Option<&Value>) -> Option<Timestamp> {
     value
         .and_then(Value::as_str)

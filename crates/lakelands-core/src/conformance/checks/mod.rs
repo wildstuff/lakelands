@@ -20,6 +20,7 @@ mod computed_inputs;
 mod concurrency;
 mod cursors;
 mod date_bucket;
+mod dates;
 mod decimals;
 mod derived_fields;
 mod derived_relations;
@@ -196,6 +197,8 @@ pub const ALL: &[Check] = &[
     authors_view::HIDDEN_NAME_JUDGED_AS_ABSENT,
     authors_view::HIDDEN_NAME_NOT_IN_THE_SHAPE,
     values::DATE_TIME_CANONICAL,
+    dates::DATE_KIND,
+    dates::DATE_MIGRATES,
     values::BYTES_ONE_SPELLING,
     values::VECTOR_LENGTH,
     values::VALUE_TYPE_RULES,

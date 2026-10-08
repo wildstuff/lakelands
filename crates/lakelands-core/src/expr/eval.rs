@@ -900,6 +900,7 @@ pub fn to_json(
         }),
         (Val::Bool(b), K::Boolean) => Some(Value::Bool(*b)),
         (v, K::DateTime) => as_time(v).map(|t| Value::String(t.to_string())),
+        (v, K::Date) => as_time(v).and_then(Timestamp::day).map(Value::String),
         (v, K::Text | K::Reference) => text(v).map(Value::String),
         (Val::Json(j), K::Json | K::Geo | K::Vector) => Some(j.clone()),
         (v, K::Json) => text(v).map(Value::String),

@@ -129,7 +129,7 @@ interface types {
     // ------------------------------------------------------------------
 
     enum storage-kind {
-        text, number, decimal, boolean, date-time, bytes, json, reference, vector, geo,
+        text, number, decimal, boolean, date-time, bytes, json, reference, vector, geo, date,
     }
 
     record field-type {

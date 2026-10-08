@@ -535,3 +535,30 @@ fn a_value_type_rename_needs_format_12_and_says_so_below_it() {
         )
     );
 }
+
+#[test]
+fn the_kind_date_needs_format_13_and_says_so_below_it() {
+    let date = json!({"name": "on", "type": {"kind": "date"}});
+    let view = json!({"declare": "type", "name": "w", "fields": [],
+                      "view": {"source": "t", "measures": [], "params": [{"name": "p", "kind": "date"}]}});
+    for with in [
+        json!({"declare": "type", "name": "t", "fields": [date]}),
+        view,
+        json!({"declare": "value_type", "name": "day", "kind": "date"}),
+    ] {
+        assert_eq!(needed(&declared_event(13, &with).body, false), 13, "{with}");
+        assert_eq!(
+            below(&declared_event(12, &with))
+                .map(|f| f.to_string())
+                .as_deref(),
+            Some("a format 12 event declares the kind `date`, which format 13 added")
+        );
+    }
+    let to = json!({"name": "t", "fields": [date]});
+    let migrated = json!({"kind": "migrated", "migration": {"to": to}, "version": 2,
+                          "schema_hash": "0", "report_id": "r"});
+    assert_eq!(needed(&event_json(13, migrated).body, false), 13);
+    let time = json!({"declare": "type", "name": "t",
+                      "fields": [{"name": "on", "type": {"kind": "date_time"}}]});
+    assert_eq!(needed(&declared_event(1, time).body, false), 1);
+}

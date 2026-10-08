@@ -431,6 +431,7 @@ pub fn field_schema(ty: &FieldType, lake: &LakeDescription) -> Value {
         }
         StorageKind::Boolean => json!({"type": "boolean"}),
         StorageKind::DateTime => json!({"type": "string", "format": "date-time"}),
+        StorageKind::Date => json!({"type": "string", "format": "date"}),
         StorageKind::Bytes => json!({"type": "string", "contentEncoding": "base64"}),
         StorageKind::Json => json!({}),
         StorageKind::Reference => json!({"type": "string"}),

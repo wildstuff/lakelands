@@ -86,6 +86,14 @@ impl Timestamp {
         ))
     }
 
+    /// The calendar date of an instant at a UTC midnight, `YYYY-MM-DD`:
+    /// the form a `date` field keeps. Any other instant has none.
+    pub fn day(self) -> Option<String> {
+        let (y, m, d) = self.date();
+        let midnight = self.0.rem_euclid(MICROS_PER_SEC * SECS_PER_DAY) == 0;
+        midnight.then(|| format!("{y:04}-{m:02}-{d:02}"))
+    }
+
     /// Parses `YYYY-MM-DD`, or RFC 3339 with `Z` or a numeric offset and
     /// up to six fractional digits. A date alone means midnight UTC.
     pub fn parse(s: &str) -> Result<Timestamp, TimestampError> {

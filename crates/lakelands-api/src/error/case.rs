@@ -410,6 +410,8 @@ named! {
         Digits = "digits" => "a string of digits",
         /// A date-time.
         DateTime = "date_time" => "a date-time string",
+        /// A date.
+        Date = "date" => "a date string",
         /// Bytes.
         Base64 = "base64" => "a base64 string",
         /// A vector.
@@ -710,7 +712,7 @@ catalog! {
         /// A `json` field named as a type.
         JsonNamedAsType => "a json field may not carry the name of a type",
         /// A type keyed by a field no key may be.
-        KeyUnkeyable { field: FieldName } => "it is keyed by `{field}`, whose kind has no string form for a key; a key field is text, a reference, a decimal, a number, a boolean or a date-time",
+        KeyUnkeyable { field: FieldName } => "it is keyed by `{field}`, whose kind has no string form for a key; a key field is text, a reference, a decimal, a number, a boolean, a date-time or a date",
         /// Links of an authority no door writes them by.
         LinkAuthority { authority: Authority } => "its links are written by `authored` or `source`, not `{authority}`",
         /// A field of a source's link that no door writes.
@@ -742,11 +744,11 @@ catalog! {
         /// A derived relation's pair named twice.
         PairTwice { from: FieldName, to: FieldName } => "the pair `{from}` = `{to}` is matched twice",
         /// A derived relation's pair of a kind no key may be.
-        PairUnkeyable { from: FieldName, to: FieldName, kind: StorageKind } => "the pair `{from}` = `{to}` matches {kind} fields; a match is between fields of a kind a key may be: text, a reference, a decimal, a number, a boolean or a date-time",
+        PairUnkeyable { from: FieldName, to: FieldName, kind: StorageKind } => "the pair `{from}` = `{to}` matches {kind} fields; a match is between fields of a kind a key may be: text, a reference, a decimal, a number, a boolean, a date-time or a date",
         /// A derived relation's pair naming a field that is not there.
         PairUnknown { from: FieldName, to: FieldName, #[serde(rename = "type")] ty: TypeName, target: Box<TypeName> } => "the pair `{from}` = `{to}` names a field that `{ty}` or `{target}` does not have",
         /// A view's parameter of a kind no parameter is.
-        ParamKind { name: ParamName, kind: StorageKind } => "its view's parameter `{name}` is of kind {kind}; a parameter is text, number, decimal, boolean or date_time",
+        ParamKind { name: ParamName, kind: StorageKind } => "its view's parameter `{name}` is of kind {kind}; a parameter is text, number, decimal, boolean, date_time or date",
         /// A `param` its view does not declare.
         ParamUndeclared { name: String, declared: Option<Names> } => "its view reads param('{name}'), which it does not declare; [its parameters are {declared}|it declares no parameters]",
         /// A view's parameter nothing reads.
@@ -783,8 +785,8 @@ catalog! {
         TypeVerbWrites { #[serde(rename = "type")] ty: TypeName } => "it is declared on the type `{ty}`, and a write effect sets fields of a record it does not have",
         /// A type named that is not declared.
         Undeclared { #[serde(rename = "type")] ty: TypeName } => "`{ty}` is not a declared type",
-        /// A valid time over a field that is not a date-time.
-        ValidTimeNotDateTime { field: FieldName, axis: String, kind: StorageKind } => "it names `{field}` as its `{axis}`, a {kind} field; a valid time is a date-time field",
+        /// A valid time over a field that is neither a date-time nor a date.
+        ValidTimeNotTime { field: FieldName, axis: String, kind: StorageKind } => "it names `{field}` as its `{axis}`, a {kind} field; a valid time is a date_time or a date field",
         /// A field its author may name, sent as a valid time where one over
         /// a field it may not know of stands: the bound is taken.
         ValidTimeStands { axis: String } => "its `{axis}` names a field you may not know of, and stands as declared",
@@ -1190,7 +1192,7 @@ catalog! {
         /// An order index of a field computed at the read.
         OrderIndexAtRead { field: FieldName } => "`{field}` is computed at the read; an order index keeps stored values",
         /// An order index of a field of a kind it does not keep.
-        OrderIndexKind { field: FieldName, kind: StorageKind } => "`{field}` is of kind {kind}; an order index keeps text, number, decimal, boolean, date-time and reference fields",
+        OrderIndexKind { field: FieldName, kind: StorageKind } => "`{field}` is of kind {kind}; an order index keeps text, number, decimal, boolean, date-time, date and reference fields",
         /// An index setting holding something other than field names.
         SettingFieldNames { value: Value } => "it holds field names, and {value} is not one",
         /// An index setting that is no list.
@@ -1309,6 +1311,8 @@ catalog! {
         NotBase64 => "not standard base64 with padding",
         /// A date-time that is no UTC instant.
         NotDateTime { value: String } => "not a UTC date-time: \"{value}\"",
+        /// A date that is no calendar date.
+        NotDate { value: String } => "not a date: \"{value}\" is neither `YYYY-MM-DD` nor an instant at a UTC midnight",
         /// A decimal that is not digits.
         NotDecimal { value: String } => "not a decimal: \"{value}\"",
         /// A value its value type's format refuses.

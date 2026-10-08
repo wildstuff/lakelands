@@ -502,3 +502,13 @@ fn the_argument_schemas_reach_every_argument_the_doors_take() {
     assert!(arg("search", &["cursor"]).is_object());
     assert!(arg("proposals", &["state"]).is_object());
 }
+
+#[test]
+fn a_date_field_is_a_string_of_the_format_date() {
+    let ty = crate::ontology::FieldType::kind(StorageKind::Date);
+    let schema = field_schema(&ty, &lake_of(Vec::new()));
+    assert_eq!(
+        schema,
+        serde_json::json!({"type": "string", "format": "date"})
+    );
+}

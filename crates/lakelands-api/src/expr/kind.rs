@@ -51,7 +51,7 @@ impl Kind {
             S::Text | S::Reference | S::Json => true,
             S::Number | S::Decimal => matches!(self, Kind::Number | Kind::Text),
             S::Boolean => self == Kind::Boolean,
-            S::DateTime => matches!(self, Kind::Instant | Kind::Text),
+            S::DateTime | S::Date => matches!(self, Kind::Instant | Kind::Text),
             S::Bytes | S::Vector | S::Geo => false,
         }
     }
@@ -84,7 +84,7 @@ pub fn of(
         Expr::Path { path } => match (path.as_slice(), path.first().and_then(field)) {
             ([_], Some(StorageKind::Number | StorageKind::Decimal)) => Some(Number),
             ([_], Some(StorageKind::Boolean)) => Some(Boolean),
-            ([_], Some(StorageKind::DateTime)) => Some(Instant),
+            ([_], Some(StorageKind::DateTime | StorageKind::Date)) => Some(Instant),
             ([_], Some(StorageKind::Text | StorageKind::Reference)) => Some(Text),
             // A longer path walks into a `json` or `geo` value's members;
             // into anything else it reads nothing, whatever the record

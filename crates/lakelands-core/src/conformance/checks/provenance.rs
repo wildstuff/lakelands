@@ -20,7 +20,7 @@ use crate::conformance::fixture::{
 check!(
     /// A valid time is a stored date-time field.
     VALID_TIME_IS_A_DATE_TIME = a_valid_time_names_a_stored_date_time_field,
-    "028, extended (lakelands#714): `valid_from` and `valid_to` each name a field of kind `date_time`, so a value that only reads as an instant never sets a record's validity; a field of any other kind is refused as invalid on it, by `declare`, `apply`, a proposal and a migration, a derived `date_time` field and a view's `date_time` field are valid times as any is, and a read at `valid_at` admits by them"
+    "028, extended (lakelands#714, lakelands#702): `valid_from` and `valid_to` each name a field of kind `date_time` or `date`, so a value that only reads as an instant never sets a record's validity; a field of any other kind is refused as invalid on it, by `declare`, `apply`, a proposal and a migration, a derived `date_time` field and a view's `date_time` field are valid times as any is, and a read at `valid_at` admits by them; a `date` valid time holds from its first day's midnight up to, not through, its last day's"
 );
 
 check!(
@@ -253,7 +253,7 @@ async fn a_valid_time_names_a_stored_date_time_field(
     let l = Lake::of(store.as_ref());
     l.declare(type_decl("payroll", vec![field("code", StorageKind::Text)]))
         .await?;
-    let not_date_time = |field: &str, axis: &str, kind| Case::ValidTimeNotDateTime {
+    let not_date_time = |field: &str, axis: &str, kind| Case::ValidTimeNotTime {
         field: field.into(),
         axis: axis.into(),
         kind,
@@ -267,7 +267,7 @@ async fn a_valid_time_names_a_stored_date_time_field(
     // Every other kind, as `valid_from` and as `valid_to`.
     let other = StorageKind::ALL
         .into_iter()
-        .filter(|k| *k != StorageKind::DateTime);
+        .filter(|k| !matches!(k, StorageKind::DateTime | StorageKind::Date));
     for kind in other {
         let at = match kind {
             StorageKind::Reference => reference("at", "payroll"),
@@ -315,6 +315,28 @@ async fn a_valid_time_names_a_stored_date_time_field(
             "`stamped`, valid from its derived `on`, read in April and June: {} and {}",
             april.len(),
             june.len()
+        ));
+    }
+    // A `date` valid time is its days' midnights, half-open: a booking
+    // from the 1st to the 31st holds through the 30th, not on the 31st.
+    let mut booked = type_decl("booked", vec![field("from", StorageKind::Date)]);
+    booked.fields.push(field("to", StorageKind::Date));
+    (booked.valid_from, booked.valid_to) = (Some("from".into()), Some("to".into()));
+    l.declare(booked).await?;
+    let july = json!({"from": "2026-07-01", "to": "2026-07-31"});
+    l.upsert("booked", "b1", july).await?;
+    let mut held = Vec::new();
+    for t in [
+        "2026-06-30T23:59:59Z",
+        "2026-07-01",
+        "2026-07-30T23:59:59Z",
+        "2026-07-31",
+    ] {
+        held.push(l.all_found("booked", at(t)).await?.len());
+    }
+    if held != [0, 1, 1, 0] {
+        wrong.push(format!(
+            "`booked` from 07-01 to 07-31, read around both: {held:?}"
         ));
     }
     // A view's `date_time` field is one, and its `number` field none.

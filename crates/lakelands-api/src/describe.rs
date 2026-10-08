@@ -201,10 +201,12 @@ pub struct TypeAccess {
     /// The fields that form the key; empty when the writer gives it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub key: Vec<FieldName>,
-    /// The field holding business start time, if valid-timed.
+    /// The `date_time` or `date` field holding business start time, if
+    /// valid-timed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_from: Option<FieldName>,
-    /// The field holding business end time, if declared.
+    /// The `date_time` or `date` field holding business end time, if
+    /// declared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_to: Option<FieldName>,
     /// Whether `search` covers the type lexically for this principal: a

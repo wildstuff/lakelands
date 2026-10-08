@@ -44,6 +44,7 @@ The JSON form a value of a storage kind takes.
 | `boolean` | — | true or false | A boolean. |
 | `digits` | — | a string of digits | A decimal's digits. |
 | `date_time` | — | a date-time string | A date-time. |
+| `date` | — | a date string | A date. |
 | `base64` | — | a base64 string | Bytes. |
 | `numbers` | — | an array of numbers, each finite as a 32-bit float | A vector. |
 
@@ -229,6 +230,7 @@ What a format version added that an event carries, written in an older format.
 | `value_renames` | — | renames a value type's values | It renames a value type's values. |
 | `proposes_value_renames` | — | proposes a value type's migration that renames values | It proposes a value type's migration that renames values. |
 | `pinned` | — | proposes a write pinned to its record | It proposes a write pinned to its record. |
+| `date` | — | declares the kind `date` | It declares the kind `date`. |
 
 ## `Place`
 
@@ -341,7 +343,7 @@ What a refusal is about.
 | `initial_not_of_type` | — | only a field of a type declares one | An `initial` value on a field of no type. |
 | `initial_reference` | — | a field that names a record is checked against that record by the door that writes it | An `initial` value on a field that names a record. |
 | `json_named_as_type` | — | a json field may not carry the name of a type | A `json` field named as a type. |
-| `key_unkeyable` | `field` (FieldName) | it is keyed by `{field}`, whose kind has no string form for a key; a key field is text, a reference, a decimal, a number, a boolean or a date-time | A type keyed by a field no key may be. |
+| `key_unkeyable` | `field` (FieldName) | it is keyed by `{field}`, whose kind has no string form for a key; a key field is text, a reference, a decimal, a number, a boolean, a date-time or a date | A type keyed by a field no key may be. |
 | `link_authority` | `authority` (Authority) | its links are written by `authored` or `source`, not `{authority}` | Links of an authority no door writes them by. |
 | `link_field_authority` | `field` (FieldName), `authority` (Authority) | its links arrive from a source, so its field `{field}` is `source` (or derived); an `{authority}` field of a link no door could write | A field of a source's link that no door writes. |
 | `link_field_is_end` | `field` (FieldName) | a link's `{field}` is its end; the relation cannot name a field of its own so | A link field named as a link's end. |
@@ -357,9 +359,9 @@ What a refusal is about.
 | `pair_at_read` | `from` (FieldName), `to` (FieldName), `target` (TypeName) | the pair `{from}` = `{to}` matches a field of `{target}` that is computed at the read; a match reads values as stored | A derived relation's pair reading a field computed at the read. |
 | `pair_kinds` | `from` (FieldName), `to` (FieldName), `left` (StorageKind), `right` (StorageKind) | the pair `{from}` = `{to}` matches a {left} field with a {right} field; values of two kinds are never identical, so the pair would match nothing | A derived relation's pair of two kinds. |
 | `pair_twice` | `from` (FieldName), `to` (FieldName) | the pair `{from}` = `{to}` is matched twice | A derived relation's pair named twice. |
-| `pair_unkeyable` | `from` (FieldName), `to` (FieldName), `kind` (StorageKind) | the pair `{from}` = `{to}` matches {kind} fields; a match is between fields of a kind a key may be: text, a reference, a decimal, a number, a boolean or a date-time | A derived relation's pair of a kind no key may be. |
+| `pair_unkeyable` | `from` (FieldName), `to` (FieldName), `kind` (StorageKind) | the pair `{from}` = `{to}` matches {kind} fields; a match is between fields of a kind a key may be: text, a reference, a decimal, a number, a boolean, a date-time or a date | A derived relation's pair of a kind no key may be. |
 | `pair_unknown` | `from` (FieldName), `to` (FieldName), `type` (TypeName), `target` (TypeName) | the pair `{from}` = `{to}` names a field that `{type}` or `{target}` does not have | A derived relation's pair naming a field that is not there. |
-| `param_kind` | `name` (ParamName), `kind` (StorageKind) | its view's parameter `{name}` is of kind {kind}; a parameter is text, number, decimal, boolean or date_time | A view's parameter of a kind no parameter is. |
+| `param_kind` | `name` (ParamName), `kind` (StorageKind) | its view's parameter `{name}` is of kind {kind}; a parameter is text, number, decimal, boolean, date_time or date | A view's parameter of a kind no parameter is. |
 | `param_undeclared` | `name` (String), `declared` (Names, optional) | its view reads param('{name}'), which it does not declare; [its parameters are {declared}\|it declares no parameters] | A `param` its view does not declare. |
 | `param_unread` | `name` (ParamName) | its view declares the parameter `{name}`, which neither its `where` nor its measures read, so a reader would bind a value that changes nothing | A view's parameter nothing reads. |
 | `payload_no_member` | `member` (FieldName) | it reads `payload.{member}`, which the payload does not have | A verb's assignment reading a payload member the payload does not have. |
@@ -378,7 +380,7 @@ What a refusal is about.
 | `type_verb_requires` | `type` (TypeName) | it is declared on the type `{type}`; `requires` reads a record it does not have | A verb on its type with a `requires`. |
 | `type_verb_writes` | `type` (TypeName) | it is declared on the type `{type}`, and a write effect sets fields of a record it does not have | A verb on its type with a write effect. |
 | `undeclared` | `type` (TypeName) | `{type}` is not a declared type | A type named that is not declared. |
-| `valid_time_not_date_time` | `field` (FieldName), `axis` (String), `kind` (StorageKind) | it names `{field}` as its `{axis}`, a {kind} field; a valid time is a date-time field | A valid time over a field that is not a date-time. |
+| `valid_time_not_time` | `field` (FieldName), `axis` (String), `kind` (StorageKind) | it names `{field}` as its `{axis}`, a {kind} field; a valid time is a date_time or a date field | A valid time over a field that is neither a date-time nor a date. |
 | `valid_time_stands` | `axis` (String) | its `{axis}` names a field you may not know of, and stands as declared | A field its author may name, sent as a valid time where one over a field it may not know of stands: the bound is taken. |
 | `value_type_format` | `value_type` (ValueTypeName), `format` (String) | value type `{value_type}` names the unknown format `{format}` | A value type naming a format that does not exist. |
 | `value_type_kind` | `field` (FieldName), `value_type` (ValueTypeName), `expected` (StorageKind), `found` (StorageKind) | field `{field}` uses value type `{value_type}`, which is {expected}, but the field is {found} | A field stored as another kind than its value type. |
@@ -564,7 +566,7 @@ What a refusal is about.
 | `no_view` | `type` (TypeName) | `{type}` is no declared view | A type named as a view that is none. |
 | `not_vector_field` | `field` (FieldName) | `{field}` is no vector field | A field named as a vector field that is none. |
 | `order_index_at_read` | `field` (FieldName) | `{field}` is computed at the read; an order index keeps stored values | An order index of a field computed at the read. |
-| `order_index_kind` | `field` (FieldName), `kind` (StorageKind) | `{field}` is of kind {kind}; an order index keeps text, number, decimal, boolean, date-time and reference fields | An order index of a field of a kind it does not keep. |
+| `order_index_kind` | `field` (FieldName), `kind` (StorageKind) | `{field}` is of kind {kind}; an order index keeps text, number, decimal, boolean, date-time, date and reference fields | An order index of a field of a kind it does not keep. |
 | `setting_field_names` | `value` (Value) | it holds field names, and {value} is not one | An index setting holding something other than field names. |
 | `setting_index_shape` | `type` (TypeName) | it holds an array of field names of `{type}`, or null for no index | An index setting that is no list. |
 | `setting_kept_holds` | — | it holds `true` for a view that is kept, or `false` | A `view_kept` setting that holds no boolean. |
@@ -619,6 +621,7 @@ What a refusal is about.
 | `integer_too_large` | `n` (Number) | {n} is beyond ±(2^53 − 1), the largest integer every reader reads exactly | An integer beyond what every reader reads exactly. |
 | `not_base64` | — | not standard base64 with padding | Bytes that are not base64. |
 | `not_date_time` | `value` (String) | not a UTC date-time: "{value}" | A date-time that is no UTC instant. |
+| `not_date` | `value` (String) | not a date: "{value}" is neither `YYYY-MM-DD` nor an instant at a UTC midnight | A date that is no calendar date. |
 | `not_decimal` | `value` (String) | not a decimal: "{value}" | A decimal that is not digits. |
 | `not_format` | `format` (String), `value_type` (ValueTypeName) | the value is not a well-formed {format} (`{value_type}`) | A value its value type's format refuses. |
 | `not_one_of` | `value` (Value), `allowed` (Names) | {value} is not one of {allowed} | A value its value type does not list. |
@@ -1010,7 +1013,7 @@ What a sort key orders by: a field's value, or when it was learned or observed (
 
 How an engine stores, compares and indexes a value. The set is closed: a kind exists only when an engine must treat it differently from every other kind (`docs/decisions/011-storage-kind-and-value-type.md`).
 
-`text`, `number`, `decimal`, `boolean`, `date_time`, `bytes`, `json`, `reference`, `vector`, `geo`
+`text`, `number`, `decimal`, `boolean`, `date_time`, `bytes`, `json`, `reference`, `vector`, `geo`, `date`
 
 ### `Walk`
 

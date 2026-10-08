@@ -1352,12 +1352,12 @@ fn a_views_parameters_arrive_in_the_order_they_were_written() {
 fn a_view_parameter_of_no_storage_kind_is_refused_naming_it() {
     let view = (
         "types/window.yaml",
-        "name: window\nview:\n  source: invoice\n  params:\n    until: date\n  \
+        "name: window\nview:\n  source: invoice\n  params:\n    until: day\n  \
          where: \"due_on <= param('until')\"\n  measures:\n    invoices: \"count()\"\n",
     );
     let e = one(&[INVOICE, view], Problem::BadFieldType);
     assert!(
-        e.message.contains("`until`") && e.message.contains("`date`"),
+        e.message.contains("`until`") && e.message.contains("`day`"),
         "{e}"
     );
 }

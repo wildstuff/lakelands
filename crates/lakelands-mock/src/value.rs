@@ -44,6 +44,13 @@ pub(crate) fn misfit(ty: &FieldType, v: &Value, value_types: &[ValueTypeDecl]) -
             }
             Some(_) => {}
         },
+        StorageKind::Date => match v.as_str() {
+            None => return shape(Shape::Date),
+            Some(s) if Timestamp::parse(s).ok().and_then(Timestamp::day).is_none() => {
+                return text().map(|value| Case::NotDate { value });
+            }
+            Some(_) => {}
+        },
         StorageKind::Vector => {
             let numbers = v.as_array().filter(|a| a.iter().all(is_vector_component));
             let Some(items) = numbers else {
@@ -76,12 +83,19 @@ pub(crate) fn misfit(ty: &FieldType, v: &Value, value_types: &[ValueTypeDecl]) -
 }
 
 /// A stored value converted to a new field type; `None` when it would
-/// lose information.
+/// lose information. A text becomes an instant or a date only in UTC: a
+/// non-zero offset is lost.
 pub(crate) fn convert(v: &Value, to: &FieldType) -> Option<Value> {
-    if misfit(to, v, &[]).is_none() {
-        return Some(v.clone());
-    }
+    let utc = |s: &str| {
+        let offset = s.len() > 10
+            && matches!(s.as_bytes()[s.len() - 6], b'+' | b'-')
+            && !s.ends_with("00:00");
+        Timestamp::parse(s).ok().filter(|_| !offset)
+    };
     let c = match (to.kind, v) {
+        (StorageKind::DateTime, Value::String(s)) => Value::String(utc(s)?.to_string()),
+        (StorageKind::Date, Value::String(s)) => Value::String(utc(s)?.day()?),
+        _ if misfit(to, v, &[]).is_none() => return Some(v.clone()),
         (StorageKind::Text | StorageKind::Decimal, Value::Number(n)) => {
             Value::String(n.to_string())
         }
@@ -157,7 +171,8 @@ fn canonical_number(v: &Value) -> Value {
 }
 
 /// A checked value in its one form: numbers as §1.2 writes them, inside
-/// vectors and JSON values too, and a date-time in the one form of §1.3.
+/// vectors and JSON values too, a date-time in the one form of §1.3 and a
+/// date as `YYYY-MM-DD`.
 /// Every value the mock stores, keys and hashes is in this form, as the
 /// store's are.
 pub(crate) fn canonical(ty: &FieldType, v: &Value) -> Value {
@@ -175,6 +190,10 @@ pub(crate) fn canonical(ty: &FieldType, v: &Value) -> Value {
         (StorageKind::DateTime, Value::String(s)) => Timestamp::parse(s)
             .map(|t| Value::String(t.to_string()))
             .unwrap_or_else(|_| v.clone()),
+        (StorageKind::Date, Value::String(s)) => Timestamp::parse(s)
+            .ok()
+            .and_then(Timestamp::day)
+            .map_or_else(|| v.clone(), Value::String),
         (StorageKind::Number | StorageKind::Vector | StorageKind::Json | StorageKind::Geo, _) => {
             numbers(v)
         }

@@ -2890,7 +2890,7 @@ struct Authored {
 }
 
 /// As the store: a key and a valid time name fields of their type, and a
-/// valid time a date-time field, in the store's cases.
+/// valid time a date-time or a date field, in the store's cases.
 fn shape_names(t: &TypeDecl) -> Result<()> {
     let has = |f: &FieldName| t.fields.iter().any(|d| &d.name == f);
     let owner = [of_type(&t.name)];
@@ -2905,11 +2905,10 @@ fn shape_names(t: &TypeDecl) -> Result<()> {
         let field = k
             .as_ref()
             .and_then(|k| t.fields.iter().find(|f| &f.name == k));
-        if let Some(f) =
-            field.filter(|f| f.ty.kind != lakelands_api::ontology::StorageKind::DateTime)
-        {
+        use lakelands_api::ontology::StorageKind as K;
+        if let Some(f) = field.filter(|f| !matches!(f.ty.kind, K::DateTime | K::Date)) {
             let (field, axis, kind) = (f.name.clone(), axis.to_owned(), f.ty.kind);
-            let case = Case::ValidTimeNotDateTime { field, axis, kind };
+            let case = Case::ValidTimeNotTime { field, axis, kind };
             return Err(invalid_field(&f.name, at(&owner, case)));
         }
     }

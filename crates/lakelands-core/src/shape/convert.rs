@@ -15,6 +15,8 @@
 //! | number → decimal | an integer, or an integral float within ±2^53, as its digits |
 //! | text → boolean | exactly `"true"` or `"false"` |
 //! | text → date-time | a date, or a date-time in UTC, rewritten in the one form of §1.3; a non-zero offset is lossy |
+//! | text or date-time → date | a date, or a date-time in UTC at a midnight, as its date; any other instant, or a non-zero offset, is lossy |
+//! | date → date-time | its midnight |
 //! | anything → json | kept as it is |
 //!
 //! Deliberately lossy: a fractional number into a decimal (a binary
@@ -74,7 +76,10 @@ pub fn convert(value: &Value, from: &FieldType, to: &FieldType) -> Conversion {
             "false" => Some(Value::Bool(false)),
             _ => None,
         },
-        (StorageKind::DateTime, Value::String(s)) => utc_instant(s).map(Value::String),
+        (StorageKind::DateTime, Value::String(s)) => utc_instant(s).map(|t| t.to_string().into()),
+        (StorageKind::Date, Value::String(s)) => {
+            utc_instant(s).and_then(Timestamp::day).map(Value::String)
+        }
         _ => None,
     };
     match out {
@@ -106,6 +111,9 @@ pub fn fits(ty: &FieldType, value: &Value) -> bool {
                 && ty.dimensions.is_none_or(|d| items.len() == d as usize)
         }),
         StorageKind::Geo => check_geo(value).is_ok(),
+        StorageKind::Date => value.as_str().is_some_and(|s| {
+            Timestamp::parse(s).ok().and_then(Timestamp::day).as_deref() == Some(s)
+        }),
     }
 }
 
@@ -386,11 +394,11 @@ fn integral_digits(n: &serde_json::Number) -> Option<String> {
 
 /// A date, or a date-time in UTC, in the one form of log format §1.3. A
 /// date-time with a non-zero offset is refused: the offset would be lost.
-fn utc_instant(s: &str) -> Option<String> {
+fn utc_instant(s: &str) -> Option<Timestamp> {
     let t = Timestamp::parse(s).ok()?;
     let offset =
         s.len() > 10 && matches!(s.as_bytes()[s.len() - 6], b'+' | b'-') && !s.ends_with("00:00");
-    (!offset).then(|| t.to_string())
+    (!offset).then_some(t)
 }
 
 /// A decimal numeral, `-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?`, reduced to

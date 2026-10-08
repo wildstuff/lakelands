@@ -42,7 +42,7 @@ check!(
 check!(
     /// A view's parameters are declared strictly.
     PARAMS_DECLARED_STRICTLY = a_view_declaring_its_parameters_badly_is_refused,
-    "028 and 018: `declare` refuses a view whose `param()` names no declared parameter, which declares a parameter nothing reads, one twice, or one of a kind other than text, number, decimal, boolean or date_time, naming it"
+    "028 and 018: `declare` refuses a view whose `param()` names no declared parameter, which declares a parameter nothing reads, one twice, or one of a kind other than text, number, decimal, boolean, date_time or date, naming it"
 );
 
 check!(
