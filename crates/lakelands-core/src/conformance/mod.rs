@@ -157,9 +157,9 @@ pub trait Harness: Send + Sync {
     fn importer(&self) -> Import {
         Arc::new(|_, _, _, _| {
             Box::pin(async {
-                Err(lakelands_api::Error::Unbound {
-                    seam: "import (this harness imports no export)".into(),
-                })
+                let op = "import".to_owned();
+                let seam = lakelands_api::error::Seam::Operation { op };
+                Err(lakelands_api::Error::unbound(seam))
             })
         })
     }

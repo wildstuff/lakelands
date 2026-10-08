@@ -722,9 +722,10 @@ async fn a_window_slower_than_the_keep_alive_is_answered_with_an_empty_line() {
 async fn a_lake_that_cannot_be_opened_is_503() {
     let open = Arc::new(
         |lake: &lakelands_api::LakeId| -> lakelands_api::Result<Arc<dyn LakeStore>> {
-            Err(lakelands_api::Error::Unavailable {
-                message: format!("the lake `{lake}` is down"),
-            })
+            let (lake, schema) = (lake.to_string(), None);
+            Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::NoLake { lake, schema },
+            ))
         },
     );
     let config = HttpConfig {

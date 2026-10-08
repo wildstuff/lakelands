@@ -114,9 +114,10 @@ fn a_second_open_of_a_lake_sees_the_same_log_and_lease() {
     let reader = open(&name, OpenMode::Read).unwrap();
     assert_eq!(reader.read(Position(0), 10).unwrap(), e);
     let second = open(&name, OpenMode::Write).unwrap();
-    let Err(Error::Unavailable { message }) = second.take_lease("another writer") else {
+    let Err(Error::Unavailable { situation }) = second.take_lease("another writer") else {
         panic!("a second writer took a held lease");
     };
+    let message = situation.to_string();
     assert!(message.contains("the writer"), "{message}");
 }
 

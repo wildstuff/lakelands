@@ -13,6 +13,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use lakelands_api::error::Seam;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{Authority, FieldDecl, FieldType, StorageKind};
 use lakelands_api::principal::TypeGrants;
@@ -279,7 +280,7 @@ async fn an_embedding_without_a_backend_is_refused_at_declare(
     let l = Lake::of(store.as_ref());
     let got = l.try_declare(notes_by(&["title"], EMBED_MODEL, 2)).await;
     ensure!(
-        matches!(&got, Err(Error::Unbound { seam }) if seam.contains(EMBED_MODEL)),
+        matches!(got.as_ref().err().and_then(Error::seam), Some(Seam::Embedding { model, .. }) if model == EMBED_MODEL),
         "with no embedding backend bound, declaring an embedding must be refused as \
          unbound, naming the model `{EMBED_MODEL}`; it answered {}",
         answered(&got)
@@ -673,9 +674,11 @@ async fn a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_un
         let got = quay(store.as_ref(), None).await;
         // The refusal names both: what the field was declared with, and
         // what is bound.
-        let names_both = |seam: &str| {
-            seam.contains(&format!("`{EMBED_MODEL}` with 2"))
-                && seam.contains(&format!("`{model}` with {dimensions}"))
+        let names_both = |seam: &Seam| {
+            let model = model.to_owned();
+            let bound = Some(lakelands_api::error::Bound { model, dimensions });
+            matches!(seam, Seam::Embedding { model: m, dimensions: 2, bound: b, .. }
+                if m == EMBED_MODEL && *b == bound)
         };
         ensure!(
             matches!(&got, Err(Error::Unbound { seam }) if names_both(seam)),
@@ -703,7 +706,8 @@ async fn a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_un
     let old = quay(store.as_ref(), Some(before)).await;
     ensure!(
         ranked.as_ref().is_ok_and(|h| h.ranked_by == "hybrid")
-            && matches!(&old, Err(Error::Unbound { seam }) if seam.contains("`another-model` with 2")),
+            && matches!(&old, Err(Error::Unbound { seam })
+                if matches!(&**seam, Seam::Embedding { model, dimensions: 2, .. } if model == "another-model")),
         "`vec`, declared again with `another-model`, holds its vectors at the head: a search \
          as of before ranks `hybrid` with that backend bound and is unbound, naming it, with \
          `{EMBED_MODEL}` bound; they answered {} and {}",
@@ -1105,7 +1109,8 @@ async fn a_declaration_that_keeps_an_embedding_needs_no_backend(
         ),
     ] {
         ensure!(
-            matches!(&got, Err(Error::Unbound { seam }) if seam.contains(&format!("`note.{named}`"))),
+            matches!(got.as_ref().err().and_then(Error::seam), Some(Seam::Embedding { ty, field, .. })
+                if ty.as_str() == "note" && field == named),
             "with none bound, {what} must be refused as unbound, naming `note.{named}`; it \
              answered {}",
             answered(&got)
@@ -1377,11 +1382,17 @@ async fn weather_fails_every_text_its_request_had_not_answered(
     let titles = titles.map(|t| format!("{t} quay"));
     let calls = piers(&l, &titles).await?;
     let got = pier_vecs(store.as_ref(), 4).await?;
+    // The weather as its case says it: the backend answered 503.
+    let remote = lakelands_api::error::Remote::Embedding {
+        model: EMBED_MODEL.to_owned(),
+    };
+    let exchange = lakelands_api::error::Exchange::Status { status: 503 };
+    let down = lakelands_api::error::Situation::Remote { remote, exchange }.to_string();
     ensure!(
         calls == 5
             && got[0] == "east"
             && got[1].contains("cannot be reached")
-            && got[2..].iter().all(|g| g.contains("is down")),
+            && got[2..].iter().all(|g| *g == down),
         "`p1`'s text is refused and `p2`'s meets weather: the halves are asked, `p0` is \
          embedded, `p1` holds its refusal, and the weather of `p2`'s request is recorded for \
          `p2` and `p3` without narrowing it, in 5 requests; {calls} requests, and the piers \

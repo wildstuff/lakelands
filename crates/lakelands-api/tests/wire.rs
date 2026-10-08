@@ -75,7 +75,8 @@ fn errors_are_a_closed_tagged_set_with_a_sentence_for_people() {
     };
     assert_eq!(
         serde_json::to_value(&e).unwrap(),
-        json!({"error": "refused", "field": "amount", "reason": {"refusal": "wrong_door"}})
+        json!({"error": "refused", "field": "amount", "reason": {"refusal": "wrong_door"},
+            "message": "refused on `amount`: another authority writes this field"})
     );
     assert_eq!(
         e.to_string(),

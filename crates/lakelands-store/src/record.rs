@@ -42,12 +42,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use lakelands_api::error::{Flaw, Part};
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
 use lakelands_api::{FieldName, Result, Value};
 use lakelands_core::rights::Door;
-use lakelands_core::{derive, unavailable, value};
+use lakelands_core::{damaged, derive, value};
 
 use crate::backed::{self, Outputs};
 use crate::ontology::Ontology;
@@ -98,10 +99,9 @@ pub fn apply(
         }
         | EventBody::RecordUnrestricted { ty, key, version } => {
             let Some(mut r) = before.cloned() else {
-                return Err(unavailable(format!(
-                    "the log changes `{ty}` `{key}` at position {} before any event wrote it",
-                    event.position
-                )));
+                let (ty, key) = (ty.clone(), key.clone());
+                let flaw = Flaw::ChangedUnwritten { ty, key };
+                return Err(damaged(Part::Log, Some(event.position), flaw));
             };
             match &event.body {
                 EventBody::RecordRetired { .. } => r.retired = true,
@@ -351,10 +351,11 @@ fn compute(
             },
         )
         .map_err(|e| {
-            unavailable(format!(
-                "the fold cannot compute the derived fields of `{}`: {e}",
-                raw.name
-            ))
+            let (ty, cause) = (
+                raw.name.clone(),
+                Box::new(lakelands_core::invalid(e.to_string())),
+            );
+            damaged(Part::Projection, None, Flaw::CannotDerive { ty, cause })
         })?;
         for name in touched {
             meta.insert(name.clone(), derived_meta(event, raw, ontology, &name));

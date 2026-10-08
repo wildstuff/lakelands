@@ -174,9 +174,7 @@ impl RemoteLake {
 
 /// A host operation, which no network door offers.
 fn host_only(op: &str) -> Error {
-    Error::Unbound {
-        seam: format!("the host operation `{op}`, which no network door offers"),
-    }
+    Error::unbound(lakelands_api::error::Seam::Operation { op: op.to_owned() })
 }
 
 #[async_trait]

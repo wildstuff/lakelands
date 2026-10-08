@@ -291,7 +291,8 @@ async fn a_damaged_line_is_found_by_the_read_that_meets_it_and_by_verify_not_by_
     std::fs::write(&index, damaged).unwrap();
 
     let refused = |what: &str, answer: Result<(), Error>| match answer {
-        Err(Error::Unavailable { message }) => {
+        Err(Error::Unavailable { situation }) => {
+            let message = situation.to_string();
             assert!(message.contains("damaged"), "{what}: {message}")
         }
         other => panic!("{what}: a damaged index is refused, and it answered {other:?}"),
@@ -489,7 +490,8 @@ fn a_line_that_names_another_position_is_refused_when_it_alone_is_read() {
         std::fs::write(&index, damaged).unwrap();
         let reader = open(&dir, OpenMode::Read);
         match reader.read(Position(q + 1), 1) {
-            Err(Error::Unavailable { message }) => {
+            Err(Error::Unavailable { situation }) => {
+                let message = situation.to_string();
                 assert!(message.contains("damaged"), "{q}: {message}")
             }
             Ok(page) if page[0].bytes == events[q as usize].bytes => wrong.push(q + 1),

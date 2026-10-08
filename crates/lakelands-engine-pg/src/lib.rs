@@ -48,7 +48,7 @@ mod vector_index;
 mod view;
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
-use lakelands_api::error::{Error, Result};
+use lakelands_api::error::{Detail, Doing, Error, Part, Result, Situation};
 use lakelands_api::location::{EngineConfig, Location};
 
 pub use connect::MIN_SERVER_VERSION;
@@ -60,7 +60,7 @@ pub use view::{holding_statements, read_statements};
 /// `EngineConfig::Postgres`.
 pub const NAME: &str = "pg";
 
-pub(crate) use lakelands_core::{invalid, lock, unavailable};
+pub(crate) use lakelands_core::{invalid, lock};
 
 /// A failed statement, for the host. Of an error the server sends, only
 /// its severity, SQLSTATE and primary message: its `DETAIL`, `HINT`,
@@ -68,20 +68,27 @@ pub(crate) use lakelands_core::{invalid, lock, unavailable};
 /// which the answer carries to a caller who may not be shown that record
 /// (024). Any other failure says every cause the driver gives.
 pub(crate) fn sql(e: postgres::Error) -> Error {
-    if let Some(db) = e.as_db_error() {
-        let (severity, code) = (db.severity(), db.code().code());
-        return unavailable(format!(
-            "the database failed: {severity} {code}: {}",
-            db.message()
-        ));
-    }
-    let mut message = format!("the database failed: {e}");
-    let mut source = std::error::Error::source(&e);
-    while let Some(s) = source {
-        message.push_str(&format!(": {s}"));
-        source = s.source();
-    }
-    unavailable(message)
+    let detail = match e.as_db_error() {
+        Some(db) => {
+            let (severity, code) = (db.severity(), db.code().code());
+            Detail::scrubbed(format_args!("{severity} {code}: {}", db.message()))
+        }
+        None => {
+            let mut said = e.to_string();
+            let mut source = std::error::Error::source(&e);
+            while let Some(s) = source {
+                said.push_str(&format!(": {s}"));
+                source = s.source();
+            }
+            Detail::scrubbed(said)
+        }
+    };
+    let (doing, part) = (Doing::Query, Part::Projection);
+    Error::unavailable(Situation::Storage {
+        doing,
+        part,
+        detail,
+    })
 }
 
 /// Finds the PostgreSQL engine by name and opens lakes kept by it.

@@ -271,9 +271,10 @@ mod tests {
         }
 
         fn fresh(&self) -> lakelands_api::Result<Box<dyn LakeEngine>> {
-            Err(lakelands_api::Error::Unavailable {
-                message: "no lake on purpose".into(),
-            })
+            let lake = "broken".to_owned();
+            Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::NoLake { lake, schema: None },
+            ))
         }
 
         fn reopen(&self, _: &LakeId, _: OpenMode) -> lakelands_api::Result<Box<dyn LakeEngine>> {
@@ -303,7 +304,7 @@ mod tests {
         assert_eq!(report.harness, "broken");
         assert!(report.passed.is_empty());
         assert_eq!(report.failed.len(), ENGINE_CHECKS.len());
-        assert!(report.failed[0].1.message.contains("no lake on purpose"));
+        assert!(report.failed[0].1.message.contains("no lake `broken`"));
     }
 
     #[test]

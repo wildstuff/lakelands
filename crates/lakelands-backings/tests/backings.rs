@@ -34,7 +34,7 @@ fn is_refused(r: &lakelands_api::Result<Value>) -> bool {
 
 fn failure(r: lakelands_api::Result<Value>) -> String {
     match r {
-        Err(Error::Unavailable { message }) => message,
+        Err(Error::Unavailable { situation }) => situation.to_string(),
         other => panic!("expected the call to fail, got {other:?}"),
     }
 }
@@ -251,7 +251,7 @@ async fn http_fails_when_the_reply_takes_longer_than_the_timeout() {
         b.call(&call(json!({"url": format!("http://127.0.0.1:{port}/")})))
             .await,
     );
-    assert!(why.contains("within 1s"), "{why}");
+    assert!(why.contains("within 1 seconds"), "{why}");
     assert!(started.elapsed().as_secs() < 4);
 }
 
@@ -327,7 +327,7 @@ async fn http_sends_the_host_and_port_as_host_and_never_user_information() {
 }
 
 #[tokio::test]
-async fn an_http_failure_names_the_host_port_and_path_never_the_url() {
+async fn an_http_failure_names_the_function_never_the_url() {
     let (port, _) =
         responder("HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\n\r\n").await;
     let b = http(&["127.0.0.1"], 5);
@@ -338,9 +338,7 @@ async fn an_http_failure_names_the_host_port_and_path_never_the_url() {
     let b = http(&["127.0.0.1"], 1);
     let url = format!("http://user:secret@127.0.0.1:{listener_port}/lookup?token=hidden");
     let why = failure(b.call(&call(json!({"url": url}))).await);
-    assert!(
-        why.contains(&format!("127.0.0.1:{listener_port}/lookup")),
-        "{why}"
-    );
+    assert!(why.contains("function `lookup`"), "{why}");
+    assert!(!why.contains(&listener_port.to_string()), "{why}");
     assert!(!why.contains("secret") && !why.contains("hidden"), "{why}");
 }

@@ -475,11 +475,12 @@ impl SearchMode {
 /// vector of no direction is nothing, and its ranking would be every
 /// record tied. A cosine of finite `f32`s summed in `f64` neither
 /// overflows nor underflows, so this is the whole condition.
-pub fn no_direction(vector: &[f32]) -> Option<&'static str> {
+pub fn no_direction(vector: &[f32]) -> Option<crate::error::Aimless> {
+    use crate::error::Aimless;
     if !vector.iter().all(|x| x.is_finite()) {
-        Some("has a component that is not a finite number")
+        Some(Aimless::NotFinite)
     } else if vector.iter().all(|&x| x == 0.0) {
-        Some("has no direction: every component is 0")
+        Some(Aimless::Zero)
     } else {
         None
     }

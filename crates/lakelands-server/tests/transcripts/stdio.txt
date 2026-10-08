@@ -32,7 +32,7 @@
 # A refusal is a tool error, in the CLI's two sentences, with the
 # contract's error as JSON beside it.
 > {"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"invoice_upsert","arguments":{"key":"INV-1","fields":{"amount":"1.00"}}}}
-< {"id":10,"jsonrpc":"2.0","result":{"content":[{"text":"error: refused on `amount`: another authority writes this field\n  what to do: source fields arrive through `lakelands ingest`; authored fields through writes and verbs\n","type":"text"},{"text":"{\"error\":\"refused\",\"field\":\"amount\",\"reason\":{\"refusal\":\"wrong_door\"}}","type":"text"}],"isError":true}}
+< {"id":10,"jsonrpc":"2.0","result":{"content":[{"text":"error: refused on `amount`: another authority writes this field\n  what to do: source fields arrive through `lakelands ingest`; authored fields through writes and verbs\n","type":"text"},{"text":"{\"error\":\"refused\",\"field\":\"amount\",\"message\":\"refused on `amount`: another authority writes this field\",\"reason\":{\"refusal\":\"wrong_door\"}}","type":"text"}],"isError":true}}
 > {"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"invoice_get","arguments":{"id":"INV-1"}}}
 < {"id":11,"jsonrpc":"2.0","result":{"content":[{"text":"error: `invoice_get` takes no argument `id`; nothing was done\n  what to do: use only the arguments the tool's input schema lists, then call it again\n","type":"text"}],"isError":true}}
 > {"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"invoice_get","arguments":{}}}

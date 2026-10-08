@@ -130,7 +130,7 @@ pub fn check(
         Place::Record,
         "an aging rule's `when`",
     )
-    .map_err(|e| ("when".into(), crate::backed::why(&e)))?;
+    .map_err(|e| ("when".into(), e.said()))?;
     Ok(Rule {
         on,
         field,

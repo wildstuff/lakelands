@@ -12,7 +12,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use http_body_util::BodyExt;
 use hyper::Method;
-use lakelands_api::error::{Error, Result};
+use lakelands_api::error::{Detail, Error, Exchange, Result};
 use lakelands_api::event::Event;
 use lakelands_api::id::Position;
 use lakelands_api::seam::{ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter};
@@ -180,15 +180,14 @@ impl ChangeFeed for RemoteFeed {
             .header("accept", "text/event-stream".into());
         let r = wire.send(key, call).await?;
         if !r.status().is_success() {
-            return Err(wire.failure(&path, r).await);
+            return Err(wire.failure(r).await);
         }
         let head = position_of(&r);
         let mut body = r.into_body();
-        let head =
-            head.ok_or_else(|| wire.unavailable(&path, "answered the feed without its position"))?;
+        let head = head.ok_or_else(|| wire.unavailable(Exchange::NoPosition))?;
         let mut events: Vec<Event> = Vec::new();
         let mut blocks = Blocks::default();
-        let not_sse = |_| wire.unavailable(&path, "sent a block that is not the contract's");
+        let not_sse = |_| wire.unavailable(Exchange::LineNotTheContract);
         let next = 'read: loop {
             while let Some(lines) = blocks.next().map_err(not_sse)? {
                 match block(&lines).map_err(not_sse)? {
@@ -205,21 +204,17 @@ impl ChangeFeed for RemoteFeed {
             }
             // A block that never ends must not grow without bound.
             if blocks.held > wire.cap {
-                return Err(wire.too_long(&path));
+                return Err(wire.too_long());
             }
             let frame = match tokio::time::timeout(wire.silence, body.frame()).await {
                 Err(_) => {
-                    return Err(wire.unavailable(
-                        &path,
-                        format_args!(
-                            "sent nothing for {} seconds, not even a keep-alive",
-                            wire.silence.as_secs()
-                        ),
-                    ));
+                    let secs = wire.silence.as_secs();
+                    return Err(wire.unavailable(Exchange::Silent { secs }));
                 }
-                Ok(None) => return Err(wire.unavailable(&path, "ended the feed's stream")),
+                Ok(None) => return Err(wire.unavailable(Exchange::Ended)),
                 Ok(Some(Err(e))) => {
-                    return Err(wire.unavailable(&path, format_args!("cut the feed off: {e}")));
+                    let detail = Detail::scrubbed(e);
+                    return Err(wire.unavailable(Exchange::CutOff { detail }));
                 }
                 Ok(Some(Ok(frame))) => frame,
             };
@@ -311,16 +306,16 @@ mod tests {
         // here, so the text is not the error's any more.
         assert_eq!(joined, Err(NotSse));
         let split = r#"{"error":"unavailable","#;
-        let rest = r#""message":"m"}"#;
+        let rest = r#""situation":{"code":"moved"}}"#;
         assert_eq!(
             block(&lines(&[
                 "event: error",
                 &format!("data: {split}"),
                 &format!("data: {rest}")
             ])),
-            Ok(Said::Failed(lakelands_api::error::Error::Unavailable {
-                message: "m".into()
-            }))
+            Ok(Said::Failed(lakelands_api::error::Error::unavailable(
+                lakelands_api::error::Situation::Moved
+            )))
         );
         assert_eq!(block(&lines(&["event: x", "id: 3"])), Ok(Said::Nothing));
         assert_eq!(block(&lines(&[": keep-alive"])), Ok(Said::Nothing));
@@ -381,13 +376,15 @@ mod tests {
             .await
             .unwrap_err();
         let waited = asked.elapsed();
-        let Error::Unavailable { message } = &e else {
+        let Error::Unavailable { situation } = &e else {
             panic!("expected unavailable, got {e:?}");
         };
+        let message = situation.to_string();
         assert!(
-            message.contains(&format!("{addr}/lakes/finance/feed")),
+            message.contains("the REST door of lake `finance`"),
             "{message}"
         );
+        assert!(!message.contains(&addr.to_string()), "{message}");
         assert!(!message.contains("k-owner"), "{message}");
         assert!(
             waited >= silence && waited < Duration::from_secs(5),

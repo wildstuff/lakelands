@@ -1,4 +1,4 @@
-use lakelands_api::Error;
+use lakelands_api::error::{Situation, Tls};
 use lakelands_api::location::{PgTls, PgTlsMode};
 
 use super::tls_config_with;
@@ -13,10 +13,12 @@ fn require_without_a_ca_file_or_a_system_bundle_is_unavailable_naming_ca_file() 
         ..PgTls::default()
     };
     match tls_config_with(&tls, &[]) {
-        Err(Error::Unavailable { message }) => assert!(
-            message.contains("tls.ca_file"),
-            "the refusal names what to set: {message}"
-        ),
+        Err(e) if matches!(e.situation(), Some(Situation::Tls { .. })) => {
+            let Some(Situation::Tls { problem, .. }) = e.situation() else {
+                unreachable!()
+            };
+            assert_eq!(*problem, Tls::NoBundle, "the refusal says what to set")
+        }
         Err(other) => panic!("refused as {other:?}, not as unavailable"),
         Ok(_) => panic!("TLS was set up with no certificate authority at all"),
     }

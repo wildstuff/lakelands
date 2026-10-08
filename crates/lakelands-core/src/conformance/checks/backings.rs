@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Seam;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::write::{Declaration, Recompute};
@@ -127,7 +128,7 @@ async fn a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare(
     misnamed.name = "not a name".into();
     let first = cat.declare(own, Declaration::Function(misnamed)).await;
     ensure!(
-        matches!(&answer, Err(Error::Unbound { seam }) if seam.contains("nowhere"))
+        matches!(answer.as_ref().err().and_then(Error::seam), Some(Seam::FunctionBacking { kind }) if kind == "nowhere")
             && matches!(reason(&first), Some(Refusal::Invalid { .. })),
         "no backing of the kind `nowhere` is bound, so declaring a function of that kind \
          must be refused as unbound, naming the kind, and one whose name is no name as \
@@ -261,10 +262,14 @@ async fn a_failing_backing_clears_the_field_and_records_the_failure(
         value(&r, "name")
     );
     let meta = r.meta.get("name");
+    // The backing's failure as its case says it: `lookup` answered 503.
+    let remote = lakelands_api::error::Remote::Function {
+        function: "lookup".into(),
+    };
+    let exchange = lakelands_api::error::Exchange::Status { status: 503 };
+    let why = lakelands_api::error::Situation::Remote { remote, exchange }.to_string();
     ensure!(
-        meta.is_some_and(
-            |m| m.origin == Origin::Derived && m.error.as_deref().is_some_and(|e| e.contains("XX"))
-        ),
+        meta.is_some_and(|m| m.origin == Origin::Derived && m.error.as_deref() == Some(&why)),
         "a field cleared by a failure keeps metadata that says why (its `error`) though it \
          holds no value; the read with provenance answered {meta:?}"
     );

@@ -4147,7 +4147,10 @@ pub async fn a_call_is_refused_in_the_order_013_gives(store: Arc<dyn LakeStore>)
                     let want = (Some("nope"), &Refusal::Invalid { message });
                     assert_eq!((on, reason), want, "proposed {proposed}");
                 }
-                (_, Error::Unbound { seam }) => assert_eq!(seam, "the verb executor `crm`"),
+                (_, Error::Unbound { seam }) => {
+                    let name = "crm".to_owned();
+                    assert_eq!(**seam, lakelands_api::error::Seam::Executor { name })
+                }
                 (_, e) => panic!("`register`, proposed {proposed}: {e:?}"),
             }
         }

@@ -46,9 +46,10 @@ fn a_refused_statement_answers_no_detail_of_the_failing_row() {
             restricted: false,
         })
         .and_then(|()| p.commit(Position(1)));
-    let Err(Error::Unavailable { message }) = answer else {
+    let Err(Error::Unavailable { situation }) = answer else {
         panic!("a write the server refuses is unavailable; it answered {answer:?}");
     };
+    let message = serde_json::to_string(&Error::Unavailable { situation }).unwrap();
     assert!(
         !message.contains("marker-value") && !message.contains("marker-key"),
         "the answer quotes nothing of the failing row: {message}"

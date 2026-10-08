@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use lakelands_api::Error;
 use lakelands_api::engine::{CanonicalEvent, LakeEngine, OpenMode};
+use lakelands_api::error::Situation;
 use lakelands_api::event::Digest;
 use lakelands_api::id::Position;
 use serde_json::json;
@@ -385,14 +386,15 @@ fn a_held_lease_is_refused_at_once_naming_its_holder(
         .take_lease("a second writer")
         .must_fail("taking a lease that is held")?;
     let waited = started.elapsed();
-    let Error::Unavailable { message } = &refused else {
+    let Some(Situation::LeaseHeld { holder: named, .. }) = refused.situation() else {
         return Err(Failure::new(format!(
-            "taking a held lease was refused as {refused:?}; it must be unavailable"
+            "taking a held lease was refused as {refused:?}; it must be unavailable, the lease \
+             held"
         )));
     };
     ensure!(
-        message.contains(holder),
-        "taking a held lease answered \"{message}\", which does not name the holder \
+        named == holder,
+        "taking a held lease answered \"{refused}\", which does not name the holder \
          `{holder}`; the operator must learn who holds the lake"
     );
     ensure!(
@@ -612,9 +614,7 @@ fn a_seal_that_cannot_begin_the_next_segment_leaves_the_log_as_it_was(
     let lease = engine.take_lease("conformance").must("taking the lease")?;
     let mut log = chain(0, 2, &Digest::zero(), &lease);
     engine.append(&lease, &log).must("appending two events")?;
-    let fails = Error::Unavailable {
-        message: "the check's `first` answers an error".to_owned(),
-    };
+    let fails = Error::unavailable(Situation::Moved);
     // With nothing sealed, and again behind a sealed segment.
     for sealed in [vec![], vec![(0, 2)]] {
         let (at, last) = (log.len() as u64, log.len() - 1);

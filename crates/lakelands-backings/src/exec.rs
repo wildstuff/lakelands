@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use lakelands_api::Result;
+use lakelands_api::error::{Detail, Exchange};
 use lakelands_api::seam::{FunctionBacking, FunctionCall};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -64,7 +65,10 @@ impl Exec {
             .stderr(Stdio::inherit())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| failed(call, format!("the command `{name}` did not start: {e}")))?;
+            .map_err(|e| {
+                let (command, detail) = (name.to_owned(), Detail::io(&e));
+                failed(call, Exchange::DidNotStart { command, detail })
+            })?;
         let mut stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");
         let limit = self.config.max_output_bytes;
@@ -81,21 +85,18 @@ impl Exec {
             let mut pipe = stdout.take(limit.saturating_add(1));
             let read = pipe.read_to_end(&mut out);
             let ((), read) = tokio::join!(write, read);
-            read.map_err(|_| failed(call, format!("the output of `{name}` could not be read")))?;
+            let command = name.to_owned();
+            read.map_err(|_| failed(call, Exchange::OutputUnread { command }))?;
             if out.len() as u64 > limit {
                 // Past the limit: stopped at once, not at the timeout, and
                 // reaped here.
                 let _ = child.kill().await;
-                return Err(failed(
-                    call,
-                    format!("the command `{name}` wrote more than {limit} bytes"),
-                ));
+                let (command, cap) = (name.to_owned(), limit);
+                return Err(failed(call, Exchange::OutputTooLarge { command, cap }));
             }
             let status = child.wait().await.map_err(|_| {
-                failed(
-                    call,
-                    format!("the command `{name}` could not be waited for"),
-                )
+                let command = name.to_owned();
+                failed(call, Exchange::NotWaited { command })
             })?;
             Ok((status, out))
         };
@@ -105,21 +106,17 @@ impl Exec {
             Err(_) => {
                 // Stopped and reaped here, not left to the runtime.
                 let _ = child.kill().await;
-                return Err(failed(
-                    call,
-                    format!(
-                        "the command `{name}` took longer than {}s and was stopped",
-                        timeout.as_secs()
-                    ),
-                ));
+                let (command, secs) = (name.to_owned(), timeout.as_secs());
+                return Err(failed(call, Exchange::TookTooLong { command, secs }));
             }
         };
         if !status.success() {
+            let (command, exit_status) = (name.to_owned(), status.code());
             return Err(failed(
                 call,
-                match status.code() {
-                    Some(code) => format!("the command `{name}` failed with exit status {code}"),
-                    None => format!("the command `{name}` was stopped by a signal"),
+                Exchange::Exited {
+                    command,
+                    exit_status,
                 },
             ));
         }

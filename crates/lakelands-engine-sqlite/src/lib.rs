@@ -39,10 +39,8 @@ mod log;
 mod projection;
 mod view;
 
-use std::path::Path;
-
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
-use lakelands_api::error::{Error, Result};
+use lakelands_api::error::{Detail, Doing, Error, Part, Result, Situation};
 use lakelands_api::location::{EngineConfig, Location};
 
 pub use handle::SqliteLake;
@@ -53,16 +51,22 @@ pub use view::{first_page_statements, read_statements, seek_statements};
 /// [`LakeEngine::name`].
 pub const NAME: &str = "sqlite";
 
-pub(crate) use lakelands_core::{invalid, lock, unavailable};
+pub(crate) use lakelands_core::{damaged, invalid, lock};
 
 /// A failed file operation, for the host.
-pub(crate) fn io_error(doing: &str, path: &Path, e: std::io::Error) -> Error {
-    unavailable(format!("{doing} {} failed: {e}", path.display()))
+pub(crate) fn io_error(doing: Doing, part: Part, e: std::io::Error) -> Error {
+    lakelands_core::io_failed(doing, part, &e)
 }
 
 /// A failed projection operation, for the host, as [`told`] says it.
 pub(crate) fn sql(e: rusqlite::Error) -> Error {
-    unavailable(format!("the projection failed: {}", told(&e)))
+    let detail = Detail::scrubbed(told(&e));
+    let (doing, part) = (Doing::Query, Part::Projection);
+    Error::unavailable(Situation::Storage {
+        doing,
+        part,
+        detail,
+    })
 }
 
 /// What a SQLite error says to the host: of a failure SQLite reports, its
@@ -72,7 +76,7 @@ pub(crate) fn sql(e: rusqlite::Error) -> Error {
 /// (`SqlInputError`) or a stored value (`IntegralValueOutOfRange`, a
 /// failed conversion), which the answer would carry to a caller who may
 /// not be shown them (024).
-fn told(e: &rusqlite::Error) -> String {
+pub(crate) fn told(e: &rusqlite::Error) -> String {
     if let rusqlite::Error::SqliteFailure(f, message) = e {
         let message = message.clone().unwrap_or_else(|| f.to_string());
         return format!("SQLite {}: {message}", f.extended_code);

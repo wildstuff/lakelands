@@ -152,7 +152,13 @@ impl ProjectionView for ProbedView<'_> {
             if *left == 0 {
                 let message = format!("the scan of `{failing}` failed (planted)");
                 *fail = None;
-                return Err(Error::Unavailable { message });
+                return Err(lakelands_api::Error::unavailable(
+                    lakelands_api::error::Situation::Storage {
+                        doing: lakelands_api::error::Doing::Write,
+                        part: lakelands_api::error::Part::Projection,
+                        detail: lakelands_api::error::Detail::scrubbed(message),
+                    },
+                ));
             }
         }
         drop(fail);
@@ -244,7 +250,13 @@ impl LakeEngine for Probed {
                     reason,
                 });
             }
-            return Err(Error::Unavailable { message });
+            return Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed(message),
+                },
+            ));
         }
         self.inner.append(lease, events)
     }
@@ -282,7 +294,13 @@ impl LakeEngine for Probed {
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
         if Probe::refused(&self.probe.refuse_view) {
             let message = "the view was refused (planted)".to_owned();
-            return Err(Error::Unavailable { message });
+            return Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed(message),
+                },
+            ));
         }
         Ok(Box::new(ProbedView {
             inner: self.inner.view(as_of)?,
@@ -309,7 +327,13 @@ impl ProjectionStore for Probed {
                     reason,
                 });
             }
-            return Err(Error::Unavailable { message });
+            return Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed(message),
+                },
+            ));
         }
         self.inner.projection().begin()
     }
@@ -320,7 +344,13 @@ impl ProjectionStore for Probed {
         }
         if Probe::refused(&self.probe.refuse_commit) {
             let message = format!("the commit through {through} was refused (planted)");
-            return Err(Error::Unavailable { message });
+            return Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed(message),
+                },
+            ));
         }
         self.inner.projection().commit(through)
     }

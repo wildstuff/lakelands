@@ -227,6 +227,24 @@ pub enum NameProblem {
         /// The declaration.
         from: String,
     },
+    /// A problem this build does not know.
+    #[serde(skip)]
+    Unknown(crate::error::Unknown),
+}
+
+impl crate::error::Closed for NameProblem {
+    const TAG: &'static str = "problem";
+
+    fn unknown(unknown: crate::error::Unknown) -> Self {
+        NameProblem::Unknown(unknown)
+    }
+
+    fn as_unknown(&self) -> Option<&crate::error::Unknown> {
+        match self {
+            NameProblem::Unknown(u) => Some(u),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for NameProblem {
@@ -244,6 +262,7 @@ impl std::fmt::Display for NameProblem {
                 "the tool name `{name}` is longer than {MAX_TOOL_NAME} characters"
             ),
             NameProblem::Empty { from } => write!(f, "{from} gives an empty tool name"),
+            NameProblem::Unknown(u) => f.write_str(u.message()),
         }
     }
 }

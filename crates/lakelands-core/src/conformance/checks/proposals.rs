@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Seam;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::write::{ProposalFilter, ProposalState, ProposedWrite};
@@ -289,7 +290,7 @@ async fn an_external_verb_without_an_executor_is_unbound(
         ),
     ] {
         ensure!(
-            matches!(&answer, Err(Error::Unbound { seam }) if seam.contains("mailer")),
+            matches!(answer.as_ref().err().and_then(Error::seam), Some(Seam::Executor { name }) if name == "mailer"),
             "{what}, whose executor `mailer` is not bound, must answer `unbound` naming \
              `mailer`, and never record a proposal that could not run; it answered {answer:?}"
         );

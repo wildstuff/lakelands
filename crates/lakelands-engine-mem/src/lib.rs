@@ -47,7 +47,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
-use lakelands_api::error::Result;
+use lakelands_api::error::{Error, Result, Situation};
 use lakelands_api::id::LakeId;
 use lakelands_api::location::{EngineConfig, Location};
 
@@ -76,7 +76,7 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-pub(crate) use lakelands_core::{invalid, unavailable};
+pub(crate) use lakelands_core::invalid;
 
 /// Finds the in-memory engine by name and opens lakes held in memory. The
 /// lakes are this opener's: its clones share them, another opener holds
@@ -126,11 +126,9 @@ impl EngineOpener for MemoryOpener {
                     .or_insert_with(|| Arc::new(Mutex::new(Lake::default()))),
             ),
             (None, OpenMode::Read | OpenMode::Write) => {
-                return Err(unavailable(format!(
-                    "there is no lake `{}` in this opener's memory; open it with `create` \
-                     to make it",
-                    location.lake
-                )));
+                let lake = location.lake.to_string();
+                let schema = None;
+                return Err(Error::unavailable(Situation::NoLake { lake, schema }));
             }
         };
         Ok(Box::new(MemoryLake::new(

@@ -147,7 +147,8 @@ async fn a_read_only_handle_refuses_compact_and_the_writer_compacts_in_place() {
             ("checkpoint", store.checkpoint().await.map(|_| ())),
         ] {
             match answer {
-                Err(Error::Unavailable { message }) => {
+                Err(Error::Unavailable { situation }) => {
+                    let message = situation.to_string();
                     assert_eq!(message, "this lake is open read-only here", "{who}, {op}");
                 }
                 other => panic!("{who}, {op}: expected unavailable, got {other:?}"),
@@ -586,7 +587,7 @@ async fn the_door_refuses_what_this_release_does_not_hold() {
         )
         .await;
     assert!(
-        matches!(&remote, Err(Error::Unbound { seam }) if seam.contains("`http`")),
+        matches!(remote.as_ref().err().and_then(Error::seam), Some(lakelands_api::error::Seam::FunctionBacking { kind }) if kind == "http"),
         "{remote:?}"
     );
     let empty = cat
@@ -741,7 +742,7 @@ async fn a_tampered_checkpoint_is_reported_by_verify() {
     })
     .await;
     assert!(
-        matches!(&r, Err(Error::Unavailable { message }) if message.contains("checkpoint")),
+        matches!(&r, Err(Error::Unavailable { situation }) if situation.to_string().contains("checkpoint")),
         "{r:?}"
     );
 }
@@ -766,8 +767,8 @@ async fn a_segment_that_begins_with_no_checkpoint_is_reported_by_verify() {
     })
     .await;
     assert!(
-        matches!(&r, Err(Error::Unavailable { message })
-            if message.contains("a segment begins there") && message.contains("no checkpoint")),
+        matches!(&r, Err(Error::Unavailable { situation })
+            if matches!(**situation, lakelands_api::error::Situation::Damaged { flaw: lakelands_api::error::Flaw::NoCheckpoint, .. })),
         "{r:?}"
     );
 }
@@ -824,8 +825,8 @@ async fn verify_refuses_a_format_version_that_goes_down() {
     let reader = open(&lake, OpenMode::Read).await.unwrap();
     let r = reader.verify(None, None).await;
     assert!(
-        matches!(&r, Err(Error::Unavailable { message })
-            if message.contains("format 1") && message.contains("format 2")),
+        matches!(&r, Err(Error::Unavailable { situation })
+            if matches!(**situation, lakelands_api::error::Situation::Damaged { flaw: lakelands_api::error::Flaw::FormatBack { v: 1, before: 2 }, .. })),
         "{r:?}"
     );
 }
@@ -1227,9 +1228,13 @@ impl lakelands_api::seam::VerbExecutor for Bank {
     ) -> lakelands_api::Result<serde_json::Value> {
         match invocation.record.as_ref().map(|r| r.key.as_str()) {
             Some("i1") => Ok(json!({"paid": true})),
-            _ => Err(Error::Unavailable {
-                message: "the bank is closed".into(),
-            }),
+            _ => Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed("the bank is closed"),
+                },
+            )),
         }
     }
 }
@@ -2037,9 +2042,13 @@ impl lakelands_api::seam::EmbedBackend for Counting {
     async fn embed(&self, texts: &[String]) -> lakelands_api::Result<Vec<Vec<f32>>> {
         self.calls.lock().unwrap().push(texts.len());
         if self.fail {
-            return Err(Error::Unavailable {
-                message: "the endpoint timed out".into(),
-            });
+            return Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed("the endpoint timed out"),
+                },
+            ));
         }
         Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
     }
@@ -2145,7 +2154,8 @@ async fn a_failed_request_records_a_failure_for_each_text() {
         let r = cat.get(&o, &"doc".into(), get(k)).await.unwrap().data;
         let why = r.meta.get("vec").and_then(|m| m.error.clone());
         assert!(
-            !r.fields.contains_key("vec") && why.as_deref() == Some("the endpoint timed out"),
+            !r.fields.contains_key("vec")
+                && why.as_deref() == Some("writing the projection failed: the endpoint timed out"),
             "{k}: {r:?}"
         );
     }
@@ -2204,8 +2214,14 @@ async fn another_model_bound_later_is_unbound_for_search_and_makes_no_embedding(
         )
         .await;
     match got {
-        Err(Error::Unbound { seam }) => {
-            assert!(seam.contains("`m`") && seam.contains("`n`"), "{seam}");
+        Err(e) if e.seam().is_some() => {
+            let Some(lakelands_api::error::Seam::Embedding { model, bound, .. }) = e.seam() else {
+                panic!("{e:?}");
+            };
+            assert!(
+                model == "m" && bound.as_ref().is_some_and(|b| b.model == "n"),
+                "{model} {bound:?}"
+            );
         }
         other => panic!("expected unbound, got {other:?}"),
     }
@@ -2237,7 +2253,14 @@ async fn another_model_bound_later_is_unbound_for_search_and_makes_no_embedding(
         )
         .await;
     assert!(
-        matches!(&got, Err(Error::Unbound { seam }) if seam.contains("2 dimensions") && seam.contains("with 3")),
+        matches!(
+            got.as_ref().err().and_then(Error::seam),
+            Some(lakelands_api::error::Seam::Embedding {
+                dimensions: 2,
+                bound: Some(lakelands_api::error::Bound { dimensions: 3, .. }),
+                ..
+            })
+        ),
         "{got:?}"
     );
     assert!(wider.calls.lock().unwrap().is_empty());
@@ -2552,9 +2575,10 @@ async fn verify_refuses_a_known_at_that_goes_back_naming_its_position() {
 
     let store = open("vectors", OpenMode::Read).await.unwrap();
     match store.verify(None, None).await {
-        Err(Error::Unavailable { message }) => assert!(
-            message.contains("at position 6") && message.contains("known_at"),
-            "{message}"
+        Err(Error::Unavailable { situation }) => assert!(
+            situation.to_string().contains("at position 6")
+                && situation.to_string().contains("known_at"),
+            "{situation}"
         ),
         other => {
             panic!("a known_at going back is refused at position 6, and it answered {other:?}")

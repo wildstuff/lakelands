@@ -697,6 +697,25 @@ A host that already has a store of its own moves in four steps.
   needs more gives the executor its own record of what it did, keyed by
   the call's position (`VerbInvocation.position`). See
   `docs/decisions/013-verbs-run-by-declared-risk.md`, extended.
+- **An outage and a missing seam are cases, not sentences
+  (lakelands#650).** `unavailable` carries a `Situation` and `unbound` a
+  `Seam`: a code and its parameters (which lease and who holds it, which
+  part of the log is damaged and how, which remote end failed and in
+  what exchange), with the English sentence beside them for logs. A host
+  renders the case in its users' language from its own catalog, and
+  acts on it without reading words: a call of a verb that reaches
+  outside the lake failed around its hand-out is `Situation::Executor`,
+  whose `retry` says how to send it again. Over REST and MCP the error's
+  JSON carries `code`, the parameters and `message`, and the error its
+  own `message`; a code the host does not know yet, from a newer lake, is
+  read as `Unknown` and shown by its message, and a plain name it does
+  not know is shown as itself in backticks. A client and a lake on either
+  side of this change cannot read each other's errors: move both
+  together. The only free text is a `Detail`, an operating system's,
+  database's or library's own words, scrubbed where they arise: never a
+  record's key or values, and never a path on the host. See
+  `docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
+  extended.
 - **A declaration that recomputes a type is a step for a quiet moment.**
   A function declared again with a change, or a type declared again with
   another derived expression, computes the derived fields of every live record

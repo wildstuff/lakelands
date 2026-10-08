@@ -33,6 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use async_trait::async_trait;
+use lakelands_api::error::{Exchange, Remote, Situation};
 use lakelands_api::seam::{EmbedBackend, FunctionBacking, FunctionCall};
 use lakelands_api::{Error, Result, Value};
 
@@ -58,8 +59,10 @@ fn calls() -> &'static Mutex<Calls> {
 /// The scripted backing.
 struct Scripted;
 
-fn fail(message: String) -> Error {
-    Error::Unavailable { message }
+/// A remote end that answered 503.
+fn fail(remote: Remote) -> Error {
+    let exchange = Exchange::Status { status: 503 };
+    Error::unavailable(Situation::Remote { remote, exchange })
 }
 
 #[async_trait]
@@ -74,13 +77,15 @@ impl FunctionBacking for Scripted {
             let mut c = lock(calls());
             *c.made.entry(token.clone()).or_default() += 1;
             if c.unplugged.contains(&token) {
-                return Err(fail(format!("the backing for `{token}` is unplugged")));
+                let function = call.function.clone();
+                return Err(fail(Remote::Function { function }));
             }
         }
         let input = call.config["echo"].as_str().unwrap_or_default();
         let value = call.inputs[input].clone();
         if call.config.get("fail_on") == Some(&value) {
-            return Err(fail(format!("`{}` cannot take {value}", call.function)));
+            let function = call.function.clone();
+            return Err(fail(Remote::Function { function }));
         }
         Ok(value)
     }
@@ -173,9 +178,8 @@ impl EmbedBackend for Embedder {
             });
         }
         if texts.iter().any(|t| t.starts_with(WEATHER)) {
-            return Err(Error::Unavailable {
-                message: format!("`{}` is down", self.model),
-            });
+            let model = self.model.clone();
+            return Err(fail(Remote::Embedding { model }));
         }
         let dimensions = self.dimensions as usize;
         Ok(texts
@@ -326,7 +330,8 @@ impl lakelands_api::seam::VerbExecutor for Executor {
             return Ok(Value::Null);
         }
         if invocation.payload.get("fail") == Some(&Value::Bool(true)) {
-            return Err(fail(format!("`{}` was asked to fail", invocation.verb)));
+            let name = invocation.verb.to_string();
+            return Err(fail(Remote::Executor { name }));
         }
         Ok(serde_json::json!({"done": invocation.verb.as_str(), "record": key}))
     }

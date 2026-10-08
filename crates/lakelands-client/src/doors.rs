@@ -18,7 +18,7 @@ use hyper::header::HeaderValue;
 use lakelands_api::Catalog;
 use lakelands_api::catalog::{CommitStream, SourceStream};
 use lakelands_api::describe::{LakeDescription, TypeDescription};
-use lakelands_api::error::{Error, Refusal, Result};
+use lakelands_api::error::{Detail, Error, Exchange, Refusal, Result};
 use lakelands_api::expr::Condition;
 use lakelands_api::id::{
     LakeId, ProposalId, RecordKey, RelationName, SourceId, TypeName, VerbName,
@@ -374,14 +374,13 @@ impl Catalog for RemoteCatalog {
         let call = Call::new(Method::POST, path.clone()).stream("application/x-ndjson", body);
         let r = self.wire.send(key, call).await?;
         if !r.status().is_success() {
-            return Err(self.wire.failure(&path, r).await);
+            return Err(self.wire.failure(r).await);
         }
         Ok(Box::pin(Commits {
             silent: Box::pin(tokio::time::sleep(self.wire.silence)),
             armed: false,
             spoke: Instant::now(),
             wire: self.wire.clone(),
-            path,
             body: r.into_body(),
             upload,
             buf: Vec::new(),
@@ -498,7 +497,6 @@ struct Commits {
     /// When the answer last brought a frame.
     spoke: Instant,
     wire: Arc<Wire>,
-    path: String,
     body: Incoming,
     upload: Arc<Upload>,
     buf: Vec<u8>,
@@ -512,10 +510,8 @@ impl Commits {
             return Ok(c);
         }
         self.done = true;
-        Err(serde_json::from_slice::<Error>(text).unwrap_or_else(|_| {
-            self.wire
-                .unavailable(&self.path, "answered a line that is not the contract's")
-        }))
+        Err(serde_json::from_slice::<Error>(text)
+            .unwrap_or_else(|_| self.wire.unavailable(Exchange::LineNotTheContract)))
     }
 }
 
@@ -537,7 +533,7 @@ impl Stream for Commits {
             }
             if this.buf.len() > this.wire.cap {
                 this.done = true;
-                return Poll::Ready(Some(Err(this.wire.too_long(&this.path))));
+                return Poll::Ready(Some(Err(this.wire.too_long())));
             }
             if this.ended {
                 this.done = true;
@@ -577,13 +573,8 @@ impl Stream for Commits {
                                 continue;
                             }
                             this.done = true;
-                            let e = this.wire.unavailable(
-                                &this.path,
-                                format_args!(
-                                    "took nothing and answered nothing for {} seconds while records were being sent",
-                                    this.wire.silence.as_secs()
-                                ),
-                            );
+                            let secs = this.wire.silence.as_secs();
+                            let e = this.wire.unavailable(Exchange::Stalled { secs });
                             return Poll::Ready(Some(Err(e)));
                         }
                     }
@@ -596,13 +587,8 @@ impl Stream for Commits {
                         return Poll::Pending;
                     }
                     this.done = true;
-                    let e = this.wire.unavailable(
-                        &this.path,
-                        format_args!(
-                            "sent nothing for {} seconds after the records ended",
-                            this.wire.silence.as_secs()
-                        ),
-                    );
+                    let secs = this.wire.silence.as_secs();
+                    let e = this.wire.unavailable(Exchange::SilentAfter { secs });
                     return Poll::Ready(Some(Err(e)));
                 }
                 Poll::Ready(None) => this.ended = true,
@@ -615,9 +601,9 @@ impl Stream for Commits {
                 }
                 Poll::Ready(Some(Err(e))) => {
                     this.done = true;
-                    let e = this
-                        .wire
-                        .unavailable(&this.path, format_args!("cut its answer off: {e}"));
+                    let e = this.wire.unavailable(Exchange::CutOff {
+                        detail: Detail::scrubbed(e),
+                    });
                     return Poll::Ready(Some(Err(e)));
                 }
             }
@@ -736,13 +722,15 @@ mod tests {
             .expect("the ingest starts");
         let out = lakelands_mock::stream::collect(&mut commits).await;
         let waited = asked.elapsed();
-        let [Err(Error::Unavailable { message })] = out.as_slice() else {
+        let [Err(Error::Unavailable { situation })] = out.as_slice() else {
             panic!("expected one unavailable, got {out:?}");
         };
+        let message = situation.to_string();
         assert!(
-            message.contains(&format!("{addr}/lakes/finance/ingest/bank")),
+            message.contains("the REST door of lake `finance`"),
             "{message}"
         );
+        assert!(!message.contains(&addr.to_string()), "{message}");
         assert!(message.contains("after the records ended"), "{message}");
         assert!(
             waited >= SILENCE && waited < Duration::from_secs(5),
@@ -796,13 +784,15 @@ mod tests {
             .expect("the ingest starts");
         let out = lakelands_mock::stream::collect(&mut commits).await;
         let waited = asked.elapsed();
-        let [Err(Error::Unavailable { message })] = out.as_slice() else {
+        let [Err(Error::Unavailable { situation })] = out.as_slice() else {
             panic!("expected one unavailable, got {out:?}");
         };
+        let message = situation.to_string();
         assert!(
-            message.contains(&format!("{addr}/lakes/finance/ingest/bank")),
+            message.contains("the REST door of lake `finance`"),
             "{message}"
         );
+        assert!(!message.contains(&addr.to_string()), "{message}");
         assert!(
             message.contains("while records were being sent"),
             "{message}"

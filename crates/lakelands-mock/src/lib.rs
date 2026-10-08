@@ -428,9 +428,7 @@ impl LakeStore for MockLake {
 
     fn bind_embed(&self, _: Arc<dyn lakelands_api::seam::EmbedBackend>) -> Result<()> {
         // The mock refuses every embedding field, so it has nothing to bind.
-        Err(lakelands_api::Error::Unbound {
-            seam: "an embedding backend (the mock refuses every embedding field)".into(),
-        })
+        Err(not_offered("bind_embed"))
     }
 
     async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
@@ -464,9 +462,7 @@ impl LakeStore for MockLake {
     ) -> Result<Position> {
         // Retention holds are a host operation the doors never call; the
         // mock keeps none and says so.
-        Err(lakelands_api::Error::Unbound {
-            seam: "retention holds (the mock keeps none)".into(),
-        })
+        Err(not_offered("restrict"))
     }
 
     async fn unrestrict(
@@ -474,9 +470,7 @@ impl LakeStore for MockLake {
         _ty: &lakelands_api::TypeName,
         _key: &lakelands_api::RecordKey,
     ) -> Result<Position> {
-        Err(lakelands_api::Error::Unbound {
-            seam: "retention holds (the mock keeps none)".into(),
-        })
+        Err(not_offered("unrestrict"))
     }
 
     async fn close(&self) -> Result<()> {
@@ -535,4 +529,11 @@ impl ChangeFeed for Feed {
     async fn ack(&self, _consumer: &str, _through: Position) -> Result<()> {
         Ok(())
     }
+}
+
+/// A host operation the mock does not offer: it keeps no retention hold
+/// and refuses every embedding field.
+fn not_offered(op: &str) -> lakelands_api::Error {
+    let op = op.to_owned();
+    lakelands_api::Error::unbound(lakelands_api::error::Seam::Operation { op })
 }

@@ -107,11 +107,15 @@ async fn another_authority_or_another_name_fails_tls() {
         (format!("https://127.0.0.1:{}/", addr.port()), "ca.pem"),
     ] {
         let e = remote(url.clone(), ca).head().await.unwrap_err();
-        let Error::Unavailable { message } = &e else {
+        let Error::Unavailable { situation } = &e else {
             panic!("{url} with {ca}: expected unavailable, got {e:?}");
         };
+        let message = situation.to_string();
         assert!(message.contains("failed TLS"), "{url} with {ca}: {message}");
-        assert!(message.contains(&addr.port().to_string()), "{message}");
+        assert!(
+            message.contains("the REST door of lake `finance`"),
+            "{message}"
+        );
         assert!(!message.contains("k-owner"), "{message}");
     }
 }

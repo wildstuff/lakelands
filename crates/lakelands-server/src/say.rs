@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use lakelands_api::error::{Error, Refusal, THE_EXECUTOR};
+use lakelands_api::error::{Error, Refusal, Situation};
 
 /// A failure, for a person.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -104,7 +104,9 @@ impl From<Error> for Failure {
             }
             // A call of an external verb that failed around its hand-out:
             // sent again as it was, it could run twice, or run nothing.
-            Error::Unavailable { message } if message.contains(THE_EXECUTOR) => {
+            Error::Unavailable { situation }
+                if matches!(**situation, Situation::Executor { .. }) =>
+            {
                 "the call is in the log: do what the message says, and call the verb again only \
                  where it says the executor was not handed the call"
                     .to_owned()
@@ -112,6 +114,7 @@ impl From<Error> for Failure {
             Error::Unavailable { .. } => {
                 "wait and retry, or check that no other process holds the lake".to_owned()
             }
+            Error::Unknown(_) => "do what the message says".to_owned(),
         };
         Failure {
             what: e.to_string(),
@@ -124,22 +127,25 @@ impl From<Error> for Failure {
 mod tests {
     use super::*;
 
-    /// A call of an external verb that failed around its hand-out, in the
-    /// store's words (`writes::not_handed`, the recording's failure), is
-    /// not advised to retry; another `unavailable` is.
+    /// A call of an external verb that failed around its hand-out
+    /// (`writes::not_handed`, the recording's failure) is not advised to
+    /// retry; another `unavailable` is.
     #[test]
     fn a_call_that_failed_around_its_hand_out_is_not_advised_to_retry() {
-        let executor = THE_EXECUTOR;
-        for said in [
-            format!("the commit failed; {executor} was not handed this call: call the verb again"),
-            format!("{executor} answered this call with null, and recording its answer failed: x"),
-        ] {
-            let todo = Failure::from(Error::Unavailable { message: said }).todo;
+        use lakelands_api::error::Retry;
+        for answered in [None, Some(serde_json::Value::Null)] {
+            let cause = Box::new(Error::unavailable(Situation::Moved));
+            let (held, retry) = (false, Retry::Call);
+            let e = Error::unavailable(Situation::Executor {
+                answered,
+                held,
+                retry,
+                cause,
+            });
+            let todo = Failure::from(e).todo;
             assert!(!todo.contains("retry"), "{todo}");
         }
-        let other = Failure::from(Error::Unavailable {
-            message: "held".into(),
-        });
+        let other = Failure::from(Error::unavailable(Situation::Moved));
         assert!(other.todo.starts_with("wait and retry"), "{}", other.todo);
     }
 }

@@ -13,7 +13,7 @@ use lakelands_api::engine::{
     CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
     Reclaimed, VectorIndex,
 };
-use lakelands_api::error::Result;
+use lakelands_api::error::{Act, Error, Result, Situation};
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::record::{StoredRecord, Value};
@@ -21,7 +21,7 @@ use lakelands_api::write::{Declaration, Proposal};
 
 use crate::projection::Put;
 use crate::view::MemView;
-use crate::{Lake, NAME, invalid, lock, unavailable};
+use crate::{Lake, NAME, invalid, lock};
 
 /// One handle onto a lake held in memory.
 pub struct MemoryLake {
@@ -48,26 +48,25 @@ impl MemoryLake {
     /// Refuses a write to the log through a handle opened read-only.
     fn writable(&self) -> Result<()> {
         match self.mode {
-            OpenMode::Read => Err(unavailable(format!(
-                "lake `{}` is open read-only here; open it for writing to take the lease or \
-                 append",
-                self.lake
-            ))),
+            OpenMode::Read => Err(Error::unavailable(Situation::ReadOnly {
+                lake: Some(self.lake.to_string()),
+                leased_elsewhere: false,
+            })),
             OpenMode::Write | OpenMode::Create => Ok(()),
         }
     }
 
     /// Refuses an append, an import or a seal through a handle that does
     /// not hold `lease`: a copy of another handle's lease writes nothing.
-    fn holding(&self, lease: &Lease, what: &str) -> Result<()> {
+    fn holding(&self, lease: &Lease, undone: Act) -> Result<()> {
         self.writable()?;
         if lock(&self.held).as_ref() == Some(lease) {
             return Ok(());
         }
-        Err(unavailable(format!(
-            "the lease with fence {} is not held by this handle; nothing was {what}",
-            lease.fence
-        )))
+        Err(Error::unavailable(Situation::LeaseNotHeld {
+            fence: Some(lease.fence),
+            undone: Some(undone),
+        }))
     }
 
     /// Holds a put for the open transaction.
@@ -115,12 +114,12 @@ impl LakeEngine for MemoryLake {
     }
 
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        self.holding(lease, "appended")?;
+        self.holding(lease, Act::Appended)?;
         lock(&self.shared).log.append(lease, events)
     }
 
     fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        self.holding(lease, "imported")?;
+        self.holding(lease, Act::Imported)?;
         lock(&self.shared).log.import(lease, events)
     }
 
@@ -134,7 +133,7 @@ impl LakeEngine for MemoryLake {
         imported: bool,
         first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
     ) -> Result<Option<SegmentDigest>> {
-        self.holding(lease, "sealed")?;
+        self.holding(lease, Act::Sealed)?;
         lock(&self.shared).log.seal(lease, imported, first)
     }
 

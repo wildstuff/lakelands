@@ -66,7 +66,7 @@ async fn a_kept_name_handed_out_of_key_order_is_not_answered() {
     assert_eq!(keys, ["j", "k"], "the view's two groups, kept");
     probe.reversed.store(true, Ordering::SeqCst);
     let said = match find().await {
-        Err(Error::Unavailable { message }) => message,
+        Err(Error::Unavailable { situation }) => situation.to_string(),
         other => panic!("a page out of key order must be refused: {other:?}"),
     };
     assert!(
@@ -84,7 +84,7 @@ async fn a_kept_name_handed_out_of_key_order_is_not_answered() {
     };
     let counted = l.cat.find(&l.own, &book, counted).await;
     assert!(
-        matches!(&counted, Err(Error::Unavailable { message }) if message.contains("out of key order")),
+        matches!(&counted, Err(Error::Unavailable { situation }) if situation.to_string().contains("out of key order")),
         "a filtered count of a kept name out of key order must be refused: {counted:?}"
     );
 }

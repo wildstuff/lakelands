@@ -15,11 +15,12 @@
 
 use async_trait::async_trait;
 use lakelands_api::Result;
+use lakelands_api::error::{Error, Remote, Situation};
 use lakelands_api::seam::{FunctionBacking, FunctionCall};
 use serde_json::Value;
 
 use crate::transport::{Failure, Target, Transport};
-use crate::{HttpConfig, body, failed, output, refused};
+use crate::{HttpConfig, body, output, refused};
 
 /// The backing kind.
 pub const KIND: &str = "http";
@@ -81,14 +82,13 @@ impl Http {
             .post(&target, &[], body(call))
             .await
             .map_err(|f| match f {
-                Failure::Refused(why) => refused(call, why),
-                Failure::TimedOut(t) => failed(
-                    call,
-                    format!("{} did not answer within {}s", target.shown(), t.as_secs()),
-                ),
-                Failure::Failed(why) | Failure::Body(why) | Failure::Tls(why) => failed(call, why),
-                Failure::Status(status) => {
-                    failed(call, Failure::status_sentence(status, "the http backing"))
+                Failure::Refused(why) => refused(call, why.to_string()),
+                other => {
+                    let remote = Remote::Function {
+                        function: call.function.clone(),
+                    };
+                    let exchange = other.exchange();
+                    Error::unavailable(Situation::Remote { remote, exchange })
                 }
             })?;
         output(call, &reply)

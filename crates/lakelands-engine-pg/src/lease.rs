@@ -18,11 +18,10 @@
 //! `docs/decisions/038-a-lake-in-postgresql.md`).
 
 use lakelands_api::engine::Lease;
-use lakelands_api::error::Result;
+use lakelands_api::error::{Error, Result, Situation};
 
 use crate::connect::Db;
 use crate::projection::Names;
-use crate::unavailable;
 
 /// The advisory lock's key for a schema, bound as `$1`: a 64-bit hash of
 /// its name, computed by the server.
@@ -46,17 +45,8 @@ pub(crate) fn take(db: &mut Db, names: &Names, schema: &str, holder: &str) -> Re
             .map_or((0, String::new()), |r| {
                 (r.get::<_, i64>(0) as u64, r.get(1))
             });
-        let row = if held_by.is_empty() {
-            format!("the lease row (fence {fence}) names no holder")
-        } else {
-            format!("the lease row names `{held_by}` (fence {fence})")
-        };
-        return Err(unavailable(format!(
-            "the lake's writer lease cannot be taken: its lock is held, and {row}. Either that \
-             writer holds it, or a writer's session is still ending, or another schema's name \
-             hashes to the same lock; retry once the writer is gone, or give this lake another \
-             schema"
-        )));
+        let holder = (!held_by.is_empty()).then_some(held_by);
+        return Err(Error::unavailable(Situation::LeaseLocked { holder, fence }));
     }
     let taken = db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
         let row = db.query_one(

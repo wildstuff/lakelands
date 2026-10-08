@@ -42,9 +42,7 @@ fn block_on<F: Future>(fut: F) -> F::Output {
 }
 
 fn down() -> Error {
-    Error::Unavailable {
-        message: "this lake fails every call on purpose".to_owned(),
-    }
+    Error::unavailable(lakelands_api::error::Situation::Moved)
 }
 
 type Answer<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;

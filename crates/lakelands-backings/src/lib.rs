@@ -25,6 +25,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use lakelands_api::error::{Detail, Exchange, Remote, Situation};
 use lakelands_api::seam::{FunctionBacking, FunctionCall};
 use lakelands_api::{Error, Refusal};
 use serde::{Deserialize, Serialize};
@@ -166,13 +167,17 @@ fn refused(call: &FunctionCall, why: String) -> Error {
 }
 
 /// A call that could not be answered.
-fn failed(call: &FunctionCall, why: String) -> Error {
-    Error::Unavailable {
-        message: format!("function `{}`: {why}", call.function),
-    }
+fn failed(call: &FunctionCall, exchange: Exchange) -> Error {
+    let remote = Remote::Function {
+        function: call.function.clone(),
+    };
+    Error::unavailable(Situation::Remote { remote, exchange })
 }
 
 /// An answer's bytes as the output: JSON, or a failure saying it is not.
 fn output(call: &FunctionCall, bytes: &[u8]) -> Result<Value, Error> {
-    serde_json::from_slice(bytes).map_err(|e| failed(call, format!("the answer is not JSON: {e}")))
+    serde_json::from_slice(bytes).map_err(|e| {
+        let detail = Detail::json(&e);
+        failed(call, Exchange::NotJson { detail })
+    })
 }

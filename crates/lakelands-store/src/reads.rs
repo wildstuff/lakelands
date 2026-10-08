@@ -943,11 +943,13 @@ impl<'a> Reader<'a> {
                 let mut last = scan.after.as_ref().map(|a| &a.key);
                 for r in &rows {
                     if let Some(before) = last.filter(|k| **k >= r.key) {
-                        return Err(lakelands_core::unavailable(format!(
-                            "the engine handed `{}` out of key order, `{}` after `{before}`; the \
-                             read is not answered",
-                            decl.name, r.key
-                        )));
+                        let flaw = lakelands_api::error::Flaw::OutOfKeyOrder {
+                            ty: decl.name.clone(),
+                            key: r.key.clone(),
+                            before: before.clone(),
+                        };
+                        let part = lakelands_api::error::Part::Projection;
+                        return Err(lakelands_core::damaged(part, None, flaw));
                     }
                     last = Some(&r.key);
                 }
@@ -2126,9 +2128,7 @@ impl<'a> Reader<'a> {
         let vector = |field: &FieldName, v: &[f32], pull: u32| -> Result<Vec<(RecordKey, f64)>> {
             match self.lake.engine.vectors() {
                 Some(index) => index.nearest(&s.ty, field.as_str(), v, pull),
-                None => Err(Error::Unbound {
-                    seam: "a vector index (this engine keeps none)".into(),
-                }),
+                None => Err(Error::unbound(lakelands_api::error::Seam::VectorIndex)),
             }
         };
         // A search without a query vector ranks its text alone; one over

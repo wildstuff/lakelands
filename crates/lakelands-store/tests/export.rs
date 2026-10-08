@@ -210,9 +210,15 @@ enum Fault {
 impl ChangeFeed for FailingFeed {
     async fn poll(&self, from: Position, filter: &FeedFilter, _: u32) -> Result<FeedBatch> {
         match self.fault {
-            Fault::BreaksAt(at) if from >= at => Err(Error::Unavailable {
-                message: format!("the feed broke at {from}"),
-            }),
+            Fault::BreaksAt(at) if from >= at => Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed(format!(
+                        "the feed broke at {from}"
+                    )),
+                },
+            )),
             Fault::Skips(at) if from == at => self.inner.feed().poll(at.next(), filter, 1).await,
             _ => self.inner.feed().poll(from, filter, 1).await,
         }
@@ -322,7 +328,7 @@ async fn a_failed_export_leaves_nothing_behind() {
     for dir in [&absent, &empty] {
         let said = lakelands_core::export::write(broken.as_ref(), dir).await;
         assert!(
-            matches!(&said, Err(Error::Unavailable { message }) if message.contains("the feed broke")),
+            matches!(&said, Err(Error::Unavailable { situation }) if situation.to_string().contains("the feed broke")),
             "{said:?}"
         );
     }
@@ -351,8 +357,11 @@ async fn an_export_through_a_feed_that_skips_an_event_is_refused() {
     let _ = std::fs::remove_dir_all(&dir);
     let said = lakelands_core::export::write(skipping.as_ref(), &dir).await;
     assert!(
-        matches!(&said, Err(Error::Unavailable { message })
-            if message.contains("answered position 3 where 2 was next")),
+        matches!(&said, Err(Error::Unavailable { situation })
+        if matches!(**situation, lakelands_api::error::Situation::Damaged {
+            flaw: lakelands_api::error::Flaw::Position { expected: Position(2), found: Some(Position(3)) },
+            ..
+        })),
         "{said:?}"
     );
     assert!(!dir.exists(), "nothing is left behind");

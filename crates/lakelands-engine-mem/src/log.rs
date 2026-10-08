@@ -19,12 +19,12 @@
 //! next with its first events, in one change.
 
 use lakelands_api::engine::{CanonicalEvent, Lease};
-use lakelands_api::error::Result;
+use lakelands_api::error::{Error, Result, Situation};
 use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::Position;
 use sha2::{Digest as _, Sha256};
 
-use crate::{invalid, unavailable};
+use crate::invalid;
 
 /// One lake's log, lease and segments.
 #[derive(Debug, Default)]
@@ -46,11 +46,10 @@ impl Log {
     /// Takes the lease for `holder`, or says who holds it.
     pub(crate) fn take_lease(&mut self, holder: &str) -> Result<Lease> {
         if let Some(held) = &self.lease {
-            return Err(unavailable(format!(
-                "the lake's writer lease is held by `{}` (fence {}); it must be released \
-                 before another writer can take it",
-                held.holder, held.fence
-            )));
+            return Err(lakelands_core::engines::lease_held(
+                &held.holder,
+                held.fence,
+            ));
         }
         self.last_fence += 1;
         let lease = Lease {
@@ -74,15 +73,12 @@ impl Log {
     fn check_lease(&self, lease: &Lease) -> Result<()> {
         match &self.lease {
             Some(current) if current == lease => Ok(()),
-            Some(current) => Err(unavailable(format!(
-                "the lease with fence {} is stale: `{}` holds the lake's writer lease with \
-                 fence {}",
-                lease.fence, current.holder, current.fence
-            ))),
-            None => Err(unavailable(format!(
-                "the lease with fence {} is stale: no one holds the lake's writer lease",
-                lease.fence
-            ))),
+            current => Err(Error::unavailable(Situation::LeaseStale {
+                fence: lease.fence,
+                holder: current.as_ref().map(|c| c.holder.clone()),
+                current: current.as_ref().map(|c| c.fence),
+                undone: None,
+            })),
         }
     }
 
@@ -211,7 +207,6 @@ impl Log {
 mod tests {
     use super::*;
     use crate::tests::chain;
-    use lakelands_api::Error;
 
     fn is_unavailable(r: &Result<impl std::fmt::Debug>) -> bool {
         matches!(r, Err(Error::Unavailable { .. }))
@@ -231,10 +226,11 @@ mod tests {
     fn a_held_lease_is_refused_naming_its_holder() {
         let mut log = Log::default();
         log.take_lease("writer one").unwrap();
-        let Err(Error::Unavailable { message }) = log.take_lease("writer two") else {
-            panic!("a second take succeeded");
+        let e = log.take_lease("writer two").unwrap_err();
+        let Some(Situation::LeaseHeld { holder, .. }) = e.situation() else {
+            panic!("a second take was refused for another reason: {e:?}");
         };
-        assert!(message.contains("writer one"), "{message}");
+        assert_eq!(holder, "writer one");
     }
 
     #[test]

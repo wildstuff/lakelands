@@ -44,6 +44,7 @@
 //! append, and refuses, when it reads the log, an event written below what
 //! it needs.
 
+use lakelands_api::error::{Added as A, Flaw};
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::expr::{Condition, Expr, Func};
 use lakelands_api::ontology::{FieldDecl, VerbEffect, VerbScope};
@@ -95,7 +96,7 @@ pub fn needed(body: &EventBody, upstream: bool) -> u32 {
 
 /// Whether an event carries one thing a format version added, and the
 /// words an event below that version which carries it is refused in.
-pub type Added = (fn(&EventBody) -> bool, &'static str);
+pub type Added = (fn(&EventBody) -> bool, A);
 
 /// What format version 11 added to what an event carries, each with the
 /// words an event below 11 that carries it is refused in. One release
@@ -103,26 +104,23 @@ pub type Added = (fn(&EventBody) -> bool, &'static str);
 pub const ELEVENTH: &[Added] = &[
     (
         |body| any_declaration(body, |d| declares_call(d, Func::Floor)),
-        "declares a call of `floor`",
+        A::Floor,
     ),
     (
         |body| any_declaration(body, |d| declares(d, &by_a_width)),
-        "declares a call of `date_bucket` by a width",
+        A::DateBucketByWidth,
     ),
     (
         |body| any_declaration(body, |d| declares_call(d, Func::InSet)),
-        "declares a call of `in_set`",
+        A::InSet,
     ),
-    (renames_a_relation, "renames a relation"),
-    (writes_a_kept_setting, "writes a `view_kept.` setting"),
-    (says_it_made, "carries `made`"),
-    (
-        reports_restated,
-        "proposes a migration whose report holds `restated`",
-    ),
+    (renames_a_relation, A::RelationRename),
+    (writes_a_kept_setting, A::KeptSetting),
+    (says_it_made, A::Made),
+    (reports_restated, A::Restated),
     (
         |body| any_declaration(body, |d| any_field(d, |f| f.initial.is_some())),
-        "declares an `initial` value",
+        A::Initial,
     ),
 ];
 
@@ -133,15 +131,15 @@ pub const ELEVENTH: &[Added] = &[
 pub const TWELFTH: &[Added] = &[
     (
         |body| matches!(body, EventBody::Declared { with_the_set, .. } if *with_the_set),
-        "declares `with_the_set`",
+        A::WithTheSet,
     ),
     (
         |body| any_declaration(body, |d| any_field(d, |f| f.computed_at.is_some())),
-        "declares when a field is computed",
+        A::ComputedAt,
     ),
     (
         |body| matches!(body, EventBody::ValueTypeMigrated { .. }),
-        "renames a value type's values",
+        A::ValueRenames,
     ),
     (
         |body| {
@@ -149,7 +147,7 @@ pub const TWELFTH: &[Added] = &[
                 write: ProposedWrite::MigrateValueType { renames, .. }, ..
             } if !renames.is_empty())
         },
-        "proposes a value type's migration that renames values",
+        A::ProposesValueRenames,
     ),
 ];
 
@@ -227,9 +225,9 @@ fn by_a_width(e: &Expr) -> bool {
 }
 
 /// What `body` carries of what a format version `added`, if anything.
-pub fn carried(added: &[Added], body: &EventBody) -> Option<&'static str> {
+pub fn carried(added: &[Added], body: &EventBody) -> Option<A> {
     let added = added.iter().find(|(carries, _)| carries(body));
-    added.map(|(_, what)| *what)
+    added.map(|(_, what)| what.clone())
 }
 
 /// Whether any declaration the event carries holds for `test`: a
@@ -326,45 +324,43 @@ pub fn caps_a_trigger(body: &EventBody) -> bool {
 
 /// Why an event is written below the version it needs, if it is: what it
 /// carries and the version that added it.
-pub fn below(event: &Event) -> Option<String> {
+pub fn below(event: &Event) -> Option<Flaw> {
     let need = needed(&event.body, event.upstream.is_some());
     if event.v >= need {
         return None;
     }
     let added = carried(TWELFTH, &event.body).or_else(|| carried(ELEVENTH, &event.body));
-    let what = if let Some(what) = added {
-        what.to_owned()
+    let carries = if let Some(what) = added {
+        what
     } else if need == 10 {
-        "proposes a value type's tightening".to_owned()
+        A::Tightening
     } else if need == 9 {
-        "declares a view that merges sources".to_owned()
+        A::MergedSources
     } else if need == 8 && declares_a_verb_on_its_type(&event.body) {
-        "declares a verb on its type".to_owned()
+        A::VerbOnType
     } else if need == 8 && calls_with_no_key(&event.body) {
-        "calls a verb with no key".to_owned()
+        A::NoKey
     } else if need == 8 {
-        "declares a view's parameters".to_owned()
+        A::ViewParams
     } else if need == 7 {
-        "declares a call of `retired`".to_owned()
+        A::Retired
     } else if need == 6 && caps_a_trigger(&event.body) {
-        "declares a trigger's `max_depth`".to_owned()
+        A::TriggerDepth
     } else if need == 6 {
-        "declares a derived relation".to_owned()
+        A::DerivedRelation
     } else if need == 5 {
-        "carries `annotations` in a declaration".to_owned()
+        A::Annotations
     } else if need == 4 {
-        "proposes a declaration or a migration".to_owned()
+        A::ProposesSchema
     } else if event.upstream.is_some() {
-        "carries `upstream`".to_owned()
+        A::Upstream
     } else if need == 3 {
-        "declares a call of `date_bucket`".to_owned()
+        A::DateBucket
     } else {
-        "carries `rekeyed`".to_owned()
+        A::Rekeyed
     };
-    Some(format!(
-        "a format {} event {what}, which format {need} added",
-        event.v
-    ))
+    let (v, need) = (event.v.into(), need.into());
+    Some(Flaw::FormatBelow { v, carries, need })
 }
 
 /// Why an event carries a member where it never sits, if it does:
@@ -376,21 +372,16 @@ pub fn below(event: &Event) -> Option<String> {
 /// (`docs/decisions/050-a-field-declares-its-initial-value.md`). No door
 /// puts any there; a reader holds the rule for a log written by something
 /// else.
-pub fn misplaced(event: &Event) -> Option<String> {
+pub fn misplaced(event: &Event) -> Option<Flaw> {
     if event.context.cause.is_some() {
-        return Some("`context` carries `cause`, which the envelope carries".to_owned());
+        return Some(Flaw::CauseInContext);
     }
     if event.origin == lakelands_api::record::Origin::Initial {
-        return Some("the envelope carries the origin `initial`, a field's alone".to_owned());
+        return Some(Flaw::InitialOrigin);
     }
     let kind = event_kind(&event.body);
-    (event.upstream.is_some() && !matches!(event.body, EventBody::RecordIngested { .. })).then(
-        || {
-            format!(
-                "a `{kind}` event carries `upstream`, which only a `record_ingested` event carries"
-            )
-        },
-    )
+    (event.upstream.is_some() && !matches!(event.body, EventBody::RecordIngested { .. }))
+        .then_some(Flaw::UpstreamOn { kind })
 }
 
 /// An event body's kind, as the log writes it.
