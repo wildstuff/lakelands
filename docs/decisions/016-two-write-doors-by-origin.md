@@ -163,12 +163,15 @@ not a view (`invalid`), the principal may write every field of it
 window checks the context again. Then each record, in stream order: the
 type is declared (`not_found`); the key's form (`invalid`); the door and
 the grants, field by field (record check 4); every value fits (5); a
-link of a relation carried by link records holds its cardinality over
-the lake's live links, then over the window's earlier links
-(`constraint`, naming `to`); then the duplicate test, which counts a
-record and checks nothing further; then the record checks from the
-empty patch on, the expected version excepted. The two cardinality
-steps answer alike, and are stated, not checked.
+record of a link type no relation carries, its relation renamed or
+removed, is `invalid`, naming the type (lakelands#761); then the
+duplicate test, which counts a record and checks nothing further; then
+the record checks from the empty patch on, the expected version
+excepted; then a link of a relation carried by link records holds its
+cardinality over the lake's live links, then over the window's earlier
+links (`constraint`, naming `to`), once the record its writer leaves is
+admitted (051). The two cardinality steps answer alike, and are stated,
+not checked.
 
 ## Extended: the one value the fold writes that no door admitted
 
