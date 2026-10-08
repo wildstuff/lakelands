@@ -1,12 +1,11 @@
 //! A view's kept records bear a name of the kept form
 //! (`lakelands_api::seam::KEPT_PREFIX`), and a kept record is put again at
 //! every write to its group, so a key of such a name may hold thousands
-//! of states. The engine reads such a name by statements of its own
-//! (lakelands#575): at the head the states with no end, through the index
-//! `records_head`, which holds the kept names alone, so that a stored
-//! type's put does not pay for it; at an earlier position a step from key
-//! to key and a seek of each key's state there. A read by keys seeks each
-//! key's state, and a recorded output is read by a seek. The engine check
+//! of states. Every name is read so that none of a key's other states is
+//! (lakelands#575, lakelands#537): at the head a walk of the heads,
+//! `records_head`, each joined to its state; at an earlier position the
+//! same walk with a seek of each key's state there. A read by keys seeks
+//! each key's state, and a recorded output is read by a seek. The engine check
 //! holds the answers. Here each statement's plan is read, as the engine
 //! itself writes it, on a small lake the planner may or may not hold
 //! statistics of (the server's autoanalyze decides that, not the test),
@@ -15,8 +14,8 @@
 //! of `records` and of `outputs` it fetched (`pg_stat_user_tables`),
 //! which a backend reports when it ends. An order name
 //! (`lakelands_api::seam::ORDER_PREFIX`, lakelands#629) keeps one state
-//! for each key and is read by the statements of a stored type, its page
-//! after a key a seek into `records_key_c`; nothing indexes it.
+//! for each key and is read by the same statements, its page after a key
+//! a seek into the heads; nothing indexes it.
 
 mod common;
 
@@ -75,7 +74,8 @@ fn plans(
     std::thread::spawn(move || {
         let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
         if analyse {
-            let tables = format!("ANALYZE {schema}.records, {schema}.outputs");
+            let tables =
+                format!("ANALYZE {schema}.records, {schema}.records_head, {schema}.outputs");
             client.batch_execute(&tables).unwrap();
         }
         // As the engine's sessions plan: each run for its values.
@@ -94,7 +94,7 @@ fn plans(
         let (many, few, limit, after) = (many.as_str(), few.as_str(), 10_i64, "a");
         let mut out = Vec::new();
         for (head, at) in [(true, last as i64), (false, at as i64)] {
-            let [first, later, count, by_key, output] = read_statements(&schema, &names[0], head);
+            let [first, later, count, by_key, output] = read_statements(&schema, head);
             let keys = vec!["a", "k00001", "none"];
             out.push((head, explain(&first, &[&many, &at, &limit])));
             out.push((head, explain(&later, &[&many, &at, &limit, &after])));
@@ -109,14 +109,17 @@ fn plans(
 }
 
 /// What every plan of a kept name's statements must be, the planner
-/// knowing the tables (`analysed`) or not: the same seeks either way.
+/// knowing the tables (`analysed`) or not: no table read whole, and each
+/// key's state found by a seek, so none of its other states is read. With
+/// statistics the heads are walked in key order too, with no sort; without
+/// them the planner may sort the heads of a small table, one row a key.
 fn seeks(plans: &[(bool, Vec<String>)], analysed: bool) {
     for (i, (head, plan)) in plans.iter().enumerate() {
         let has = |step: &str| plan.iter().any(|line| line.contains(step));
         let told = format!("with statistics: {analysed}; at the head: {head}\n{plan:#?}");
         // Only the read by keys sorts, the few records it read.
         assert!(
-            (i % 5 == 3 || !has("Sort")) && !has("Seq Scan"),
+            (i % 5 == 3 || !analysed || !has("Sort")) && !has("Seq Scan"),
             "a kept name's read sorts or reads a table whole; {told}"
         );
         if i % 5 == 3 {
@@ -133,34 +136,43 @@ fn seeks(plans: &[(bool, Vec<String>)], analysed: bool) {
                 has("Limit") && has("Index Scan Backward using outputs_pkey"),
                 "the read of a recorded output is not a seek of its latest state; {told}"
             );
-        } else if *head {
-            assert!(
-                has("records_head"),
-                "a kept name's read at the head does not read the states with no end through \
-                 `records_head`; {told}"
-            );
         } else {
-            // The first key and each next one by a seek into
-            // `records_key_c`, which covers it. The steps are the outer
-            // side of the one join, each joined to the seek of its key's
-            // state: the rows come in the order of the steps, which is the
-            // keys', with no `ORDER BY`. A page steps no further than its
-            // limit of ten states asks.
-            let lines = |step: &str| plan.iter().filter(|line| line.contains(step)).count();
+            // The heads, the outer side of the one join, each joined to
+            // its state by a seek cut at one row: at the head the state it
+            // names, at an earlier position the key's latest one there.
             let at = |step: &str| plan.iter().position(|line| line.contains(step));
-            let stepped = plan.iter().find_map(|line| {
-                let rows = line.split("Recursive Union (actual rows=").nth(1)?;
+            assert!(
+                at("Nested Loop").is_some()
+                    && at("on records_head h") < at("on records x")
+                    && plan[at("on records x").unwrap_or(0) - 1].contains("Limit"),
+                "a kept name's read does not seek each head's state; {told}"
+            );
+            if !analysed {
+                continue;
+            }
+            // Known to the planner, a page walks the heads in key order, with
+            // no sort, and no further than its limit of ten states asks; a
+            // count reads its name's heads by their primary key.
+            let walked = plan.iter().find_map(|line| {
+                let (_, rows) = line.split_once("on records_head h (actual rows=")?;
                 rows.split(' ').next()?.parse::<u64>().ok()
             });
+            // At the head the state is the one at the head's position, by
+            // either index that holds it; earlier, the key's primary key read
+            // backward from the position.
+            let seek = match head {
+                true => "using records_",
+                false => "Backward using records_pkey",
+            };
+            let sought = plan
+                .iter()
+                .any(|l| l.contains(seek) && l.contains("on records x"));
             assert!(
-                lines("Nested Loop") == 1
-                    && lines("Index Only Scan using records_key_c") == 2
-                    && at("CTE Scan on step") < at("Index Scan Backward using records_key_c")
-                    && at("Nested Loop") < at("CTE Scan on step")
-                    && (i % 5 == 2 || stepped <= Some(10)),
-                "a kept name's read at an earlier position does not step from key to key \
-                 through `records_key_c` and seek each key's state, in the order of the \
-                 steps; {told}"
+                sought
+                    && (i % 5 == 2 && has("records_head_pkey")
+                        || has("using records_head_pkey on records_head h") && walked <= Some(11)),
+                "a kept name's read does not walk the heads in key order and seek each \
+                 key's state by an index; {told}"
             );
         }
     }
@@ -265,19 +277,6 @@ fn a_kept_name_is_read_by_seeks_with_statistics_and_without() {
         "SELECT reltuples::bigint FROM pg_class WHERE relname = 'records' \
          AND relnamespace = $1::text::regnamespace",
     ) >= 0;
-    // The index of the head is over the kept names alone, as the server
-    // prints its condition: a stored type's put does not maintain it.
-    let narrowed = common::settled(
-        &url,
-        &schema,
-        "SELECT count(*) FROM pg_index WHERE indexrelid = ($1 || '.records_head')::regclass \
-         AND pg_get_expr(indpred, indrelid) = '((until IS NULL) AND \
-         ((ty COLLATE \"C\") >= ''sys:kept.''::text) AND ((ty COLLATE \"C\") < ''sys:kept/''::text))'",
-    );
-    assert_eq!(
-        narrowed, 1,
-        "`records_head` is not over the kept names alone"
-    );
     // The small lake as the planner holds it, then analysed: the plans
     // are seeks whether autoanalyze ran before them or not.
     let small = (early + UNANALYSED, early + UNANALYSED / 2);
@@ -304,14 +303,14 @@ fn a_kept_name_is_read_by_seeks_with_statistics_and_without() {
         &url,
         &schema,
         "SELECT idx_scan FROM pg_stat_user_indexes \
-         WHERE schemaname = $1 AND indexrelname = 'records_head'",
+         WHERE schemaname = $1 AND indexrelname = 'records_head_pkey'",
     );
     common::drop_schema(&url, &schema);
     assert!(
         each[0] < 400 && each[1] < 10 && through_head >= 60,
         "two pages, three keys, a count, a page in a field's order and the view's state, read at the head \
          and in the middle of the states of a key with {STATES} of them, fetched {each:?} \
-         tuples of `records` and of `outputs`; `records_head` was read {through_head} times"
+         tuples of `records` and of `outputs`; the heads were read {through_head} times"
     );
 }
 
@@ -340,25 +339,32 @@ fn an_order_name_is_read_by_a_seek_and_indexed_nowhere() {
         p.commit(Position(first + 999)).unwrap();
     }
     drop(engine);
-    let rows = ["records", "text_index", "sort_index", "full_text"].map(|table| {
+    let rows = [
+        "records",
+        "records_head",
+        "text_index",
+        "sort_index",
+        "full_text",
+    ]
+    .map(|table| {
         let query =
             format!("SELECT count(*) FROM {schema}.{table} WHERE ty = 'sys:order.v' AND $1 <> ''");
         common::settled(&url, &schema, &query)
     });
     assert_eq!(
         rows,
-        [keys as i64, 0, 0, 0],
-        "one state for each key, no other row"
+        [keys as i64, keys as i64, 0, 0, 0],
+        "one state and one head for each key, no other row"
     );
     let (u, sc, n) = (url.clone(), schema.clone(), name.clone());
     let plan: Vec<String> = std::thread::spawn(move || {
         let mut client = postgres::Client::connect(&u, postgres::NoTls).unwrap();
         client
             .batch_execute(&format!(
-                "ANALYZE {sc}.records; SET plan_cache_mode = force_custom_plan"
+                "ANALYZE {sc}.records, {sc}.records_head; SET plan_cache_mode = force_custom_plan"
             ))
             .unwrap();
-        let [_, later, ..] = read_statements(&sc, &n, true);
+        let [_, later, ..] = read_statements(&sc, true);
         let (ty, at, limit, after) = (n.as_str(), last as i64, 1_i64, "k10000");
         let explain = format!("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) {later}");
         let rows = client.query(&explain, &[&ty, &at, &limit, &after]).unwrap();
@@ -369,7 +375,7 @@ fn an_order_name_is_read_by_a_seek_and_indexed_nowhere() {
     common::drop_schema(&url, &schema);
     let has = |step: &str| plan.iter().any(|line| line.contains(step));
     assert!(
-        has("records_key_c") && !has("Sort") && !has("Seq Scan") && !has("records_head"),
-        "an order name's page after a key is not a seek into `records_key_c`: {plan:#?}"
+        has("records_head_pkey") && !has("Sort") && !has("Seq Scan"),
+        "an order name's page after a key is not a seek into the heads: {plan:#?}"
     );
 }

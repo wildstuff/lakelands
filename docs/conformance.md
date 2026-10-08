@@ -168,6 +168,7 @@ belongs in the suite, not beside one engine:
 - `retiring_a_record_does_not_erase_its_history` — the log format: a retired record is invisible at and after its retirement, and its history is kept
 - `a_read_as_of_a_position_past_the_head_is_refused_as_out_of_range` — 015: a position that is not in the lake's log is refused as out of range, naming the head
 - `position_at_answers_the_last_position_at_or_before_an_instant` — 009 and log-format §1.3: position_at answers, at each event's known_at, the last event at or before it; between two instants the earlier one's last; before the first event none; past the head the head; and a read as of the answer sees the lake as it stood then
+- `a_record_written_many_times_answers_each_state_at_its_position` — 009, 027 and the log format (lakelands#537): a record written forty times beside two others, re-keyed with them and retired, answers at every position a write left, from its first on, the state written last at or before it, and none before its first write, at its old key from the re-key on or from its retirement on; `find` there answers the records then in key order, with their total, a page of two at a time
 
 **versions**
 

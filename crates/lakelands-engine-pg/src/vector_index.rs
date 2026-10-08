@@ -335,9 +335,8 @@ pub(crate) fn catch_up(
         };
         let asked: Vec<String> = db.column(
             &format!(
-                "SELECT substr(key, $1) FROM {} WHERE ty = $2 AND left(key, $1 - 1) = $3 \
-                 AND until IS NULL",
-                names.t("records"),
+                "SELECT substr(key, $1) FROM {} WHERE ty = $2 AND left(key, $1 - 1) = $3",
+                names.t("records_head"),
             ),
             &[
                 &(VECTOR_INDEX_SETTING.len() as i32 + 1),

@@ -37,7 +37,7 @@ use postgres::types::ToSql;
 
 use crate::connect::Db;
 use crate::handle::PgLake;
-use crate::projection::{self, Names, PROPOSALS, decode_record, holds_at};
+use crate::projection::{self, DECLARATIONS, MEMBERS, Names, PROPOSALS, decode_record};
 
 /// A read view of one lake's projection at one position.
 pub(crate) struct PgView<'a> {
@@ -55,111 +55,91 @@ struct Read<'c> {
     head: bool,
 }
 
-/// The statement that reads a kept name (`lakelands_api::seam::KEPT_PREFIX`)
-/// from the table `records`: `select` of its states in force at the
-/// position `$2`, after the key `$4` when `after`, with `tail` after
-/// them. A kept record is put at every write to its group, so a key may
-/// hold thousands of states, and a stored type's statements read every
-/// state of the keys they pass. At the head this reads the states with no
-/// end, every one put at or before the position, in key order through
-/// `records_head`, whose condition it repeats. At an earlier position it
-/// steps from key to key through `records_key_c` and seeks each key's
-/// latest state at or before the position: the steps come in key order,
-/// which the statement answers in with no `ORDER BY`, and each step is
-/// joined to its state, so a limit in `tail` counts the states answered
-/// and not the keys stepped over.
-fn kept_sql(records: &str, head: bool, select: &str, after: bool, tail: &str) -> String {
-    let from = |key: &str| match after {
-        true => format!("AND {key} COLLATE \"C\" > $4"),
-        false => String::new(),
+/// The records in force at the position `$2`, `r`, each beside its head
+/// `h`, from the table `records` and its heads: read in key order, they
+/// are a walk of the heads' primary key, each head's state sought by a
+/// seek (`History::at_head` says why not by a join). At the head it is
+/// the state the head is at; at an earlier position the key's latest state
+/// at or before it, and a key first put after it has none. A kept record
+/// is put at every write to its group, so a key may hold thousands of
+/// states, and none of the others is read.
+fn in_force_sql(records: &str, head: bool) -> String {
+    let at = match head {
+        true => "x.since = h.since AND x.since <= $2",
+        false => "x.since <= $2 ORDER BY x.since DESC",
     };
+    format!(
+        "{records}_head h CROSS JOIN LATERAL (SELECT x.state FROM {records} x \
+         WHERE x.ty = h.ty AND x.key = h.key AND {at} LIMIT 1) r"
+    )
+}
+
+/// The statement of [`Read::records_after`]: the records of `$1` in force
+/// at `$2`, in key order after the key `$4` when `after`. At most `$3`
+/// records, and every one when that is null.
+///
+/// At the head every head has its state, so the heads are cut at the limit
+/// before their states are sought: a walk of one table's primary key, which
+/// the planner takes in its order whether it holds statistics of the table
+/// or not.
+fn records_after_sql(records: &str, head: bool, after: bool) -> String {
+    let from = if after { "AND h.key > $4" } else { "" };
     if head {
         return format!(
-            "SELECT {select} FROM {records} r \
-             WHERE r.ty = $1 AND {} AND r.until IS NULL AND r.since <= $2 {} {tail}",
-            projection::kept_range(),
-            from("r.key")
+            "SELECT r.state FROM (SELECT * FROM {records}_head h \
+             WHERE h.ty = $1 AND h.since <= $2 {from} ORDER BY h.key LIMIT $3) h \
+             CROSS JOIN LATERAL (SELECT x.state FROM {records} x \
+             WHERE x.ty = h.ty AND x.key = h.key AND x.since = h.since LIMIT 1) r \
+             ORDER BY h.key"
         );
     }
     format!(
-        "WITH RECURSIVE step(key) AS (\
-         (SELECT key FROM {records} WHERE ty = $1 {} ORDER BY key COLLATE \"C\" LIMIT 1) \
-         UNION ALL \
-         SELECT (SELECT n.key FROM {records} n WHERE n.ty = $1 AND n.key COLLATE \"C\" > step.key \
-         ORDER BY n.key COLLATE \"C\" LIMIT 1) FROM step WHERE step.key IS NOT NULL) \
-         SELECT {select} FROM step CROSS JOIN LATERAL (\
-         SELECT h.state, h.until FROM {records} h WHERE h.ty = $1 \
-         AND h.key COLLATE \"C\" = step.key AND h.since <= $2 ORDER BY h.since DESC LIMIT 1) r \
-         WHERE (r.until IS NULL OR r.until > $2) {tail}",
-        from("key")
+        "SELECT r.state FROM {} WHERE h.ty = $1 {from} ORDER BY h.key LIMIT $3",
+        in_force_sql(records, false)
     )
 }
 
-/// The statement of [`Read::records_after`]: for a kept name
-/// [`kept_sql`]'s states, the view at the head or not. At most `$3`
-/// records, and every one when that is null.
-fn records_after_sql(records: &str, ty: &TypeName, head: bool, after: bool) -> String {
-    if is_kept_name(ty) {
-        let tail = if head {
-            "ORDER BY r.key COLLATE \"C\" "
-        } else {
-            ""
-        };
-        return kept_sql(records, head, "r.state", after, &format!("{tail}LIMIT $3"));
-    }
-    let from = if after {
-        "AND key COLLATE \"C\" > $4"
-    } else {
-        ""
-    };
+/// The statement of [`Read::count_in_force`]: the records of `$1` in force
+/// at `$2`, under the two flags `$3` and `$4`.
+fn count_in_force_sql(records: &str, head: bool) -> String {
     format!(
-        "SELECT state FROM {records} WHERE ty = $1 AND {} {from} \
-         ORDER BY key COLLATE \"C\" LIMIT $3",
-        holds_at(2)
-    )
-}
-
-/// The statement of [`Read::count_in_force`]: the states in force of a
-/// stored type, or [`kept_sql`]'s of a kept name, under the two flags.
-fn count_in_force_sql(records: &str, ty: &TypeName, head: bool) -> String {
-    let flags = |state: &str| {
-        format!(
-            "AND ($3 OR NOT ({state}::jsonb ->> 'retired')::boolean) \
-             AND ($4 OR NOT ({state}::jsonb ->> 'restricted')::boolean)"
-        )
-    };
-    if is_kept_name(ty) {
-        return kept_sql(records, head, "COUNT(*)", false, &flags("r.state"));
-    }
-    let holds = holds_at(2);
-    format!(
-        "SELECT COUNT(*) FROM {records} WHERE ty = $1 AND {holds} {}",
-        flags("state")
+        "SELECT COUNT(*) FROM {} WHERE h.ty = $1 \
+         AND ($3 OR NOT (r.state::jsonb ->> 'retired')::boolean) \
+         AND ($4 OR NOT (r.state::jsonb ->> 'restricted')::boolean)",
+        in_force_sql(records, head)
     )
 }
 
 /// The statement of a recorded output's read from the table `outputs`:
-/// the latest state of the seam and input at or before the position, and
-/// whether it still holds there. A view's state is recorded again at
-/// every change of its counters; none of its other states is read
-/// (lakelands#575).
+/// the latest state of the seam and input at or before the position. A
+/// view's state is recorded again at every change of its counters; none
+/// of its other states is read (lakelands#575).
 fn output_sql(outputs: &str) -> String {
     format!(
-        "SELECT state FROM (SELECT state, until FROM {outputs} WHERE seam = $1 AND input = $2 \
-         AND since <= $3 ORDER BY since DESC LIMIT 1) s WHERE until IS NULL OR until > $3"
+        "SELECT state FROM {outputs} WHERE seam = $1 AND input = $2 AND since <= $3 \
+         ORDER BY since DESC LIMIT 1"
     )
 }
 
 /// The statement of [`Read::records_by_key`]: for each key `$2` names,
-/// the latest state at or before the position, and whether it still
-/// holds there. No other state of a key is read, where a range over the
-/// keys read every state of each up to the position (lakelands#575).
+/// the latest state at or before the position. No other state of a key is
+/// read, where a range over the keys read every state of each up to the
+/// position (lakelands#575).
 fn records_by_key_sql(records: &str) -> String {
     format!(
         "SELECT r.state FROM unnest($2::text[]) k(key) CROSS JOIN LATERAL (\
-         SELECT h.state, h.until FROM {records} h WHERE h.ty = $1 AND h.key = k.key \
-         AND h.since <= $3 ORDER BY h.since DESC LIMIT 1) r \
-         WHERE r.until IS NULL OR r.until > $3 ORDER BY k.key COLLATE \"C\""
+         SELECT h.state FROM {records} h WHERE h.ty = $1 AND h.key = k.key \
+         AND h.since <= $3 ORDER BY h.since DESC LIMIT 1) r ORDER BY k.key COLLATE \"C\""
+    )
+}
+
+/// The head record of `$1` whose key is the column `key`, `r`, sought
+/// through its head: a seek into each primary key.
+fn head_of_sql(records: &str, key: &str) -> String {
+    format!(
+        "CROSS JOIN LATERAL (SELECT x.state FROM {records}_head h \
+         JOIN {records} x ON x.ty = h.ty AND x.key = h.key AND x.since = h.since \
+         WHERE h.ty = $1 AND h.key = {key} LIMIT 1) r"
     )
 }
 
@@ -217,8 +197,8 @@ fn sorted_after_sql(
         "{with}SELECT s.sort_key, r.state FROM \
          (SELECT s.sort_key, s.key FROM {rows} s.ty = $1 AND s.field = $2 {seek} \
           ORDER BY {by} LIMIT $3) s \
-         JOIN {records} r ON r.ty = $1 AND r.key = s.key AND r.until IS NULL \
-         ORDER BY {by}"
+         {} ORDER BY {by}",
+        head_of_sql(records, "s.key")
     )
 }
 
@@ -241,8 +221,8 @@ fn unsorted_holding_sql([sorted, text, records]: &[String; 3], after: bool) -> S
           AND (SELECT 1 FROM {sorted} s \
           WHERE s.ty = $1 AND s.field = $2 AND s.key = t.key) IS NULL \
           ORDER BY t.key COLLATE \"C\" LIMIT $3) t \
-         JOIN {records} r ON r.ty = $1 AND r.key = t.key AND r.until IS NULL \
-         ORDER BY t.key COLLATE \"C\""
+         {} ORDER BY t.key COLLATE \"C\"",
+        head_of_sql(records, "t.key")
     )
 }
 
@@ -262,21 +242,20 @@ pub fn holding_statements(schema: &str) -> [String; 3] {
     ]
 }
 
-/// The statements the view reads the records of `ty` by in the lake's
-/// `schema`, as it runs them at the head (`head`) or at an earlier
-/// position: a first page by key, a later page and the count under the
-/// flags alone; then the read of records by their keys and of a recorded
-/// output. For the engine's own test of their plans for a kept name
-/// (lakelands#575). A page takes the name, the position, the limit and
-/// the key it continues after; the count the name, the position and the
-/// two flags; the read by keys the name, the keys and the position; the
-/// output its seam, input and position.
-pub fn read_statements(schema: &str, ty: &TypeName, head: bool) -> [String; 5] {
+/// The statements the view reads records by in the lake's `schema`, as it
+/// runs them at the head (`head`) or at an earlier position: a first page
+/// by key, a later page and the count under the flags alone; then the read
+/// of records by their keys and of a recorded output. For the engine's own
+/// test of their plans (lakelands#575). A page takes the name, the
+/// position, the limit and the key it continues after; the count the name,
+/// the position and the two flags; the read by keys the name, the keys and
+/// the position; the output its seam, input and position.
+pub fn read_statements(schema: &str, head: bool) -> [String; 5] {
     let records = format!("{schema}.records");
     [
-        records_after_sql(&records, ty, head, false),
-        records_after_sql(&records, ty, head, true),
-        count_in_force_sql(&records, ty, head),
+        records_after_sql(&records, head, false),
+        records_after_sql(&records, head, true),
+        count_in_force_sql(&records, head),
         records_by_key_sql(&records),
         output_sql(&format!("{schema}.outputs")),
     ]
@@ -350,12 +329,11 @@ impl Read<'_> {
     fn record(&mut self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
         self.db
             .query_opt(
-                // The latest state at or before the position, and whether
-                // it still holds there: no other state of the key is read.
+                // The latest state at or before the position: no other
+                // state of the key is read.
                 &format!(
-                    "SELECT state FROM (SELECT state, until FROM {} WHERE ty = $1 AND key = $2 \
-                     AND since <= $3 ORDER BY since DESC LIMIT 1) s \
-                     WHERE until IS NULL OR until > $3",
+                    "SELECT state FROM {} WHERE ty = $1 AND key = $2 AND since <= $3 \
+                     ORDER BY since DESC LIMIT 1",
                     self.names.t("records")
                 ),
                 &[&ty.as_str(), &key.as_str(), &self.at],
@@ -366,24 +344,14 @@ impl Read<'_> {
 
     /// Every record of a type at the view's position, in key order.
     fn records(&mut self, ty: &TypeName) -> Result<Vec<StoredRecord>> {
-        if is_kept_name(ty) {
-            return self.records_after(ty, None, None);
-        }
-        self.db.records(
-            &format!(
-                "SELECT state FROM {} WHERE ty = $1 AND {} ORDER BY key COLLATE \"C\"",
-                self.names.t("records"),
-                holds_at(2)
-            ),
-            &[&ty.as_str(), &self.at],
-        )
+        self.records_after(ty, None, None)
     }
 
     /// How many records of a type are in force at the view's position, the
     /// retired and the restricted ones only when asked, their flags read
     /// from the stored state.
     fn count_in_force(&mut self, ty: &TypeName, retired: bool, restricted: bool) -> Result<u64> {
-        let query = count_in_force_sql(&self.names.t("records"), ty, self.head);
+        let query = count_in_force_sql(&self.names.t("records"), self.head);
         let counted: Vec<i64> = self
             .db
             .column(&query, &[&ty.as_str(), &self.at, &retired, &restricted])?;
@@ -392,9 +360,9 @@ impl Read<'_> {
 
     /// At most `n` records of a type at the view's position after the key
     /// `after` (from the first when `None`), in key order, bytewise: a walk
-    /// of the index `records_key_c`. The first page and a later one are two
+    /// of the heads' primary key. The first page and a later one are two
     /// statements, so that neither hides the index condition behind an
-    /// `OR`. With no `n`, every record: a kept name's are read so.
+    /// `OR`. With no `n`, every record.
     fn records_after(
         &mut self,
         ty: &TypeName,
@@ -402,7 +370,7 @@ impl Read<'_> {
         n: Option<u32>,
     ) -> Result<Vec<StoredRecord>> {
         let limit = n.map(i64::from);
-        let query = records_after_sql(&self.names.t("records"), ty, self.head, after.is_some());
+        let query = records_after_sql(&self.names.t("records"), self.head, after.is_some());
         // `$4` is bound only when the statement names it.
         let args: [&(dyn ToSql + Sync); 4] = [&ty.as_str(), &self.at, &limit, &after];
         self.db
@@ -439,10 +407,9 @@ impl Read<'_> {
              (SELECT t.key FROM {text} t \
               WHERE t.ty = $1 AND t.field = $2 AND t.value = $3 {from} \
               ORDER BY t.key COLLATE \"C\" LIMIT $4) t \
-             JOIN {records} r ON r.ty = $1 AND r.key = t.key AND r.until IS NULL \
-             ORDER BY t.key COLLATE \"C\"",
+             {head} ORDER BY t.key COLLATE \"C\"",
             text = self.names.t("text_index"),
-            records = self.names.t("records"),
+            head = head_of_sql(&self.names.t("records"), "t.key"),
         );
         let args: [&(dyn ToSql + Sync); 5] = [&ty.as_str(), &field.as_str(), text, &limit, &after];
         self.db
@@ -461,11 +428,11 @@ impl Read<'_> {
         let row = self.db.query_one(
             &format!(
                 "SELECT (SELECT n FROM {m} WHERE k = $1), \
-                 (SELECT state FROM {r} WHERE ty = $2 AND key = $3 AND until IS NULL), \
-                 (SELECT state FROM {d} WHERE ident = $4 AND until IS NULL)",
+                 (SELECT r.state FROM {r} WHERE h.ty = $2 AND h.key = $3), \
+                 (SELECT r.state FROM {d} WHERE h.ident = $4)",
                 m = self.names.t("meta"),
-                r = self.names.t("records"),
-                d = self.names.t("declarations"),
+                r = projection::RECORDS.at_head(self.names),
+                d = projection::DECLARATIONS.at_head(self.names),
             ),
             &[
                 &engines::sorted_mark(ty),
@@ -560,25 +527,24 @@ impl Read<'_> {
             let args = &args[..5 + usize::from(after.is_some())];
             return self.db.records(&query, args);
         }
-        let from = after.map_or("", |_| "AND r.key COLLATE \"C\" > $4");
+        let from = after.map_or("", |_| "AND h.key > $4");
         let query = format!(
-            "SELECT r.state FROM {records} r WHERE r.ty = $1 AND r.until IS NULL {from} \
+            "SELECT r.state FROM {records} WHERE h.ty = $1 {from} \
              AND NOT EXISTS (SELECT 1 FROM {sorted} s \
-             WHERE s.ty = r.ty AND s.field = $2 AND s.key = r.key) \
-             ORDER BY r.key COLLATE \"C\" LIMIT $3",
+             WHERE s.ty = h.ty AND s.field = $2 AND s.key = h.key) \
+             ORDER BY h.key LIMIT $3",
             sorted = self.names.t("sort_index"),
-            records = self.names.t("records"),
+            records = projection::RECORDS.at_head(self.names),
         );
         let args: [&(dyn ToSql + Sync); 4] = [&ty.as_str(), &field.as_str(), &limit, &after];
         self.db
             .records(&query, &args[..3 + usize::from(after.is_some())])
     }
 
-    /// The keys of `ty` with a state put or ended after the view's
-    /// position, and their states there; `None` past `ceiling` states put
-    /// or keys ended. Two range reads, one into `records_since` for the
-    /// states put, one into `records_at` for the states that held at the
-    /// position and ended.
+    /// The keys of `ty` with a state put after the view's position, and
+    /// their states there; `None` past `ceiling` states put. One range read
+    /// into `records_since`: a state that held at the position and ended
+    /// since ended where its key's next state was put.
     fn changed(&mut self, ty: &TypeName, ceiling: usize) -> Result<Option<engines::Changed>> {
         let records = self.names.t("records");
         let args: [&(dyn ToSql + Sync); 3] = [&ty.as_str(), &self.at, &(ceiling as i64 + 1)];
@@ -588,15 +554,8 @@ impl Read<'_> {
             ),
             &args,
         )?;
-        let ended: Vec<String> = self.db.column(
-            &format!(
-                "SELECT key FROM {records} WHERE ty = $1 AND until > $2 AND since <= $2 \
-                 ORDER BY until LIMIT $3"
-            ),
-            &args,
-        )?;
-        let keys: BTreeSet<String> = put.iter().chain(&ended).cloned().collect();
-        if put.len().max(ended.len()).max(keys.len()) > ceiling {
+        let keys: BTreeSet<String> = put.iter().cloned().collect();
+        if put.len() > ceiling {
             return Ok(None);
         }
         Ok(Some(engines::Changed {
@@ -626,9 +585,8 @@ impl Read<'_> {
     fn verbs(&mut self) -> Result<BTreeMap<VerbName, TypeName>> {
         let rows = self.db.query(
             &format!(
-                "SELECT state FROM {} WHERE ident LIKE 'verb %' AND {}",
-                self.names.t("declarations"),
-                holds_at(1)
+                "SELECT state FROM {}",
+                DECLARATIONS.in_force(self.names, 1, "AND ident LIKE 'verb %'")
             ),
             &[&self.at],
         )?;
@@ -668,10 +626,8 @@ impl Read<'_> {
     fn types(&mut self) -> Result<Vec<TypeDecl>> {
         let rows = self.db.query(
             &format!(
-                "SELECT state FROM {} WHERE ident LIKE 'type %' AND {} \
-                 ORDER BY ident COLLATE \"C\"",
-                self.names.t("declarations"),
-                holds_at(1)
+                "SELECT state FROM {} ORDER BY ident COLLATE \"C\"",
+                DECLARATIONS.in_force(self.names, 1, "AND ident LIKE 'type %'")
             ),
             &[&self.at],
         )?;
@@ -692,9 +648,8 @@ impl ProjectionView for PgView<'_> {
         self.read(Vec::new(), |r| {
             r.db.query(
                 &format!(
-                    "SELECT state FROM {} WHERE {} ORDER BY ident COLLATE \"C\"",
-                    r.names.t("declarations"),
-                    holds_at(1)
+                    "SELECT state FROM {} ORDER BY ident COLLATE \"C\"",
+                    DECLARATIONS.in_force(r.names, 1, "")
                 ),
                 &[&r.at],
             )?
@@ -949,11 +904,7 @@ impl ProjectionView for PgView<'_> {
         self.read(Vec::new(), |r| {
             let all: Vec<Proposal> =
                 r.db.query(
-                    &format!(
-                        "SELECT state FROM {} WHERE {}",
-                        r.names.t(PROPOSALS.table),
-                        holds_at(1)
-                    ),
+                    &format!("SELECT state FROM {}", PROPOSALS.in_force(r.names, 1, "")),
                     &[&r.at],
                 )?
                 .iter()
@@ -970,9 +921,8 @@ impl ProjectionView for PgView<'_> {
                 .query_opt(
                     &format!(
                         "SELECT state FROM {} WHERE object_set = $1 AND ty = $2 AND key = $3 \
-                         AND {}",
+                         AND since <= $4 ORDER BY since DESC LIMIT 1",
                         r.names.t("members"),
-                        holds_at(4)
                     ),
                     &[&set, &ty.as_str(), &key.as_str(), &r.at],
                 )?
@@ -984,9 +934,8 @@ impl ProjectionView for PgView<'_> {
         self.single(BTreeSet::new(), |r| {
             let rows = r.db.query(
                 &format!(
-                    "SELECT key FROM {} WHERE object_set = $1 AND ty = $2 AND state AND {}",
-                    r.names.t("members"),
-                    holds_at(3)
+                    "SELECT key FROM {} WHERE state",
+                    MEMBERS.in_force(r.names, 3, "AND object_set = $1 AND ty = $2")
                 ),
                 &[&set, &ty.as_str(), &r.at],
             )?;

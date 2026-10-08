@@ -138,10 +138,12 @@ head, the field named by the head's setting), reads that index too:
   changes neither.
 - **The merge is shared.** `lakelands_core::engines::
   scan_in_field_order_at` passes over and merges; an engine finds `C`
-  and the states. SQLite and PostgreSQL read `C` by two range reads,
+  and the states. SQLite reads `C` by two range reads,
   `records_since (ty, since)` for the states put and `records_at (ty,
   until, key)` for the states that ended; a `UNION` of the two is planned
-  by SQLite as a merge in key order, which reads the type. The memory
+  by SQLite as a merge in key order, which reads the type. PostgreSQL
+  reads `records_since` alone, since a state there ends only where its
+  key's next state is put (lakelands#537). The memory
   engine keeps, per type, the position and key of every state put.
 - **The ceiling.** More than `min(10 × limit, 4 096)` states put since
   `p`, or keys in `C`, and the page sorts the type as before. Every
