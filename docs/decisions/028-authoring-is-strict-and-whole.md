@@ -252,3 +252,11 @@ absent, and the read anchors only those. A declaration in force is not
 checked again until it is declared again, and then it is checked as any
 other is.
 
+## Extended: a date is a valid time too (lakelands#702)
+
+A valid time names a field of kind `date_time` or `date`. A date is the
+instant at its UTC midnight, so a booking valid from `2026-07-01` to
+`2026-07-31` holds from the start of the 1st up to the start of the
+31st, not through it: the interval stays half-open, as for instants. A
+field of any other kind is refused as before, and the refusal names both
+kinds a valid time may be.

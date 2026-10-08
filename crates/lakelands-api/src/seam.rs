@@ -273,7 +273,7 @@ pub fn sortable(kind: &crate::ontology::StorageKind) -> bool {
     use crate::ontology::StorageKind as K;
     matches!(
         kind,
-        K::Text | K::Number | K::Decimal | K::Boolean | K::DateTime | K::Reference
+        K::Text | K::Number | K::Decimal | K::Boolean | K::DateTime | K::Date | K::Reference
     )
 }
 

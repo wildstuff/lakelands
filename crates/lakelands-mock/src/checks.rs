@@ -242,7 +242,8 @@ macro_rules! door_checks {
             a_migrations_faults_come_in_one_order_for_a_hidden_name_and_an_absent_one,
             a_valid_time_names_a_date_time_field,
             #[own_principals]
-            a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_know_of);
+            a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_know_of,
+            a_date_is_kept_as_its_day);
     };
     (@each $at:ident, $new:expr, $block_on:path;
         $($(#[$mark:ident])? $name:ident),* $(,)?) => {
@@ -12597,9 +12598,9 @@ pub async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not
     );
 }
 
-/// A valid time names a `date_time` field: one of any other kind is
-/// refused as invalid on it, by `declare` and by a migration, in the
-/// store's words (lakelands#714).
+/// A valid time names a `date_time` or a `date` field: one of any other
+/// kind is refused as invalid on it, by `declare`, a migration, `apply`
+/// and a proposal, in the store's words (lakelands#714, lakelands#702).
 pub async fn a_valid_time_names_a_date_time_field(store: Arc<dyn LakeStore>) {
     let c = store.catalog(WriteContext::default());
     let own = &Cast::of(store.lake()).owner;
@@ -12611,7 +12612,7 @@ pub async fn a_valid_time_names_a_date_time_field(store: Arc<dyn LakeStore>) {
     };
     let refused = |answer: &Result<(), Error>, at: &str| {
         matches!(answer, Err(Error::Refused { field: Some(f), reason: Refusal::Invalid(said) })
-            if f.as_str() == at && matches!(said.case, Case::ValidTimeNotDateTime { .. }))
+            if f.as_str() == at && matches!(said.case, Case::ValidTimeNotTime { .. }))
     };
     let mut wrong = Vec::new();
     for k in ["text", "number", "decimal", "boolean", "json"] {
@@ -12625,11 +12626,17 @@ pub async fn a_valid_time_names_a_date_time_field(store: Arc<dyn LakeStore>) {
             }
         }
     }
-    let ok = stamped(kind("at", "date_time"), ("at", "from"));
-    c.declare(own, ok)
-        .await
-        .expect("a date-time valid time is declared");
-    let Declaration::Type(to) = stamped(kind("at", "text"), ("at", "from")) else {
+    for k in ["date", "date_time"] {
+        let mut ok = stamped(kind("at", k), ("at", "from"));
+        if let (Declaration::Type(t), "date") = (&mut ok, k) {
+            t.name = ty("dated");
+        }
+        if let Err(e) = c.declare(own, ok).await {
+            wrong.push(format!("a valid time of kind {k}: {e}"));
+        }
+    }
+    let text = stamped(kind("at", "text"), ("at", "from"));
+    let Declaration::Type(to) = text.clone() else {
         unreachable!("a type")
     };
     let m = Migration {
@@ -12637,14 +12644,106 @@ pub async fn a_valid_time_names_a_date_time_field(store: Arc<dyn LakeStore>) {
         renames: Vec::new(),
         relation_renames: Vec::new(),
     };
-    let answer = c.migrate(own, m).await.map(drop);
-    if !refused(&answer, "at") {
-        wrong.push(format!("a migration of `at` to text: {answer:?}"));
+    let declarations = vec![text.clone()];
+    let proposed = lakelands_api::write::ProposedWrite::Declare { declarations };
+    for (door, answer) in [
+        ("a migration", c.migrate(own, m).await.map(drop)),
+        ("`apply`", c.apply(own, vec![text]).await.map(drop)),
+        (
+            "a proposal",
+            c.propose(own, proposed, "text".into()).await.map(drop),
+        ),
+    ] {
+        if !refused(&answer, "at") {
+            wrong.push(format!("{door} of `at` as text: {answer:?}"));
+        }
     }
     assert!(
         wrong.is_empty(),
         "a valid time names a date-time field: {wrong:?}"
     );
+}
+
+/// A `date` field keeps its day: a date or a UTC midnight is written as
+/// `YYYY-MM-DD`, another instant is refused naming the field, and a
+/// migration converts `text` and `date_time` to a date, and `text` to a
+/// `date_time` in its one form, as the store does (lakelands#702).
+pub async fn a_date_is_kept_as_its_day(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    let ev = |kinds: [&str; 3]| {
+        let fields: Vec<Value> = ["on", "t", "u"]
+            .iter()
+            .zip(kinds)
+            .map(|(name, kind)| json!({"name": name, "type": {"kind": kind}}))
+            .collect();
+        let d = json!({"declare": "type", "name": "ev", "fields": fields});
+        serde_json::from_value::<Declaration>(d).expect("a declaration reads")
+    };
+    c.declare(own, ev(["date", "text", "text"])).await.unwrap();
+    let put = |k: &str, fields: Value| {
+        let fields = serde_json::from_value(fields).expect("a patch");
+        let (c, k) = (c.clone(), key(k));
+        async move {
+            (c.upsert(own, &ty("ev"), &k, fields, WriteOpts::default())
+                .await)
+                .map(drop)
+        }
+    };
+    let mut wrong = Vec::new();
+    put(
+        "e1",
+        json!({"on": "2026-07-05T00:00:00Z", "t": "2026-07-06", "u": "2026-07-07T00:00:00+00:00"}),
+    )
+    .await
+    .unwrap();
+    let e1 = c.get(own, &ty("ev"), get("e1")).await.unwrap().data;
+    if e1.fields.get("on") != Some(&json!("2026-07-05")) {
+        wrong.push(format!("`on` written at a midnight: {:?}", e1.fields));
+    }
+    let refused = put("e2", json!({"on": "2026-07-05T10:00:00Z"})).await;
+    let said = matches!(&refused, Err(Error::Refused { field: Some(f), reason: Refusal::Constraint(said) | Refusal::Invalid(said) })
+        if f.as_str() == "on" && matches!(&said.case, Case::NotDate { .. }));
+    if !said {
+        wrong.push(format!("`on` written at 10:00: {refused:?}"));
+    }
+    // `date → date_time`, `text → date` and `text → date_time`.
+    let Declaration::Type(to) = ev(["date_time", "date", "date_time"]) else {
+        unreachable!("a type")
+    };
+    let m = Migration {
+        to,
+        renames: Vec::new(),
+        relation_renames: Vec::new(),
+    };
+    let report = c.migrate(own, m.clone()).await.unwrap();
+    c.migrate_apply(own, m, &report.data.report_id)
+        .await
+        .unwrap();
+    let e1 = c.get(own, &ty("ev"), get("e1")).await.unwrap().data;
+    let want = json!({"on": "2026-07-05T00:00:00.000000Z", "t": "2026-07-06",
+                      "u": "2026-07-07T00:00:00.000000Z"});
+    if json!(e1.fields) != want {
+        wrong.push(format!("e1 migrated: {:?}, not {want}", e1.fields));
+    }
+    // `date_time → date` over an instant at 10:00 is lossy.
+    put("e3", json!({"on": "2026-07-05T10:00:00Z"}))
+        .await
+        .unwrap();
+    let Declaration::Type(to) = ev(["date", "date", "date_time"]) else {
+        unreachable!("a type")
+    };
+    let m = Migration {
+        to,
+        renames: Vec::new(),
+        relation_renames: Vec::new(),
+    };
+    let report = c.migrate(own, m).await.unwrap().data;
+    let on = report.fields.iter().find(|f| f.field.as_str() == "on");
+    if report.lossless || on.is_none_or(|f| f.sample_keys != [key("e3")]) {
+        wrong.push(format!("`on` to a date over e3's 10:00: {report:?}"));
+    }
+    assert!(wrong.is_empty(), "a date field: {wrong:?}");
 }
 
 /// A vector field of two dimensions.

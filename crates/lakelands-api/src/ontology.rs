@@ -62,11 +62,14 @@ pub enum StorageKind {
     Vector,
     /// A GeoJSON geometry.
     Geo,
+    /// A calendar date, `YYYY-MM-DD`: an instant at a UTC midnight, kept
+    /// in the form a person writes it.
+    Date,
 }
 
 impl StorageKind {
     /// Every kind, in declaration order.
-    pub const ALL: [StorageKind; 10] = [
+    pub const ALL: [StorageKind; 11] = [
         StorageKind::Text,
         StorageKind::Number,
         StorageKind::Decimal,
@@ -77,6 +80,7 @@ impl StorageKind {
         StorageKind::Reference,
         StorageKind::Vector,
         StorageKind::Geo,
+        StorageKind::Date,
     ];
 }
 
@@ -102,6 +106,7 @@ impl std::fmt::Display for StorageKind {
             StorageKind::Reference => "reference",
             StorageKind::Vector => "vector",
             StorageKind::Geo => "geo",
+            StorageKind::Date => "date",
         })
     }
 }
@@ -686,7 +691,8 @@ pub struct ViewSource {
 pub struct ViewParam {
     /// Its name.
     pub name: ParamName,
-    /// Its kind: `text`, `number`, `decimal`, `boolean` or `date_time`.
+    /// Its kind: `text`, `number`, `decimal`, `boolean`, `date_time` or
+    /// `date`.
     pub kind: StorageKind,
 }
 
@@ -720,11 +726,13 @@ pub struct TypeDecl {
     /// few types are views and a view is the largest member.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view: Option<Box<ViewDecl>>,
-    /// The field that holds a record's business start time, if the type
-    /// is valid-timed; `valid_to` is its end, if declared.
+    /// The `date_time` or `date` field that holds a record's business
+    /// start time, if the type is valid-timed; `valid_to` is its end, if
+    /// declared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_from: Option<FieldName>,
-    /// The field that holds a record's business end time.
+    /// The `date_time` or `date` field that holds a record's business end
+    /// time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_to: Option<FieldName>,
     /// The language of the type's searchable text, as a BCP-47 tag

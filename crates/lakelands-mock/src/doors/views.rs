@@ -272,6 +272,7 @@ fn view_params(owner: &[Place], v: &ViewDecl, read: &BTreeSet<String>) -> Result
                 | StorageKind::Decimal
                 | StorageKind::Boolean
                 | StorageKind::DateTime
+                | StorageKind::Date
         ) {
             let (name, kind) = (p.name.clone(), p.kind);
             return Err(invalid(at(owner, Case::ParamKind { name, kind })));

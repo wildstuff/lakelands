@@ -387,7 +387,7 @@
   },
   {
    "axis": "s",
-   "code": "valid_time_not_date_time",
+   "code": "valid_time_not_time",
    "field": "f",
    "kind": "text"
   },
@@ -1521,6 +1521,10 @@
   },
   {
    "code": "not_date_time",
+   "value": "s"
+  },
+  {
+   "code": "not_date",
    "value": "s"
   },
   {

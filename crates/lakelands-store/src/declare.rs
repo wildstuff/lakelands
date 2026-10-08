@@ -18,7 +18,7 @@
 //!   measures over a group (`docs/decisions/023-one-evaluator-decides-what-an-expression-means.md`).
 //! - **Derived fields** can be ordered: no field reads itself, no cycle.
 //! - **Keys** are fields of a kind with a string form (text, reference,
-//!   decimal, number, boolean, date-time), and so are a view's `group_by`
+//!   decimal, number, boolean, date-time, date), and so are a view's `group_by`
 //!   fields, which key its records (`docs/log-format.md` §2.3).
 //! - **References** name what exists: keys, `valid_from` / `valid_to`,
 //!   `depends_on`, `via`, a view's source and `group_by`, a relation's
@@ -279,6 +279,7 @@ fn view_params(owner: &[Place], v: &ViewDecl, read: &BTreeSet<String>) -> Result
                 | StorageKind::Decimal
                 | StorageKind::Boolean
                 | StorageKind::DateTime
+                | StorageKind::Date
         ) {
             let (name, kind) = (p.name.clone(), p.kind);
             return Err(invalid(at(owner, Case::ParamKind { name, kind })));
@@ -568,15 +569,16 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             return Err(invalid_field(k, at(&owner, Case::KeyUnkeyable { field })));
         }
     }
-    // A valid time is a stored instant (028, extended): a field of another
-    // kind would set a record's validity by a value that only reads as one.
+    // A valid time is a stored instant or date (028, extended): a field of
+    // another kind would set a record's validity by a value that only reads
+    // as one.
     for (axis, k) in [("valid_from", &t.valid_from), ("valid_to", &t.valid_to)] {
         let kind = |k: &FieldName| t.fields.iter().find(|f| &f.name == k).map(|f| f.ty.kind);
         if let Some((k, kind)) = k.as_ref().and_then(|k| Some((k, kind(k)?)))
-            && kind != StorageKind::DateTime
+            && !matches!(kind, StorageKind::DateTime | StorageKind::Date)
         {
             let (field, axis) = (k.clone(), axis.to_owned());
-            let case = Case::ValidTimeNotDateTime { field, axis, kind };
+            let case = Case::ValidTimeNotTime { field, axis, kind };
             return Err(invalid_field(k, at(&owner, case)));
         }
     }

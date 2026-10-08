@@ -4,10 +4,10 @@
 //! [`check`] takes a value as a writer sent it and returns it in its one
 //! canonical JSON form (`docs/log-format.md` §5), or says why it does not
 //! fit. It covers three things: the storage kind (the JSON shape each
-//! kind has, a date-time normalised to its one form, a decimal kept as
-//! written, a vector of the declared length), the value type's `one_of`,
-//! and the value type's `format` when that names one of the known
-//! [`ValueFormat`]s. A value type's `constraint` is a condition in the
+//! kind has, a date-time normalised to its one form, a date to its day, a
+//! decimal kept as written, a vector of the declared length), the value
+//! type's `one_of`, and the value type's `format` when that names one of
+//! the known [`ValueFormat`]s. A value type's `constraint` is a condition in the
 //! one expression grammar and is not evaluated here: the store applies it
 //! with the evaluator, after `check` has settled the value's form.
 //!
@@ -141,6 +141,13 @@ fn check_kind(value: &Value, ty: &FieldType) -> Result<Value, Case> {
             let value = || s.escape_debug().to_string();
             let t = Timestamp::parse(s).map_err(|_| Case::NotDateTime { value: value() })?;
             Ok(Value::String(t.to_string()))
+        }
+        StorageKind::Date => {
+            let s = value.as_str().ok_or_else(|| wrong(Shape::Date))?;
+            let day = Timestamp::parse(s).ok().and_then(Timestamp::day);
+            let value = || s.escape_debug().to_string();
+            day.map(Value::String)
+                .ok_or_else(|| Case::NotDate { value: value() })
         }
         StorageKind::Bytes => {
             let s = value.as_str().ok_or_else(|| wrong(Shape::Base64))?;

@@ -58,7 +58,7 @@
 //! `type` is one. A type is written short:
 //!
 //! - a storage kind: `text`, `number`, `decimal`, `boolean`, `date_time`,
-//!   `bytes`, `json`, `geo`;
+//!   `date`, `bytes`, `json`, `geo`;
 //! - `reference(<type>)`, `vector(<length>)`;
 //! - a value type declared in the bundle (`iban`), which brings its
 //!   storage kind; one declared over `reference` or `vector` takes the

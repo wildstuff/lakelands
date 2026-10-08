@@ -39,7 +39,8 @@
 //!   names; a `value_type_migrated` event; and a proposed
 //!   `migrate_value_type` whose `renames` is not empty.
 //! - **13**: what [`THIRTEENTH`] lists: a `write_proposed` event
-//!   `pinned` to the record it writes.
+//!   `pinned` to the record it writes; a declaration that names the kind
+//!   `date`, in the places 5 names.
 //!
 //! The store writes every event of one append at the greatest of the
 //! lake's version and what [`needed`] answers for each event of the
@@ -157,11 +158,28 @@ pub const TWELFTH: &[Added] = &[
 ];
 
 /// What format version 13 added, as [`ELEVENTH`] lists 11's: below 13 an
-/// accept judged a holder's proposal on the record as it then stood.
-pub const THIRTEENTH: &[Added] = &[(
-    |body| matches!(body, EventBody::WriteProposed { pinned, .. } if *pinned),
-    A::Pinned,
-)];
+/// accept judged a holder's proposal on the record as it then stood, and
+/// no kind `date` existed, so a reader there cannot read a declaration
+/// that names it.
+pub const THIRTEENTH: &[Added] = &[
+    (
+        |body| matches!(body, EventBody::WriteProposed { pinned, .. } if *pinned),
+        A::Pinned,
+    ),
+    (|body| any_declaration(body, names_a_date), A::Date),
+];
+
+/// Whether a declaration names the kind `date`: a field's, a view's
+/// parameter's or a value type's kind.
+fn names_a_date(d: &Declaration) -> bool {
+    use lakelands_api::ontology::StorageKind::Date;
+    let param = |t: &lakelands_api::ontology::TypeDecl| {
+        (t.view.iter()).any(|v| v.params.iter().any(|p| p.kind == Date))
+    };
+    any_field(d, |f| f.ty.kind == Date)
+        || matches!(d, Declaration::Type(t) if param(t))
+        || matches!(d, Declaration::ValueType(v) if v.kind == Date)
+}
 
 /// Whether the event proposes a migration whose report says what its `to`
 /// states otherwise: below 11 no report does, and a reader there would

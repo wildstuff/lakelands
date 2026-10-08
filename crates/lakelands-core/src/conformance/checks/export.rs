@@ -598,8 +598,8 @@ fn import_seams() -> lakelands_api::seam::Seams {
 /// (version 9), a proposed tightening of a value type (version 10), a
 /// derived field calling `floor` (version 11), a
 /// record ingested with an upstream, a set of declarations and a value
-/// type's renames, applied and proposed (version 12),
-/// a second checkpoint and more invoices.
+/// type's renames, applied and proposed (version 12), a date written
+/// (version 13), a second checkpoint and more invoices.
 /// Answers the
 /// second writer's handle and a position before the second checkpoint.
 async fn exported_lake(
@@ -772,6 +772,13 @@ async fn exported_lake(
     };
     let proposed = cat.propose(own, proposed, "back".into()).await;
     proposed.must("proposing a rename")?;
+    // Format version 13: a field of the kind `date`, and a date written.
+    l.declare(type_of(
+        "due",
+        &[("on", lakelands_api::ontology::StorageKind::Date)],
+    ))
+    .await?;
+    l.upsert("due", "d1", json!({"on": "2026-07-05"})).await?;
     let earlier = store.head().await.must("reading the head")?;
     store.checkpoint().await.must("checkpointing")?;
     invoices(store, 3, 2).await?;

@@ -699,6 +699,8 @@ named! {
         ProposesValueRenames = "proposes_value_renames" => "proposes a value type's migration that renames values",
         /// It proposes a write pinned to its record.
         Pinned = "pinned" => "proposes a write pinned to its record",
+        /// It declares the kind `date`.
+        Date = "date" => "declares the kind `date`",
     }
 }
 

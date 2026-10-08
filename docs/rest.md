@@ -174,7 +174,7 @@ separated by commas.
 parameters, one member per parameter, every parameter bound:
 `params={"anchor":"2026-06-30"}`. A `date_time` given as a date alone is
 midnight UTC, so `date <= param('anchor')` leaves out the rest of that
-day. A pattern started on a view binds them as `start.params` in the
+day. A `date` parameter takes a date, or an instant at a UTC midnight. A pattern started on a view binds them as `start.params` in the
 body of `POST …/query`. A parameter missing, unknown or of the wrong
 kind is `invalid` (422), naming the view and the parameter.
 

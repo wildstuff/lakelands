@@ -1674,7 +1674,7 @@ its page, not the type (§`find`'s ceiling above;
 `docs/decisions/041-a-sorted-page-reads-its-page.md`). A write of it is
 refused as invalid, naming the field, when it names a field the type
 does not declare or declares with a kind other than text, number,
-decimal, boolean, date-time or reference, or when `<type>` is no
+decimal, boolean, date-time, date or reference, or when `<type>` is no
 declared stored type or view (the field named is then `key`), or its
 value is not an array of names (`value`). The fold that puts it rebuilds
 that type's index in the same transaction; retiring it, or an empty

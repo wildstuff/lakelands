@@ -29,7 +29,7 @@ use crate::write::{Declaration, Migration, ProposedWrite};
 /// verb on its type; version 9 a view's `merge`; version 10 a proposed
 /// tightening of a value type; version 11 a call of `floor` in a
 /// declaration; version 12 a declaration `with_the_set`; version 13 a
-/// proposal `pinned` to the record it writes
+/// proposal `pinned` to the record it writes, and the kind `date`
 /// (`docs/log-format.md` §6).
 pub const LOG_FORMAT_VERSION: u32 = 13;
 
