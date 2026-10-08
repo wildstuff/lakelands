@@ -11,7 +11,7 @@ use lakelands_api::Version;
 use lakelands_api::event::{Event, EventBody, EventId};
 use lakelands_api::id::{FieldName, IdempotencyKey, ProposalId, RecordKey, TypeName, VerbName};
 use lakelands_api::ontology::{
-    Authority, FieldDecl, OnInputChange, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl,
+    Authority, FieldDecl, OnInputChange, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
 };
 use lakelands_api::principal::{Access, Principal};
 use lakelands_api::record::{FieldMeta, Origin, Record, StoredRecord, Value};
@@ -272,6 +272,7 @@ impl State {
                 proposal,
                 write,
                 why,
+                ..
             } => {
                 self.proposals.insert(
                     proposal.clone(),
@@ -678,6 +679,22 @@ fn held_ends<'d>(who: &Principal, decl: &'d TypeDecl) -> Vec<(&'d FieldName, &'d
 /// review.
 pub(crate) fn only_holder(who: &Principal, decl: &TypeDecl) -> bool {
     !own_only(who, &decl.name).is_empty() || !held_ends(who, decl).is_empty()
+}
+
+/// As the store (051): whether a holder of `only` on `decl` may propose a
+/// write there, or a call of `verb`: no field its `only` names is
+/// computed, and the verb assigns none.
+pub(crate) fn pinnable(who: &Principal, decl: &TypeDecl, verb: Option<&VerbDecl>) -> bool {
+    let computed = |d: &FieldDecl| {
+        d.authority == Authority::Derived || d.function.is_some() || d.embed.is_some()
+    };
+    let assigned = |f: &FieldName| match verb.map(|v| &v.effect) {
+        Some(VerbEffect::Write { set }) => set.iter().any(|a| &a.field == f),
+        _ => false,
+    };
+    own_only(who, &decl.name)
+        .keys()
+        .all(|f| !assigned(f) && !field(decl, f).is_some_and(computed))
 }
 
 /// As the store (051): whether `who` can make a record of `decl` that its

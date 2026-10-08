@@ -131,6 +131,18 @@ call, caused by it), whatever was declared since: an external call is
 answered as a retry of a call is, and any other acceptance is
 `decided`.
 
+## Extended: the executor is handed the record its call was judged on (lakelands#660)
+
+An executor is handed the record as it stood at the position that made
+its verb due, the `verb_called` or the `write_accepted`, where the call
+was judged; not as the head holds it when the hand-out comes. A write
+between the two, another caller's or a retirement, does not reach the
+executor, so it never acts on a record its call was not judged on: a
+record retired after the call is handed as it stood, where it was
+refused before. A purge appends and removes nothing, and compaction
+keeps the projection's history, so that state is always there to read;
+there is no fallback to the head.
+
 ## Extended: an executor's answer is held until it is recorded (lakelands#646)
 
 An executor's answer whose append the engine refuses `unavailable`, or

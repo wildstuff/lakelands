@@ -28,9 +28,10 @@ use crate::write::{Declaration, Migration, ProposedWrite};
 /// declaration; version 8 a view's `params` and a call of `param`, and a
 /// verb on its type; version 9 a view's `merge`; version 10 a proposed
 /// tightening of a value type; version 11 a call of `floor` in a
-/// declaration; version 12 a declaration `with_the_set`
+/// declaration; version 12 a declaration `with_the_set`; version 13 a
+/// proposal `pinned` to the record it writes
 /// (`docs/log-format.md` §6).
-pub const LOG_FORMAT_VERSION: u32 = 12;
+pub const LOG_FORMAT_VERSION: u32 = 13;
 
 /// The version a lake is created with and writes until it needs a newer
 /// one: a lake that never re-keys a type stays at version 1, byte for
@@ -267,6 +268,11 @@ pub enum EventBody {
         write: ProposedWrite,
         /// Why it waits.
         why: String,
+        /// Whether its proposer's grant admits only some records of the
+        /// type it writes: its accept is refused once the record or the
+        /// type changed after it (format version 13).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pinned: bool,
     },
     /// A proposal was accepted. Its write follows, caused by this event.
     WriteAccepted {

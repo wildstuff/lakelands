@@ -25,7 +25,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::error::Case;
-use lakelands_api::ontology::{Authority, FieldDecl, TypeDecl};
+use lakelands_api::ontology::{Authority, FieldDecl, TypeDecl, VerbDecl, VerbEffect};
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Migration, MigrationReport};
@@ -317,6 +317,24 @@ fn ends_held(who: &Principal, decl: &TypeDecl) -> bool {
 /// waits for review (051).
 pub fn only_holder(who: &Principal, decl: &TypeDecl) -> bool {
     !own_only(who, &decl.name).is_empty() || ends_held(who, decl)
+}
+
+/// Whether a holder of `only` on `decl` may propose a write there, or a
+/// call of `verb`: no field its `only` names is computed, and the verb
+/// assigns none. Its accept applies the write as it was proposed, so
+/// only such a write leaves the pairs where the proposer was judged to
+/// leave them (051).
+pub fn pinnable(who: &Principal, decl: &TypeDecl, verb: Option<&VerbDecl>) -> bool {
+    let computed = |d: &FieldDecl| {
+        d.authority == Authority::Derived || d.function.is_some() || d.embed.is_some()
+    };
+    let assigned = |f: &FieldName| match verb.map(|v| &v.effect) {
+        Some(VerbEffect::Write { set }) => set.iter().any(|a| &a.field == f),
+        _ => false,
+    };
+    own_only(who, &decl.name)
+        .iter()
+        .all(|(f, _)| !assigned(f) && !decl.fields.iter().any(|d| &d.name == f && computed(d)))
 }
 
 /// Whether `who` can make a record of `decl` that its grant admits: it

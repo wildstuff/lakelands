@@ -48,7 +48,7 @@ mod views;
 use crate::links;
 use crate::state::{
     DeclaredType, State, access, admits, creates, door_writes, field, holds_only, only_applies,
-    only_holder, own_only,
+    only_holder, own_only, pinnable,
 };
 use crate::{Batch, Draft, Log, Shared, refused, stream, value};
 
@@ -1045,11 +1045,10 @@ fn may_retire(who: &Principal, t: &DeclaredType) -> bool {
 }
 
 fn callable(st: &State, who: &Principal, v: &VerbDecl) -> bool {
-    // A holder of `only` calls no verb that waits for review (051).
-    let Some(t) = st
-        .visible(who, &v.on)
-        .filter(|t| !only_holder(who, &t.decl) || v.risk == Risk::Low)
-    else {
+    // A holder of `only` calls no verb that waits for review and could
+    // move its pairs (051).
+    let held = |t: &&DeclaredType| only_holder(who, &t.decl) && !pinnable(who, &t.decl, Some(v));
+    let Some(t) = (st.visible(who, &v.on)).filter(|t| !held(t) || v.risk == Risk::Low) else {
         return false;
     };
     match &v.effect {
@@ -2339,7 +2338,7 @@ fn plan_propose(
     st: &State,
     batch: &mut Batch,
     who: &Principal,
-    write: ProposedWrite,
+    (write, pinned): (ProposedWrite, bool),
     why: String,
     key: Option<lakelands_api::IdempotencyKey>,
 ) -> Result<(Position, ProposalId)> {
@@ -2382,6 +2381,39 @@ fn plan_propose(
         ProposedWrite::Declare { declarations } => check_set(st, who, declarations)?,
         ProposedWrite::Migrate { .. } | ProposedWrite::MigrateValueType { .. } => {}
     }
+    // As the store (051): a pinned proposal is judged as its write would
+    // be now, against the record its proposer owns at the key.
+    let (by, scratch) = (
+        By {
+            st,
+            who,
+            cause: None,
+        },
+        &mut Batch::new(batch.peek().0),
+    );
+    match &write {
+        ProposedWrite::Upsert {
+            ty,
+            key,
+            patch,
+            opts,
+        } if pinned => {
+            plan_upsert(&by, scratch, ty, key, patch.clone(), opts)?;
+        }
+        ProposedWrite::Retire { ty, key, opts } if pinned => {
+            plan_retire(&by, scratch, ty, key, opts)?;
+        }
+        ProposedWrite::Call {
+            verb,
+            key: Some(key),
+            payload,
+            opts,
+        } if pinned => {
+            let v = &st.verbs[verb];
+            plan_run(&by, scratch, v, key, payload.clone(), opts)?;
+        }
+        _ => {}
+    }
     let write = match write {
         ProposedWrite::Migrate { migration, .. } => {
             let head = Position(batch.peek().0.saturating_sub(1));
@@ -2414,6 +2446,7 @@ fn plan_propose(
             proposal: id.clone(),
             write,
             why,
+            pinned,
         },
     );
     d.key = key;
@@ -4185,8 +4218,9 @@ impl Catalog for MockCatalog {
                 payload,
                 opts,
             };
+            let pinned = pinned(&st, who, &write)?;
             let (position, proposal) =
-                plan_propose(&st, &mut batch, who, write, why.clone(), key_)?;
+                plan_propose(&st, &mut batch, who, (write, pinned), why.clone(), key_)?;
             log.proposers.insert(proposal.clone(), who.clone());
             Outcome::Proposed {
                 position,
@@ -4735,11 +4769,10 @@ impl Catalog for MockCatalog {
         if let Some(o) = remembered(&st, who, &opts) {
             return Ok(o);
         }
-        if reaches_held(&st, who, &write)? {
-            return Err(refused(Refusal::NotGranted));
-        }
+        let pinned = pinned(&st, who, &write)?;
         let key = opts.idempotency_key;
         let mut batch = Batch::at(&log);
+        let write = (write, pinned);
         let (position, proposal) = plan_propose(&st, &mut batch, who, write, why.clone(), key)?;
         log.proposers.insert(proposal.clone(), who.clone());
         self.commit(&mut log, batch);
@@ -4760,6 +4793,9 @@ impl Catalog for MockCatalog {
         if write.is_schema() && !who.grants.schema {
             return Err(refused(Refusal::NotGranted));
         }
+        let (_, then) = self.state_at(&log, Some(p.position))?;
+        let logged = log.events.get(p.position.0 as usize);
+        unmoved(&st, &then, logged, p.position)?;
         let proposer = log.proposers.get(proposal).cloned().ok_or_else(|| {
             let what = Unmocked::Proposer;
             invalid(Case::MockCannot { what })
@@ -4786,7 +4822,11 @@ impl Catalog for MockCatalog {
                 key,
                 patch,
                 opts,
-            } => Some(plan_upsert(&by, &mut batch, &ty, &key, patch, &opts)?),
+            } => {
+                let version = plan_upsert(&by, &mut batch, &ty, &key, patch, &opts)?;
+                reviewed(&st, who, &batch, &ty, &key)?;
+                Some(version)
+            }
             ProposedWrite::Retire { ty, key, opts } => {
                 Some(plan_retire(&by, &mut batch, &ty, &key, &opts)?)
             }
@@ -4801,7 +4841,6 @@ impl Catalog for MockCatalog {
                 // differently since, it is not what was checked (013).
                 if let Some(now) = st.verbs.get(&verb) {
                     scoped(now, key.as_ref(), &opts)?;
-                    let (_, then) = self.state_at(&log, Some(p.position))?;
                     if then.verbs.get(&verb) != Some(now) {
                         let verb = verb.clone();
                         return Err(invalid(Case::VerbRedeclared { verb }));
@@ -4810,7 +4849,9 @@ impl Catalog for MockCatalog {
                 let v = check_call(&st, &proposer, &verb, key.as_ref(), &payload, &opts)?.clone();
                 let key = record_key(&v, key.as_ref())?;
                 check_version(&st, &v.on, key, &opts)?;
-                Some(plan_run(&by, &mut batch, &v, key, payload, &opts)?)
+                let version = plan_run(&by, &mut batch, &v, key, payload, &opts)?;
+                reviewed(&st, who, &batch, &v.on, key)?;
+                Some(version)
             }
             // Checked again on the head; a refusal leaves the proposal
             // pending, since nothing is committed.
@@ -5590,26 +5631,134 @@ fn remembered(st: &State, who: &Principal, opts: &WriteOpts) -> Option<Outcome> 
     st.idempotent.get(&(who.writer(), key.clone())).cloned()
 }
 
-/// As the store (051): whether a proposed write reaches a type `who`
-/// holds `only` on, or a shape, which a holder of `only` on any type never
-/// changes. A type it is not shown is answered as not there.
-fn reaches_held(st: &State, who: &Principal, write: &ProposedWrite) -> Result<bool> {
+/// As the store (051): whether `who`'s proposal of `write` is pinned, a
+/// write to a record of a type it holds `only` on; a change of shape and a
+/// write that anything but itself could move off its pairs are refused. A
+/// type it is not shown is answered as not there.
+fn pinned(st: &State, who: &Principal, write: &ProposedWrite) -> Result<bool> {
     if !holds_only(who) {
         return Ok(false);
     }
-    let ty = match write {
-        ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => ty,
+    let (ty, verb) = match write {
+        ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => (ty, None),
         ProposedWrite::Call { verb, .. } => {
             let shown = (st.verbs.get(verb)).filter(|v| st.visible(who, &v.on).is_some());
             let missing = || Error::NotFound {
                 missing: Missing::Verb { name: verb.clone() },
             };
-            &shown.ok_or_else(missing)?.on
+            let v = shown.ok_or_else(missing)?;
+            (&v.on, Some(v))
         }
-        _ => return Ok(true),
+        _ => return Err(refused(Refusal::NotGranted)),
     };
     let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
-    Ok(only_holder(who, &t.decl))
+    let pinned = only_holder(who, &t.decl);
+    if pinned && !pinnable(who, &t.decl, verb) {
+        return Err(refused(Refusal::NotGranted));
+    }
+    Ok(pinned)
+}
+
+/// As the store (051): whether a reviewer decides the proposal logged at
+/// `at`, writing `write`: one holding `only` decides no change of shape,
+/// and no write to a type it holds `only` on that its listing would not
+/// show it whole.
+fn decides(st: &State, who: &Principal, write: &ProposedWrite, at: Position) -> bool {
+    if !holds_only(who) {
+        return true;
+    }
+    let ty = match write {
+        ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => ty,
+        ProposedWrite::Call { verb, .. } => match st.verbs.get(verb) {
+            Some(v) => &v.on,
+            None => return false,
+        },
+        _ => return false,
+    };
+    if st.types.get(ty).is_some_and(|t| !only_holder(who, &t.decl)) {
+        return true;
+    }
+    let mut shown = write.clone();
+    known_shape(st, who, &mut shown, (who, None, at)) && shown == *write
+}
+
+/// As the store (051): the accept of a pinned proposal, `logged`, made at
+/// `at`, is refused once the record it writes or its type changed after
+/// it; `then` is the lake at `at`.
+fn unmoved(st: &State, then: &State, logged: Option<&Event>, at: Position) -> Result<()> {
+    let Some(EventBody::WriteProposed {
+        write,
+        pinned: true,
+        ..
+    }) = logged.map(|e| &e.body)
+    else {
+        return Ok(());
+    };
+    let (ty, key) = match write {
+        ProposedWrite::Upsert { ty, key, .. } | ProposedWrite::Retire { ty, key, .. } => {
+            (ty, Some(key))
+        }
+        ProposedWrite::Call { verb, key, .. } => match st.verbs.get(verb) {
+            Some(v) => (&v.on, key.as_ref()),
+            None => return Ok(()),
+        },
+        _ => return Ok(()),
+    };
+    let version = |s: &State| s.types.get(ty).map(|t| t.version);
+    let moved_at = |ty: &TypeName, k: &RecordKey| {
+        let stored = st.records.get(&(ty.clone(), k.clone()));
+        stored.is_some_and(|r| r.position > at)
+    };
+    let mut moved = key.is_some_and(|k| moved_at(ty, k));
+    // As the store: a link is its holder's by its end records too, and a
+    // change to an end moves no link.
+    let ends = st.types.values().find_map(|o| {
+        let carried = (o.decl.relations.iter()).find(|x| {
+            x.via.is_none() && x.derived.is_none() && links::name(&o.decl.name, &x.name) == *ty
+        });
+        carried.map(|x| [o.decl.name.clone(), x.target.clone()])
+    });
+    if let (Some(key), Some(ends)) = (key, ends) {
+        let parts = lakelands_api::key::key_components(key);
+        for (end, k) in ends.iter().zip(&parts) {
+            moved = moved || moved_at(end, &RecordKey::from(k.as_str()));
+        }
+    }
+    if !moved && version(st) == version(then) {
+        return Ok(());
+    }
+    let (ty, key) = (ty.clone(), key.cloned());
+    Err(invalid(Case::WriteChangedSinceProposed { ty, key }))
+}
+
+/// As the store (051): what an accepted write leaves of the record `key`
+/// of `ty` is judged by the reviewer's pairs too.
+fn reviewed(
+    st: &State,
+    who: &Principal,
+    batch: &Batch,
+    ty: &TypeName,
+    key: &RecordKey,
+) -> Result<()> {
+    let Some(t) = st.types.get(ty) else {
+        return Ok(());
+    };
+    for d in &batch.drafts {
+        if let EventBody::RecordUpserted {
+            ty: on,
+            key: at,
+            patch,
+            ..
+        } = &d.body
+            && (on, at) == (ty, key)
+        {
+            let after = after_write(t, st.live(ty, key).map(|r| &r.fields), patch);
+            if !st.admits_fields(who, ty, &after) {
+                return Err(refused(Refusal::NotGranted));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Whether a proposed write is a migration, of a type or a value type.
@@ -5628,10 +5777,11 @@ fn decidable<'a>(st: &'a State, who: &Principal, id: &ProposalId) -> Result<&'a 
     let p = st.proposals.get(id).ok_or_else(|| Error::NotFound {
         missing: Missing::Proposal { id: id.clone() },
     })?;
-    // Before it is told decided: a holder of `only` decides nothing that
-    // reaches the type (051).
-    if let Some(write) = &p.write
-        && reaches_held(st, who, write)?
+    // Before it is told decided: a holder of `only` decides only what its
+    // listing shows it whole (051).
+    if p.write
+        .as_ref()
+        .is_some_and(|w| !decides(st, who, w, p.position))
     {
         return Err(refused(Refusal::NotGranted));
     }

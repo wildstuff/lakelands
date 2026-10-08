@@ -1416,8 +1416,10 @@ impl Call<'_> {
     /// The events a verb's call appends when it runs: `verb_called`, and
     /// for a write effect the record write it causes; then, apart, the
     /// triggers and object-set changes that write causes, as for any other
-    /// write. `n` drafts precede. `key` is `None` for a verb on its type,
-    /// which reads no record and writes none.
+    /// write; and the record that write leaves. `n` drafts precede. `key`
+    /// is `None` for a verb on its type, which reads no record and writes
+    /// none. At an accept, `as_whom` is the proposer: the record is read
+    /// as its write reaches it (051).
     #[allow(clippy::too_many_arguments)]
     fn run_verb(
         &self,
@@ -1431,7 +1433,7 @@ impl Call<'_> {
         now: Timestamp,
         n: usize,
         as_whom: &Principal,
-    ) -> Result<(Vec<Draft>, Vec<Draft>)> {
+    ) -> Result<(Vec<Draft>, Vec<Draft>, Option<StoredRecord>)> {
         let called = self.draft(
             now,
             Origin::Authored,
@@ -1444,7 +1446,7 @@ impl Call<'_> {
         // A verb on its type is external and declares no `requires`: it
         // reads no record and writes none.
         let Some(key) = key else {
-            return Ok((vec![called], Vec::new()));
+            return Ok((vec![called], Vec::new(), None));
         };
         let record = own_record(view, w.ontology.ty(&verb.on)?, key, as_whom)?;
         // The version before anything is judged on the record (024).
@@ -1452,7 +1454,7 @@ impl Call<'_> {
         requires(w, verb, key, &record, now)?;
         let called_at = position_after(w, n);
         let mut drafts = vec![called];
-        let mut reactions = Vec::new();
+        let (mut reactions, mut after) = (Vec::new(), None);
         if let VerbEffect::Write { set } = &verb.effect {
             let mut patch = Patch::new();
             for a in set {
@@ -1523,8 +1525,9 @@ impl Call<'_> {
                 position_after(w, n + 1),
                 now,
             )?;
+            after = Some(plan.after);
         }
-        Ok((drafts, reactions))
+        Ok((drafts, reactions, after))
     }
 
     /// `call`. Answers the outcome, and for an external verb that ran,
@@ -1547,17 +1550,14 @@ impl Call<'_> {
         if key.is_some() {
             rights::not_a_view(w.ontology.ty(&decl.on)?)?;
         }
-        // A holder of `only` calls no verb that waits for review: a
-        // proposal of it is not admitted yet (051).
-        let held = rights::only_holder(self.who, w.ontology.ty(&decl.on)?);
-        granted(self.verb_callable(&decl) && !(held && decl.risk != Risk::Low))?;
+        granted(self.verb_callable(&decl))?;
         if let VerbEffect::External { executor } = &decl.effect {
             bound_executor(self.lake, executor)?;
         }
         let payload = self.verb_payload(&w, &decl, &payload)?;
         let now = self.lake.clock(&mut w);
         let mut drafts = if decl.risk == Risk::Low {
-            let (mut drafts, reactions) = self.run_verb(
+            let (mut drafts, reactions, _) = self.run_verb(
                 &w,
                 view.as_ref(),
                 &mut Pending::default(),
@@ -1575,6 +1575,7 @@ impl Call<'_> {
             // A call that could not run now is not proposed: the version,
             // then `requires`, as when it runs; accepting it judges the
             // record again (013).
+            let pinned = self.pin(w.ontology.ty(&decl.on)?, Some(&decl))?;
             if let Some(key) = key {
                 let record = own_record(view.as_ref(), w.ontology.ty(&decl.on)?, key, self.who)?;
                 cas(opts.expected_version, Some(&record))?;
@@ -1601,6 +1602,7 @@ impl Call<'_> {
                         opts: opts.clone(),
                     },
                     why,
+                    pinned,
                 },
             )]
         };
@@ -1654,7 +1656,7 @@ impl Call<'_> {
             ordinary_door(ty)?;
             shown_type(&w.ontology, ty, self.who)?;
         }
-        granted(!self.reaches_held(&w.ontology, &write)?)?;
+        let pinned = self.pinned(&w.ontology, &write)?;
         match &mut write {
             ProposedWrite::Upsert {
                 ty,
@@ -1769,6 +1771,7 @@ impl Call<'_> {
                 proposal: ProposalId::from(id.0.as_str()),
                 write,
                 why,
+                pinned,
             },
         );
         self.keyed(&mut d, &key_opt);
@@ -1777,19 +1780,110 @@ impl Call<'_> {
         Ok(outcome_of(&events))
     }
 
-    /// Whether a proposed write reaches a type its caller holds `only` on,
-    /// or a shape, which a holder of `only` on any type never changes
-    /// (051). A type the caller is not shown is answered as not there.
-    fn reaches_held(&self, o: &Ontology, write: &ProposedWrite) -> Result<bool> {
+    /// Whether this caller's proposal is pinned: it writes a record of a
+    /// type the caller holds `only` on. Such a caller changes no shape, and
+    /// proposes no write that anything but the write itself could move off
+    /// its pairs (051). A type it is not shown is answered as not there.
+    fn pinned(&self, o: &Ontology, write: &ProposedWrite) -> Result<bool> {
         if !rights::holds_only(self.who) {
             return Ok(false);
         }
-        let ty = match write {
-            ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => ty.clone(),
-            ProposedWrite::Call { verb, .. } => self.shown_verb(o, verb)?.on.clone(),
-            _ => return Ok(true),
+        let (ty, verb) = match write {
+            ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => (ty, None),
+            ProposedWrite::Call { verb, .. } => {
+                let v = self.shown_verb(o, verb)?;
+                (&v.on, Some(v))
+            }
+            _ => return granted(false).map(|()| false),
         };
-        Ok(rights::only_holder(self.who, shown_type(o, &ty, self.who)?))
+        self.pin(shown_type(o, ty, self.who)?, verb)
+    }
+
+    /// Whether a proposal by this caller on `decl`, or of a call of `verb`,
+    /// is pinned, refusing one that may not be (051).
+    fn pin(&self, decl: &TypeDecl, verb: Option<&VerbDecl>) -> Result<bool> {
+        let pinned = rights::only_holder(self.who, decl);
+        granted(!pinned || rights::pinnable(self.who, decl, verb))?;
+        Ok(pinned)
+    }
+
+    /// Refuse a reviewer holding `only` a proposal it is not listed whole:
+    /// a change of shape, which it never makes, and a write to a type it
+    /// holds `only` on that its listing would trim or withhold (051). It is
+    /// judged before the reviewer is told whether the proposal is decided.
+    fn decides(&self, o: &Ontology, p: &lakelands_api::write::Proposal) -> Result<()> {
+        let Some(write) = p.write.as_ref().filter(|_| rights::holds_only(self.who)) else {
+            return Ok(());
+        };
+        let ty = match write {
+            ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => ty,
+            ProposedWrite::Call { verb, .. } => match o.verb(verb) {
+                Ok(v) => &v.on,
+                Err(_) => return granted(false),
+            },
+            _ => return granted(false),
+        };
+        if o.ty(ty).is_ok_and(|t| !rights::only_holder(self.who, t)) {
+            return Ok(());
+        }
+        let view = self.lake.engine.view(None)?;
+        let shape = self.lake.shape(view.as_ref())?;
+        let read =
+            crate::reads::Reader::open(self.lake, self.who, Default::default(), view, shape)?;
+        granted(read.shows_whole(write, p.position))
+    }
+
+    /// Refuse the accept of a pinned proposal, the one logged at `at`,
+    /// once the record it writes or its type changed after it, or, for a
+    /// link, either end record: its proposer was judged on them as they
+    /// stood (051).
+    fn unmoved(&self, o: &Ontology, view: &dyn ProjectionView, at: Position) -> Result<()> {
+        let logged = self.lake.read_events(at, 1)?;
+        let Some(EventBody::WriteProposed {
+            write,
+            pinned: true,
+            ..
+        }) = logged.first().map(|e| &e.body)
+        else {
+            return Ok(());
+        };
+        let (ty, key) = match write {
+            ProposedWrite::Upsert { ty, key, .. } | ProposedWrite::Retire { ty, key, .. } => {
+                (ty, Some(key))
+            }
+            ProposedWrite::Call { verb, key, .. } => (&o.verb(verb)?.on, key.as_ref()),
+            _ => return Ok(()),
+        };
+        let declared = self.lake.engine.view(Some(at))?.declarations()?;
+        let then = declared.iter().find_map(|d| match &d.declaration {
+            Declaration::Type(t) if &t.name == ty => Some(d.version),
+            _ => None,
+        });
+        let moved_at = |ty: &TypeName, key: &RecordKey| -> Result<bool> {
+            Ok(view.get(ty, key)?.is_some_and(|r| r.position > at))
+        };
+        let mut moved = match key {
+            Some(key) => moved_at(ty, key)?,
+            None => false,
+        };
+        // A link is its holder's by its end records too, and a change to
+        // an end moves no link.
+        let types = o.types.values().map(|e| &e.decl);
+        if let Some(key) = key
+            && let Some((t, r)) = links::relation_of(types, ty)
+        {
+            let parts = lakelands_api::key::key_components(key);
+            for (end, k) in [(&t.name, parts.first()), (&r.target, parts.get(1))] {
+                if let Some(k) = k {
+                    moved = moved || moved_at(end, &RecordKey::from(k.as_str()))?;
+                }
+            }
+        }
+        if !moved && then == o.types.get(ty).map(|e| e.version) {
+            return Ok(());
+        }
+        let (ty, key) = (ty.clone(), key.cloned());
+        Err(invalid(Case::WriteChangedSinceProposed { ty, key }))
     }
 
     /// `accept`: apply a pending proposal's write, written as the proposer.
@@ -1801,9 +1895,7 @@ impl Call<'_> {
         let p = find_proposal(view.as_ref(), proposal)?;
         // Before a retry is answered: an accept sent again would hand a
         // holder of `only` what an earlier accepter was answered (051).
-        if let Some(write) = &p.write {
-            granted(!self.reaches_held(&w.ontology, write)?)?;
-        }
+        self.decides(&w.ontology, &p)?;
         if p.state != ProposalState::Pending {
             let again = self.accepted_again(&w, view.as_ref(), proposal)?;
             return Ok((again, None));
@@ -1819,6 +1911,7 @@ impl Call<'_> {
             return Err(lakelands_core::damaged(Part::Projection, None, flaw));
         };
         granted(!write.is_schema() || self.who.grants.schema)?;
+        self.unmoved(&w.ontology, view.as_ref(), p.position)?;
         let now = self.lake.clock(&mut w);
         // The write was checked under the proposer's grants when it was
         // proposed; it is applied as the proposer, with what was checked.
@@ -1870,6 +1963,17 @@ impl Call<'_> {
                     &proposer,
                     &|_| {},
                 )?;
+                // What the write leaves is judged by the reviewer's pairs
+                // too: a holder of `only` accepts no write that takes a
+                // record out of its reach, as it writes none (051).
+                let decl = w.ontology.ty(ty)?;
+                granted(owns(
+                    view.as_ref(),
+                    &pending,
+                    self.who,
+                    decl,
+                    &plan.after.fields,
+                )?)?;
                 drafts.push(as_proposer(plan.draft));
                 drafts.extend(self.reactions(
                     &w,
@@ -1926,7 +2030,7 @@ impl Call<'_> {
                         position: accepted_at,
                     });
                 }
-                let (own, reactions) = self.run_verb(
+                let (own, reactions, after) = self.run_verb(
                     &w,
                     view.as_ref(),
                     &mut pending,
@@ -1938,6 +2042,10 @@ impl Call<'_> {
                     1,
                     &proposer,
                 )?;
+                if let Some(after) = after {
+                    let on = w.ontology.ty(&decl.on)?;
+                    granted(owns(view.as_ref(), &pending, self.who, on, &after.fields)?)?;
+                }
                 drafts.extend(own.into_iter().map(as_proposer));
                 drafts.extend(reactions);
             }
@@ -2064,9 +2172,7 @@ impl Call<'_> {
         let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
         let p = find_proposal(view.as_ref(), proposal)?;
-        if let Some(write) = &p.write {
-            granted(!self.reaches_held(&w.ontology, write)?)?;
-        }
+        self.decides(&w.ontology, &p)?;
         if p.state != ProposalState::Pending {
             return Err(refused(Refusal::Decided));
         }

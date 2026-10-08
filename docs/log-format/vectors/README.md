@@ -22,6 +22,9 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
+- `v13.json`: version 13's addition after `v12.json`'s position 33: a
+  `write_proposed` upsert that carries `pinned`; and `negatives`, the
+  line written as version 12, which a reader refuses.
 - `v12.json`: version 12's additions after `v11.json`'s position 30: a
   `declared` function that carries `with_the_set`, a `value_type_migrated`
   that renames a value, and a proposed `migrate_value_type` that carries

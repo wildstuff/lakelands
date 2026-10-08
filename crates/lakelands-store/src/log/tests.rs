@@ -173,6 +173,7 @@ fn a_version_3_event_proposing_a_declaration_is_refused() {
             ],
         },
         why: "w".into(),
+        pinned: false,
     });
     let (_, stored) = sealed(3, 1, 1, d.clone());
     let e = open(&stored).unwrap_err().to_string();

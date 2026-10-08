@@ -38,6 +38,8 @@
 //!   a declaration with a field that says `computed_at`, in the places 5
 //!   names; a `value_type_migrated` event; and a proposed
 //!   `migrate_value_type` whose `renames` is not empty.
+//! - **13**: what [`THIRTEENTH`] lists: a `write_proposed` event
+//!   `pinned` to the record it writes.
 //!
 //! The store writes every event of one append at the greatest of the
 //! lake's version and what [`needed`] answers for each event of the
@@ -53,6 +55,9 @@ use lakelands_api::write::{Declaration, ProposedWrite};
 /// The lowest format version that can carry `body`, with `upstream` or
 /// without it.
 pub fn needed(body: &EventBody, upstream: bool) -> u32 {
+    if carried(THIRTEENTH, body).is_some() {
+        return 13;
+    }
     if carried(TWELFTH, body).is_some() {
         return 12;
     }
@@ -150,6 +155,13 @@ pub const TWELFTH: &[Added] = &[
         A::ProposesValueRenames,
     ),
 ];
+
+/// What format version 13 added, as [`ELEVENTH`] lists 11's: below 13 an
+/// accept judged a holder's proposal on the record as it then stood.
+pub const THIRTEENTH: &[Added] = &[(
+    |body| matches!(body, EventBody::WriteProposed { pinned, .. } if *pinned),
+    A::Pinned,
+)];
 
 /// Whether the event proposes a migration whose report says what its `to`
 /// states otherwise: below 11 no report does, and a reader there would
@@ -329,7 +341,9 @@ pub fn below(event: &Event) -> Option<Flaw> {
     if event.v >= need {
         return None;
     }
-    let added = carried(TWELFTH, &event.body).or_else(|| carried(ELEVENTH, &event.body));
+    let added = [THIRTEENTH, TWELFTH, ELEVENTH]
+        .into_iter()
+        .find_map(|added| carried(added, &event.body));
     let carries = if let Some(what) = added {
         what
     } else if need == 10 {

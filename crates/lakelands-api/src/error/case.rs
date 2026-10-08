@@ -1137,6 +1137,8 @@ catalog! {
         VerbValueUnfit { verb: VerbName, field: FieldName } => "verb `{verb}` computes a value that does not fit `{field}`",
         /// A link one ingest window made already where one is allowed.
         WindowLinksAlready { from: RecordKey, to: RecordKey, relation: RelationName, cardinality: Cardinality } => "the window links `{from}` to `{to}` over `{relation}` already, and it allows one ({cardinality})",
+        /// A pinned proposal's accept after its record or type changed.
+        WriteChangedSinceProposed { #[serde(rename = "type")] ty: TypeName, #[serde(default, skip_serializing_if = "Option::is_none")] key: Option<RecordKey> } => "`{ty}`[ `{key}`] changed since this write was proposed; propose it again",
 
         // ---- aging
         /// An aging rule's field that its door does not write.

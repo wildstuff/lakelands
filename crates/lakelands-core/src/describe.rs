@@ -27,7 +27,7 @@ use lakelands_api::ontology::{
 use lakelands_api::write::{Declaration, FunctionDecl};
 use lakelands_api::{Access, FieldName, LakeId, Principal, TypeName};
 
-use crate::rights::{field_access, granted_access, only_holder, type_access};
+use crate::rights::{field_access, granted_access, only_holder, pinnable, type_access};
 
 /// The lake as `who` may see it.
 pub fn lake(lake: &LakeId, declared: &[Declared], who: &Principal) -> LakeDescription {
@@ -570,7 +570,9 @@ fn type_description(
     };
     let verbs = each(declared, |d| match &d.declaration {
         Declaration::Verb(v)
-            if v.on == t.name && verb_callable(v, t, who) && (!held || v.risk == Risk::Low) =>
+            if v.on == t.name
+                && verb_callable(v, t, who)
+                && (!held || v.risk == Risk::Low || pinnable(who, t, Some(v))) =>
         {
             Some(v.name.clone())
         }
@@ -661,7 +663,10 @@ fn verb_description(
     who: &Principal,
 ) -> Option<VerbDescription> {
     let t = find_type(declared, &v.on)?;
-    if !verb_callable(v, t, who) || (only_holder(who, t) && v.risk != Risk::Low) {
+    // A verb that waits for review is proposed, and a holder of `only`
+    // proposes none that could move its pairs (051).
+    let held = only_holder(who, t) && !pinnable(who, t, Some(v));
+    if !verb_callable(v, t, who) || (held && v.risk != Risk::Low) {
         return None;
     }
     Some(VerbDescription {

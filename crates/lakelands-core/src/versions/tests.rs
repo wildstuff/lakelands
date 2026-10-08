@@ -122,6 +122,7 @@ fn annotations_anywhere_in_a_declaration_need_format_5() {
             proposal: "p".into(),
             write,
             why: String::new(),
+            pinned: false,
         };
         assert_eq!(needed(&proposed, false), 5);
     }
@@ -180,6 +181,7 @@ fn a_declaration_calling_retired_needs_format_7_and_says_so_below_it() {
             declarations: vec![guard("retired()")],
         },
         why: String::new(),
+        pinned: false,
     };
     assert_eq!(needed(&proposed, false), 7, "a proposal keeps it too");
     let event = declared_event(6, guard("retired()"));
@@ -245,6 +247,7 @@ fn a_verb_on_its_type_needs_format_8_declared_called_or_proposed() {
             opts: Default::default(),
         },
         why: String::new(),
+        pinned: false,
     };
     assert_eq!(needed(&proposed(None), false), 8);
     assert_eq!(needed(&proposed(Some("k")), false), 1);
