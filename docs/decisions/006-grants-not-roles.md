@@ -368,3 +368,17 @@ it through a key. To show such a type, it grants the target type, its
 key fields at least masked; an unkeyed type can be granted with nothing
 else.
 
+
+## Extended: nothing beside a type names it to one it is kept from (lakelands#770)
+
+A type its principal is not shown is not named by what is declared
+beside it either. A verb on such a type is not described and no tool
+is made of it, even where the principal could write every field the
+verb sets: `call` and `propose` already answer it as a verb that is
+not declared, and `describe` now agrees with them. A function is shown
+to a principal only where `describe` lists it (every type that computes
+a field by it is shown to the principal, which reads that field and each
+input, or it holds `schema`). The conditions of a value type's rename name
+such a function only to a reviewer shown it; to any other it is told
+only as one there may be (`conditions_unshown`), as a set or a trigger
+it is not shown is.

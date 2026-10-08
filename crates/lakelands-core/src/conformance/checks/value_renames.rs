@@ -26,9 +26,9 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all_found, derived, events_after, field, field_access, find_at, followed, get_at,
-    head_unmoved, migration, object_set_on, reason, refused_like, restrict, reviewer, trigger_on,
-    try_upsert, type_decl,
+    Lake, Must, all_found, computed_by, derived, events_after, field, field_access, find_at,
+    followed, get_at, head_unmoved, migration, object_set_on, reason, refused_like, restrict,
+    reviewer, trigger_on, try_upsert, type_decl,
 };
 
 check!(
@@ -113,7 +113,7 @@ check!(
 check!(
     /// The report lists what may name an old value.
     RENAMES_LIST_CONDITIONS = a_rename_report_lists_the_declarations_and_rules_that_may_name_an_old_value,
-    "024 and 027, extended (lakelands#553): the preflight of a rename lists, by kind and name, each declaration in force whose expressions hold an old value as a literal (a set, a trigger, a verb, a view) and each aging rule on a type that uses the value type that moves from or to one, and changes none of them; a declaration the reader is not shown, and a rule whose `from` it may not read, is told only as one there may be, by its preflight and by the proposal listed to it, there with its grants followed to the proposal through the renames since"
+    "024 and 027, extended (lakelands#553): the preflight of a rename lists, by kind and name, each declaration in force whose expressions hold an old value as a literal (a set, a trigger, a verb, a view, a function) and each aging rule on a type that uses the value type that moves from or to one, and changes none of them; a declaration the reader is not shown (a function too, judged as `describe` judges it, lakelands#770), and a rule whose `from` it may not read, is told only as one there may be, by its preflight and by the proposal listed to it, there with its grants followed to the proposal through the renames since"
 );
 
 check!(
@@ -743,6 +743,18 @@ async fn a_rename_report_lists_the_declarations_and_rules_that_may_name_an_old_v
 ) -> Result<(), Failure> {
     let more = ["note", "flag", "secret"].map(|f| field(f, StorageKind::Text));
     let l = lake(store.as_ref(), &["open", "done"], more.into()).await?;
+    l.declare_json(
+        json!({"declare": "function", "name": "opens", "backing": "expr",
+        "inputs": [{"name": "note", "type": {"kind": "text"}}], "expr": "note = 'open'"}),
+    )
+    .await?;
+    let opens = computed_by("opens", StorageKind::Boolean, "opens", &["note"]);
+    let added = l.cat.add_field(&l.own, &"task".into(), opens.clone()).await;
+    added.must("adding `opens`")?;
+    let fields = ["code", "note"].map(|f| field(f, StorageKind::Text));
+    let mut boxed = type_decl("box", [fields.into(), vec![opens]].concat());
+    boxed.key = vec!["code".into()];
+    l.declare(boxed).await?;
     for d in [
         object_set_on("opened", "task", "state = 'open'"),
         trigger_on("reopened", "task", Some("state = 'open'")),
@@ -761,14 +773,15 @@ async fn a_rename_report_lists_the_declarations_and_rules_that_may_name_an_old_v
     listed.sort();
     let want = [
         "the aging rule `close`",
+        "the function declaration `opens`",
         "the object_set declaration `opened`",
         "the trigger declaration `reopened`",
         "the verb declaration `reopen`",
     ];
     ensure!(
         listed == want && !report.conditions_unshown,
-        "the report lists the set, the trigger, the verb and the aging rule that name `open`, \
-         and not the set on `done`; it lists {:?}",
+        "the report lists the function, the set, the trigger, the verb and the aging rule that \
+         name `open`, and not the set on `done`; it lists {:?}",
         report.conditions
     );
     // Neither may call a verb, and `unruled` may not read a rule's
@@ -782,7 +795,7 @@ async fn a_rename_report_lists_the_declarations_and_rules_that_may_name_an_old_v
     let blind = access("blind", "task", "note");
     let unruled = access("unruled", lakelands_api::seam::AGING_RULE_TYPE, "from");
     // `want` is sorted: the rule first, the verb last.
-    let readers = [(&blind, &want[..3]), (&unruled, &want[1..3])];
+    let readers = [(&blind, &want[..4]), (&unruled, &want[1..4])];
     let mut told = Vec::new();
     for (who, _) in readers {
         let report = l.cat.migrate_value_type(who, m.clone()).await;
@@ -806,6 +819,29 @@ async fn a_rename_report_lists_the_declarations_and_rules_that_may_name_an_old_v
              {shown:?}, unshown {}",
             who.id,
             told.conditions_unshown
+        );
+    }
+    // A reviewer without `schema` is told of `opens` only where `describe`
+    // shows it: where it reads `note`, the field it reads, and is shown
+    // `box`, which it computes a field of too.
+    let (read, none) = (Access::Read, Access::None);
+    for (note, code, named) in [(read, read, true), (none, read, false), (read, none, false)] {
+        let mut who = field_access(store.as_ref(), "plain", "task", &[("note", note)]);
+        let held = who.grants.types.entry("box".into()).or_default();
+        held.fields.insert("code".into(), code);
+        who.grants.review = true;
+        let listed = l.cat.proposals(&who, Default::default()).await;
+        let listed = (listed.must("listing as `plain`")?.data.into_iter()).find(|p| p.id == id);
+        let report = listed.and_then(|p| match p.write {
+            Some(ProposedWrite::MigrateValueType { report, .. }) => Some(report),
+            _ => None,
+        });
+        let told = report.map(|r| r.conditions.iter().any(|c| c.contains("`opens`")));
+        ensure!(
+            told == Some(named),
+            "a reviewer without `schema` that reads `note` as {note:?} and `box`.`code` as \
+             {code:?} is told of the function `opens` only where it is shown it; it is told \
+             {told:?}"
         );
     }
     // `hot` read `flag`, renamed `tag` since, which `kept` may not know of:

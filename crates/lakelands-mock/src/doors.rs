@@ -1367,12 +1367,13 @@ fn function_visible(st: &State, who: &Principal, f: &FunctionDecl) -> bool {
         .collect();
     !uses.is_empty()
         && uses.iter().all(|(ty, x)| {
-            reads_all(
-                st,
-                who,
-                ty,
-                std::iter::once(*x).chain(f.inputs.iter().map(|i| &i.name)),
-            )
+            st.visible(who, ty).is_some()
+                && reads_all(
+                    st,
+                    who,
+                    ty,
+                    std::iter::once(*x).chain(f.inputs.iter().map(|i| &i.name)),
+                )
         })
 }
 

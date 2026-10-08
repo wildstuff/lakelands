@@ -26,7 +26,7 @@ const LINKS: &str = "sys.link.invoice.approved_by";
 check!(
     /// A reference to a type not shown is a field not known of.
     REFERENCE_TO_UNSHOWN = a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_know_of,
-    "024 and 051, extended (lakelands#718): a reference to a type its reader is not shown is a field it may not know of, read, masked or by default alike: `describe_type`, `get` and `find` leave it out, a filter, an order, a grouping and an upsert on it answer word for word as on a field the type does not have; a type keyed by it, a view grouped by it and a type keyed by a reference to either answer every door as types that are not there; proposals are listed to a reviewer kept from the target without it, an upsert, a bundle and a migration alike, and a source is refused it; a value type's rename writing a use in a type keyed by it is not granted to that reviewer's preflight, naming nothing, and listed without the use or the set over it; a principal that may write every other field is not granted `retire`, and `may.retire` is false; a reference the reader's own `only` names stays, a reader shown the target by its type-level grant alone keeps it all, and a read as of a position judges the types as they stood"
+    "024 and 051, extended (lakelands#718): a reference to a type its reader is not shown is a field it may not know of, read, masked or by default alike: `describe_type`, `get` and `find` leave it out, a filter, an order, a grouping and an upsert on it answer word for word as on a field the type does not have; a type keyed by it, a view grouped by it and a type keyed by a reference to either answer every door as types that are not there, and a verb on such a type is neither described nor made a tool (lakelands#770); proposals are listed to a reviewer kept from the target without it, an upsert, a bundle and a migration alike, and a source is refused it; a value type's rename writing a use in a type keyed by it is not granted to that reviewer's preflight, naming nothing, and listed without the use or the set over it; a principal that may write every other field is not granted `retire`, and `may.retire` is false; a reference the reader's own `only` names stays, a reader shown the target by its type-level grant alone keeps it all, and a read as of a position judges the types as they stood"
 );
 
 check!(
@@ -50,7 +50,7 @@ check!(
 check!(
     /// A type keyed by a field its reader may not know of is not shown.
     KEYED_BY_HIDDEN = a_type_keyed_by_a_field_its_reader_may_not_know_of_is_not_shown,
-    "006 and 024, extended (lakelands#715): a type whose key names a field its principal may not know of is not shown to it, since every record key would hand out that field's value: to one who reads the whole lake but a key field held at `none`, the type, the link type of its relation and a view over it answer `describe_type`, `get`, `find`, `search`, a pattern, `upsert`, `retire` and `link` value for value as a name that is not declared, `describe` names none of them, and nothing is written; one who reads the key field masked is shown them all"
+    "006 and 024, extended (lakelands#715): a type whose key names a field its principal may not know of is not shown to it, since every record key would hand out that field's value: to one who reads the whole lake but a key field held at `none`, the type, the link type of its relation and a view over it answer `describe_type`, `get`, `find`, `search`, a pattern, `upsert`, `retire` and `link`, and a verb on the type `call` and `propose` (lakelands#770), value for value as a name that is not declared, `describe` names none of them, nor any verb on the type, in its verbs or its tools, though the reader writes every field the verb sets, and nothing is written; one who reads the key field masked is shown them all, the verbs too"
 );
 
 /// A principal who writes the lake but for these grants by type.
@@ -329,6 +329,20 @@ async fn doors(
         said_to.push(said(c.retire(who, &t, k, opts()).await));
         let linked = c.link(who, &t, k, by, to, Default::default(), opts());
         said_to.push(said(linked.await));
+        // A verb on the type, called and proposed: `<type>_ok` is low risk.
+        for verb in [format!("{ty}_ok"), format!("{ty}_hold")] {
+            let verb = verb.as_str().into();
+            let (key, payload) = (Some(k.clone()), Default::default());
+            let call = c.call(who, &verb, key.as_ref(), Default::default(), opts());
+            said_to.push(said(call.await));
+            let write = ProposedWrite::Call {
+                verb,
+                key,
+                payload,
+                opts: opts(),
+            };
+            said_to.push(said(c.propose(who, write, "why".into()).await));
+        }
     }
     said_to
 }
@@ -582,6 +596,13 @@ async fn a_type_keyed_by_a_field_its_reader_may_not_know_of_is_not_shown(
         d["declare"] = json!("type");
         l.declare_json(d).await?;
     }
+    for (verb, risk) in [("ledger_ok", "low"), ("ledger_hold", "high")] {
+        l.declare_json(
+            json!({"declare": "verb", "name": verb, "on": "ledger", "risk": risk,
+            "effect": "write", "set": [{"field": "cat", "value": "'b'"}]}),
+        )
+        .await?;
+    }
     for k in ["l1", "l2"] {
         l.upsert("ledger", k, json!({"code": k, "cat": "a"}))
             .await?;
@@ -596,7 +617,12 @@ async fn a_type_keyed_by_a_field_its_reader_may_not_know_of_is_not_shown(
         ("sys.link.ledger.cites", link.as_str()),
         ("ledger_count", UNGROUPED),
     ];
-    let keyed = |id: &str, access| field_access(store.as_ref(), id, "ledger", &[("code", access)]);
+    // Each writes `cat`, so each may call the verbs on a type it is shown.
+    let keyed = |id: &str, access| {
+        let mut who = field_access(store.as_ref(), id, "ledger", &[("code", access)]);
+        who.grants.default = Access::Write;
+        who
+    };
     let (hidden, masked) = (
         keyed("hidden", Access::None),
         keyed("masked", Access::Masked),
@@ -614,19 +640,18 @@ async fn a_type_keyed_by_a_field_its_reader_may_not_know_of_is_not_shown(
     }
     for who in [&hidden, &masked] {
         let d = l.cat.describe(who, Default::default()).await;
-        let names: Vec<_> = d
-            .must("describing the lake")?
-            .data
-            .types
-            .into_iter()
-            .map(|t| t.name)
-            .collect();
+        let d = d.must("describing the lake")?.data;
+        let names: Vec<_> = d.types.iter().map(|t| &t.name).collect();
         let shown = kept
             .iter()
             .filter(|k| names.iter().any(|n| n.as_str() == k.0))
             .count();
-        if shown != if who.id == hidden.id { 0 } else { kept.len() } {
-            apart.push(format!("{} is described {names:?}", who.id));
+        // Its verbs, and the tools made of them, name the type with it.
+        let verbs: Vec<_> = d.verbs.iter().map(|v| v.name.as_str()).collect();
+        let tools = format!("{:?}", lakelands_api::tools::tools(&d));
+        let (all, n) = (who.id != hidden.id, usize::from(who.id != hidden.id));
+        if shown != n * kept.len() || verbs.len() != 2 * n || tools.contains("ledger_ok") != all {
+            apart.push(format!("{} is described {names:?}, {verbs:?}", who.id));
         }
     }
     ensure!(
@@ -651,7 +676,7 @@ async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_kno
     for mut d in [
         json!({"name": "payroll", "fields": [f("code", "text")]}),
         json!({"name": "ticket", "fields": [f("no", "text"), to("payee", "payroll"), f("cat", "text")]}),
-        json!({"name": "slip", "key": ["payee"], "fields": [to("payee", "payroll")]}),
+        json!({"name": "slip", "key": ["payee"], "fields": [to("payee", "payroll"), f("n", "text")]}),
         json!({"name": "stub", "key": ["of"], "fields": [to("of", "slip")]}),
         json!({"name": "by_payee", "key": ["payee"], "fields": [to("payee", "payroll"), f("n", "decimal")],
             "view": {"source": "ticket", "group_by": ["payee"], "measures": count}}),
@@ -668,6 +693,13 @@ async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_kno
         json!({"no": "1", "payee": "p1", "cat": "a"}),
     )
     .await?;
+    for (verb, risk) in [("slip_ok", "low"), ("slip_hold", "high")] {
+        l.declare_json(
+            json!({"declare": "verb", "name": verb, "on": "slip", "risk": risk,
+            "effect": "write", "set": [{"field": "n", "value": "'b'"}]}),
+        )
+        .await?;
+    }
     l.upsert("slip", "p1", json!({"payee": "p1"})).await?;
     l.upsert("stub", "p1", json!({"of": "p1"})).await?;
     let reader = |id: &str, payroll: TypeGrants, ticket: TypeGrants| {
@@ -933,6 +965,16 @@ async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_kno
                 who.id,
                 d.map(|d| d.data.fields.len())
             ));
+        }
+    }
+    // A verb on `slip` is described, and made a tool, only where `slip` is.
+    for (who, want) in [(&kept, 0), (&typed, 2)] {
+        let d = l.cat.describe(who, Default::default()).await;
+        let d = d.must("describing the lake")?.data;
+        let on = d.verbs.iter().filter(|v| v.on.as_str() == "slip").count();
+        let tools = format!("{:?}", lakelands_api::tools::tools(&d));
+        if on != want || tools.contains("slip_ok") != (want > 0) {
+            apart.push(format!("`{}` is described {on} verbs on `slip`", who.id));
         }
     }
     let rows = l.cat.find(&held, &"ticket".into(), Find::default()).await;
