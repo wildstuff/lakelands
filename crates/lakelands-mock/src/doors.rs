@@ -1051,6 +1051,13 @@ fn may_retire(who: &Principal, t: &DeclaredType) -> bool {
         .all(|f| who.grants.access(&t.decl.name, &f.name).writes())
 }
 
+/// Whether `who` may read every field `v` reads, as the store judges a
+/// filter on it: a verb that reads one would answer it (024, extended).
+fn reads_what_it_reads(who: &Principal, decl: &TypeDecl, v: &VerbDecl) -> bool {
+    let reads = |n: &FieldName| field(decl, n).is_none_or(|f| access(who, decl, f).reads());
+    v.fields_read().is_some_and(|read| read.iter().all(reads))
+}
+
 fn callable(st: &State, who: &Principal, v: &VerbDecl) -> bool {
     // A holder of `only` calls no verb that waits for review and could
     // move its pairs (051).
@@ -1058,20 +1065,21 @@ fn callable(st: &State, who: &Principal, v: &VerbDecl) -> bool {
     let Some(t) = (st.visible(who, &v.on)).filter(|t| !held(t) || v.risk == Risk::Low) else {
         return false;
     };
-    match &v.effect {
-        VerbEffect::Write { set } => set
-            .iter()
-            .all(|a| field(&t.decl, &a.field).is_some_and(|f| access(who, &t.decl, f).writes())),
-        // Carrying it out writes nothing of the record, so it asks for
-        // write access to the type, as the store does.
-        VerbEffect::External { .. } => who
-            .grants
-            .types
-            .get(&v.on)
-            .and_then(|t| t.default)
-            .unwrap_or(who.grants.default)
-            .writes(),
-    }
+    reads_what_it_reads(who, &t.decl, v)
+        && match &v.effect {
+            VerbEffect::Write { set } => set.iter().all(|a| {
+                field(&t.decl, &a.field).is_some_and(|f| access(who, &t.decl, f).writes())
+            }),
+            // Carrying it out writes nothing of the record, so it asks for
+            // write access to the type, as the store does.
+            VerbEffect::External { .. } => who
+                .grants
+                .types
+                .get(&v.on)
+                .and_then(|t| t.default)
+                .unwrap_or(who.grants.default)
+                .writes(),
+        }
 }
 
 /// As the store: whether `who` is shown relation `r` of `owner`: both ends
@@ -3253,7 +3261,9 @@ fn known_shape(
         }
         ProposedWrite::Retire { ty, key, .. } => answered(ty, key),
         // A payload is what the verb's fields become: whole to a reader who
-        // may read each field the verb sets, and empty otherwise.
+        // may read each field the verb sets, and empty otherwise. One whose
+        // verb reads a field the reader may not read is not listed
+        // ([`hidden_from`]).
         ProposedWrite::Call {
             verb, key, payload, ..
         } => {
@@ -5017,12 +5027,9 @@ impl Catalog for MockCatalog {
             // of `only` is listed none (051).
             .filter(|p| !holds_only(who) || !p.write.as_ref().is_some_and(migrates))
             // As the store (lakelands#762): one on a type its reader is not
-            // shown is not there to it.
-            .filter(|p| {
-                !p.write
-                    .as_ref()
-                    .is_some_and(|w| hidden_by_type(&st, who, w))
-            })
+            // shown, or of a verb that reads what it may not read, is not
+            // there to it.
+            .filter(|p| !p.write.as_ref().is_some_and(|w| hidden_from(&st, who, w)))
             .cloned()
             .collect();
         // Proposals are made in log order, so `proposed_at` and
@@ -5805,8 +5812,9 @@ fn told(st: &State, who: &Principal, p: &Proposal, e: Error) -> Error {
 /// called verb is on; of a migration's `to` and of each type a bundle
 /// declares, what [`TypeDecl::names_against`] names against the type in force,
 /// the shape completed as the mock keeps it; and the type each verb,
-/// trigger and object set of a bundle is on.
-fn hidden_by_type(st: &State, who: &Principal, write: &ProposedWrite) -> bool {
+/// trigger and object set of a bundle is on. A call of a verb that reads a
+/// field `who` may not read is hidden too (024, extended).
+fn hidden_from(st: &State, who: &Principal, write: &ProposedWrite) -> bool {
     let shape = |t: &TypeDecl| {
         let mut t = t.clone();
         st.complete(&mut t);
@@ -5818,7 +5826,16 @@ fn hidden_by_type(st: &State, who: &Principal, write: &ProposedWrite) -> bool {
         ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => {
             named.push(ty.clone())
         }
-        ProposedWrite::Call { verb, .. } => named.extend(st.verbs.get(verb).map(|v| v.on.clone())),
+        ProposedWrite::Call { verb, .. } => {
+            let Some(v) = st.verbs.get(verb) else {
+                return false;
+            };
+            let on = st.types.get(&v.on).map(|t| &t.decl);
+            if on.is_some_and(|t| !reads_what_it_reads(who, t, v)) {
+                return true;
+            }
+            named.push(v.on.clone())
+        }
         ProposedWrite::Migrate { migration, .. } => named.extend(shape(&migration.to)),
         ProposedWrite::Declare { declarations } => {
             for d in declarations {
@@ -5848,8 +5865,8 @@ fn decidable<'a>(st: &'a State, who: &Principal, id: &ProposalId) -> Result<&'a 
     };
     let p = st.proposals.get(id).ok_or_else(absent)?;
     // As the store (lakelands#762): a proposal on a type its reviewer is
-    // not shown is not there.
-    if p.write.as_ref().is_some_and(|w| hidden_by_type(st, who, w)) {
+    // not shown, or of a verb that reads what it may not read, is not there.
+    if p.write.as_ref().is_some_and(|w| hidden_from(st, who, w)) {
         return Err(absent());
     }
     // Before it is told decided: a holder of `only` decides only what its

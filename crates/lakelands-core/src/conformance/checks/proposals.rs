@@ -75,7 +75,7 @@ check!(
 check!(
     /// An accept's refusal names what its reviewer's listing shows.
     TOLD_AS_LISTED = an_accepts_refusal_names_what_its_reviewers_listing_shows,
-    "006 and 013, extended (lakelands#780): a refusal of the proposer's write at its accept is judged by the reviewer's view, as its listing is: whole to a reviewer shown each field, type, key and value it names, and to one kept from any of them as a write changed since it was proposed, naming only the type and key written: a reference to a record retired since, a value its field no longer takes; a conflict names versions only and is whole to each; nothing is appended and the proposal stays pending"
+    "006 and 013, extended (lakelands#780): a refusal of the proposer's write at its accept is judged by the reviewer's view, as its listing is: whole to a reviewer shown each field, type, key and value it names, and to one kept from any of them as a write changed since it was proposed, naming only the type and key written: a reference to a record retired since, a value its field no longer takes; a call whose `requires` no longer holds is whole to a reviewer who reads what it reads, and not there to one kept from it (lakelands#779); a conflict names versions only and is whole to each; nothing is appended and the proposal stays pending"
 );
 
 check!(
@@ -1487,7 +1487,7 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(
     let retyped = propose(&l.own, upsert("i4", json!({"level": "mid"}))).await?;
     let moved = propose(&l.own, upsert("i2", json!({"note": "b"}))).await?;
     let refiled = propose(&l.own, call("refile", "i2", json!({"to": "v2"}))).await?;
-    let closed = propose(&clerk, call("close", "i6", json!({}))).await?;
+    let closed = propose(&l.own, call("close", "i6", json!({}))).await?;
     let gone = propose(
         &l.own,
         json!({"write": "retire", "type": "inv", "key": "i3"}),
@@ -1540,8 +1540,8 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(
         (
             &closed,
             "i6",
-            vec![&field],
-            vec![&typed, &shown, &clerk],
+            vec![],
+            vec![&typed, &shown],
             "requires_unmet",
         ),
         (
@@ -1566,6 +1566,16 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(
             if got != expected {
                 wrong.push(format!("`{key}` to `{}`: {got}, not {expected}", who.id));
             }
+        }
+    }
+    // `close` reads `level`, so its proposal is not there to a reviewer
+    // kept from it (024, extended): answered as an id no proposal holds.
+    for who in [&field, &clerk] {
+        let got = told(who, &closed).await;
+        let missing = lakelands_api::error::Missing::Proposal { id: closed.clone() };
+        let absent = json!(Some(Error::NotFound { missing }));
+        if got != absent {
+            wrong.push(format!("`i6` to `{}`: {got}, not {absent}", who.id));
         }
     }
     let moved_head = s.head().await.must("reading the head")? != head;

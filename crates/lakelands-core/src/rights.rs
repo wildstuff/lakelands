@@ -344,6 +344,18 @@ pub fn pinnable(who: &Principal, decl: &TypeDecl, verb: Option<&VerbDecl>) -> bo
         .all(|(f, _)| !assigned(f) && !decl.fields.iter().any(|d| &d.name == f && computed(d)))
 }
 
+/// Whether `who` may read every field `verb` reads, each judged as a
+/// filter on it is: a verb that reads one would answer its value, by
+/// running or not, or copy it whole (024, extended).
+pub fn reads_what_verb_reads(who: &Principal, decl: &TypeDecl, verb: &VerbDecl) -> bool {
+    let reads = |n: &FieldName| {
+        let field = decl.fields.iter().find(|f| &f.name == n);
+        field.is_none_or(|f| field_access(who, decl, f).reads())
+    };
+    verb.fields_read()
+        .is_some_and(|read| read.iter().all(reads))
+}
+
 /// Whether `who` can make a record of `decl` that its grant admits: it
 /// writes every field its `only` names at the authored door (051).
 pub fn creates(who: &Principal, decl: &TypeDecl) -> bool {

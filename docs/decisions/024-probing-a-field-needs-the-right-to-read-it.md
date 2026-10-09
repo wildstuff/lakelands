@@ -586,3 +586,35 @@ grant. The field's access now depends on another type, which is the
 price of the rule; a host that wants the reference read grants its
 target type, the key fields at least masked.
 
+
+## Extended: a verb reads only what its caller may read (lakelands#779)
+
+A verb was judged by the fields it writes alone. Its `requires` and the
+values it sets read the record too, and a caller who may not read a
+field they read learned it all the same: a verb that requires
+`secret = 'x'` runs on one record and is refused `requires_unmet` on
+another, and a verb that sets `copy := secret` copies the value to a
+field its caller reads. So a verb is callable, and described, only to a
+caller who may read every field its `requires` and its set values read,
+each judged as a filter on that field is. `payload.<name>` reads the
+call's payload, which is the caller's own. To any other caller the verb
+answers `not_granted`, as one whose fields it may not write does, before
+the record is read, and `describe` names it neither on its type nor
+among the lake's verbs. This holds for a direct call, a call its risk
+proposes and a call proposed through `propose`. An accept judges the
+record again, so its reviewer is held to the same rule. A call is
+proposed only where its `requires` held, so a call proposal tells what
+the verb reads as well. Its `why`, when the store wrote it, names the
+verb, which `describe` withholds from that reader, as it withholds a type
+the reader is not shown. So a call proposal of such a verb is not there
+to a reader who may not read what the verb reads, as a proposal on a
+hidden type is not
+(`docs/decisions/013-verbs-run-by-declared-risk.md`, lakelands#762).
+`proposals` leaves it out, so its count does not tell either. `accept`
+and `reject` answer as for an id no proposal holds, before anything else
+of the proposal is judged. So a reviewer is not told that the verb was
+declared again since, which would name it. The verb is the one the lake
+declares when the proposal is read or decided. A field derived from one the caller may not read, a
+write-only field and a reference to a type the caller is not shown are
+judged the same way, since a filter on them is. A verb that reads no
+such field is unchanged.

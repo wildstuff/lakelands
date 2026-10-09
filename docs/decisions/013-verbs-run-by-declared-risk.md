@@ -257,6 +257,12 @@ types a proposal names are:
   computed field's `depends_on` filled, a link field's among them);
 - the type each verb, trigger and object set of a bundle is on.
 
+A call of a verb that reads a field its reader may not read is not there
+either. Such a verb is not described to that reader, and the proposal
+would tell that its `requires` held
+(`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+extended, lakelands#779).
+
 A link type is shown only with both its ends
 (`docs/decisions/006-grants-not-roles.md`, extended), so a write to a
 link with a hidden end is among them, and so is a bundle that adds a
@@ -319,6 +325,11 @@ told whole where the reviewer is shown each thing it names:
 - each key, the one written or, as each value, one the listing shows
   under a field named, or in a call's payload, which is listed only
   whole.
+
+A call of a verb whose `requires` or set values read a field the
+reviewer is kept from does not come to this. It is not there to that
+reviewer (above; `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+extended, lakelands#779).
 
 A name of another kind, a relation's, a trigger's or a function's, is
 not judged. Any refusal is told whole to a reviewer that reads

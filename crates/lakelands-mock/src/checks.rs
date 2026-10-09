@@ -27,7 +27,8 @@ use lakelands_api::event::EventBody;
 use lakelands_api::expr::Condition;
 use lakelands_api::expr::kind::Kind;
 use lakelands_api::id::{
-    Cursor, FieldName, LakeId, Position, RecordKey, SourceId, TypeName, VerbName, Version,
+    Cursor, FieldName, LakeId, Position, ProposalId, RecordKey, SourceId, TypeName, VerbName,
+    Version,
 };
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
@@ -42,7 +43,7 @@ use lakelands_api::seam::{FEED_EXAMINED, FeedFilter};
 use lakelands_api::tools::{Door, tools};
 use lakelands_api::write::{
     Carrier, Declaration, FunctionDecl, Migration, MigrationReport, ObjectSetDecl, Outcome,
-    ProposalFilter, ProposalState, ProposedWrite, Recompute, WriteOpts,
+    Proposal, ProposalFilter, ProposalState, ProposedWrite, Recompute, WriteOpts,
 };
 use lakelands_api::{Catalog, LakeStore, WriteContext};
 use serde_json::json;
@@ -251,7 +252,9 @@ macro_rules! door_checks {
             a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_know_of,
             a_date_is_kept_as_its_day,
             #[own_principals]
-            describe_names_no_verb_or_function_its_reader_is_not_shown);
+            describe_names_no_verb_or_function_its_reader_is_not_shown,
+            #[own_principals]
+            a_verb_that_reads_a_field_its_caller_may_not_read_is_not_callable);
     };
     (@each $at:ident, $new:expr, $block_on:path;
         $($(#[$mark:ident])? $name:ident),* $(,)?) => {
@@ -4780,9 +4783,10 @@ pub async fn only_a_reviewer_decides_proposals(store: Arc<dyn LakeStore>) {
 /// accept is whole to a reviewer shown all it names and to its proposer,
 /// and to one kept from a field or a type it names answers a write
 /// changed since it was proposed: an upsert's reference retired since and
-/// a value its field no longer takes, a call's payload reference and its
-/// `requires`, judged by the fields it reads; a conflict and a retirement
-/// of a record retired since name only what is listed.
+/// a value its field no longer takes, and a call's payload reference; a
+/// call whose `requires` reads a field the reviewer is kept from is not
+/// there to it (lakelands#779); a conflict and a retirement of a record
+/// retired since name only what is listed.
 pub async fn an_accepts_refusal_names_only_what_its_reviewer_is_listed(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let (c, own) = (&f.catalog, &f.cast.owner);
@@ -4851,7 +4855,7 @@ pub async fn an_accepts_refusal_names_only_what_its_reviewer_is_listed(store: Ar
     let retyped = propose(own, upserted("i4", json!({"level": "mid"}))).await;
     let moved = propose(own, upserted("i2", json!({"note": "b"}))).await;
     let refiled = propose(own, called("refile", "i2", json!({"to": "v2"}))).await;
-    let closed = propose(&clerk, called("close", "i6", json!({}))).await;
+    let closed = propose(own, called("close", "i6", json!({}))).await;
     let gone = propose(own, json!({"write": "retire", "type": "inv", "key": "i3"})).await;
     for (t, k) in [("vault", "v1"), ("vault", "v2"), ("inv", "i3")] {
         c.retire(own, &ty(t), &key(k), WriteOpts::default())
@@ -4910,8 +4914,8 @@ pub async fn an_accepts_refusal_names_only_what_its_reviewer_is_listed(store: Ar
         (
             &closed,
             "i6",
-            vec![&field],
-            vec![&typed, &shown, &clerk],
+            vec![],
+            vec![&typed, &shown],
             "requires_unmet",
         ),
         (
@@ -4934,6 +4938,18 @@ pub async fn an_accepts_refusal_names_only_what_its_reviewer_is_listed(store: Ar
             let told = c.accept(who, id).await.map(drop);
             assert_eq!(told, expected, "the accept of `{k}` by `{}`", who.id);
         }
+    }
+    // `close` reads `level`, so its proposal is not there to a reviewer
+    // kept from it (lakelands#779).
+    for who in [&field, &clerk] {
+        let missing = Missing::Proposal { id: closed.clone() };
+        let told = c.accept(who, &closed).await.map(drop);
+        assert_eq!(
+            told,
+            Err(Error::NotFound { missing }),
+            "`i6` to `{}`",
+            who.id
+        );
     }
     assert_eq!(f.head().await, head, "nothing was appended");
     let listed = c
@@ -13532,4 +13548,199 @@ pub async fn describe_names_no_verb_or_function_its_reader_is_not_shown(store: A
         wrong.push(format!("listed {conditions}"));
     }
     assert!(wrong.is_empty(), "{}", wrong.join("; "));
+}
+
+/// What `who` is listed: every proposal, and those on invoices.
+async fn listings(catalog: &dyn Catalog, who: &Principal) -> Vec<Vec<Proposal>> {
+    let mut lists = Vec::new();
+    for on in [None, Some(ty(INVOICE))] {
+        let filter = ProposalFilter {
+            ty: on,
+            ..ProposalFilter::default()
+        };
+        let listed = catalog.proposals(who, filter).await;
+        lists.push(listed.expect("the reviewer lists").data);
+    }
+    lists
+}
+
+/// A verb whose `requires` or set values read a field its caller may not
+/// read, a field derived from one or a reference to a type it is not
+/// shown, is not its to call, propose or be shown, and a call proposal of
+/// it is not there to such a reviewer (lakelands#779).
+pub async fn a_verb_that_reads_a_field_its_caller_may_not_read_is_not_callable(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let own = &f.cast.owner;
+    let shade = json!({"name": "shade", "type": {"kind": "text"}, "authority": "derived",
+        "derived": "secret", "depends_on": ["secret"]});
+    let shade = serde_json::from_value(shade).expect("a field");
+    (f.catalog.add_field(own, &ty(INVOICE), shade).await).expect("the owner adds `shade`");
+    f.write(
+        own,
+        "INV-1",
+        &[("status", json!("open")), ("secret", json!("x"))],
+    )
+    .await;
+    f.write(own, "INV-1", &[("note", json!("n"))]).await;
+    let set = |value: &str| json!([{"field": "status", "value": value}]);
+    let verdict = json!([{"field": "verdict", "value": "'ok'"}]);
+    for (name, risk, requires, set) in [
+        ("vouch", "low", "secret = 'x'", set("'vouched'")),
+        ("echo", "low", "status = 'open'", set("note")),
+        ("check", "high", "note = 'n'", set("'checked'")),
+        ("stamp", "low", "status = 'open'", verdict.clone()),
+        ("shadow", "low", "shade = 'x'", set("'shaded'")),
+        ("bill", "low", "partner = 'P-1'", verdict),
+    ] {
+        let verb = json!({"declare": "verb", "name": name, "on": INVOICE, "risk": risk,
+            "requires": requires, "effect": "write", "set": set});
+        let d = serde_json::from_value(verb).expect("a declaration reads");
+        f.catalog.declare(own, d).await.expect("the owner declares");
+    }
+    // The answer whole: a refusal with its field and reason.
+    let answer = |a: Result<Outcome, Error>| match a {
+        Ok(Outcome::Applied { .. }) => "applied".to_owned(),
+        Ok(Outcome::Proposed { .. }) => "proposed".to_owned(),
+        other => format!("{other:?}"),
+    };
+    let grants = json!({"default": "read", "review": true, "types": {
+        INVOICE: {"fields": {"secret": "none", "note": "masked"}}}});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let blind = &principal(f.store.lake(), PrincipalKind::Human, "blind", grants);
+    let grants = json!({"default": "read", "types": {
+        INVOICE: {"fields": {"status": "write", "secret": "write_only"}}}});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let sealed = &principal(f.store.lake(), PrincipalKind::Agent, "sealed", grants);
+    // Reads `partner` of an invoice, and is not shown the `partner` type.
+    let grants = json!({"default": "read", "types": {
+        INVOICE: {"fields": {"verdict": "write"}}, PARTNER: {"default": "none"}}});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let unseen = &principal(f.store.lake(), PrincipalKind::Agent, "unseen", grants);
+    let (clerk, opts) = (&f.cast.clerk, WriteOpts::default);
+    let mut got = Vec::new();
+    for (who, verb) in [
+        (clerk, "stamp"),
+        (clerk, "echo"),
+        (clerk, "vouch"),
+        (clerk, "check"),
+        (sealed, "vouch"),
+        (clerk, "shadow"),
+        (unseen, "bill"),
+    ] {
+        let (k, verb) = (Some(key("INV-1")), VerbName::from(verb));
+        let call = f.catalog.call(who, &verb, k.as_ref(), Patch::new(), opts());
+        got.push(answer(call.await));
+    }
+    let (verb, key_, payload) = ("vouch".into(), Some(key("INV-1")), Patch::new());
+    let write = ProposedWrite::Call {
+        verb,
+        key: key_,
+        payload,
+        opts: opts(),
+    };
+    got.push(answer(f.catalog.propose(clerk, write, "why".into()).await));
+    let checked = || async {
+        let (k, verb) = (Some(key("INV-1")), VerbName::from("check"));
+        let call = f.catalog.call(own, &verb, k.as_ref(), Patch::new(), opts());
+        let Ok(Outcome::Proposed { proposal, .. }) = call.await else {
+            panic!("the owner calling `check` proposes it");
+        };
+        proposal
+    };
+    let before = listings(f.catalog.as_ref(), blind).await;
+    let proposals = [checked().await, checked().await];
+    let why = || "why".to_owned();
+    got.push(answer(f.catalog.accept(blind, &proposals[0]).await));
+    got.push(answer(f.catalog.reject(blind, &proposals[1], why()).await));
+    got.push(answer(
+        f.catalog.accept(&f.cast.reviewer, &proposals[1]).await,
+    ));
+    let refused = format!(
+        "{:?}",
+        Err::<Outcome, _>(Error::Refused {
+            field: None,
+            reason: Refusal::NotGranted,
+        })
+    );
+    // A proposal that is not there is answered as an id no proposal holds.
+    let absent = |id: &ProposalId| {
+        let missing = Missing::Proposal { id: id.clone() };
+        format!("{:?}", Err::<Outcome, _>(Error::NotFound { missing }))
+    };
+    let none = ProposalId::from("none");
+    assert_eq!(
+        answer(f.catalog.accept(blind, &none).await),
+        absent(&none),
+        "an id no proposal holds"
+    );
+    let mut want = vec![refused; 11];
+    want[8] = absent(&proposals[0]);
+    want[9] = absent(&proposals[1]);
+    want[10] = "applied".to_owned();
+    assert_eq!(
+        got, want,
+        "a verb the clerk may not write, the clerk's, the write-only and the \
+         unseen caller's calls and the clerk's proposal, then blind's accept \
+         and reject and the reviewer's accept"
+    );
+    // `check` was proposed only where `note` held what it requires: to
+    // `blind` its proposals are not there, so the listings are those of
+    // the lake before them.
+    let after = listings(f.catalog.as_ref(), blind).await;
+    assert_eq!(after, before, "`blind` lists no `check`");
+    let listed = f
+        .catalog
+        .proposals(&f.cast.reviewer, ProposalFilter::default());
+    let listed = listed.await.expect("the reviewer lists").data;
+    let entry = listed.iter().find(|p| p.id == proposals[0]);
+    let entry = entry.map(|p| (p.write.is_some(), p.more));
+    assert_eq!(entry, Some((true, false)), "the reviewer lists `check`");
+    // Declared again, `check` is still not there to `blind`, before the
+    // accept is told it was redeclared.
+    let pending = checked().await;
+    let again = json!({"declare": "verb", "name": "check", "on": INVOICE, "risk": "high",
+        "requires": "note = 'n'", "effect": "write", "set": set("'rechecked'")});
+    let again = serde_json::from_value(again).expect("a declaration reads");
+    f.catalog
+        .declare(own, again)
+        .await
+        .expect("the owner declares");
+    let got = [
+        answer(f.catalog.accept(blind, &pending).await),
+        answer(f.catalog.reject(blind, &pending, why()).await),
+    ];
+    assert_eq!(
+        got,
+        [absent(&pending), absent(&pending)],
+        "a redeclared `check`"
+    );
+    let redeclared = f.catalog.accept(&f.cast.reviewer, &pending).await;
+    let verb = VerbName::from("check");
+    let told = |e: &Error| match refusal(e) {
+        (None, Refusal::Invalid(said)) => said.case == Case::VerbRedeclared { verb },
+        _ => false,
+    };
+    assert!(
+        redeclared.as_ref().is_err_and(told),
+        "the reviewer is told `check` was declared again: {redeclared:?}"
+    );
+    let shown = |d: &lakelands_api::describe::LakeDescription| {
+        let on = d.types.iter().find(|t| t.name.as_str() == INVOICE);
+        let on: Vec<String> = on
+            .iter()
+            .flat_map(|t| t.verbs.iter().map(|v| v.to_string()))
+            .collect();
+        let all: Vec<String> = d.verbs.iter().map(|v| v.name.to_string()).collect();
+        (on, all)
+    };
+    let d = f
+        .catalog
+        .describe(clerk, ReadAt::default())
+        .await
+        .expect("describe")
+        .data;
+    let fixture = vec!["approve".to_owned(), "pay".to_owned()];
+    assert_eq!(shown(&d), (fixture.clone(), fixture), "the clerk is shown");
 }

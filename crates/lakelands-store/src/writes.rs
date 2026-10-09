@@ -1064,10 +1064,12 @@ impl Scope for VerbScope<'_> {
 /// [`TypeDecl::names_against`] names against the type in force, the shape
 /// completed as `o` keeps it; and the type each verb, trigger and object
 /// set of a bundle is on. A link type is shown only with both its ends, so
-/// a write to one with a hidden end is among them. Such a proposal is not
-/// there to `who`: not listed, and not found by `accept` or `reject`
-/// (lakelands#762).
-pub(crate) fn hidden_by_type(o: &Ontology, who: &Principal, write: &ProposedWrite) -> bool {
+/// a write to one with a hidden end is among them. A call of a verb that
+/// reads a field `who` may not read is hidden too: `describe` does not name
+/// the verb, and the entry would tell that its `requires` held (024,
+/// extended). Such a proposal is not there to `who`: not listed, and not
+/// found by `accept` or `reject` (lakelands#762).
+pub(crate) fn hidden_from(o: &Ontology, who: &Principal, write: &ProposedWrite) -> bool {
     let shape = |t: &TypeDecl| {
         let mut t = t.clone();
         o.complete(&mut t);
@@ -1078,7 +1080,14 @@ pub(crate) fn hidden_by_type(o: &Ontology, who: &Principal, write: &ProposedWrit
         ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => {
             named.push(ty.clone())
         }
-        ProposedWrite::Call { verb, .. } => named.extend(o.verb(verb).ok().map(|v| v.on.clone())),
+        ProposedWrite::Call { verb, .. } => {
+            let Ok(v) = o.verb(verb) else { return false };
+            let on = o.ty(&v.on);
+            if on.is_ok_and(|on| !rights::reads_what_verb_reads(who, on, v)) {
+                return true;
+            }
+            named.push(v.on.clone())
+        }
         ProposedWrite::Migrate { migration, .. } => named.extend(shape(&migration.to)),
         ProposedWrite::Declare { declarations } => {
             for d in declarations {
@@ -1526,13 +1535,16 @@ impl Call<'_> {
         (shown_type(o, &v.on, self.who).map(|_| v)).map_err(|_| Error::NotFound { missing })
     }
 
-    fn verb_callable(&self, verb: &VerbDecl) -> bool {
-        match &verb.effect {
-            VerbEffect::Write { set } => set
-                .iter()
-                .all(|a| self.who.grants.access(&verb.on, &a.field).writes()),
-            VerbEffect::External { .. } => rights::type_access(self.who, &verb.on).writes(),
-        }
+    /// Whether the caller may call `verb` on `on`, its type: it may write
+    /// what the verb writes, and read what it reads (024, extended).
+    fn verb_callable(&self, on: &TypeDecl, verb: &VerbDecl) -> bool {
+        rights::reads_what_verb_reads(self.who, on, verb)
+            && match &verb.effect {
+                VerbEffect::Write { set } => set
+                    .iter()
+                    .all(|a| self.who.grants.access(&verb.on, &a.field).writes()),
+                VerbEffect::External { .. } => rights::type_access(self.who, &verb.on).writes(),
+            }
     }
 
     /// Check a verb's payload against its declaration: a member the verb
@@ -1696,7 +1708,7 @@ impl Call<'_> {
         if key.is_some() {
             rights::not_a_view(w.ontology.ty(&decl.on)?)?;
         }
-        granted(self.verb_callable(&decl))?;
+        granted(self.verb_callable(w.ontology.ty(&decl.on)?, &decl))?;
         if let VerbEffect::External { executor } = &decl.effect {
             bound_executor(self.lake, executor)?;
         }
@@ -1852,7 +1864,7 @@ impl Call<'_> {
                 if scoped(&decl, key.as_ref(), opts.expected_version)?.is_some() {
                     rights::not_a_view(w.ontology.ty(&decl.on)?)?;
                 }
-                granted(self.verb_callable(&decl))?;
+                granted(self.verb_callable(w.ontology.ty(&decl.on)?, &decl))?;
                 // A call that could not run when accepted is not proposed (013).
                 if let VerbEffect::External { executor } = &decl.effect {
                     bound_executor(self.lake, executor)?;
@@ -1964,15 +1976,15 @@ impl Call<'_> {
         Ok(pinned)
     }
 
-    /// A proposal hidden from its reviewer by a type it names
-    /// ([`hidden_by_type`]) is not there to it: answered as an id that does
+    /// A proposal hidden from its reviewer by a type it names or a verb it
+    /// calls ([`hidden_from`]) is not there to it: answered as an id that does
     /// not exist, as its listing leaves it out, before anything else of the
     /// proposal is told or done (lakelands#762).
     fn shown_to_reviewer(&self, o: &Ontology, p: &lakelands_api::write::Proposal) -> Result<()> {
         if !p
             .write
             .as_ref()
-            .is_some_and(|w| hidden_by_type(o, self.who, w))
+            .is_some_and(|w| hidden_from(o, self.who, w))
         {
             return Ok(());
         }
