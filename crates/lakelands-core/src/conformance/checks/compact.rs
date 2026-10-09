@@ -166,7 +166,7 @@ async fn churned(store: &dyn LakeStore, embedded: bool, token: &str) -> Result<L
         .restrict(&"invoice".into(), &"i2".into(), "a retention hold".into())
         .await
         .must("restricting invoice i2")?;
-    cat.propose(
+    let fut = cat.propose(
         own,
         ProposedWrite::Upsert {
             ty: "invoice".into(),
@@ -175,9 +175,8 @@ async fn churned(store: &dyn LakeStore, embedded: bool, token: &str) -> Result<L
             opts: WriteOpts::default(),
         },
         "a correction".into(),
-    )
-    .await
-    .must("proposing an upsert of invoice i3")?;
+    );
+    fut.await.must("proposing an upsert of invoice i3")?;
     let tighter: ValueTypeDecl = serde_json::from_value(
         json!({"name": "account_kind", "kind": "text", "one_of": ["giro", "savings"]}),
     )
@@ -187,9 +186,8 @@ async fn churned(store: &dyn LakeStore, embedded: bool, token: &str) -> Result<L
         .await
         .must("running the preflight of tightening `account_kind`")?
         .data;
-    cat.migrate_value_type_apply(own, tighter.into(), &r.report_id)
-        .await
-        .must("tightening `account_kind`")?;
+    let fut = cat.migrate_value_type_apply(own, tighter.into(), &r.report_id);
+    fut.await.must("tightening `account_kind`")?;
     rekey::apply(store).await?;
     store.rebuild().await.must("rebuilding the projection")?;
     crate::conformance::fixture::two_makes(&l).await?;
@@ -444,9 +442,8 @@ async fn compact_appends_nothing_and_exports_the_same_bytes(
     let log = log_of(store.as_ref()).await?;
     let verified = store.verify(None, None).await.must("verifying the lake")?;
     let (first, second) = (scratch.dir("before"), scratch.dir("after"));
-    let manifest = export::write(store.as_ref(), &first)
-        .await
-        .must("exporting before the compact")?;
+    let manifest = export::write(store.as_ref(), &first);
+    let manifest = manifest.await.must("exporting before the compact")?;
 
     let report = compact(store.as_ref()).await?;
     unmoved(&report, head)?;
@@ -461,9 +458,8 @@ async fn compact_appends_nothing_and_exports_the_same_bytes(
         again == verified,
         "verify answers {again:?} after a compact and {verified:?} before"
     );
-    let later = export::write(store.as_ref(), &second)
-        .await
-        .must("exporting after the compact")?;
+    let later = export::write(store.as_ref(), &second);
+    let later = later.await.must("exporting after the compact")?;
     ensure!(
         later == manifest,
         "the export's manifest after a compact is {later:?}, and before it was {manifest:?}"
@@ -554,10 +550,8 @@ fn compactor(store: Store) -> Doing {
     Box::pin(async move {
         let mut out = Vec::new();
         for _ in 0..3 {
-            let report = store
-                .compact()
-                .await
-                .must("compacting while others write")?;
+            let report = store.compact();
+            let report = report.await.must("compacting while others write")?;
             out.push(Done::Compacted(report.head));
         }
         Ok(out)

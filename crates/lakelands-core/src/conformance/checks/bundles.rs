@@ -63,16 +63,15 @@ async fn a_bundle_with_forward_references_is_applied_whole_or_not_at_all(store: 
         "after the bundle the lake describes {names:?}; it must hold `invoice` and `partner`"
     );
 
-    let refused = cat
-        .apply(
-            own,
-            vec![
-                Declaration::Type(type_decl("fine", vec![field("n", StorageKind::Number)])),
-                referring("orphan", "ghost"),
-                referring("stray", "nowhere"),
-            ],
-        )
-        .await;
+    let refused = cat.apply(
+        own,
+        vec![
+            Declaration::Type(type_decl("fine", vec![field("n", StorageKind::Number)])),
+            referring("orphan", "ghost"),
+            referring("stray", "nowhere"),
+        ],
+    );
+    let refused = refused.await;
     let unmoved = store.head().await.must("reading the head")?;
     // The set refused whole, each problem said at the declaration it is in.
     let at = |name: &str| json!({"at": [{"name": name}]});

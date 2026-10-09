@@ -214,16 +214,15 @@ async fn an_ingested_record_carrying_a_field_the_source_does_not_write_is_refuse
     let ungranted =
         crate::conformance::fixture::ingest(cat.as_ref(), &no_ingest, "bank", nowhere()).await;
     let untyped = l.ingest("bank", nowhere()).await;
-    let door = l
-        .ingest(
-            "bank",
-            vec![source_record(
-                "feed",
-                "k2",
-                json!({"body": 5, "verdict": "x"}),
-            )],
-        )
-        .await;
+    let door = l.ingest(
+        "bank",
+        vec![source_record(
+            "feed",
+            "k2",
+            json!({"body": 5, "verdict": "x"}),
+        )],
+    );
+    let door = door.await;
     ensure!(
         matches!(&ungranted, Err(e) if matches!(e, Error::Refused { reason: Refusal::NotGranted, .. }))
             && matches!(untyped, Err(Error::NotFound { .. }))
@@ -278,10 +277,8 @@ async fn ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert(sto
         ("a revert to `one`", "one", (1, 0)),
         ("`one` again, unchanged", "one", (0, 1)),
     ] {
-        let windows = l
-            .ingest("wire", body(b))
-            .await
-            .must(&format!("ingesting {step}"))?;
+        let windows = l.ingest("wire", body(b));
+        let windows = windows.await.must(&format!("ingesting {step}"))?;
         windows_reach_head(store.as_ref(), &windows, step).await?;
         let got = committed(&windows);
         ensure!(
@@ -367,9 +364,8 @@ async fn an_ingested_record_carries_its_upstream_per_field(store: Store) -> Held
     let mut first = source_record("feed", "r1", json!({"body": "warm", "unit": "C"}));
     first.upstream = Some(from.clone());
     let patch_first = first.fields.clone();
-    l.ingest("mirror", vec![first])
-        .await
-        .must("ingesting `r1` with an upstream")?;
+    let fut = l.ingest("mirror", vec![first]);
+    fut.await.must("ingesting `r1` with an upstream")?;
     let rec = l.read("feed", "r1").await?;
     for f in ["body", "unit"] {
         let got = rec.meta.get(f).and_then(|m| m.upstream.clone());
@@ -428,9 +424,8 @@ async fn an_ingested_record_carries_its_upstream_per_field(store: Store) -> Held
     // An authored write over a field leaves it without one.
     let mut stamped = source_record("feed", "r2", json!({"body": "cold"}));
     stamped.upstream = Some(from.clone());
-    l.ingest("mirror", vec![stamped])
-        .await
-        .must("ingesting `r2` with an upstream")?;
+    let fut = l.ingest("mirror", vec![stamped]);
+    fut.await.must("ingesting `r2` with an upstream")?;
     l.upsert("feed", "r2", json!({"verdict": "ok"})).await?;
     let rec = l.read("feed", "r2").await?;
     let (body, verdict) = (

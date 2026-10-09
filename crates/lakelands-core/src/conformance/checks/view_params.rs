@@ -452,9 +452,8 @@ async fn a_step_arriving_at_a_view_with_parameters_is_refused_before_reading(sto
         project: Projection::Rows { fields: Vec::new() },
         ..start_on("account_window", Some("a"), None, anchor("2026-06-12"))
     };
-    l.cat
-        .query(&l.own, out)
-        .await
+    let fut = l.cat.query(&l.own, out);
+    fut.await
         .must("a pattern started on `account_window` with its anchor, stepping over `window`")?;
     Ok(())
 }

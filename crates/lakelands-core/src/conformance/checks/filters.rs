@@ -252,9 +252,8 @@ async fn probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggre
              failed with {err:?}"
             );
         }
-        cat.find(&reader, &line, find_where("qty = 1"))
-            .await
-            .must("filtering on the readable `qty`")?;
+        let fut = cat.find(&reader, &line, find_where("qty = 1"));
+        fut.await.must("filtering on the readable `qty`")?;
     }
     Ok(())
 }

@@ -194,11 +194,8 @@ async fn declare_refuses_bad_names_unknown_references_and_tool_name_collisions(
     };
     // The colliding names come from the one generator, never spelled here.
     let generic = GENERIC_TOOLS[0];
-    let described = cat
-        .describe(own, ReadAt::default())
-        .await
-        .must("describing the lake")?
-        .data;
+    let described = cat.describe(own, ReadAt::default());
+    let described = described.await.must("describing the lake")?.data;
     let find_tool = tools(&described)
         .map_err(|p| Failure::new(format!("the lake's names cannot become tools: {p:?}")))?
         .into_iter()

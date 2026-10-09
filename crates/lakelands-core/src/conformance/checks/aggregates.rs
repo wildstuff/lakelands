@@ -41,9 +41,8 @@ async fn an_aggregate_over_no_records_answers_zero(store: Store) -> Held {
         scale: Some(2),
         ..value_type("money", StorageKind::Decimal)
     };
-    cat.declare(own, Declaration::ValueType(money))
-        .await
-        .must("declaring the value type `money`")?;
+    let fut = cat.declare(own, Declaration::ValueType(money));
+    fut.await.must("declaring the value type `money`")?;
     let amount = FieldDecl {
         ty: FieldType {
             value_type: Some("money".into()),

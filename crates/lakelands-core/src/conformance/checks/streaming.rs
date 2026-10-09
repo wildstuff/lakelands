@@ -799,10 +799,8 @@ impl Size<'_> {
             .map_err(|e| Failure::new(format!("importing {}: {e}", dir.display())))?
             .store;
         let measured = m.stop();
-        let head = imported
-            .head()
-            .await
-            .must("reading the imported lake's head")?;
+        let head = imported.head();
+        let head = head.await.must("reading the imported lake's head")?;
         ensure!(
             head == through,
             "the lake imported from the export has its head at {head}; the export's is {through}"
@@ -940,9 +938,8 @@ impl Size<'_> {
         let ticks = (from..records)
             .map(|i| tick(&format!("t{i:09}"), i))
             .collect();
-        ingest(cat.as_ref(), &own, SOURCE, ticks)
-            .await
-            .must("feeding ticks")?;
+        let fut = ingest(cat.as_ref(), &own, SOURCE, ticks);
+        fut.await.must("feeding ticks")?;
         let head = store.head().await.must("reading the head")?;
         let page = Find {
             limit: Some(10),
@@ -1164,16 +1161,14 @@ impl Size<'_> {
         // settings by key for every read: this check writes four.
         let asked = limit + 1 + 4;
         let live = self.live;
-        let sorted = self
-            .sorted_walk(store, records, "find-sorted-fallback", None, |_| {
-                live + asked
-            })
-            .await?;
+        let sorted = self.sorted_walk(store, records, "find-sorted-fallback", None, |_| {
+            live + asked
+        });
+        let sorted = sorted.await?;
         let l = Lake::of(store);
         l.set("sort_index.reading", json!(["note"])).await?;
-        let indexed = self
-            .sorted_walk(store, records, "find-sorted", None, |_| asked + 3)
-            .await?;
+        let indexed = self.sorted_walk(store, records, "find-sorted", None, |_| asked + 3);
+        let indexed = indexed.await?;
         // Eight records the fourth and fifth pages answer, spread over both.
         let changing: Vec<RecordKey> = sorted
             .iter()
@@ -1183,15 +1178,14 @@ impl Size<'_> {
             .cloned()
             .collect();
         let n = changing.len() as u64;
-        let written = self
-            .sorted_walk(
-                store,
-                records,
-                "find-sorted-after-writes",
-                Some(&changing),
-                |page| asked + 3 + if page >= 4 { 2 * n } else { 0 },
-            )
-            .await?;
+        let written = self.sorted_walk(
+            store,
+            records,
+            "find-sorted-after-writes",
+            Some(&changing),
+            |page| asked + 3 + if page >= 4 { 2 * n } else { 0 },
+        );
+        let written = written.await?;
         for (phase, keys) in [
             ("find-sorted", indexed),
             ("find-sorted-after-writes", written),
@@ -1637,11 +1631,10 @@ impl Size<'_> {
             max_graph_nodes: cap,
             ..limits()
         };
-        let store = (self.given.relimit)(store, Seams::default(), capped)
-            .await
-            .map_err(|e| {
-                Failure::new(format!("opening the lake with a cap of {cap} failed: {e}"))
-            })?;
+        let store = (self.given.relimit)(store, Seams::default(), capped);
+        let store = store.await.map_err(|e| {
+            Failure::new(format!("opening the lake with a cap of {cap} failed: {e}"))
+        })?;
         let head = store.head().await.must("reading the head")?;
         let m = Measure::start(&self.given.meter, false);
         let answer = doors(store.as_ref())
@@ -1752,10 +1745,8 @@ async fn bounded(store: &dyn LakeStore, log: &Log, at: Position) -> Held {
     for (filter, limit) in [(&none, 100), (&checkpoints, 1)] {
         let (mut from, mut polls, mut found) = (Position::GENESIS, 0, Vec::new());
         loop {
-            let b = feed
-                .poll(from, filter, limit)
-                .await
-                .must("polling the feed")?;
+            let b = feed.poll(from, filter, limit);
+            let b = b.await.must("polling the feed")?;
             let to = (from.0 + bound).min(b.head.0 + 1);
             ensure!(
                 b.next.0 <= to && (b.next.0 == to || !b.events.is_empty()),

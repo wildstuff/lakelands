@@ -94,9 +94,8 @@ async fn a_chain_of_reactions_past_the_lakes_ceiling_is_refused_too_deep_and_app
 
     // The direct write that starts the chain, then one reaction per
     // change the feed tells of, each one deeper than its cause.
-    react(store.as_ref(), 0)
-        .await
-        .must("the direct write of `s0`")?;
+    let fut = react(store.as_ref(), 0);
+    fut.await.must("the direct write of `s0`")?;
     let mut from = Position::GENESIS;
     for depth in 1..=max + 1 {
         let (cause, next) = last_step(store.as_ref(), from).await?;

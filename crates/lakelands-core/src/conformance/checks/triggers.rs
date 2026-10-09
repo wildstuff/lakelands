@@ -98,16 +98,15 @@ async fn a_transition_guard_fires_on_open_to_closed_only(store: Store) -> Held {
     let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
         .await?;
-    cat.declare(
+    let fut = cat.declare(
         own,
         trigger(
             "closed",
             Some("previous(status) = 'open' and status = 'closed'"),
             None,
         ),
-    )
-    .await
-    .must("declaring the transition trigger")?;
+    );
+    fut.await.must("declaring the transition trigger")?;
     for (key, states) in [
         ("a", vec!["open", "closed"]),
         ("b", vec!["draft", "closed"]),
@@ -222,9 +221,8 @@ async fn a_guard_tells_a_retirement_from_an_update(store: Store) -> Held {
         return Err(Failure::new("a proposed retirement answers `proposed`"));
     };
     let at = store.head().await.must("reading the head")?;
-    cat.accept(own, &proposal)
-        .await
-        .must("accepting the retirement of `b`")?;
+    let fut = cat.accept(own, &proposal);
+    fut.await.must("accepting the retirement of `b`")?;
     let events = events_after(store.as_ref(), at).await?;
     let retired = events
         .iter()
@@ -250,16 +248,15 @@ async fn a_revival_is_a_creation_to_a_guard(store: Store) -> Held {
     let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
         .await?;
-    cat.declare(
+    let fut = cat.declare(
         own,
         trigger(
             "created",
             Some("previous(status) is null and changed(status) and not retired()"),
             None,
         ),
-    )
-    .await
-    .must("declaring the trigger")?;
+    );
+    fut.await.must("declaring the trigger")?;
     let fired = |step: &'static str, want: bool, at: Position| {
         let store = store.clone();
         async move {
@@ -406,9 +403,8 @@ async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(store: Stor
     write(reactive(2, Some(always_1)), "j3")
         .await
         .must("a depth-2 reaction naming `always`'s firing")?;
-    write(reactive(2, None), "j4")
-        .await
-        .must("a depth-2 reaction naming no cause")?;
+    let fut = write(reactive(2, None), "j4");
+    fut.await.must("a depth-2 reaction naming no cause")?;
     Ok(())
 }
 

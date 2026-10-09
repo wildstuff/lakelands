@@ -134,9 +134,8 @@ async fn kinds_from(store: &dyn LakeStore, from: Position) -> Result<Vec<EventBo
 async fn a_low_verb_runs_and_a_higher_one_is_proposed(store: Store) -> Held {
     let l = ledger(store.as_ref()).await?;
     let Lake { own, .. } = &l;
-    let ran = call(store.as_ref(), own, "approve", json!({}))
-        .await
-        .must("calling the low-risk `approve`")?;
+    let ran = call(store.as_ref(), own, "approve", json!({}));
+    let ran = ran.await.must("calling the low-risk `approve`")?;
     ensure!(
         matches!(
             ran,
@@ -162,9 +161,8 @@ async fn a_low_verb_runs_and_a_higher_one_is_proposed(store: Store) -> Held {
         value(&r, "status")
     );
 
-    let waiting = call(store.as_ref(), own, "pay", json!({"reference": "TX-1"}))
-        .await
-        .must("calling the high-risk `pay`")?;
+    let waiting = call(store.as_ref(), own, "pay", json!({"reference": "TX-1"}));
+    let waiting = waiting.await.must("calling the high-risk `pay`")?;
     let (at, _) = proposal(&waiting)?;
     let head = store.head().await.must("reading the head")?;
     ensure!(
@@ -209,9 +207,8 @@ async fn a_low_verb_runs_and_a_higher_one_is_proposed(store: Store) -> Held {
         idempotency_key: Some("once".into()),
         ..WriteOpts::default()
     };
-    let first = approve(own, "i", json!({}), once.clone())
-        .await
-        .must("approving `i` once")?;
+    let first = approve(own, "i", json!({}), once.clone());
+    let first = first.await.must("approving `i` once")?;
     let bare = lakelands_api::Principal {
         grants: Default::default(),
         ..own.clone()
@@ -477,10 +474,8 @@ async fn accepting_a_proposal_applies_its_write_as_the_proposers(store: Store) -
             .await
             .must("the clerk calling `pay`")?,
     )?;
-    let accepted = cat
-        .accept(&reviewer, &id)
-        .await
-        .must("the reviewer accepting the proposal")?;
+    let accepted = cat.accept(&reviewer, &id);
+    let accepted = accepted.await.must("the reviewer accepting the proposal")?;
     let r = read(cat.as_ref(), &owner(store.as_ref()), "invoice", "i").await?;
     ensure!(
         value(&r, "status") == Some(&json!("paid"))
@@ -514,11 +509,8 @@ async fn accepting_a_proposal_applies_its_write_as_the_proposers(store: Store) -
             .map(|e| (e.position, e.body.kind(), e.writer.clone(), e.cause))
             .collect::<Vec<_>>()
     );
-    let listed = cat
-        .proposals(&reviewer, ProposalFilter::default())
-        .await
-        .must("listing proposals")?
-        .data;
+    let listed = cat.proposals(&reviewer, ProposalFilter::default());
+    let listed = listed.await.must("listing proposals")?.data;
     ensure!(
         listed
             .iter()
@@ -537,10 +529,8 @@ async fn a_rejected_proposal_writes_nothing_and_a_decided_one_stays_decided(stor
             .must("calling `pay`")?,
     )?;
     let before = store.head().await.must("reading the head")?;
-    let rejected = cat
-        .reject(own, &id, "not this month".into())
-        .await
-        .must("rejecting the proposal")?;
+    let rejected = cat.reject(own, &id, "not this month".into());
+    let rejected = rejected.await.must("rejecting the proposal")?;
     let logged = kinds_from(store.as_ref(), before.next()).await?;
     ensure!(
         matches!(logged.as_slice(), [EventBody::WriteRejected { .. }])
@@ -855,9 +845,8 @@ async fn a_verbs_write_carries_the_verbs_procedure_version(store: Store) -> Held
          reads {:?}",
         before.meta.get("status")
     );
-    call(store.as_ref(), own, "approve", json!({}))
-        .await
-        .must("calling the low-risk `approve`")?;
+    let fut = call(store.as_ref(), own, "approve", json!({}));
+    fut.await.must("calling the low-risk `approve`")?;
     let after = l.read("invoice", "i").await?;
     let meta = after.meta.get("status");
     ensure!(
@@ -915,9 +904,8 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
         idempotency_key: Some(IdempotencyKey::from("dispatch-once")),
         ..WriteOpts::default()
     };
-    let first = dispatch(json!({}), once.clone())
-        .await
-        .must("calling `dispatch`")?;
+    let first = dispatch(json!({}), once.clone());
+    let first = first.await.must("calling `dispatch`")?;
     let Outcome::Applied {
         position,
         output: Some(output),
@@ -945,9 +933,8 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
 
     // A retry answers the first call's outcome, position and output
     // alike, and runs nothing again.
-    let again = dispatch(json!({}), once)
-        .await
-        .must("retrying `dispatch`")?;
+    let again = dispatch(json!({}), once);
+    let again = again.await.must("retrying `dispatch`")?;
     ensure!(
         again == first && executed(key) == 1,
         "a retry with the same idempotency key answers the first outcome, {first:?}, and \
@@ -1080,9 +1067,8 @@ async fn a_retried_external_verb_answers_its_call_though_a_host_write_names_it(
     let l = jobs(store.as_ref(), "low", "retry-ext").await?;
     for (verb, key) in [("ship_low", Some("retry-ext")), ("ship_any_low", None)] {
         let once = format!("{verb}-once");
-        let first = call_once(&l, verb, key, &once)
-            .await
-            .must("calling the external verb")?;
+        let first = call_once(&l, verb, key, &once);
+        let first = first.await.must("calling the external verb")?;
         let Outcome::Applied {
             position,
             output: Some(_),
@@ -1094,9 +1080,8 @@ async fn a_retried_external_verb_answers_its_call_though_a_host_write_names_it(
             )));
         };
         host_write(store.as_ref(), "retry-ext", *position).await?;
-        let again = call_once(&l, verb, key, &once)
-            .await
-            .must("retrying the external verb")?;
+        let again = call_once(&l, verb, key, &once);
+        let again = again.await.must("retrying the external verb")?;
         ensure!(
             again == first,
             "a retry of `{verb}` answers the first outcome, {first:?}, though a host write names \
@@ -1110,9 +1095,8 @@ async fn a_retried_write_verb_answers_its_own_write_though_a_host_write_names_it
     store: Store,
 ) -> Held {
     let l = jobs(store.as_ref(), "low", "retry-write").await?;
-    let first = call_once(&l, "close", Some("retry-write"), "close-once")
-        .await
-        .must("calling `close`")?;
+    let first = call_once(&l, "close", Some("retry-write"), "close-once");
+    let first = first.await.must("calling `close`")?;
     let Outcome::Applied {
         position,
         version: Some(_),
@@ -1131,9 +1115,8 @@ async fn a_retried_write_verb_answers_its_own_write_though_a_host_write_names_it
         .map(|e| e.position)
         .ok_or_else(|| Failure::new("`close` appends `verb_called` before its write"))?;
     host_write(store.as_ref(), "retry-write", called).await?;
-    let again = call_once(&l, "close", Some("retry-write"), "close-once")
-        .await
-        .must("retrying `close`")?;
+    let again = call_once(&l, "close", Some("retry-write"), "close-once");
+    let again = again.await.must("retrying `close`")?;
     ensure!(
         again == first,
         "a retry of `close` answers its own write, {first:?}, though a later host write names \
@@ -1144,15 +1127,12 @@ async fn a_retried_write_verb_answers_its_own_write_though_a_host_write_names_it
 
 async fn a_retried_proposed_call_answers_its_proposal_after_it_is_accepted(store: Store) -> Held {
     let l = jobs(store.as_ref(), "medium", "retry-prop").await?;
-    let first = call_once(&l, "ship_medium", Some("retry-prop"), "ship-medium-once")
-        .await
-        .must("calling `ship_medium`")?;
+    let first = call_once(&l, "ship_medium", Some("retry-prop"), "ship-medium-once");
+    let first = first.await.must("calling `ship_medium`")?;
     let (at, id) = proposal(&first)?;
     let reviewer = reviewer(store.as_ref(), false);
-    l.cat
-        .accept(&reviewer, &id)
-        .await
-        .must("the reviewer accepting the proposal")?;
+    let fut = l.cat.accept(&reviewer, &id);
+    fut.await.must("the reviewer accepting the proposal")?;
     let called = kinds_from(store.as_ref(), at)
         .await?
         .iter()
@@ -1160,9 +1140,8 @@ async fn a_retried_proposed_call_answers_its_proposal_after_it_is_accepted(store
         .map(|i| Position(at.0 + i as u64))
         .ok_or_else(|| Failure::new("accepting the proposal appends `verb_called`"))?;
     host_write(store.as_ref(), "retry-prop", called).await?;
-    let again = call_once(&l, "ship_medium", Some("retry-prop"), "ship-medium-once")
-        .await
-        .must("retrying `ship_medium`")?;
+    let again = call_once(&l, "ship_medium", Some("retry-prop"), "ship-medium-once");
+    let again = again.await.must("retrying `ship_medium`")?;
     ensure!(
         again == first,
         "a retry of a proposed call answers the proposal, {first:?}, after its acceptance and a \

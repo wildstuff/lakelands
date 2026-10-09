@@ -309,9 +309,8 @@ async fn a_merged_sources_fields_are_probed_as_a_read_of_it(store: Store) -> Hel
     // every source's measures aggregate.
     let reader = kcal("reader", Access::Read);
     for (who, sees) in [(&reader, true), (&blind, false)] {
-        let d = l
-            .cat
-            .describe(who, Default::default())
+        let d = l.cat.describe(who, Default::default());
+        let d = d
             .await
             .map_err(|e| Failure::new(format!("describing the lake as `{}`: {e}", who.id)))?
             .data;
@@ -366,10 +365,8 @@ async fn a_view_that_merges_is_written_in_log_format_9(store: Store) -> Held {
         highest < 9,
         "a view without a merge needs no format 9, yet the lake writes {highest}"
     );
-    let declared = l
-        .declare(energy_balance("energy_balance", Vec::new(), None, None))
-        .await?
-        .position();
+    let declared = l.declare(energy_balance("energy_balance", Vec::new(), None, None));
+    let declared = declared.await?.position();
     l.upsert(
         "food_log",
         "f9",

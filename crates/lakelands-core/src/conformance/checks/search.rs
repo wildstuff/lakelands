@@ -838,9 +838,8 @@ async fn a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_els
         embed_calls() - before
     );
     let before = embed_calls();
-    cat.search(own, doc_search(SearchMode::vector("v", vec![1.0, 0.0])))
-        .await
-        .must("a vector search")?;
+    let fut = cat.search(own, doc_search(SearchMode::vector("v", vec![1.0, 0.0])));
+    fut.await.must("a vector search")?;
     let brought = cat
         .search(own, doc_search(hybrid("quayside", Some(vec![0.0, 1.0]))))
         .await
@@ -1036,9 +1035,8 @@ async fn a_vector_ranking_reads_a_vector_field_and_makes_no_call_it_cannot_use(
         absent,
         ("nosuch", "secret"),
     )?;
-    let masked = cat
-        .search(&blind, doc_search(hybrid("plain", "vr-masked", None)))
-        .await;
+    let masked = cat.search(&blind, doc_search(hybrid("plain", "vr-masked", None)));
+    let masked = masked.await;
     ensure!(
         matches!(refused_on(&masked), Some((f, Refusal::NotGranted)) if f == "plain"),
         "a hybrid search over the masked `plain` must be refused as not granted first; it \

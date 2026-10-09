@@ -257,9 +257,8 @@ async fn what_can_never_be_evaluated_is_refused_and_a_records_own_failure_is_not
         "a reader kept from `due_on` is answered as for a field the type lacks; find answered \
          {asked:?}"
     );
-    let absent = cat
-        .find(&kept, &ty, find_where("nosuch + paid_on is null"))
-        .await;
+    let absent = cat.find(&kept, &ty, find_where("nosuch + paid_on is null"));
+    let absent = absent.await;
     let names = ("nosuch", "due_on");
     refused_alike("a filter on `due_on`", &asked, absent, names)?;
     // A failure of one record's value is that record's: `i1` divides by a

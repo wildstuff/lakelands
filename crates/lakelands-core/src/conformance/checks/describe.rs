@@ -238,26 +238,21 @@ async fn describe_answers_the_declaration_whole(store: Store) -> Held {
         Declaration::ObjectSet(big.clone()),
         Declaration::ObjectSet(paid_well.clone()),
     ] {
-        cat.declare(&own, d)
-            .await
-            .must("declaring the ledger's ontology")?;
+        let fut = cat.declare(&own, d);
+        fut.await.must("declaring the ledger's ontology")?;
     }
     let earlier = store.head().await.must("reading the head")?;
     let again = function("scaled", "net", "net * 3");
-    cat.declare(&own, Declaration::Function(again.clone()))
-        .await
-        .must("declaring `scaled` again")?;
+    let fut = cat.declare(&own, Declaration::Function(again.clone()));
+    fut.await.must("declaring `scaled` again")?;
 
     // The owner, at the head: every declaration whole.
     let d = describe_at(cat, &own, ReadAt::default(), "describing as the owner").await?;
     for decl in [&ledger, &net_view, &pay_view] {
         let t = one_type(&d, decl.name.as_str())?;
         same(&format!("the owner's `{}`", decl.name), &projected(t), decl)?;
-        let alone = cat
-            .describe_type(&own, &decl.name, ReadAt::default())
-            .await
-            .must("describing one type as the owner")?
-            .data;
+        let alone = cat.describe_type(&own, &decl.name, ReadAt::default());
+        let alone = alone.await.must("describing one type as the owner")?.data;
         same(
             &format!("the owner's describe_type `{}`", decl.name),
             &projected(&alone),

@@ -63,9 +63,8 @@ async fn a_sets_declaration_decides_the_membership_of_the_records_there(
         ("amount > 100", vec![]),
     ] {
         let from = store.head().await.must("reading the head")?.next();
-        let answer = l
-            .declare_as(object_set_on("open", "invoice", filter), filter)
-            .await?;
+        let answer = l.declare_as(object_set_on("open", "invoice", filter), filter);
+        let answer = answer.await?;
         let got = changes(from).await?;
         // The answer names `open` once however many records it moves, and
         // `through` covers them (015, extended).

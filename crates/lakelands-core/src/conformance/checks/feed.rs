@@ -170,10 +170,8 @@ async fn a_record_event_says_whether_it_made_the_record(store: Store) -> Held {
 async fn a_poll_with_a_limit_of_zero_answers_one_event(store: Store) -> Held {
     let l = invoices(store.as_ref()).await?;
     let from = store.head().await.must("reading the head")?.next();
-    let first = l
-        .upsert("invoice", "a", json!({"status": "open"}))
-        .await?
-        .position();
+    let first = l.upsert("invoice", "a", json!({"status": "open"}));
+    let first = first.await?.position();
     l.upsert("invoice", "b", json!({"status": "open"})).await?;
     let batch = store
         .feed()
@@ -195,18 +193,12 @@ async fn a_poll_with_a_limit_of_zero_answers_one_event(store: Store) -> Held {
 async fn the_feed_answers_the_log_from_a_position_by_kind_and_type(store: Store) -> Held {
     let l = invoices(store.as_ref()).await?;
     let from = store.head().await.must("reading the head")?.next();
-    let a = l
-        .upsert("invoice", "a", json!({"status": "open"}))
-        .await?
-        .position();
-    let m = l
-        .upsert("memo", "m", json!({"text": "hi"}))
-        .await?
-        .position();
-    let b = l
-        .upsert("invoice", "b", json!({"status": "open"}))
-        .await?
-        .position();
+    let a = l.upsert("invoice", "a", json!({"status": "open"}));
+    let a = a.await?.position();
+    let m = l.upsert("memo", "m", json!({"text": "hi"}));
+    let m = m.await?.position();
+    let b = l.upsert("invoice", "b", json!({"status": "open"}));
+    let b = b.await?.position();
     let feed = store.feed();
 
     let everything = feed
@@ -224,10 +216,8 @@ async fn the_feed_answers_the_log_from_a_position_by_kind_and_type(store: Store)
     );
 
     let invoices_only = filter(&["record_upserted"], &["invoice"], &[]);
-    let first = feed
-        .poll(from, &invoices_only, 1)
-        .await
-        .must("polling for one upsert of `invoice`")?;
+    let first = feed.poll(from, &invoices_only, 1);
+    let first = first.await.must("polling for one upsert of `invoice`")?;
     let firsts: Vec<Position> = first.events.iter().map(|e| e.position).collect();
     ensure!(
         firsts == [a] && first.next == a.next(),
@@ -298,9 +288,8 @@ async fn a_trigger_fires_on_every_write_whose_guard_holds(store: Store) -> Held 
         ("held", "four", false),
     ] {
         let from = store.head().await.must("reading the head")?.next();
-        let answer = l
-            .upsert("invoice", "i", json!({"status": status, "note": note}))
-            .await?;
+        let answer = l.upsert("invoice", "i", json!({"status": status, "note": note}));
+        let answer = answer.await?;
         let appended = all_events(store.as_ref(), from).await?;
         let at = fired_at(&appended);
         ensure!(
@@ -474,10 +463,8 @@ async fn polling_from_next_in_small_pages_sees_every_matching_event_once_in_orde
             l.upsert("memo", &key, json!({"text": "aside"})).await?;
         }
         let limit = 1 + round % 2;
-        let batch = feed
-            .poll(next, &invoices_only, limit)
-            .await
-            .must("polling the feed from `next`")?;
+        let batch = feed.poll(next, &invoices_only, limit);
+        let batch = batch.await.must("polling the feed from `next`")?;
         ensure!(
             batch.events.len() <= limit as usize && batch.next > next || batch.events.is_empty(),
             "a poll from {next} with limit {limit} answered {} events and next {}",
@@ -489,10 +476,8 @@ async fn polling_from_next_in_small_pages_sees_every_matching_event_once_in_orde
     }
     // Drain what is left.
     loop {
-        let batch = feed
-            .poll(next, &invoices_only, 1)
-            .await
-            .must("polling the rest of the feed")?;
+        let batch = feed.poll(next, &invoices_only, 1);
+        let batch = batch.await.must("polling the rest of the feed")?;
         if batch.events.is_empty() {
             break;
         }
@@ -584,14 +569,10 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(store: Store) -
         TypeName::from("invoice"),
         lakelands_api::RecordKey::from("INV-1"),
     );
-    store
-        .restrict(&invoice, &inv1, "a hold".into())
-        .await
-        .must("restricting INV-1")?;
-    store
-        .unrestrict(&invoice, &inv1)
-        .await
-        .must("lifting the hold")?;
+    let fut = store.restrict(&invoice, &inv1, "a hold".into());
+    fut.await.must("restricting INV-1")?;
+    let fut = store.unrestrict(&invoice, &inv1);
+    fut.await.must("lifting the hold")?;
     for key in ["INV-2", "INV-1"] {
         l.retire(invoice.as_str(), key).await?;
     }

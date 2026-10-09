@@ -129,12 +129,8 @@ async fn a_verb_on_its_type_runs_under_its_types_grants_and_records_its_output(
 ) -> Held {
     let l = ledger(store.as_ref(), "create_payment", "low").await?;
     let clerk = type_writer(store.as_ref(), "clerk", "payment");
-    let described = l
-        .cat
-        .describe(&clerk, ReadAt::default())
-        .await
-        .must("describing the lake")?
-        .data;
+    let described = l.cat.describe(&clerk, ReadAt::default());
+    let described = described.await.must("describing the lake")?.data;
     let scope = described
         .verbs
         .iter()
@@ -216,10 +212,8 @@ async fn a_verb_on_its_type_at_medium_risk_is_proposed_and_runs_when_accepted(
         executed("open_ticket") - runs
     );
     let reviewer = reviewer(store.as_ref(), false);
-    l.cat
-        .accept(&reviewer, proposal)
-        .await
-        .must("the reviewer accepting the proposal")?;
+    let fut = l.cat.accept(&reviewer, proposal);
+    fut.await.must("the reviewer accepting the proposal")?;
     ensure!(
         executed("open_ticket") == runs + 1,
         "accepting runs the executor once; it ran {} times",
@@ -388,9 +382,8 @@ async fn a_verb_on_its_type_with_a_write_effect_or_requires_is_refused(store: St
 async fn a_feed_filtered_by_type_passes_none_of_a_verbs_events(store: Store) -> Held {
     let l = ledger(store.as_ref(), "open_ticket", "medium").await?;
     let from = store.head().await.must("reading the head")?.next();
-    let proposed = on_type(&l, &l.own, "open_ticket", json!({"amount": 3}))
-        .await
-        .must("calling `open_ticket` on its type")?;
+    let proposed = on_type(&l, &l.own, "open_ticket", json!({"amount": 3}));
+    let proposed = proposed.await.must("calling `open_ticket` on its type")?;
     let Outcome::Proposed { proposal, .. } = &proposed else {
         return Err(Failure::new(format!(
             "a medium verb on its type is proposed; it answered {proposed:?}"
@@ -400,12 +393,8 @@ async fn a_feed_filtered_by_type_passes_none_of_a_verbs_events(store: Store) -> 
         ty: Some("payment".into()),
         ..ProposalFilter::default()
     };
-    let listed = l
-        .cat
-        .proposals(&l.own, filter)
-        .await
-        .must("listing `payment`'s proposals")?
-        .data;
+    let listed = l.cat.proposals(&l.own, filter);
+    let listed = listed.await.must("listing `payment`'s proposals")?.data;
     ensure!(
         listed.iter().any(|p| &p.id == proposal),
         "proposals filtered by `payment` list the call of `open_ticket`, a verb on it; they \

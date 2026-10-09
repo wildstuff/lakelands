@@ -244,16 +244,10 @@ async fn a_computed_field_is_read_no_further_than_what_it_is_computed_from(
         migration,
         report: Default::default(),
     };
-    l.cat
-        .propose(&l.own, write, "adding z".into())
-        .await
-        .must("proposing `z`")?;
-    let listed = l
-        .cat
-        .proposals(&reviewer, Default::default())
-        .await
-        .must("listing")?
-        .data;
+    let fut = l.cat.propose(&l.own, write, "adding z".into());
+    fut.await.must("proposing `z`")?;
+    let listed = l.cat.proposals(&reviewer, Default::default());
+    let listed = listed.await.must("listing")?.data;
     let shown: Vec<_> = listed
         .iter()
         .map(|p| (json!(p.write).to_string(), p.more))

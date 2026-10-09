@@ -141,10 +141,8 @@ async fn a_field_computed_at_the_read_means_its_expression_in_every_read(store: 
         let fields = vec!["invoice.overdue".into()];
         let mut rows = pattern("invoice", None, vec![], Projection::Rows { fields });
         (rows.start.filter, rows.at) = (Some("overdue".into()), read_at(as_of));
-        let rows = c
-            .query(own, rows)
-            .await
-            .must("a pattern from what is overdue")?;
+        let rows = c.query(own, rows);
+        let rows = rows.await.must("a pattern from what is overdue")?;
         let shown = format!("{:?}", rows.data);
         ensure!(
             shown.matches("Bool(true)").count() == 2 && !shown.contains("Bool(false)"),
@@ -275,14 +273,11 @@ async fn a_field_computed_at_the_read_means_its_expression_in_every_read(store: 
         renames: vec![("due_on".into(), "due".into())],
         ..migration(to)
     };
-    let report = c
-        .migrate(own, renamed.clone())
-        .await
-        .must("renaming `due_on`")?;
+    let report = c.migrate(own, renamed.clone());
+    let report = report.await.must("renaming `due_on`")?;
     let id = report.data.report_id;
-    c.migrate_apply(own, renamed, &id)
-        .await
-        .must("renaming `due_on`")?;
+    let fut = c.migrate_apply(own, renamed, &id);
+    fut.await.must("renaming `due_on`")?;
     let i1 = l.read("invoice", "i1").await?;
     ensure!(
         i1.fields.get("overdue") == Some(&json!(true)),

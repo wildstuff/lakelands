@@ -129,10 +129,8 @@ async fn a_migration_that_would_lose_information_is_refused_with_its_report(stor
          value, one that is not, name `bad`, and not be lossless; it reported {report:?}"
     );
     let before = store.head().await.must("reading the head")?;
-    let err = cat
-        .migrate_apply(own, m.clone(), &report.report_id)
-        .await
-        .must_fail("applying a lossy migration")?;
+    let err = cat.migrate_apply(own, m.clone(), &report.report_id);
+    let err = err.await.must_fail("applying a lossy migration")?;
     // The report before the loss: another report id is refused as such.
     let other = cat.migrate_apply(own, m, "not-the-report").await;
     head_unmoved(store.as_ref(), before, "applying a lossy migration").await?;
@@ -172,9 +170,8 @@ async fn migrated_values_follow_the_conversion_table_and_renames_keep_them(store
         relation_renames: Vec::new(),
     };
     let report = preflight(store.as_ref(), &m).await?;
-    cat.migrate_apply(own, m, &report.report_id)
-        .await
-        .must("applying the lossless migration")?;
+    let fut = cat.migrate_apply(own, m, &report.report_id);
+    fut.await.must("applying the lossless migration")?;
 
     let r = l.read("memo", "a").await?;
     ensure!(

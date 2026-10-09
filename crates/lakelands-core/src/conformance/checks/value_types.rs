@@ -162,13 +162,11 @@ async fn a_value_type_that_accepts_more_is_declared_and_no_record_changes(store:
         status(&["open", "paid", "late", "void", "held"]),
         status(&[]),
     ] {
-        cat.declare(own, Declaration::ValueType(loosened))
-            .await
-            .must("declaring a loosened `status_code`")?;
+        let fut = cat.declare(own, Declaration::ValueType(loosened));
+        fut.await.must("declaring a loosened `status_code`")?;
     }
-    cat.declare(own, Declaration::ValueType(score(None)))
-        .await
-        .must("declaring `score` again as it is")?;
+    let fut = cat.declare(own, Declaration::ValueType(score(None)));
+    fut.await.must("declaring `score` again as it is")?;
     let v = versions(store.as_ref(), "status_code").await?;
     ensure!(
         v == [1, 2, 3],
@@ -400,9 +398,8 @@ async fn a_tightening_every_value_fits_is_one_declared_version(store: Store) -> 
         "invoice",
         "i5",
         json!({"status": "void"}),
-    )
-    .await
-    .must_fail("writing `void` after it was taken out")?;
+    );
+    let e = e.await.must_fail("writing `void` after it was taken out")?;
     ensure!(
         matches!(refused_on(&e), Some(("status", Refusal::Constraint(..)))),
         "`void` was written after the tightening, or refused as {e:?}"
@@ -443,9 +440,8 @@ async fn a_value_type_migration_needs_the_schema_grant(store: Store) -> Held {
         },
     );
     let pre = cat.migrate_value_type(&clerk, to.clone().into()).await;
-    let apply = cat
-        .migrate_value_type_apply(&clerk, to.into(), &r.report_id)
-        .await;
+    let apply = cat.migrate_value_type_apply(&clerk, to.into(), &r.report_id);
+    let apply = apply.await;
     let refused = |r: &Result<_, Error>| matches!(reason(&r), Some(Refusal::NotGranted));
     ensure!(
         refused(&pre.map(|_| ())) && refused(&apply.map(|_| ())),
@@ -488,16 +484,14 @@ async fn an_apply_that_loosens_one_value_type_and_tightens_another_is_refused_wh
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
-    let e = cat
-        .apply(
-            own,
-            vec![
-                Declaration::ValueType(status(&["open", "paid", "late", "void", "held"])),
-                Declaration::ValueType(score(Some("value >= 0"))),
-            ],
-        )
-        .await
-        .must_fail("applying a set that tightens `score`")?;
+    let e = cat.apply(
+        own,
+        vec![
+            Declaration::ValueType(status(&["open", "paid", "late", "void", "held"])),
+            Declaration::ValueType(score(Some("value >= 0"))),
+        ],
+    );
+    let e = e.await.must_fail("applying a set that tightens `score`")?;
     ensure!(
         is_refused_as(&e, "value_type_tightens"),
         "the set was refused as {e:?}; invalid, naming `migrate`, was expected"

@@ -218,15 +218,14 @@ async fn after_resumes_where_the_cursor_would(store: Store) -> Held {
         .ok_or_else(|| Failure::new("the first page's last row is not in the walk"))?;
     let expected = listed[at + 1..].to_vec();
     l.retire("item", gone.key.as_str()).await?;
-    let resumed: Vec<String> = by_after(
+    let resumed = by_after(
         cat,
         own,
         whole.clone(),
         Some(position_of(&order, &gone)),
         100,
-    )
-    .await?
-    .concat();
+    );
+    let resumed: Vec<String> = resumed.await?.concat();
     ensure!(
         resumed == expected,
         "after retiring `{}`, resuming after its position ({:?}) at the head walked \

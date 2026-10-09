@@ -171,9 +171,8 @@ async fn a_relation_carried_by_a_hidden_field_is_walked_by_no_one_held_from_it(
     };
     let via = json!({"name": "r", "target": "other", "via": "tgt"});
     let linked = json!({"name": "r", "target": "other"});
-    let owners = cat
-        .declare(&l.own, wk(&["no", "tgt"], json!([via, linked])))
-        .await;
+    let owners = cat.declare(&l.own, wk(&["no", "tgt"], json!([via, linked])));
+    let owners = owners.await;
     let authors = cat.declare(&author, wk(&["no"], json!([linked]))).await;
     let relations = l.describe_type("wk").await?.relations.len();
     let twice = |e: &lakelands_api::Error| matches!(e.case(), Some(Said { case: Case::DeclaredTwice { what: Naming::Relation, name }, .. }) if name == "r");
@@ -259,11 +258,8 @@ async fn a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field
         );
         let fields = vec!["emp.g".into(), "emp.h".into(), "emp.k".into()];
         let rows = pattern("emp", Some("e1"), Vec::new(), Projection::Rows { fields });
-        let rows = cat
-            .query(&who, rows)
-            .await
-            .must("the clerk's pattern rows over `emp`")?
-            .data;
+        let rows = cat.query(&who, rows);
+        let rows = rows.await.must("the clerk's pattern rows over `emp`")?.data;
         let QueryResult::Rows { rows, .. } = rows else {
             return Err(Failure::new("a pattern's rows answered something else"));
         };
@@ -385,11 +381,8 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
         got.masked
     );
     let d = describe_type(cat.as_ref(), &by_name, "staff").await?;
-    let lake = cat
-        .describe(&by_name, ReadAt::default())
-        .await
-        .must("describing the lake")?
-        .data;
+    let lake = cat.describe(&by_name, ReadAt::default());
+    let lake = lake.await.must("describing the lake")?.data;
     let generated = tools(&lake).map_err(|p| Failure::new(format!("no tools: {p:?}")))?;
     let schemas = serde_json::to_string(&generated).unwrap_or_default();
     let link_fields: Vec<&str> = (d.relations.iter())
@@ -470,10 +463,8 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
     refused_alike("an ingest of `feed`", &fed, nosuch, ("nosuch", "feed"))?;
     let unnamed = |who| cat.search(who, lexical("staff", "ss pp ann", None, false));
     let mine = unnamed(own).await.must("the owner's search")?.data;
-    let theirs = unnamed(&by_name)
-        .await
-        .must("a search naming no fields")?
-        .data;
+    let theirs = unnamed(&by_name);
+    let theirs = theirs.await.must("a search naming no fields")?.data;
     let score = |h: &lakelands_api::query::Hits| h.hits.iter().map(|h| h.score).collect::<Vec<_>>();
     ensure!(
         score(&mine) == [3.0] && score(&theirs) == [1.0],
@@ -492,9 +483,8 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
         },
     );
     let got = read(cat.as_ref(), &by_default, "staff", "s1").await?;
-    let secret = cat
-        .find(&by_default, &staff, find_where("secret = 'x'"))
-        .await;
+    let secret = cat.find(&by_default, &staff, find_where("secret = 'x'"));
+    let secret = secret.await;
     ensure!(
         got.masked.iter().map(FieldName::as_str).eq(["secret"])
             && matches!(refused_on(&secret), Some(("secret", Refusal::NotGranted))),
@@ -688,11 +678,8 @@ async fn a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent(store: S
          out; it listed {described:?}"
     );
 
-    let lake = cat
-        .describe(&clerk, ReadAt::default())
-        .await
-        .must("describing the lake as the clerk")?
-        .data;
+    let lake = cat.describe(&clerk, ReadAt::default());
+    let lake = lake.await.must("describing the lake as the clerk")?.data;
     let generated = tools(&lake)
         .map_err(|p| Failure::new(format!("the clerk's describe cannot become tools: {p:?}")))?;
     let tool = |door: Door| generated.iter().find(|t| t.door == door);
@@ -833,10 +820,8 @@ async fn a_write_only_field_is_written_and_never_shown(store: Store) -> Held {
     if !["note", "summary", "gist"].iter().all(|f| write_only(f)) {
         red.push(format!("`describe` lists {:?}", d.fields));
     }
-    let lake = cat
-        .describe(&intake, ReadAt::default())
-        .await
-        .must("describing the lake")?;
+    let lake = cat.describe(&intake, ReadAt::default());
+    let lake = lake.await.must("describing the lake")?;
     let generated = tools(&lake.data).map_err(|p| Failure::new(format!("no tools: {p:?}")))?;
     let schema = |door: Door| {
         generated

@@ -296,11 +296,10 @@ async fn a_patch_with_an_undeclared_field_is_refused_whole(store: Store) -> Held
     for key in ["m1", "m2"] {
         let before = store.head().await.must("reading the head")?;
         let remark = json!({"text": "changed", "remark": "call before dunning"});
-        let err = try_upsert(cat.as_ref(), own, "memo", key, remark)
-            .await
-            .must_fail(&format!(
-                "writing the undeclared field `remark` to `memo` `{key}`"
-            ))?;
+        let err = try_upsert(cat.as_ref(), own, "memo", key, remark);
+        let err = err.await.must_fail(&format!(
+            "writing the undeclared field `remark` to `memo` `{key}`"
+        ))?;
         head_unmoved(
             store.as_ref(),
             before,

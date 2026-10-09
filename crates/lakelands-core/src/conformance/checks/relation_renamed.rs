@@ -1093,9 +1093,8 @@ async fn a_rebuild_recomputes_the_links_a_rename_moved(store: Store) -> Held {
     l.declare(type_decl("filler", vec![sourced("n", StorageKind::Number)]))
         .await?;
     let filler = (0..1100).map(|i| source_record("filler", &format!("f{i:04}"), json!({"n": i})));
-    l.ingest("load", filler.collect())
-        .await
-        .must("filling a page")?;
+    let fut = l.ingest("load", filler.collect());
+    fut.await.must("filling a page")?;
     apply(&l, rename(vec![noted("r2", "upper(note)")], "r1", "r2")).await?;
     l.declare(invoice(vec![noted("r2", "lower(note)")])).await?;
     let mut answers = Vec::new();
@@ -1134,12 +1133,10 @@ async fn the_old_link_type_takes_no_link_after_the_rename(store: Store) -> Held 
     let first = l.ingest("feed", one("sys.link.invoice.src", "i1", "p1"));
     first.await.must("ingesting a link over `src`")?;
     apply(&l, rename(vec![fed("dst")], "src", "dst")).await?;
-    let old = l
-        .ingest("feed", one("sys.link.invoice.src", "i2", "p2"))
-        .await;
-    let new = l
-        .ingest("feed", one("sys.link.invoice.dst", "i2", "p2"))
-        .await;
+    let old = l.ingest("feed", one("sys.link.invoice.src", "i2", "p2"));
+    let old = old.await;
+    let new = l.ingest("feed", one("sys.link.invoice.dst", "i2", "p2"));
+    let new = new.await;
     let edges = walked(&l, "dst", "i2", None).await.must("walking `dst`")?;
     ensure!(
         matches!(invalid_case(&old), Some(Case::UnclaimedLinkType { ty })

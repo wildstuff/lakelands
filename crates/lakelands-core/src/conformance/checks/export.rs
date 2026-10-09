@@ -660,9 +660,8 @@ async fn exported_lake(
     let state = |one_of: Value| json!({"name": "stamp_state", "kind": "text", "one_of": one_of});
     let wide = serde_json::from_value(state(json!(["new", "seen"]))).expect("a value type");
     let declared = lakelands_api::write::Declaration::ValueType(wide);
-    cat.declare(own, declared)
-        .await
-        .must("declaring `stamp_state`")?;
+    let fut = cat.declare(own, declared);
+    fut.await.must("declaring `stamp_state`")?;
     let narrower = lakelands_api::write::ProposedWrite::MigrateValueType {
         to: serde_json::from_value(state(json!(["new"]))).expect("a value type"),
         renames: Vec::new(),
@@ -711,9 +710,8 @@ async fn exported_lake(
         lake: "upstream-lake".into(),
         position: Position(42),
     });
-    crate::conformance::fixture::ingest(cat.as_ref(), own, "mirror", vec![read_from])
-        .await
-        .must("ingesting `s1` with an upstream")?;
+    let fut = crate::conformance::fixture::ingest(cat.as_ref(), own, "mirror", vec![read_from]);
+    fut.await.must("ingesting `s1` with an upstream")?;
     // Format version 12: a set that computes records again, a function
     // and the type in force whose field it computes, appended as one.
     let set = [
@@ -781,24 +779,20 @@ async fn answers(store: &dyn LakeStore, earlier: Position) -> Result<Value, Fail
         .iter()
         .map(|e| serde_json::to_value(e).expect("an event serialises"))
         .collect();
-    let described = cat
-        .describe(&own, ReadAt::default())
-        .await
-        .must("describing the lake")?
-        .data;
+    let described = cat.describe(&own, ReadAt::default());
+    let described = described.await.must("describing the lake")?.data;
     let mut records = serde_json::Map::new();
     for t in &described.types {
         for (at, label) in [(None, "head"), (Some(earlier), "earlier")] {
-            let found = cat
-                .find(
-                    &own,
-                    &t.name,
-                    Find {
-                        limit: Some(1_000),
-                        ..find_at(at)
-                    },
-                )
-                .await;
+            let found = cat.find(
+                &own,
+                &t.name,
+                Find {
+                    limit: Some(1_000),
+                    ..find_at(at)
+                },
+            );
+            let found = found.await;
             let found = match found {
                 Ok(r) => serde_json::to_value(&r.data).expect("an answer serialises"),
                 Err(e) => json!(format!("refused: {e}")),
@@ -821,12 +815,8 @@ async fn an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from(
 ) -> Held {
     let scratch = Scratch::new(given.scratch.clone());
     let (store, earlier) = exported_lake(store, &given.reopen).await?;
-    let newest = log_events(store.as_ref())
-        .await?
-        .iter()
-        .map(|e| e.v)
-        .max()
-        .unwrap_or(0);
+    let newest = log_events(store.as_ref());
+    let newest = newest.await?.iter().map(|e| e.v).max().unwrap_or(0);
     ensure!(
         newest == lakelands_api::event::LOG_FORMAT_VERSION,
         "the exported lake must hold an event of the newest format version, {}; its newest is \
@@ -880,12 +870,8 @@ async fn an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from(
         );
     }
     // The next writer continues the lake above every fence in it.
-    let highest = log_events(imported.as_ref())
-        .await?
-        .iter()
-        .map(|e| e.fence)
-        .max()
-        .unwrap_or(0);
+    let highest = log_events(imported.as_ref());
+    let highest = highest.await?.iter().map(|e| e.fence).max().unwrap_or(0);
     let writer = writer(imported, import_seams())
         .await
         .map_err(|e| Failure::new(format!("opening the imported lake for writing: {e}")))?;
@@ -900,9 +886,8 @@ async fn an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from(
         "the imported lake's next writer must take a lease greater than every fence in the \
          log ({highest}); it took {taken:?}"
     );
-    writer
-        .verify(None, None)
-        .await
+    let fut = writer.verify(None, None);
+    fut.await
         .must("verifying the imported lake after a write")?;
     Ok(())
 }

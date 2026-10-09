@@ -276,9 +276,8 @@ async fn writing_a_link_again_changes_its_fields_and_keeps_one_link(store: Store
 async fn an_unlinked_link_leaves_the_walk_and_stays_in_its_history(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
-    let linked = link_ok(&l, "i1", "p1", json!({"since": SEPT}))
-        .await?
-        .position();
+    let linked = link_ok(&l, "i1", "p1", json!({"since": SEPT}));
+    let linked = linked.await?.position();
     unlink(&l, "i1", "p1").await.must("unlinking i1 from p1")?;
     let now = walked(cat.as_ref(), own, "invoice", "i1", Walk::Out, None).await?;
     ensure!(
@@ -414,9 +413,8 @@ async fn link_records_go_through_the_link_doors_and_ingest_only(store: Store) ->
                 .await
         }
     };
-    let first = link_once(own.clone(), json!({}))
-        .await
-        .must("linking i2 to p1 once")?;
+    let first = link_once(own.clone(), json!({}));
+    let first = first.await.must("linking i2 to p1 once")?;
     let bare = Principal {
         grants: Default::default(),
         ..own.clone()
@@ -638,9 +636,8 @@ async fn a_relation_that_allows_one_link_per_target_refuses_a_second(store: Stor
             .await
         }
     };
-    handle("i1")
-        .await
-        .must("linking i1 to p1 over `handled_by`")?;
+    let fut = handle("i1");
+    fut.await.must("linking i1 to p1 over `handled_by`")?;
     let before = store.head().await.must("reading the head")?;
     let second = handle("i2").await;
     ensure!(
@@ -716,20 +713,18 @@ async fn ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_windo
         )
     };
     // Two links from i1 in one window: many_to_one breaks.
-    let window = l
-        .ingest(
-            "registry",
-            vec![record("i1", "p1", true), record("i1", "p2", true)],
-        )
-        .await;
+    let window = l.ingest(
+        "registry",
+        vec![record("i1", "p1", true), record("i1", "p2", true)],
+    );
+    let window = window.await;
     ensure!(
         matches!(reason(&window), Some(Refusal::Constraint(..))),
         "two links from i1 in one window break `vouched_by`'s many_to_one; it answered \
          {window:?}"
     );
-    l.ingest("registry", vec![record("i1", "p1", true)])
-        .await
-        .must("ingesting the link i1 → p1")?;
+    let fut = l.ingest("registry", vec![record("i1", "p1", true)]);
+    fut.await.must("ingesting the link i1 → p1")?;
     // Against the lake, with `to` only in the key.
     let keyed = l.ingest("registry", vec![record("i1", "p2", false)]).await;
     ensure!(
@@ -824,9 +819,8 @@ async fn narrowing_a_relations_cardinality_is_refused_while_links_would_break(
     for p in ["p1", "p2"] {
         link_ok(&l, "i1", p, json!({})).await?;
     }
-    let preflight = cat
-        .migrate(own, migration(with(Cardinality::ManyToOne)))
-        .await;
+    let preflight = cat.migrate(own, migration(with(Cardinality::ManyToOne)));
+    let preflight = preflight.await;
     ensure!(
         matches!(reason(&preflight), Some(Refusal::Constraint(..))),
         "i1 links to two partners, so narrowing `approved_by` to many_to_one would break \

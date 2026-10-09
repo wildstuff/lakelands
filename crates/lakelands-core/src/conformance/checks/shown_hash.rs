@@ -175,18 +175,14 @@ async fn a_schema_hash_is_that_of_the_shape_its_reader_is_shown(store: Store) ->
         "hid lists the report it was shown: {shown:?}"
     );
     let before = s.head().await.must("the head")?;
-    l.cat
-        .accept(&l.own, &first)
-        .await
-        .must("the owner accepts")?;
+    let fut = l.cat.accept(&l.own, &first);
+    fut.await.must("the owner accepts")?;
     let (whole, _, v1) = described(&l, &l.own, "account").await?;
-    let logged = events_after(s, before)
-        .await?
-        .into_iter()
-        .find_map(|e| match e.body {
-            EventBody::Migrated { schema_hash, .. } => Some(schema_hash),
-            _ => None,
-        });
+    let logged = events_after(s, before);
+    let logged = logged.await?.into_iter().find_map(|e| match e.body {
+        EventBody::Migrated { schema_hash, .. } => Some(schema_hash),
+        _ => None,
+    });
     let want = crate::shape::schema_hash(&to(account("text", true, true)).to).ok();
     ensure!(
         logged == want && Some(&whole) == want.as_ref() && v1 > v0 && whole != h0,

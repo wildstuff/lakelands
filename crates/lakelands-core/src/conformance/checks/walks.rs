@@ -79,9 +79,8 @@ fn from(key: &str, steps: Vec<Step>) -> Pattern {
 async fn a_step_over_a_relation_the_type_does_not_declare_is_refused(store: Store) -> Held {
     let l = org(store.as_ref()).await?;
     let Lake { cat, own } = &l;
-    cat.query(own, from("zed", vec![step("reports_to", Walk::Out, 1, 1)]))
-        .await
-        .must("walking `reports_to` from `zed`")?;
+    let fut = cat.query(own, from("zed", vec![step("reports_to", Walk::Out, 1, 1)]));
+    fut.await.must("walking `reports_to` from `zed`")?;
     let err = cat
         .query(own, from("zed", vec![step("audited_by", Walk::Out, 1, 1)]))
         .await
@@ -98,12 +97,11 @@ async fn a_step_deeper_than_the_lakes_limit_is_refused(store: Store) -> Held {
     let l = org(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let limit = limits().max_depth;
-    cat.query(
+    let fut = cat.query(
         own,
         from("zed", vec![step("reports_to", Walk::Out, 1, limit)]),
-    )
-    .await
-    .must(&format!(
+    );
+    fut.await.must(&format!(
         "walking `reports_to` up to the default limit of {limit}"
     ))?;
     let err = cat

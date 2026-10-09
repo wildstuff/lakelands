@@ -179,9 +179,8 @@ async fn typed(store: &dyn LakeStore, ty: &str, vt: ValueTypeDecl) -> Held {
     let Lake { cat, own } = &l;
     let kind = vt.kind;
     let name = vt.name.clone();
-    cat.declare(own, Declaration::ValueType(vt))
-        .await
-        .must(&format!("declaring value type `{name}`"))?;
+    let fut = cat.declare(own, Declaration::ValueType(vt));
+    fut.await.must(&format!("declaring value type `{name}`"))?;
     one_field(
         store,
         ty,

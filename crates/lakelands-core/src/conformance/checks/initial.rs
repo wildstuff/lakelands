@@ -333,10 +333,8 @@ async fn an_initial_value_is_declared_on_an_authored_field_of_a_types_own(store:
         "one_of": ["paid"]}))
     .expect("the check's value type reads");
     let to = || Box::new(narrower.clone());
-    let shown = l
-        .cat
-        .migrate_value_type(&l.own, narrower.clone().into())
-        .await;
+    let shown = l.cat.migrate_value_type(&l.own, narrower.clone().into());
+    let shown = shown.await;
     let shown = shown.must("the owner's preflight of the tightening")?.data;
     let uses = json!(shown.fields);
     ensure!(

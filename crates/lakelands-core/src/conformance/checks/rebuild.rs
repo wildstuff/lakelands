@@ -88,9 +88,8 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(store: Stor
 
     let mut positions = Vec::new();
     for (nr, partner, amount) in [("i1", "p1", "10.00"), ("i2", "p1", "5.50")] {
-        let written = l
-            .upsert("invoice", nr, json!({"partner": partner, "amount": amount}))
-            .await?;
+        let written = l.upsert("invoice", nr, json!({"partner": partner, "amount": amount}));
+        let written = written.await?;
         positions.push(written.position());
     }
     // Declared after records exist, then kept by later writes: a rebuild
@@ -160,11 +159,8 @@ async fn migrations(store: &dyn LakeStore) -> Result<Vec<Position>, Failure> {
         renames: Vec::new(),
         relation_renames: Vec::new(),
     };
-    let report = cat
-        .migrate(own, m.clone())
-        .await
-        .must("the preflight of retyping `pages`")?
-        .data;
+    let report = cat.migrate(own, m.clone());
+    let report = report.await.must("the preflight of retyping `pages`")?.data;
     let retyped = cat
         .migrate_apply(own, m, &report.report_id)
         .await
@@ -210,9 +206,8 @@ async fn a_rebuild_folds_a_page_over_the_records_the_pages_before_wrote(store: S
     l.declare(type_decl("filler", vec![sourced("n", StorageKind::Number)]))
         .await?;
     let filler = (0..1_100).map(|i| source_record("filler", &format!("f{i:04}"), json!({"n": i})));
-    l.ingest("load", filler.collect())
-        .await
-        .must("loading the filler")?;
+    let fut = l.ingest("load", filler.collect());
+    fut.await.must("loading the filler")?;
     let payment = |amount: &str| -> lakelands_api::ontology::TypeDecl {
         let fields = json!([{"name": "account", "type": {"kind": "reference", "target": "account"}},
                             {"name": "amount", "type": {"kind": amount}}]);
@@ -278,9 +273,8 @@ async fn a_rebuild_folds_a_page_that_computes_fields_again(store: Store) -> Held
     l.declare(type_decl("filler", vec![sourced("n", StorageKind::Number)]))
         .await?;
     let filler = (0..1_100).map(|i| source_record("filler", &format!("f{i:04}"), json!({"n": i})));
-    l.ingest("load", filler.collect())
-        .await
-        .must("loading the filler")?;
+    let fut = l.ingest("load", filler.collect());
+    fut.await.must("loading the filler")?;
     // The function changes the call it makes while its backing refuses:
     // every name is cleared and a failure recorded for each call. A write
     // reads the failure back. Then `recompute` calls again, and the outputs
@@ -339,10 +333,8 @@ async fn a_rebuild_reproduces_the_chain(store: Store) -> Held {
     }
     let before = store.verify(None, None).await.must("verifying the chain")?;
     store.rebuild().await.must("rebuilding the projection")?;
-    let after = store
-        .verify(None, None)
-        .await
-        .must("verifying the chain after the rebuild")?;
+    let after = store.verify(None, None);
+    let after = after.await.must("verifying the chain after the rebuild")?;
     ensure!(
         before == after,
         "verifying the whole chain answered {before:?} before the rebuild and {after:?} \
@@ -413,30 +405,21 @@ async fn after_a_rebuild_every_index_answers_as_before(store: Store) -> Held {
             with_meta: false,
             at: ReadAt::default(),
         };
-        let lexical = cat
-            .search(&own, search(SearchMode::lexical("harbour")))
-            .await
-            .must("searching \"harbour\"")?
-            .data;
-        let vector = cat
-            .search(
-                &own,
-                search(SearchMode::vector("embedding", vec![0.0, 1.0])),
-            )
-            .await
-            .must("searching near (0, 1)")?
-            .data;
+        let lexical = cat.search(&own, search(SearchMode::lexical("harbour")));
+        let lexical = lexical.await.must("searching \"harbour\"")?.data;
+        let vector = cat.search(
+            &own,
+            search(SearchMode::vector("embedding", vec![0.0, 1.0])),
+        );
+        let vector = vector.await.must("searching near (0, 1)")?.data;
         let walk = pattern(
             "note",
             Some("leaf"),
             vec![step("under", Walk::Out)],
             Projection::Graph,
         );
-        let graph = cat
-            .query(&own, walk)
-            .await
-            .must("walking `under` from `leaf`")?
-            .data;
+        let graph = cat.query(&own, walk);
+        let graph = graph.await.must("walking `under` from `leaf`")?.data;
         // What each index answers: which records, in which order, with
         // which scores, and which links.
         let ranked = |h: &lakelands_api::query::Hits| {

@@ -112,9 +112,8 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(store: Store)
                 .await
         }
     };
-    link("account", "1", "owner", json!({}))
-        .await
-        .must("linking account 1 to x")?;
+    let fut = link("account", "1", "owner", json!({}));
+    fut.await.must("linking account 1 to x")?;
     let kept = link("box", "b1", "kept_by", json!({"since": "1"})).await;
     kept.must("linking box b1 to x")?;
     // The reviewer and author: it may not know of `score`, may not see

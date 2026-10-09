@@ -145,9 +145,8 @@ async fn lake(store: &dyn LakeStore) -> Held {
 
 async fn feed(l: &Lake, source: &str, records: Vec<lakelands_api::SourceRecord>) -> Held {
     let (cat, who) = (l.cat.as_ref(), &l.own);
-    ingest(cat, who, source, records)
-        .await
-        .must(&format!("ingesting from `{source}`"))?;
+    let fut = ingest(cat, who, source, records);
+    fut.await.must(&format!("ingesting from `{source}`"))?;
     Ok(())
 }
 
@@ -338,10 +337,8 @@ async fn derived_and_system_values_make_no_owner(store: Store) -> Held {
                "when": "true"}),
     )
     .await?;
-    store
-        .age(Timestamp::from_date(2026, 3, 1).expect("a date"))
-        .await
-        .must("aging")?;
+    let fut = store.age(Timestamp::from_date(2026, 3, 1).expect("a date"));
+    fut.await.must("aging")?;
     // A person wrote a note on `p2`, then cleared it.
     l.upsert("partner", "p2", json!({"note": "x"})).await?;
     l.upsert("partner", "p2", json!({"note": null})).await?;
@@ -417,10 +414,9 @@ async fn each_purged_record_reacts_as_a_retire_does_in_the_same_append(store: St
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
-    cat.declare(own, trigger_on("partner_changed", "partner", None))
-        .await
-        .must("declaring the trigger")?;
-    cat.declare(
+    let fut = cat.declare(own, trigger_on("partner_changed", "partner", None));
+    fut.await.must("declaring the trigger")?;
+    let fut = cat.declare(
         own,
         Declaration::ObjectSet(ObjectSetDecl {
             name: "named".into(),
@@ -428,9 +424,8 @@ async fn each_purged_record_reacts_as_a_retire_does_in_the_same_append(store: St
             filter: Condition::from("name is not null"),
             description: None,
         }),
-    )
-    .await
-    .must("declaring the object set")?;
+    );
+    fut.await.must("declaring the object set")?;
     // Written again after the set exists, so `p1` is in it.
     feed_one(&l, "crm", "partner", "p1", json!({"name": "Harbor Ltd"})).await?;
     let before = store.head().await.must("reading the head")?;
@@ -605,9 +600,8 @@ async fn a_value_a_backing_filled_makes_no_owner(store: Store) -> Held {
         "config": {"token": "purge_backed", "echo": "code"}
     }))
     .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))?;
-    cat.declare(own, function)
-        .await
-        .must("declaring `lookup`")?;
+    let fut = cat.declare(own, function);
+    fut.await.must("declaring `lookup`")?;
     let code = sourced("code", StorageKind::Text);
     let name = computed_by("name", StorageKind::Text, "lookup", &["code"]);
     l.declare(type_decl("place", vec![code, name])).await?;
@@ -755,9 +749,8 @@ async fn a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_on
     }
     let again = store.purge_preflight(&crm, None).await;
     let again = again.must("the preflight")?;
-    let done = store
-        .purge_source(&crm, None, Some(again.report_id.as_str()))
-        .await;
+    let done = store.purge_source(&crm, None, Some(again.report_id.as_str()));
+    let done = done.await;
     let done = done.must("a purge under its preflight's id")?;
     ensure!(
         (done.retired, &done.types, &done.references) == (3, &again.types, &again.references)
@@ -844,10 +837,8 @@ async fn a_purge_names_the_records_outside_it_that_refer_into_it(store: Store) -
         ("invoice", "approved_by", 1, vec![format!("{lt} {theirs}")]),
     ];
     let crm = SourceId::from("crm");
-    let seen = store
-        .purge_preflight(&crm, None)
-        .await
-        .must("the preflight of `crm`")?;
+    let seen = store.purge_preflight(&crm, None);
+    let seen = seen.await.must("the preflight of `crm`")?;
     let done = purge(store.as_ref(), "crm").await?;
     for (what, report) in [("preflight", &seen), ("purge", &done)] {
         let got = referring(report);
@@ -1024,9 +1015,8 @@ async fn a_preflight_of_a_type_and_one_of_the_source_whole_answer_ids_of_their_o
         refused_as!(&what, answer, Case::PurgeReportStale)?;
         head_unmoved(store.as_ref(), before, &what).await?;
     }
-    let done = store
-        .purge_source(&crm, Some(&invoice), Some(typed.report_id.as_str()))
-        .await;
+    let done = store.purge_source(&crm, Some(&invoice), Some(typed.report_id.as_str()));
+    let done = done.await;
     let done = done.must("the purge from `invoice` under its own preflight's id")?;
     ensure!(
         done.retired == 1 && done.ty.as_ref() == Some(&invoice),

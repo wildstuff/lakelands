@@ -95,14 +95,13 @@ async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(store: S
         )
         .await
         .must("the host's reactive call of `close` on `j1`")?;
-    ingest(
+    let fut = ingest(
         reaction.as_ref(),
         own,
         "meter",
         vec![source_record("reading", "r1", json!({"value": 7}))],
-    )
-    .await
-    .must("the host's reactive ingest of `r1`")?;
+    );
+    fut.await.must("the host's reactive ingest of `r1`")?;
 
     let events = events_after(store.as_ref(), before).await?;
     let mut seen = [false; 3];
@@ -205,12 +204,10 @@ async fn a_cause_past_the_head_is_refused_and_appends_nothing(store: Store) -> H
         }
     }
     head_unmoved(store.as_ref(), head, "a write whose cause is past the head").await?;
-    write(store.catalog(reactive(1, Some(head))), "j2")
-        .await
-        .must("a write whose cause is the head")?;
-    write(store.catalog(reactive(1, Some(Position::GENESIS))), "j3")
-        .await
-        .must("a write whose cause is position 0")?;
+    let fut = write(store.catalog(reactive(1, Some(head))), "j2");
+    fut.await.must("a write whose cause is the head")?;
+    let fut = write(store.catalog(reactive(1, Some(Position::GENESIS))), "j3");
+    fut.await.must("a write whose cause is position 0")?;
     // The cause is judged at the append, after the door's own checks.
     let late = store.catalog(reactive(
         1,
@@ -276,11 +273,8 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(store: Store) -> H
     let mut widened = type_decl("job", vec![field("status", StorageKind::Text)]);
     widened.fields.push(field("note", StorageKind::Text));
     let migration = migration(widened.clone());
-    let report = cat
-        .migrate(own, migration.clone())
-        .await
-        .must("preflighting a migration of `job`")?
-        .data;
+    let report = cat.migrate(own, migration.clone());
+    let report = report.await.must("preflighting a migration of `job`")?.data;
 
     let ceiling = limits().max_reactive_depth;
     let deep = store.catalog(reactive(ceiling + 1, None));
@@ -349,18 +343,14 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(store: Store) -> H
     }
     head_unmoved(store.as_ref(), head, "every write past the ceiling").await?;
     let vt = value_type("code", StorageKind::Text);
-    cat.declare(own, Declaration::ValueType(vt.clone()))
-        .await
-        .must("declaring the value type `code`")?;
+    let fut = cat.declare(own, Declaration::ValueType(vt.clone()));
+    fut.await.must("declaring the value type `code`")?;
     let tightened = lakelands_api::ontology::ValueTypeDecl {
         one_of: vec!["a".into()],
         ..vt
     };
-    let report = cat
-        .migrate_value_type(own, tightened.clone().into())
-        .await
-        .must("preflighting a tightened `code`")?
-        .data;
+    let report = cat.migrate_value_type(own, tightened.clone().into());
+    let report = report.await.must("preflighting a tightened `code`")?.data;
     let before = store.head().await.must("reading the head")?;
     match deep
         .migrate_value_type_apply(own, tightened.into(), &report.report_id)
@@ -481,9 +471,8 @@ async fn every_write_door_checks_the_context_before_anything_else(store: Store) 
         lake: "elsewhere".into(),
         ..nobody.clone()
     };
-    let foreign = d
-        .upsert(&stranger, &lt, &key, patch(json!({"n": 1})), opts())
-        .await;
+    let foreign = d.upsert(&stranger, &lt, &key, patch(json!({"n": 1})), opts());
+    let foreign = foreign.await;
     if !matches!(reason(&foreign), Some(Refusal::NotGranted)) {
         red.push(format!("a principal of another lake answered {foreign:?}"));
     }
@@ -505,9 +494,8 @@ async fn a_triggers_ceiling_is_read_with_the_cause_at_the_append(store: Store) -
         unreachable!("trigger_on declares a trigger")
     };
     once.max_depth = Some(0);
-    cat.declare(own, Declaration::Trigger(once))
-        .await
-        .must("declaring `once` with max_depth 0")?;
+    let fut = cat.declare(own, Declaration::Trigger(once));
+    fut.await.must("declaring `once` with max_depth 0")?;
     let reader = reads_all(store.as_ref(), "reader");
     let write = |who: lakelands_api::Principal, ctx: WriteContext, key: &'static str| {
         let store = store.clone();
@@ -533,9 +521,8 @@ async fn a_triggers_ceiling_is_read_with_the_cause_at_the_append(store: Store) -
         "a reaction naming a cause past the head",
     )
     .await?;
-    let fired = write(own.clone(), WriteContext::default(), "j1")
-        .await
-        .must("the write that fires `once`")?;
+    let fired = write(own.clone(), WriteContext::default(), "j1");
+    let fired = fired.await.must("the write that fires `once`")?;
     ensure!(
         store.head().await.must("reading the head")? == firing,
         "the write at {} fires `once` at {firing}; the head is elsewhere",

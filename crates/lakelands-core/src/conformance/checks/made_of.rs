@@ -696,12 +696,8 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
             apart.push(format!("`{ty}`: {there:?}"));
         }
     }
-    let d = l
-        .cat
-        .describe(&eve, Default::default())
-        .await
-        .must("describing the lake")?
-        .data;
+    let d = l.cat.describe(&eve, Default::default());
+    let d = d.await.must("describing the lake")?.data;
     let measured_views = ["mm_view", "m0_view", "pm_view", "p0_view"];
     let names: Vec<&str> = d
         .types
@@ -1026,25 +1022,18 @@ async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_kno
     for who in [&kept, &reader("masked", none.clone(), masked)] {
         let c = l.cat.as_ref();
         let t = TypeName::from("ticket");
-        let described = c
-            .describe_type(who, &t, Default::default())
-            .await
-            .must("describing `ticket`")?;
+        let described = c.describe_type(who, &t, Default::default());
+        let described = described.await.must("describing `ticket`")?;
         let fields: Vec<String> = described
             .data
             .fields
             .iter()
             .map(|f| f.name.to_string())
             .collect();
-        let got = c
-            .get(who, &t, get_at("t1", None))
-            .await
-            .must("getting `t1`")?
-            .data;
-        let rows = c
-            .find(who, &t, Find::default())
-            .await
-            .must("finding `ticket`")?;
+        let got = c.get(who, &t, get_at("t1", None));
+        let got = got.await.must("getting `t1`")?.data;
+        let rows = c.find(who, &t, Find::default());
+        let rows = rows.await.must("finding `ticket`")?;
         let found = format!("{:?}", rows.data);
         if fields != ["no", "cat"] || got.fields.contains_key("payee") || found.contains("payee") {
             apart.push(format!(
@@ -1192,10 +1181,8 @@ async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_kno
         renames: m.renames.clone(),
         report: Default::default(),
     };
-    l.cat
-        .propose(&l.own, rename, "a rename".into())
-        .await
-        .must("proposing the rename")?;
+    let fut = l.cat.propose(&l.own, rename, "a rename".into());
+    fut.await.must("proposing the rename")?;
     let listed = l.cat.proposals(&reviewer, ProposalFilter::default()).await;
     let listed: Vec<_> = (listed.must("listing the proposals")?.data.into_iter())
         .filter_map(|p| match p.write {

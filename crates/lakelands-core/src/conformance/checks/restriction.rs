@@ -71,10 +71,8 @@ async fn a_restricted_record_is_withheld_but_kept(store: Store) -> Held {
         matches!(hidden, Err(Error::NotFound { .. })),
         "a principal without the restricted grant must not find `f1` after the hold; it answered {hidden:?}"
     );
-    let seen = cat
-        .get(own, &ty, get_at("f1", None))
-        .await
-        .must("reading `f1` with the restricted grant")?;
+    let seen = cat.get(own, &ty, get_at("f1", None));
+    let seen = seen.await.must("reading `f1` with the restricted grant")?;
     ensure!(
         seen.data.fields.get("body") == Some(&json!("kept")) && seen.position == held,
         "the owner must read `f1` unchanged at the hold's position {held}; it read {:?} at {}",
@@ -91,9 +89,8 @@ async fn a_restricted_record_is_withheld_but_kept(store: Store) -> Held {
         .unrestrict(&ty, &"f1".into())
         .await
         .must("lifting the hold on `f1`")?;
-    cat.get(&reader, &ty, get_at("f1", None))
-        .await
-        .must("reading `f1` after the hold is lifted")?;
+    let fut = cat.get(&reader, &ty, get_at("f1", None));
+    fut.await.must("reading `f1` after the hold is lifted")?;
     cat.get(&reader, &ty, get_at("f1", before))
         .await
         .must("reading `f1` before the hold, once it is lifted")?;
@@ -628,13 +625,12 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(store: S
         apart.push(format!("the holder's accepted proposal: {accepted:?}"));
     }
     // A reviewer without the grant decides no proposal on a held record.
-    let said = c
-        .propose(
-            &holder,
-            onto("partner", "held", json!({"n": "z"})),
-            "why".into(),
-        )
-        .await;
+    let said = c.propose(
+        &holder,
+        onto("partner", "held", json!({"n": "z"})),
+        "why".into(),
+    );
+    let said = said.await;
     let Outcome::Proposed { proposal, .. } = said.must("the holder's proposal")? else {
         return Err(Failure::new("the holder's write onto `held` is proposed"));
     };
@@ -770,10 +766,8 @@ async fn a_link_with_a_held_end_is_not_there_and_an_accept_is_judged_by_what_it_
         ),
         (a, b) => apart.push(format!("`get` of `d1:held`: {a:?}; of `d1:gone`: {b:?}")),
     }
-    let listed = c
-        .find(&w, &lt, Default::default())
-        .await
-        .must("finding the links")?;
+    let listed = c.find(&w, &lt, Default::default());
+    let listed = listed.await.must("finding the links")?;
     if format!("{:?}", listed.data).contains("held") {
         apart.push(format!("`find` lists {:?}", listed.data));
     }
@@ -840,9 +834,8 @@ async fn a_link_with_a_held_end_is_not_there_and_an_accept_is_judged_by_what_it_
     searcher.grants.types.insert("memo".into(), held);
     let search =
         json!({"type": "sys.link.deal.with", "mode": "lexical", "text": "x", "as_of": before.0});
-    let hits = c
-        .search(&searcher, serde_json::from_value(search).expect("a search"))
-        .await;
+    let hits = c.search(&searcher, serde_json::from_value(search).expect("a search"));
+    let hits = hits.await;
     if !format!("{hits:?}").contains("d1:p1") || format!("{hits:?}").contains("held") {
         apart.push(format!("a search as of before the hold: {hits:?}"));
     }
@@ -959,9 +952,8 @@ async fn a_link_with_a_held_end_is_not_there_and_an_accept_is_judged_by_what_it_
     for (verb, key, payload) in doors {
         let (v, k) = (verb.into(), key.into());
         let head = s.head().await.must("the head")?;
-        let refused = c
-            .call(&w, &v, Some(&k), patch(payload.clone()), opts())
-            .await;
+        let refused = c.call(&w, &v, Some(&k), patch(payload.clone()), opts());
+        let refused = refused.await;
         let logged = s.head().await.must("the head")? != head;
         let said = c.call(&holder, &v, Some(&k), patch(payload), opts()).await;
         let applied = match said {
@@ -1082,17 +1074,10 @@ async fn a_link_with_a_held_end_is_not_there_and_an_accept_is_judged_by_what_it_
         {"name": "t", "type": to}, {"name": "u", "type": to}]}))
     .expect("a type");
     let m = migration(to);
-    let report = l
-        .cat
-        .migrate(&l.own, m.clone())
-        .await
-        .must("retyping `tick`")?
-        .data
-        .report_id;
-    l.cat
-        .migrate_apply(&l.own, m, &report)
-        .await
-        .must("retyping `tick`")?;
+    let report = l.cat.migrate(&l.own, m.clone());
+    let report = report.await.must("retyping `tick`")?.data.report_id;
+    let fut = l.cat.migrate_apply(&l.own, m, &report);
+    fut.await.must("retyping `tick`")?;
     for proposal in retyped {
         let late = c.accept(&l.own, &proposal).await;
         if !matches!(
