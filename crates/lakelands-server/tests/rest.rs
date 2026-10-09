@@ -14,9 +14,12 @@
 //! line is sent as `application/json`; `content-type: (none)` sends its
 //! body with no `Content-Type` at all.
 //!
-//! The lake here commits ingests in windows of two records, so a window
-//! boundary is in the transcript, and declares one verb whose executor no
-//! host binds.
+//! The lake here commits ingests in windows of one record, so window
+//! boundaries are in the transcript, and declares one verb whose executor
+//! no host binds. The wire shows one `Committed` line per window whatever
+//! it holds; how a window fills is the store's, held in process by the
+//! suite. A window of one closes at its record, so the transcript does not
+//! depend on how fast a body's next line arrives (lakelands#807).
 
 mod common;
 
@@ -51,11 +54,11 @@ const PINNED: [&str; 5] = [
     "cache-control:",
 ];
 
-/// The fixture lake as REST serves it here: ingest windows of two
-/// records, and an external verb `notify` with no executor bound.
+/// The fixture lake as REST serves it here: ingest windows of one
+/// record, and an external verb `notify` with no executor bound.
 async fn rest_lake(backend: Backend) -> Arc<dyn LakeStore> {
     let limits = Limits {
-        commit_window_events: 2,
+        commit_window_events: 1,
         ..Limits::default()
     };
     let store = common::lake_with(backend, limits).await;
