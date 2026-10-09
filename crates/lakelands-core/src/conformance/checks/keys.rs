@@ -7,25 +7,21 @@
 //! disagrees with its key fields is refused, and a record created by its
 //! key alone gets its key fields from it.
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::StorageKind;
-use lakelands_api::{FieldName, LakeStore, Refusal, TypeName};
+use lakelands_api::{FieldName, Refusal, TypeName};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, field, head_unmoved, patch, reason, type_decl, value,
 };
+use crate::conformance::{Held, Store};
 
 check!(
-    /// A key that disagrees with the key fields is refused.
     KEY_AND_KEY_FIELDS_AGREE = a_key_that_disagrees_with_its_key_fields_is_refused,
     "the log format: a record's key is its key fields' values joined by `:`; a write that says otherwise is refused and appends nothing"
 );
 
 check!(
-    /// The key alone creates a record with its key fields set.
     KEY_FIELDS_FROM_THE_KEY = a_record_created_by_its_key_alone_gets_its_key_fields,
     "the log format: a writer may give only the key; the key fields are read from its components"
 );
@@ -43,9 +39,7 @@ fn keyed() -> lakelands_api::ontology::TypeDecl {
     t
 }
 
-async fn a_key_that_disagrees_with_its_key_fields_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_key_that_disagrees_with_its_key_fields_is_refused(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(keyed()).await?;
@@ -79,9 +73,7 @@ async fn a_key_that_disagrees_with_its_key_fields_is_refused(
     .await
 }
 
-async fn a_record_created_by_its_key_alone_gets_its_key_fields(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_record_created_by_its_key_alone_gets_its_key_fields(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(keyed()).await?;
     l.upsert("line", "INV%3A9:4", json!({"note": "from the key"}))

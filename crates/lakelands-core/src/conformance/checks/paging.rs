@@ -7,7 +7,6 @@
 //! where two engines drift apart silently, each consistent with itself.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::StorageKind;
@@ -23,28 +22,24 @@ use crate::conformance::fixture::{
     Lake, Must, agg, all_found, count_view, is_invalid, limits, order, pattern, principal,
     refused_on, type_of, value,
 };
-use crate::conformance::{Failure, Given};
+use crate::conformance::{Failure, Given, Held, Store};
 
 check!(
-    /// Walking the cursor visits each record once.
     EVERY_RECORD_ONCE = paging_through_find_visits_every_record_exactly_once,
     "the read contract: a cursor continues where its page ended, so a page set is a total order with no repeat and no gap"
 );
 
 check!(
-    /// A page answers its total and jumps by offset.
     TOTAL_AND_OFFSET = a_page_answers_its_total_and_an_offset_jumps_to_the_walks_slice,
     "045 and 029: `total` answers as many records as a full walk finds, for a filter the engine applies and one only the store evaluates, a view and a reader without `restricted`, the same on every page of a cursor walk while another writer writes; `offset` answers the full walk's slice from it, by key, by a field and by a field with an order index, a view too, and its cursor continues the walk; `offset` beside `cursor`, `after` or `aggregate`, and `total` beside `aggregate`, are refused as invalid, and an offset past `max_offset` as too_large naming it"
 );
 
 check!(
-    /// Records without the sort value come last, both ways.
     MISSING_SORT_VALUES_LAST = records_without_the_sort_field_are_listed_last_in_either_direction,
     "the read contract: records without a value for a sort key sort last in either direction; ordering never drops them"
 );
 
 check!(
-    /// A read that names no limit is not refused for it (lakelands#679).
     UNNAMED_LIMIT = a_read_that_names_no_limit_takes_the_smaller_bound,
     "the location's limits: a read that names no `limit` takes `default_limit`, or `max_limit` where that is smaller, so it is never refused for a bound it did not ask for; a `limit` the caller names above `max_limit` is still refused as invalid",
     given
@@ -64,9 +59,7 @@ fn keys(rows: &[Record]) -> Vec<String> {
     rows.iter().map(|r| r.key.as_str().to_owned()).collect()
 }
 
-async fn paging_through_find_visits_every_record_exactly_once(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn paging_through_find_visits_every_record_exactly_once(store: Store) -> Held {
     const TOTAL: usize = 25;
     let l = counter(store.as_ref()).await?;
     for i in 0..TOTAL {
@@ -100,9 +93,7 @@ async fn paging_through_find_visits_every_record_exactly_once(
     Ok(())
 }
 
-async fn records_without_the_sort_field_are_listed_last_in_either_direction(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn records_without_the_sort_field_are_listed_last_in_either_direction(store: Store) -> Held {
     let l = counter(store.as_ref()).await?;
     // Interleaved by key, so a tail that only happened to be in key order
     // cannot pass by accident.
@@ -173,9 +164,7 @@ async fn one_page(
     }
 }
 
-async fn a_page_answers_its_total_and_an_offset_jumps_to_the_walks_slice(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_page_answers_its_total_and_an_offset_jumps_to_the_walks_slice(store: Store) -> Held {
     let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let cat = cat.as_ref();
@@ -350,10 +339,7 @@ async fn a_page_answers_its_total_and_an_offset_jumps_to_the_walks_slice(
     Ok(())
 }
 
-async fn a_read_that_names_no_limit_takes_the_smaller_bound(
-    store: Arc<dyn LakeStore>,
-    given: Given,
-) -> Result<(), Failure> {
+async fn a_read_that_names_no_limit_takes_the_smaller_bound(store: Store, given: Given) -> Held {
     let l = counter(store.as_ref()).await?;
     for i in 0..7 {
         l.upsert("counter", &format!("k{i}"), json!({"n": i}))

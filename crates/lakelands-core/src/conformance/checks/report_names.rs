@@ -5,18 +5,15 @@
 //! extended): in a listing, in a preview, and in the refusal of a
 //! migration that is not lossless, whoever proposes, applies or accepts it.
 
-use std::sync::Arc;
-
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::write::{Migration, MigrationReport, ProposalFilter, ProposedWrite};
-use lakelands_api::{Access, Error, LakeStore, Missing, Outcome, Principal, Refusal, WriteOpts};
+use lakelands_api::{Access, Error, Missing, Outcome, Principal, Refusal, WriteOpts};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{Lake, Must, field_access, patch, reason, restrict, reviewer};
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A report is trimmed for its reader wherever it is answered.
     REPORT_AS_ITS_READERS_VIEW = a_migrations_report_is_answered_as_its_reader_may_know_it,
     "013, 024 and 027, extended (lakelands#531): a migration's report names a conversion, a dropped field, a re-keyed type, a rewritten reference and a colliding key only where its reader may see the type and know of the field, and a sample key only of a record it is answered, in the refusal of an accept, of `migrate_apply` and of `propose` and in a preview, an author's own too; `more` says that the report holds more, and one who may see everything reads it whole without it; the id is made over what the reader is shown, so a preview read trimmed is applied by it (lakelands#644); a relation the migration removes is listed as dropped to one who sees the type and is shown the relation (lakelands#662); to an accepter who may not see the type the proposal is one that does not exist (lakelands#762)"
 );
@@ -73,9 +70,7 @@ pub(super) fn refused(answer: lakelands_api::Result<Outcome>) -> Result<String, 
     }
 }
 
-async fn a_migrations_report_is_answered_as_its_reader_may_know_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_migrations_report_is_answered_as_its_reader_may_know_it(store: Store) -> Held {
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     let keyed = |name: &str, key: &[&str], fields: Value| json!({"declare": "type", "name": name, "key": key, "fields": fields});
     let to = |ty: &str| json!({"name": ty, "type": {"kind": "reference", "target": ty}, "required": true});

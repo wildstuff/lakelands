@@ -3,7 +3,6 @@
 //! §5).
 
 use std::cmp::Ordering;
-use std::sync::Arc;
 
 use lakelands_api::ontology::{ComputedAt, FieldDecl, FieldType, StorageKind, ValueTypeDecl};
 use lakelands_api::read::{Direction, OrderBy};
@@ -11,39 +10,34 @@ use lakelands_api::write::Declaration;
 use lakelands_api::{Find, LakeStore, Record, Refusal};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, derived, doors, field, head_unmoved, order, owner, refused_on, try_upsert,
     type_decl, value, value_type,
 };
+use crate::conformance::{Failure, Held, Store};
 use crate::expr::order::cmp_values;
 
 check!(
-    /// An instant reads back in its one written form.
     DATE_TIME_CANONICAL = date_time_values_read_back_in_their_one_canonical_form,
     "the log format §5: a date-time is kept in UTC as YYYY-MM-DDTHH:MM:SS.ffffffZ, whatever offset it was written with"
 );
 
 check!(
-    /// Bytes have one spelling.
     BYTES_ONE_SPELLING = bytes_are_padded_standard_base64_and_nothing_else,
     "the log format §5: bytes are canonical standard base64, padded and with zero pad bits; unpadded, url-safe or non-canonical spellings are refused"
 );
 
 check!(
-    /// A vector has its declared length and finite components.
     VECTOR_LENGTH = a_vector_of_the_wrong_length_or_an_infinite_component_is_refused,
     "011 and the log format §5: a vector field declares its dimensions, and a value of another length does not fit it, nor one with a component that is not finite as an `f32` (`1e300`); a vector of zeros fits; a vector derived from a `json` field, written or computed at the read, holding what no vector of the field is (`[1e300, 0, 0]`, `[\"a\", \"b\", \"c\"]`, two numbers) holds no value"
 );
 
 check!(
-    /// A value type's rules hold on every write.
     VALUE_TYPE_RULES = a_value_types_one_of_format_and_scale_hold_on_every_write,
     "011: a value's `one_of`, named `format` and decimal `scale` are the value type's, checked on every write; scale rounds half away from zero"
 );
 
 check!(
-    /// Null clears a field whatever its value type says.
     NULL_CLEARS_ANY_TYPE = null_clears_a_field_whatever_its_value_type_allows,
     "012 and 011: `null` in a patch clears the field; it is not a value the value type must allow"
 );
@@ -60,11 +54,11 @@ async fn one_field(store: &dyn LakeStore, name: &str, ty: FieldType) -> Result<L
 
 /// Write `v` to `thing` and expect a refusal on field `v`, with nothing
 /// appended.
-async fn refused(store: &dyn LakeStore, v: Value, why: &str) -> Result<(), Failure> {
+async fn refused(store: &dyn LakeStore, v: Value, why: &str) -> Held {
     refused_in(store, "thing", v, why).await
 }
 
-async fn refused_in(store: &dyn LakeStore, ty: &str, v: Value, why: &str) -> Result<(), Failure> {
+async fn refused_in(store: &dyn LakeStore, ty: &str, v: Value, why: &str) -> Held {
     let before = store.head().await.must("reading the head")?;
     let what = format!("writing {v} ({why})");
     let err = try_upsert(
@@ -87,9 +81,7 @@ async fn refused_in(store: &dyn LakeStore, ty: &str, v: Value, why: &str) -> Res
     Ok(())
 }
 
-async fn date_time_values_read_back_in_their_one_canonical_form(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn date_time_values_read_back_in_their_one_canonical_form(store: Store) -> Held {
     one_field(
         store.as_ref(),
         "thing",
@@ -114,9 +106,7 @@ async fn date_time_values_read_back_in_their_one_canonical_form(
     refused(store.as_ref(), json!("2026-02-30"), "no such day").await
 }
 
-async fn bytes_are_padded_standard_base64_and_nothing_else(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn bytes_are_padded_standard_base64_and_nothing_else(store: Store) -> Held {
     let l = one_field(store.as_ref(), "thing", FieldType::kind(StorageKind::Bytes)).await?;
     for ok in ["aGVsbG8=", "aGk=", "+/+/", ""] {
         l.upsert("thing", "k", json!({ "v": ok })).await?;
@@ -133,9 +123,7 @@ async fn bytes_are_padded_standard_base64_and_nothing_else(
     Ok(())
 }
 
-async fn a_vector_of_the_wrong_length_or_an_infinite_component_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_vector_of_the_wrong_length_or_an_infinite_component_is_refused(store: Store) -> Held {
     let ty = FieldType {
         dimensions: Some(3),
         ..FieldType::kind(StorageKind::Vector)
@@ -186,7 +174,7 @@ async fn a_vector_of_the_wrong_length_or_an_infinite_component_is_refused(
     Ok(())
 }
 
-async fn typed(store: &dyn LakeStore, ty: &str, vt: ValueTypeDecl) -> Result<(), Failure> {
+async fn typed(store: &dyn LakeStore, ty: &str, vt: ValueTypeDecl) -> Held {
     let l = Lake::of(store);
     let Lake { cat, own } = &l;
     let kind = vt.kind;
@@ -206,9 +194,7 @@ async fn typed(store: &dyn LakeStore, ty: &str, vt: ValueTypeDecl) -> Result<(),
     Ok(())
 }
 
-async fn a_value_types_one_of_format_and_scale_hold_on_every_write(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_value_types_one_of_format_and_scale_hold_on_every_write(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
 
@@ -268,9 +254,7 @@ async fn a_value_types_one_of_format_and_scale_hold_on_every_write(
     Ok(())
 }
 
-async fn null_clears_a_field_whatever_its_value_type_allows(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn null_clears_a_field_whatever_its_value_type_allows(store: Store) -> Held {
     let status = ValueTypeDecl {
         one_of: vec!["open".into(), "paid".into()],
         ..value_type("status", StorageKind::Text)
@@ -290,14 +274,11 @@ async fn null_clears_a_field_whatever_its_value_type_allows(
 }
 
 check!(
-    /// A decimal is written as a string of digits, never a number.
     DECIMAL_NOT_A_NUMBER = a_decimal_written_as_a_json_number_is_refused,
     "the log format §5: a decimal's one JSON form is a string of digits, so a JSON number, which may already have lost digits, is refused"
 );
 
-async fn a_decimal_written_as_a_json_number_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_decimal_written_as_a_json_number_is_refused(store: Store) -> Held {
     let l = one_field(
         store.as_ref(),
         "thing",
@@ -311,19 +292,16 @@ async fn a_decimal_written_as_a_json_number_is_refused(
 }
 
 check!(
-    /// A geometry reads back in one form; a malformed one is refused.
     GEO_VALUES = a_geo_value_reads_back_in_its_one_form_and_a_malformed_one_is_refused,
     "011, extended, and the log format §5: a geo value is a GeoJSON geometry whose numbers take their one JSON form, the same through get and find, live and after a rebuild; empty `coordinates` are the empty geometry of every type alike, while an empty part inside one is refused; an open ring, a missing `type` or a GeoJSON object that is not a geometry is refused naming the field; null clears it"
 );
 
 check!(
-    /// A JSON value reads back in one form, and null clears it.
     JSON_VALUES = a_json_value_reads_back_in_its_one_form_and_null_clears_it,
     "011, extended, and the log format §5: a json value is kept as written but for its numbers, which take their one JSON form (`1`, never `1.0`), the same through get and find, live and after a rebuild; null clears it like any field"
 );
 
 check!(
-    /// A page ordered by a geo or json field takes the fallback order.
     GEO_JSON_ORDER = a_page_ordered_by_a_geo_or_json_field_takes_the_rulebooks_fallback_order,
     "029: a geo or json value has no order of its own, so a find ordered by one ranks it as `cmp_values` does, a JSON value by its canonical bytes, a missing value last either way, ties by key; paging walks the same order"
 );
@@ -352,7 +330,7 @@ async fn texts(store: &dyn LakeStore, keys: &[&str]) -> Result<Vec<(String, Stri
 /// Writes each value to its own `thing` record, then reads every record
 /// through `get` and `find`, live and after a rebuild, and holds each to
 /// its one form.
-async fn one_form(store: Arc<dyn LakeStore>, cases: &[(&str, Value, &str)]) -> Result<(), Failure> {
+async fn one_form(store: Store, cases: &[(&str, Value, &str)]) -> Held {
     let l = Lake::of(store.as_ref());
     for (key, written, _) in cases {
         l.upsert("thing", key, json!({ "v": written })).await?;
@@ -375,8 +353,8 @@ async fn one_form(store: Arc<dyn LakeStore>, cases: &[(&str, Value, &str)]) -> R
 }
 
 async fn a_geo_value_reads_back_in_its_one_form_and_a_malformed_one_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     one_field(store.as_ref(), "thing", FieldType::kind(StorageKind::Geo)).await?;
     one_form(
         store.clone(),
@@ -466,9 +444,7 @@ async fn a_geo_value_reads_back_in_its_one_form_and_a_malformed_one_is_refused(
     Ok(())
 }
 
-async fn a_json_value_reads_back_in_its_one_form_and_null_clears_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_json_value_reads_back_in_its_one_form_and_null_clears_it(store: Store) -> Held {
     one_field(store.as_ref(), "thing", FieldType::kind(StorageKind::Json)).await?;
     one_form(
         store.clone(),
@@ -495,8 +471,8 @@ async fn a_json_value_reads_back_in_its_one_form_and_null_clears_it(
 }
 
 async fn a_page_ordered_by_a_geo_or_json_field_takes_the_rulebooks_fallback_order(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(type_decl(
         "thing",

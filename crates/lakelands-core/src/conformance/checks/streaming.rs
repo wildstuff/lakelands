@@ -150,13 +150,13 @@ use crate::conformance::fixture::{
     Lake, Must, agg, aggregate, declare, doors, embedding, field, ingest, limits, order, owner,
     pattern, pause, reason, restrict, source_record, sourced, step, type_decl, view_of,
 };
-use crate::conformance::{Failure, Given, Meter, backing, next};
+use crate::conformance::{Failure, Given, Held, Meter, Store, backing, next};
 use crate::export;
 use crate::links::{link_key, link_type_name};
 
 check!(
-    /// A large lake goes through ingest, the feed and export in bounded memory.
-    STREAMS = a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it,
+    STREAMS =
+        a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it,
     "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification and its import into a new lake, each page of a walk of a type through find, the first pages of a walk ordered by an indexed field, with and without writes between them, each also reading its page and a few rows more, not the type, a rebuild, a reopen, a three-hop walk over link records, a three-hop walk over a derived relation, the owner's page of a kept view, in key order, while one group's whole face differs from its open one (lakelands#628), and its sum over every group and a pattern started on one group (lakelands#731), a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, the ten records of highest degree over the whole type, and components refused at the lake's max_graph_nodes, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must; and (lakelands#558) a feed poll examines at most FEED_EXAMINED events: one whose filter matches nothing answers none and a next short of the head, and following next reaches it, the checkpoints are each answered once, an event is in the poll whose last examined position it is and not in the one before, and no limit answers more",
     given,
     embedding
@@ -598,7 +598,7 @@ impl Size<'_> {
 
     /// Deliver `n` records from `from` on and check what the windows
     /// answer and how far the source was read ahead of them.
-    async fn ingest(&mut self, store: &dyn LakeStore, from: u64, n: u64) -> Result<(), Failure> {
+    async fn ingest(&mut self, store: &dyn LakeStore, from: u64, n: u64) -> Held {
         let cat = doors(store);
         let window = u64::from(limits().commit_window_events.max(1));
         let taken = Arc::new(AtomicU64::new(0));
@@ -739,13 +739,7 @@ impl Size<'_> {
     }
 
     /// Export the lake and verify the files.
-    async fn export(
-        &mut self,
-        store: &dyn LakeStore,
-        records: u64,
-        log: &Log,
-        dir: &Path,
-    ) -> Result<(), Failure> {
+    async fn export(&mut self, store: &dyn LakeStore, records: u64, log: &Log, dir: &Path) -> Held {
         let m = Measure::start(&self.given.meter, false);
         let manifest = export::write(store, dir)
             .await
@@ -822,7 +816,7 @@ impl Size<'_> {
     /// Count every `reading` through `find`'s `count()`, once with a filter
     /// the engine applies and once with one only the store evaluates, each
     /// measured: a count holds a batch, whatever the size of the type.
-    async fn counts(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+    async fn counts(&mut self, store: &dyn LakeStore, records: u64) -> Held {
         let cat = doors(store);
         let head = store.head().await.must("reading the head")?;
         for (phase, filter) in [
@@ -879,7 +873,7 @@ impl Size<'_> {
     /// then by counting the view `by_site`, each measured: a group keeps
     /// what its measures fold, never its records, so each holds a batch
     /// and the groups, whatever the size of the type (lakelands#388).
-    async fn groups(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+    async fn groups(&mut self, store: &dyn LakeStore, records: u64) -> Held {
         let cat = doors(store);
         let head = store.head().await.must("reading the head")?;
         let of = |func| (func != AggFunc::Count).then_some("value");
@@ -924,12 +918,7 @@ impl Size<'_> {
     /// a pattern started on one hold a page of it (lakelands#731). It is fed
     /// before the feed and the export, so each size's import carries a view
     /// as large.
-    async fn whole_face(
-        &mut self,
-        store: &dyn LakeStore,
-        from: u64,
-        records: u64,
-    ) -> Result<(), Failure> {
+    async fn whole_face(&mut self, store: &dyn LakeStore, from: u64, records: u64) -> Held {
         let (cat, own) = (doors(store), self.own.clone());
         let tick = |key: &str, g: u64| source_record("tick", key, json!({"g": g}));
         if from == 0 {
@@ -1040,7 +1029,7 @@ impl Size<'_> {
     /// `total`, measured: the rows skipped are read and dropped a page at
     /// a time, and the total counted a batch at a time, whatever the size
     /// of the type (045).
-    async fn jump(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+    async fn jump(&mut self, store: &dyn LakeStore, records: u64) -> Held {
         let cat = doors(store);
         let head = store.head().await.must("reading the head")?;
         let limit = 25u32;
@@ -1083,7 +1072,7 @@ impl Size<'_> {
     /// Walk every `reading` through `find`, a page of `max_limit` at a
     /// time with the cursor, measuring each page on its own: a page holds
     /// its rows, whatever the size of the type.
-    async fn find_walk(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+    async fn find_walk(&mut self, store: &dyn LakeStore, records: u64) -> Held {
         let cat = doors(store);
         let head = store.head().await.must("reading the head")?;
         let limit = limits().max_limit;
@@ -1168,7 +1157,7 @@ impl Size<'_> {
     /// three rows more than it answers, and two per record changed since
     /// its position. Every walk answers what the first, a sort of the
     /// type, answered. Then retire the setting.
-    async fn sorted_walks(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+    async fn sorted_walks(&mut self, store: &dyn LakeStore, records: u64) -> Held {
         let limit = u64::from(limits().max_limit);
         // The store asks the engine for a page and one more row, which
         // tells it whether another page follows, and reads the lake's
@@ -1347,7 +1336,7 @@ impl Size<'_> {
 
     /// Link every record delivered from `from` to `size` to the two it
     /// [`follows`], through a source; not measured.
-    async fn link(&mut self, store: &dyn LakeStore, from: u64, size: u64) -> Result<(), Failure> {
+    async fn link(&mut self, store: &dyn LakeStore, from: u64, size: u64) -> Held {
         let first = u64::from(self.given.large_lake.max(20));
         let want: u64 = (from..size).map(|i| follows(i, first).count() as u64).sum();
         let what = format!("ingesting the `{FOLLOWS}` links of records {from} to {size}");
@@ -1382,7 +1371,7 @@ impl Size<'_> {
     /// once the setting `vector_index.reading` asks for an index on `vec`,
     /// through the index where the engine keeps one (lakelands#197); the
     /// setting is retired again, so the lake grows without the index.
-    async fn searches(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+    async fn searches(&mut self, store: &dyn LakeStore, records: u64) -> Held {
         self.search(store, records, "search", "hybrid").await?;
         let l = Lake::of(store);
         l.set("vector_index.reading", json!(["vec"])).await?;
@@ -1400,7 +1389,7 @@ impl Size<'_> {
         records: u64,
         phase: &'static str,
         ranked_by: &str,
-    ) -> Result<(), Failure> {
+    ) -> Held {
         let head = store.head().await.must("reading the head")?;
         let sought = key(SOUGHT);
         let m = Measure::start(&self.given.meter, false);
@@ -1457,7 +1446,7 @@ impl Size<'_> {
 
     /// Walk `follows` backwards from [`WALK_FROM`], one step per hop, as
     /// rows, page by page, measured as one query.
-    async fn traverse(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+    async fn traverse(&mut self, store: &dyn LakeStore, records: u64) -> Held {
         let head = store.head().await.must("reading the head")?;
         let first = u64::from(self.given.large_lake.max(20));
         let want = walk_rows(records, first);
@@ -1513,7 +1502,7 @@ impl Size<'_> {
     /// Walk the derived `same_note` out of [`WALK_FROM`], [`HOPS`] hops:
     /// each hop is one lookup of a note at the head, so the walk holds a
     /// record whatever the lake's size, never the type (044).
-    async fn derived_walk(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+    async fn derived_walk(&mut self, store: &dyn LakeStore, records: u64) -> Held {
         let head = store.head().await.must("reading the head")?;
         let pattern = Pattern::traverse(
             TypeName::from(TY),
@@ -1550,7 +1539,7 @@ impl Size<'_> {
     /// The ten records of highest degree over `follows`, both ways, over
     /// the whole type: the seeds are read a page at a time and the best
     /// rows kept, so the measure holds a page, not the type.
-    async fn degree(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+    async fn degree(&mut self, store: &dyn LakeStore, records: u64) -> Held {
         let head = store.head().await.must("reading the head")?;
         let first = u64::from(self.given.large_lake.max(20));
         let mut degree: std::collections::BTreeMap<u64, u64> = (0..records)
@@ -1605,7 +1594,7 @@ impl Size<'_> {
     /// record they reach, so they grow with the graph by definition, and
     /// are reported; their bound is the lake's `max_graph_nodes`, which
     /// the next line holds.
-    async fn components(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+    async fn components(&mut self, store: &dyn LakeStore, records: u64) -> Held {
         let head = store.head().await.must("reading the head")?;
         let largest = largest_component(records, u64::from(self.given.large_lake.max(20)));
         let mut pattern = measure(Projection::Components);
@@ -1642,11 +1631,7 @@ impl Size<'_> {
     /// first size: refused as soon as the walk holds one record more than
     /// the cap, at every size, so what it holds is bounded by the cap and
     /// not by the lake. Answers the lake opened with that cap.
-    async fn components_capped(
-        &mut self,
-        store: Arc<dyn LakeStore>,
-        records: u64,
-    ) -> Result<Arc<dyn LakeStore>, Failure> {
+    async fn components_capped(&mut self, store: Store, records: u64) -> Result<Store, Failure> {
         let cap = self.given.large_lake.max(20) / 2;
         let capped = lakelands_api::location::Limits {
             max_graph_nodes: cap,
@@ -1681,7 +1666,7 @@ impl Size<'_> {
     }
 
     /// Rebuild the projection; every answer stays as it was.
-    async fn rebuild(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+    async fn rebuild(&mut self, store: &dyn LakeStore, records: u64) -> Held {
         let head = store.head().await.must("reading the head")?;
         let before = answers(store, &self.own).await?;
         ensure!(
@@ -1719,11 +1704,7 @@ impl Size<'_> {
     }
 
     /// Open the lake again, as a host's next process does.
-    async fn reopen(
-        &mut self,
-        store: Arc<dyn LakeStore>,
-        records: u64,
-    ) -> Result<Arc<dyn LakeStore>, Failure> {
+    async fn reopen(&mut self, store: Store, records: u64) -> Result<Store, Failure> {
         let head = store.head().await.must("reading the head")?;
         let before = answers(store.as_ref(), &self.own).await?;
         let m = Measure::start(&self.given.meter, false);
@@ -1761,7 +1742,7 @@ impl Size<'_> {
 /// further apart than the bound, are each answered once by following
 /// `next`; the checkpoint `at` is in the poll whose last event it is and
 /// not in the one that stops just before it; and no `limit` answers more.
-async fn bounded(store: &dyn LakeStore, log: &Log, at: Position) -> Result<(), Failure> {
+async fn bounded(store: &dyn LakeStore, log: &Log, at: Position) -> Held {
     let (feed, bound) = (store.feed(), u64::from(FEED_EXAMINED));
     let kind = |k: &str| FeedFilter {
         kinds: vec![k.into()],
@@ -1843,9 +1824,9 @@ fn report_file(scratch: &Path) -> PathBuf {
 }
 
 async fn a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     given: Given,
-) -> Result<(), Failure> {
+) -> Held {
     let cat = doors(store.as_ref());
     let own = owner(store.as_ref());
     declare(cat.as_ref(), &own, reading()).await?;
@@ -1891,7 +1872,7 @@ async fn a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_doe
 
 /// Print every row, append them to the report file, and fail for every
 /// held operation whose heap grew past the bound.
-fn report(given: &Given, rows: &[Row]) -> Result<(), Failure> {
+fn report(given: &Given, rows: &[Row]) -> Held {
     let file = report_file(&given.scratch);
     let mut out = fs::OpenOptions::new()
         .create(true)

@@ -3,36 +3,30 @@
 //! `docs/decisions/026-the-store-walks-the-graph.md`,
 //! `docs/decisions/029-every-answer-has-one-order.md`).
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::{RelationDecl, StorageKind};
 use lakelands_api::query::{Depth, Pattern, QueryResult, Step, Walk};
 use lakelands_api::{Error, LakeStore, RecordKey, Refusal, TypeName};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{Lake, Must, field, limits, reason, reference, type_decl};
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A step must follow a declared relation.
     UNDECLARED_RELATION = a_step_over_a_relation_the_type_does_not_declare_is_refused,
     "018: the planner knows the ontology; a step over an undeclared relation is refused, not answered empty"
 );
 
 check!(
-    /// A walk may not go deeper than the lake allows.
     TOO_DEEP = a_step_deeper_than_the_lakes_limit_is_refused,
     "018 and the location's limits: on a lake opened with the default limits, a step whose depth exceeds `max_depth` is refused rather than walked"
 );
 
 check!(
-    /// A walk orders what it reaches, whatever the engine.
     WALK_ORDER = a_walk_answers_what_it_reaches_in_one_order,
     "026 and 029: a graph includes its start, and a walk orders what it reaches by depth, type and key, so no engine's link order shows through"
 );
 
 check!(
-    /// A step may name a relation by its inverse.
     INVERSE_STEP = a_step_naming_an_inverse_walks_the_relation_the_other_way,
     "018 and 044, extended: a step naming a relation's `inverse` walks that relation the other way, its `walk` counting from the name it gives, and the edges keep the declared relation with its declaring side as `from`"
 );
@@ -82,9 +76,7 @@ fn from(key: &str, steps: Vec<Step>) -> Pattern {
     Pattern::traverse(TypeName::from("person"), RecordKey::from(key), steps)
 }
 
-async fn a_step_over_a_relation_the_type_does_not_declare_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_step_over_a_relation_the_type_does_not_declare_is_refused(store: Store) -> Held {
     let l = org(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     cat.query(own, from("zed", vec![step("reports_to", Walk::Out, 1, 1)]))
@@ -102,9 +94,7 @@ async fn a_step_over_a_relation_the_type_does_not_declare_is_refused(
     Ok(())
 }
 
-async fn a_step_deeper_than_the_lakes_limit_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_step_deeper_than_the_lakes_limit_is_refused(store: Store) -> Held {
     let l = org(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let limit = limits().max_depth;
@@ -132,9 +122,7 @@ async fn a_step_deeper_than_the_lakes_limit_is_refused(
     Ok(())
 }
 
-async fn a_walk_answers_what_it_reaches_in_one_order(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_walk_answers_what_it_reaches_in_one_order(store: Store) -> Held {
     let l = org(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let mut p = from("ceo", vec![step("reports_to", Walk::In, 1, 2)]);
@@ -156,14 +144,11 @@ async fn a_walk_answers_what_it_reaches_in_one_order(
 }
 
 check!(
-    /// A walk around a cycle ends.
     CYCLE_TERMINATES = a_walk_over_a_cycle_ends_and_answers_each_record_once,
     "026: the store walks the graph, so a walk over a cycle of links ends within its depth and reaches every record once"
 );
 
-async fn a_walk_over_a_cycle_ends_and_answers_each_record_once(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_walk_over_a_cycle_ends_and_answers_each_record_once(store: Store) -> Held {
     let l = org(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     // The ceo reports to the one who reports to the ceo: a cycle of two.
@@ -192,9 +177,7 @@ async fn a_walk_over_a_cycle_ends_and_answers_each_record_once(
     Ok(())
 }
 
-async fn a_step_naming_an_inverse_walks_the_relation_the_other_way(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_step_naming_an_inverse_walks_the_relation_the_other_way(store: Store) -> Held {
     let l = org(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     for (walk, declared) in [

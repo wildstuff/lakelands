@@ -4,26 +4,21 @@
 //! caller may not read would answer that field's value, by running or not,
 //! or copy it whole, so it is not that caller's to call or to be shown.
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::error::Missing;
 use lakelands_api::id::ProposalId;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::write::{Proposal, ProposalFilter, ProposedWrite};
-use lakelands_api::{
-    Access, Error, LakeStore, Outcome, Principal, ReadAt, Refusal, TypeName, WriteOpts,
-};
+use lakelands_api::{Access, Error, Outcome, Principal, ReadAt, Refusal, TypeName, WriteOpts};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, derived, field, field_access, invalid_case, patch, reference, type_decl, type_of,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A verb reads only what its caller may read.
     VERB_READS_AS_A_FILTER = a_verb_that_reads_a_field_its_caller_may_not_read_is_not_its_to_call,
     "024, extended (lakelands#779): a verb whose `requires` or set values read a field its caller may not know of, sees masked or may only write, a field derived from one, or a reference to a type it is not shown, is refused not_granted to that caller, whole as a verb it may not write is, called directly, called at a risk that proposes it and proposed as a call, and to a reviewer accepting it, whatever the record holds; it appends nothing, `describe` names it neither on its type nor among the lake's verbs, and a call proposal of it is not there to that reviewer: the listing and a listing filtered to its type are those of the lake without it, and its accept and reject answer as an id no proposal holds does, also once the verb is declared again; a verb that reads no such field stays callable and named; a caller who reads the field calls it and is answered as the record holds"
 );
@@ -90,8 +85,8 @@ async fn vetted(l: &Lake) -> Result<lakelands_api::id::ProposalId, Failure> {
 }
 
 async fn a_verb_that_reads_a_field_its_caller_may_not_read_is_not_its_to_call(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let (s, l, text) = (store.as_ref(), Lake::of(store.as_ref()), StorageKind::Text);
     l.declare(type_of("vault", &[("v", text)])).await?;
     let fields = ["status", "copy", "mark", "secret"].map(|n| field(n, text));

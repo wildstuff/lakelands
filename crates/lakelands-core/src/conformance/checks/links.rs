@@ -10,8 +10,6 @@
 //! cardinality over live links, live ends, and the doors each link goes
 //! through.
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::ontology::{
     Authority, Cardinality, FieldDecl, RelationDecl, StorageKind, TypeDecl,
@@ -22,106 +20,90 @@ use lakelands_api::write::{Outcome, WriteOpts};
 use lakelands_api::{Catalog, Error, LakeStore, Position, Principal, Refusal};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, all, doors, field, field_writer, head_unmoved, invalid_case, migration,
     no_such_field, patch, pattern, principal, reads_all, reason, reference, refused_on, restrict,
     source_record, step, type_decl,
 };
+use crate::conformance::{Failure, Held, Store};
 use crate::links::{link_key, link_type_name};
 
 check!(
-    /// A link is written and walked, its fields on the edge.
     WRITTEN_AND_WALKED = a_link_is_written_and_walked_with_its_fields,
     "035 and §2.3: a relation without via is carried by link records; the walk follows it out and in, and the edge carries the link's own fields"
 );
 
 check!(
-    /// One link per pair.
     ONE_PER_PAIR = writing_a_link_again_changes_its_fields_and_keeps_one_link,
     "035: a link is keyed by its pair, so writing it again changes its fields and advances its version, never adds a second link"
 );
 
 check!(
-    /// Unlink keeps history.
     UNLINK_KEEPS_HISTORY = an_unlinked_link_leaves_the_walk_and_stays_in_its_history,
     "035 and §2.3: unlink retires the link record; the walk no longer follows it, and a read as of before the unlink still does"
 );
 
 check!(
-    /// Cardinality holds over live links.
     CARDINALITY = a_link_that_would_break_the_relations_cardinality_is_refused,
     "§2.3 and 024, extended: many_to_one allows one live link per `from`; a second is refused as a constraint and nothing is appended, and a principal without write on the link type is refused not_granted before the links are read; the record already linked is named only to a caller shown it, so a writer without `restricted`, or a holder of `only` not admitted to it, finds no key of it in the whole error (051)"
 );
 
 check!(
-    /// Both ends are live records.
     LIVE_ENDS = a_link_to_a_key_that_is_no_live_record_is_refused,
     "032 and 035: a link's ends are references, so a link to a key that is not a live record of the target is refused on `to`"
 );
 
 check!(
-    /// Links go through their own doors.
     OWN_DOORS = link_records_go_through_the_link_doors_and_ingest_only,
     "035 and §2.3: upsert and retire refuse a link type's records, before a retry under the key of a link; a caller cannot declare a link type; the link door refuses a relation whose links arrive by ingest, before `from` among the fields, `from` among the fields before a retry, and a retry before the record checks (035, extended); and ingest writes them"
 );
 
 check!(
-    /// A relation keeps its carrier.
     CARRIER_KEPT = a_relation_cannot_move_between_via_and_link_records,
     "035 and §2.3: a declaration that gives a relation via it did not have, or takes it away, is refused"
 );
 
 check!(
-    /// A link's fields are granted like any field.
     LINK_GRANTS = a_link_field_the_principal_may_not_write_refuses_the_link,
     "035: the link doors check the principal's grants on the link type's fields as upsert does"
 );
 
 check!(
-    /// A relation's fields follow 027.
     LINK_SHAPE = a_relations_fields_are_declared_when_added_and_migrated_when_retyped,
     "007, 027 and 035: adding an optional link field is declared; retyping one reshapes the link type, is refused at declare and goes through migrate on the owner type"
 );
 
 check!(
-    /// Retiring an end keeps the link.
     RETIRED_END = retiring_an_end_keeps_the_link_and_the_walk_skips_the_retired_end,
     "032 and 035: retiring a record others link to stays allowed and keeps the links' history; the walk does not reach the retired record"
 );
 
 check!(
-    /// One link per `to`.
     ONE_PER_TO = a_relation_that_allows_one_link_per_target_refuses_a_second,
     "§2.3: one_to_many and one_to_one allow one live link per `to`; a second link into it is refused as a constraint"
 );
 
 check!(
-    /// An authority flip swaps the door, keeps the links.
     AUTHORITY_FLIP = a_relations_authority_changes_by_declaration_and_keeps_its_links,
     "035, extended: a relation's authority changes by an ordinary declaration; the door its links arrive by swaps, and the links already written stay"
 );
 
 check!(
-    /// Ingest holds the cardinality.
     INGEST_CARDINALITY = ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_window,
     "§2.3: a link that arrives by ingest holds the relation's cardinality over the lake's live links and the window's, its ends read from the key when the record leaves them out"
 );
 
 check!(
-    /// A re-declared relation that reshapes its links is a migration.
     REDECLARED_TARGET = a_relation_declared_again_with_another_target_is_a_migration,
     "027 and 035, extended: a relation removed by migrate keeps its links, and the preflight lists it under `dropped` with the number of its live links, none when none is live (lakelands#554); declaring it again with another target would reshape them, and is refused, naming the link type"
 );
 
 check!(
-    /// A restricted link is not walked without the grant.
     RESTRICTED_LINK = a_restricted_link_is_walked_only_with_the_restricted_grant,
     "035 and the retention hold: a link's edge comes from its own record, so a restricted link is walked only by a principal with the `restricted` grant"
 );
 
 check!(
-    /// A narrowing that would break links is refused.
     NARROWING = narrowing_a_relations_cardinality_is_refused_while_links_would_break,
     "027 and §2.3: narrowing a relation's cardinality is a migration, and its preflight refuses it while live links would break the narrower rule"
 );
@@ -244,9 +226,7 @@ pub(super) fn pairs(edges: &[Edge]) -> Vec<String> {
         .collect()
 }
 
-async fn a_link_is_written_and_walked_with_its_fields(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_link_is_written_and_walked_with_its_fields(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
@@ -270,9 +250,7 @@ async fn a_link_is_written_and_walked_with_its_fields(
     Ok(())
 }
 
-async fn writing_a_link_again_changes_its_fields_and_keeps_one_link(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn writing_a_link_again_changes_its_fields_and_keeps_one_link(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
@@ -295,9 +273,7 @@ async fn writing_a_link_again_changes_its_fields_and_keeps_one_link(
     Ok(())
 }
 
-async fn an_unlinked_link_leaves_the_walk_and_stays_in_its_history(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn an_unlinked_link_leaves_the_walk_and_stays_in_its_history(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let linked = link_ok(&l, "i1", "p1", json!({"since": SEPT}))
@@ -324,9 +300,7 @@ async fn an_unlinked_link_leaves_the_walk_and_stays_in_its_history(
     Ok(())
 }
 
-async fn a_link_that_would_break_the_relations_cardinality_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_link_that_would_break_the_relations_cardinality_is_refused(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link_ok(&l, "i1", "p1", json!({})).await?;
@@ -382,9 +356,7 @@ async fn a_link_that_would_break_the_relations_cardinality_is_refused(
     Ok(())
 }
 
-async fn a_link_to_a_key_that_is_no_live_record_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_link_to_a_key_that_is_no_live_record_is_refused(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
@@ -402,9 +374,7 @@ async fn a_link_to_a_key_that_is_no_live_record_is_refused(
     Ok(())
 }
 
-async fn link_records_go_through_the_link_doors_and_ingest_only(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn link_records_go_through_the_link_doors_and_ingest_only(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let key = link_key(&"i1".into(), &"p1".into());
@@ -540,9 +510,7 @@ async fn link_records_go_through_the_link_doors_and_ingest_only(
     Ok(())
 }
 
-async fn a_relation_cannot_move_between_via_and_link_records(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_relation_cannot_move_between_via_and_link_records(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let before = store.head().await.must("reading the head")?;
     let mut moved = invoice(vec![RelationDecl {
@@ -561,9 +529,7 @@ async fn a_relation_cannot_move_between_via_and_link_records(
     Ok(())
 }
 
-async fn a_link_field_the_principal_may_not_write_refuses_the_link(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_link_field_the_principal_may_not_write_refuses_the_link(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let cat = doors(store.as_ref());
     let clerk = field_writer(store.as_ref(), "clerk", LT, &["from", "to"]);
@@ -580,8 +546,8 @@ async fn a_link_field_the_principal_may_not_write_refuses_the_link(
 }
 
 async fn a_relations_fields_are_declared_when_added_and_migrated_when_retyped(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
@@ -620,9 +586,7 @@ async fn a_relations_fields_are_declared_when_added_and_migrated_when_retyped(
     Ok(())
 }
 
-async fn retiring_an_end_keeps_the_link_and_the_walk_skips_the_retired_end(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn retiring_an_end_keeps_the_link_and_the_walk_skips_the_retired_end(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
@@ -651,9 +615,7 @@ async fn retiring_an_end_keeps_the_link_and_the_walk_skips_the_retired_end(
     Ok(())
 }
 
-async fn a_relation_that_allows_one_link_per_target_refuses_a_second(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_relation_that_allows_one_link_per_target_refuses_a_second(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let mut handled = approved_by(vec![], Authority::Authored);
@@ -690,9 +652,7 @@ async fn a_relation_that_allows_one_link_per_target_refuses_a_second(
     Ok(())
 }
 
-async fn a_relations_authority_changes_by_declaration_and_keeps_its_links(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_relations_authority_changes_by_declaration_and_keeps_its_links(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link_ok(&l, "i1", "p1", json!({})).await?;
@@ -734,8 +694,8 @@ async fn a_relations_authority_changes_by_declaration_and_keeps_its_links(
 }
 
 async fn ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_window(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = lake(store.as_ref()).await?;
     // A source relation of its own, beside `approved_by`.
     let mut vouched = approved_by(vec![], Authority::Source);
@@ -780,9 +740,7 @@ async fn ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_windo
     Ok(())
 }
 
-async fn a_relation_declared_again_with_another_target_is_a_migration(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_relation_declared_again_with_another_target_is_a_migration(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     // What the preflight of removing the relation lists as dropped.
     let dropped = || async {
@@ -824,9 +782,7 @@ async fn a_relation_declared_again_with_another_target_is_a_migration(
     Ok(())
 }
 
-async fn a_restricted_link_is_walked_only_with_the_restricted_grant(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_restricted_link_is_walked_only_with_the_restricted_grant(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
@@ -855,8 +811,8 @@ async fn a_restricted_link_is_walked_only_with_the_restricted_grant(
 }
 
 async fn narrowing_a_relations_cardinality_is_refused_while_links_would_break(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let with = |c: Cardinality| {

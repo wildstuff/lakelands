@@ -4,8 +4,6 @@
 //! history, so a read pinned to an earlier position answers with the
 //! setting of that position, not today's.
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::seam::Seams;
 use lakelands_api::{Access, Find, Grants, LakeStore, Position, PrincipalKind};
@@ -14,17 +12,14 @@ use serde_json::json;
 use crate::conformance::fixture::{
     Lake, Must, all_found, derived, field, find_where, principal, read_at, restrict, type_decl,
 };
-use crate::conformance::{Failure, Reopen};
+use crate::conformance::{Failure, Held, Reopen, Store};
 
 check!(
-    /// `setting('key')` reads the setting as of the read's position.
     SETTING_AS_OF = a_setting_is_read_as_it_stood_at_the_position_read,
     "seams, SystemVocabulary: setting('key') in an expression reads the sys.setting record with that key as of the position being read"
 );
 
-async fn a_setting_is_read_as_it_stood_at_the_position_read(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_setting_is_read_as_it_stood_at_the_position_read(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(type_decl("band", vec![field("level", StorageKind::Number)]))
         .await?;
@@ -58,16 +53,15 @@ async fn a_setting_is_read_as_it_stood_at_the_position_read(
 }
 
 check!(
-    /// A restricted setting stays what the lake computes with.
     SETTING_RESTRICTED = a_restricted_setting_stays_what_the_lake_computes_with,
     "seams, SystemVocabulary (lakelands#583): restricting a setting hides its record and never its value from the lake's computations or from an expression: a derived field written while the writer stays open, after the lake is opened again and after a rebuild reads it, a read's `where` and a view's `where` and measure read it, and a reader without the `restricted` grant is not listed the record and is answered by `setting('key')` in its own `where` what the lake computes with",
     reopens
 );
 
 async fn a_restricted_setting_stays_what_the_lake_computes_with(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     reopen: Reopen,
-) -> Result<(), Failure> {
+) -> Held {
     let l = Lake::of(store.as_ref());
     let gross = derived(
         "gross",
@@ -144,14 +138,11 @@ async fn readings(store: &dyn LakeStore) -> Result<String, Failure> {
 }
 
 check!(
-    /// A derived field that reads a setting is as of its record's last write.
     SETTING_AS_OF_THE_WRITE = a_field_that_reads_a_setting_is_as_of_its_records_last_write,
     "seams, SystemVocabulary and 048 (lakelands#523): a derived field whose expression reads a setting is computed with the setting of its record's last write; the setting changed and the type declared again with one more field that is not computed leave it as it was, live and after a rebuild, and a write of the record brings it up to date"
 );
 
-async fn a_field_that_reads_a_setting_is_as_of_its_records_last_write(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_field_that_reads_a_setting_is_as_of_its_records_last_write(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let fields = || {
         let d = derived("d", StorageKind::Number, "x * setting('rate')", &["x"]);

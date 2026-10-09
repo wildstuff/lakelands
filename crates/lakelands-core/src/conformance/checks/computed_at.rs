@@ -3,7 +3,6 @@
 //! the record as stored and the read's clock, never stored.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 use std::time::Duration;
 
 use lakelands_api::error::{Case, Said};
@@ -13,31 +12,28 @@ use lakelands_api::query::Projection;
 use lakelands_api::query::{Search, SearchMode};
 use lakelands_api::read::{AggFunc, Direction, Found, GroupKey, OrderBy};
 use lakelands_api::write::{Declaration, Migration};
-use lakelands_api::{Access, Find, LakeStore, Outcome, Position, Record, Timestamp};
+use lakelands_api::{Access, Find, Outcome, Position, Record, Timestamp};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::backing::KIND;
 use crate::conformance::fixture::{
     Lake, Must, agg, aggregate, all_found, field, field_access, find_where, get_at, log_events,
     migration, object_set_on, order, pattern, pause, principal, read_at, refused_like, trigger_on,
     try_upsert, type_decl, view_of, write_verb,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A field computed at the read means its expression in every read.
     AT_THE_READ = a_field_computed_at_the_read_means_its_expression_in_every_read,
     "052 (lakelands#550): a derived field declared `computed_at: read` is computed at every read from the record as stored and the read's clock, the clock a `where` reads: `get`, a `where` naming it or its expression, an aggregate grouped by it, a view's measure over it, a pattern's start and rows, and a search's hits agree, at the head and as of a position; its value is of the instant it is read, not of the last write; it carries no provenance and no event of the log holds it; a reader is answered it as what it is computed from, masked or hidden; `describe` shows the member and the completed `depends_on`; `order_by` it is refused, in `find` and in a pattern, once the reader is known to read it, and one kept from it or from its type is told nothing; a grant's `only` on it cannot be applied; and a migration that renames its input follows"
 );
 
 check!(
-    /// What says when a field is computed, and what may not read the read.
     SAID_WHEN = when_a_field_is_computed_is_said_and_kept_from_stored_reads,
     "052 (lakelands#550): a derived expression or an `expr` function that reads the clock says `computed_at`, or is refused naming both; `computed_at: write` stamps the write's instant; a field computed at the read has the authority `derived`, no backing, no `previous`, and is not required, sensitive by itself, cleared or searchable, no key, validity bound or derived relation's match on either side, no field of a view or of a link, and read by no field computed at the write; a trigger, a verb and an object set that read it are refused, and so is a type declared again so that a field one of them or another type's derived relation reads is computed at the read; a verb's payload and a function's input say no `computed_at`; a view that reads it is not kept, no order index names it, and no door writes it"
 );
 
 check!(
-    /// Declared again, a field moves between the write and the read.
     MOVED = a_field_declared_again_moves_between_the_write_and_the_read,
     "052 (lakelands#550): saying `computed_at: write` where nothing was said computes nothing again; a field declared again from the write to the read holds no stored value from then on, and one declared back to the write is computed again for every live record"
 );
@@ -68,9 +64,7 @@ fn keys(rows: &[Record]) -> BTreeSet<String> {
     rows.iter().map(|r| r.key.to_string()).collect()
 }
 
-async fn a_field_computed_at_the_read_means_its_expression_in_every_read(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_field_computed_at_the_read_means_its_expression_in_every_read(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let (c, own) = (&l.cat, &l.own);
     l.declare_json(invoice("due_on")).await?;
@@ -366,9 +360,7 @@ async fn setting(l: &Lake, key: &str, value: Value) -> lakelands_api::Result<Out
     .await
 }
 
-async fn when_a_field_is_computed_is_said_and_kept_from_stored_reads(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn when_a_field_is_computed_is_said_and_kept_from_stored_reads(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let input = json!([{"name": "due_on", "type": {"kind": "date_time"}}]);
     for (name, backing, expr) in [
@@ -495,9 +487,7 @@ async fn when_a_field_is_computed_is_said_and_kept_from_stored_reads(
     Ok(())
 }
 
-async fn a_field_declared_again_moves_between_the_write_and_the_read(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_field_declared_again_moves_between_the_write_and_the_read(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let sheet = |when: Option<&str>| {
         let mut double = json!({"name": "double", "type": {"kind": "number"},

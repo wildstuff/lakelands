@@ -1,48 +1,40 @@
 //! Aggregates over a set of records (`lakelands_api::read::Aggregate`,
 //! `docs/decisions/011-storage-kind-and-value-type.md`).
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, ValueTypeDecl};
 use lakelands_api::query::{Projection, QueryResult};
 use lakelands_api::read::{AggFunc, Aggregate, ReadAt};
 use lakelands_api::write::Declaration;
-use lakelands_api::{Find, Found, LakeStore, Timestamp, TypeName, Value};
+use lakelands_api::{Find, Found, Timestamp, TypeName, Value};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, agg, aggregate, all_found, count_view, dec, decimal, field, pattern, reads_all,
     restrict, type_decl, value_type,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A count is a full walk's length.
     COUNT_IS_THE_WALK = a_count_answers_as_many_records_as_a_full_find_walk,
     "the read contract and 029: `find` with only `count()` answers as many records as a walk of every page of the same `find` returns, with no filter, a filter the engine applies and one only the store evaluates, at `valid_at`, at an earlier position and over a view, for a principal with the `restricted` grant and one without; a superseded state, a retired record and, without the grant, a restricted one are not counted"
 );
 
 check!(
-    /// A group key reads a setting as `where` does.
     SETTING_IN_A_GROUP_KEY = a_group_key_reads_a_setting_as_a_where_reads_it,
     "the read contract (lakelands#563): an aggregate's named group key that calls `setting` reads the lake's setting, as the same call in `where` does, in `find` and in a pattern: `setting('threshold')` groups by its value, and `amount > setting('threshold')`, in a pattern `bill.amount > setting('threshold')` (lakelands#720), splits the records it holds for from the rest"
 );
 
 check!(
-    /// A pattern's aggregate reads its rows by their paths.
     PATTERN_AGGREGATE_READS_PATHS = a_pattern_aggregate_reads_its_rows_by_their_paths,
     "018, extended (lakelands#720): a pattern's aggregate names each value as its rows hold it, `<type>.<field>` or `<type>.key` of a type the pattern binds: a field key and a measure by the path, a named key's paths through a field into members, over a step too; a name no bound type starts is refused alike for a type absent and one not shown, over a step binding it too, a named key reading a field its reader may not know of is refused as a field key on it is, one reading a masked or a write-only field as not granted, as `find` refuses it, and one with no meaning as `find` refuses it; a holder of `only` is grouped, counted and keyed over its admitted records alone, at the start and over a step; a null and a missing value fall into one null group; `<type>.key` is a field `key` its reader may know of, judged by its kind as `find` judges it, null where a record holds none, grouping, summing and ordering as `find` does, and the record's key to one kept from it, as over a type with none"
 );
 
 check!(
-    /// Nothing counts as zero.
     EMPTY_AGGREGATE = an_aggregate_over_no_records_answers_zero,
     "the read contract and 011: an aggregate over an empty set answers one group with a count of 0 and a sum of zero, kept at the field's scale"
 );
 
-async fn an_aggregate_over_no_records_answers_zero(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn an_aggregate_over_no_records_answers_zero(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let money = ValueTypeDecl {
@@ -87,9 +79,7 @@ async fn an_aggregate_over_no_records_answers_zero(
     Ok(())
 }
 
-async fn a_count_answers_as_many_records_as_a_full_find_walk(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_count_answers_as_many_records_as_a_full_find_walk(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let mut item = type_decl(
@@ -182,9 +172,7 @@ async fn a_count_answers_as_many_records_as_a_full_find_walk(
     Ok(())
 }
 
-async fn a_group_key_reads_a_setting_as_a_where_reads_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_group_key_reads_a_setting_as_a_where_reads_it(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(type_decl(
         "bill",
@@ -228,9 +216,7 @@ async fn a_group_key_reads_a_setting_as_a_where_reads_it(
     Ok(())
 }
 
-async fn a_pattern_aggregate_reads_its_rows_by_their_paths(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_pattern_aggregate_reads_its_rows_by_their_paths(store: Store) -> Held {
     use crate::conformance::fixture::{
         field_access, invalid_case, principal, reason, reference, step,
     };

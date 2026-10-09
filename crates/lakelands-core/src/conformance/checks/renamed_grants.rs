@@ -3,8 +3,6 @@
 //! is the lowest of what a principal's grants say under every name the
 //! field bears, has borne or, as of an earlier position, will bear.
 
-use std::sync::Arc;
-
 use lakelands_api::seam::Seams;
 use lakelands_api::write::{Migration, Outcome, ProposedWrite};
 use lakelands_api::{Access, LakeStore, Position, Principal};
@@ -16,10 +14,9 @@ use crate::conformance::fixture::{
     Lake, Must, field_access, get_at, ingest, log_events, no_such_field, read_at, recorded_outputs,
     refused_alike, reviewer, source_record, try_upsert, write_verb,
 };
-use crate::conformance::{Failure, Given, ImportedLake};
+use crate::conformance::{Failure, Given, Held, ImportedLake, Store};
 
 check!(
-    /// A grant holds a field under every name it has borne.
     GRANT_FOLLOWS = a_grant_holds_a_field_under_every_name_it_has_borne,
     "006 and 024, extended (lakelands#527): a field renamed by a migration is one field: its access is the lowest of what a principal's grants say under the name it bears at the position read and under every other name it has borne or will bear that they name, reading and writing judged apart; so a field held at none or masked stays so under its new name, through a chain of renames, and under its old name in a read as of before for a host that renamed its grant, at every door (`get`, a `where`, an `order_by`, an aggregate, a view's measure, a pattern, a search, `describe_type`, a write, a verb that sets it); a permission stays with its name, and a host widens by naming the new name and dropping the old; two fields that have borne one name are restricted together by it; a proposed migration that renames is listed to a reader kept from the old name with neither the pair nor the new name, and its accept answers it no rename; a migration's answer names its renames; the list is kept through a reopen, made again by a rebuild and an import, and is no event of the log",
     given
@@ -119,10 +116,7 @@ async fn kept(store: &dyn LakeStore, before: Position) -> [usize; 4] {
     ]
 }
 
-async fn a_grant_holds_a_field_under_every_name_it_has_borne(
-    store: Arc<dyn LakeStore>,
-    given: Given,
-) -> Result<(), Failure> {
+async fn a_grant_holds_a_field_under_every_name_it_has_borne(store: Store, given: Given) -> Held {
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     let mut first = account(&["a", "c", "holder"]);
     first["declare"] = json!("type");

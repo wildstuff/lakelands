@@ -7,8 +7,6 @@
 //! is `open` (`i1`, `i2`, `i5`), `big` those above 100 (`i2` to `i5`). Every
 //! set below is counted by hand from that.
 
-use std::sync::Arc;
-
 use lakelands_api::event::EventBody;
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::StorageKind::{Json, Number, Text};
@@ -23,23 +21,20 @@ use crate::conformance::fixture::{
     limits, migration, object_set_on, reference, refused_like, refused_on, trigger_on, type_decl,
     type_of,
 };
-use crate::conformance::{Failure, Given};
+use crate::conformance::{Failure, Given, Held, Store};
 
 check!(
-    /// Sets built from sets.
     COMPOSED = a_set_names_a_set_and_follows_it,
     "004, extended (lakelands#552), and log format §6: in_set('name') holds for a record where the named set's filter holds: union, intersection and difference are or, and, and not, through two levels; a read's where names a set and reads its filter, as of an earlier position the filter in force there; a set declared again decides the sets built on it in the same append; a write joins and leaves them; a trigger whose when names a set fires as the filter holds; the declaration that names a set is written in format version 11"
 );
 
 check!(
-    /// What a set may not name, and where a path may not step.
     REFUSED = a_set_that_cannot_be_named_and_a_path_that_cannot_be_walked_are_refused,
     "028, extended (lakelands#552): in_set of a set that is not declared, of a set of another type and of a set that names it in turn is refused as invalid, and in_set outside a set's where, a trigger's when and a read's where; a path that steps into a field that is no json is refused at the declaration of a set, a trigger and a derived field and at a read, saying what to write, while a path into a json field is read; a set declared again for another type is refused on `of`; none appends; past max_set_changes over a declared set and the sets built on it the declaration is refused too_large, naming the set whose change passed it",
     given
 );
 
 check!(
-    /// A named set tells no more than its filter.
     RIGHTS = a_named_set_is_read_by_the_right_to_read_what_its_filter_reads,
     "024, extended (lakelands#552): a reader kept from a field is answered, for in_set of a set whose filter reads it, directly or through the sets it names, as for a set that is not declared; describe lists it no such set; a write's answer names it no such set joined or left; an author kept from the field declares no set that names one"
 );
@@ -117,7 +112,7 @@ fn set_off(o: &Outcome) -> String {
     format!("fired [{fired}] joined [{joined}] left [{left}]")
 }
 
-async fn a_set_names_a_set_and_follows_it(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_set_names_a_set_and_follows_it(store: Store) -> Held {
     let (s, l) = (store.as_ref(), lake(store.as_ref()).await?);
     let own = &l.own;
     // Union, intersection, difference, and a set two levels up.
@@ -185,9 +180,9 @@ async fn a_set_names_a_set_and_follows_it(store: Arc<dyn LakeStore>) -> Result<(
 }
 
 async fn a_set_that_cannot_be_named_and_a_path_that_cannot_be_walked_are_refused(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     given: Given,
-) -> Result<(), Failure> {
+) -> Held {
     let (s, l) = (store.as_ref(), lake(store.as_ref()).await?);
     let Lake { cat, own } = &l;
     let named = object_set_on("named", "partner", "name is not null");
@@ -284,9 +279,7 @@ async fn a_set_that_cannot_be_named_and_a_path_that_cannot_be_walked_are_refused
     head_unmoved(store.as_ref(), before, "the refused declaration").await
 }
 
-async fn a_named_set_is_read_by_the_right_to_read_what_its_filter_reads(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_named_set_is_read_by_the_right_to_read_what_its_filter_reads(store: Store) -> Held {
     let (s, l) = (store.as_ref(), lake(store.as_ref()).await?);
     let both = set("both", "in_set('open') and in_set('big')");
     l.declare_as(both, "both").await?;

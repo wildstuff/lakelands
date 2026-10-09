@@ -4,8 +4,6 @@
 //! theirs, each ranking weighed as the search asks
 //! (`docs/decisions/046-a-hybrid-search-fuses-the-ranks-a-read-may-see.md`).
 
-use std::sync::Arc;
-
 use lakelands_api::error::{Aimless, Case};
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::query::{Hits, Search, SearchMode, VectorTerm};
@@ -13,38 +11,33 @@ use lakelands_api::{LakeStore, Principal};
 use serde_json::json;
 
 use super::search::doc_search;
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, field, field_writer, refused_like, refused_on, restrict, searchable, type_decl,
     vector,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A record the read may not see moves no hybrid score.
     HIDDEN_MOVES_NO_SCORE = a_record_the_read_may_not_see_moves_no_hybrid_score,
     "046 and 024: a hybrid search ranks each list among the hits the read may see, so a restricted record, or one its `where` leaves out, ranked above a visible hit moves neither that hit's rank nor its score"
 );
 
 check!(
-    /// Every page of a hybrid search reads one ranking.
     PAGES_ONE_RANKING = every_page_of_a_hybrid_search_reads_one_ranking,
     "046 and 029: a hybrid search fuses each list to the lake's `max_limit` ranks whatever the page, so its pages through a cursor answer the one ranking a single page answers, keys and the scores' bits"
 );
 
 check!(
-    /// Ranking without reading a record answers what reading them answers.
     SAME_LIST_UNREAD = a_search_that_reads_no_record_to_rank_answers_what_reading_them_answers,
     "046: at the head, a hybrid search by a principal who sees every live record, without `where` or `valid_at`, ranks without reading a record, and answers the keys and the scores' bits the same search answers under a `where` that holds for every record, with restricted and retired records in the lake"
 );
 
 check!(
-    /// Fused rankings are weighed as the search asks.
     FUSED_BY_WEIGHT = a_search_fuses_its_rankings_each_by_its_weight,
     "046, extended, and 024: a vector search that names further fields in `also` ranks each field among the hits the read may see and fuses the rankings by weighted reciprocal rank, each adding `weight / (60 + rank)` in the order named, an absent weight being 1; it answers the keys and the scores' bits of that rule on every engine, a record without a vector in a field gains nothing from it, and a restricted record first in every ranking moves no score; a hybrid search weighs its text (`text_weight`) and its vector (`weight`) by the same rule, and weights of 1 answer what no weights answer"
 );
 
 check!(
-    /// A weight that weighs nothing is refused.
     WEIGHTS_REFUSED = a_weight_that_cannot_weigh_or_a_field_named_twice_is_refused_naming_it,
     "046, extended: a weight of 0, below 0 or above 1 000 000, a `weight` on a vector search that names no other field, a vector field named twice, and a query vector in `vector`, in `also` or in a hybrid search whose components are all 0 or one is not a finite number once read as an `f32` (`(0, 0)`, `(1e-200, 0)`, `(1e300, 0)`) are each refused as invalid, naming the field or `text_weight`, before the principal's rights to the field are looked at"
 );
@@ -115,9 +108,7 @@ fn rrf(ranks: &[u32]) -> u64 {
         .to_bits()
 }
 
-async fn a_record_the_read_may_not_see_moves_no_hybrid_score(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_record_the_read_may_not_see_moves_no_hybrid_score(store: Store) -> Held {
     // `held` and `out` point along the query, `a` beside it: in the
     // vector list both rank above `a`. Only `held` and `a` hold the word.
     let rows = [
@@ -150,9 +141,7 @@ async fn a_record_the_read_may_not_see_moves_no_hybrid_score(
     Ok(())
 }
 
-async fn every_page_of_a_hybrid_search_reads_one_ranking(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn every_page_of_a_hybrid_search_reads_one_ranking(store: Store) -> Held {
     // `r00` to `r79` point ever further from the query, a degree apart;
     // only `r70` holds the word, so it is the lexical list's one hit and
     // the vector list's 71st: it fuses to 1/60 + 1/130 and ranks first,
@@ -185,8 +174,8 @@ async fn every_page_of_a_hybrid_search_reads_one_ranking(
 }
 
 async fn a_search_that_reads_no_record_to_rank_answers_what_reading_them_answers(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     // Twelve records five degrees apart, every other one holding the word;
     // two restricted, which the owner sees, and two retired, which no one does.
     let rows = (0..12).map(|i| {
@@ -263,9 +252,7 @@ fn weighed(text_weight: Option<f64>, weight: Option<f64>) -> SearchMode {
     }
 }
 
-async fn a_search_fuses_its_rankings_each_by_its_weight(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_search_fuses_its_rankings_each_by_its_weight(store: Store) -> Held {
     // Along the query, `v` ranks held, a, b, c and `w` ranks held, b, a;
     // `c` holds no `w`, and it alone holds the word.
     let rows = [
@@ -323,8 +310,8 @@ async fn a_search_fuses_its_rankings_each_by_its_weight(
 }
 
 async fn a_weight_that_cannot_weigh_or_a_field_named_twice_is_refused_naming_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = docs(store.as_ref(), [("a".to_owned(), "harbour", 0, 0)]).await?;
     // The reader sees `v` only masked: a search over it would be refused
     // as not granted, were its shape not judged first.

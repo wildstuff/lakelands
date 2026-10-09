@@ -2,8 +2,6 @@
 //! direction, depth, `type` and `where`, a page at a time
 //! (`docs/decisions/018-one-pattern-query.md`, lakelands#556).
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::{RelationDecl, StorageKind};
 use lakelands_api::query::Walk::{Both, In, Out};
 use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Step, Walk};
@@ -12,38 +10,33 @@ use lakelands_api::write::WriteOpts;
 use lakelands_api::{Access, Catalog, Cursor, Find, LakeStore, Principal};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, agg, field, field_access, is_invalid, patch, pattern, reads_all, reason, reference,
     restrict, type_decl,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A graph cut by its limit is continued by its cursor.
     GRAPH_PAGES = a_graph_cut_by_its_limit_pages_on_with_its_cursor,
     "018 and 029, extended: a graph cut by `limit` answers `truncated` and a `next_cursor`, and the next page holds the next records of the one order with every link between a record of that page and one of this or an earlier page, read at the first page's position; several starts are one walk, cut together"
 );
 
 check!(
-    /// A cursor continues only the read it was handed out for.
     GRAPH_CURSORS = a_graph_refuses_a_cursor_of_another_read_and_a_path_any,
     "018: a graph refuses a cursor handed out for rows, for `find` or for another pattern, and a path and an aggregate, which have no pages, refuse every cursor, each as invalid before anything is walked"
 );
 
 check!(
-    /// A graph walks what its steps say.
     GRAPH_STEPS = a_graph_honours_each_steps_direction_depth_and_where,
     "018, extended: a graph whose steps all start at depth 0 walks each relation in its own step's direction to its own `max`, keeping and walking on from a record only where its step's `where`, read against the type its relation reaches wherever it is declared, holds, and a step that reaches several types and reads a `where` names its `type`; any other is a chain walked as rows walk it, answered as the start, what rows bind, the records between and the links walked; an empty range and a chain's undeclared relation are refused; over a reference field and over link records alike"
 );
 
 check!(
-    /// A path walks what its steps say, from one start.
     PATH_STEPS = a_path_honours_its_steps_and_has_one_start,
     "018, extended: a path walks each relation in its step's direction, only through records its step's `where` keeps, and no path is an empty graph; several starts, a projection other than `graph`, and a step starting below depth 0 are refused as invalid"
 );
 
 check!(
-    /// A graph shows no more than the reader's rows would.
     GRAPH_RIGHTS = a_graph_shows_a_reader_no_more_than_its_rows,
     "024 and 026, extended: a graph's step `where` on a field the reader may not read is refused as in rows; a restricted record and its links are left out of a graph as out of rows, and a chain is not walked through a record the reader is not shown"
 );
@@ -143,11 +136,7 @@ async fn graph(
 }
 
 /// Each pattern must be refused as invalid.
-async fn refused(
-    cat: &dyn Catalog,
-    who: &Principal,
-    cases: Vec<(Pattern, &str)>,
-) -> Result<(), Failure> {
+async fn refused(cat: &dyn Catalog, who: &Principal, cases: Vec<(Pattern, &str)>) -> Held {
     for (p, what) in cases {
         let err = cat.query(who, p).await.must_fail(what)?;
         ensure!(
@@ -158,9 +147,7 @@ async fn refused(
     Ok(())
 }
 
-async fn a_graph_cut_by_its_limit_pages_on_with_its_cursor(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_graph_cut_by_its_limit_pages_on_with_its_cursor(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let paged = |key| Pattern {
@@ -194,9 +181,7 @@ async fn a_graph_cut_by_its_limit_pages_on_with_its_cursor(
     Ok(())
 }
 
-async fn a_graph_refuses_a_cursor_of_another_read_and_a_path_any(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_graph_refuses_a_cursor_of_another_read_and_a_path_any(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let paged = |max, project, cursor| Pattern {
@@ -259,9 +244,7 @@ async fn a_graph_refuses_a_cursor_of_another_read_and_a_path_any(
     refused(cat.as_ref(), own, cases).await
 }
 
-async fn a_graph_honours_each_steps_direction_depth_and_where(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_graph_honours_each_steps_direction_depth_and_where(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let mut late = st("of", In, 0, 1);
@@ -322,9 +305,7 @@ async fn a_graph_honours_each_steps_direction_depth_and_where(
     refused(cat.as_ref(), own, cases).await
 }
 
-async fn a_path_honours_its_steps_and_has_one_start(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_path_honours_its_steps_and_has_one_start(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let path = |key: Option<&str>, to: &str, step: Step| Pattern {
@@ -361,9 +342,7 @@ async fn a_path_honours_its_steps_and_has_one_start(
     refused(cat.as_ref(), own, cases).await
 }
 
-async fn a_graph_shows_a_reader_no_more_than_its_rows(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_graph_shows_a_reader_no_more_than_its_rows(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let blind = field_access(store.as_ref(), "blind", "spoke", &[("name", Access::None)]);

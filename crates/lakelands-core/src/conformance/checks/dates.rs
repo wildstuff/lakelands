@@ -2,28 +2,24 @@
 //! as `YYYY-MM-DD` (`docs/decisions/011-storage-kind-and-value-type.md`,
 //! extended; `docs/log-format.md` §1.3).
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::ontology::StorageKind::{Date, DateTime, Number, Text};
 use lakelands_api::read::{Direction, OrderBy};
-use lakelands_api::{Find, LakeStore, Params, Refusal, Value};
+use lakelands_api::{Find, Params, Refusal, Value};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, bound, derived, describe_type, field, find_where, migration, order, param,
     reference, refused_on, try_upsert, type_decl, view_of,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A date is written and read as `YYYY-MM-DD`, and compares as its midnight.
     DATE_KIND = a_date_is_read_as_its_day_and_compares_as_its_midnight,
     "011, extended (lakelands#702): a `date` field takes a date or an instant at a UTC midnight and reads `YYYY-MM-DD`; any other instant, an offset midnight too, is refused naming the field; a key made from a date is the date, and a write by it is admitted; a view grouped by a date is keyed by it; a date orders and equals as its midnight against a `date_time`, ties with one at that midnight, has dates for its `min` and `max`, compares with `today()`, buckets by `date_bucket` and subtracts to a duration; a derived date at a midnight lands and one off it holds no value; a view's parameter may be a date; `describe` says `date`"
 );
 
 check!(
-    /// A migration converts to and from a date without loss.
     DATE_MIGRATES = a_migration_converts_dates_without_loss,
     "027 and 011, extended (lakelands#702): `date_time` to `date` is lossless over midnights and refused with its report, naming the record, over one that is not, as `text` to `date` is over a midnight at a non-zero offset; `text` to `date`, `date` to `date_time` at its midnight and `date` to `text` as written; a key field migrated to `date` re-keys its type, and a reference to a record is rewritten to its new key"
 );
@@ -43,9 +39,7 @@ fn inv() -> lakelands_api::ontology::TypeDecl {
     )
 }
 
-async fn a_date_is_read_as_its_day_and_compares_as_its_midnight(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_date_is_read_as_its_day_and_compares_as_its_midnight(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(inv()).await?;
     let mut rate = type_decl("rate", vec![field("cur", Text), field("day", Date)]);
@@ -220,7 +214,7 @@ async fn a_date_is_read_as_its_day_and_compares_as_its_midnight(
     Ok(())
 }
 
-async fn a_migration_converts_dates_without_loss(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_migration_converts_dates_without_loss(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let kinds = |on, t, d, s| {
         let fields = [("on", on), ("t", t), ("d", d), ("s", s)];

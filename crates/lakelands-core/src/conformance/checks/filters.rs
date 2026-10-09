@@ -3,46 +3,39 @@
 //! `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
 //! `docs/decisions/010-provenance-per-field.md`).
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::query::Projection;
 use lakelands_api::read::{AggFunc, Aggregate, OrderBy};
 use lakelands_api::{Find, LakeStore, Refusal, Timestamp};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, agg, alike_renamed, field, field_writer, find_where, no_such_field, order, pattern,
     refused_on, source_record, sourced, type_decl, windows_reach_head,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// Absence never satisfies a comparison.
     ABSENT_NEVER_MATCHES = absent_fields_never_match_not_even_not_equal,
     "023: a comparison with an absent or null operand is false, `!=` included; `is null` is how absence is asked about"
 );
 
 check!(
-    /// Numbers and numeric text compare by value.
     NUMBERS_COMPARE_AS_NUMBERS = numbers_and_numeric_text_compare_as_numbers,
     "023: when both sides read as numbers, a JSON number or a decimal string, they compare exactly as numbers, never as text"
 );
 
 check!(
-    /// Values of kinds that do not compare match nothing.
     KINDS_THAT_DO_NOT_COMPARE = values_of_kinds_that_do_not_compare_match_nothing_and_fail_nothing,
     "023: text that is not a number against a number, a boolean against text: every operator is false, and the read does not fail"
 );
 
 check!(
-    /// A read may not probe a field its principal may not read.
     PROBING_REFUSED = probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggregate,
     "024 and 006: filtering, ordering or aggregating over a field the principal sees masked, through `find` or through a pattern's rows and its aggregate, is refused as not granted, naming the field; over one it may not see at all, it is answered as for a field the type does not declare"
 );
 
 check!(
-    /// Provenance can be filtered and ordered on.
     PROVENANCE_IN_WHERE_AND_ORDER = a_filter_and_an_order_can_read_when_a_source_saw_a_value,
     "010 and 017: `seen_at(f)` reads a field's provenance in `where`, and `order_by` may order by it"
 );
@@ -72,9 +65,7 @@ async fn keys_where(store: &dyn LakeStore, filter: &str) -> Result<Vec<String>, 
     Ok(keys)
 }
 
-async fn absent_fields_never_match_not_even_not_equal(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn absent_fields_never_match_not_even_not_equal(store: Store) -> Held {
     let l = lines(store.as_ref()).await?;
     l.upsert("line", "with", json!({"note": "x"})).await?;
     l.upsert("line", "other", json!({"note": "y"})).await?;
@@ -99,9 +90,7 @@ async fn absent_fields_never_match_not_even_not_equal(
     Ok(())
 }
 
-async fn numbers_and_numeric_text_compare_as_numbers(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn numbers_and_numeric_text_compare_as_numbers(store: Store) -> Held {
     let l = lines(store.as_ref()).await?;
     l.upsert("line", "nine", json!({"qty": 9, "price": "9.50"}))
         .await?;
@@ -129,9 +118,7 @@ async fn numbers_and_numeric_text_compare_as_numbers(
     Ok(())
 }
 
-async fn values_of_kinds_that_do_not_compare_match_nothing_and_fail_nothing(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn values_of_kinds_that_do_not_compare_match_nothing_and_fail_nothing(store: Store) -> Held {
     let l = lines(store.as_ref()).await?;
     l.upsert("line", "a", json!({"label": "abc", "qty": 1, "flag": true}))
         .await?;
@@ -157,8 +144,8 @@ async fn values_of_kinds_that_do_not_compare_match_nothing_and_fail_nothing(
 }
 
 async fn probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggregate(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = lines(store.as_ref()).await?;
     let Lake { cat, .. } = &l;
     l.upsert("line", "a", json!({"qty": 1, "note": "secret"}))
@@ -272,9 +259,7 @@ async fn probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggre
     Ok(())
 }
 
-async fn a_filter_and_an_order_can_read_when_a_source_saw_a_value(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_filter_and_an_order_can_read_when_a_source_saw_a_value(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let ty = type_decl("reading", vec![sourced("level", StorageKind::Number)]);
     l.declare(ty).await?;
@@ -312,14 +297,11 @@ async fn a_filter_and_an_order_can_read_when_a_source_saw_a_value(
 }
 
 check!(
-    /// A cleared value matches nothing; its record is still there.
     CLEARED_FIELD = a_cleared_field_matches_nothing_but_its_record_is_found_by_another,
     "012 and 023: a field set to null is absent, so no comparison on it holds, and the record is found by its other fields as before"
 );
 
-async fn a_cleared_field_matches_nothing_but_its_record_is_found_by_another(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_cleared_field_matches_nothing_but_its_record_is_found_by_another(store: Store) -> Held {
     let l = lines(store.as_ref()).await?;
     l.upsert("line", "a", json!({"label": "keep", "note": "gone"}))
         .await?;

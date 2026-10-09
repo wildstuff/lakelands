@@ -5,8 +5,6 @@
 //! every type it reached, in one append, as `retire` would retire each; a
 //! record another hand also wrote refuses the whole purge.
 
-use std::sync::Arc;
-
 use lakelands_api::error::{Case, RecordName};
 use lakelands_api::event::EventBody;
 use lakelands_api::expr::Condition;
@@ -19,70 +17,60 @@ use lakelands_api::{
 };
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, computed_by, count_view, derived, events_after, field, get_at, head_unmoved,
     ingest, invalid_case, pattern, refused_like, refused_on, source_record, sourced, step,
     trigger_on, type_decl,
 };
+use crate::conformance::{Failure, Held, Store};
 use crate::links::{link_key, link_type_name};
 
 check!(
-    /// A purge retires what the source brought in, and nothing else.
     RETIRES_WHAT_IT_BROUGHT = a_purge_retires_every_record_the_source_brought_in_and_no_other,
     "039: a purge retires, in one append, every live record the source brought in across every type it reached, and leaves other sources' and authored records; the report counts per type"
 );
 
 check!(
-    /// A purge keeps history.
     KEEPS_HISTORY = a_purged_record_is_still_read_as_of_before_the_purge,
     "039 and 007: a purge retires, it does not erase: a read as of before it sees the records, and each retirement continues the record's version"
 );
 
 check!(
-    /// A co-owned record refuses the whole purge.
     CO_OWNED_REFUSES = a_record_another_hand_also_wrote_refuses_the_whole_purge,
     "039: a record the source brought in that a principal or another source also wrote refuses the whole purge as invalid, naming it, and nothing is appended"
 );
 
 check!(
-    /// The lake's own values make no owner.
     LAKES_OWN_VALUES = derived_and_system_values_make_no_owner,
     "039: a derived value and a value the lake itself wrote (an aging move) make no owner; a cleared authored field co-owns nothing"
 );
 
 check!(
-    /// Restricted records are purged too.
     RESTRICTED_PURGED = a_restricted_record_is_purged_too,
     "039: a purge is the host's act over its lake, so a record under a retention hold is retired with the rest"
 );
 
 check!(
-    /// A type without provenance is not searched.
     UNSEARCHED = a_type_that_keeps_no_provenance_is_named_and_not_searched,
     "039 and 010: a type declared without per-field provenance cannot say who brought its records in; the purge names it as unsearched and leaves its records"
 );
 
 check!(
-    /// Purging twice is once; the same content ingested again comes back.
     SECOND_PURGE = a_second_purge_appends_nothing_and_the_feed_can_come_back,
     "039 and log-format §3: a second purge of the same source retires nothing and appends nothing; the same content ingested after a purge is a new ingest"
 );
 
 check!(
-    /// Each retirement reacts as a `retire` does.
     REACTS_AS_RETIRE = each_purged_record_reacts_as_a_retire_does_in_the_same_append,
     "039 and 004: each retirement of a purge is written by `system:lakelands`, origin `system`, context `direct`, and fires the triggers and leaves the object sets a `retire` would, in the same append, caused by that retirement"
 );
 
 check!(
-    /// Other sources' links at purged records stay.
     LINKS_STAY = another_sources_links_to_a_purged_record_stay_and_the_walk_skips_it,
     "039, 035 and 032: the purged source's own link records are retired with it; link records another source brought in, pointing at purged records, stay, and a walk skips the retired end"
 );
 
 check!(
-    /// A record the source left no value in stays.
     CLEARED_STAYS = a_record_whose_values_from_the_source_were_all_cleared_stays,
     "039: whose a record is, is read over the fields that hold a value: a record whose values from the source were all cleared holds nothing of it and stays, whether the source brought it in or set and cleared a value on another source's record, while a record still holding one is purged"
 );
@@ -110,7 +98,7 @@ fn shared(e: &Error) -> Option<(usize, Vec<&str>)> {
 /// sourced `amount`, a shared `status`, a derived `gross`, and the source
 /// relation `approved_by` to `partner`); `crm` brings in partners p1 and p2
 /// and the invoice c1, `erp` the invoice i1.
-async fn lake(store: &dyn LakeStore) -> Result<(), Failure> {
+async fn lake(store: &dyn LakeStore) -> Held {
     let l = Lake::of(store);
     l.declare(type_decl(
         "partner",
@@ -155,11 +143,7 @@ async fn lake(store: &dyn LakeStore) -> Result<(), Failure> {
     .await
 }
 
-async fn feed(
-    l: &Lake,
-    source: &str,
-    records: Vec<lakelands_api::SourceRecord>,
-) -> Result<(), Failure> {
+async fn feed(l: &Lake, source: &str, records: Vec<lakelands_api::SourceRecord>) -> Held {
     let (cat, who) = (l.cat.as_ref(), &l.own);
     ingest(cat, who, source, records)
         .await
@@ -168,13 +152,7 @@ async fn feed(
 }
 
 /// One record of `ty` at `key` brought in from `source`.
-async fn feed_one(
-    l: &Lake,
-    source: &str,
-    ty: &str,
-    key: &str,
-    fields: Value,
-) -> Result<(), Failure> {
+async fn feed_one(l: &Lake, source: &str, ty: &str, key: &str, fields: Value) -> Held {
     feed(l, source, vec![source_record(ty, key, fields)]).await
 }
 
@@ -220,9 +198,7 @@ async fn live(l: &Lake, ty: &str, key: &str) -> Result<bool, Failure> {
     }
 }
 
-async fn a_purge_retires_every_record_the_source_brought_in_and_no_other(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_purge_retires_every_record_the_source_brought_in_and_no_other(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     l.upsert("partner", "p3", json!({"note": "ours"})).await?;
@@ -285,9 +261,7 @@ async fn a_purge_retires_every_record_the_source_brought_in_and_no_other(
     Ok(())
 }
 
-async fn a_purged_record_is_still_read_as_of_before_the_purge(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_purged_record_is_still_read_as_of_before_the_purge(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -326,9 +300,7 @@ async fn a_purged_record_is_still_read_as_of_before_the_purge(
     Ok(())
 }
 
-async fn a_record_another_hand_also_wrote_refuses_the_whole_purge(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_record_another_hand_also_wrote_refuses_the_whole_purge(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     l.upsert("partner", "p1", json!({"note": "called"})).await?;
@@ -355,7 +327,7 @@ async fn a_record_another_hand_also_wrote_refuses_the_whole_purge(
     Ok(())
 }
 
-async fn derived_and_system_values_make_no_owner(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn derived_and_system_values_make_no_owner(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     // The lake moves `i1`'s shared status itself.
@@ -388,7 +360,7 @@ async fn derived_and_system_values_make_no_owner(store: Arc<dyn LakeStore>) -> R
     Ok(())
 }
 
-async fn a_restricted_record_is_purged_too(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_restricted_record_is_purged_too(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     store
@@ -403,9 +375,7 @@ async fn a_restricted_record_is_purged_too(store: Arc<dyn LakeStore>) -> Result<
     Ok(())
 }
 
-async fn a_type_that_keeps_no_provenance_is_named_and_not_searched(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_type_that_keeps_no_provenance_is_named_and_not_searched(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let line = sourced("text", StorageKind::Text);
@@ -423,9 +393,7 @@ async fn a_type_that_keeps_no_provenance_is_named_and_not_searched(
     Ok(())
 }
 
-async fn a_second_purge_appends_nothing_and_the_feed_can_come_back(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_second_purge_appends_nothing_and_the_feed_can_come_back(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     purge(store.as_ref(), "crm").await?;
@@ -445,9 +413,7 @@ async fn a_second_purge_appends_nothing_and_the_feed_can_come_back(
     Ok(())
 }
 
-async fn each_purged_record_reacts_as_a_retire_does_in_the_same_append(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn each_purged_record_reacts_as_a_retire_does_in_the_same_append(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -502,9 +468,7 @@ async fn each_purged_record_reacts_as_a_retire_does_in_the_same_append(
     Ok(())
 }
 
-async fn another_sources_links_to_a_purged_record_stay_and_the_walk_skips_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn another_sources_links_to_a_purged_record_stay_and_the_walk_skips_it(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -558,9 +522,7 @@ async fn another_sources_links_to_a_purged_record_stay_and_the_walk_skips_it(
     Ok(())
 }
 
-async fn a_record_whose_values_from_the_source_were_all_cleared_stays(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_record_whose_values_from_the_source_were_all_cleared_stays(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     // `crm` clears the one value it gave `p1`; `p2` keeps its name. On
@@ -590,14 +552,11 @@ async fn a_record_whose_values_from_the_source_were_all_cleared_stays(
 }
 
 check!(
-    /// A co-owned purge names how many, and the first ten.
     CO_OWNED_COUNTED = a_co_owned_purge_names_the_count_and_the_first_ten,
     "039 and seams: a purge refused because records are co-owned names how many there are, and the first ten, never more"
 );
 
-async fn a_co_owned_purge_names_the_count_and_the_first_ten(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_co_owned_purge_names_the_count_and_the_first_ten(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let keys: Vec<String> = (0..12).map(|n| format!("b{n:02}")).collect();
@@ -632,12 +591,11 @@ async fn a_co_owned_purge_names_the_count_and_the_first_ten(
 }
 
 check!(
-    /// A value a backing filled makes no owner.
     BACKED_NO_OWNER = a_value_a_backing_filled_makes_no_owner,
     "039: a backed output is the lake's own computation, like a derived value; it makes no owner, so the source's purge retires the record"
 );
 
-async fn a_value_a_backing_filled_makes_no_owner(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_value_a_backing_filled_makes_no_owner(store: Store) -> Held {
     use crate::conformance::backing::KIND;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -669,14 +627,11 @@ async fn a_value_a_backing_filled_makes_no_owner(store: Arc<dyn LakeStore>) -> R
 }
 
 check!(
-    /// A field that declares `initial` makes no owner.
     INITIAL_NO_OWNER = a_field_that_declares_initial_makes_no_owner,
     "039, extended, and 050 (lakelands#551): a field that declares `initial` makes no owner, whoever wrote it last: a record whose such field an author moved goes with its source's purge, whole or of one type, and the preflight and the purge name in `moved`, per type and field, how many such records they take and their first keys; another authored field still refuses the purge whole"
 );
 
-async fn a_field_that_declares_initial_makes_no_owner(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_field_that_declares_initial_makes_no_owner(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare_json(json!({"declare": "type", "name": "order", "fields": [
         {"name": "total", "type": {"kind": "number"}, "authority": "source"},
@@ -721,14 +676,13 @@ async fn a_field_that_declares_initial_makes_no_owner(
 }
 
 check!(
-    /// A field declared `shared` since takes a source's ingest, and its purge.
     SHARED_SINCE = a_field_declared_shared_since_is_ingested_and_purged_with_its_source,
     "039 and 016 (lakelands#611): an authored field declared again as `shared`, with no migration, takes an ingest under a source, and that source's purge takes the record it brought in and leaves the records an author wrote before"
 );
 
 async fn a_field_declared_shared_since_is_ingested_and_purged_with_its_source(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(type_decl("sample", vec![field("title", StorageKind::Text)]))
         .await?;
@@ -756,20 +710,19 @@ async fn a_field_declared_shared_since_is_ingested_and_purged_with_its_source(
 }
 
 check!(
-    /// A preflight says what the purge would do, and the purge may hold to it.
-    PREFLIGHT = a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_once_the_lake_moved,
+    PREFLIGHT =
+        a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_once_the_lake_moved,
     "039, extended: `purge_preflight` appends nothing and answers the report the purge then answers, under an id; it is refused as the purge is for a co-owned record; a purge that repeats the id is refused as invalid, appending nothing, once the lake has moved or when the id is another source's, and otherwise purges"
 );
 
 check!(
-    /// What a purge strands is named, not refused.
     REFERENCES_NAMED = a_purge_names_the_records_outside_it_that_refer_into_it,
     "039, extended, 026 and 035: the preflight and the purge name, per relation, the live records the purge does not take that refer to a record it takes, by a `via` field or as a link record with an end inside, restricted ones included, by type and key only: how many, and the first ten in key order; a retired record, one the purge takes itself and a relation derived from matching values are not named, and the purge is not refused"
 );
 
 async fn a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_once_the_lake_moved(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let (crm, erp) = (SourceId::from("crm"), SourceId::from("erp"));
@@ -824,9 +777,7 @@ async fn a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_on
     Ok(())
 }
 
-async fn a_purge_names_the_records_outside_it_that_refer_into_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_purge_names_the_records_outside_it_that_refer_into_it(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     // A `bill` names its partner in the text field `partner_id`, and is
@@ -912,44 +863,38 @@ async fn a_purge_names_the_records_outside_it_that_refer_into_it(
 }
 
 check!(
-    /// A purge that names a type takes the source's records of that type alone.
     ONE_TYPE = a_purge_that_names_a_type_retires_what_the_source_brought_into_it_alone,
     "039, extended: a purge that names a type retires, in one append, the live records the source brought into that type, and leaves the source's records of its other types and other sources' records of that type; the report names the type, counts it alone and names no type unsearched"
 );
 
 check!(
-    /// Co-ownership is judged in the named type alone.
     CO_OWNED_IN_TYPE = a_co_owned_record_refuses_a_typed_purge_only_in_the_named_type,
     "039, extended: a record of another type of the source that another hand also wrote does not refuse a purge that names a type; one in the named type refuses it whole as invalid, naming it and the type, and nothing is appended"
 );
 
 check!(
-    /// What the source keeps in its other types is named when it refers in.
     OWN_REFERENCES = a_typed_purge_names_the_sources_own_records_that_still_refer_into_it,
     "039, extended: a typed purge leaves the source's records of its other types, and its report names those that refer to a record it takes, by a `via` field, as it names any other record outside the purge"
 );
 
 check!(
-    /// The named type's own links go; another type's stay and are named.
     TYPED_LINKS = a_typed_purge_takes_the_links_of_the_named_types_relations_and_no_other,
     "039, extended, and 035: a typed purge takes the source's link records of the relations the named type declares with its records; the source's link records of another type's relation that end at a purged record stay and are named in the report"
 );
 
 check!(
-    /// A preflight's id is of the source, the type and the head.
     TYPED_ID = a_preflight_of_a_type_and_one_of_the_source_whole_answer_ids_of_their_own,
     "039, extended: at one head the preflight of a source whole and the preflight of the source from one type answer different ids; each is refused as invalid by the other's purge, appending nothing, and taken by its own"
 );
 
 check!(
-    /// A type a purge cannot take from is refused, not passed over.
     TYPE_REFUSED = a_purge_from_a_type_it_cannot_take_from_is_refused,
     "039, extended, and 010: a purge and a preflight that name a type that is not declared are not found; ones that name a view, or a type that keeps no per-field provenance, are refused as invalid saying why; nothing is appended"
 );
 
 async fn a_purge_that_names_a_type_retires_what_the_source_brought_into_it_alone(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let before = store.head().await.must("reading the head")?;
@@ -980,9 +925,7 @@ async fn a_purge_that_names_a_type_retires_what_the_source_brought_into_it_alone
     Ok(())
 }
 
-async fn a_co_owned_record_refuses_a_typed_purge_only_in_the_named_type(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_co_owned_record_refuses_a_typed_purge_only_in_the_named_type(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     l.upsert("partner", "p1", json!({"note": "kept"})).await?;
@@ -1006,8 +949,8 @@ async fn a_co_owned_record_refuses_a_typed_purge_only_in_the_named_type(
 }
 
 async fn a_typed_purge_names_the_sources_own_records_that_still_refer_into_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     // `crm` also feeds a `bill` that names its partner `p1` in a field.
@@ -1030,8 +973,8 @@ async fn a_typed_purge_names_the_sources_own_records_that_still_refer_into_it(
 }
 
 async fn a_typed_purge_takes_the_links_of_the_named_types_relations_and_no_other(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     // `crm` brought in the link from its invoice `c1` to its partner `p2`:
@@ -1060,8 +1003,8 @@ async fn a_typed_purge_takes_the_links_of_the_named_types_relations_and_no_other
 }
 
 async fn a_preflight_of_a_type_and_one_of_the_source_whole_answer_ids_of_their_own(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     lake(store.as_ref()).await?;
     let (crm, invoice) = (SourceId::from("crm"), TypeName::from("invoice"));
     let before = store.head().await.must("reading the head")?;
@@ -1092,9 +1035,7 @@ async fn a_preflight_of_a_type_and_one_of_the_source_whole_answer_ids_of_their_o
     Ok(())
 }
 
-async fn a_purge_from_a_type_it_cannot_take_from_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_purge_from_a_type_it_cannot_take_from_is_refused(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let mut lines = type_decl("log_line", vec![sourced("text", StorageKind::Text)]);

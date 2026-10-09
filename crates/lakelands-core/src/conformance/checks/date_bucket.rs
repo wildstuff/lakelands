@@ -9,8 +9,6 @@
 //! bucket starts at midnight UTC: the day, Monday of the ISO week, the
 //! first of the month, of the quarter and of the year.
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::StorageKind;
@@ -19,32 +17,28 @@ use lakelands_api::write::Declaration;
 use lakelands_api::{Find, Found, LakeStore, TypeName, Value};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, agg, dec, decimal, doors, find_where, invalid_case, invalid_like, log_events,
     owner, type_of,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// Records group into date buckets by unit.
     GROUPS = find_groups_records_by_date_bucket_for_every_unit,
     "017, extended, and 029: find groups by a named date_bucket key for day, week (ISO, from Monday), month, quarter and year, across a year's end and a leap day, with the same groups, counts and exact sums on every engine, the bucket answered under the key's name as its starting instant, and the records without a date in the null group, last"
 );
 
 check!(
-    /// A where selects by bucket.
     WHERE = a_where_selects_the_records_of_one_date_bucket,
     "017, extended: a where comparing date_bucket(x, 'month') with an instant selects exactly that month's records; a unit outside the five is refused as invalid, naming it"
 );
 
 check!(
-    /// A declaration may call it, from format 3 on.
     DECLARED = a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3,
     "017, extended, and log-format §6: a declaration may call date_bucket (a derived field, a view's where, an object set's filter); the event that first declares such a call is written in format version 3, as is every event after it, and a derived bucket answers finds by it"
 );
 
 check!(
-    /// Windows of a width, counted from an origin.
     WINDOWS = find_groups_records_by_windows_of_a_width_from_an_origin,
     "017, extended (lakelands#559), and log format §6: date_bucket(x, width, origin) answers the start of the window of that width holding x, the windows counted from the origin in both directions, the same on every engine; a width without its origin, a width that is not above zero, a quoted width and a calendar unit with an origin are refused as invalid, each naming what to write; a declaration that calls it by a width is written in format version 11, as is every event after it"
 );
@@ -160,9 +154,7 @@ fn expect(buckets: &[(&str, u64)]) -> Vec<(Option<String>, u64, rust_decimal::De
     out
 }
 
-async fn find_groups_records_by_date_bucket_for_every_unit(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn find_groups_records_by_date_bucket_for_every_unit(store: Store) -> Held {
     lake(store.as_ref()).await?;
     // 2027-12-25 is a Saturday: its ISO week starts on Monday 2027-12-20;
     // from Monday 2027-12-27 to Sunday 2028-03-05 are ten whole weeks.
@@ -210,9 +202,7 @@ async fn find_groups_records_by_date_bucket_for_every_unit(
     Ok(())
 }
 
-async fn a_where_selects_the_records_of_one_date_bucket(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_where_selects_the_records_of_one_date_bucket(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let mut find = by("month");
@@ -240,8 +230,8 @@ async fn a_where_selects_the_records_of_one_date_bucket(
 }
 
 async fn a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
@@ -307,9 +297,7 @@ async fn a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3
     Ok(())
 }
 
-async fn find_groups_records_by_windows_of_a_width_from_an_origin(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn find_groups_records_by_windows_of_a_width_from_an_origin(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     // Thirty days from 2028-01-01: the seven days of December fall in the

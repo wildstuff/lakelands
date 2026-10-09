@@ -29,7 +29,7 @@ use lakelands_api::{
 };
 use rust_decimal::Decimal;
 
-use super::Failure;
+use super::{Failure, Held};
 
 /// An answer a refusal may be in: an error, or a result that may hold one.
 pub trait Answer {
@@ -109,7 +109,7 @@ pub fn refused_as<T: Debug>(
     answer: lakelands_api::Result<T>,
     expected: &str,
     fits: impl FnOnce(&Said) -> bool,
-) -> Result<(), Failure> {
+) -> Held {
     super::tally();
     match invalid_said(&answer) {
         Some(said) if fits(said) => Ok(()),
@@ -131,7 +131,7 @@ pub fn refused_like<T: Debug>(
     what: &str,
     answer: lakelands_api::Result<T>,
     expected: &Value,
-) -> Result<(), Failure> {
+) -> Held {
     let shown = expected.to_string();
     refused_as(what, answer, &shown, |said| said_like(said, expected))
 }
@@ -168,7 +168,7 @@ pub fn refused_alike<T: Debug, U: Debug>(
     hidden: &lakelands_api::Result<T>,
     absent: lakelands_api::Result<U>,
     names: (&str, &str),
-) -> Result<(), Failure> {
+) -> Held {
     let absent = absent.must_fail(&format!("{what}, as `{}`", names.0))?;
     match hidden {
         Err(e) => alike_renamed(what, e, &absent, names),
@@ -189,12 +189,7 @@ pub fn alike_each(hidden: &[Option<Error>], absent: &[Option<Error>], names: (&s
 /// `from` that `absent` was asked by is `to` in each text of it: a hidden
 /// thing is answered as an absent one of its name. `from` is used nowhere
 /// else; `("", "")` renames nothing.
-pub fn alike_renamed(
-    what: &str,
-    hidden: &Error,
-    absent: &Error,
-    (from, to): (&str, &str),
-) -> Result<(), Failure> {
+pub fn alike_renamed(what: &str, hidden: &Error, absent: &Error, (from, to): (&str, &str)) -> Held {
     let wire = |e: &Error| serde_json::to_string(e).map_err(|e| Failure::new(e.to_string()));
     let (h, a) = (wire(hidden)?, wire(absent)?);
     // `from` and `to` are names, so no escape in the wire text holds them.
@@ -252,7 +247,7 @@ pub fn limits() -> lakelands_api::location::Limits {
 /// Fail unless `store` was opened with the default limits, so a harness
 /// that opens lakes otherwise fails here, naming the limits, and never
 /// in a check that happens to meet one.
-pub fn default_limits(store: &dyn LakeStore) -> Result<(), Failure> {
+pub fn default_limits(store: &dyn LakeStore) -> Held {
     let got = store.limits();
     if got == limits() {
         Ok(())
@@ -391,7 +386,7 @@ impl Lake {
 /// Two records of `mark`, each made under its own declaration of `flag`'s
 /// `initial`, `false` then `true`: a fold of many events at once, a
 /// rebuild's or an import's, answers each as made (050).
-pub async fn two_makes(l: &Lake) -> Result<(), Failure> {
+pub async fn two_makes(l: &Lake) -> Held {
     for (initial, key) in [(false, "m1"), (true, "m2")] {
         l.declare_json(
             serde_json::json!({"declare": "type", "name": "mark", "fields": [
@@ -1059,11 +1054,7 @@ pub async fn ingest(
 
 /// Fail unless the lake's head is still `before`: a refused write must
 /// append nothing at all.
-pub async fn head_unmoved(
-    store: &dyn LakeStore,
-    before: Position,
-    what: &str,
-) -> Result<(), Failure> {
+pub async fn head_unmoved(store: &dyn LakeStore, before: Position, what: &str) -> Held {
     let after = store.head().await.must("reading the head")?;
     if after == before {
         Ok(())
@@ -1105,11 +1096,7 @@ pub async fn refused_unmoved<T: Debug>(
 /// Fail unless an ingest's windows answer positions in log order and the
 /// last of them is the lake's head: everything the delivery committed is
 /// visible from the position its last window names.
-pub async fn windows_reach_head(
-    store: &dyn LakeStore,
-    windows: &[Committed],
-    what: &str,
-) -> Result<(), Failure> {
+pub async fn windows_reach_head(store: &dyn LakeStore, windows: &[Committed], what: &str) -> Held {
     let head = store.head().await.must("reading the head")?;
     let Some(last) = windows.last() else {
         return Err(Failure::new(format!(

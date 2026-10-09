@@ -4,8 +4,6 @@
 //! each extended): `proposals` shows a proposed value where a read of the
 //! record would show it, and the accept applies the logged write whole.
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::write::{ProposalFilter, ProposedWrite};
 use lakelands_api::{
@@ -13,13 +11,13 @@ use lakelands_api::{
 };
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::backing::EXECUTOR;
 use crate::conformance::fixture::{Lake, Must, field_access, patch, type_of, value};
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A proposal shows its reader the values it may read, and is accepted whole.
-    VALUES_AS_THE_READERS_VIEW = a_proposal_shows_its_reader_the_values_it_may_read_and_is_accepted_whole,
+    VALUES_AS_THE_READERS_VIEW =
+        a_proposal_shows_its_reader_the_values_it_may_read_and_is_accepted_whole,
     "013 and 024, extended (lakelands#499): `proposals` shows a proposed value where a read of the record would: a field its reader may not know of and a masked one are not in a proposed patch, a proposed call's payload is whole only to a reader who may read every field the verb sets, or see the type of a verb that reaches outside, and a write to a type the reader may not see is not listed (lakelands#762); every entry that holds more than its reader is shown says `more`, and no other does; the proposer reads its own proposal by the same rule; the accept applies the logged write whole, what its reviewer was not shown too, and one not shown the type is answered as for a proposal that does not exist (lakelands#762)"
 );
 
@@ -55,8 +53,8 @@ async fn listed(l: &Lake, who: &Principal) -> Result<Vec<Value>, Failure> {
 }
 
 async fn a_proposal_shows_its_reader_the_values_it_may_read_and_is_accepted_whole(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let (s, l, text) = (store.as_ref(), Lake::of(store.as_ref()), StorageKind::Text);
     let fields = [("no", text), ("note", text), ("salary", text)];
     l.declare(type_of("invoice", &fields)).await?;

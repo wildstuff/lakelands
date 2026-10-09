@@ -3,30 +3,26 @@
 //! (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`
 //! and `docs/decisions/028-authoring-is-strict-and-whole.md`, extended).
 
-use std::sync::Arc;
-
+use lakelands_api::Access;
 use lakelands_api::Refusal;
 use lakelands_api::error::{Case, RecordName};
 use lakelands_api::write::{Declaration, Outcome, ProposedWrite};
-use lakelands_api::{Access, LakeStore};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
     Lake, Must, alike_each, alike_renamed, field_access, invalid_case, migration, object_set_on,
     reason, refused_on, trigger_on, try_upsert, write_verb,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A declaration reads only what its author may read.
     AUTHOR_READS = a_declaration_reads_only_what_its_author_may_read,
     "024 and 028, extended (lakelands#538): a declaration whose author may not know of a field it reads is answered as one that reads a field the type does not have, whatever reads it: a set's `where`, a trigger's `when`, a verb's `requires`, what it sets a field from and the field it sets, a derived field, a field computed by a function, an embedding, a view's `where`, grouping and measure, and a derived relation's pair; by `declare`, `apply`, `add_field`, a migration and a proposal alike; a field the author knows of and may not read is refused as not granted on it, and a verb may set it; a field the type's shape names, as a valid time or a relation's `via`, stands as declared for an author who may not know of it, and a key field it may not know of hides the type from it (lakelands#715); `add_field` adds to its author's view of the type; a write's answer names a trigger or an object set only to one who reads every field its condition names, shown the definition or not, and still says `through`",
     embedding
 );
 
 check!(
-    /// A type its author is not shown is a type that is not declared.
     HIDDEN_TYPE = a_type_its_author_is_not_shown_is_a_type_that_is_not_declared,
     "027 and 028, extended (lakelands#538): to a principal that holds `schema` and is not shown a type, the type is one that is not declared: `add_field`, a migration, its apply and its proposal answer that there is no such type, and a trigger, a verb and an object set on it, declared or proposed, that it is not declared, each in the words an undeclared type gets; to declare the type or propose it is not granted and names nothing; none of them writes; a value type's preview and its refused apply show a use and a misfit only in a field their caller is shown and reads, the totals whole"
 );
@@ -107,9 +103,7 @@ fn ways(f: &str) -> Vec<(&'static str, Vec<Declaration>)> {
     ]
 }
 
-async fn a_declaration_reads_only_what_its_author_may_read(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_declaration_reads_only_what_its_author_may_read(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let fields = [text("a"), text("b"), text("m"), text("s")];
     l.declare_json(json!({"declare": "type", "name": "account", "fields": fields}))
@@ -361,9 +355,7 @@ fn why<T>(a: lakelands_api::Result<T>) -> Option<lakelands_api::Error> {
     a.err()
 }
 
-async fn a_type_its_author_is_not_shown_is_a_type_that_is_not_declared(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_type_its_author_is_not_shown_is_a_type_that_is_not_declared(store: Store) -> Held {
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     let state = |one_of: &[&str]| json!({"name": "state", "kind": "text", "one_of": one_of});
     let declared = over(state(&["x", "y"]), json!({"declare": "value_type"}));

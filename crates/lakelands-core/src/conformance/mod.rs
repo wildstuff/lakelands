@@ -24,9 +24,9 @@
 //!
 //! # Adding a check
 //!
-//! A check is one `async fn(Arc<dyn LakeStore>) -> Result<(), Failure>`
-//! whose name is a sentence in snake_case, stating what must hold, and
-//! one `check!` line turning it into a [`Check`] constant. Adding a check
+//! A check is one `async fn(Store) -> Held` whose name is a sentence in
+//! snake_case, stating what must hold, and one `check!` line turning it
+//! into a [`Check`] constant, whose doc is its `about`. Adding a check
 //! is one new file in `checks/` (or one function in an existing file of
 //! the same subject) plus one line in the registry,
 //! [`checks::ALL`](crate::conformance::checks::ALL), in `checks/mod.rs`.
@@ -59,37 +59,38 @@ use lakelands_api::LakeStore;
 use lakelands_api::seam::Seams;
 
 /// Turns an `async fn` of the suite into a [`Check`] constant whose
-/// `name` is the function's own name. A trailing `, embedding` runs the
+/// `name` is the function's own name and whose doc is its `about`, so
+/// the line takes no `///` of its own. A trailing `, embedding` runs the
 /// check on a lake with the suite's embedding backend bound; a trailing
 /// `, reopens` hands the check the harness's [`Reopen`] as its second
 /// argument, a trailing `, scratch` the directory of its own the
 /// harness supplies ([`Harness::scratch`]), a trailing `, given` all
 /// of [`Given`], and `, given, embedding` both.
 macro_rules! check {
-    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr) => {
-        check!(@make $(#[$doc])* $konst = $run, $about, false, |store, _| Box::pin($run(store)));
+    ($konst:ident = $run:ident, $about:expr) => {
+        check!(@make $konst = $run, $about, false, |store, _| Box::pin($run(store)));
     };
-    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, embedding) => {
-        check!(@make $(#[$doc])* $konst = $run, $about, true, |store, _| Box::pin($run(store)));
+    ($konst:ident = $run:ident, $about:expr, embedding) => {
+        check!(@make $konst = $run, $about, true, |store, _| Box::pin($run(store)));
     };
-    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, reopens) => {
-        check!(@make $(#[$doc])* $konst = $run, $about, false,
+    ($konst:ident = $run:ident, $about:expr, reopens) => {
+        check!(@make $konst = $run, $about, false,
             |store, given| Box::pin($run(store, given.reopen)));
     };
-    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, scratch) => {
-        check!(@make $(#[$doc])* $konst = $run, $about, false,
+    ($konst:ident = $run:ident, $about:expr, scratch) => {
+        check!(@make $konst = $run, $about, false,
             |store, given| Box::pin($run(store, given.scratch)));
     };
-    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, given) => {
-        check!(@make $(#[$doc])* $konst = $run, $about, false,
+    ($konst:ident = $run:ident, $about:expr, given) => {
+        check!(@make $konst = $run, $about, false,
             |store, given| Box::pin($run(store, given)));
     };
-    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, given, embedding) => {
-        check!(@make $(#[$doc])* $konst = $run, $about, true,
+    ($konst:ident = $run:ident, $about:expr, given, embedding) => {
+        check!(@make $konst = $run, $about, true,
             |store, given| Box::pin($run(store, given)));
     };
-    (@make $(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, $embedding:expr, $call:expr) => {
-        $(#[$doc])*
+    (@make $konst:ident = $run:ident, $about:expr, $embedding:expr, $call:expr) => {
+        #[doc = $about]
         pub const $konst: $crate::conformance::Check = $crate::conformance::Check {
             name: stringify!($run),
             about: $about,
@@ -277,8 +278,14 @@ pub struct ImportedLake {
 pub type FreshLake<'a> =
     Pin<Box<dyn Future<Output = lakelands_api::Result<Arc<dyn LakeStore>>> + Send + 'a>>;
 
+/// The lake a check is handed: its store, as the contract sees it.
+pub type Store = Arc<dyn LakeStore>;
+
+/// What a check, or a step of one, answers: it held, or why not.
+pub type Held = Result<(), Failure>;
+
 /// The future one check runs as.
-pub type CheckFuture = Pin<Box<dyn Future<Output = Result<(), Failure>> + Send>>;
+pub type CheckFuture = Pin<Box<dyn Future<Output = Held> + Send>>;
 
 /// One behaviour every engine must honour.
 #[derive(Clone, Copy)]

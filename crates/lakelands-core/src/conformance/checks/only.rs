@@ -6,7 +6,6 @@
 //! another's being to it a key that is free, and changes no shape.
 
 use std::fmt::Debug;
-use std::sync::Arc;
 
 use lakelands_api::error::{Case, Said};
 use lakelands_api::ontology::StorageKind::{Number, Text};
@@ -21,49 +20,42 @@ use lakelands_api::{
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, field, head_unmoved, principal, restrict, searchable, type_decl, vector, view_of,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// Every read answers a holder of `only` its admitted records alone.
     ONLY_READS = a_grant_admits_only_its_records_at_every_read,
     "051: a principal whose grant holds `only` on a type is answered only the records whose fields hold its values: `get` of another's record is not found, `find` with a filter, an order, `total`, a count, a sum and a group count and sum its own alone, a read as of a position judges the records as they stood then, and a count of a kept view under its pairs, at the head and as of earlier, counts its own group"
 );
 
 check!(
-    /// Search answers a holder of `only` its admitted records alone.
     ONLY_SEARCH = a_search_finds_only_admitted_records,
     "051: a lexical, a vector and a hybrid search by a holder of `only` find only its admitted records, however they rank; a search as of a position keeps a candidate only where it is admitted then and at the head, a link by its ends, under the grant followed to the head, so a field renamed since changes nothing"
 );
 
 check!(
-    /// A view is computed for a holder of `only` from its admitted records.
     ONLY_VIEWS = a_view_answers_a_holder_its_own_groups,
     "051: a view grouped by every field a source's `only` names answers its holder the groups it is admitted, kept or not; one that is not is computed from the admitted records alone, a view over it too; `only` on a view admits its groups by their fields; `describe_type` says `only some` of such a view to its holder; a pair on a kept view's measure admits a holder of the `restricted` grant only the groups whose whole face holds it too, through `find`, `total` and `get` (lakelands#628)"
 );
 
 check!(
-    /// A link record is admitted where both its ends are.
     ONLY_LINKS = a_link_is_answered_where_its_ends_are_admitted,
     "051: a walk by a holder of `only` reaches only admitted records; a link type whose end type holds `only` answers `get`, `find`, `total` and a count over the links whose ends are admitted; `only` on a link type admits its links by their fields in a walk too"
 );
 
 check!(
-    /// A holder of `only` writes its own records alone.
     ONLY_WRITES = a_holder_of_only_writes_its_own_records_alone,
     "051: a holder of `only` changes, makes, retires and makes again under its version, links, unlinks, ingests and calls a low-risk verb on its own records; another's record is to its write a key that is free, so a probe under a version, a missing required field, a disagreeing key field and a link ingested from it answer as on a free key, and another's retired key is made again, its version continued, `retire`, `unlink` and a verb answer not found, and a write that would pass, a handover and a re-delivery onto another's key are not granted, appending nothing; a link's cardinality names the other end only where its writer is answered it, restricted or not, and holds, over the lake and the window, for a link that `only` on its link type admits by a field its source sends; an aging rule stays refused; a proposal on another's record, retired or not, is listed without its write; a retry under a key used before the grant held answers as before; a reference into the type from another type, through `upsert`, `propose` or `ingest`, must name an admitted record"
 );
 
 check!(
-    /// A holder of `only` changes no shape.
     ONLY_SCHEMA = a_holder_of_only_changes_no_shape,
     "051: `declare`, `apply`, `recompute`, `add_field`, `migrate`, `migrate_apply`, `migrate_value_type`, `migrate_value_type_apply`, the proposal of a declaration or a migration of a type or a value type, and `accept` and `reject` of a schema proposal are refused to a principal holding `only` on any type, appending nothing, and a migration's proposal, of a type or a value type, is not listed to it"
 );
 
 check!(
-    /// A grant `only` that cannot be applied is refused at the doors that name its type.
     ONLY_GRANT_CHECKED = a_grant_that_cannot_be_applied_is_refused,
     "051: `describe_type` tells a holder its `only`, offers its writes, the type's links and its verbs but one above low risk that assigns a field its `only` names, and an upsert only where it writes every field its `only` names; `only` on a field the type does not declare, of another kind than text or reference, with a value that is not text, or on a field the holder may not read, refuses the doors that name the type as invalid, naming the type and never the field; the grant follows a rename of its field, and after the field is dropped a read at the head is refused while one as of before is answered; a walk or a view that reaches a type whose grant cannot be applied admits none of its records"
 );
@@ -220,12 +212,7 @@ pub(super) fn node_keys(result: &QueryResult, ty: &str) -> String {
 
 /// Fails unless each `find` of `rows`, one a line `type | what | find |
 /// answer`, answers `who` as its line says; `BEFORE` in a find is `before`.
-pub(super) async fn finds(
-    l: &Lake,
-    who: &Principal,
-    rows: &str,
-    before: Position,
-) -> Result<(), Failure> {
+pub(super) async fn finds(l: &Lake, who: &Principal, rows: &str, before: Position) -> Held {
     let mut wrong = Vec::new();
     for row in rows.lines().map(str::trim).filter(|r| !r.is_empty()) {
         let [ty, what, find, want] = row.split(" | ").collect::<Vec<_>>()[..] else {
@@ -255,10 +242,7 @@ fn unappliable(e: &Error) -> bool {
 }
 
 /// Fails unless `answer` is refused as not granted, naming no field.
-pub(super) fn not_granted<T: Debug>(
-    what: &str,
-    answer: lakelands_api::Result<T>,
-) -> Result<(), Failure> {
+pub(super) fn not_granted<T: Debug>(what: &str, answer: lakelands_api::Result<T>) -> Held {
     let (field, reason) = (None, Refusal::NotGranted);
     let refused = Error::Refused { field, reason };
     ensure!(
@@ -269,10 +253,7 @@ pub(super) fn not_granted<T: Debug>(
 }
 
 /// Fails unless `answer` is not found, as for a record that is not there.
-pub(super) fn not_found<T: Debug>(
-    what: &str,
-    answer: lakelands_api::Result<T>,
-) -> Result<(), Failure> {
+pub(super) fn not_found<T: Debug>(what: &str, answer: lakelands_api::Result<T>) -> Held {
     let missing = matches!(answer, Err(Error::NotFound { .. }));
     ensure!(missing, "{what} must be not found; it answered {answer:?}");
     Ok(())
@@ -297,9 +278,7 @@ const HANDED: &str = r#"
     spend | a kept view's filtered count | {"where": "total > 0", "total": true} | alice total=1
 "#;
 
-async fn a_grant_admits_only_its_records_at_every_read(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_grant_admits_only_its_records_at_every_read(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     claims(&l, true).await?;
     let alice = alice(store.as_ref(), json!({}));
@@ -323,7 +302,7 @@ const SEARCHES: &str = r#"
     hybrid | {"mode": "hybrid", "text": "taxi", "field": "v", "vector": [1.0, 0.0]} | c1 c3 | c1
 "#;
 
-async fn a_search_finds_only_admitted_records(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_search_finds_only_admitted_records(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     claims(&l, false).await?;
     // With `restricted`, a fused search at the head would rank unread.
@@ -402,7 +381,7 @@ const HELD_VIEWS: &str = r#"
     top | a view over a view held to bob | {"aggregate": {"measures": [{"name": "s", "func": "sum", "field": "total"}]}} | s=20
 "#;
 
-async fn a_view_answers_a_holder_its_own_groups(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_view_answers_a_holder_its_own_groups(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     claims(&l, true).await?;
     let by = vec![field("total", Number)];
@@ -470,9 +449,7 @@ const LINKS: &str = r#"
     sys.link.claim.on_trip | their count | {"aggregate": {"measures": [{"name": "n", "func": "count"}]}} | n=2
 "#;
 
-async fn a_link_is_answered_where_its_ends_are_admitted(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_link_is_answered_where_its_ends_are_admitted(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     claims(&l, false).await?;
     let walk = json!({"start": {"type": "trip", "key": "t1"},
@@ -532,9 +509,7 @@ pub(super) fn said<T>(answer: lakelands_api::Result<T>) -> String {
     }
 }
 
-async fn a_holder_of_only_writes_its_own_records_alone(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_holder_of_only_writes_its_own_records_alone(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let cat = l.cat.as_ref();
     claims(&l, false).await?;
@@ -883,7 +858,7 @@ async fn a_holder_of_only_writes_its_own_records_alone(
     Ok(())
 }
 
-async fn a_holder_of_only_changes_no_shape(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_holder_of_only_changes_no_shape(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     claims(&l, false).await?;
@@ -979,9 +954,7 @@ const KEPT_UNAPPLIED: &str = r#"
     over_spend | a view over it | {"aggregate": {"measures": [{"name": "s", "func": "sum", "field": "t"}]}} | s=0
 "#;
 
-async fn a_grant_that_cannot_be_applied_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_grant_that_cannot_be_applied_is_refused(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     claims(&l, false).await?;
     for (name, risk) in [("pay", "low"), ("propose_pay", "high")] {
@@ -1090,7 +1063,6 @@ async fn a_grant_that_cannot_be_applied_is_refused(
 }
 
 check!(
-    /// A grant that cannot be applied admits no record at any door.
     ONLY_UNAPPLIED_ADMITS_NONE = a_grant_that_cannot_be_applied_admits_no_record_at_any_door,
     "051, extended (lakelands#771): a holder's `only` that cannot be applied admits none of the type's records, whatever a stored value holds: the proposal listing answers a reviewer every proposal on such a record without its write, and a reference into the type, a link's end too, is refused as naming no live record, exactly as an absent key is; an upsert, a verb, an unlink, a proposed upsert or retirement, a retirement and an ingest on a record whose value equals the pair answer as on one whose value does not, the link's end judged so too; a search as of a position admits no candidate where the grant cannot be applied to the head's declaration, a field made one the holder may not read there included, though its values stay, and no link whose end's type the grant so holds; a kept view grouped by the pair's field, and a view over it, answer nothing to such a grant through `find`, a sum, a count, groups, `total`, a read as of before and `get`, refuse it where it masks the pair's field, and answer as types not declared where it holds that field at `none`, since the view is grouped by it (lakelands#782)"
 );
@@ -1103,9 +1075,7 @@ const UNAPPLIED_YET_HELD: &str = r#"
     a hidden owner | {"only": {"owner": "alice"}, "fields": {"owner": "none"}}
 "#;
 
-async fn a_grant_that_cannot_be_applied_admits_no_record_at_any_door(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_grant_that_cannot_be_applied_admits_no_record_at_any_door(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let cat = l.cat.as_ref();
     claims(&l, true).await?;

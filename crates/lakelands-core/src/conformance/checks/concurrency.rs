@@ -29,39 +29,33 @@ use lakelands_api::{
 };
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::backing::made;
 use crate::conformance::fixture::{
     Caller, Lake, Must, all, field, join_all, log_events, patch, read_at, type_decl, type_of,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// Concurrent writes land once, in one order.
     WRITES_LAND_ONCE = concurrent_writes_each_land_once_in_one_order_of_the_log,
     "008: many callers write through the lake's one writer; every write lands once, the log's positions follow one another without a gap, every answer names a position the write is visible from, and the chain verifies"
 );
 
 check!(
-    /// Writes and a declaration made at once order the same way.
     DECLARATION_ORDERED = writes_and_a_declaration_made_at_once_are_ordered_as_one_log,
     "008 and 027: a declaration made while others write takes its place in the same order; every write after it sees the new field at its position, none before it does"
 );
 
 check!(
-    /// A read at a position answers the same, during writes and after,
-    /// at every position `head()` names while others write.
     READS_AT_A_POSITION = a_read_at_a_position_answers_the_same_during_writes_and_after,
     "008 and 009: a read at a position sees the lake as it was there, whoever is writing; `find` and `get` at one position agree, and answer the same when asked again later"
 );
 
 check!(
-    /// Two feed readers during writes see one log.
     FEED_READERS_AGREE = two_feed_readers_polling_during_writes_see_one_log,
     "004 and 008: the feed is the log; two consumers polling from one position while others write see the same events, in the same order, each once"
 );
 
 check!(
-    /// Concurrent writes of one input call its backing once.
     BACKED_UNDER_WRITES = concurrent_writes_see_their_own_filled_field_and_one_input_is_called_once,
     "008 and 022, extended: each write answers a position its own filled field is visible from, whoever else is writing, and one input is called once across all the writers"
 );
@@ -158,9 +152,7 @@ fn get_at(key: &str, as_of: Position) -> Get {
     }
 }
 
-async fn concurrent_writes_each_land_once_in_one_order_of_the_log(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn concurrent_writes_each_land_once_in_one_order_of_the_log(store: Store) -> Held {
     let l = items(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     // Each writer writes its own records, and every writer also writes
@@ -288,9 +280,7 @@ async fn concurrent_writes_each_land_once_in_one_order_of_the_log(
     Ok(())
 }
 
-async fn writes_and_a_declaration_made_at_once_are_ordered_as_one_log(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn writes_and_a_declaration_made_at_once_are_ordered_as_one_log(store: Store) -> Held {
     let l = items(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let mut callers: Vec<Caller<'static, Result<Vec<Written>, Failure>>> = (0..4)
@@ -388,9 +378,7 @@ async fn seen_at(
     Ok((keys, one))
 }
 
-async fn a_read_at_a_position_answers_the_same_during_writes_and_after(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_read_at_a_position_answers_the_same_during_writes_and_after(store: Store) -> Held {
     let l = items(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let done = Arc::new(AtomicBool::new(false));
@@ -460,9 +448,7 @@ async fn a_read_at_a_position_answers_the_same_during_writes_and_after(
     Ok(())
 }
 
-async fn two_feed_readers_polling_during_writes_see_one_log(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn two_feed_readers_polling_during_writes_see_one_log(store: Store) -> Held {
     let l = items(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let from = store.head().await.must("reading the head")?.next();
@@ -520,8 +506,8 @@ async fn two_feed_readers_polling_during_writes_see_one_log(
 }
 
 async fn concurrent_writes_see_their_own_filled_field_and_one_input_is_called_once(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let token = "backed_under_writes";
     let l =
         super::backings::places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
@@ -574,14 +560,11 @@ async fn concurrent_writes_see_their_own_filled_field_and_one_input_is_called_on
 }
 
 check!(
-    /// Writes made while `age` runs wait for its append.
     AGE_UNDER_WRITES = writes_made_while_a_rule_runs_land_before_or_after_its_append,
     "036 and seams, SystemVocabulary: `age` holds the writer's lock for a rule's whole run, so a write made meanwhile lands before or after the rule's append, never inside it, and every move is made from the record as it stood before that append"
 );
 
-async fn writes_made_while_a_rule_runs_land_before_or_after_its_append(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn writes_made_while_a_rule_runs_land_before_or_after_its_append(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_of("task", &[("state", Text), ("note", Text)]))
@@ -598,10 +581,10 @@ async fn writes_made_while_a_rule_runs_land_before_or_after_its_append(
     .await?;
 
     // Four writers touch every task's `note` while one caller ages.
-    let mut callers: Vec<Caller<'static, Result<(), Failure>>> = (0..4)
+    let mut callers: Vec<Caller<'static, Held>> = (0..4)
         .map(|w| {
             let (cat, own, keys) = (cat.clone(), own.clone(), keys.clone());
-            let caller: Caller<'static, Result<(), Failure>> = Box::pin(async move {
+            let caller: Caller<'static, Held> = Box::pin(async move {
                 for k in &keys {
                     crate::conformance::fixture::upsert(
                         cat.as_ref(),

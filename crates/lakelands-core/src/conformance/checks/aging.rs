@@ -7,8 +7,6 @@
 //! rule, each with an id made from the rule, the record and the date, so
 //! aging a date twice writes it once.
 
-use std::sync::Arc;
-
 use lakelands_api::event::{EventBody, Procedure};
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::seam::AGING_RULE_TYPE;
@@ -16,75 +14,64 @@ use lakelands_api::write::{AgeReport, Declaration};
 use lakelands_api::{Catalog, LakeStore, Origin, Principal, Refusal, Timestamp, WriteOrigin};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, alike_renamed, count_view, derived, events_after, field, field_access,
     head_unmoved, no_such_field, reference, refused_on, restrict, sourced, trigger_on, type_decl,
     upsert,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A rule moves only what holds `from` and meets `when`.
     MOVES_WHAT_HOLDS_FROM = a_rule_moves_only_the_records_holding_from_whose_condition_holds,
     "036: `age` moves every record of the rule's type, restricted ones included, whose field holds `from` and whose `when` holds, and no other"
 );
 
 check!(
-    /// A date aged twice is written once.
     TWICE_IS_ONCE = aging_a_date_twice_appends_nothing_the_second_time,
     "036 and log-format §3: every move has an id from the rule, the record and the date, and a second `age` for the same date appends nothing"
 );
 
 check!(
-    /// `today()` is the date handed in.
     TODAY_IS_THE_DATE = today_in_a_rule_is_the_date_aged_not_the_clock,
     "036: inside a rule's condition `today()` is the date `age` was handed, never the clock of the process running it"
 );
 
 check!(
-    /// A condition that cannot be evaluated leaves the record.
     FAILED_GUARD_LEAVES = a_condition_that_cannot_be_evaluated_leaves_the_record,
     "036: a `when` that cannot be evaluated for a record leaves it as it is, is counted as a failed guard, and the run goes on"
 );
 
 check!(
-    /// A move is the system's, by its rule, and reacts like any write.
     MOVE_PROVENANCE = a_move_is_written_by_the_system_as_its_rule,
     "036 and seams: a move is a `record_upserted` of origin `system` by `system:lakelands`, its procedure `aging:<rule>` at the rule record's version, scheduled, with no cause; a trigger reacts in the same append"
 );
 
 check!(
-    /// A rule that does not fit is refused when it is written.
     RULE_CHECKED = a_rule_that_does_not_fit_is_refused_naming_its_field,
     "seams: a rule is refused as invalid, naming the rule field at fault, when `on` names no type, a `sys.` type or a view, `field` is derived or part of the key, `from` is no value of the field, `to` equals `from`, or `when` reads `previous`"
 );
 
 check!(
-    /// Rules run in name order, one append each.
     NAME_ORDER = rules_run_in_name_order_one_append_each,
     "seams: `age` runs the rules in rule-name order, each rule's moves one append, and reports them in that order"
 );
 
 check!(
-    /// `today` is a date.
     TODAY_AT_MIDNIGHT = age_at_a_time_other_than_midnight_is_refused,
     "seams: `age` is handed a date, at UTC midnight; any other time is refused as invalid, naming `today`, and appends nothing"
 );
 
 check!(
-    /// A rule that no longer fits is skipped and named.
     NO_LONGER_FITS = a_rule_that_no_longer_fits_is_skipped_and_named,
     "seams: a rule the lake's shape no longer fits is skipped, named in the report with its reason, while the other rules run"
 );
 
 check!(
-    /// A rule carries its author's rights.
     RULE_AUTHORITY = a_rule_needs_write_on_its_field_and_read_on_what_when_reads,
     "036, 024 and 006: a rule is refused, naming the field, unless its author may write the field it moves and read every field its `when` reads: as not granted, or as for an undeclared field where its author may not know of the field; the run carries that authority"
 );
 
 check!(
-    /// A move the store refuses leaves its record.
     REFUSED_MOVE_LEAVES = a_move_the_store_would_refuse_leaves_the_record,
     "036: a move the store would refuse for a record (its `to` a reference no longer live) leaves the record, is counted as a failed guard, and the other rules run"
 );
@@ -95,14 +82,7 @@ fn date(y: i64, m: u32, d: u32) -> Timestamp {
 
 /// Writes one aging rule as the owner: on `target` (`type.field`), from
 /// `from` to `to` when `when` holds.
-async fn rule(
-    l: &Lake,
-    name: &str,
-    target: &str,
-    from: &str,
-    to: &str,
-    when: &str,
-) -> Result<(), Failure> {
+async fn rule(l: &Lake, name: &str, target: &str, from: &str, to: &str, when: &str) -> Held {
     let (on, field) = target
         .split_once('.')
         .expect("a rule's target is type.field");
@@ -121,7 +101,7 @@ async fn rule(
 
 /// Writes the rule `name` that moves an open invoice to overdue when
 /// `when` holds.
-async fn overdue(l: &Lake, name: &str, when: &str) -> Result<(), Failure> {
+async fn overdue(l: &Lake, name: &str, when: &str) -> Held {
     rule(l, name, "invoice.status", "open", "overdue", when).await
 }
 
@@ -136,7 +116,7 @@ async fn rule_as(
     from: Value,
     to: Value,
     when: &str,
-) -> Result<(), Failure> {
+) -> Held {
     upsert(
         cat,
         who,
@@ -158,7 +138,7 @@ async fn status(l: &Lake, key: &str) -> Result<Value, Failure> {
 }
 
 /// `invoice` with `status` (text) and `amount` (number).
-async fn invoices(l: &Lake) -> Result<(), Failure> {
+async fn invoices(l: &Lake) -> Held {
     let fields = vec![
         field("status", StorageKind::Text),
         field("amount", StorageKind::Number),
@@ -169,9 +149,7 @@ async fn invoices(l: &Lake) -> Result<(), Failure> {
     Ok(())
 }
 
-async fn a_rule_moves_only_the_records_holding_from_whose_condition_holds(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rule_moves_only_the_records_holding_from_whose_condition_holds(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     invoices(&l).await?;
     for (key, status, amount) in [
@@ -212,9 +190,7 @@ async fn a_rule_moves_only_the_records_holding_from_whose_condition_holds(
     Ok(())
 }
 
-async fn aging_a_date_twice_appends_nothing_the_second_time(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn aging_a_date_twice_appends_nothing_the_second_time(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     invoices(&l).await?;
     l.upsert("invoice", "i1", json!({"status": "open", "amount": 200}))
@@ -251,9 +227,7 @@ async fn aging_a_date_twice_appends_nothing_the_second_time(
     Ok(())
 }
 
-async fn today_in_a_rule_is_the_date_aged_not_the_clock(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn today_in_a_rule_is_the_date_aged_not_the_clock(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     invoices(&l).await?;
     l.upsert(
@@ -278,9 +252,7 @@ async fn today_in_a_rule_is_the_date_aged_not_the_clock(
     Ok(())
 }
 
-async fn a_condition_that_cannot_be_evaluated_leaves_the_record(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_condition_that_cannot_be_evaluated_leaves_the_record(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     invoices(&l).await?;
     for (key, divisor) in [("a", 1), ("b", 0), ("c", 2)] {
@@ -310,9 +282,7 @@ async fn a_condition_that_cannot_be_evaluated_leaves_the_record(
     Ok(())
 }
 
-async fn a_move_is_written_by_the_system_as_its_rule(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_move_is_written_by_the_system_as_its_rule(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     invoices(&l).await?;
@@ -380,9 +350,7 @@ async fn a_move_is_written_by_the_system_as_its_rule(
     Ok(())
 }
 
-async fn a_rule_that_does_not_fit_is_refused_naming_its_field(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rule_that_does_not_fit_is_refused_naming_its_field(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let total = derived("total", StorageKind::Number, "amount * 2", &["amount"]);
@@ -453,7 +421,7 @@ async fn a_rule_that_does_not_fit_is_refused_naming_its_field(
     head_unmoved(store.as_ref(), before, "writing rules that do not fit").await
 }
 
-async fn rules_run_in_name_order_one_append_each(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn rules_run_in_name_order_one_append_each(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     invoices(&l).await?;
     for key in ["i1", "i2"] {
@@ -495,9 +463,7 @@ async fn rules_run_in_name_order_one_append_each(store: Arc<dyn LakeStore>) -> R
     Ok(())
 }
 
-async fn age_at_a_time_other_than_midnight_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn age_at_a_time_other_than_midnight_is_refused(store: Store) -> Held {
     let before = store.head().await.must("reading the head")?;
     let noon = Timestamp(date(2026, 3, 1).0 + 12 * 3_600 * 1_000_000);
     let e = store.age(noon).await.must_fail("aging at noon")?;
@@ -508,9 +474,7 @@ async fn age_at_a_time_other_than_midnight_is_refused(
     head_unmoved(store.as_ref(), before, "aging at noon").await
 }
 
-async fn a_rule_that_no_longer_fits_is_skipped_and_named(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rule_that_no_longer_fits_is_skipped_and_named(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     invoices(&l).await?;
     l.declare(type_decl("ticket", vec![field("state", StorageKind::Text)]))
@@ -558,9 +522,7 @@ fn clerk(store: &dyn LakeStore, id: &str, invoice: &[(&str, lakelands_api::Acces
     clerk
 }
 
-async fn a_rule_needs_write_on_its_field_and_read_on_what_when_reads(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rule_needs_write_on_its_field_and_read_on_what_when_reads(store: Store) -> Held {
     use lakelands_api::Access;
     let l = Lake::of(store.as_ref());
     let Lake { cat, .. } = &l;
@@ -647,9 +609,7 @@ async fn a_rule_needs_write_on_its_field_and_read_on_what_when_reads(
     Ok(())
 }
 
-async fn a_move_the_store_would_refuse_leaves_the_record(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_move_the_store_would_refuse_leaves_the_record(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
         .await?;
@@ -688,14 +648,11 @@ async fn a_move_the_store_would_refuse_leaves_the_record(
 }
 
 check!(
-    /// A rule under a retention hold is live and runs.
     HELD_RULE_RUNS = a_rule_under_a_retention_hold_is_live_and_runs,
     "036 and seams, SystemVocabulary: a hold withholds a record from reads, it does not stop it; a restricted rule record runs"
 );
 
-async fn a_rule_under_a_retention_hold_is_live_and_runs(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rule_under_a_retention_hold_is_live_and_runs(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     invoices(&l).await?;
     l.upsert("invoice", "i1", json!({"status": "open", "amount": 200}))
@@ -722,15 +679,11 @@ async fn a_rule_under_a_retention_hold_is_live_and_runs(
 }
 
 check!(
-    /// `setting()` in a rule reads the setting at the run, and a replay
-    /// reads the moves.
     SETTING_IN_WHEN = a_rule_reads_the_setting_at_its_run_and_a_replay_reads_its_moves,
     "seams, SystemVocabulary: setting() in `when` reads the lake's settings as a filter does, with no grant on sys.setting asked of the rule's author, as of the head at the run; the move is an event, so a replay never evaluates `when` again"
 );
 
-async fn a_rule_reads_the_setting_at_its_run_and_a_replay_reads_its_moves(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rule_reads_the_setting_at_its_run_and_a_replay_reads_its_moves(store: Store) -> Held {
     use lakelands_api::Access;
     use lakelands_api::principal::TypeGrants;
     use lakelands_api::seam::SETTING_TYPE;
@@ -805,14 +758,13 @@ async fn a_rule_reads_the_setting_at_its_run_and_a_replay_reads_its_moves(
 }
 
 check!(
-    /// A rule the shape left behind is skipped, for each way it can be.
     SKIPPED_EVERY_WAY = a_rule_is_skipped_when_its_field_is_dropped_or_its_value_no_longer_admitted,
     "seams, SystemVocabulary, and 027 extended: a rule whose field a migration dropped, or whose `from` or `to` a tightened value type no longer admits, is skipped and named, never run half"
 );
 
 async fn a_rule_is_skipped_when_its_field_is_dropped_or_its_value_no_longer_admitted(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     use lakelands_api::ontology::ValueTypeDecl;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;

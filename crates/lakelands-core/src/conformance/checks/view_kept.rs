@@ -24,7 +24,6 @@
 //! red where a kept record answers something else than its twin.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 use lakelands_api::describe::{Kept, NotKept};
 use lakelands_api::principal::TypeGrants;
@@ -43,38 +42,33 @@ use crate::conformance::fixture::{
     Lake, Must, agg, aggregate, doors, get_at, ingest, order, owner, patch, pattern, reads_all,
     restrict, source_record, step, try_upsert,
 };
-use crate::conformance::{Failure, Given, ImportedLake};
+use crate::conformance::{Failure, Given, Held, ImportedLake, Store};
 
 check!(
-    /// A kept view of each shape is its twin.
     KEPT_SHAPES = a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes,
     "the `view_kept.` setting, by a twin: a view named by a `view_kept.` setting and the same view under no setting answer alike, in the records the owner finds after each event and a reader without the `restricted` grant at each row's end, as of the row before, and, where the table reads, through every door of a view (`find`, a count and `find` by a text group field, two pages in an order, an aggregate, `get` of a key and of none, a pattern's start and a walk over a derived relation); at the table's end for a reader kept from a field of the view, for one kept from a field it reads of its source and for one kept from a group field of a merged source, and a reference and a link to its records; then after a rebuild, a compact and an import, and for the events sent after them; so a grouped view, one with a `where`, an ungrouped one, one with a merged source, one over a kept view, asked for before the view it reads, and one grouped by a field a recorded output fills, while members arrive, change, move to another group, to none and leave, a member is restricted under the outer view's `where`, and every member of an ungrouped view is",
     given
 );
 
 check!(
-    /// A kept measure is its twin's whatever it folds.
     KEPT_VALUES = a_kept_measure_answers_as_its_twin_whatever_values_it_folds,
     "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: an extreme whose holder leaves, equal values at two keys and an equal value written over the holder, which reads as written; a maximum whose holder `1.5` leaves for `1`, whose sort key begins its own; a group's values under a number and a decimal group field, written and fed, where `1.0` and `1.00` are two groups of a decimal and one of a number; the holder of an outer view's extreme leaving a group whose other member is in it on the whole face alone; a sum whose large member leaves, and sums of `5` and `0.00` in both key orders; a setting written over a group whose measure divides by zero, after which the next write is accepted and the view is refused as its twin is until the member changes; and `max(known_at(n))`, null in both",
     given
 );
 
 check!(
-    /// A kept view is its twin while what it is kept by changes.
     KEPT_POSITIONS = a_kept_view_answers_as_its_twin_at_every_position_and_under_every_setting,
     "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: the kept view and its twin answer alike while a setting its `where` names is written, restricted, lifted, retired and written again, and one a measure's argument names; while its own setting is retired under a kept view over it, written `false` and written again; while a `view_kept.` setting that the `where` of another view names is written; while it is declared with a parameter, which `describe_type` says cannot be kept, and without one, and again with another `where`; while a function a field of its source calls is declared again, and the source with another derived expression, each computing the source's records again, after which it is kept; and its source is migrated; a read at a valid time answers what the twin computes there; `describe_type` says `not_asked` of a view no setting holds for, never `kept` of a view over one that is not, and `not_asked` of every twin",
     given
 );
 
 check!(
-    /// A kept extreme is its twin when its holders are moved in one event.
     KEPT_RUNS = a_kept_extreme_answers_as_its_twin_when_a_run_or_a_re_key_moves_its_holders,
     "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: a kept `min` and `max` answer as their twins after one aging run takes the holders of nine groups out of the view's `where`, after a purge retires the holders of nine groups, and after a re-key moves a holder to a greater key and the keys of the records that refer to it in the same event, `describe_type` saying `kept` after each, since every group's next holder is read from its extreme's order in the fold of the event that took the holder; and after the appends that follow each",
     given
 );
 
 check!(
-    /// A kept view's order index answers every page its twin computes.
     KEPT_ORDER = a_kept_view_answers_every_ordered_page_from_its_order_index_as_its_twin_computes,
     "041 and lakelands#668: a `sort_index.<view>` setting asks for an order index of a kept view's records, and every page in an order it keeps answers as the same view computed, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: pages of two by the group field and by each measure, both ways, and by the last measure below 100, each continued by its cursor to its last page, for the owner, a reader without the `restricted` grant, readers kept from a field of the view (refused alike where an order names it), of its source and of a merged source, and one holding `only` on the source by the group field, a kept page handing out a cursor where its twin's does; for the owner as of the row before and, at the table's end, after a rebuild, a compact and an import, as of every row's end; while the index is asked for before its view is kept and after, of a merged view too, members arrive, change, move to another group and leave, a group is restricted whole and another reads otherwise on its whole face, the view is declared again, and the setting is retired and asked for again",
     given
@@ -469,7 +463,7 @@ const ORDERS: &str = r#"
 /// Each check's function: its table, run by [`twin`].
 macro_rules! tables {
     ($($run:ident = $table:ident,)*) => {$(
-        async fn $run(store: Arc<dyn LakeStore>, given: Given) -> Result<(), Failure> {
+        async fn $run(store: Store, given: Given) -> Held {
             twin(store, given, $table).await
         }
     )*};
@@ -528,7 +522,7 @@ struct Twin {
 
 /// Runs `table` on the lake, then holds it through an export, a rebuild,
 /// a compact and an import; fails naming every row that failed.
-async fn twin(store: Arc<dyn LakeStore>, given: Given, table: &str) -> Result<(), Failure> {
+async fn twin(store: Store, given: Given, table: &str) -> Held {
     let lines: Vec<&str> = table.lines().map(str::trim).collect();
     let then = lines.iter().position(|l| *l == "then");
     let (first, then) = lines.split_at(then.unwrap_or(lines.len()));
@@ -665,7 +659,7 @@ impl Twin {
     }
 
     /// Sends one line of a table to the lake, or holds the lake to it.
-    async fn line(&mut self, store: &dyn LakeStore, line: &str) -> Result<(), Failure> {
+    async fn line(&mut self, store: &dyn LakeStore, line: &str) -> Held {
         let l = Lake::of(store);
         let bad = |why: String| Failure::new(format!("the table's line `{line}`: {why}"));
         let (word, rest) = line.split_once(' ').unwrap_or((line, ""));
@@ -973,13 +967,7 @@ impl Twin {
 
     /// Fails unless the owner finds `want` in the view and in its twin:
     /// each record as its key and its measures, `-` for none.
-    async fn is(
-        &self,
-        l: &Lake,
-        view: &str,
-        want: &str,
-        valid_at: Option<Timestamp>,
-    ) -> Result<(), Failure> {
+    async fn is(&self, l: &Lake, view: &str, want: &str, valid_at: Option<Timestamp>) -> Held {
         let measures = self.pairs.iter().find(|p| p.name == view);
         let measures = measures.map(|p| p.measures.clone()).unwrap_or_default();
         for end in ["", "_twin"] {
@@ -1016,7 +1004,7 @@ fn kinds(fields: &str) -> Vec<Value> {
 
 /// Fails unless `describe_type` says `want` of the view's keeping, and
 /// `not asked` of its twin's.
-async fn says(l: &Lake, view: &str, want: &str) -> Result<(), Failure> {
+async fn says(l: &Lake, view: &str, want: &str) -> Held {
     let said = |kept: &Option<Kept>| match kept {
         Some(Kept::Kept) => "kept",
         Some(Kept::Computed { why }) => match why {

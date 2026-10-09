@@ -9,8 +9,6 @@
 //! creation. A trigger may cap the depth of the reactions that name its
 //! firing as their cause, below the lake's own ceiling.
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::expr::Condition;
@@ -26,40 +24,34 @@ use crate::conformance::fixture::{
     Lake, Must, events_after, field, find_where, head_unmoved, limits, reactive, reason,
     refused_like, refused_on, try_upsert, type_decl,
 };
-use crate::conformance::{Failure, Given};
+use crate::conformance::{Failure, Given, Held, Store};
 
 check!(
-    /// A transition guard fires on its transition only.
     TRANSITION = a_transition_guard_fires_on_open_to_closed_only,
     "004, extended: a guard `previous(status) = 'open' and status = 'closed'` fires on open → closed and not on draft → closed, open → open or a record created closed (`previous` is null for it); `previous` outside a guard is refused as invalid naming it"
 );
 
 check!(
-    /// A guard tells a retirement from an update.
     RETIREMENT = a_guard_tells_a_retirement_from_an_update,
     "004, extended: a guard `status = 'closed' and not retired()` fires on closing a record and on updating a closed one but not on retiring it, and a guard `retired()` fires on the retirement only, caused by it, as it does on a proposed retirement when it is accepted; the declaration calling `retired` is written in log format 7"
 );
 
 check!(
-    /// A revival reads as a creation in a guard.
     REVIVAL = a_revival_is_a_creation_to_a_guard,
     "004, extended: an upsert of a retired record is a creation to a guard: `previous(f)` is null, `changed(f)` is true and `retired()` is false"
 );
 
 check!(
-    /// `retired()` belongs to a trigger's guard alone.
     RETIRED_ONLY_IN_A_GUARD = retired_outside_a_triggers_guard_is_refused_naming_it,
     "004, extended: `retired()` in an object set's filter, a verb's `requires`, a derived field or a find's filter, and `retired` called with an argument in a guard, are refused as invalid naming `retired`, appending nothing"
 );
 
 check!(
-    /// A reaction past its trigger's ceiling is refused.
     PER_TRIGGER_DEPTH = a_reaction_past_its_triggers_max_depth_is_refused_naming_it,
     "021, extended: a reactive write whose `cause` names a firing of a trigger with `max_depth` is refused too_deep naming the trigger when it is deeper than that ceiling, appending nothing, while the lake's own ceiling is higher; a reaction to another trigger, or naming no cause, at the same depth is taken"
 );
 
 check!(
-    /// A trigger's ceiling lies within the lake's.
     TRIGGER_CEILING = a_trigger_max_depth_above_the_lakes_ceiling_is_refused,
     "021, extended: a trigger whose `max_depth` is above the lake's `max_reactive_depth` is refused as invalid naming the trigger and both numbers, by `declare`, `apply` and `propose`, and by `accept` once the lake is opened again with a lower ceiling; the lake's ceiling itself and 0 are taken",
     given
@@ -101,9 +93,7 @@ async fn fired_after(
         .collect())
 }
 
-async fn a_transition_guard_fires_on_open_to_closed_only(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_transition_guard_fires_on_open_to_closed_only(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
@@ -158,9 +148,7 @@ async fn a_transition_guard_fires_on_open_to_closed_only(
     Ok(())
 }
 
-async fn a_guard_tells_a_retirement_from_an_update(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_guard_tells_a_retirement_from_an_update(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl(
@@ -257,7 +245,7 @@ async fn a_guard_tells_a_retirement_from_an_update(
     Ok(())
 }
 
-async fn a_revival_is_a_creation_to_a_guard(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_revival_is_a_creation_to_a_guard(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
@@ -303,9 +291,7 @@ async fn a_revival_is_a_creation_to_a_guard(store: Arc<dyn LakeStore>) -> Result
     .await
 }
 
-async fn retired_outside_a_triggers_guard_is_refused_naming_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn retired_outside_a_triggers_guard_is_refused_naming_it(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
@@ -351,9 +337,7 @@ async fn retired_outside_a_triggers_guard_is_refused_naming_it(
     )
 }
 
-async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("n", StorageKind::Number)]))
@@ -429,9 +413,9 @@ async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(
 }
 
 async fn a_trigger_max_depth_above_the_lakes_ceiling_is_refused(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     given: Given,
-) -> Result<(), Failure> {
+) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("n", StorageKind::Number)]))

@@ -19,8 +19,6 @@
 //! towards another centre with their group moved, and 200 records added.
 //! 50 queries lie near the centres or between two of them.
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
 use lakelands_api::query::{Search, SearchMode, VectorTerm};
 use lakelands_api::{LakeStore, Position, Principal, SourceRecord, TypeName};
@@ -28,10 +26,9 @@ use serde_json::json;
 
 use super::search::doc_search;
 use crate::conformance::fixture::{self, Lake, Must, doors, field, read_at, type_decl, vector};
-use crate::conformance::{Failure, Given};
+use crate::conformance::{Given, Held, Store};
 
 check!(
-    /// An indexed vector field answers its index's set, at the engine's recall floor.
     VECTOR_INDEX_RECALL = an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_floor,
     "043, 025 and 029: a search over a vector field the `vector_index.<type>` setting names says `ranked_by: index`, ranks the index's candidates by the one cosine with ties by key, answers the same bytes when asked again, and finds on average at least the engine's floor of the brute-force reference's hits for k = 1, 10 and 100, with and without a filter, at the head and at an earlier position, after records were retired, vectors cleared and rewritten and records added; an engine without such an index answers the reference, a recall of 1; a vector search fused over several fields says `index` when any of them is named",
     given
@@ -131,11 +128,7 @@ fn bits(h: &lakelands_api::query::Hits) -> Vec<(String, u64)> {
     h.hits.iter().map(hit).collect()
 }
 
-async fn deliver(
-    store: &dyn LakeStore,
-    own: &Principal,
-    records: Vec<SourceRecord>,
-) -> Result<(), Failure> {
+async fn deliver(store: &dyn LakeStore, own: &Principal, records: Vec<SourceRecord>) -> Held {
     let what = format!("ingesting {} points", records.len());
     crate::conformance::fixture::ingest(doors(store).as_ref(), own, SOURCE, records)
         .await
@@ -169,9 +162,9 @@ fn reference(
 }
 
 async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_floor(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     given: Given,
-) -> Result<(), Failure> {
+) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let source = |f: FieldDecl| FieldDecl {
