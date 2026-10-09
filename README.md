@@ -76,47 +76,50 @@ of changes without polling, `propose`, `proposals`, `accept` and
 (stdio and HTTP) and REST from one catalog. Agents never write a query
 language.
 
-> **Status: `0.11.0`.** Lakelands `0.11.0` is the `lakelands` CLI, its
+> **Status: `0.12.0`.** Lakelands `0.12.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
-> SQLite, in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (466 checks through the doors and 65 through the
-> engine seam), with 52 decision records and the event log at format
-> version 12, installable from the release. Its budgets: the store
-> facade and engine traits hold 58 of 110 methods, the core crates'
-> product code 46 345 of 47 000 lines and their specification 59 654 of
-> 60 000, and 2 of 20 `cfg(feature)` sites. A ceiling rises only by a
-> recorded rule (decision 047): the product's rose to 45 500 and the
-> specification's to 58 000, row by row, each for a remedy or a rule
-> this release needed, and the operator set both higher, to 47 000 and
-> 59 000, as a reserve for the release's last changes; the
-> specification's rose once more, to 59 500, for two rights fixes, and
-> to 60 000 for a third. Beside what `0.10.0` held, a grant can admit
-> only some records of a type, a field can be computed at the read, and
-> a derived field that reads the clock says when it is computed. A
-> setting weighs a type's vector fields, and a search says what each
-> axis brought and with what weight. A graph answers what its steps say,
-> a page at a time. A request that names a member it does not take is
-> refused, naming it. A value type's migration renames a value in every
-> record that holds it, retired ones included, in one event. A
-> description, a schema hash and a report's id each answer only what
-> their reader is shown: a relation is shown with both its ends, and a
-> type keyed by a field its reader may not know of is not shown, nor a
-> relation whose `via` field its reader may not know of; an author's
-> valid time, `via` or key that names a field it may not know of is
-> answered as a name no field has, and a valid time over one is not
-> named. An engine's error quotes no row, statement or value, and a
-> hybrid search names nothing of a type's embedding before its caller is
-> judged to see it. A text the embedding backend refuses fails alone in
-> its batch, a backend can be bound after the open, a write waits only
-> for its own calls, and an executor's answer is held until it is
-> recorded. A set of declarations computes its records once, at its last
-> (log format 12); a read takes the lake's shape by position; a page
-> under an exact text, a kept view's whole face and a kept extreme's
-> next holder are each read a page or a row at a time; a feed poll
-> examines a bounded number of events. The mock answers as the store
-> does where the two had parted: over null, a view's probe and
-> declaration, names and expressions, a cursor, and a call's order of
-> refusals.
+> SQLite, in-memory and PostgreSQL engines, all three passing the
+> whole conformance suite (486 checks through the doors and 65 through
+> the engine seam), with 52 decision records and the event log at
+> format version 13, installable from the release. Its budgets: the
+> store facade and engine traits hold 58 of 110 methods, the core
+> crates' product code 50 299 of 50 500 lines and their specification
+> 66 309 of 66 500, and 2 of 20 `cfg(feature)` sites. A ceiling rises
+> only by a recorded rule (decision 047): for this round the operator
+> set both as a reserve, to 50 000 and 64 000, sized to its pull
+> requests, and the round's last rights fixes raised the
+> specification's five times, to 66 500, and the product's once, to
+> 50 500, row by row. Beside what `0.11.0` held, every refusal names
+> its case: one closed catalog of cases, each with its code, its
+> parameters and its sentence (`docs/refusals.md`, held to its rules
+> by the `refusals` gate), and an outage names its situation and a
+> missing seam its seam. A holder of `only` writes its own records and
+> proposes writes to them, and a field can hold a calendar date (log
+> format 13). A query vector has a direction, a vector ranking reads a
+> vector field, and a hybrid search without a vector reads a field a
+> model fills. A kept view is paged by the order index its setting
+> asks for and read a page at a time, and one that is not kept names
+> no index. A pattern's aggregate reads its rows by their paths, and a
+> valid time is a date-time or a date field. An author's hidden name
+> is judged at the step an absent one is, and a valid time over a
+> field it may not know of answers as on a type with none. A tools
+> change is owed to a session's next stream until the session lists
+> its tools, and an end touches only its own head-only name. The round
+> ends with a sweep of rights. A reference to a type its reader is not
+> shown is a field the reader does not know of, and `describe` names
+> no verb or function on such a type. A proposal on it is not there to
+> that reader, nor one whose verb reads a field the reader may not
+> read, and an accept's refusal names only what the reviewer's listing
+> shows. A verb is callable only by a caller who may read what it
+> reads, and an `only` that cannot be applied admits no record on any
+> path. A view's key is judged where its values come from, at its
+> sources, and a view shown to a reader names no measure of a field
+> the reader may not know of. A restricted record is not there to a
+> writer without the grant, nor a link with a held end to a reader
+> without it, and a record held now is not there to such a reader as
+> of any earlier position; an accept is judged by every record its
+> write reaches, a high-risk call runs its whole write at the door,
+> and a host can hold a retired record.
 
 ## Try it
 
