@@ -131,7 +131,7 @@ pub(super) fn names(key: &str) -> (TypeName, RecordKey, RelationName, RecordKey)
 }
 
 /// `who`'s `get` of the record `key` of `ty` at `at`.
-async fn get(
+pub(super) async fn get(
     l: &Lake,
     who: &Principal,
     ty: &str,
@@ -204,13 +204,13 @@ fn short(found: &Found) -> String {
 }
 
 /// The keys of a search's hits, best first.
-fn hit_keys(hits: &Hits) -> String {
+pub(super) fn hit_keys(hits: &Hits) -> String {
     let keys: Vec<&str> = hits.hits.iter().map(|h| h.record.key.as_str()).collect();
     keys.join(" ")
 }
 
 /// The keys of a walk's nodes of `ty`, in order.
-fn node_keys(result: &QueryResult, ty: &str) -> String {
+pub(super) fn node_keys(result: &QueryResult, ty: &str) -> String {
     let QueryResult::Graph { nodes, .. } = result else {
         return format!("{result:?}");
     };
@@ -220,7 +220,12 @@ fn node_keys(result: &QueryResult, ty: &str) -> String {
 
 /// Fails unless each `find` of `rows`, one a line `type | what | find |
 /// answer`, answers `who` as its line says; `BEFORE` in a find is `before`.
-async fn finds(l: &Lake, who: &Principal, rows: &str, before: Position) -> Result<(), Failure> {
+pub(super) async fn finds(
+    l: &Lake,
+    who: &Principal,
+    rows: &str,
+    before: Position,
+) -> Result<(), Failure> {
     let mut wrong = Vec::new();
     for row in rows.lines().map(str::trim).filter(|r| !r.is_empty()) {
         let [ty, what, find, want] = row.split(" | ").collect::<Vec<_>>()[..] else {

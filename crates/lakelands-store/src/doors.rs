@@ -90,6 +90,13 @@ impl Doors {
             // is in its shape and in its grants, or in neither.
             let view = lake.engine.view(at.as_of)?;
             let shape = lake.shape(view.as_ref())?;
+            // A record held now is not there at any position to a reader
+            // without the grant, and one released since is (006, extended).
+            let held_now = at.as_of.is_some() && !who.grants.restricted;
+            let view = match held_now {
+                true => Box::new(crate::reads::HeldNow::new(&lake, view)?),
+                false => view,
+            };
             let head = at.as_of.is_none().then_some(&shape.renames[..]);
             // A holder's search as of a position judges at the head too,
             // its grants followed through the head's shape.
@@ -104,7 +111,7 @@ impl Doors {
             let (who, _) = lake.followed(who, at.as_of, head)?;
             let who = Lake::hidden(who, &shape.ontology).0;
             let mut r = Reader::open(&lake, &who, at, view, shape)?;
-            r.head_who = head_who.transpose()?;
+            (r.head_who, r.held_now) = (head_who.transpose()?, held_now);
             let data = f(&r)?;
             Ok(Reply {
                 position: r.position,

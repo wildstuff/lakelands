@@ -2,31 +2,47 @@
 //! (`docs/log-format.md` §2.3, the store facade's `restrict`).
 //!
 //! A restricted record is absent for a principal without the
-//! `restricted` grant and present, unchanged, for one with it; its history
-//! stays readable at earlier positions; lifting the hold brings it back.
+//! `restricted` grant and present, unchanged, for one with it, its history
+//! included; lifting the hold brings it back, at every position.
 
 use std::sync::Arc;
 
 use lakelands_api::key::UNGROUPED;
+use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::ontology::{StorageKind, TypeDecl};
 use lakelands_api::principal::{Grants, PrincipalKind, TypeGrants};
 use lakelands_api::read::{AggFunc, Found};
 use lakelands_api::write::{Outcome, ProposedWrite, WriteOpts};
 use lakelands_api::{
-    Access, Catalog, Error, Find, LakeStore, Principal, Refusal, Timestamp, TypeName,
+    Access, Catalog, Error, Find, LakeStore, Position, Principal, Refusal, Timestamp, TypeName,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 
+use super::only::{claim_with, claims, de, finds, get, hit_keys, holder, node_keys};
+use super::rekey;
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, agg, aggregate, alike_renamed, field, get_at, head_unmoved, ingest, migration,
-    patch, pause, principal, restrict, source_record, type_decl,
+    patch, pause, principal, restrict, source_record, type_decl, view_of,
 };
+use lakelands_api::describe::{Kept, NotKept};
 
 check!(
     /// A restricted record is withheld from principals without the grant.
     HOLD_WITHHOLDS_AND_KEEPS = a_restricted_record_is_withheld_but_kept,
-    "the facade: restrict hides a record from principals without the restricted grant, keeps it for those with it, keeps its history, and unrestrict lifts it"
+    "the facade: restrict hides a record from principals without the restricted grant, keeps it and its history for those with it, and unrestrict lifts it, its history readable again"
+);
+
+check!(
+    /// A record held across a re-key is not there as of before it.
+    HOLD_ACROSS_A_REKEY = a_record_held_across_a_rekey_is_not_there_as_of_before,
+    "006, extended (lakelands#790): a record is found at the head by the name and the key it bears there, so a record held before a re-key and still held, and one held under its new key since, are not there as of before it to a reader without `restricted`, each compared whole with a key no record holds, nor counted in a `total`; one migration's re-keys move its records at once, never one through another, and a key taken by another record since names that one, never the record it held then; a holder of `only` searching as of before a re-key is judged at the head by each candidate's key there"
+);
+
+check!(
+    /// A record held now is not there at any position.
+    HOLD_AT_EVERY_POSITION = a_record_held_now_is_not_there_at_any_position,
+    "006, extended (lakelands#790): the hold as it stands now governs every position: to a reader without the `restricted` grant a record held at the head is not there as of an earlier position at `get` (compared whole with a key no record holds), `find` (rows and `total`), aggregates, a computed and a kept view, a walk, a pattern from it (compared whole with one from an absent record) and a link with an end held now (`get` compared whole, and the listing), a search, lexical and by vector, whose answers, scores and pages are those of a type that never held it; a link held under the name its relation was renamed to since is not there either; `describe` says a view so read is computed; a record held then and released since is answered there as any record is"
 );
 
 check!(
@@ -73,14 +89,11 @@ async fn a_restricted_record_is_withheld_but_kept(
         seen.data.fields,
         seen.position
     );
-    let then = cat
-        .get(&reader, &ty, get_at("f1", Some(written.position())))
-        .await
-        .must("reading `f1` before the hold")?;
+    let before = Some(written.position());
+    let then = cat.get(&reader, &ty, get_at("f1", before)).await;
     ensure!(
-        then.data.fields.get("body") == Some(&json!("kept")),
-        "history before the hold stays readable: `f1` at {} must hold its body",
-        written.position()
+        matches!(then, Err(Error::NotFound { .. })),
+        "a record held now is not there at an earlier position either; it answered {then:?}"
     );
     store
         .unrestrict(&ty, &"f1".into())
@@ -89,6 +102,291 @@ async fn a_restricted_record_is_withheld_but_kept(
     cat.get(&reader, &ty, get_at("f1", None))
         .await
         .must("reading `f1` after the hold is lifted")?;
+    cat.get(&reader, &ty, get_at("f1", before))
+        .await
+        .must("reading `f1` before the hold, once it is lifted")?;
+    Ok(())
+}
+
+const HELD_NOW: &str = r#"
+    claim | rows and total | {"total": true, "as_of": BEFORE} | c2 c3 total=2
+    claim | a page and total | {"total": true, "limit": 1, "as_of": BEFORE} | c2 total=2
+    claim | a filtered total | {"where": "amount > 1", "total": true, "as_of": BEFORE} | c2 c3 total=2
+    claim | aggregates | {"aggregate": {"measures": [{"name": "n", "func": "count"}, {"name": "s", "func": "sum", "field": "amount"}]}, "as_of": BEFORE} | n=2 s=25
+    claim | a group | {"aggregate": {"measures": [{"name": "s", "func": "sum", "field": "amount"}], "group_by": ["owner"]}, "as_of": BEFORE} | owner=alice s=5; owner=bob s=20
+    spend | a kept view | {"total": true, "as_of": BEFORE} | alice bob total=2
+    spent | a computed view | {"total": true, "as_of": BEFORE} | alice bob total=2
+    sys.link.claim.on_trip | the links, an end held now | {"total": true, "as_of": BEFORE} | c2:t1 c3:t1 total=2
+    trips | a kept view no hold reached then | {"aggregate": {"measures": [{"name": "s", "func": "sum", "field": "n"}]}, "as_of": BEFORE} | s=1
+"#;
+
+async fn a_record_held_now_is_not_there_at_any_position(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    claims(&l, true).await?;
+    let (by, sum) = (
+        vec![field("owner", Text), field("total", Number)],
+        [("total", "sum(amount)")],
+    );
+    l.declare(view_of("spent", "claim", &["owner"], by, &sum))
+        .await?;
+    // A kept view whose face without the grant was whole then: `t2` is held
+    // only since.
+    let n = vec![field("n", Number)];
+    l.declare(view_of("trips", "trip", &[], n, &[("n", "count()")]))
+        .await?;
+    l.set("view_kept.trips", json!(true)).await?;
+    l.upsert("trip", "t2", json!({"name": "oslo"})).await?;
+    // `memo` as `twin` is, and `m1` and `m4`, which outrank `m2`, besides.
+    for ty in ["memo", "twin"] {
+        let note = json!({"name": "note", "type": {"kind": "text"}, "searchable": true});
+        let v = json!({"name": "v", "type": {"kind": "vector", "dimensions": 2}});
+        l.declare(de(json!({"name": ty, "fields": [note, v]})))
+            .await?;
+        for (key, note, v) in [
+            ("m1", "taxi taxi taxi", [1.0, 0.0]),
+            ("m2", "taxi ride", [0.9, 0.3]),
+            ("m4", "taxi taxi", [0.95, 0.05]),
+            ("m5", "bus", [0.0, 1.0]),
+        ] {
+            if ty == "memo" || !["m1", "m4"].contains(&key) {
+                l.upsert(ty, key, json!({"note": note, "v": v})).await?;
+            }
+        }
+    }
+    // `c2` and `m2` are held then and released since; the rest held now.
+    let released = [("claim", "c2"), ("memo", "m2"), ("twin", "m2")];
+    for (ty, key) in released {
+        restrict(s, ty, key, "then").await?;
+    }
+    let then = s.head().await.must("reading the head")?;
+    let now = [
+        ("claim", "c1"),
+        ("memo", "m1"),
+        ("memo", "m4"),
+        ("trip", "t2"),
+    ];
+    for (ty, key) in now {
+        restrict(s, ty, key, "now").await?;
+    }
+    for (ty, key) in released {
+        s.unrestrict(&ty.into(), &key.into())
+            .await
+            .must("releasing")?;
+    }
+    let w = holder(s, "w", json!({"default": "read"}));
+    let at = Some(then);
+    let got = |key: &'static str| get(&l, &w, "claim", key, at);
+    let (held, absent) = (got("c1").await, got("c9").await);
+    let link = |key| get(&l, &w, "sys.link.claim.on_trip", key, at);
+    let (to_held, to_none) = (link("c1:t1").await, link("c9:t1").await);
+    let said = |a: &lakelands_api::Result<_>| json!(a.as_ref().err()).to_string();
+    ensure!(
+        held.is_err()
+            && said(&held) == said(&absent).replace("c9", "c1")
+            && to_held.is_err()
+            && said(&to_held) == said(&to_none).replace("c9", "c1"),
+        "`c1`, held now, and its link must be as of before what a key no record holds is: \
+         {held:?}, not {absent:?}; {to_held:?}, not {to_none:?}"
+    );
+    finds(&l, &w, HELD_NOW, then).await?;
+    let walk = |(ty, key): (&str, &str), steps: Value, project: &str| {
+        let start = json!({"type": ty, "key": key});
+        de(json!({"start": start, "steps": steps, "project": {"as": project}, "as_of": then.0}))
+    };
+    let into = json!([{"relation": "on_trip", "walk": "in"}]);
+    let from_t1 = || walk(("trip", "t1"), into.clone(), "graph");
+    let walked = l.cat.query(&w, from_t1()).await;
+    let walked = node_keys(&walked.must("a walk from `t1`")?.data, "claim");
+    let out = json!([{"relation": "on_trip", "walk": "out"}]);
+    let from = |key| l.cat.query(&w, walk(("claim", key), out.clone(), "rows"));
+    let (from_held, from_absent) = (from("c1").await, from("c9").await);
+    ensure!(
+        walked == "c2 c3"
+            && format!("{from_held:?}") == format!("{from_absent:?}").replace("c9", "c1"),
+        "the walk as of before reached `{walked}`, not `c2 c3`; a pattern from `c1`, held \
+         now, answered {from_held:?}, not {from_absent:?}"
+    );
+    // `memo` as of before answers whole what `twin`, which never held `m1`
+    // or `m4`, answers: each search, a pattern started by one, and each
+    // page of one with its total.
+    let reads = |ty: &str| {
+        let search = |mode: Value| {
+            let mut search = mode;
+            (search["type"], search["as_of"], search["k"]) = (json!(ty), json!(then.0), json!(10));
+            search
+        };
+        let lexical = json!({"mode": "lexical", "text": "taxi"});
+        let vector = json!({"mode": "vector", "field": "v", "vector": [1.0, 0.0]});
+        let hybrid = json!({"mode": "hybrid", "text": "taxi", "field": "v", "vector": [1.0, 0.0]});
+        let started = json!({"start": {"type": ty, "search": vector}, "as_of": then.0});
+        [search(lexical), search(vector), search(hybrid), started]
+    };
+    let mut wrong = Vec::new();
+    for (memo, twin) in reads("memo").into_iter().zip(reads("twin")) {
+        let answer = async |asked: Value| {
+            let said = match asked.get("start") {
+                Some(_) => json!(l.cat.query(&w, de(asked)).await.map(|r| r.data)),
+                None => json!(l.cat.search(&w, de(asked)).await.map(|r| r.data)),
+            };
+            said.to_string().replace("twin", "memo")
+        };
+        let (held, never) = (answer(memo.clone()).await, answer(twin).await);
+        if held != never {
+            wrong.push(format!("{memo}: {held}, not {never}"));
+        }
+    }
+    let pages = async |ty: &str| {
+        let (mut pages, mut cursor) = (Vec::new(), None);
+        loop {
+            let find = json!({"total": true, "limit": 1, "as_of": then.0, "cursor": cursor});
+            let found = l.cat.find(&w, &ty.into(), de(find)).await.must("a page")?;
+            let mut page = json!(found.data);
+            cursor = page.as_object_mut().and_then(|p| p.remove("next_cursor"));
+            pages.push(page.to_string().replace("twin", "memo"));
+            if cursor.as_ref().is_none_or(Value::is_null) || pages.len() > 9 {
+                return Ok::<_, Failure>(pages);
+            }
+        }
+    };
+    let (held, never) = (pages("memo").await?, pages("twin").await?);
+    ensure!(
+        wrong.is_empty() && held == never,
+        "`memo` as of before must be answered as `twin`, which never held `m1` or `m4`: \
+         {wrong:#?}; its pages of one {held:#?}, not {never:#?}"
+    );
+    // `describe` says what the read does: a view it computes is not kept.
+    let trips = l
+        .cat
+        .describe_type(&w, &"trips".into(), de(json!({"as_of": then.0})))
+        .await;
+    let kept = trips.must("`describe_type` of `trips` as of before")?.data;
+    let computed = Some(Kept::Computed {
+        why: NotKept::NotKeptHere,
+    });
+    ensure!(
+        kept.lifecycle.kept == computed,
+        "`trips` as of before is computed for `w`; `describe` said {:?}",
+        kept.lifecycle.kept
+    );
+    // A relation renamed since: the link `c3:t1` held under its new name.
+    let mut to = claim_with("owner");
+    to.relations[0].name = "trip_of".into();
+    let mut m = migration(to);
+    m.relation_renames = vec![("on_trip".into(), "trip_of".into())];
+    let report = l.cat.migrate(&l.own, m.clone()).await.must("previewing")?;
+    let renamed = l.cat.migrate_apply(&l.own, m, &report.data.report_id).await;
+    renamed.must("renaming `on_trip`")?;
+    restrict(s, "sys.link.claim.trip_of", "c3:t1", "now").await?;
+    let walked = l.cat.query(&w, from_t1()).await;
+    let walked = node_keys(&walked.must("a walk from `t1` again")?.data, "claim");
+    let find = de(json!({"where": "from = 'c3'", "total": true, "as_of": then.0}));
+    let link = l.cat.find(&w, &"sys.link.claim.on_trip".into(), find).await;
+    let link = link.must("the links from `c3` as of before")?.data;
+    ensure!(
+        walked == "c2"
+            && matches!(&link, Found::Records { rows, total: Some(0), .. } if rows.is_empty()),
+        "a link held under the name its relation bears since is not there as of before: \
+         the walk reached `{walked}`, the links from `c3` are {link:?}"
+    );
+    Ok(())
+}
+
+async fn a_record_held_across_a_rekey_is_not_there_as_of_before(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let s = store.as_ref();
+    // `4` is held before the re-key and `DE2`, once `2`, only after it.
+    let l = rekey::lake(s, rekey::IBANS).await?;
+    let then = s.head().await.must("reading the head")?;
+    rekey::apply(s).await?;
+    restrict(s, "account", "DE2", "now").await?;
+    let w = holder(s, "w", json!({"default": "read"}));
+    let got = async |ty: &str, key: &str, at: Position| {
+        let got = get(&l, &w, ty, key, Some(at)).await;
+        json!(got.err()).to_string().replace(key, "9")
+    };
+    let total = async |who| {
+        let find = de(json!({"total": true, "as_of": then.0}));
+        match l
+            .cat
+            .find(who, &"account".into(), find)
+            .await
+            .map(|f| f.data)
+        {
+            Ok(Found::Records { total, .. }) => total.unwrap_or_default(),
+            _ => 0,
+        }
+    };
+    let (seen, all) = (total(&w).await, total(&l.own).await);
+    // One migration moves its records at once: `seat` 1→2, 2→3, 3→4, 4→5,
+    // `4` held before and `3`, once `2`, since. `pew`'s `1` moves to `0`,
+    // and another record takes the key `1`, which a second migration
+    // moves to the held `Q`. `card` swaps its keys, and its `2` then is
+    // bob's since.
+    let typed = |name: &str, key: &str| {
+        let text = |n: &str| json!({"name": n, "type": {"kind": "text"}, "required": true});
+        let note = json!({"name": "note", "type": {"kind": "text"}, "searchable": true});
+        let fields = [text("n"), text("m"), text("o"), text("owner"), note];
+        de(json!({"name": name, "key": [key], "fields": fields}))
+    };
+    let put = async |ty: &str, key: &str, [n, m, o, owner, note]: [&str; 5]| {
+        let fields = json!({"n": n, "m": m, "o": o, "owner": owner, "note": note});
+        l.upsert(ty, key, fields).await
+    };
+    for ty in ["seat", "pew", "card"] {
+        l.declare(typed(ty, "n")).await?;
+    }
+    for (n, m) in [("1", "2"), ("2", "3"), ("3", "4"), ("4", "5")] {
+        put("seat", n, [n, m, "o", "a", "taxi"]).await?;
+    }
+    put("pew", "1", ["1", "0", "P", "a", "taxi"]).await?;
+    put("card", "1", ["1", "2", "o", "alice", "bus"]).await?;
+    put("card", "2", ["2", "1", "o", "alice", "taxi"]).await?;
+    restrict(s, "seat", "4", "then").await?;
+    let before = s.head().await.must("reading the head")?;
+    for ty in ["seat", "pew", "card"] {
+        l.migrate(typed(ty, "m")).await?;
+    }
+    restrict(s, "seat", "3", "now").await?;
+    put("pew", "1", ["9", "1", "Q", "a", "taxi"]).await?;
+    l.migrate(typed("pew", "o")).await?;
+    restrict(s, "pew", "Q", "now").await?;
+    put("card", "1", ["2", "1", "o", "bob", "taxi"]).await?;
+    put("card", "2", ["1", "2", "o", "alice", "taxi"]).await?;
+    // Held then and now, held since under a new key, or free: as a key no
+    // record holds, or found.
+    let mut wrong = Vec::new();
+    for (ty, key, at, found) in [
+        ("account", "4", then, false),
+        ("account", "2", then, false),
+        ("seat", "4", before, false),
+        ("seat", "2", before, false),
+        ("seat", "1", before, true),
+        ("seat", "3", before, true),
+        ("pew", "1", before, true),
+    ] {
+        let want = if found {
+            "null".into()
+        } else {
+            got(ty, "9", at).await
+        };
+        let said = got(ty, key, at).await;
+        if said != want {
+            wrong.push(format!("{ty} {key}: {said}, not {want}"));
+        }
+    }
+    let only = json!({"default": "read", "types": {"card": {"only": {"owner": "alice"}}}});
+    let search = de(json!({"type": "card", "mode": "lexical", "text": "taxi", "as_of": before.0}));
+    let hits = l.cat.search(&holder(s, "alice", only), search).await;
+    let hits = hit_keys(&hits.must("alice's search as of before")?.data);
+    ensure!(
+        wrong.is_empty() && seen + 2 == all && hits == "1",
+        "as of before a re-key, a record held then and now or since under its new key is not \
+         there, one free is: {wrong:#?}; `w` counts {seen} of the owner's {all}; alice's \
+         search, judged by each candidate's key at the head, hits `{hits}`, not `1`"
+    );
     Ok(())
 }
 
