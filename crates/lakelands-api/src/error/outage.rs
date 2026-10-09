@@ -309,6 +309,8 @@ macro_rules! named {
             fn said(&self) -> Option<String> {
                 Some(self.to_string())
             }
+
+            fn names(&self, _: &mut super::Named) {}
         }
 
         impl Serialize for $set {

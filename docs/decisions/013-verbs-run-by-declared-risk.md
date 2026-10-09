@@ -301,6 +301,47 @@ type, the type is one that is not declared
 extended), and a proposal on a type that is not there is not there
 either: not in the listing, and not at the accept.
 
+## Extended: an accept's refusal names what its reviewer's listing shows (lakelands#780)
+
+An accept applies the proposer's write, planned again as the proposer,
+so a refusal of that plan is the proposer's: it may name a field, a
+type, a key or a value the reviewer is not shown. What an accept
+answers a reviewer is judged by the reviewer's view, as its listing is.
+A refusal of the write it applies (an upsert's plan, a verb's run) is
+told whole where the reviewer is shown each thing it names:
+
+- each type, one the reviewer is shown;
+- each field, one it reads of the type written; a verb named counts the
+  fields its `requires` reads;
+- each verb, the one called;
+- what a field's declaration says (the values it allows, its value
+  type), only beside a field named;
+- each key, the one written or, as each value, one the listing shows
+  under a field named, or in a call's payload, which is listed only
+  whole.
+
+A name of another kind, a relation's, a trigger's or a function's, is
+not judged. Any refusal is told whole to a reviewer that reads
+everything, and to the proposer, whose own write was told the same.
+Otherwise the accept answers as a proposal stale since it was proposed:
+the write changed since it was proposed, naming only the type and the
+key written, which the listing shows. A conflict names versions only,
+and is told whole. A retirement's refusal names only the record it
+retires, and what a write sets off is judged by declarations the lake
+already took, so neither is judged. A refusal is judged by what its
+case's members are, as typed (`Named` in the contract), so the store
+and the mock judge alike. A link's cardinality is judged only where a
+link is written, and no proposal writes one. A reject answers nothing
+of the write.
+
+**Why.** The listing shows a reviewer the proposal trimmed to what it
+may know, and says `more` where that is less than the whole. A refusal
+that names a hidden field, its target type and the key it held would
+tell the reviewer what the listing withheld, through the door the
+reviewer is meant to use on it. A write that no longer applies needs no
+more than that answer to be proposed again, by one who may see what
+changed.
+
 ## Extended: a value type's tightening is proposed like a migration (lakelands#476)
 
 A value type that is to accept less could be changed only by a principal

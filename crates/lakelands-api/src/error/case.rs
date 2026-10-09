@@ -28,6 +28,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Number, Value};
 
 use super::outage::{Aimless, Exchange, closed, named};
+use crate::expr::Condition;
 use crate::expr::kind::Kind;
 use crate::id::{
     FieldName, LakeId, ParamName, Position, ProposalId, RecordKey, RelationName, SourceId,
@@ -38,7 +39,7 @@ use crate::query::Walk;
 use crate::read::OrderBy;
 use crate::time::Timestamp;
 use crate::tools::NameProblem;
-use crate::write::Carrier;
+use crate::write::{Carrier, ProposedWrite};
 
 /// Declares a closed set of cases from their templates: the enum, its
 /// sentence, its fallback and its [`Param`]. Each case is its doc, its
@@ -108,6 +109,15 @@ macro_rules! catalog {
             fn said(&self) -> Option<String> {
                 Some(self.to_string())
             }
+
+            fn names(&self, n: &mut $crate::error::Named) {
+                match self {
+                    $( $set::$case $({ $($param),* })? => {
+                        $($( $crate::error::Param::names($param, n); )*)?
+                    } )*
+                    $set::Unknown(_) => n.unjudged = true,
+                }
+            }
         }
     };
     ($($rest:tt)*) => { $crate::error::catalog!(@ "code"; $($rest)*); };
@@ -123,17 +133,100 @@ pub trait Param {
 
     /// What the template says for it, if it is there.
     fn said(&self) -> Option<String>;
+
+    /// Adds what it names to `n`: a kind [`Named`] does not judge leaves
+    /// it unjudged.
+    fn names(&self, n: &mut Named) {
+        n.unjudged = true;
+    }
+}
+
+/// What a refusal names, by kind (lakelands#780). The members of a case
+/// are typed, so a name is known by its type; text the caller gave is a
+/// value.
+#[derive(Debug, Default)]
+pub struct Named {
+    /// Types.
+    pub types: Vec<TypeName>,
+    /// Fields.
+    pub fields: Vec<FieldName>,
+    /// Records' keys.
+    pub keys: Vec<RecordKey>,
+    /// Verbs.
+    pub verbs: Vec<VerbName>,
+    /// Values.
+    pub values: Vec<Value>,
+    /// What a field's declaration says: the values it allows, its value
+    /// type.
+    pub declared: bool,
+    /// A name of another kind: a relation's, a trigger's, a function's.
+    pub unjudged: bool,
+}
+
+impl Named {
+    /// Whether a reviewer is shown all of it by `listed`, a proposal as
+    /// its listing shows it: each type one it `sees`; each field one it
+    /// `reads` of the type written, a verb's counting those its `requires`
+    /// reads; each verb the one called; what a declaration
+    /// says only beside a field; each key the one written or, as each
+    /// value, one listed under a field named, or in a call's payload,
+    /// which is listed only whole.
+    pub fn shown_by(
+        &self,
+        listed: &ProposedWrite,
+        sees: &dyn Fn(&TypeName) -> bool,
+        reads: &dyn Fn(&FieldName) -> bool,
+        requires: &dyn Fn(&VerbName) -> Option<Condition>,
+    ) -> bool {
+        let (key, verb, patch) = match listed {
+            ProposedWrite::Upsert { key, patch, .. } => (Some(key), None, Some(patch)),
+            ProposedWrite::Retire { key, .. } => (Some(key), None, None),
+            ProposedWrite::Call {
+                verb, key, payload, ..
+            } => (key.as_ref(), Some(verb), Some(payload)),
+            _ => return false,
+        };
+        let called = verb.is_some();
+        let listed = |v: &Value| {
+            let mut under = (patch.iter()).flat_map(|p| p.iter());
+            under.any(|(f, x)| x == v && (called || self.fields.contains(f)))
+        };
+        let mut read = Vec::new();
+        for v in &self.verbs {
+            match requires(v).map(|c| c.typed()) {
+                Some(Ok(e)) => read.extend(e.fields_read().into_iter().cloned()),
+                Some(Err(_)) => return false,
+                None => {}
+            }
+        }
+        let key_shown = |k: &RecordKey| Some(k) == key || listed(&Value::from(k.as_str()));
+        !self.unjudged
+            && self.types.iter().all(sees)
+            && self.fields.iter().chain(&read).all(reads)
+            && (!self.declared || !self.fields.is_empty())
+            && self.verbs.iter().all(|v| Some(v) == verb)
+            && self.keys.iter().all(key_shown)
+            && self.values.iter().all(listed)
+    }
 }
 
 impl<T: Param> Param for Option<T> {
     fn said(&self) -> Option<String> {
         self.as_ref().and_then(Param::said)
     }
+
+    fn names(&self, n: &mut Named) {
+        self.iter().for_each(|t| t.names(n));
+    }
 }
 
 impl<T: Param + ?Sized> Param for Box<T> {
     fn said(&self) -> Option<String> {
         T::said(self)
+    }
+
+    fn names(&self, n: &mut Named) {
+        T::names(self, n);
     }
 }
 
@@ -143,6 +236,10 @@ impl<T: Param> Param for Vec<T> {
         let each: Vec<String> = self.iter().filter_map(Param::said).collect();
         (!each.is_empty()).then(|| each.join(T::JOIN))
     }
+
+    fn names(&self, n: &mut Named) {
+        self.iter().for_each(|t| t.names(n));
+    }
 }
 
 /// A flag is there when it is set, and says nothing.
@@ -150,6 +247,8 @@ impl Param for bool {
     fn said(&self) -> Option<String> {
         self.then(String::new)
     }
+
+    fn names(&self, _: &mut Named) {}
 }
 
 /// An error that is the cause of another is said without the words that
@@ -158,45 +257,59 @@ impl Param for super::Error {
     fn said(&self) -> Option<String> {
         Some(super::Error::said(self))
     }
+
+    fn names(&self, n: &mut Named) {
+        super::Error::names(self, n);
+    }
 }
 
+/// Each said by its display; after `=>`, the kind [`Named`] holds it as,
+/// or `nothing` for one that names nothing.
 macro_rules! said_by_display {
-    ($($ty:ty),* $(,)?) => {
+    ($($ty:ty $(=> $kind:ident)?),* $(,)?) => {
         $(impl Param for $ty {
             fn said(&self) -> Option<String> {
                 Some(self.to_string())
             }
+
+            $(fn names(&self, n: &mut Named) {
+                said_by_display!(@ $kind, self, n);
+            })?
         })*
     };
+    (@ nothing, $t:expr, $n:expr) => { let _ = $n; };
+    (@ declared, $t:expr, $n:expr) => { $n.declared = true };
+    (@ values, $t:expr, $n:expr) => { $n.values.push(Value::from($t.clone())) };
+    (@ $kind:ident, $t:expr, $n:expr) => { $n.$kind.push($t.clone()) };
 }
 
 said_by_display!(
-    String,
-    char,
-    u16,
-    u32,
-    u64,
-    usize,
-    i32,
-    i64,
-    Number,
-    Value,
-    Names,
-    Kind,
-    StorageKind,
-    FieldName,
+    String => values,
+    char => nothing,
+    u16 => nothing,
+    u32 => nothing,
+    u64 => nothing,
+    usize => nothing,
+    i32 => nothing,
+    i64 => nothing,
+    Number => values,
+    Value => values,
+    Names => declared,
+    Kind => nothing,
+    StorageKind => nothing,
+    FieldName => fields,
     LakeId,
     ParamName,
-    Position,
-    RecordKey,
+    Position => nothing,
+    RecordKey => keys,
     RelationName,
     TriggerName,
-    TypeName,
-    ValueTypeName,
-    VerbName,
+    TypeName => types,
+    ValueTypeName => declared,
+    VerbName => verbs,
     ProposalId,
     SourceId,
-    Timestamp,
+    Timestamp => nothing,
     super::Detail,
 );
 
@@ -296,6 +409,8 @@ impl Param for Cardinality {
     fn said(&self) -> Option<String> {
         serde_json::to_value(self).ok()?.as_str().map(str::to_owned)
     }
+
+    fn names(&self, _: &mut Named) {}
 }
 
 /// An authority by its name in a declaration: `derived`.
@@ -303,6 +418,8 @@ impl Param for Authority {
     fn said(&self) -> Option<String> {
         serde_json::to_value(self).ok()?.as_str().map(str::to_owned)
     }
+
+    fn names(&self, _: &mut Named) {}
 }
 
 /// Which way a step walks: `out`, `in`, `either way`.
@@ -317,6 +434,8 @@ impl Param for Walk {
             .find(|(w, _)| w == self)
             .map(|(_, s)| (*s).into())
     }
+
+    fn names(&self, _: &mut Named) {}
 }
 
 /// An order by its name in a read: `known_at`.
@@ -324,6 +443,8 @@ impl Param for OrderBy {
     fn said(&self) -> Option<String> {
         serde_json::to_value(self).ok()?.as_str().map(str::to_owned)
     }
+
+    fn names(&self, _: &mut Named) {}
 }
 
 /// What carries a relation's edges.
@@ -335,6 +456,8 @@ impl Param for Carrier {
             Carrier::Derived => "matching values (`derived`)".into(),
         })
     }
+
+    fn names(&self, _: &mut Named) {}
 }
 
 /// A field's type by its kind, its value type, its target and its length.
@@ -360,6 +483,11 @@ impl Param for FieldType {
             }
         }
         Some(Shown(self).to_string())
+    }
+
+    fn names(&self, n: &mut Named) {
+        self.value_type.names(n);
+        self.target.names(n);
     }
 }
 
@@ -1604,6 +1732,12 @@ impl Said {
             self.at.insert(0, place);
         }
         self
+    }
+
+    /// Adds what it names, its places' and its case's, to `n`.
+    pub fn names(&self, n: &mut Named) {
+        self.at.names(n);
+        self.case.names(n);
     }
 }
 
