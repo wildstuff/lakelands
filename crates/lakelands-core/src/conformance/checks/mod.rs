@@ -302,6 +302,7 @@ pub const ALL: &[Check] = &[
     keys::KEY_FIELDS_FROM_THE_KEY,
     restriction::HOLD_WITHHOLDS_AND_KEEPS,
     restriction::HOLD_NOT_THERE_TO_A_WRITE,
+    restriction::HOLD_REACHES_LINKS_AND_REVIEWS,
     only::ONLY_READS,
     only::ONLY_SEARCH,
     only::ONLY_VIEWS,

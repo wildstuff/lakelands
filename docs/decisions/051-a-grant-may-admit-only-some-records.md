@@ -214,3 +214,30 @@ restricted since the proposal is not there to its accept. A proposal
 whose record its reviewer is not answered is listed without its write,
 as before, and that reviewer decides it no more than a holder of `only`
 decides one it is not listed whole: it is refused as not granted.
+
+## Extended: a link with a held end, and what an accept reaches (lakelands#781)
+
+A link with an end its reader is not answered is not answered either,
+at `get` and `find` of the link type, at a reference to it and at its
+writes: a link from or to a held record is, to a reader without
+`restricted`, a link no record holds. A view over a link type is
+computed for such a reader, as for a holder of `only`: no kept face
+judges a link's ends. A relation's cardinality still holds over every link, whoever
+can see it: a refusal for it names the other link's end only where the
+writer is answered that record, under `only` and `restricted` alike, so
+what is kept stays whole before it stays hidden. What a proposed write
+reaches is the record it writes, a link's two end records, and the
+records its references name: an upsert's, and a call's as its
+assignments compute them for the record at the accept, whatever form
+they take; and the two end records of each link among them. A reviewer without `restricted` is
+refused, as not granted, the accept of a write that reaches a held
+record, and the accept judges a proposer as a holder where its write
+reached one when proposed, computed wholly as it stood then (the
+declarations, its record, the settings in force and the proposal's
+time): a record held, a field retyped, a setting changed or a time
+passed only since is no proof of the grant. A call above low risk is judged
+as its caller's write before it is proposed, as `propose` judges it. The host places and lifts a hold on a
+retired record too: a key whose retired record is held is otherwise
+closed to every writer without the grant for good. What is still told
+is accepted, as for `only`: a cardinality refusal and an accept's
+refusal each say that a record the caller is not answered exists.

@@ -756,11 +756,16 @@ fn check_references(
         // to it not there; under an `only` that cannot be applied, none is
         // (lakelands#771).
         let held = ontology.ty(target).ok();
-        let exists = (pending.record(view, target, &to)?).is_some_and(|r| {
+        let found = pending.record(view, target, &to)?;
+        let mut exists = found.as_ref().is_some_and(|r| {
             !r.retired
-                && answered(who, &r)
+                && answered(who, r)
                 && held.is_some_and(|d| rights::admits(who, d, &r.fields))
         });
+        // A link record is there only with its ends (006).
+        if let (true, Some(d), Some(r)) = (exists, held, &found) {
+            exists = ends_answered(view, pending, who, d, &r.fields)?;
+        }
         if !exists {
             let (field, ty, key) = (name.clone(), target.clone(), to);
             return Err(constraint(
@@ -934,27 +939,74 @@ fn own_record(
     }
 }
 
-/// Whether a proposal logged at `at` reached a record restricted then: the
-/// record it writes, or one an upsert's reference names.
-fn held_then(lake: &Lake, o: &Ontology, at: Position, write: &ProposedWrite) -> Result<bool> {
-    let (ty, key, patch) = match write {
-        ProposedWrite::Upsert { ty, key, patch, .. } => (ty, Some(key), Some(patch)),
-        ProposedWrite::Retire { ty, key, .. } => (ty, Some(key), None),
-        ProposedWrite::Call { verb, key, .. } => (&o.verb(verb)?.on, key.as_ref(), None),
-        _ => return Ok(false),
-    };
-    let decl = o.ty(ty)?;
-    let refs = (patch.iter().flat_map(|p| p.iter())).filter_map(|(n, v)| {
-        let f = decl.fields.iter().find(|f| &f.name == n)?;
-        Some((f.ty.target.as_ref()?, RecordKey::from(v.as_str()?)))
-    });
-    let then = lake.engine.view(Some(at))?;
-    for (ty, key) in key.map(|k| (ty, k.clone())).into_iter().chain(refs) {
-        if then.get(ty, &key)?.is_some_and(|r| r.restricted) {
+/// Whether the proposal `p` reached a record restricted when it was logged
+/// ([`reached`]).
+fn held_then(
+    lake: &Lake,
+    p: &lakelands_api::write::Proposal,
+    write: &ProposedWrite,
+) -> Result<bool> {
+    // What a write reached is computed wholly as it stood then: the
+    // declarations, its record, the settings in force and the proposal's
+    // time. A record held, a field retyped, a setting changed since is no
+    // proof of the grant.
+    let then = lake.engine.view(Some(p.position))?;
+    let ontology = Ontology::at(then.as_ref())?;
+    let settings = crate::lake::settings_in(then.as_ref(), &ontology)?;
+    for (ty, key) in reached(&ontology, (then.as_ref(), &settings, p.proposed_at), write)? {
+        if then.get(&ty, &key)?.is_some_and(|r| r.restricted) {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+/// The records a proposed write reaches: the record it writes, those its
+/// references name, an upsert's or what a call's assignments compute for
+/// the record in `view` with these settings at `now`, and the two end
+/// records of each link among them.
+fn reached(
+    o: &Ontology,
+    (view, settings, now): (&dyn ProjectionView, &BTreeMap<String, Value>, Timestamp),
+    write: &ProposedWrite,
+) -> Result<Vec<(TypeName, RecordKey)>> {
+    let (ty, key, refs) = match write {
+        ProposedWrite::Upsert { ty, key, patch, .. } => (ty, Some(key), patch.clone()),
+        ProposedWrite::Retire { ty, key, .. } => (ty, Some(key), Patch::new()),
+        ProposedWrite::Call {
+            verb, key, payload, ..
+        } => {
+            let Ok(v) = o.verb(verb) else {
+                return Ok(Vec::new());
+            };
+            // What it would write, whatever form an assignment takes; one
+            // that cannot be computed refuses the accept by itself.
+            let record = key
+                .as_ref()
+                .map(|k| view.get(&v.on, k))
+                .transpose()?
+                .flatten();
+            let set = record.and_then(|r| assigned(o, settings, v, &r.fields, payload, now).ok());
+            (&v.on, key.as_ref(), set.unwrap_or_default())
+        }
+        _ => return Ok(Vec::new()),
+    };
+    let decl = o.ty(ty)?;
+    let mut out: Vec<_> = key.map(|k| (ty.clone(), k.clone())).into_iter().collect();
+    out.extend(refs.iter().filter_map(|(n, v)| {
+        let f = decl.fields.iter().find(|f| &f.name == n)?;
+        Some((f.ty.target.clone()?, RecordKey::from(v.as_str()?)))
+    }));
+    for (t, k) in out.clone() {
+        let Some((owner, r)) = links::relation_of(o.types.values().map(|e| &e.decl), &t) else {
+            continue;
+        };
+        let parts = lakelands_api::key::key_components(&k);
+        for (end, part) in [(&owner.name, parts.first()), (&r.target, parts.get(1))] {
+            out.extend(part.map(|p| (end.clone(), RecordKey::from(p.as_str()))));
+        }
+    }
+    Ok(out)
 }
 
 /// Whether `who` is answered the record `r`: a restricted record is not
@@ -1025,6 +1077,60 @@ fn requires(
     let (verb, ty, key) = (verb.name.clone(), verb.on.clone(), key.clone());
     let case = Case::RequiresUnmet { verb, ty, key };
     Err(refused(Refusal::Precondition(Box::new(case.into()))))
+}
+
+/// The values a write verb's assignments give `record` for a call with
+/// `payload`, as the call computes them.
+fn assigned(
+    o: &Ontology,
+    settings: &BTreeMap<String, Value>,
+    verb: &VerbDecl,
+    record: &BTreeMap<FieldName, Value>,
+    payload: &Patch,
+    now: Timestamp,
+) -> Result<Patch> {
+    let VerbEffect::Write { set } = &verb.effect else {
+        return Ok(Patch::new());
+    };
+    let mut patch = Patch::new();
+    for a in set {
+        let at = [
+            Place::Verb {
+                name: verb.name.clone(),
+            },
+            Place::Field {
+                name: a.field.clone(),
+            },
+        ];
+        let e = declare::condition(&a.value, Eval::Record, &at)?;
+        let v = expr::eval(
+            &e,
+            &VerbScope {
+                record,
+                payload,
+                settings,
+                now,
+            },
+        )
+        .map_err(|why| {
+            let (verb, field, why) = (verb.name.clone(), a.field.clone(), Box::new(why));
+            invalid(Case::VerbCannotCompute { verb, field, why })
+        })?;
+        let kind = o
+            .ty(&verb.on)?
+            .fields
+            .iter()
+            .find(|f| f.name == a.field)
+            .map(|f| f.ty.kind);
+        let json = kind
+            .and_then(|k| expr::eval::to_json(&v, k, None))
+            .ok_or_else(|| {
+                let (verb, field) = (verb.name.clone(), a.field.clone());
+                invalid(Case::VerbValueUnfit { verb, field })
+            })?;
+        patch.insert(a.field.clone(), json);
+    }
+    Ok(patch)
 }
 
 /// The scope a verb's assignments see: the record's fields, and
@@ -1613,46 +1719,9 @@ impl Call<'_> {
         let called_at = position_after(w, n);
         let mut drafts = vec![called];
         let (mut reactions, mut after) = (Vec::new(), None);
-        if let VerbEffect::Write { set } = &verb.effect {
-            let mut patch = Patch::new();
-            for a in set {
-                let at = [
-                    Place::Verb {
-                        name: verb.name.clone(),
-                    },
-                    Place::Field {
-                        name: a.field.clone(),
-                    },
-                ];
-                let e = declare::condition(&a.value, Eval::Record, &at)?;
-                let v = expr::eval(
-                    &e,
-                    &VerbScope {
-                        record: &record.fields,
-                        payload: &payload,
-                        settings: &w.settings,
-                        now,
-                    },
-                )
-                .map_err(|why| {
-                    let (verb, field, why) = (verb.name.clone(), a.field.clone(), Box::new(why));
-                    invalid(Case::VerbCannotCompute { verb, field, why })
-                })?;
-                let kind = w
-                    .ontology
-                    .ty(&verb.on)?
-                    .fields
-                    .iter()
-                    .find(|f| f.name == a.field)
-                    .map(|f| f.ty.kind);
-                let json = kind
-                    .and_then(|k| expr::eval::to_json(&v, k, None))
-                    .ok_or_else(|| {
-                        let (verb, field) = (verb.name.clone(), a.field.clone());
-                        invalid(Case::VerbValueUnfit { verb, field })
-                    })?;
-                patch.insert(a.field.clone(), json);
-            }
+        if let VerbEffect::Write { .. } = &verb.effect {
+            let (o, settings) = (&w.ontology, &w.settings);
+            let patch = assigned(o, settings, verb, &record.fields, &payload, now)?;
             let mut plan = self.plan_record(
                 w,
                 view,
@@ -1731,10 +1800,26 @@ impl Call<'_> {
             drafts
         } else {
             // A call that could not run now is not proposed: the version,
-            // then `requires`, as when it runs; accepting it judges the
-            // record again (013).
+            // then `requires`, and the write it would make, as the caller,
+            // as when it runs; accepting it judges the record again (013).
             let pinned = self.pin(w.ontology.ty(&decl.on)?, Some(&decl))?;
-            if let Some(key) = key {
+            if matches!(decl.effect, VerbEffect::Write { .. }) {
+                let mut pending = Pending::default();
+                let (view, payload) = (view.as_ref(), payload.clone());
+                let expected = opts.expected_version;
+                self.run_verb(
+                    &w,
+                    view,
+                    &mut pending,
+                    &decl,
+                    key,
+                    payload,
+                    expected,
+                    now,
+                    1,
+                    self.who,
+                )?;
+            } else if let Some(key) = key {
                 let record = own_record(
                     view.as_ref(),
                     &w.ontology,
@@ -1996,22 +2081,17 @@ impl Call<'_> {
     /// Refuse a reviewer holding `only` a proposal it is not listed whole:
     /// a change of shape, which it never makes, and a write to a type it
     /// holds `only` on that its listing would trim or withhold (051); and
-    /// one without `restricted` a write to a held record, which it is not
-    /// answered (006). It is judged before the reviewer is told whether the
-    /// proposal is decided.
-    fn decides(&self, o: &Ontology, p: &lakelands_api::write::Proposal) -> Result<()> {
-        let at = match p.write.as_ref() {
-            Some(ProposedWrite::Upsert { ty, key, .. } | ProposedWrite::Retire { ty, key, .. }) => {
-                Some((ty, Some(key)))
-            }
-            Some(ProposedWrite::Call { verb, key, .. }) => {
-                o.verb(verb).ok().map(|v| (&v.on, key.as_ref()))
-            }
-            _ => None,
-        };
-        if let Some((ty, Some(key))) = at.filter(|_| !self.who.grants.restricted) {
+    /// one without `restricted` a write that reaches a held record, which
+    /// it is not answered (006). It is judged before the reviewer is told
+    /// whether the proposal is decided.
+    fn decides(&self, w: &Writer, p: &lakelands_api::write::Proposal) -> Result<()> {
+        let o = &w.ontology;
+        if let Some(write) = p.write.as_ref().filter(|_| !self.who.grants.restricted) {
             let view = self.lake.engine.view(None)?;
-            granted(!view.get(ty, key)?.is_some_and(|r| r.restricted))?;
+            let now = crate::lake::wall_clock().max(w.last_known_at);
+            for (ty, key) in reached(o, (view.as_ref(), &w.settings, now), write)? {
+                granted(!view.get(&ty, &key)?.is_some_and(|r| r.restricted))?;
+            }
         }
         let Some(write) = p.write.as_ref().filter(|_| rights::holds_only(self.who)) else {
             return Ok(());
@@ -2097,7 +2177,7 @@ impl Call<'_> {
         self.shown_to_reviewer(&w.ontology, &p)?;
         // Before a retry is answered: an accept sent again would hand a
         // holder of `only` what an earlier accepter was answered (051).
-        self.decides(&w.ontology, &p)?;
+        self.decides(&w, &p)?;
         if p.state != ProposalState::Pending {
             let again = self.accepted_again(&w, view.as_ref(), proposal)?;
             return Ok((again, None));
@@ -2121,7 +2201,7 @@ impl Call<'_> {
         // reached a record restricted then, and else a record restricted
         // since is not there to the accept (006).
         let mut proposer = self.lake.system(p.proposer.clone());
-        proposer.grants.restricted = held_then(self.lake, &w.ontology, p.position, write)?;
+        proposer.grants.restricted = held_then(self.lake, &p, write)?;
         let accepted = Draft {
             id: Some(log::accepted_id(&self.lake.id, proposal)),
             ..self.draft(
@@ -2453,7 +2533,7 @@ impl Call<'_> {
         let view = self.lake.engine.view(None)?;
         let p = find_proposal(view.as_ref(), proposal)?;
         self.shown_to_reviewer(&w.ontology, &p)?;
-        self.decides(&w.ontology, &p)?;
+        self.decides(&w, &p)?;
         if p.state != ProposalState::Pending {
             return Err(refused(Refusal::Decided));
         }
@@ -4409,13 +4489,15 @@ pub fn restrict(
     let mut w = lake.for_write()?;
     rights::not_a_view(w.ontology.ty(ty)?)?;
     let view = lake.engine.view(None)?;
-    let before = own_record(
-        view.as_ref(),
-        &w.ontology,
-        w.ontology.ty(ty)?,
-        key,
-        &lake.system("host"),
-    )?;
+    // A hold is placed and lifted on a retired record too: the host holds
+    // what it keeps, live or not (006).
+    let missing = || Error::NotFound {
+        missing: Missing::Record {
+            ty: ty.clone(),
+            key: key.clone(),
+        },
+    };
+    let before = view.get(ty, key)?.ok_or_else(missing)?;
     let version = Version(before.version.0 + 1);
     let restriction = |already| {
         let (ty, key) = (ty.clone(), key.clone());

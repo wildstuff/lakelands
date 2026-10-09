@@ -672,17 +672,25 @@ impl<'a> Reader<'a> {
     }
 
     /// Whether a view's records are computed for this reader from the
-    /// admitted records of what it reads, never served kept.
+    /// admitted records of what it reads, never served kept: under its
+    /// `only` (051), or, without `restricted`, over a link type, or a view
+    /// computed so, whose links are judged by their ends, as no kept face
+    /// can (006).
     fn computes(&self, ty: &TypeName) -> bool {
         let find = |t: &TypeName| self.shape.ontology.ty(t).ok();
         let only = rights::only(self.who, ty, &find);
+        let view = find(ty).and_then(|d| d.view.as_deref());
+        let mut sources = view
+            .into_iter()
+            .flat_map(|v| std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source)));
+        let links = |s: &TypeName| lakelands_core::links::is_link_type(s) || self.computes(s);
         matches!(only, rights::Effective::ComputeOnly(_))
+            || (!self.who.grants.restricted && sources.any(links))
     }
 
     /// Whether this reader is admitted every record of `decl` as stored.
     fn whole(&self, decl: &TypeDecl) -> bool {
-        self.pairs(&decl.name).is_some_and(|p| p.is_empty())
-            && rights::held_ends(self.who, decl).is_empty()
+        self.pairs(&decl.name).is_some_and(|p| p.is_empty()) && !judges_ends(self.who, decl)
     }
 
     /// Of link records of `decl`, which have every end this reader holds
@@ -867,7 +875,7 @@ impl<'a> Reader<'a> {
             return Ok(0);
         };
         // A link's ends are judged a page at a time, never by the engine.
-        let ends = !rights::held_ends(self.who, decl).is_empty();
+        let ends = judges_ends(self.who, decl);
         let bounded = self.with_bound(decl, filter);
         let filter = bounded.as_ref();
         if ends || filter.is_some_and(|e| kept || self.store_only(decl, e)) {
@@ -3201,9 +3209,18 @@ fn derived_edges(
     Ok(all)
 }
 
+/// Whether a read judges the ends of `decl`'s records: a link type's, for
+/// a reader holding `only` on an end type (051) or without `restricted`
+/// (006).
+fn judges_ends(who: &Principal, decl: &TypeDecl) -> bool {
+    !rights::held_ends(who, decl).is_empty()
+        || (!who.grants.restricted && lakelands_core::links::is_link_type(&decl.name))
+}
+
 /// Of link records of `decl` in `view`, which have every end `who` holds
-/// `only` on admitted by `pairs` (051): each such end type's records read
-/// once for the batch. Any other type's records all pass.
+/// `only` on admitted by `pairs` (051), and no end `who` is not answered
+/// (006): each end type's records read once for the batch. Any other
+/// type's records all pass.
 fn ends_admitted(
     view: &dyn ProjectionView,
     who: &Principal,
@@ -3212,18 +3229,41 @@ fn ends_admitted(
     pairs: impl Fn(&TypeName) -> Option<Vec<(FieldName, Value)>>,
 ) -> Result<Vec<bool>> {
     let mut out = vec![true; rows.len()];
-    for (field, end) in rights::held_ends(who, decl) {
+    if !judges_ends(who, decl) {
+        return Ok(out);
+    }
+    let held = rights::held_ends(who, decl);
+    let link = lakelands_core::links::is_link_type(&decl.name);
+    let named = [lakelands_core::links::FROM, lakelands_core::links::TO];
+    let ends = (decl.fields.iter()).filter(|f| link && named.contains(&f.name.as_str()));
+    for (field, end) in ends.filter_map(|f| Some((&f.name, f.ty.target.as_ref()?))) {
         let key = |r: &StoredRecord| r.fields.get(field)?.as_str().map(RecordKey::from);
         let keys: Vec<RecordKey> = rows.iter().filter_map(key).collect();
-        let Some(pairs) = pairs(end) else {
-            out.fill(false);
-            continue;
+        // `None` where `who` holds no `only` on the end type.
+        let pairs = match held.iter().any(|(f, _)| *f == field).then(|| pairs(end)) {
+            Some(None) => {
+                out.fill(false);
+                continue;
+            }
+            Some(Some(p)) => Some(p),
+            None => None,
         };
-        let ends = view.get_many(end, &keys)?.into_iter();
-        let admitted = ends.filter(|e| rights::admitted(&pairs, &e.fields));
-        let admitted: BTreeSet<RecordKey> = admitted.map(|e| e.key).collect();
+        let found = view.get_many(end, &keys)?;
+        let admitted = (found.iter())
+            .filter(|e| {
+                pairs
+                    .as_ref()
+                    .is_none_or(|p| rights::admitted(p, &e.fields))
+            })
+            .filter(|e| who.grants.restricted || !e.restricted);
+        let admitted: BTreeSet<&RecordKey> = admitted.map(|e| &e.key).collect();
+        let present: BTreeSet<&RecordKey> = found.iter().map(|e| &e.key).collect();
         for (ok, r) in out.iter_mut().zip(rows) {
-            *ok &= key(r).is_some_and(|k| admitted.contains(&k));
+            // An end no record holds is judged by `only` alone.
+            *ok &= match key(r) {
+                Some(k) => admitted.contains(&k) || (pairs.is_none() && !present.contains(&k)),
+                None => pairs.is_none(),
+            };
         }
     }
     Ok(out)
