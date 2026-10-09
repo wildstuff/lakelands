@@ -956,8 +956,22 @@ async fn a_holder_of_only_changes_no_shape(store: Arc<dyn LakeStore>) -> Result<
 const UNAPPLIED: &str = r#"
     a field the type does not declare | {"only": {"payer": "alice"}}
     a number field | {"only": {"amount": "10"}}
+    a number field and value | {"only": {"amount": 10}}
     a value that is not text | {"only": {"owner": 1}}
     a field she may not read | {"only": {"owner": "alice"}, "fields": {"owner": "masked"}}
+    a field she may not know of | {"only": {"owner": "alice"}, "fields": {"owner": "none"}}
+"#;
+
+/// The reads of the kept `spend`, grouped by the pair's field, and of a
+/// view computed over it, that admit nothing to a grant that cannot be
+/// applied (lakelands#771): `-` is an answer of nothing.
+const KEPT_UNAPPLIED: &str = r#"
+    spend | its records | {"total": true} | total=0
+    spend | its sum | {"aggregate": {"measures": [{"name": "s", "func": "sum", "field": "total"}]}} | s=0
+    spend | its count | {"aggregate": {"measures": [{"name": "n", "func": "count"}]}} | n=0
+    spend | its groups | {"aggregate": {"measures": [{"name": "s", "func": "sum", "field": "total"}], "group_by": ["owner"]}} | -
+    spend | its groups as of before | {"aggregate": {"measures": [{"name": "s", "func": "sum", "field": "total"}], "group_by": ["owner"]}, "as_of": BEFORE} | -
+    over_spend | a view over it | {"aggregate": {"measures": [{"name": "s", "func": "sum", "field": "t"}]}} | s=0
 "#;
 
 async fn a_grant_that_cannot_be_applied_is_refused(
@@ -1066,6 +1080,273 @@ async fn a_grant_that_cannot_be_applied_is_refused(
     ensure!(
         dropped.as_ref().is_err_and(unappliable),
         "after `owner` is dropped alice's `find` at the head must be refused; it answered {dropped:?}"
+    );
+    Ok(())
+}
+
+check!(
+    /// A grant that cannot be applied admits no record at any door.
+    ONLY_UNAPPLIED_ADMITS_NONE = a_grant_that_cannot_be_applied_admits_no_record_at_any_door,
+    "051, extended (lakelands#771): a holder's `only` that cannot be applied admits none of the type's records, whatever a stored value holds: the proposal listing answers a reviewer every proposal on such a record without its write, and a reference into the type, a link's end too, is refused as naming no live record, exactly as an absent key is; an upsert, a verb, an unlink, a proposed upsert or retirement, a retirement and an ingest on a record whose value equals the pair answer as on one whose value does not, the link's end judged so too; a search as of a position admits no candidate where the grant cannot be applied to the head's declaration, a field made one the holder may not read there included, though its values stay, and no link whose end's type the grant so holds; a kept view grouped by the pair's field, and a view over it, answer nothing to such a grant through `find`, a sum, a count, groups, `total`, a read as of before and `get`, and refuse it where it hides the pair's field"
+);
+
+/// Grants on `claim` whose `only` cannot be applied though a stored value
+/// equals its pair: a number, and an owner the holder may not read.
+const UNAPPLIED_YET_HELD: &str = r#"
+    a number pair | {"only": {"amount": 10}}
+    a masked owner | {"only": {"owner": "alice"}, "fields": {"owner": "masked"}}
+    a hidden owner | {"only": {"owner": "alice"}, "fields": {"owner": "none"}}
+"#;
+
+async fn a_grant_that_cannot_be_applied_admits_no_record_at_any_door(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let cat = l.cat.as_ref();
+    claims(&l, true).await?;
+    let over = vec![field("t", Number)];
+    l.declare(view_of(
+        "over_spend",
+        "spend",
+        &[],
+        over,
+        &[("t", "sum(total)")],
+    ))
+    .await?;
+    let before = store.head().await.must("reading the head")?.0.to_string();
+    let memo = crate::conformance::fixture::reference("claim", "claim");
+    l.declare(type_decl("memo", vec![memo])).await?;
+    let held_by = json!({"name": "held_by", "target": "claim", "cardinality": "many_to_one"});
+    l.declare_json(json!({"declare": "type", "name": "desk",
+        "fields": [{"name": "n", "type": {"kind": "text"}}], "relations": [held_by]}))
+        .await?;
+    l.upsert("desk", "d1", json!({"n": "d1"})).await?;
+    let pay = json!({"declare": "verb", "name": "pay", "on": "claim", "risk": "low",
+                     "effect": "write", "set": [{"field": "note", "value": "'paid'"}]});
+    l.declare_json(pay).await?;
+    let shared = |n: &str, k: &str| json!({"name": n, "type": {"kind": k}, "authority": "shared"});
+    let bill = [
+        shared("owner", "text"),
+        shared("amount", "number"),
+        shared("note", "text"),
+    ];
+    l.declare_json(json!({"declare": "type", "name": "bill", "fields": bill}))
+        .await?;
+    for (key, owner, amount) in [("c1", "alice", 10), ("c2", "bob", 20)] {
+        let bill = json!({"owner": owner, "amount": amount, "note": "n"});
+        l.upsert("bill", &key.replace('c', "b"), bill).await?;
+    }
+    for key in ["c1", "c2"] {
+        let w = json!({"write": "upsert", "type": "claim", "key": key, "patch": {"note": "x"}});
+        let proposed = cat.propose(&l.own, de(w), "the owner's".into()).await;
+        proposed.must("the owner's proposal")?;
+    }
+    // Every proposal is listed to her as one on a record she is not shown.
+    let all = cat.proposals(&l.own, Default::default()).await;
+    let mut all = all.must("the owner's listing")?.data;
+    for p in &mut all {
+        (p.write, p.more) = (None, true);
+    }
+    let mut wrong = Vec::new();
+    for (what, grant) in UNAPPLIED_YET_HELD
+        .lines()
+        .filter_map(|r| r.trim().split_once(" | "))
+    {
+        let grant: Value = serde_json::from_str(grant).expect("a grant reads");
+        let types = json!({"claim": grant, "bill": grant});
+        let grants = json!({"default": "write", "review": true, "ingest": true, "types": types});
+        let eve = &holder(store.as_ref(), "eve", grants);
+        let listed = cat.proposals(eve, Default::default()).await;
+        if !listed.as_ref().is_ok_and(|r| r.data == all) {
+            wrong.push(format!("{what}: the listing {listed:?}"));
+        }
+        // A reference to her `c1`, as a field and as a link's end, is
+        // refused whole as one to the absent `c9`.
+        let refused = |c: &'static str| async move {
+            let (memo, desk) = (TypeName::from("memo"), TypeName::from("desk"));
+            let (m1, d1, to) = (
+                RecordKey::from("m1"),
+                RecordKey::from("d1"),
+                RecordKey::from(c),
+            );
+            let patch = de(json!({"claim": c}));
+            let upserted = cat.upsert(eve, &memo, &m1, patch, Default::default());
+            let (held_by, none) = (RelationName::from("held_by"), Default::default());
+            let linked = cat.link(eve, &desk, &d1, &held_by, &to, none, Default::default());
+            let print = |e: Option<Error>| serde_json::to_string(&e).expect("an error prints");
+            [print(upserted.await.err()), print(linked.await.err())].map(|e| e.replace(c, "c?"))
+        };
+        let (held, absent) = (refused("c1").await, refused("c9").await);
+        if held != absent || absent.iter().any(|e| e == "null") {
+            wrong.push(format!("{what}: `c1` {held:?}, the absent `c9` {absent:?}"));
+        }
+        // Her writes on `c1`, whose value her pair equals, answer as on
+        // `c2`, whose value it does not (and `b1` as `b2`): she owns neither.
+        let writes = |c: &'static str| async move {
+            let (claim, key, b) = (
+                TypeName::from("claim"),
+                RecordKey::from(c),
+                c.replace('c', "b"),
+            );
+            let (on, t1, opts) = (
+                RelationName::from("on_trip"),
+                RecordKey::from("t1"),
+                Default::default,
+            );
+            let print = |r: Result<(), Error>| match r {
+                Ok(()) => "applied".to_owned(),
+                Err(e) => serde_json::to_string(&e)
+                    .expect("an error prints")
+                    .replace(c, "c?"),
+            };
+            let up = json!({"write": "upsert", "type": "claim", "key": c, "patch": {"note": "x"}});
+            let gone = json!({"write": "retire", "type": "claim", "key": c});
+            let fed = de(json!({"type": "bill", "key": b, "fields": {"note": "x"}}));
+            [
+                print(
+                    cat.upsert(eve, &claim, &key, de(json!({"note": "x"})), opts())
+                        .await
+                        .map(drop),
+                ),
+                print(
+                    cat.call(eve, &"pay".into(), Some(&key), Default::default(), opts())
+                        .await
+                        .map(drop),
+                ),
+                print(
+                    cat.unlink(eve, &claim, &key, &on, &t1, opts())
+                        .await
+                        .map(drop),
+                ),
+                print(cat.propose(eve, de(up), "eve's".into()).await.map(drop)),
+                print(cat.propose(eve, de(gone), "eve's".into()).await.map(drop)),
+                print(cat.retire(eve, &claim, &key, opts()).await.map(drop)),
+                print(
+                    crate::conformance::fixture::ingest(cat, eve, "feed", vec![fed])
+                        .await
+                        .map(drop),
+                )
+                .replace(&b, "b?"),
+            ]
+        };
+        let (held, other) = (writes("c1").await, writes("c2").await);
+        if held != other {
+            wrong.push(format!(
+                "{what}: writes on `c1` {held:?}, on `c2` {other:?}"
+            ));
+        }
+    }
+    for (what, grant) in UNAPPLIED.lines().filter_map(|r| r.trim().split_once(" | ")) {
+        let grant: Value = serde_json::from_str(grant).expect("a grant reads");
+        let eve = holder(
+            store.as_ref(),
+            "eve",
+            json!({"default": "read", "types": {"claim": grant}}),
+        );
+        // A kept view grouped by the pair's field, and a view over it, admit
+        // nothing; one whose pair she may not read refuses her outright.
+        let hidden = grant.get("fields").is_some();
+        for row in KEPT_UNAPPLIED
+            .lines()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+        {
+            let [ty, read, find, want] = row.split(" | ").collect::<Vec<_>>()[..] else {
+                panic!("a row is four cells: {row}");
+            };
+            let find = serde_json::from_str(&find.replace("BEFORE", &before));
+            let found = l
+                .cat
+                .find(&eve, &ty.into(), de(find.expect("a find reads")))
+                .await;
+            let said = match found {
+                Ok(f) if !hidden => short(&f.data).trim().to_owned(),
+                Err(Error::Refused {
+                    reason: Refusal::NotGranted,
+                    ..
+                }) if hidden => want.replace('-', ""),
+                other => format!("{other:?}"),
+            };
+            if said != want.replace('-', "") {
+                wrong.push(format!("{what}: {read} of `{ty}`: {said}"));
+            }
+        }
+        let got = get(&l, &eve, "spend", "alice", None).await;
+        if !matches!(&got, Err(Error::NotFound { .. }) if !hidden)
+            && !matches!(&got, Err(Error::Refused { reason: Refusal::NotGranted, .. }) if hidden)
+        {
+            wrong.push(format!("{what}: `get` of `spend` `alice`: {got:?}"));
+        }
+    }
+    // A search as of before a declaration that makes the pair's field
+    // one she may not read admits no candidate at the head, where her
+    // grant cannot be applied, though the stored values stay.
+    let text = |n: &str| json!({"name": n, "type": {"kind": "text"}, "searchable": n == "note"});
+    let mut chit = json!({"declare": "type", "name": "chit",
+                          "fields": [text("holder"), text("secret"), text("note")]});
+    l.declare_json(chit.clone()).await?;
+    for key in ["h1", "h3"] {
+        l.upsert("chit", key, json!({"holder": "alice", "note": "taxi"}))
+            .await?;
+    }
+    let before = store.head().await.must("reading the head")?;
+    chit["fields"][0]["depends_on"] = json!(["secret"]);
+    l.declare_json(chit).await?;
+    l.upsert("chit", "h3", json!({"holder": "bob"})).await?;
+    let grant = json!({"only": {"holder": "alice"}, "fields": {"secret": "none"}});
+    let eve = holder(
+        store.as_ref(),
+        "eve",
+        json!({"default": "read", "types": {"chit": grant}}),
+    );
+    let search = lakelands_api::query::Search {
+        ty: "chit".into(),
+        at: de(json!({"as_of": before.0})),
+        ..super::search::doc_search(lakelands_api::query::SearchMode::lexical("taxi"))
+    };
+    let found = cat.search(&eve, search).await.map(|h| hit_keys(&h.data));
+    if found.as_deref().ok() != Some("") {
+        wrong.push(format!(
+            "a search as of before `holder` came to depend on `secret`: {found:?}"
+        ));
+    }
+    // So does a link whose end's type is held so: `trip`'s `name` comes to
+    // depend on `tsecret`, which she may not read.
+    let trip = |name: Value| {
+        let fields = [
+            json!({"name": "name", "type": {"kind": "text"}, "depends_on": name}),
+            json!({"name": "tsecret", "type": {"kind": "text"}}),
+        ];
+        json!({"declare": "type", "name": "trip", "fields": fields})
+    };
+    l.declare_json(trip(json!([]))).await?;
+    l.upsert("trip", "t2", json!({"name": "rome"})).await?;
+    let (ty, c3, on, t1) = names("c3");
+    let unlinked = cat.unlink(&l.own, &ty, &c3, &on, &t1, Default::default());
+    unlinked.await.must("unlinking `c3` from `t1`")?;
+    let (label, t2) = (de(json!({"label": "trip"})), RecordKey::from("t2"));
+    let linked = cat.link(&l.own, &ty, &c3, &on, &t2, label, Default::default());
+    linked.await.must("linking `c3` to `t2`")?;
+    let before = store.head().await.must("reading the head")?;
+    l.upsert("trip", "t2", json!({"name": "paris"})).await?;
+    l.declare_json(trip(json!(["tsecret"]))).await?;
+    let grant = json!({"only": {"name": "rome"}, "fields": {"tsecret": "none"}});
+    let grants = json!({"default": "read", "types": {"trip": grant}});
+    let eve = holder(store.as_ref(), "eve", grants);
+    let search = lakelands_api::query::Search {
+        ty: crate::links::link_type_name(&ty, &on),
+        at: de(json!({"as_of": before.0})),
+        ..super::search::doc_search(lakelands_api::query::SearchMode::lexical("trip"))
+    };
+    let found = cat.search(&eve, search).await.map(|h| hit_keys(&h.data));
+    if found.as_deref().ok() != Some("") {
+        wrong.push(format!(
+            "a link search as of before `tsecret` hid `name`: {found:?}"
+        ));
+    }
+    ensure!(
+        wrong.is_empty(),
+        "an `only` that cannot be applied admits no record, whatever a stored value holds: {wrong:?}"
     );
     Ok(())
 }

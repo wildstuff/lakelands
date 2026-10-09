@@ -235,6 +235,8 @@ macro_rules! door_checks {
             #[own_principals]
             a_grant_admits_only_the_records_whose_fields_hold_its_values,
             #[own_principals]
+            a_grant_that_cannot_be_applied_admits_no_record,
+            #[own_principals]
             a_hidden_target_is_not_learned_by_declaring_its_field,
             #[own_principals]
             a_relation_carried_by_a_hidden_field_answers_nothing_of_it,
@@ -12071,6 +12073,160 @@ pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
         wrong.is_empty(),
         "alice is admitted her own claims alone: {}",
         wrong.join("; ")
+    );
+}
+
+/// A grant whose `only` cannot be applied admits no record, whatever a
+/// stored value holds (051, lakelands#771): a reviewer is listed every
+/// proposal on the type without its write, a reference into the type is
+/// refused whole as one to an absent key, and a write on the record whose
+/// value equals the pair answers as on another's.
+pub async fn a_grant_that_cannot_be_applied_admits_no_record(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    let opts = WriteOpts::default;
+    for d in [
+        json!({"declare": "type", "name": "trip", "fields": [
+            {"name": "title", "type": {"kind": "text"}}]}),
+        json!({"declare": "type", "name": "claim", "fields": [
+            {"name": "holder", "type": {"kind": "text"}, "authority": "shared"},
+            {"name": "amount", "type": {"kind": "number"}, "authority": "shared"},
+            {"name": "note", "type": {"kind": "text"}, "authority": "shared"}],
+            "relations": [{"name": "on_trip", "target": "trip"}]}),
+        json!({"declare": "type", "name": "memo", "fields": [
+            {"name": "claim", "type": {"kind": "reference", "target": "claim"}}]}),
+        json!({"declare": "verb", "name": "pay", "on": "claim", "risk": "low",
+               "effect": "write", "set": [{"field": "note", "value": "'paid'"}]}),
+    ] {
+        let d = serde_json::from_value::<Declaration>(d).expect("a declaration reads");
+        c.declare(own, d).await.expect("the owner declares");
+    }
+    for (k, holder, amount) in [("c1", "alice", 10), ("c2", "bob", 20)] {
+        let p = patch(&[("holder", json!(holder)), ("amount", json!(amount))]);
+        c.upsert(own, &ty("claim"), &key(k), p, opts())
+            .await
+            .expect("the owner writes a claim");
+        c.upsert(
+            own,
+            &ty("trip"),
+            &key("t1"),
+            patch(&[("title", json!("rome"))]),
+            opts(),
+        )
+        .await
+        .expect("the owner writes `t1`");
+        c.link(
+            own,
+            &ty("claim"),
+            &key(k),
+            &"on_trip".into(),
+            &key("t1"),
+            Patch::new(),
+            opts(),
+        )
+        .await
+        .expect("the owner links a claim");
+        let w = json!({"write": "upsert", "type": "claim", "key": k, "patch": {"amount": 1}});
+        let w = serde_json::from_value(w).expect("a write reads");
+        c.propose(own, w, "the owner's".into())
+            .await
+            .expect("the owner proposes");
+    }
+    let mut all = c
+        .proposals(own, Default::default())
+        .await
+        .expect("a listing")
+        .data;
+    for p in &mut all {
+        (p.write, p.more) = (None, true);
+    }
+    let mut wrong = Vec::new();
+    for grant in [
+        json!({"only": {"amount": 10}}),
+        json!({"only": {"holder": "alice"}, "fields": {"holder": "masked"}}),
+        json!({"only": {"holder": "alice"}, "fields": {"holder": "none"}}),
+    ] {
+        let grants = json!({"default": "write", "review": true, "ingest": true,
+                            "types": {"claim": grant}});
+        let grants = serde_json::from_value(grants).expect("grants read");
+        let eve = &principal(store.lake(), PrincipalKind::Agent, "eve", grants);
+        let listed = c.proposals(eve, Default::default()).await.map(|r| r.data);
+        if listed.as_ref().ok() != Some(&all) {
+            wrong.push(format!("{grant}: the listing {listed:?}"));
+        }
+        let refused = |to: &'static str| {
+            let p = patch(&[("claim", json!(to))]);
+            let c = c.clone();
+            async move {
+                let e = c
+                    .upsert(eve, &ty("memo"), &key("m1"), p, opts())
+                    .await
+                    .err();
+                serde_json::to_string(&e)
+                    .expect("an error prints")
+                    .replace(to, "c?")
+            }
+        };
+        let (held, absent) = (refused("c1").await, refused("c9").await);
+        if held != absent || absent == "null" {
+            wrong.push(format!("{grant}: `c1` {held}, the absent `c9` {absent}"));
+        }
+        // Her writes on `c1` answer as on bob's `c2`: she owns neither.
+        let writes = |k: &'static str| {
+            let c = c.clone();
+            async move {
+                let print = |r: Result<(), Error>| match r {
+                    Ok(()) => "applied".to_owned(),
+                    Err(e) => serde_json::to_string(&e).expect("an error prints"),
+                };
+                let (claim, on, t1) = (ty("claim"), "on_trip".into(), key("t1"));
+                let note = || patch(&[("note", json!("x"))]);
+                let up =
+                    json!({"write": "upsert", "type": "claim", "key": k, "patch": {"note": "x"}});
+                let gone = json!({"write": "retire", "type": "claim", "key": k});
+                let fed: SourceRecord = serde_json::from_value(
+                    json!({"type": "claim", "key": k, "fields": {"note": "x"}}),
+                )
+                .expect("a record reads");
+                let fed = match c.ingest(eve, &"feed".into(), stream::of(vec![fed])).await {
+                    Ok(mut s) => format!("{:?}", stream::collect(&mut s).await),
+                    Err(e) => print(Err(e)),
+                };
+                let de = |w: serde_json::Value| serde_json::from_value(w).expect("a write reads");
+                [
+                    print(
+                        c.upsert(eve, &claim, &key(k), note(), opts())
+                            .await
+                            .map(drop),
+                    ),
+                    print(
+                        c.call(eve, &"pay".into(), Some(&key(k)), Patch::new(), opts())
+                            .await
+                            .map(drop),
+                    ),
+                    print(
+                        c.unlink(eve, &claim, &key(k), &on, &t1, opts())
+                            .await
+                            .map(drop),
+                    ),
+                    print(c.propose(eve, de(up), "eve's".into()).await.map(drop)),
+                    print(c.propose(eve, de(gone), "eve's".into()).await.map(drop)),
+                    print(c.retire(eve, &claim, &key(k), opts()).await.map(drop)),
+                    fed,
+                ]
+                .map(|a| a.replace(k, "c?"))
+            }
+        };
+        let (held, other) = (writes("c1").await, writes("c2").await);
+        if held != other {
+            wrong.push(format!(
+                "{grant}: writes on `c1` {held:?}, on `c2` {other:?}"
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "an `only` that cannot be applied admits no record: {wrong:?}"
     );
 }
 

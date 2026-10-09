@@ -288,6 +288,13 @@ fn only_seen<'a>(
     }
 }
 
+/// Whether `who`'s `only` on `decl` admits a record holding `fields`: one
+/// that cannot be applied admits none, whatever the record holds (051,
+/// lakelands#771).
+pub fn admits(who: &Principal, decl: &TypeDecl, fields: &BTreeMap<FieldName, Value>) -> bool {
+    check_only(who, decl).is_ok() && admitted(&own_only(who, &decl.name), fields)
+}
+
 /// Whether a stored record holds every pair.
 pub fn admitted(pairs: &[(FieldName, Value)], fields: &BTreeMap<FieldName, Value>) -> bool {
     pairs.iter().all(|(f, v)| fields.get(f) == Some(v))

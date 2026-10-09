@@ -14,7 +14,13 @@ record that does not exist.
   applied and not guessed at: the doors that name the type refuse it as
   invalid, naming the type and never the field, until the host fixes the
   grant; a walk or a view that reaches the type admits none of its
-  records. Two names of one field that a rename joins with differing
+  records. Nor does any other path, whatever a stored value holds: the
+  proposal listing answers a proposal on such a record without its
+  write, a reference into the type, a link's end too, names no live
+  record, as an absent key does, and a write on a record of the type is
+  one on another's (lakelands#771). A value equal to the pair would
+  otherwise tell which records hold a field the holder may not read.
+  Two names of one field that a rename joins with differing
   values hold null, which no pair may hold.
 - **Every read.** `get` of another's record is not found, as a missing
   one is. `find` with a filter, an order, `total`, a count, a sum and a
@@ -31,6 +37,8 @@ record that does not exist.
   admitted then and at the head too, under the grant followed to the
   head and by the name the type bears there: the ranking reads the text
   and vectors at the head, and another's current text must find nothing.
+  A grant that cannot be applied to the head's declaration admits no
+  candidate there, though the stored values stay (lakelands#771).
   A cursor page and a query started by a search keep working.
 - **Views.** A view's effective `only` is its own pairs, plus, where it
   has one stored source, no merge, and groups by every field the

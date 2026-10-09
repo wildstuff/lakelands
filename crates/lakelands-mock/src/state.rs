@@ -479,6 +479,18 @@ impl State {
         self.admits_fields(who, &r.ty, &r.fields)
     }
 
+    /// As the store's `rights::admits`: whether `who`'s `only` on `ty`
+    /// admits a record holding `fields`, one that cannot be applied
+    /// admitting none (lakelands#771). A link's ends are not judged.
+    pub fn only_admits(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        fields: &BTreeMap<FieldName, Value>,
+    ) -> bool {
+        (self.types.get(ty)).is_some_and(|t| only_applies(who, &t.decl)) && admits(who, ty, fields)
+    }
+
     /// [`Self::admitted`] for a record of `ty` holding `fields`, as a
     /// write would leave it.
     pub fn admits_fields(

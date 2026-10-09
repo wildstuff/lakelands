@@ -88,7 +88,14 @@ pub fn window(
         // A record a holder of `only` is not admitted is, to it, a key that
         // is free: it is not compared, and `plan_record` refuses the write
         // as on a free key with another's owner (051).
-        let own = crate::writes::owned(view.as_ref(), &pending, who, decl, before.clone())?;
+        let own = crate::writes::owned(
+            view.as_ref(),
+            &pending,
+            &w.ontology,
+            who,
+            decl,
+            before.clone(),
+        )?;
         // A link type no relation carries, its relation renamed or
         // removed, stays declared for its history and takes no link.
         let types = w.ontology.types.values().map(|e| &e.decl);
