@@ -303,6 +303,8 @@ pub const ALL: &[Check] = &[
     restriction::HOLD_WITHHOLDS_AND_KEEPS,
     restriction::HOLD_NOT_THERE_TO_A_WRITE,
     restriction::HOLD_REACHES_LINKS_AND_REVIEWS,
+    restriction::HOLD_AT_EVERY_POSITION,
+    restriction::HOLD_ACROSS_A_REKEY,
     only::ONLY_READS,
     only::ONLY_SEARCH,
     only::ONLY_VIEWS,

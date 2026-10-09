@@ -110,9 +110,16 @@ pub struct Reader<'a> {
     /// its grants followed to the head, where a search judges each
     /// candidate too (051).
     pub head_who: Option<Principal>,
+    /// For a read as of a position by a reader without `restricted`, which
+    /// reads each record held as it is at the head ([`HeldNow`]): a kept
+    /// view's face folded then is not read.
+    pub held_now: bool,
 }
 
+mod held;
 mod measures;
+
+pub(crate) use held::HeldNow;
 
 /// A view's parameters as one read binds them: as given, in canonical
 /// form, and as the literals `param()` is replaced by.
@@ -349,6 +356,7 @@ impl<'a> Reader<'a> {
             bound: RefCell::default(),
             computing: RefCell::default(),
             head_who: None,
+            held_now: false,
         })
     }
 
@@ -805,8 +813,12 @@ impl<'a> Reader<'a> {
                     why: NotKept::OnlySome,
                 });
             // Told to one the view's read would answer, of that reader's
-            // face: a number of groups says something of their records.
-            } else if t.lifecycle.kept.as_ref() == Some(&open) && self.probe_view(view).is_ok() {
+            // face: a number of groups says something of their records. A
+            // read held as now computes every view, as `kept_as` does.
+            } else if t.lifecycle.kept.as_ref() == Some(&open)
+                && !self.held_now
+                && self.probe_view(view).is_ok()
+            {
                 let face = usize::from(self.who.grants.restricted);
                 t.lifecycle.kept = Some(match self.kept_read(&t.name, view, face) {
                     Ok(Some((_, 0))) => Kept::Kept,
@@ -1133,6 +1145,9 @@ impl<'a> Reader<'a> {
         v: &lakelands_api::ontology::ViewDecl,
     ) -> Result<Option<(TypeDecl, bool)>> {
         let face = usize::from(self.who.grants.restricted);
+        if self.held_now {
+            return Ok(None);
+        }
         let state = match self.kept_read(&decl.name, v, face)? {
             Some((state, 0)) if !self.timed(decl) && !self.computes(&decl.name) => state,
             _ => return Ok(None),
@@ -2523,7 +2538,7 @@ impl<'a> Reader<'a> {
 
     /// For a search as of a position by a holder of `only` on `decl`, the
     /// candidates admitted at the head as well, under the grant followed
-    /// there and by the name the type bears there: a ranking by the text
+    /// there and by the name and the key it bears there: a ranking by the text
     /// and vectors at the head must find no record by another's (051).
     /// A grant that cannot be applied to the head's declaration admits
     /// none there (lakelands#771). `None` where every candidate passes.
@@ -2536,12 +2551,10 @@ impl<'a> Reader<'a> {
             return Ok(None);
         };
         let head = self.lake.engine.view(None)?;
-        let mut name = decl.name.clone();
-        for r in self.lake.renames(Some(head.as_ref()))? {
-            if let Some(to) = r.to.filter(|_| r.at > self.position && r.ty == name) {
-                name = to;
-            }
-        }
+        // Each candidate under the name and the key it bears at the head.
+        let since = held::Since::new(self.lake, head.as_ref(), self.position)?;
+        let name = since.name(&decl.name);
+        let moved: Vec<RecordKey> = keys.iter().map(|k| since.key(&name, k)).collect();
         let shape = self.lake.shape(head.as_ref())?;
         let applied = |t: &TypeName| {
             let d = shape.ontology.ty(t).ok();
@@ -2550,14 +2563,20 @@ impl<'a> Reader<'a> {
         let Some(at_head) = applied(&name) else {
             return Ok(Some(BTreeSet::new()));
         };
-        let rows = head.get_many(&name, keys)?;
+        let rows = head.get_many(&name, &moved)?;
         // A link's ends are judged at the head too, under the same grant.
         let ends = ends_admitted(head.as_ref(), who, decl, &rows, |t| {
             applied(t).map(|_| rights::own_only(who, t))
         })?;
-        let admitted = (rows.into_iter().zip(ends))
-            .filter(|(r, ends)| *ends && !r.retired && rights::admits(who, at_head, &r.fields));
-        Ok(Some(admitted.map(|(r, _)| r.key).collect()))
+        let admitted: BTreeSet<RecordKey> = (rows.into_iter().zip(ends))
+            .filter(|(r, ends)| *ends && !r.retired && rights::admits(who, at_head, &r.fields))
+            .map(|(r, _)| r.key)
+            .collect();
+        let admitted = keys
+            .iter()
+            .zip(&moved)
+            .filter(|(_, k)| admitted.contains(*k));
+        Ok(Some(admitted.map(|(k, _)| k.clone()).collect()))
     }
 
     /// Refuse a walk around `here` over a relation that probes a field the

@@ -382,3 +382,32 @@ input, or it holds `schema`). The conditions of a value type's rename name
 such a function only to a reviewer shown it; to any other it is told
 only as one there may be (`conditions_unshown`), as a set or a trigger
 it is not shown is.
+
+## Extended: a hold now hides a record at every position (lakelands#790)
+
+A retention hold is about the record, not the moment. To a principal
+without the `restricted` grant, a record held at the head is not there
+at any position: a read as of an earlier position answers it as a record
+that never existed, at `get`, `find` (its rows, `total` and aggregates),
+a view computed or kept, a walk, a pattern and a search, lexical, by
+vector or both, whose candidates, ranks and counts leave it out. A
+record held then and released since is answered there as any record is,
+since the hold that stands now is the one that governs.
+
+A read as of a position by such a principal reads through a view that
+gives each record its hold at the head, asked of the head one page of
+keys at a time. A record is found at the head by the name and the key
+it bears there, after each rename of its link type and each re-key
+since, and one the head does not hold keeps the hold it had: a record
+is never released by not being found. Every door then judges the hold as it does at the head.
+A page the engine fills with records held now is read on until it is
+full, a total is counted in pages, and a kept view, folded as it stood
+then, is computed instead, and `describe` says it is not kept here. A
+read at the head, or by a principal with
+the grant, is unchanged.
+
+**Why.** A hold withholds a record from those without the grant. A read
+as of the moment before the hold would hand it back whole, so a hold
+that cut only the head would withhold nothing. A record released from a
+hold is one its readers may see, and the history before its release is
+part of it.
