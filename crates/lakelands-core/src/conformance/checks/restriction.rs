@@ -183,7 +183,7 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(
     for k in ["held", "open", "late"] {
         l.upsert("partner", k, json!({ "n": k })).await?;
     }
-    for k in ["held", "d1", "rr"] {
+    for k in ["held", "d1", "rr1", "rr2", "rr3"] {
         l.upsert("deal", k, json!({"partner": "open"})).await?;
     }
     let (deal, d1, with, held) = (&"deal".into(), &"d1".into(), &"with".into(), &"held".into());
@@ -205,13 +205,16 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(
     fed.await.must("ingesting `d1` to `held`")?;
     restrict(s, "partner", "held", "a hold").await?;
     restrict(s, "deal", "held", "a hold").await?;
-    // `rr` is held, then retired.
-    restrict(s, "deal", "rr", "a hold").await?;
-    let retired = l
-        .cat
-        .retire(&l.own, deal, &"rr".into(), WriteOpts::default())
-        .await;
-    retired.must("retiring `rr`")?;
+    // Each `rr` is held, then retired: one for each door, as a write that
+    // went through would make it live.
+    for k in ["rr1", "rr2", "rr3"] {
+        restrict(s, "deal", k, "a hold").await?;
+        let retired = l
+            .cat
+            .retire(&l.own, deal, &k.into(), WriteOpts::default())
+            .await;
+        retired.must("retiring a held `rr`")?;
+    }
     let writer = |id: &str, restricted| {
         let grants = Grants {
             default: Access::Write,
@@ -236,7 +239,7 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(
         apart.extend(alike.err().map(|f| f.message));
     }
     let (partner, n2, z) = (&"partner".into(), &"n2".into(), || patch(json!({"n": "z"})));
-    let (rr, opts) = (&"rr".into(), WriteOpts::default);
+    let (rr1, opts) = (&"rr1".into(), WriteOpts::default);
     let onto = |ty: &str, key: &str, fields| ProposedWrite::Upsert {
         ty: ty.into(),
         key: key.into(),
@@ -252,7 +255,7 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(
             })
         )
     };
-    let fed = source_record("deal", "rr", json!({"src": "x"}));
+    let fed = source_record("deal", "rr3", json!({"src": "x"}));
     for (what, answer) in [
         (
             "`held`, made",
@@ -265,23 +268,23 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(
                 .map(drop),
         ),
         (
-            "`rr`, made",
-            c.upsert(&w, deal, rr, patch(json!({"partner": "open"})), opts())
+            "`rr1`, made",
+            c.upsert(&w, deal, rr1, patch(json!({"partner": "open"})), opts())
                 .await
                 .map(drop),
         ),
         (
-            "`rr`, proposed",
+            "`rr2`, proposed",
             c.propose(
                 &w,
-                onto("deal", "rr", json!({"partner": "open"})),
+                onto("deal", "rr2", json!({"partner": "open"})),
                 "why".into(),
             )
             .await
             .map(drop),
         ),
         (
-            "`rr`, ingested",
+            "`rr3`, ingested",
             ingest(c, &w, "feed", vec![fed]).await.map(drop),
         ),
     ] {
