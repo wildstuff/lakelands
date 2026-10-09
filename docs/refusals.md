@@ -495,7 +495,7 @@ What a refusal is about.
 | `param_unknown` | `type` (TypeName), `name` (ParamName), `declared` (Names, optional) | `{type}` declares no parameter `{name}`, so it binds nothing[; its parameters are {declared}] | A parameter given that the type does not declare. |
 | `param_value` | `name` (ParamName), `type` (TypeName), `kind` (StorageKind), `value` (Value) | parameter `{name}` of view `{type}` is {kind}, and {value} is not one | A parameter's value not of its kind. |
 | `path_starts` | `count` (usize) | a path has one start, and this pattern's start names {count} records | A path with several starts. |
-| `pattern_no_path` | `path` (String) | `{path}` is no path the pattern's rows hold; a row holds `<type>.<field>` for each type the pattern binds | A name a pattern's aggregate reads that no row holds. |
+| `pattern_no_path` | `path` (String) | `{path}` is no path the pattern's rows hold; a row holds `<type>.<field>` for each type the pattern binds | A path a pattern orders, projects or aggregates by that no row holds. |
 | `pattern_to_chain` | — | a pattern with `to` walks its steps as one walk from its start; every step's depth starts at 0 | A pattern with `to` whose steps are a chain. |
 | `pattern_to_not_graph` | — | a pattern with `to` answers the walk to it as a graph; ask `project` `graph` | A pattern with `to` not projected as a graph. |
 | `position_not_integer` | — | a position is a non-negative integer | A position of an `after` that is no whole number. |

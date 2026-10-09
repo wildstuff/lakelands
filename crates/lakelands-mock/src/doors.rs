@@ -4317,18 +4317,6 @@ impl Catalog for MockCatalog {
             let what = Unmocked::PatternProjection;
             return Err(invalid(Case::MockCannot { what }));
         };
-        // Rows are ordered by their paths, `type.field`: each probes its
-        // field as `find`'s order does (024), on a type the principal is
-        // shown; another reads nothing (006, extended). The mock answers
-        // its rows in walk order whatever the order asks for.
-        for o in &pattern.order_by {
-            if let Some((ty, field)) = o.field.as_str().rsplit_once('.')
-                && let Some(ot) = st.visible(who, &TypeName::from(ty))
-            {
-                readable(&st, who, ot, &FieldName::from(field))?;
-                steady_order(&ot.decl, field)?;
-            }
-        }
         let e = filter(&st, who, t, start.filter.as_ref())?;
         let mut paths: Vec<Vec<&StoredRecord>> = candidates(&st, who, t, pattern.at, e.as_ref())?
             .into_iter()
@@ -4336,6 +4324,7 @@ impl Catalog for MockCatalog {
             .map(|r| vec![r])
             .collect();
         let mut scope_ty = t;
+        let mut bound = vec![t];
         for (i, step) in pattern.steps.iter().enumerate() {
             // A step over a relation the type does not declare is
             // refused, not answered empty. A step naming a relation's
@@ -4448,6 +4437,32 @@ impl Catalog for MockCatalog {
             }
             paths = out;
             scope_ty = next;
+            bound.push(next);
+        }
+        // Rows are ordered and projected by their paths, `type.field`, as
+        // the store reads them: a name the rows do not hold is refused
+        // (018, extended), an order probes its field as `find`'s does
+        // (024), and a projected field is named, not probed. A row's
+        // `<type>.key` is its record's key unless the type has a field of
+        // that name its reader may know of. The mock answers its rows in
+        // walk order whatever the order asks for.
+        let known = |t: &DeclaredType, f: &FieldName| {
+            field(&t.decl, f).is_some_and(|x| access(who, &t.decl, x) != Access::None)
+        };
+        // Every order's path is read before one is probed, and every
+        // projected path before one is judged, as the store does.
+        let orders = (pattern.order_by.iter()).map(|o| row_path(&bound, o.field.as_str()));
+        for (ot, f) in orders.collect::<Result<Vec<_>>>()? {
+            if f.as_str() != "key" || known(ot, &f) {
+                readable(&st, who, ot, &f)?;
+                steady_order(&ot.decl, f.as_str())?;
+            }
+        }
+        let projected = fields.iter().map(|n| row_path(&bound, n));
+        for (ot, f) in projected.collect::<Result<Vec<_>>>()? {
+            if f.as_str() != "key" && !known(ot, &f) {
+                return Err(no_field(&ot.decl.name, &f));
+            }
         }
         let rows: Vec<BTreeMap<String, Value>> = paths
             .iter()
@@ -6020,6 +6035,25 @@ fn read_as_stored(st: &State, t: &TypeDecl) -> Result<()> {
             Err(invalid_field(&f.name, at(&on, Case::ReadAsStored)))
         }
         None => Ok(()),
+    }
+}
+
+/// As the store: a path a pattern's rows hold, named whole, is the
+/// longest of the types `bound` that starts it, then one field of that
+/// type or `key`; any other name is refused (018, extended).
+fn row_path<'t>(bound: &[&'t DeclaredType], name: &str) -> Result<(&'t DeclaredType, FieldName)> {
+    let path: Vec<&str> = name.split('.').collect();
+    let starts = |k: usize| {
+        bound
+            .iter()
+            .find(|b| b.decl.name.as_str() == path[..k].join("."))
+    };
+    match (1..path.len())
+        .rev()
+        .find_map(|k| starts(k).map(|t| (k, *t)))
+    {
+        Some((k, t)) if k + 1 == path.len() => Ok((t, FieldName::from(path[k]))),
+        _ => Err(invalid(Case::PatternNoPath { path: name.into() })),
     }
 }
 

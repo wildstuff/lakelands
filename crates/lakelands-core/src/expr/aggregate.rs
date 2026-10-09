@@ -393,6 +393,19 @@ pub fn group_keys(keys: &[GroupKey]) -> Answer<Vec<(FieldName, Option<Expr>)>> {
     Ok(out)
 }
 
+/// A path a pattern's rows hold, named whole, as an order, a projected
+/// field, a field key or a measure's field names one: the longest type
+/// `bound` that starts it, then one field of that type or `key`. A name
+/// no bound type starts, or one that goes on past the field, is refused.
+/// Answers the type and the field.
+pub fn row_path(name: &str, bound: &dyn Fn(&str) -> bool) -> Answer<(String, FieldName)> {
+    let path: Vec<&str> = name.split('.').collect();
+    match (1..path.len()).rev().find(|&k| bound(&path[..k].join("."))) {
+        Some(k) if k + 1 == path.len() => Ok((path[..k].join("."), FieldName::from(path[k]))),
+        _ => Err(Case::PatternNoPath { path: name.into() }.into()),
+    }
+}
+
 /// A pattern's aggregate read over its rows, which hold each value under
 /// its path, `<type>.<field>` or `<type>.key`, for each type `bound`
 /// (018, extended). A measure's field and a field key name a path whole.
@@ -421,11 +434,8 @@ pub fn over_rows(
         Ok(k)
     };
     let whole = |name: &FieldName| {
-        let path: Vec<FieldName> = name.as_str().split('.').map(FieldName::from).collect();
-        match at(&path)? {
-            k if k + 1 == path.len() => Ok(()),
-            _ => Err(unbound(name.to_string())),
-        }
+        read.borrow_mut().push(row_path(name.as_str(), bound)?);
+        Ok::<_, Said>(())
     };
     agg.measures
         .iter()
