@@ -12,7 +12,6 @@ use async_trait::async_trait;
 use lakelands_api::catalog::{CommitStream, SourceStream};
 use lakelands_api::describe::{LakeDescription, TypeDescription};
 use lakelands_api::engine::OpenMode;
-use lakelands_api::event::EventBody;
 use lakelands_api::location::Location;
 use lakelands_api::ontology::FieldDecl;
 use lakelands_api::principal::WriteContext;
@@ -32,7 +31,7 @@ use lakelands_api::{
 };
 
 use lakelands_api::error::{Exchange, Remote, Seam, Situation};
-use lakelands_core::{invalid, rights};
+use lakelands_core::{feed, invalid, rights};
 
 use crate::exec;
 use crate::ingest;
@@ -788,44 +787,6 @@ pub struct Feed {
     lake: Arc<Lake>,
 }
 
-/// The type an event is about, and the record, by its key: both for the
-/// `record_*` events, `trigger_fired` and `object_set_changed`; the type
-/// for a type's `declared` and `migrated`; the record for `verb_called`.
-fn about(body: &EventBody) -> (Option<&TypeName>, Option<&RecordKey>) {
-    match body {
-        EventBody::RecordUpserted { ty, key, .. }
-        | EventBody::RecordIngested { ty, key, .. }
-        | EventBody::RecordRetired { ty, key, .. }
-        | EventBody::RecordRestricted { ty, key, .. }
-        | EventBody::RecordUnrestricted { ty, key, .. }
-        | EventBody::TriggerFired { ty, key, .. }
-        | EventBody::ObjectSetChanged { ty, key, .. } => (Some(ty), Some(key)),
-        EventBody::Declared {
-            declaration: Declaration::Type(t),
-            ..
-        } => (Some(&t.name), None),
-        EventBody::Migrated { migration, .. } => (Some(&migration.to.name), None),
-        EventBody::VerbCalled { key, .. } => (None, key.as_ref()),
-        _ => (None, None),
-    }
-}
-
-/// Whether a `migrated` event is also about one of `types`: the link
-/// types its renamed relations move records between, old and new, so a
-/// consumer that follows either hears of the move (035, extended). A
-/// `value_type_migrated` is about every type whose records it rewrites.
-fn moves(body: &EventBody, types: &[TypeName]) -> bool {
-    let migration = match body {
-        EventBody::Migrated { migration, .. } => migration,
-        EventBody::ValueTypeMigrated { types: of, .. } => {
-            return of.iter().any(|t| types.contains(t));
-        }
-        _ => return false,
-    };
-    let moved = lakelands_core::links::moved(migration);
-    (moved.iter()).any(|(old, new)| types.contains(old) || types.contains(new))
-}
-
 #[async_trait]
 impl ChangeFeed for Feed {
     async fn poll(&self, from: Position, filter: &FeedFilter, limit: u32) -> Result<FeedBatch> {
@@ -833,12 +794,44 @@ impl ChangeFeed for Feed {
         exec::run(move || {
             let head = lake.head();
             let want = limit.max(1) as usize;
-            let mut events = Vec::new();
-            let mut next = from;
-            // Read in batches to `limit` matches or to `last`, the head or the
-            // bound: nothing past the last position examined is read or verified.
-            let last = Position(from.0.saturating_add(u64::from(FEED_EXAMINED) - 1)).min(head);
-            'read: while next <= last && events.len() < want {
+            let (mut read, mut events, mut next) = (0, Vec::new(), from);
+            // Up to the view's position the projection's index names the
+            // events the filter admits, and only those are read and opened,
+            // in one ask: where the index stops short of the view, so does
+            // the poll. One that decides nothing, as while the projection
+            // is rebuilt, leaves the poll to the log. A filter that names
+            // nothing admits every event.
+            let view = feed::seek(&filter)
+                .map(|_| lake.engine.view(None))
+                .transpose()?;
+            let indexed = view
+                .as_ref()
+                .and_then(|v| v.position())
+                .map(|p| p.min(head));
+            let mut decided = false;
+            if let (Some(view), Some(p)) = (&view, indexed.filter(|p| next <= *p)) {
+                let room = want.min(FEED_EXAMINED as usize) as u32;
+                let m = view.matching(&filter, next, p, room)?;
+                read = m.positions.len();
+                for e in lake.read_these(&m.positions)? {
+                    if feed::admits(&filter, e.body.kind(), &feed::about(&e.body)) {
+                        events.push(e);
+                    }
+                }
+                if let Some(through) = m.through {
+                    (decided, next) = (true, through.next());
+                }
+            }
+            drop(view);
+            if decided && indexed.is_some_and(|p| next <= p) {
+                return Ok(FeedBatch { events, next, head });
+            }
+            // Past it, as while the projection is rebuilt, every event is
+            // read, to `limit` matches or to `last`, the head or the bound:
+            // nothing past the last position examined is read or verified.
+            let bound = (FEED_EXAMINED as usize - read) as u64;
+            let last = Position(next.0.saturating_add(bound).saturating_sub(1)).min(head);
+            'read: while bound > 0 && next <= last && events.len() < want {
                 let room = (last.0 - next.0 + 1).min(want.clamp(64, 1024) as u64);
                 let batch = lake.read_events(next, room as u32)?;
                 if batch.is_empty() {
@@ -849,15 +842,7 @@ impl ChangeFeed for Feed {
                         break 'read;
                     }
                     next = e.position.next();
-                    let kind_ok =
-                        filter.kinds.is_empty() || filter.kinds.iter().any(|k| k == e.body.kind());
-                    let (ty, key) = about(&e.body);
-                    let type_ok = filter.types.is_empty()
-                        || ty.is_some_and(|t| filter.types.contains(t))
-                        || moves(&e.body, &filter.types);
-                    let key_ok =
-                        filter.keys.is_empty() || key.is_some_and(|k| filter.keys.contains(k));
-                    if kind_ok && type_ok && key_ok {
+                    if feed::admits(&filter, e.body.kind(), &feed::about(&e.body)) {
                         events.push(e);
                         if events.len() >= want {
                             break 'read;

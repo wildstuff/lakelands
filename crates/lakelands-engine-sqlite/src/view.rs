@@ -10,7 +10,7 @@
 
 use std::collections::BTreeSet;
 
-use lakelands_api::engine::{Declared, ProjectionView, Scan};
+use lakelands_api::engine::{Declared, Matched, ProjectionView, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
@@ -18,9 +18,10 @@ use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::read::{Direction, Order};
 use lakelands_api::record::{StoredRecord, Value};
-use lakelands_api::seam::is_kept_name;
+use lakelands_api::seam::{FeedFilter, is_kept_name};
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
 use lakelands_core::engines::{self, Holders, decode};
+use lakelands_core::feed::{self, Seek};
 use rusqlite::{Connection, ToSql, params};
 
 use crate::handle::SqliteLake;
@@ -866,6 +867,35 @@ impl ProjectionView for SqliteView<'_> {
         self.read(None, |r| {
             let state: Option<String> = one(r.conn, OUTPUT_AT, params![seam, input.0, r.at()])?;
             state.as_deref().map(|s| decode(s, "a state")).transpose()
+        })
+    }
+
+    fn matching(
+        &self,
+        filter: &FeedFilter,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<Matched> {
+        let to = feed::decides_through(filter, from, through);
+        self.read(feed::undecided(), |r| {
+            let Some(last) = feed::last_decided(from, to.min(r.at), r.folded) else {
+                return Ok(feed::undecided());
+            };
+            let range = [from, last];
+            let by = |column: &'static str, values: Vec<&str>| -> Result<Vec<Vec<Position>>> {
+                let of = |v| projection::routes(r.conn, filter, Some((column, v)), range, limit);
+                values.into_iter().map(of).collect()
+            };
+            let lists = match feed::seek(filter) {
+                Some(Seek::Keys(keys)) => by("key", keys.iter().map(RecordKey::as_str).collect()),
+                Some(Seek::Types(types)) => by("ty", types.iter().map(TypeName::as_str).collect()),
+                Some(Seek::Kinds(kinds)) => by("kind", kinds.iter().map(String::as_str).collect()),
+                None => Ok(vec![projection::routes(
+                    r.conn, filter, None, range, limit,
+                )?]),
+            }?;
+            Ok(feed::merged(lists, limit, last))
         })
     }
 }

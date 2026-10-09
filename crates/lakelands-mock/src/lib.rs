@@ -478,6 +478,10 @@ impl LakeStore for MockLake {
     }
 }
 
+/// The positions a filter of types and kinds with no key decides in one
+/// poll, as the store's index does (`lakelands_core::feed::WINDOW`).
+const WINDOW: u64 = 65_536;
+
 /// The change feed: the log, read by kind and type from a position.
 struct Feed {
     shared: Arc<Shared>,
@@ -488,15 +492,7 @@ impl ChangeFeed for Feed {
     async fn poll(&self, from: Position, filter: &FeedFilter, limit: u32) -> Result<FeedBatch> {
         let log = self.shared.log();
         let head = Shared::head(&log);
-        let mut events = Vec::new();
-        let mut next = from;
-        // As the store: at most `FEED_EXAMINED` events examined a poll.
-        let examined = log.events.iter().skip(from.0 as usize);
-        for e in examined.take(FEED_EXAMINED as usize) {
-            if events.len() >= limit as usize {
-                break;
-            }
-            next = e.position.next();
+        let admits = |e: &&lakelands_api::event::Event| {
             let kind_ok =
                 filter.kinds.is_empty() || filter.kinds.iter().any(|k| k == e.body.kind());
             let body = serde_json::to_value(&e.body).unwrap_or_default();
@@ -519,7 +515,50 @@ impl ChangeFeed for Feed {
             // An event about a record names its key at the top of its body.
             let key_ok =
                 filter.keys.is_empty() || filter.keys.iter().any(|k| body["key"] == k.as_str());
-            if kind_ok && type_ok && key_ok {
+            kind_ok && type_ok && key_ok
+        };
+        let want = limit.max(1) as usize;
+        let named = !(filter.kinds.is_empty() && filter.types.is_empty() && filter.keys.is_empty());
+        if named {
+            // As the store, whose index names the events a filter admits: a
+            // poll reads those alone, at most `limit` and `FEED_EXAMINED`,
+            // through the head, or a window on for a filter of types and
+            // kinds with no key (`lakelands_core::feed::decides_through`);
+            // `next` is past the last match when the poll is full, else past
+            // the last position decided.
+            let windowed =
+                filter.keys.is_empty() && !filter.types.is_empty() && !filter.kinds.is_empty();
+            let last = match windowed {
+                true => Position(from.0.saturating_add(WINDOW - 1)).min(head),
+                false => head,
+            };
+            let room = want.min(FEED_EXAMINED as usize);
+            let events: Vec<_> = (log.events.iter().skip(from.0 as usize))
+                .take_while(|e| e.position <= last)
+                .filter(admits)
+                .take(room)
+                .cloned()
+                .collect();
+            let through = match events.last() {
+                Some(e) if events.len() == room => e.position,
+                _ => last,
+            };
+            return Ok(FeedBatch {
+                events,
+                next: through.next().max(from),
+                head,
+            });
+        }
+        let mut events = Vec::new();
+        let mut next = from;
+        // As the store: at most `FEED_EXAMINED` events examined a poll.
+        let examined = log.events.iter().skip(from.0 as usize);
+        for e in examined.take(FEED_EXAMINED as usize) {
+            if events.len() >= want {
+                break;
+            }
+            next = e.position.next();
+            if admits(&e) {
                 events.push(e.clone());
             }
         }

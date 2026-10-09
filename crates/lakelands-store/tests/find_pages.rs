@@ -102,6 +102,16 @@ impl ProjectionView for CountingView<'_> {
     fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
         self.inner.output(seam, input)
     }
+
+    fn matching(
+        &self,
+        filter: &lakelands_api::seam::FeedFilter,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<lakelands_api::engine::Matched> {
+        self.inner.matching(filter, from, through, limit)
+    }
 }
 
 impl LakeEngine for Counting {

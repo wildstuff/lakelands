@@ -2,13 +2,14 @@
 //! (`docs/decisions/035-a-link-is-a-record.md`, extended, lakelands#429).
 
 use lakelands_api::error::Case;
-use lakelands_api::event::EventBody;
+use lakelands_api::event::{Event, EventBody};
 use lakelands_api::ontology::{
     Authority, Cardinality, Derived, MatchPair, RelationDecl, StorageKind,
 };
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{Edge, Projection, QueryResult, Search, SearchMode, Walk};
 use lakelands_api::read::Found;
+use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{
     Carried, Carrier, Migration, Outcome, ProposedWrite, RelationRename, WriteOpts,
 };
@@ -17,9 +18,9 @@ use serde_json::json;
 
 use super::links::{SEPT, dated, invoice, lake, link_ok, pairs};
 use crate::conformance::fixture::{
-    Lake, Must, derived, events_after, field, find_at, get_at, head_unmoved, invalid_case,
-    invalid_like, object_set_on, patch, pattern, principal, reference, source_record, sourced,
-    step, trigger_on, type_decl, vector,
+    Lake, Must, derived, events_after, field, find_at, followed, get_at, head_unmoved,
+    invalid_case, invalid_like, object_set_on, patch, pattern, principal, reference, source_record,
+    sourced, step, trigger_on, type_decl, vector,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -47,7 +48,7 @@ async fn apply(l: &Lake, m: Migration) -> Held {
 
 check!(
     RENAMED_KEEPS_EDGES = a_migration_renames_a_relation_and_keeps_its_edges,
-    "035, extended (lakelands#429): a migration that names a relation's rename keeps its edges: the report lists the relation with its carrier and the link records that move, and no drop; the apply appends the `migrated` and the new link type's declaration and no event for a link; a walk by the new name answers the edges with their fields, a walk as of before answers them by the old name, and the links are records of the new link type; as of the `migrated` itself the walk answers them already, and the new link type is found from its declaration, one position later, on"
+    "035, extended (lakelands#429, lakelands#678): a migration that names a relation's rename keeps its edges: the report lists the relation with its carrier and the link records that move, and no drop; the apply appends the `migrated` and the new link type's declaration and no event for a link; a walk by the new name answers the edges with their fields, a walk as of before answers them by the old name, and the links are records of the new link type; as of the `migrated` itself the walk answers them already, and the new link type is found from its declaration, one position later, on; a consumer of the old link type and one of the new each hear of the `migrated`, and every filtered poll answers what the log does"
 );
 
 /// The edges a walk over `relation` from invoice `key` answers.
@@ -119,7 +120,22 @@ async fn a_migration_renames_a_relation_and_keeps_its_edges(store: Store) -> Hel
         pairs(&now),
         pairs(&then)
     );
-    Ok(())
+    // A consumer of either link type hears of the move (lakelands#678).
+    for ty in [OLD, NEW] {
+        let only = FeedFilter {
+            types: vec![ty.into()],
+            ..FeedFilter::default()
+        };
+        let heard = followed(store.as_ref(), Position::GENESIS, &only).await?;
+        let migrated = |e: &&Event| matches!(e.body, EventBody::Migrated { .. });
+        ensure!(
+            heard.iter().filter(migrated).count() == 1,
+            "a consumer of `{ty}` hears of the rename that moves its links: it read the kinds \
+             {:?}",
+            heard.iter().map(|e| e.body.kind()).collect::<Vec<_>>()
+        );
+    }
+    super::feed::the_index_answers_the_log(store.as_ref(), "a relation renamed").await
 }
 
 check!(

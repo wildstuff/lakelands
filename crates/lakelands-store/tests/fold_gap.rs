@@ -19,7 +19,7 @@ use lakelands_api::engine::{
     CanonicalEvent, EngineOpener, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
     VectorIndex,
 };
-use lakelands_api::event::{Digest, EventBody, EventId, SegmentDigest};
+use lakelands_api::event::{Digest, EventBody, SegmentDigest};
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::{FeedFilter, Seams};
@@ -188,8 +188,8 @@ impl ProjectionStore for Failing {
     fn put_output(&self, seam: &str, input: &Digest, output: &Value, at: Position) -> Result<()> {
         self.inner.projection().put_output(seam, input, output, at)
     }
-    fn mark_applied(&self, id: &EventId, at: Position) -> Result<()> {
-        self.inner.projection().mark_applied(id, at)
+    fn mark_applied(&self, applied: &lakelands_api::engine::Applied) -> Result<()> {
+        self.inner.projection().mark_applied(applied)
     }
     fn clear(&self) -> Result<()> {
         self.inner.projection().clear()

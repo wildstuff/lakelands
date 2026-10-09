@@ -250,7 +250,7 @@ An engine is found by name and opened through `EngineOpener`:
 | Method | Contract |
 |---|---|
 | `name` | The name the engine answers to in `EngineConfig`. |
-| `open(location, mode)` | Open the lake `Read`, `Write` or `Create` (write, creating it if absent, opening it if present). `Read` or `Write` of a lake that does not exist is `Unavailable`; a location configured for another engine is `Invalid`. Opening never takes the lease; a writer takes it afterwards with `take_lease`. A handle opened `Read` refuses `take_lease`, `append` and `seal_segment` as `Unavailable`, and writes nothing to the projection (`begin`, the puts, `clear` and `compact` are `Unavailable`), so any number of readers can hold the lake while one process writes (`docs/decisions/008-one-writer-per-lake.md`). A read-only open of a lake that does not exist creates nothing. The store folds only on the writer's handle; a reader reads what the writer folded. |
+| `open(location, mode)` | Open the lake `Read`, `Write` or `Create` (write, creating it if absent, opening it if present). `Read` or `Write` of a lake that does not exist is `Unavailable`; a location configured for another engine is `Invalid`. Opening never takes the lease; a writer takes it afterwards with `take_lease`. A handle opened `Read` refuses `take_lease`, `append` and `seal_segment` as `Unavailable`, and writes nothing to the projection (`begin`, the puts, `clear` and `compact` are `Unavailable`), so any number of readers can hold the lake while one process writes (`docs/decisions/008-one-writer-per-lake.md`). A read-only open of a lake that does not exist creates nothing. The store folds only on the writer's handle; a reader reads what the writer folded. A disk engine's `Read`, `Write` and `Create` refuse a projection marked with another layout, or none, as `Unavailable` (`projection_layout`) before any of its tables is read or made; `Rebuild` opens an existing lake as `Write` does whatever layout made its projection, and nothing is read from it before `clear` makes it anew at the engine's layout (`docs/decisions/004-the-change-feed-is-the-log.md`). The memory engine opens `Rebuild` as `Write`. |
 
 ### `ProjectionStore`: what the fold writes
 
@@ -334,7 +334,7 @@ state again); it never adds a second one.
 | `put_proposal(proposal, at)` | A proposal's state from `at`, the position of its latest event; earlier states kept. A view at a position inside a multi-event append sees each state from its own event, not from the commit. |
 | `put_membership(…, at)` | Whether a record is in an object set from a position on; earlier membership kept. |
 | `put_output(…, at)` | A seam's recorded output, by seam and input digest, valid from `at`, the position of the event that recorded it. A later output for the same seam and input replaces the earlier one from its position on (022, extended: a redeclaration retries a failure). One seam name is the store's own, `sys:renames`: under it the fold keeps the lake's list of field renames, as one output, put at the position of each `migrated` event that renames. No seam records under it and no event holds it; an engine keeps it as any other (`docs/decisions/006-grants-not-roles.md`, extended). A read of an output takes the latest state of its seam and input at or before the view's position and reads none of their other states, so an output recorded often is read as one recorded once. |
-| `mark_applied(id, at)` | Remember an applied event id, so a redelivery is recognised. The first position marked for an id is kept. |
+| `mark_applied(applied)` | Remember an applied event's id at its position, so a redelivery is recognised (the first position marked for an id is kept), and keep the feed's index of it: its kind and what it is about (`lakelands_core::feed::about`), one entry a type it concerns. `clear` takes the index with the rest; `compact` keeps it. |
 | `clear` | Delete everything, kept history and the vector index included, for a rebuild; `folded_through` is none afterwards. |
 | `compact` | Give back the storage the projection no longer uses, outside a transaction (`Invalid` inside one), and answer its size in bytes before and after as the engine measures it, or none. No view answers otherwise afterwards: no state, kept history included, no applied id and no recorded output goes. A compact that fails leaves every answer as it was (`docs/decisions/040-maintenance-never-changes-an-answer.md`). |
 
@@ -364,6 +364,7 @@ masking are the store's.
 | `is_member(set, type, key)` | Whether the record is in the object set at the position; false if never put. |
 | `members(set, type)` | The keys of the type's records that are in the object set at the position; empty for a set never put. One read: the store asks it once for a set before it walks a type (a set declared again, a migration, a re-key), where `is_member` for each record would be a statement each on PostgreSQL (lakelands#477). |
 | `applied(id)` | The position `id` was applied at, if that is at or before the view's position. |
+| `matching(filter, from, through, limit)` | The positions in `[from, through]`, none past the view's position, whose applied events `filter` admits by the index `mark_applied` kept (`lakelands_core::feed::admits`), in order, each once, at most `limit`, and the last position decided: the last answered when `limit` is reached, else `through` or the view's position, or earlier where the engine bounds its work, and never past what the projection had folded where the index is read, in the same snapshot: a view taken before a rebuild's `clear` decides only what the refold has reached, and nothing (`through` none) where it has not reached `from`. An engine seeks a filter by its keys, else its types, else its kinds (`lakelands_core::feed::seek`), one ordered range a value, and checks the rest on each entry; one that checks a kind on every entry of a type decides at most `lakelands_core::feed::WINDOW` (65 536) positions at a time. |
 | `output(seam, input)` | The recorded output valid at the position, if any: the latest recorded for that seam and input at or before it. |
 
 **`scan`.** A record qualifies when all of these hold:
@@ -834,6 +835,7 @@ holds it to.
 | `lexical`'s hit set, its language, searchable fields only, live only (restricted included), ties by key, `k`; at an earlier position, visibility from the position and text from the head | engine: `lexical_hits_are_the_pipelines_over_searchable_live_records`, `lexical_finds_every_token_the_pipeline_makes_beyond_ascii`, `lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_then`, `lexical_over_named_fields_is_the_pipelines_over_those_fields` |
 | `nearest`'s exact top `k` by cosine, ties, a zero vector, a wrong length; `put` replaces; `clear` empties the index | engine: `nearest_ranks_by_cosine_with_ties_by_key`, `a_zero_vector_scores_zero_and_a_wrong_length_is_invalid`, `put_replaces_a_vector_and_remove_forgets_it`, `clear_empties_the_projection_and_the_vector_index` |
 | `declarations`, `is_member`, `members`, `output` and `applied` at an earlier position; `mark_applied` keeps the first position | engine: `declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position`, `the_first_applied_position_is_kept` |
+| `matching` answers a filter's positions in order, each once, to its `through`, and nothing past the view or past what the projection has folded | engine: `the_index_answers_a_filters_positions_in_order_to_its_through`; store: `read_through`'s `past_the_views_position_a_poll_reads_the_log`; suite: `a_filtered_poll_answers_the_log_unmasked` and every row that follows the log through `the_index_answers_the_log` |
 | `proposals`' filters, a `call`'s type, and its order | engine: `proposals_filter_by_state_and_type_newest_first` |
 
 ## `PrincipalResolver`
@@ -1249,14 +1251,25 @@ extended).
 `poll(from, filter, limit) -> batch` and `ack(consumer, through)`. The
 feed is the log filtered by kind and type, read from a position
 (`docs/decisions/004-the-change-feed-is-the-log.md`). `poll` answers at
-once, possibly empty, never waiting for new events. It stops at `limit`
-matches, at the head, or once it has examined `FEED_EXAMINED` (4 096,
-`lakelands_api::seam`) events, matched or not, whichever comes first,
-and answers `next` there. So a poll may answer no events with `next` at
-or below `head`: an empty batch is not the end of the log. A consumer is
-caught up when `next` is past `head`, and reads on at once until then
-(suite: `STREAMS`, which follows the feed of its large lake with a
-filter that matches nothing and one that matches its checkpoints):
+once, possibly empty, never waiting for new events. A filter that names
+something is answered from the projection's index of the log up to the
+view's position (`ProjectionView::matching`): only the events it names
+are read from the log, each opened, verified and checked again by the
+same rule, so the index can only narrow what a poll reads and an
+answered event always comes from the log; the events a run of them
+reads through between two are dropped unopened. Past the view's
+position, as while the projection is rebuilt, where the index decides
+nothing from `from` on, and for a filter that names nothing, the poll
+reads every event from the log. It stops at
+`limit` matches, at the head, where the index stops deciding, or once it
+has read `FEED_EXAMINED` (4 096, `lakelands_api::seam`) events, matched
+or not, whichever comes first, and answers `next` there. So a poll may
+answer no events with `next` at or below `head`: an empty batch is not
+the end of the log. A consumer is caught up when `next` is past `head`,
+and reads on at once until then; one whose filter matches nothing more
+is caught up in one poll, whatever the length of the log (suite:
+`STREAMS`, which follows the feed of its large lake with a filter that
+matches nothing, one record's history and its checkpoints):
 
 - `events`: at most `limit` events (a `limit` of 0 is read as 1, and one
   above `FEED_EXAMINED` as `FEED_EXAMINED`) from `from` up to the head,
@@ -1292,10 +1305,9 @@ filter that matches nothing and one that matches its checkpoints):
     `a_feed_filtered_by_key_answers_that_records_events_only`,
     `a_key_filter_does_not_follow_a_rekey`).
 
-  A key filter reads the log from `from` as every filter does, so one
-  record's history asked for from position 0 reads the whole log, a
-  bounded poll at a time; an index of the log by kind, type or key would
-  take that away (lakelands#678).
+  A key filter is answered from the index as every filter is, so one
+  record's history asked for from position 0 reads that record's events
+  alone (lakelands#678).
   `lakelands-client` refuses a filter with keys as invalid, naming
   `keys`, until the REST feed takes them.
 
@@ -1310,8 +1322,9 @@ filter that matches nothing and one that matches its checkpoints):
   below format 11 carries no such member, and its absence says nothing
   there: for those a consumer takes `version` 1 as the first creation or
   reads the record as of the position before.
-- `next`: the position after the last event examined, matched or not,
-  which is where the next poll starts.
+- `next`: the position after the last position the poll decided, by
+  the index or by reading the log, matched or not, which is where the
+  next poll starts.
   `lakelands-client`'s `poll` answers at most `FEED_EXAMINED` events as
   well, but the server's stream behind it reads on to a match or to the
   head, one bounded poll at a time, so a remote poll whose filter matches

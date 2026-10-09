@@ -18,6 +18,7 @@ pub mod describe;
 pub mod engines;
 pub mod export;
 pub mod expr;
+pub mod feed;
 pub mod graph;
 pub mod links;
 pub mod log;

@@ -316,30 +316,37 @@ async fn a_new_endpoint_starting_at_the_head_skips_the_past() {
     assert_eq!(f.requests().len(), 1);
 }
 
-/// A poll examines at most `FEED_EXAMINED` events, so an endpoint whose
-/// events are far apart reads on past a poll that answered none: the round
-/// says more is waiting, and the next one delivers.
+/// A poll answers at most its batch, so an endpoint reads on past a poll
+/// that stopped short: the round says more is waiting, and the next one
+/// delivers. Its events are far apart, and the feed's index finds each in
+/// one poll, whatever lies between (lakelands#678).
 #[tokio::test]
 async fn a_sparse_endpoint_reads_on_past_a_bounded_poll() {
     let store = lake().await;
-    for i in 0..4_200 {
-        set(store.as_ref(), &format!("o{i}"), "open").await;
+    for key in ["i1", "i2"] {
+        for i in 0..4_200 {
+            set(store.as_ref(), &format!("{key}-o{i}"), "open").await;
+        }
+        set(store.as_ref(), key, "overdue").await;
     }
-    set(store.as_ref(), "i1", "overdue").await;
     let f = fake(&[]).await;
     let dir = root();
     let lake = lake_id(store.as_ref());
-    let c = config(json!({"url": f.url(), "lakes": [lake.as_str()]}));
+    let mut c = config(json!({"url": f.url(), "lakes": [lake.as_str()]}));
+    c.batch = 1;
     let mut d = deliverers(&c, &dir, &lake).unwrap().pop().unwrap();
     assert!(
         d.round(store.as_ref()).await.unwrap(),
-        "a poll that stopped short of the head with no events wants another"
+        "a poll that stopped short of the head wants another"
     );
-    assert!(f.requests().is_empty());
+    assert_eq!(f.bodies().len(), 1, "the first poll delivers its one event");
     assert!(!d.round(store.as_ref()).await.unwrap());
     let bodies = f.bodies();
-    assert_eq!(bodies.len(), 1, "{bodies:?}");
-    assert!(bodies[0].contains("\"overdue\""), "{}", bodies[0]);
+    assert_eq!(bodies.len(), 2, "{bodies:?}");
+    assert!(
+        bodies.iter().all(|b| b.contains("\"overdue\"")),
+        "{bodies:?}"
+    );
 }
 
 /// A sleep that returns at once and keeps what it was asked to wait.

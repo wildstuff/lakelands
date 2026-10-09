@@ -44,6 +44,32 @@ impl EngineHarness for Pg {
     fn reopen(&self, lake: &LakeId, mode: OpenMode) -> lakelands_api::Result<Box<dyn LakeEngine>> {
         PgOpener.open(&self.location(lake.as_str()), mode)
     }
+
+    fn mark_layout(&self, lake: &LakeId, layout: Option<u64>) -> bool {
+        let schema = self.schemas.lock().unwrap()[lake.as_str()].clone();
+        let (url, n) = (self.url.clone(), layout.map(|n| n as i64));
+        // The synchronous client runs a runtime of its own, on a thread of
+        // its own (`common::drop_schemas`).
+        let marked = std::thread::spawn(move || {
+            let mut db = postgres::Client::connect(&url, postgres::NoTls)?;
+            db.batch_execute(&format!(
+                "DROP TABLE IF EXISTS \"{schema}\".routes; \
+                 CREATE TABLE \"{schema}\".routes (x INTEGER)"
+            ))?;
+            db.execute(
+                &format!("DELETE FROM \"{schema}\".meta WHERE k = 'layout'"),
+                &[],
+            )?;
+            if let Some(n) = n {
+                let mark = format!("INSERT INTO \"{schema}\".meta (k, n) VALUES ('layout', $1)");
+                db.execute(&mark, &[&n])?;
+            }
+            Ok::<_, postgres::Error>(())
+        });
+        let marked = marked.join().expect("the marking thread");
+        marked.expect("marking the projection");
+        true
+    }
 }
 
 #[test]

@@ -10,10 +10,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::engine::{After, Declared, ProjectionView, Scan};
+use lakelands_api::engine::{After, Declared, Matched, ProjectionView, Scan};
 use lakelands_api::event::{Digest, EventBody, EventId};
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::StoredRecord;
+use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
 use lakelands_api::{FieldName, Position, RecordKey, RelationName, Result, TypeName, Value};
 use lakelands_core::engines as core_engines;
@@ -280,6 +281,16 @@ impl ProjectionView for HeldNow<'_> {
 
     fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
         self.then.output(seam, input)
+    }
+
+    fn matching(
+        &self,
+        filter: &FeedFilter,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<Matched> {
+        self.then.matching(filter, from, through, limit)
     }
 }
 

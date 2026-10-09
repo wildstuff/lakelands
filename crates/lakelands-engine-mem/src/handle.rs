@@ -10,11 +10,11 @@
 use std::sync::{Arc, Mutex};
 
 use lakelands_api::engine::{
-    CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
-    Reclaimed, VectorIndex,
+    Applied, CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
+    ProjectionView, Reclaimed, VectorIndex,
 };
 use lakelands_api::error::{Act, Case, Error, Result, Situation};
-use lakelands_api::event::{Digest, EventId, SegmentDigest};
+use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
@@ -52,7 +52,7 @@ impl MemoryLake {
                 lake: Some(self.lake.to_string()),
                 leased_elsewhere: false,
             })),
-            OpenMode::Write | OpenMode::Create => Ok(()),
+            OpenMode::Write | OpenMode::Create | OpenMode::Rebuild => Ok(()),
         }
     }
 
@@ -253,8 +253,8 @@ impl ProjectionStore for MemoryLake {
         })
     }
 
-    fn mark_applied(&self, id: &EventId, at: Position) -> Result<()> {
-        self.stage(Put::Applied { id: id.clone(), at })
+    fn mark_applied(&self, applied: &Applied) -> Result<()> {
+        self.stage(Put::Applied(applied.clone()))
     }
 
     /// Drops the projection, its kept history and the vector index; the

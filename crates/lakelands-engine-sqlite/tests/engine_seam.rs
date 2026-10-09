@@ -34,6 +34,22 @@ impl EngineHarness for Sqlite {
     fn reopen(&self, lake: &LakeId, mode: OpenMode) -> lakelands_api::Result<Box<dyn LakeEngine>> {
         SqliteOpener.open(&self.location(lake.as_str()), mode)
     }
+
+    fn mark_layout(&self, lake: &LakeId, layout: Option<u64>) -> bool {
+        let path = self.root.join(lake.as_str()).join("projection.db");
+        let marked = rusqlite::Connection::open(path).and_then(|db| {
+            db.execute_batch("DROP TABLE IF EXISTS routes; CREATE TABLE routes (x INTEGER);")?;
+            match layout {
+                Some(n) => db.execute(
+                    "INSERT OR REPLACE INTO meta (k, v) VALUES ('layout', ?1)",
+                    [n as i64],
+                ),
+                None => db.execute("DELETE FROM meta WHERE k = 'layout'", []),
+            }
+        });
+        marked.expect("marking the projection");
+        true
+    }
 }
 
 #[test]

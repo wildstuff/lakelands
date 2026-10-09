@@ -13,11 +13,11 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use lakelands_api::engine::{
-    CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
-    Reclaimed, VectorIndex,
+    Applied, CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
+    ProjectionView, Reclaimed, VectorIndex,
 };
 use lakelands_api::error::Result;
-use lakelands_api::event::{Digest, EventId, SegmentDigest};
+use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::location::SqliteTuning;
 use lakelands_api::record::{StoredRecord, Value};
@@ -130,16 +130,30 @@ impl SqliteLake {
                 None
             }
             OpenMode::Write | OpenMode::Create => {
+                let made = path.is_file();
                 let conn = connect(&path, &tuning, true)?;
-                conn.execute_batch(projection::SCHEMA).map_err(sql)?;
+                // A projection is read only by the layout it was made
+                // with; a new one is made with this build's.
+                if made {
+                    engines::layout(&lake, projection::layout(&conn)?, projection::LAYOUT)?;
+                }
+                let (schema, mark) = (projection::SCHEMA, projection::mark());
+                conn.execute_batch(&format!("BEGIN IMMEDIATE; {schema} {mark} COMMIT;"))
+                    .map_err(sql)?;
                 // An order index a writer did not keep (a binary that lacks
                 // it folded past its mark or wrote its setting) is rebuilt
                 // from the head, once.
                 projection::catch_up_sorted(&conn)?;
                 Some(conn)
             }
+            // Whatever layout made the projection, nothing is read from it
+            // or made in it before `clear` makes it anew.
+            OpenMode::Rebuild => Some(connect(&path, &tuning, true)?),
         };
         let reader = connect(&path, &tuning, false)?;
+        if mode != OpenMode::Rebuild {
+            engines::layout(&lake, projection::layout(&reader)?, projection::LAYOUT)?;
+        }
         Ok(SqliteLake {
             lease_file: LeaseFile::new(&dir),
             lake,
@@ -176,7 +190,7 @@ impl SqliteLake {
     fn writable(&self) -> Result<()> {
         match self.mode {
             OpenMode::Read => Err(self.read_only()),
-            OpenMode::Write | OpenMode::Create => Ok(()),
+            OpenMode::Write | OpenMode::Create | OpenMode::Rebuild => Ok(()),
         }
     }
 
@@ -499,27 +513,43 @@ impl ProjectionStore for SqliteLake {
         })
     }
 
-    fn mark_applied(&self, id: &EventId, at: Position) -> Result<()> {
-        self.stage(at, |conn, _| {
+    fn mark_applied(&self, applied: &Applied) -> Result<()> {
+        let at = applied.at.0 as i64;
+        self.stage(applied.at, |conn, _| {
             conn.prepare_cached("INSERT OR IGNORE INTO applied (id, at) VALUES (?1, ?2)")
-                .and_then(|mut s| s.execute(params![id.0, at.0 as i64]))
-                .map(|_| ())
-                .map_err(sql)
+                .and_then(|mut s| s.execute(params![applied.id.0, at]))
+                .map_err(sql)?;
+            let mut route = conn
+                .prepare_cached("INSERT INTO routes (at, kind, ty, key) VALUES (?1, ?2, ?3, ?4)")
+                .map_err(sql)?;
+            for a in &applied.about {
+                let (ty, key) = (a.ty.as_ref().map(TypeName::as_str), a.key.as_ref());
+                let key = key.map(RecordKey::as_str);
+                route
+                    .execute(params![at, applied.kind, ty, key])
+                    .map_err(sql)?;
+            }
+            Ok(())
         })
     }
 
-    /// Drops the projection, its kept history and the vector index; the
-    /// log and the lease stay. An open transaction is abandoned.
+    /// Drops the projection, its kept history and the vector index, and
+    /// makes the projection's tables again at this build's layout, marked
+    /// with it; the log and the lease stay. An open transaction is
+    /// abandoned.
     fn clear(&self) -> Result<()> {
         *lock(&self.transaction) = None;
         self.write(|conn| {
             abandon(conn)?;
-            let statements: String = projection::TABLES
+            let dropped: String = projection::TABLES
                 .iter()
-                .map(|t| format!("DELETE FROM {t};"))
+                .map(|t| format!("DROP TABLE IF EXISTS {t};"))
                 .collect();
-            conn.execute_batch(&format!("BEGIN IMMEDIATE; {statements} COMMIT;"))
-                .map_err(sql)
+            let (schema, mark) = (projection::SCHEMA, projection::mark());
+            conn.execute_batch(&format!(
+                "BEGIN IMMEDIATE; {dropped} {schema} {mark} COMMIT;"
+            ))
+            .map_err(sql)
         })
     }
 

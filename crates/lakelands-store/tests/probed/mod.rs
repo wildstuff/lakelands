@@ -6,7 +6,9 @@
 //! that hands another digest than the engine took or asks twice; and it
 //! counts the rows its scans hand out by type and the reads of a kept
 //! view's state, and keeps the last record put under each kept name and
-//! key, and the entries of the kept views' orders since the last clear.
+//! key, and the entries of the kept views' orders since the last clear;
+//! and it can hand one event of the log out damaged, and the head's view
+//! out at an earlier position.
 //! [`calls`] reads what a lake owes as the drain would.
 
 #![allow(dead_code)]
@@ -83,6 +85,15 @@ pub struct Probe {
     pub another_digest: std::sync::atomic::AtomicBool,
     /// How many events the log's reads handed out.
     pub events_read: AtomicUsize,
+    /// A position whose event the log's reads hand out with its bytes
+    /// damaged: one byte more than it holds.
+    pub damaged: Mutex<Option<Position>>,
+    /// A position the head's view is handed out at, as a projection being
+    /// rebuilt lags the head.
+    pub lags: Mutex<Option<Position>>,
+    /// Whether the feed's index decides nothing, as when a projection a
+    /// rebuild cleared has not refolded the range asked.
+    pub undecided: std::sync::atomic::AtomicBool,
     /// How often a view was asked for the declarations in force.
     pub declarations: AtomicUsize,
     /// How often a view was asked for the lake's list of renames.
@@ -219,6 +230,18 @@ impl ProjectionView for ProbedView<'_> {
         }
         self.inner.output(seam, input)
     }
+    fn matching(
+        &self,
+        filter: &lakelands_api::seam::FeedFilter,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<lakelands_api::engine::Matched> {
+        if self.probe.undecided.load(Ordering::SeqCst) {
+            return Ok(lakelands_core::feed::undecided());
+        }
+        self.inner.matching(filter, from, through, limit)
+    }
 }
 
 impl LakeEngine for Probed {
@@ -260,10 +283,14 @@ impl LakeEngine for Probed {
         self.inner.import(lease, events)
     }
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
-        let read = self.inner.read(from, limit)?;
+        let mut read = self.inner.read(from, limit)?;
         self.probe
             .events_read
             .fetch_add(read.len(), Ordering::SeqCst);
+        let damaged = *self.probe.damaged.lock().unwrap();
+        for e in read.iter_mut().filter(|e| Some(e.position) == damaged) {
+            e.bytes.push(b' ');
+        }
         Ok(read)
     }
     fn seal_segment(
@@ -298,8 +325,9 @@ impl LakeEngine for Probed {
                 },
             ));
         }
+        let lags = *self.probe.lags.lock().unwrap();
         Ok(Box::new(ProbedView {
-            inner: self.inner.view(as_of)?,
+            inner: self.inner.view(as_of.or(lags))?,
             probe: self.probe.clone(),
         }))
     }
@@ -403,8 +431,8 @@ impl ProjectionStore for Probed {
     fn put_output(&self, seam: &str, input: &Digest, output: &Value, at: Position) -> Result<()> {
         self.inner.projection().put_output(seam, input, output, at)
     }
-    fn mark_applied(&self, id: &EventId, at: Position) -> Result<()> {
-        self.inner.projection().mark_applied(id, at)
+    fn mark_applied(&self, applied: &lakelands_api::engine::Applied) -> Result<()> {
+        self.inner.projection().mark_applied(applied)
     }
     fn clear(&self) -> Result<()> {
         self.probe.orders.lock().unwrap().clear();

@@ -131,7 +131,7 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures_core::Stream;
-use lakelands_api::event::{Digest, EventBody};
+use lakelands_api::event::{Digest, Event, EventBody};
 use lakelands_api::ontology::{
     Authority, Cardinality, FieldDecl, RelationDecl, StorageKind, TypeDecl,
 };
@@ -157,7 +157,7 @@ use crate::links::{link_key, link_type_name};
 check!(
     STREAMS =
         a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it,
-    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification and its import into a new lake, each page of a walk of a type through find, the first pages of a walk ordered by an indexed field, with and without writes between them, each also reading its page and a few rows more, not the type, a rebuild, a reopen, a three-hop walk over link records, a three-hop walk over a derived relation, the owner's page of a kept view, in key order, while one group's whole face differs from its open one (lakelands#628), and its sum over every group and a pattern started on one group (lakelands#731), a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, the ten records of highest degree over the whole type, and components refused at the lake's max_graph_nodes, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must; and (lakelands#558) a feed poll examines at most FEED_EXAMINED events: one whose filter matches nothing answers none and a next short of the head, and following next reaches it, the checkpoints are each answered once, an event is in the poll whose last examined position it is and not in the one before, and no limit answers more",
+    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification and its import into a new lake, each page of a walk of a type through find, the first pages of a walk ordered by an indexed field, with and without writes between them, each also reading its page and a few rows more, not the type, a rebuild, a reopen, a three-hop walk over link records, a three-hop walk over a derived relation, the owner's page of a kept view, in key order, while one group's whole face differs from its open one (lakelands#628), and its sum over every group and a pattern started on one group (lakelands#731), a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, the ten records of highest degree over the whole type, and components refused at the lake's max_graph_nodes, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must; and (lakelands#678) a filtered poll reads only what the projection's index names: one whose filter matches nothing answers none and next past the head in one poll, one record's history from 0 answers its events in one poll, the checkpoints are each answered once in at most one poll more than there are, and a poll with no filter examines at most FEED_EXAMINED events whatever its limit",
     given,
     embedding
 );
@@ -1729,84 +1729,96 @@ impl Size<'_> {
     }
 }
 
-/// A poll examines at most [`FEED_EXAMINED`] events. A filter that
-/// matches nothing moves `next` by the bound a poll and reaches the head
-/// in as many polls as the bound goes into the log; the checkpoints,
-/// further apart than the bound, are each answered once by following
-/// `next`; the checkpoint `at` is in the poll whose last event it is and
-/// not in the one that stops just before it; and no `limit` answers more.
+/// A filtered poll reads only what the projection's index names
+/// (lakelands#678): one whose filter matches nothing answers none and
+/// `next` past the head in one poll, whatever the log's length; one
+/// record's history from 0 answers its events in one poll; the
+/// checkpoints are each answered once, `at` among them, in at most one
+/// poll more than there are; and a poll with no filter still examines at
+/// most [`FEED_EXAMINED`] events, whatever its `limit`.
 async fn bounded(store: &dyn LakeStore, log: &Log, at: Position) -> Held {
     let (feed, bound) = (store.feed(), u64::from(FEED_EXAMINED));
     let kind = |k: &str| FeedFilter {
         kinds: vec![k.into()],
         ..FeedFilter::default()
     };
-    let (none, checkpoints) = (kind("trigger_fired"), kind("checkpoint"));
-    for (filter, limit) in [(&none, 100), (&checkpoints, 1)] {
-        let (mut from, mut polls, mut found) = (Position::GENESIS, 0, Vec::new());
-        loop {
-            let b = feed.poll(from, filter, limit);
-            let b = b.await.must("polling the feed")?;
-            let to = (from.0 + bound).min(b.head.0 + 1);
-            ensure!(
-                b.next.0 <= to && (b.next.0 == to || !b.events.is_empty()),
-                "a poll from {from} with {filter:?} answered {} events and next {}; it examines \
-                 up to {to}, the bound of {bound} or the head, unless it finds its limit first",
-                b.events.len(),
-                b.next
-            );
-            found.extend(b.events.iter().map(|e| e.position));
-            (from, polls) = (b.next, polls + 1);
-            if from > b.head {
-                break;
-            }
+    let (never, checkpoints) = (kind("trigger_fired"), kind("checkpoint"));
+    let none = feed.poll(Position::GENESIS, &never, 100);
+    let none = none.await.must("polling for what the log never holds")?;
+    ensure!(
+        none.events.is_empty() && none.next == none.head.next(),
+        "a poll from 0 for a kind the log of {} events never holds answered {} events and next \
+         {}; it answers none and next past the head {} in one poll",
+        log.events,
+        none.events.len(),
+        none.next,
+        none.head
+    );
+    let one = FeedFilter {
+        types: vec![TY.into()],
+        keys: vec![key(3).as_str().into()],
+        ..FeedFilter::default()
+    };
+    let history = feed.poll(Position::GENESIS, &one, 100);
+    let history = history.await.must("polling one record's history")?;
+    let about = |e: &Event| match &e.body {
+        EventBody::RecordIngested { ty, key: k, .. } => ty == TY && *k == key(3),
+        _ => false,
+    };
+    ensure!(
+        !history.events.is_empty()
+            && history.events.iter().all(about)
+            && history.events.is_sorted_by(|a, b| a.position < b.position)
+            && history.next == history.head.next(),
+        "a poll from 0 for the record `{}` answered {:?} and next {} over a log of {} events; \
+         it answers that record's events in order, and next past the head, in one poll",
+        key(3),
+        positions(&history.events),
+        history.next,
+        log.events
+    );
+    let (mut from, mut polls, mut found) = (Position::GENESIS, 0, Vec::new());
+    loop {
+        let b = feed.poll(from, &checkpoints, 1);
+        let b = b.await.must("polling the checkpoints")?;
+        ensure!(
+            b.events.len() <= 1,
+            "a poll with a limit of 1 answered {} events",
+            b.events.len()
+        );
+        found.extend(b.events.iter().map(|e| e.position));
+        (from, polls) = (b.next, polls + 1);
+        if from > b.head {
+            break;
         }
-        let (want, said) = match limit {
-            100 => (vec![], polls == log.events.div_ceil(bound)),
-            _ => (
-                found.clone(),
-                found.len() as u64 == log.checkpoints
-                    && found.contains(&at)
-                    && found.is_sorted_by(|a, b| a < b),
-            ),
-        };
-        ensure!(
-            said && found == want,
-            "following the feed with {filter:?} answered {found:?} in {polls} polls over {} \
-             events; a poll examines at most {bound} events and the log holds {} checkpoints",
-            log.events,
-            log.checkpoints
-        );
     }
-    if at.0 >= bound {
-        let at_end = feed.poll(Position(at.0 + 1 - bound), &checkpoints, u32::MAX);
-        let at_end = at_end.await.must("polling up to the checkpoint")?;
-        let short = feed.poll(Position(at.0 - bound), &checkpoints, u32::MAX);
-        let short = short.await.must("polling short of the checkpoint")?;
-        ensure!(
-            at_end.events.last().map(|e| e.position) == Some(at)
-                && at_end.next == at.next()
-                && !short.events.iter().any(|e| e.position == at)
-                && short.next == at,
-            "the checkpoint at {at} is the last event a poll {bound} events before it examines, \
-             and the next poll's first; they answered next {} and {}",
-            at_end.next,
-            short.next
-        );
-    }
+    ensure!(
+        found.len() as u64 == log.checkpoints
+            && found.contains(&at)
+            && found.is_sorted_by(|a, b| a < b)
+            && polls <= log.checkpoints + 1,
+        "following the checkpoints answered {found:?} in {polls} polls; the log holds {} \
+         checkpoints, {at} among them, each answered once in at most one poll more",
+        log.checkpoints
+    );
     let every = FeedFilter::default();
-    let all = feed.poll(Position::GENESIS, &every, u32::MAX).await;
-    let all = all.must("polling the feed with no limit")?;
+    let all = feed.poll(Position::GENESIS, &every, u32::MAX);
+    let all = all.await.must("polling the feed with no limit")?;
     let n = bound.min(log.events);
     ensure!(
         all.events.len() as u64 == n && all.next.0 == n,
-        "a poll from 0 with a limit of {} answers {n} events and next {n}, the bound; it \
-         answered {} and next {}",
+        "a poll from 0 with no filter and a limit of {} answers {n} events and next {n}, the \
+         bound; it answered {} and next {}",
         u32::MAX,
         all.events.len(),
         all.next
     );
     Ok(())
+}
+
+/// The positions of `events`.
+fn positions(events: &[Event]) -> Vec<u64> {
+    events.iter().map(|e| e.position.0).collect()
 }
 
 /// The report file, beside the check's scratch directory.

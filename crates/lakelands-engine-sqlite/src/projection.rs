@@ -30,7 +30,7 @@ use lakelands_api::error::Result;
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::StoredRecord;
-use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING};
+use lakelands_api::seam::{FeedFilter, SETTING_TYPE, SORT_INDEX_SETTING};
 use lakelands_api::write::Declaration;
 use lakelands_core::engines::{self, sorted_mark};
 use rusqlite::types::FromSql;
@@ -76,6 +76,12 @@ CREATE TABLE IF NOT EXISTS applied (
     id TEXT PRIMARY KEY,
     at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS routes (
+    at INTEGER NOT NULL, kind TEXT NOT NULL, ty TEXT, key TEXT
+);
+CREATE INDEX IF NOT EXISTS routes_kind ON routes (kind, at);
+CREATE INDEX IF NOT EXISTS routes_ty ON routes (ty, at);
+CREATE INDEX IF NOT EXISTS routes_key ON routes (key, at);
 CREATE TABLE IF NOT EXISTS text_index (
     ty TEXT NOT NULL, field TEXT NOT NULL, value TEXT NOT NULL, key TEXT NOT NULL,
     PRIMARY KEY (ty, field, value, key)
@@ -109,7 +115,7 @@ CREATE TABLE IF NOT EXISTS vectors (
 ";
 
 /// Every table the projection holds, cleared by a rebuild.
-pub(crate) const TABLES: [&str; 13] = [
+pub(crate) const TABLES: [&str; 14] = [
     "meta",
     "declarations",
     "records",
@@ -117,6 +123,7 @@ pub(crate) const TABLES: [&str; 13] = [
     "members",
     "outputs",
     "applied",
+    "routes",
     "text_index",
     "edges",
     "sort_index",
@@ -262,6 +269,69 @@ pub(crate) fn column<T: FromSql, R, C: FromIterator<R>>(
     let mut stmt = conn.prepare_cached(statement).map_err(sql)?;
     let rows = stmt.query_map(args, |r| r.get::<_, T>(0)).map_err(sql)?;
     rows.map(|r| f(r.map_err(sql)?)).collect()
+}
+
+/// The positions from `from` through `through` of the feed index's rows
+/// whose `column` is `value`, in order and at most `limit`, each row
+/// checked against the filter's other lists (`lakelands_core::feed::Seek`).
+pub(crate) fn routes(
+    conn: &Connection,
+    filter: &FeedFilter,
+    by: Option<(&str, &str)>,
+    [from, through]: [Position; 2],
+    limit: u32,
+) -> Result<Vec<Position>> {
+    let lists: [(&str, Vec<&str>); 3] = [
+        ("kind", filter.kinds.iter().map(String::as_str).collect()),
+        ("ty", filter.types.iter().map(TypeName::as_str).collect()),
+        ("key", filter.keys.iter().map(RecordKey::as_str).collect()),
+    ];
+    let mut args: Vec<&dyn ToSql> = Vec::new();
+    let mut tests = Vec::new();
+    for (column, values) in by.iter().map(|(c, v)| (*c, std::slice::from_ref(v))).chain(
+        (lists.iter())
+            .filter(|(c, v)| !v.is_empty() && by.is_none_or(|(b, _)| b != *c))
+            .map(|(c, v)| (*c, v.as_slice())),
+    ) {
+        let marks = vec!["?"; values.len()].join(", ");
+        tests.push(format!("AND {column} IN ({marks})"));
+        args.extend(values.iter().map(|v| v as &dyn ToSql));
+    }
+    let (from, through, limit) = (from.0 as i64, through.0 as i64, i64::from(limit.max(1)));
+    args.extend([&from as &dyn ToSql, &through, &limit]);
+    let statement = format!(
+        "SELECT DISTINCT at FROM routes WHERE 1 {} AND at BETWEEN ? AND ? ORDER BY at LIMIT ?",
+        tests.join(" ")
+    );
+    column(conn, &statement, args.as_slice(), |at: i64| {
+        Ok(Position(at as u64))
+    })
+}
+
+/// The layout of the projection this build reads and writes. It is
+/// raised whenever a table changes so that a projection made before
+/// would answer wrongly, not fail: one made with another layout is never
+/// read, and is rebuilt from the log.
+pub(crate) const LAYOUT: u64 = 1;
+
+/// The layout `conn`'s projection was made with: none where it holds no
+/// `meta`, or was made before projections were marked.
+pub(crate) fn layout(conn: &Connection) -> Result<Option<u64>> {
+    let marked: Option<i64> = one(
+        conn,
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
+        [],
+    )?;
+    if marked.is_none() {
+        return Ok(None);
+    }
+    one(conn, "SELECT v FROM meta WHERE k = 'layout'", []).map(|v: Option<i64>| v.map(|v| v as u64))
+}
+
+/// The statement that marks a projection with this build's layout, as
+/// it is made or cleared.
+pub(crate) fn mark() -> String {
+    format!("INSERT INTO meta (k, v) VALUES ('layout', {LAYOUT}) ON CONFLICT (k) DO NOTHING;")
 }
 
 /// The position the projection reflects, if any.

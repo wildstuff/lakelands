@@ -31,12 +31,12 @@ fn fired_at(events: &[Event]) -> Vec<Position> {
 
 check!(
     BY_KEY = a_feed_filtered_by_key_answers_that_records_events_only,
-    "004 and lakelands#146: a feed filtered by types and keys answers exactly the events about those records, in log order, each once: its upserts, a trigger it fired, its object-set changes, a restrict, an unrestrict and its retire; with types empty a key matches in any type and verb_called passes too; kinds narrow it further; no event that names no record passes"
+    "004 and lakelands#146: a feed filtered by types and keys answers exactly the events about those records, in log order, each once: its upserts, a trigger it fired, its object-set changes, a restrict, an unrestrict and its retire; with types empty a key matches in any type and verb_called passes too; kinds narrow it further; no event that names no record passes; and every filtered poll answers what the log does (lakelands#678)"
 );
 
 check!(
     BY_OLD_KEY = a_key_filter_does_not_follow_a_rekey,
-    "004, 027 and lakelands#146: a feed filtered by a record's old key answers its events up to the migration that re-keyed it and none after; the new key answers what came after"
+    "004, 027 and lakelands#146: a feed filtered by a record's old key answers its events up to the migration that re-keyed it and none after; the new key answers what came after; and every filtered poll answers what the log does (lakelands#678)"
 );
 
 check!(
@@ -46,7 +46,7 @@ check!(
 
 check!(
     REBUILD_LEAVES_THE_FEED = rebuilding_the_projection_changes_nothing_in_the_feed,
-    "001 and 004: the log is the truth and the projection an index; deleting and rebuilding the projection leaves every event as it was"
+    "001 and 004: the log is the truth and the projection an index; deleting and rebuilding the projection leaves every event as it was, and every filtered poll answers what the log does (lakelands#678)"
 );
 
 check!(
@@ -63,6 +63,35 @@ check!(
     HIDDEN_TRIGGER = a_trigger_whose_guard_the_writer_may_not_read_is_not_named,
     "015, extended, and 024: a write's answer names a trigger it fired, or an object set its record joined or left, only if `describe` lists it to the writer; one whose condition reads a field the writer may not read is left out, and `through` still covers it"
 );
+
+check!(
+    INDEX_UNMASKED = a_filtered_poll_answers_the_log_unmasked,
+    "004, 051 and lakelands#678: the feed is the log unmasked and its index masks nothing: a poll filtered by a type, by the key of a restricted record, by that of a record an `only` grant would not admit and by a retired one's answers exactly what reading the whole log with no filter and keeping what the filter admits answers, whole, and moves `next` past the head as that read does; a reader who does not read everything is refused the feed at a door"
+);
+
+async fn a_filtered_poll_answers_the_log_unmasked(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(type_of("doc", &[("owner", Text), ("text", Text)]))
+        .await?;
+    for (key, owner) in [("d1", "a"), ("d2", "b"), ("d3", "a")] {
+        l.upsert("doc", key, json!({"owner": owner, "text": "first"}))
+            .await?;
+    }
+    l.upsert("doc", "d2", json!({"text": "second"})).await?;
+    store
+        .restrict(&"doc".into(), &"d2".into(), "a hold".into())
+        .await
+        .must("restricting d2")?;
+    l.retire("doc", "d3").await?;
+    let held = polled(store.as_ref(), filter(&[], &["doc"], &["d2"])).await?;
+    let kinds: Vec<&str> = held.iter().map(|e| e.body.kind()).collect();
+    ensure!(
+        kinds == ["record_upserted", "record_upserted", "record_restricted"],
+        "the restricted record d2, which an `only` grant on owner `a` would not admit either, \
+         answers its whole history to a filter by its key; it answered {kinds:?}"
+    );
+    the_index_answers_the_log(store.as_ref(), "a restricted and a retired record").await
+}
 
 async fn invoices(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
@@ -271,7 +300,7 @@ async fn rebuilding_the_projection_changes_nothing_in_the_feed(store: Store) -> 
         before.len(),
         after.len()
     );
-    Ok(())
+    the_index_answers_the_log(store.as_ref(), "a rebuilt projection").await
 }
 
 async fn a_trigger_fires_on_every_write_whose_guard_holds(store: Store) -> Held {
@@ -649,7 +678,7 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(store: Store) -
         positions(&got),
         positions(&want)
     );
-    Ok(())
+    the_index_answers_the_log(store.as_ref(), "records of two types under one key").await
 }
 
 async fn a_key_filter_does_not_follow_a_rekey(store: Store) -> Held {
@@ -671,5 +700,96 @@ async fn a_key_filter_does_not_follow_a_rekey(store: Store) -> Held {
          answered positions {:?}",
         positions(&new)
     );
+    the_index_answers_the_log(store.as_ref(), "a lake re-keyed").await
+}
+
+/// The projection's index of the log answers what the log does
+/// (lakelands#678): for every filter of a grid made from the lake's own
+/// log (each kind, type, key and type with key it holds, kinds with types,
+/// two of each, and a kind and a type it never holds), a poll from 0
+/// answers exactly the events of the whole log, read with no filter, that
+/// the filter admits, whole and in order; followed a match at a time it
+/// answers them again, each poll moving `next` on, the last one past the
+/// head. `what` names the lake in a failure.
+pub(super) async fn the_index_answers_the_log(store: &dyn LakeStore, what: &str) -> Held {
+    let log = log_events(store).await?;
+    let mut kinds = Vec::new();
+    let (mut types, mut keys, mut pairs, mut typed) = (vec![], vec![], vec![], vec![]);
+    for e in &log {
+        kinds.push(e.body.kind());
+        for a in crate::feed::about(&e.body) {
+            if let Some(ty) = &a.ty {
+                types.push(ty.to_string());
+                typed.push((e.body.kind(), ty.to_string()));
+            }
+            if let Some(key) = &a.key {
+                keys.push(key.to_string());
+                if let Some(ty) = &a.ty {
+                    pairs.push((ty.to_string(), key.to_string()));
+                }
+            }
+        }
+    }
+    for list in [&mut types, &mut keys] {
+        list.sort();
+        list.dedup();
+    }
+    kinds.sort();
+    kinds.dedup();
+    pairs.sort();
+    pairs.dedup();
+    typed.sort();
+    typed.dedup();
+    let mut grid = vec![
+        filter(&["never_a_kind"], &[], &[]),
+        filter(&[], &["no_such_type"], &[]),
+    ];
+    grid.extend(kinds.iter().map(|k| filter(&[k], &[], &[])));
+    grid.extend(types.iter().map(|t| filter(&[], &[t], &[])));
+    grid.extend(keys.iter().map(|k| filter(&[], &[], &[k])));
+    grid.extend(pairs.iter().map(|(t, k)| filter(&[], &[t], &[k])));
+    grid.extend(typed.iter().map(|(k, t)| filter(&[k], &[t], &[])));
+    if let ([a, b, ..], [c, d, ..]) = (kinds.as_slice(), types.as_slice()) {
+        grid.push(filter(&[a, b], &[], &[]));
+        grid.push(filter(&[a, b], &[c, d], &[]));
+    }
+    let head = store.head().await.must("reading the head")?;
+    for f in grid {
+        let admits =
+            |e: &&Event| crate::feed::admits(&f, e.body.kind(), &crate::feed::about(&e.body));
+        let want: Vec<Event> = log.iter().filter(admits).cloned().collect();
+        let got = followed(store, Position::GENESIS, &f).await?;
+        ensure!(
+            got == want,
+            "{what}: a poll with {f:?} answered positions {:?}; the log holds {:?} that it admits",
+            positions(&got),
+            positions(&want)
+        );
+        let (mut from, mut paged, mut polls) = (Position::GENESIS, Vec::new(), 0);
+        loop {
+            let b = store.feed().poll(from, &f, 1).await;
+            let b = b.must(&format!("polling with {f:?} from {from}"))?;
+            ensure!(
+                b.next > from && b.events.len() <= 1,
+                "{what}: a poll with {f:?} from {from} and a limit of 1 answered {} events and \
+                 next {}; it moves on and answers at most one",
+                b.events.len(),
+                b.next
+            );
+            (from, polls) = (b.next, polls + 1);
+            paged.extend(b.events);
+            if from > b.head {
+                break;
+            }
+        }
+        ensure!(
+            paged == want && polls <= want.len() + 1 && from == head.next(),
+            "{what}: following {f:?} a match at a time answered {:?} in {polls} polls and \
+             stopped at {from}; it answers {:?}, in at most one poll more, and stops past the \
+             head {head}",
+            positions(&paged),
+            positions(&want)
+        );
+    }
     Ok(())
 }
