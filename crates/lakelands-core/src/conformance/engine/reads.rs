@@ -20,163 +20,138 @@ use lakelands_api::{Refusal, Timestamp};
 use serde_json::{Value, json};
 
 use super::projection::{fold, fold_one, record, view};
-use crate::conformance::Failure;
 use crate::conformance::fixture::{Must, order, reason};
+use crate::conformance::{Failure, Held};
 
 engine_check!(
-    /// A count is its scan's length.
     COUNT_IS_THE_SCAN = a_count_is_the_number_of_records_its_scan_selects,
     "seams §ProjectionView and 029: `count` answers the number of records `scan` selects, its flags, `valid_at`, `filter` and `equal` applied and its order, keyset position and limit ignored, at the head and at an earlier position, across more than one batch, a superseded state and a retired record not counted"
 );
 
 engine_check!(
-    /// A kept name answers as a stored type holding the same states.
     KEPT_NAME = a_kept_name_answers_as_a_stored_type_holding_the_same_states,
     "seams §ProjectionStore and lakelands#575: the same states put under a view's kept name, `sys:kept.<view>`, and under an ordinary one answer alike through `get`, `get_many`, a walk by key from `after` across batches, a page under a filter, in a field's order and under `equal`, and a count under each flag and under a filter, at the head and at an earlier position, over a key put thousands of times, keys first put after that position between older ones, and an ended, a retired and a restricted key; an output recorded as often is read at both"
 );
 
 engine_check!(
-    /// Mixed kinds sort the same on every engine.
     MIXED_KINDS = mixed_kinds_sort_the_same_on_every_engine,
     "029: a scan orders numbers, then instants, then text, then booleans, then JSON, a missing value last in either direction, ties by key, so every engine puts the same records in the same places"
 );
 
 engine_check!(
-    /// A scan continues strictly after its keyset position.
     AFTER_AND_LIMIT = a_scan_continues_strictly_after_its_keyset_position,
     "seams §scan: a scan answers only what sorts strictly after `after`, and at most `limit` of it, 0 answering nothing, so an engine that pages natively gives the store's pages"
 );
 
 engine_check!(
-    /// A key-ordered scan answers across its batches as one scan.
     KEY_BATCHES = a_key_ordered_scan_answers_across_its_batches_as_one_scan,
     "seams §scan and lakelands#134: a scan ordered by the key alone, read in batches from `after`, answers what one scan over every state answers, whatever its limit, its `after`, its flags and its filter, at the head and at an earlier position, however many rows each batch passes over"
 );
 
 engine_check!(
-    /// A page by key under an exact text reads from `after`, not every
-    /// match.
     TEXT_PAGE = a_page_by_key_under_an_exact_text_reads_from_after_not_every_match,
     "seams §scan and lakelands#574: a scan ordered by the key alone that must hold a text exactly, by a term of its filter or by `equal`, walked page by page from `after` and read whole, answers what one scan over every state answers, past records that hold the text and do not qualify (another term, retired, restricted) and a key that ended on both sides of a batch's end, over keys a database's collation orders otherwise than their bytes; a walk is handed at most twice the type's rows and a batch, not every record holding the text for each page, and a count no more rows than hold the text and a batch"
 );
 
 engine_check!(
-    /// A field-ordered scan walks page by page as one scan.
     FIELD_ORDER_WALK = a_field_ordered_scan_walks_page_by_page_as_one_scan,
     "seams §scan and lakelands#137: a scan ordered by fields, walked page by page from `after`, answers what one scan over every state answers, whatever its directions, its filter (an exact text among them, which many or few records hold, lakelands#587) and its flags, after later puts (of keys first put after the position among them), a redeclaration and a change of the `sort_index.<type>` setting, at the head and at an earlier position"
 );
 
 engine_check!(
-    /// A page ordered by an indexed field reads its page.
     SORTED_PAGE = a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it,
     "041 and lakelands#137: a page of 10 ordered by a field the `sort_index.<type>` setting names reads its page and at most three rows more, not the type, the first page and one continued after a value longer than the index keeps alike; the setting's write switches the same page from sorting the type to the index and back, and the answer stays what one scan over every state answers; and so for a view's kept records, whose index its `sort_index.<view>` setting asks for of the fields the view declares (lakelands#668)"
 );
 
 engine_check!(
-    /// A scan's `equal` selects identical values only.
     EQUAL_IS_IDENTITY = a_scan_with_equal_answers_exactly_the_identical_values,
     "044 and seams §scan: a scan's `equal` selects the records whose field holds exactly the JSON value, never the expression's `=` (`'010'` is not `'10'`, text is not a number, an instant in another written form is not the same), never a null, at the head and at an earlier position alike"
 );
 
 engine_check!(
-    /// A scan's filter selects exactly what the evaluator selects.
     FILTER_AS_EVALUATOR = scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors,
     "seams §scan: an engine selects exactly the records the one evaluator selects, comparisons across kinds included, and a filter that errors for a record does not select it"
 );
 
 engine_check!(
-    /// A scan honours the flags and `valid_at`.
     FLAGS_AND_VALID_AT = scan_honours_retired_restricted_and_valid_at,
     "seams §scan: retired and restricted records come only when asked for, and a valid-timed type's records only when valid at `valid_at`"
 );
 
 engine_check!(
-    /// Lexical hits come from the pipeline over searchable, live records.
     LEXICAL_HITS = lexical_hits_are_the_pipelines_over_searchable_live_records,
     "025 and seams §lexical: a hit holds a token the one pipeline makes of the query in a searchable field of a live record, restricted ones included (the store applies grants); the hit set is the same on every engine, ties by key, at most k"
 );
 
 engine_check!(
-    /// Lexical search finds tokens outside ASCII.
     LEXICAL_BEYOND_ASCII = lexical_finds_every_token_the_pipeline_makes_beyond_ascii,
     "025: every token the one pipeline makes is a term an engine finds, in any script, combining marks included, so no engine's own tokenizer narrows the hit set"
 );
 
 engine_check!(
-    /// Lexical search at an earlier position ranks by the head.
-    LEXICAL_EARLIER = lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_then,
+    LEXICAL_EARLIER =
+        lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_then,
     "seams §lexical: a view answers from the full-text index at the head and keeps only the records live at its own position"
 );
 
 engine_check!(
-    /// Lexical search limited to named fields matches in those only.
     LEXICAL_NAMED_FIELDS = lexical_over_named_fields_is_the_pipelines_over_those_fields,
     "025 and seams §lexical: a search limited to named fields matches, scores and ties over the head text of the named searchable fields only, and no engine cuts its candidates at k before it narrows them: a record matching in a named field is a hit however many others match only in fields not named"
 );
 
 engine_check!(
-    /// A record put after its type is declared again in the same
-    /// transaction is indexed under the new declaration.
-    LEXICAL_REDECLARED_MID_FOLD = a_record_put_after_a_redeclaration_in_the_same_transaction_is_indexed_under_it,
+    LEXICAL_REDECLARED_MID_FOLD =
+        a_record_put_after_a_redeclaration_in_the_same_transaction_is_indexed_under_it,
     "025 and seams §ProjectionStore: a put reads the declarations as the transaction holds them, so a type declared again inside one fold's transaction governs every record put after it, and the records it already held"
 );
 
 engine_check!(
-    /// The vector index ranks by cosine, ties by key.
     NEAREST_BY_COSINE = nearest_ranks_by_cosine_with_ties_by_key,
     "seams §VectorIndex: nearest answers the exact top k by the cosine of the angle, best first, equal scores by key"
 );
 
 engine_check!(
-    /// A zero vector scores 0; a wrong length is invalid.
     ZERO_AND_WRONG_LENGTH = a_zero_vector_scores_zero_and_a_wrong_length_is_invalid,
     "seams §VectorIndex: a vector of zeros scores 0 against everything, and a query whose length differs from a stored vector's is refused as invalid"
 );
 
 engine_check!(
-    /// `put` replaces a vector; `remove` forgets it.
     PUT_AND_REMOVE = put_replaces_a_vector_and_remove_forgets_it,
     "seams §VectorIndex: put replaces a record's vector for the field, remove forgets it, forgetting one that is absent does nothing, and count counts"
 );
 
 engine_check!(
-    /// Edges over a relation carried by link records.
     LINK_EDGES = edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_position,
     "035 and seams §edges: an engine answers a relation without via from its live link records at the view's position, out and in, each edge carrying the link's own fields"
 );
 
 engine_check!(
-    /// A record's edges read what they reach at the head.
     EDGES_READ_WHAT_THEY_REACH = a_records_edges_at_the_head_read_its_links_not_the_type,
     "seams §edges and lakelands#190: at the head, the edges into or out of a record over a relation carried by link records, and the edges into it over one carried by a reference field, are found without reading the link type or the declaring type: the records an engine hands the rulebook to find them are about the edges it returns"
 );
 
 engine_check!(
-    /// Kept states read at an earlier position.
     EARLIER_STATES = declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position,
     "seams §ProjectionView: declarations, membership (a record's, and a set's members of a type), recorded outputs and applied ids are kept states too, read at a view's own position"
 );
 
 engine_check!(
-    /// A later output replaces an earlier one.
     LATER_OUTPUT_HOLDS = a_later_output_for_the_same_call_replaces_the_earlier_from_its_position,
     "022, extended, and seams §ProjectionView: the log may hold two outputs for one seam and input (a failure, then the answer a redeclaration asked for); the later one holds from its position, the earlier one before it; an output under the store's own seam name, `sys:renames`, is kept and answered as of a position like any other (lakelands#527)"
 );
 
 engine_check!(
-    /// The first applied position is kept.
     FIRST_APPLIED = the_first_applied_position_is_kept,
     "seams §ProjectionStore: marking an id applied twice keeps the first position, so a redelivery is recognised where the event first took effect"
 );
 
 engine_check!(
-    /// A page at an earlier position reads the head index and the changes.
-    SORTED_PAGE_PINNED = a_page_at_an_earlier_position_reads_the_head_index_and_the_keys_changed_since,
+    SORTED_PAGE_PINNED =
+        a_page_at_an_earlier_position_reads_the_head_index_and_the_keys_changed_since,
     "041, extended: a page ordered by an indexed field at an earlier position reads the head's order index and the keys of the type changed since, with their states at the position, so it answers what one scan over the states there answers, a key changed, retired or written after the position in its place there, and reads its page, at most three rows more and two per changed key, not the type; a commit between two pages of one view changes neither"
 );
 
 engine_check!(
-    /// Proposals filter by state and type, newest first.
     PROPOSALS = proposals_filter_by_state_and_type_newest_first,
     "seams §ProjectionView: proposals match the filter's state and type, a call's type being its verb's `on`, newest first by their latest state, then by id"
 );
@@ -217,7 +192,7 @@ fn sort_setting(fields: Value, at: u64) -> StoredRecord {
     )
 }
 
-fn mixed_kinds_sort_the_same_on_every_engine(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn mixed_kinds_sort_the_same_on_every_engine(engine: &dyn LakeEngine) -> Held {
     let values = [
         ("a", json!("abc")),
         ("b", json!(true)),
@@ -266,9 +241,7 @@ fn mixed_kinds_sort_the_same_on_every_engine(engine: &dyn LakeEngine) -> Result<
     Ok(())
 }
 
-fn a_scan_continues_strictly_after_its_keyset_position(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn a_scan_continues_strictly_after_its_keyset_position(engine: &dyn LakeEngine) -> Held {
     fold(engine, 1, |p| {
         for (key, n) in [("a", 1), ("b", 2), ("c", 2), ("d", 3), ("e", 4)] {
             p.put_record(&record("t", key, json!({"n": n}), 1))?;
@@ -330,9 +303,7 @@ fn a_scan_continues_strictly_after_its_keyset_position(
 /// Records in the key-batch check: more than one batch of 1 024.
 const BATCHED: u64 = 2100;
 
-fn a_key_ordered_scan_answers_across_its_batches_as_one_scan(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn a_key_ordered_scan_answers_across_its_batches_as_one_scan(engine: &dyn LakeEngine) -> Held {
     // Every third record retired and every fifth restricted at position
     // 1; every fourth moved to n = -1 at position 2.
     let state = |i: u64, at: u64| {
@@ -408,7 +379,7 @@ fn a_key_ordered_scan_answers_across_its_batches_as_one_scan(
 
 fn a_page_by_key_under_an_exact_text_reads_from_after_not_every_match(
     engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+) -> Held {
     const N: u64 = 4100;
     const BATCH: u64 = 1024;
     // Keys in three runs, which the bytes order `B`, `_`, `a` and a
@@ -441,7 +412,7 @@ fn a_page_by_key_under_an_exact_text_reads_from_after_not_every_match(
     let (ty, head) = (TypeName::from("t"), view(engine, None)?);
     // The pages of a scan, each after the last key of the one before, and
     // the rows the engine handed the rulebook for them all.
-    let walk = |mut scan: Scan, what: &str| -> Result<(), Failure> {
+    let walk = |mut scan: Scan, what: &str| -> Held {
         let mut read = 0;
         loop {
             let before = crate::engines::rows_read();
@@ -508,7 +479,7 @@ fn a_page_by_key_under_an_exact_text_reads_from_after_not_every_match(
 
 fn scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors(
     engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+) -> Held {
     fold(engine, 1, |p| {
         for (key, v) in [
             ("a", json!(10)),
@@ -566,7 +537,7 @@ fn scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors(
     Ok(())
 }
 
-fn scan_honours_retired_restricted_and_valid_at(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn scan_honours_retired_restricted_and_valid_at(engine: &dyn LakeEngine) -> Held {
     let timed = declare(json!({
         "declare": "type", "name": "t", "valid_from": "from", "valid_to": "to",
         "fields": [
@@ -621,9 +592,7 @@ fn scan_honours_retired_restricted_and_valid_at(engine: &dyn LakeEngine) -> Resu
     Ok(())
 }
 
-fn a_count_is_the_number_of_records_its_scan_selects(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn a_count_is_the_number_of_records_its_scan_selects(engine: &dyn LakeEngine) -> Held {
     let timed = declare(json!({
         "declare": "type", "name": "t", "valid_from": "from", "valid_to": "to",
         "fields": [
@@ -744,9 +713,7 @@ fn hit_keys(hits: &[(RecordKey, f64)]) -> Vec<String> {
     hits.iter().map(|(k, _)| k.to_string()).collect()
 }
 
-fn lexical_hits_are_the_pipelines_over_searchable_live_records(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn lexical_hits_are_the_pipelines_over_searchable_live_records(engine: &dyn LakeEngine) -> Held {
     fold(engine, 1, |p| {
         p.put_declaration(&documents(), 1, None, Position(0))?;
         p.put_record(&record(
@@ -796,7 +763,7 @@ fn lexical_hits_are_the_pipelines_over_searchable_live_records(
 
 fn lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_then(
     engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+) -> Held {
     fold(engine, 1, |p| {
         p.put_declaration(&documents(), 1, None, Position(0))?;
         p.put_record(&record("doc", "kept", json!({"body": "ocean"}), 1))?;
@@ -841,9 +808,7 @@ fn lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_t
     Ok(())
 }
 
-fn lexical_over_named_fields_is_the_pipelines_over_those_fields(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn lexical_over_named_fields_is_the_pipelines_over_those_fields(engine: &dyn LakeEngine) -> Held {
     fold(engine, 1, |p| {
         p.put_declaration(&documents(), 1, None, Position(0))?;
         p.put_record(&record(
@@ -931,7 +896,7 @@ fn lexical_over_named_fields_is_the_pipelines_over_those_fields(
 
 fn a_record_put_after_a_redeclaration_in_the_same_transaction_is_indexed_under_it(
     engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+) -> Held {
     let narrow = declare(json!({
         "declare": "type", "name": "doc", "language": "en",
         "fields": [
@@ -959,14 +924,13 @@ fn a_record_put_after_a_redeclaration_in_the_same_transaction_is_indexed_under_i
 }
 
 engine_check!(
-    /// A changed record is found by what it holds now, and by nothing else.
     CHANGED_ROWS = a_changed_record_is_found_by_what_it_holds_now_and_read_no_more,
     "seams §ProjectionStore, 025 and 041: after a record changes, the head indexes hold the rows of its latest state and no others: an exact text lookup, a search and a page in an indexed field's order answer by what it holds now, a field it cleared included, and an exact lookup hands the rulebook no record that matched only before, unless the engine keeps no index of exact text and reads the type for every lookup"
 );
 
 fn a_changed_record_is_found_by_what_it_holds_now_and_read_no_more(
     engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+) -> Held {
     let t = declare(json!({
         "declare": "type", "name": "t", "language": "en",
         "fields": [
@@ -1037,14 +1001,13 @@ fn a_changed_record_is_found_by_what_it_holds_now_and_read_no_more(
 }
 
 engine_check!(
-    /// A transaction of many puts leaves what putting them one by one leaves.
     MANY_PUTS = a_transaction_of_many_puts_leaves_what_putting_them_one_by_one_leaves,
     "seams §ProjectionStore: an engine may write a transaction's puts before its commit, so a type's declaration is put before any record of the type at or after its position; a transaction of more than a page of puts (records below a declaration's position, the declaration, records after it, a record put again, a state put again at its position, a membership put twice, a `sort_index.<type>` setting after its records, a `vector_index.<type>` setting in its first page and one in its last, each with vectors put before and after the page between), over keys a database's collation orders otherwise than their bytes, leaves the head indexes, the earlier states, the memberships and the nearest vectors that putting them one by one leaves; a view opened in it after more than a page of its puts answers what was committed before it; one refused at its commit leaves nothing; and a type that holds an ended key is indexed whole when it is declared again; and the states of two records put record by record, below a declaration's position and at it, after the declaration, leave what position order leaves"
 );
 
 fn a_transaction_of_many_puts_leaves_what_putting_them_one_by_one_leaves(
     engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+) -> Held {
     const N: u64 = 2_100;
     let t = |searchable: bool| {
         let under = json!([{"name": "under", "target": "t", "via": "up"}]);
@@ -1131,7 +1094,7 @@ fn a_transaction_of_many_puts_leaves_what_putting_them_one_by_one_leaves(
     );
     // What the head answers: the search, a relation's edges, an exact
     // lookup, a page in the indexed order.
-    let answers = |when: &str, rivers: u64| -> Result<(), Failure> {
+    let answers = |when: &str, rivers: u64| -> Held {
         let head = view(engine, None)?;
         let found = |text: &str| head.lexical(&ty, text, None, 5_000).map(|h| hit_keys(&h));
         let (river, hill) = (
@@ -1274,7 +1237,7 @@ fn vectors(engine: &dyn LakeEngine) -> Result<&dyn lakelands_api::engine::Vector
         .ok_or_else(|| Failure::new("the engine keeps no vector index"))
 }
 
-fn nearest_ranks_by_cosine_with_ties_by_key(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn nearest_ranks_by_cosine_with_ties_by_key(engine: &dyn LakeEngine) -> Held {
     let index = vectors(engine)?;
     let ty = TypeName::from("doc");
     for (key, v) in [
@@ -1314,9 +1277,7 @@ fn nearest_ranks_by_cosine_with_ties_by_key(engine: &dyn LakeEngine) -> Result<(
     Ok(())
 }
 
-fn a_zero_vector_scores_zero_and_a_wrong_length_is_invalid(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn a_zero_vector_scores_zero_and_a_wrong_length_is_invalid(engine: &dyn LakeEngine) -> Held {
     let index = vectors(engine)?;
     let ty = TypeName::from("doc");
     index
@@ -1341,7 +1302,7 @@ fn a_zero_vector_scores_zero_and_a_wrong_length_is_invalid(
     Ok(())
 }
 
-fn put_replaces_a_vector_and_remove_forgets_it(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn put_replaces_a_vector_and_remove_forgets_it(engine: &dyn LakeEngine) -> Held {
     let index = vectors(engine)?;
     let ty = TypeName::from("doc");
     index
@@ -1382,7 +1343,7 @@ fn put_replaces_a_vector_and_remove_forgets_it(engine: &dyn LakeEngine) -> Resul
 
 fn declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position(
     engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+) -> Held {
     let v1 = declare(json!({"declare": "type", "name": "t", "fields": []}));
     let v2 = declare(json!({
         "declare": "type", "name": "t", "fields": [{"name": "n", "type": {"kind": "number"}}]
@@ -1472,7 +1433,7 @@ fn declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position(
     Ok(())
 }
 
-fn the_first_applied_position_is_kept(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn the_first_applied_position_is_kept(engine: &dyn LakeEngine) -> Held {
     let id = EventId("once".into());
     fold(engine, 2, |p| p.mark_applied(&id, Position(2)))?;
     fold(engine, 5, |p| p.mark_applied(&id, Position(5)))?;
@@ -1502,7 +1463,7 @@ fn proposal(id: &str, position: u64, write: ProposedWrite, state: ProposalState)
     }
 }
 
-fn proposals_filter_by_state_and_type_newest_first(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn proposals_filter_by_state_and_type_newest_first(engine: &dyn LakeEngine) -> Held {
     use ProposalState::{Accepted, Pending};
     let verb = declare(json!({
         "declare": "verb", "name": "pay", "on": "invoice", "risk": "high",
@@ -1576,9 +1537,7 @@ fn proposals_filter_by_state_and_type_newest_first(engine: &dyn LakeEngine) -> R
     Ok(())
 }
 
-fn lexical_finds_every_token_the_pipeline_makes_beyond_ascii(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn lexical_finds_every_token_the_pipeline_makes_beyond_ascii(engine: &dyn LakeEngine) -> Held {
     let plain = declare(json!({
         "declare": "type", "name": "note",
         "fields": [{"name": "body", "type": {"kind": "text"}, "searchable": true}]
@@ -1631,7 +1590,7 @@ fn lexical_finds_every_token_the_pipeline_makes_beyond_ascii(
 
 fn a_later_output_for_the_same_call_replaces_the_earlier_from_its_position(
     engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+) -> Held {
     // A seam's name and the store's own, under which the fold keeps the
     // lake's renames: an engine keeps both alike.
     let (failed, answer) = (json!({"error": "timed out"}), json!([1.0, 0.0]));
@@ -1660,7 +1619,7 @@ fn a_later_output_for_the_same_call_replaces_the_earlier_from_its_position(
 
 fn edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_position(
     engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+) -> Held {
     use lakelands_api::query::Walk;
     let partner = declare(json!({"declare": "type", "name": "partner", "fields": []}));
     let invoice = declare(json!({
@@ -1771,9 +1730,7 @@ fn order_value(i: u64) -> Value {
     values[(i as usize * 7) % values.len()].clone()
 }
 
-fn a_field_ordered_scan_walks_page_by_page_as_one_scan(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn a_field_ordered_scan_walks_page_by_page_as_one_scan(engine: &dyn LakeEngine) -> Held {
     const N: u64 = 160;
     // Twenty-one more keys are first put at position 2, among the rows of
     // every order: a page at position 1 passes them over.
@@ -1869,14 +1826,13 @@ fn a_field_ordered_scan_walks_page_by_page_as_one_scan(
 }
 
 engine_check!(
-    /// A setting that orders the settings type is read by the next setting.
     SETTINGS_ORDERED = a_sort_setting_for_the_settings_type_orders_the_settings_put_after_it,
     "041 and seams §ProjectionStore: a `sort_index.<type>` setting takes effect for the records put after it in the same transaction, the settings type's own included: a setting put before it and one put after it are both in the order index"
 );
 
 fn a_sort_setting_for_the_settings_type_orders_the_settings_put_after_it(
     engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+) -> Held {
     use lakelands_api::seam::SETTING_TYPE;
     let settings = declare(json!({
         "declare": "type", "name": SETTING_TYPE,
@@ -1914,7 +1870,7 @@ fn walk_field_orders(
     n: u64,
     state: &dyn Fn(u64, u64) -> StoredRecord,
     when: &str,
-) -> Result<(), Failure> {
+) -> Held {
     let ty = TypeName::from("t");
     let by = |field: &str, dir| order(field, OrderBy::Value, dir);
     let filters =
@@ -1992,7 +1948,7 @@ fn walk_field_orders(
 
 fn a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it(
     engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+) -> Held {
     // A stored type, then the records a view's fold keeps, put under its
     // kept name, at positions after the type's.
     sorted_page_reads(engine, "t", false, 0)?;
@@ -2002,12 +1958,7 @@ fn a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it
 /// [`a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it`]
 /// for the type `name`, declared from `from` on, a view of `t` if `kept`,
 /// whose records are put under its kept name.
-fn sorted_page_reads(
-    engine: &dyn LakeEngine,
-    name: &str,
-    kept: bool,
-    from: u64,
-) -> Result<(), Failure> {
+fn sorted_page_reads(engine: &dyn LakeEngine, name: &str, kept: bool, from: u64) -> Held {
     const N: u64 = 1000;
     const LIMIT: u32 = 10;
     let mut declared = json!({
@@ -2144,7 +2095,7 @@ fn sorted_page_reads(
 
 fn a_page_at_an_earlier_position_reads_the_head_index_and_the_keys_changed_since(
     engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+) -> Held {
     const N: u64 = 1000;
     const LIMIT: u32 = 10;
     let decl = declare(json!({
@@ -2236,9 +2187,7 @@ fn a_page_at_an_earlier_position_reads_the_head_index_and_the_keys_changed_since
     Ok(())
 }
 
-fn a_records_edges_at_the_head_read_its_links_not_the_type(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn a_records_edges_at_the_head_read_its_links_not_the_type(engine: &dyn LakeEngine) -> Held {
     use lakelands_api::query::Walk;
     const N: u64 = 1000;
     let partner = declare(json!({"declare": "type", "name": "partner", "fields": []}));
@@ -2305,9 +2254,7 @@ fn a_records_edges_at_the_head_read_its_links_not_the_type(
     Ok(())
 }
 
-fn a_scan_with_equal_answers_exactly_the_identical_values(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn a_scan_with_equal_answers_exactly_the_identical_values(engine: &dyn LakeEngine) -> Held {
     fold(engine, 1, |p| {
         for (key, v) in [
             ("a", json!("10")),
@@ -2351,9 +2298,7 @@ fn a_scan_with_equal_answers_exactly_the_identical_values(
     Ok(())
 }
 
-fn a_kept_name_answers_as_a_stored_type_holding_the_same_states(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn a_kept_name_answers_as_a_stored_type_holding_the_same_states(engine: &dyn LakeEngine) -> Held {
     // Under each name `a` is put at every position, the even keys of
     // 2 600 at position 1 and the odd ones, which lie between them, after
     // `then`; one key ends before `then` and one after it; some keys are

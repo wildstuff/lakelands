@@ -3,8 +3,6 @@
 //! `docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`,
 //! `docs/decisions/029-every-answer-has-one-order.md`).
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::principal::PrincipalKind;
@@ -17,22 +15,19 @@ use crate::conformance::fixture::{
     no_such_field, owner, principal, read_at, refused_alike, refused_on, restrict, searchable,
     type_decl, vector,
 };
-use crate::conformance::{Failure, Reopen, backing};
+use crate::conformance::{Failure, Held, Reopen, Store, backing};
 
 check!(
-    /// Words match by the one pipeline: case, stem and diacritics fold.
     MATCH_SET = full_text_matches_words_whatever_their_case_inflection_or_accents,
     "025: the store's one token pipeline splits, lower-cases, stems and folds diacritics, so the same query matches the same records on every engine"
 );
 
 check!(
-    /// Hits come by score, then by key.
     SEARCH_ORDER = search_is_ordered_by_score_then_key,
     "029: ranked search answers best first, and equal scores in key order"
 );
 
 check!(
-    /// Search cannot probe an unreadable field.
     SEARCH_PROBE_REFUSED = searching_a_type_whose_searchable_field_is_unreadable_is_refused,
     "024: a search that names a searchable field the principal may not read is refused, naming the field; one that names none searches only the fields it reads, so over a type whose every searchable field it sees masked it answers no hits"
 );
@@ -68,9 +63,7 @@ pub(super) fn keys(h: &Hits) -> Vec<&str> {
     h.hits.iter().map(|h| h.record.key.as_str()).collect()
 }
 
-async fn full_text_matches_words_whatever_their_case_inflection_or_accents(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn full_text_matches_words_whatever_their_case_inflection_or_accents(store: Store) -> Held {
     let l = articles(store.as_ref()).await?;
     l.upsert(
         "article",
@@ -99,7 +92,7 @@ async fn full_text_matches_words_whatever_their_case_inflection_or_accents(
     Ok(())
 }
 
-async fn search_is_ordered_by_score_then_key(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn search_is_ordered_by_score_then_key(store: Store) -> Held {
     let l = articles(store.as_ref()).await?;
     for (key, text) in [
         ("b", "lake"),
@@ -137,9 +130,7 @@ async fn search_is_ordered_by_score_then_key(store: Arc<dyn LakeStore>) -> Resul
     Ok(())
 }
 
-async fn searching_a_type_whose_searchable_field_is_unreadable_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn searching_a_type_whose_searchable_field_is_unreadable_is_refused(store: Store) -> Held {
     let l = articles(store.as_ref()).await?;
     let cat = &l.cat;
     l.upsert("article", "a", json!({"text": "secret plan"}))
@@ -169,13 +160,11 @@ async fn searching_a_type_whose_searchable_field_is_unreadable_is_refused(
 }
 
 check!(
-    /// Hybrid search cannot probe an unreadable text field.
     HYBRID_PROBE_REFUSED = a_hybrid_search_over_an_unreadable_searchable_field_is_refused_whole,
     "024: a hybrid search that names a searchable field the principal may not read is refused, naming the field, whether it brings a vector or not; it never answers from its vector half. One that names none leaves that field out of its text half, so the text it brings ranks nothing"
 );
 
 check!(
-    /// Vector search cannot probe an unreadable vector field.
     VECTOR_PROBE_REFUSED = a_vector_search_over_an_unreadable_vector_field_is_refused,
     "024: a vector or hybrid search that names a vector field the principal may not read is refused, naming that field; a query vector of another length than the field declares is refused by the declaration, so a holder of `only` admitted none of the stored vectors is answered the same whole error as over the type while it held none, naming no record"
 );
@@ -193,7 +182,7 @@ pub(super) async fn refused(
     search: Search,
     field: &str,
     what: &str,
-) -> Result<(), Failure> {
+) -> Held {
     match doors(store).search(who, search).await {
         Err(e) if matches!(refused_on(&e), Some((f, Refusal::NotGranted)) if f == field) => Ok(()),
         Err(e) => Err(Failure::new(format!(
@@ -209,8 +198,8 @@ pub(super) async fn refused(
 }
 
 async fn a_hybrid_search_over_an_unreadable_searchable_field_is_refused_whole(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     two_docs(store.as_ref()).await?;
     // The vector [0, 1] points along `a` alone: an answer from the vector
     // half would find `a` whatever the text says.
@@ -267,9 +256,7 @@ async fn a_hybrid_search_over_an_unreadable_searchable_field_is_refused_whole(
     Ok(())
 }
 
-async fn a_vector_search_over_an_unreadable_vector_field_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_vector_search_over_an_unreadable_vector_field_is_refused(store: Store) -> Held {
     let only = json!({"default": "read", "types": {"doc": {"only": {"body": "none"}}}});
     let only = serde_json::from_value(only).expect("grants read");
     let holder = principal(store.as_ref(), PrincipalKind::Agent, "holder", only);
@@ -319,15 +306,12 @@ async fn a_vector_search_over_an_unreadable_vector_field_is_refused(
 }
 
 check!(
-    /// A vector search cannot probe the text a vector is embedded from.
     EMBED_PROBE_REFUSED = a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused,
     "024: a vector embedded from a field encodes that field, so a vector or hybrid search over it is refused, naming the field, when the principal may not read one of the fields it is embedded from, even though it may read the vector; a vector field named in `also` is probed like the first, and one the principal may not know of is answered as undeclared",
     embedding
 );
 
-async fn a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused(store: Store) -> Held {
     use crate::conformance::backing::EMBED_MODEL;
 
     let l = Lake::of(store.as_ref());
@@ -407,46 +391,41 @@ async fn a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused(
 }
 
 check!(
-    /// Search follows the text as it now stands.
     SEARCH_FOLLOWS_TEXT = a_search_finds_a_record_by_its_current_text_and_nothing_by_none,
     "025: the index follows every write, so a record is found by its new words and no longer by its old ones, and a query of no words matches nothing"
 );
 
 check!(
-    /// Withheld records are never hits.
     WITHHELD_NEVER_HITS = a_retired_or_restricted_record_is_never_a_hit,
     "the log format §2.3 and 006: a retired record is invisible, and a restricted one invisible to a principal without the `restricted` grant; neither is ever a search hit"
 );
 
 check!(
-    /// Without a backend, hybrid search is lexical and says so.
-    HYBRID_WITHOUT_BACKEND = a_hybrid_search_without_a_vector_or_a_backend_ranks_lexically_and_says_so,
+    HYBRID_WITHOUT_BACKEND =
+        a_hybrid_search_without_a_vector_or_a_backend_ranks_lexically_and_says_so,
     "the embedding seam (docs/seams.md): with no embedding backend bound, a hybrid search that brings no vector over a field a model fills ranks by its text alone, and its answer and its one axis say it ranked lexically",
     reopens
 );
 
 check!(
-    /// A bound backend embeds hybrid search, and only when needed.
-    HYBRID_THROUGH_BACKEND = a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_else,
+    HYBRID_THROUGH_BACKEND =
+        a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_else,
     "the embedding seam (docs/seams.md): a hybrid search without a vector ranks through the bound backend and says `hybrid`; a vector search or a hybrid one bringing its vector never calls it; a backend that fails, whatever error it answers, or that answers a vector of no direction, makes the search unavailable, never lexical or invalid",
     embedding
 );
 
 check!(
-    /// A vector that is gone is not a neighbour.
-    VECTOR_LEAVES_THE_NEIGHBOURS = a_retired_record_or_a_cleared_vector_is_no_longer_a_nearest_neighbour,
+    VECTOR_LEAVES_THE_NEIGHBOURS =
+        a_retired_record_or_a_cleared_vector_is_no_longer_a_nearest_neighbour,
     "the engine seam's vector index: it follows the projection, so a retired record or a cleared vector field is no longer among the nearest"
 );
 
 check!(
-    /// A vector search answers the reference ranking to the bit.
     VECTOR_TOP_K = a_vector_search_answers_the_brute_force_ranking_to_the_bit,
     "025 and 029, the engine seam's vector index: for k = 1, 10 and 100, with and without a filter, at the head and at an earlier position, after records were retired, vectors cleared and rewritten and records added, a vector search answers the keys, order and scores of the brute-force reference: the one cosine over every vector at the head, best first, ties by key, kept where the read sees the record"
 );
 
-async fn a_search_finds_a_record_by_its_current_text_and_nothing_by_none(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_search_finds_a_record_by_its_current_text_and_nothing_by_none(store: Store) -> Held {
     let l = articles(store.as_ref()).await?;
     l.upsert("article", "a", json!({"text": "harbour crane"}))
         .await?;
@@ -467,9 +446,7 @@ async fn a_search_finds_a_record_by_its_current_text_and_nothing_by_none(
     Ok(())
 }
 
-async fn a_retired_or_restricted_record_is_never_a_hit(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_retired_or_restricted_record_is_never_a_hit(store: Store) -> Held {
     let l = articles(store.as_ref()).await?;
     let Lake { cat, .. } = &l;
     for k in ["live", "gone", "held"] {
@@ -503,8 +480,8 @@ async fn a_retired_or_restricted_record_is_never_a_hit(
 }
 
 async fn a_retired_record_or_a_cleared_vector_is_no_longer_a_nearest_neighbour(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     let embedding = vector("embedding", 2);
     l.declare(type_decl("doc", vec![embedding])).await?;
@@ -515,7 +492,7 @@ async fn a_retired_record_or_a_cleared_vector_is_no_longer_a_nearest_neighbour(
     ] {
         l.upsert("doc", k, json!({ "embedding": v })).await?;
     }
-    let nearest = |store: Arc<dyn LakeStore>| async move {
+    let nearest = |store: Store| async move {
         let s = doc_search(SearchMode::vector("embedding", vec![1.0, 0.0]));
         doors(store.as_ref())
             .search(&owner(store.as_ref()), s)
@@ -630,9 +607,7 @@ fn reference(points: &[Point], earlier: bool, group: Option<u32>, k: u32) -> Vec
     all.into_iter().map(|(key, score)| (key.0, score)).collect()
 }
 
-async fn a_vector_search_answers_the_brute_force_ranking_to_the_bit(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_vector_search_answers_the_brute_force_ranking_to_the_bit(store: Store) -> Held {
     use lakelands_api::Position;
 
     let l = Lake::of(store.as_ref());
@@ -804,9 +779,9 @@ fn hybrid(text: &str, vector: Option<Vec<f32>>) -> SearchMode {
 }
 
 async fn a_hybrid_search_without_a_vector_or_a_backend_ranks_lexically_and_says_so(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     reopen: Reopen,
-) -> Result<(), Failure> {
+) -> Held {
     use super::embeddings::{reopen_failed, with_embedder};
     // `e` is declared, and its records written, where the suite's backend
     // is bound; the search is made where none is.
@@ -836,8 +811,8 @@ async fn a_hybrid_search_without_a_vector_or_a_backend_ranks_lexically_and_says_
 }
 
 async fn a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_else(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     use crate::conformance::backing::{NOWHERE, UNREACHABLE, embed_calls};
     let l = two_embedded_docs(store.as_ref()).await?;
     let Lake { cat, own } = &l;
@@ -897,16 +872,16 @@ async fn a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_els
 }
 
 check!(
-    /// A vector ranking reads a vector field, and makes no call it cannot use.
-    SEARCH_READS_A_VECTOR_FIELD = a_vector_ranking_reads_a_vector_field_and_makes_no_call_it_cannot_use,
+    SEARCH_READS_A_VECTOR_FIELD =
+        a_vector_ranking_reads_a_vector_field_and_makes_no_call_it_cannot_use,
     "046, extended (lakelands#743): a vector search, an `also` term or a hybrid search over a field that holds no vectors is refused as invalid on that field, naming its kind; a hybrid search without a vector over a vector field no model fills is refused as invalid on that field, with a backend bound or not; neither asks the backend for a vector, and the caller's rights come first: a hidden field answers as an absent one, a masked one as not granted; a vector, or a hybrid search's own, over a vector field is answered as before",
     reopens
 );
 
 async fn a_vector_ranking_reads_a_vector_field_and_makes_no_call_it_cannot_use(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     reopen: Reopen,
-) -> Result<(), Failure> {
+) -> Held {
     use super::embeddings::{reopen_failed, with_embedder};
     use crate::conformance::backing::embedded;
     use lakelands_api::query::VectorTerm;
@@ -993,7 +968,7 @@ async fn a_vector_ranking_reads_a_vector_field_and_makes_no_call_it_cannot_use(
         ),
     ];
     let mut wrong = Vec::new();
-    let judge = |store: &Arc<dyn LakeStore>,
+    let judge = |store: &Store,
                  rows: Vec<(
         &'static str,
         SearchMode,
@@ -1089,14 +1064,11 @@ async fn a_vector_ranking_reads_a_vector_field_and_makes_no_call_it_cannot_use(
 }
 
 check!(
-    /// A hit is the record `get` answers, in the type's declared shape.
     HIT_IS_THE_RECORD = every_hit_is_the_record_get_answers_in_its_declared_shape,
     "README, Search: a search never returns a shape the ontology did not declare; every hit, lexical, vector or hybrid, is the record `get` answers the same principal, with only the type's declared fields and only those it may read"
 );
 
-async fn every_hit_is_the_record_get_answers_in_its_declared_shape(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn every_hit_is_the_record_get_answers_in_its_declared_shape(store: Store) -> Held {
     use lakelands_api::Get;
     let l = two_docs(store.as_ref()).await?;
     let Lake { cat, own } = &l;

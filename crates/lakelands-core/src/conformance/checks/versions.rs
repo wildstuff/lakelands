@@ -3,8 +3,6 @@
 //! `docs/decisions/016-two-write-doors-by-origin.md`, `docs/log-format.md`
 //! §2.3 and §3).
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::write::ProposedWrite;
 use lakelands_api::{
@@ -13,33 +11,31 @@ use lakelands_api::{
 };
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, declare, doors, events_from, field, get_at, head_unmoved, owner, patch, principal,
     refused_unmoved, type_decl, value,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// Versions start at one and count the record's changes.
     VERSIONS_COUNT_CHANGES = versions_start_at_one_and_grow_by_one_with_every_change,
     "the glossary and the log format: a version starts at 1 and grows by one per event that changes the record, retirement included"
 );
 
 check!(
-    /// A write expecting a superseded version loses.
     STALE_EXPECTED_VERSION = a_write_expecting_a_superseded_version_is_refused_as_a_conflict,
     "015: a write naming a version the record has moved past fails as a conflict, and nothing of it lands"
 );
 
 check!(
-    /// A retry with the same key is the same write.
-    IDEMPOTENT_RETRY = a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_appends_nothing,
+    IDEMPOTENT_RETRY =
+        a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_appends_nothing,
     "016 and the log format: one idempotency key from one principal is one write in the whole lake; a proposal made with a key carries it, and its retry answers the proposal and appends nothing"
 );
 
 check!(
-    /// A stale version is a conflict before the record is judged.
-    STALE_BEFORE_REQUIRES = a_verb_called_at_a_stale_version_is_a_conflict_before_its_requires_is_judged,
+    STALE_BEFORE_REQUIRES =
+        a_verb_called_at_a_stale_version_is_a_conflict_before_its_requires_is_judged,
     "015 and 024, extended: a verb's call compares the expected version right after its record is found, so a call at a stale version is a conflict, never a precondition judged on a state the caller has not seen"
 );
 
@@ -70,9 +66,7 @@ async fn counter(store: &dyn LakeStore) -> Result<Lake, Failure> {
     Ok(Lake::of(store))
 }
 
-async fn versions_start_at_one_and_grow_by_one_with_every_change(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn versions_start_at_one_and_grow_by_one_with_every_change(store: Store) -> Held {
     let l = counter(store.as_ref()).await?;
     let counter = TypeName::from("counter");
 
@@ -108,9 +102,7 @@ fn expecting(v: u64) -> WriteOpts {
     }
 }
 
-async fn a_write_expecting_a_superseded_version_is_refused_as_a_conflict(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_write_expecting_a_superseded_version_is_refused_as_a_conflict(store: Store) -> Held {
     let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
 
@@ -158,8 +150,8 @@ async fn a_write_expecting_a_superseded_version_is_refused_as_a_conflict(
 }
 
 async fn a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_appends_nothing(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let counter = TypeName::from("counter");
@@ -253,14 +245,11 @@ async fn a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_app
 }
 
 check!(
-    /// A compare-and-set against a version before a retirement loses.
     CAS_ACROSS_RETIREMENT = a_write_expecting_the_version_before_a_retirement_is_a_conflict,
     "the glossary, the log format §2.3 and 015: a retired key keeps its count, so `expected_version` is compared with the retired record's version, a match re-creates it, and an older one is a conflict reporting that version"
 );
 
-async fn a_write_expecting_the_version_before_a_retirement_is_a_conflict(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_write_expecting_the_version_before_a_retirement_is_a_conflict(store: Store) -> Held {
     use crate::conformance::fixture::head_unmoved;
     let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
@@ -309,8 +298,8 @@ async fn a_write_expecting_the_version_before_a_retirement_is_a_conflict(
 }
 
 async fn a_verb_called_at_a_stale_version_is_a_conflict_before_its_requires_is_judged(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = counter(store.as_ref()).await?;
     l.declare_json(
         json!({"declare": "verb", "name": "reset", "on": "counter", "risk": "low",

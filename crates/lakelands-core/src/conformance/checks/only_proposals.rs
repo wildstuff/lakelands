@@ -2,30 +2,26 @@
 //! the record and its type as they stood, and decides the proposals it is
 //! shown whole (`docs/decisions/051-a-grant-may-admit-only-some-records.md`).
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::write::{Outcome, Recompute};
-use lakelands_api::{Error, LakeStore, Principal, ProposalId, RecordKey, Refusal, VerbName};
+use lakelands_api::{Error, Principal, ProposalId, RecordKey, Refusal, VerbName};
 use serde_json::{Value, json};
 
 use super::only::{alice, claims, de, holder, said};
-use crate::conformance::Failure;
 use crate::conformance::backing::{KIND, plug, unplug};
 use crate::conformance::fixture::{
     Lake, Must, computed_by, events_from, field, head_unmoved, type_decl,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A holder of `only` proposes its own records' writes, pinned to them.
     ONLY_PROPOSES = a_holder_of_only_proposes_its_own_records,
     "051: a holder of `only` proposes an upsert, a retirement and a high-risk call on its own records, each logged `pinned`, another's proposals not; on another's record a proposal that would pass is not granted and one that reads the record is not found; a proposal is refused where a field its `only` names is derived or backed, or where the verb assigns one, and neither `describe` nor `describe_type` lists it such a verb; the accept of a pinned proposal applies while its record and type stand as proposed, and is refused once a rederive, a backed output, a record made again at the key, a redeclaration of the type that leaves its records as they are, a migration or a re-key moved them, or, for a link, once either end record moved"
 );
 
 check!(
-    /// A holder of `only` decides only what it is shown whole.
     ONLY_DECIDES = a_holder_of_only_decides_what_it_is_shown_whole,
     "051: a reviewer holding `only` accepts and rejects a proposal its listing shows it whole; one on another's record it is refused, appending nothing, before it is told the proposal is decided, so a guessed id tells it nothing; and its accept is refused where the write, its derived values computed, would leave the record outside its pairs"
 );
@@ -52,15 +48,13 @@ fn not_granted() -> String {
 }
 
 /// Fails unless every row answered what it wants.
-fn all_right(rows: &[(String, String, String)], what: &str) -> Result<(), Failure> {
+fn all_right(rows: &[(String, String, String)], what: &str) -> Held {
     let wrong: Vec<_> = rows.iter().filter(|(_, said, want)| said != want).collect();
     ensure!(wrong.is_empty(), "{what}: {wrong:?}");
     Ok(())
 }
 
-async fn a_holder_of_only_proposes_its_own_records(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_holder_of_only_proposes_its_own_records(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let cat = l.cat.as_ref();
     let start = claims(&l, false).await?;
@@ -350,9 +344,7 @@ impl Refused for Result<ProposalId, String> {
     }
 }
 
-async fn a_holder_of_only_decides_what_it_is_shown_whole(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let cat = l.cat.as_ref();
     claims(&l, false).await?;

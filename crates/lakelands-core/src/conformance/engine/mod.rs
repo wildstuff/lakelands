@@ -21,11 +21,11 @@
 //!
 //! # Adding a check
 //!
-//! A check is one `fn(&dyn LakeEngine) -> Result<(), Failure>` whose name
-//! is a sentence in snake_case stating what must hold, turned into an
-//! [`EngineCheck`] constant by one `engine_check!` line in the file of its
-//! subject, and one line in [`ENGINE_CHECKS`]. Nothing else registers a
-//! check.
+//! A check is one `fn(&dyn LakeEngine) -> Held` whose name is a sentence
+//! in snake_case stating what must hold, turned into an [`EngineCheck`]
+//! constant by one `engine_check!` line in the file of its subject, and
+//! one line in [`ENGINE_CHECKS`]. Nothing else registers a check. The
+//! constant's doc is its `about`, so the line takes no `///` of its own.
 
 use std::fmt;
 use std::panic::AssertUnwindSafe;
@@ -36,15 +36,15 @@ use lakelands_api::id::LakeId;
 use lakelands_api::id::Position;
 use serde_json::{Value, json};
 
-use super::{Counting, Failure, Report, counting, panic_message};
+use super::{Counting, Failure, Held, Report, counting, panic_message};
 
 /// Turns a check function into an [`EngineCheck`] constant whose `name`
-/// is the function's own name.
+/// is the function's own name and whose doc is its `about`.
 /// A check marked `reopening` also gets the harness, to open more
 /// handles onto the same lake.
 macro_rules! engine_check {
-    ($(#[$doc:meta])* $konst:ident = reopening $run:ident, $about:expr) => {
-        $(#[$doc])*
+    ($konst:ident = reopening $run:ident, $about:expr) => {
+        #[doc = $about]
         pub const $konst: $crate::conformance::engine::EngineCheck =
             $crate::conformance::engine::EngineCheck {
                 name: stringify!($run),
@@ -52,8 +52,8 @@ macro_rules! engine_check {
                 run: $run,
             };
     };
-    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr) => {
-        $(#[$doc])*
+    ($konst:ident = $run:ident, $about:expr) => {
+        #[doc = $about]
         pub const $konst: $crate::conformance::engine::EngineCheck =
             $crate::conformance::engine::EngineCheck {
                 name: stringify!($run),
@@ -90,7 +90,7 @@ pub struct EngineCheck {
     /// Where the rule is stated, and why it matters, in one sentence.
     pub about: &'static str,
     /// The check itself, run against a fresh lake; the harness reopens it.
-    pub run: fn(&dyn LakeEngine, &dyn EngineHarness) -> Result<(), Failure>,
+    pub run: fn(&dyn LakeEngine, &dyn EngineHarness) -> Held,
 }
 
 impl fmt::Debug for EngineCheck {
@@ -191,7 +191,7 @@ pub fn run_engine_checks(harness: &dyn EngineHarness) -> Report {
 
 /// Runs one engine check on a fresh lake. A harness that cannot open
 /// one, and a check that panics, are failures of that check.
-pub fn run_engine_check(harness: &dyn EngineHarness, check: &EngineCheck) -> Result<(), Failure> {
+pub fn run_engine_check(harness: &dyn EngineHarness, check: &EngineCheck) -> Held {
     let engine = match std::panic::catch_unwind(AssertUnwindSafe(|| harness.fresh())) {
         Ok(Ok(engine)) => engine,
         Ok(Err(e)) => {

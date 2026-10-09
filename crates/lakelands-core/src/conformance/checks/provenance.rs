@@ -2,35 +2,28 @@
 //! (`docs/decisions/009-every-response-carries-its-position.md`,
 //! `docs/decisions/010-provenance-per-field.md`, `docs/glossary.md`).
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
 use lakelands_api::record::Origin;
-use lakelands_api::{
-    Error, Find, Get, LakeStore, Missing, Position, ReadAt, SourceId, Timestamp, TypeName,
-};
+use lakelands_api::{Error, Find, Get, Missing, Position, ReadAt, SourceId, Timestamp, TypeName};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, field, field_writer, source_record, type_decl, upsert, windows_reach_head,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A valid time is a stored date-time field.
     VALID_TIME_IS_A_DATE_TIME = a_valid_time_names_a_stored_date_time_field,
     "028, extended (lakelands#714, lakelands#702): `valid_from` and `valid_to` each name a field of kind `date_time` or `date`, so a value that only reads as an instant never sets a record's validity; a field of any other kind is refused as invalid on it, by `declare`, `apply`, a proposal and a migration, a derived `date_time` field and a view's `date_time` field are valid times as any is, and a read at `valid_at` admits by them; a `date` valid time holds from its first day's midnight up to, not through, its last day's"
 );
 
 check!(
-    /// Business time and transaction time are two axes.
     TWO_TIME_AXES = valid_at_and_as_of_combine_and_neither_stands_in_for_the_other,
     "009 and the glossary: `valid_at` asks what was true in the world, `as_of` what the lake knew; a read may name both"
 );
 
 check!(
-    /// Every field says where its value came from.
     FIELD_PROVENANCE = every_field_carries_its_own_provenance,
     "010: with meta, each field answers its origin, known_at, position and writer, and a value from a source also its source and seen_at"
 );
@@ -41,9 +34,7 @@ fn day(m: u32, d: u32) -> String {
         .unwrap_or_default()
 }
 
-async fn valid_at_and_as_of_combine_and_neither_stands_in_for_the_other(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn valid_at_and_as_of_combine_and_neither_stands_in_for_the_other(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let mut ty = type_decl(
@@ -151,7 +142,7 @@ async fn valid_at_and_as_of_combine_and_neither_stands_in_for_the_other(
     Ok(())
 }
 
-async fn every_field_carries_its_own_provenance(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn every_field_carries_its_own_provenance(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let ty = type_decl(
@@ -245,9 +236,7 @@ async fn every_field_carries_its_own_provenance(store: Arc<dyn LakeStore>) -> Re
     Ok(())
 }
 
-async fn a_valid_time_names_a_stored_date_time_field(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_valid_time_names_a_stored_date_time_field(store: Store) -> Held {
     use crate::conformance::fixture::{derived, migration, reference, refused_on, vector, view_of};
     use lakelands_api::Refusal;
     let l = Lake::of(store.as_ref());

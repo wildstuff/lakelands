@@ -1,8 +1,6 @@
 //! A migration decides the membership of the records it migrates again
 //! (`docs/decisions/004-the-change-feed-is-the-log.md`, extended).
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::location::Limits;
@@ -15,10 +13,9 @@ use serde_json::json;
 use crate::conformance::fixture::{
     Lake, Must, events_from, head_unmoved, limits, migration, object_set_on, refused_on, type_of,
 };
-use crate::conformance::{Failure, Given};
+use crate::conformance::{Failure, Given, Held, Store};
 
 check!(
-    /// A migration decides set membership again.
     SET_MIGRATED = a_migration_decides_the_membership_of_the_records_it_migrates,
     "004, extended: a migration appends, directly after its `migrated` and caused by it, an `object_set_changed` for each record whose membership under a set of the type changes as migrated, and none when it changes nothing a filter reads; its answer names each set joined or left once and `through` the changes, also when it adds a relation carried by links; a re-keyed member stays a member under its new key, after a rebuild too; past the lake's `max_set_changes` a migration is refused `too_large`, naming a set and the ceiling, and appends nothing; one that is also applied with a stale report, or is not lossless, is refused for that first",
     given
@@ -61,9 +58,9 @@ fn names(answer: &Outcome, joined: &str, left: &str) -> bool {
 }
 
 async fn a_migration_decides_the_membership_of_the_records_it_migrates(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     given: Given,
-) -> Result<(), Failure> {
+) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(item(Text, &[])).await?;
     // A boolean equals only a boolean, so `flag`'s kind decides which holds.

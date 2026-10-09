@@ -3,8 +3,6 @@
 //! `docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
 //! `docs/decisions/004-the-change-feed-is-the-log.md`).
 
-use std::sync::Arc;
-
 use lakelands_api::error::{Case, Seam};
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind;
@@ -16,70 +14,60 @@ use lakelands_api::{
 use serde_json::{Value, json};
 
 use super::only::{alice, claim_with, claims, de, holder};
-use crate::conformance::Failure;
 use crate::conformance::backing::EXECUTOR;
 use crate::conformance::fixture::{
     Lake, Must, doors, events_from, field, field_writer, head_unmoved, invalid_case, log_events,
     outputs_from, owner, patch, reactive, read, reason, refused_on, reviewer, try_upsert,
     type_decl, value,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A verb runs or waits by its declared risk.
     VERB_BY_RISK = a_low_verb_runs_and_a_higher_one_is_proposed,
     "013: a `low` verb that writes authored fields runs at once; any other risk is recorded as a proposal and runs only when accepted; a call is refused for its payload before its record, for its record before its version, and a retry answers before the grants (013, extended); a payload member the verb does not declare, even a field of its type, is refused naming the verb and the member, not as a field the type lacks (lakelands#656)"
 );
 
 check!(
-    /// A verb that reaches outside needs its executor.
     EXTERNAL_UNBOUND = an_external_verb_without_an_executor_is_unbound,
     "013 and 015: a verb whose effect reaches outside the lake runs only through a bound executor; `describe` names the executor and says beforehand that it is not bound; without one, calling it at any risk or proposing a call of it answers `unbound` naming the executor, after the grant and before the payload (013, extended), and nothing is appended"
 );
 
 check!(
-    /// A riskier call that could not run now is not proposed.
     NOT_PROPOSED_IF_IT_COULD_NOT_RUN = a_riskier_call_that_could_not_run_now_is_not_proposed,
     "013, extended, and 024, extended: a call that would become a proposal is checked as if it ran now: at a stale version it is a conflict, and where its `requires` does not hold it is refused as a precondition, the version first; nothing is appended"
 );
 
 check!(
-    /// Accept applies what was checked.
     ACCEPT_AFTER_REDECLARE = accepting_a_call_after_its_verb_was_declared_differently_is_refused,
     "013, extended (lakelands#371): accepting a call whose verb was declared differently after the call was proposed, its effect or its payload changed, is refused as invalid naming the verb and leaves the proposal pending, as a scope that no longer fits does; a verb declared again with the same content, or changed and changed back, is accepted"
 );
 
 check!(
-    /// A proposal is logged, and accepting it applies it as the proposer.
     ACCEPT_APPLIES = accepting_a_proposal_applies_its_write_as_the_proposers,
     "013 and 004: a proposal is a `write_proposed` event; accepting it appends `write_accepted`, then the verb's run caused by that acceptance and its write caused by that run, written as the proposer"
 );
 
 check!(
-    /// A rejection writes nothing but itself, and decides for good.
     REJECT_AND_DECIDED = a_rejected_proposal_writes_nothing_and_a_decided_one_stays_decided,
     "013: rejecting appends `write_rejected` and nothing else; a decided proposal is refused as decided"
 );
 
 check!(
-    /// Reviewers decide; proposers see their own.
     WHO_DECIDES = only_a_reviewer_decides_and_a_proposer_sees_its_own_proposals,
     "006, 013 and Catalog::proposals: accept and reject need the review grant, checked before the proposal is looked up (013, extended); without it, `proposals` lists only the principal's own"
 );
 
 check!(
-    /// A proposal on a type its reviewer is not shown is not there to it.
     NOT_SHOWN_NOT_DECIDED = a_proposal_on_a_type_its_reviewer_is_not_shown_is_not_there,
     "006 and 013, extended (lakelands#762): to a reviewer not shown a type a proposal names, or for a link type either end type, the proposal is not there: `proposals` does not list it, and `accept` and `reject` answer as for a proposal id that does not exist, word for word, before anything else of it is told: an upsert, a call on a link, a pinned one whose hidden end moved since, a migration, a bundle that redeclares the type, puts a verb on it, or relates or refers a new type to it, and a migration that drops a relation to it, pending or decided; a restatement of a type related to it through a computed link field, as a bundle and as a migration, is listed and decided; nothing is appended; every other proposal is listed as to a reviewer shown everything, and decided; a reviewer shown the type decides it"
 );
 
 check!(
-    /// An accept's refusal names what its reviewer's listing shows.
     TOLD_AS_LISTED = an_accepts_refusal_names_what_its_reviewers_listing_shows,
     "006 and 013, extended (lakelands#780): a refusal of the proposer's write at its accept is judged by the reviewer's view, as its listing is: whole to a reviewer shown each field, type, key and value it names, and to one kept from any of them as a write changed since it was proposed, naming only the type and key written: a reference to a record retired since, a value its field no longer takes; a call whose `requires` no longer holds is whole to a reviewer who reads what it reads, and not there to one kept from it (lakelands#779); a conflict names versions only and is whole to each; nothing is appended and the proposal stays pending"
 );
 
 check!(
-    /// A field a verb wrote names the verb's version.
     VERB_PROCEDURE_VERSION = a_verbs_write_carries_the_verbs_procedure_version,
     "010 and the log format §1.1: a value a verb produced carries, as its procedure_version, the version of the verb's declaration"
 );
@@ -143,9 +131,7 @@ async fn kinds_from(store: &dyn LakeStore, from: Position) -> Result<Vec<EventBo
     Ok(events.into_iter().map(|e| e.body).collect())
 }
 
-async fn a_low_verb_runs_and_a_higher_one_is_proposed(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_low_verb_runs_and_a_higher_one_is_proposed(store: Store) -> Held {
     let l = ledger(store.as_ref()).await?;
     let Lake { own, .. } = &l;
     let ran = call(store.as_ref(), own, "approve", json!({}))
@@ -246,9 +232,7 @@ async fn a_low_verb_runs_and_a_higher_one_is_proposed(
     Ok(())
 }
 
-async fn an_external_verb_without_an_executor_is_unbound(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn an_external_verb_without_an_executor_is_unbound(store: Store) -> Held {
     let l = ledger(store.as_ref()).await?;
     l.declare_json(
         json!({"declare": "verb", "name": "chase", "on": "invoice", "risk": "high",
@@ -315,9 +299,7 @@ async fn an_external_verb_without_an_executor_is_unbound(
     Ok(())
 }
 
-async fn a_riskier_call_that_could_not_run_now_is_not_proposed(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_riskier_call_that_could_not_run_now_is_not_proposed(store: Store) -> Held {
     let l = ledger(store.as_ref()).await?;
     for verb in [
         json!({"declare": "verb", "name": "settle", "on": "invoice", "risk": "high",
@@ -380,9 +362,7 @@ async fn a_riskier_call_that_could_not_run_now_is_not_proposed(
     head_unmoved(store.as_ref(), before, "calls that could not run").await
 }
 
-async fn accepting_a_call_after_its_verb_was_declared_differently_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn accepting_a_call_after_its_verb_was_declared_differently_is_refused(store: Store) -> Held {
     let l = ledger(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let review = reviewer(store.as_ref(), false);
@@ -487,9 +467,7 @@ async fn accepting_a_call_after_its_verb_was_declared_differently_is_refused(
     Ok(())
 }
 
-async fn accepting_a_proposal_applies_its_write_as_the_proposers(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn accepting_a_proposal_applies_its_write_as_the_proposers(store: Store) -> Held {
     ledger(store.as_ref()).await?;
     let cat = doors(store.as_ref());
     let clerk = field_writer(store.as_ref(), "clerk", "invoice", &["status", "paid_ref"]);
@@ -550,9 +528,7 @@ async fn accepting_a_proposal_applies_its_write_as_the_proposers(
     Ok(())
 }
 
-async fn a_rejected_proposal_writes_nothing_and_a_decided_one_stays_decided(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rejected_proposal_writes_nothing_and_a_decided_one_stays_decided(store: Store) -> Held {
     let l = ledger(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let (_, id) = proposal(
@@ -597,9 +573,7 @@ async fn a_rejected_proposal_writes_nothing_and_a_decided_one_stays_decided(
     Ok(())
 }
 
-async fn only_a_reviewer_decides_and_a_proposer_sees_its_own_proposals(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn only_a_reviewer_decides_and_a_proposer_sees_its_own_proposals(store: Store) -> Held {
     ledger(store.as_ref()).await?;
     let cat = doors(store.as_ref());
     let own = owner(store.as_ref());
@@ -671,9 +645,7 @@ async fn only_a_reviewer_decides_and_a_proposer_sees_its_own_proposals(
     Ok(())
 }
 
-async fn a_proposal_on_a_type_its_reviewer_is_not_shown_is_not_there(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_proposal_on_a_type_its_reviewer_is_not_shown_is_not_there(store: Store) -> Held {
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     claims(&l, false).await?;
     // Kept from `trip`, so from `claim`'s link type over `on_trip` too.
@@ -869,9 +841,7 @@ async fn a_proposal_on_a_type_its_reviewer_is_not_shown_is_not_there(
     Ok(())
 }
 
-async fn a_verbs_write_carries_the_verbs_procedure_version(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_verbs_write_carries_the_verbs_procedure_version(store: Store) -> Held {
     let l = ledger(store.as_ref()).await?;
     let Lake { own, .. } = &l;
     // Declared once, so at version 1; the plain write before it has none.
@@ -899,15 +869,14 @@ async fn a_verbs_write_carries_the_verbs_procedure_version(
 }
 
 check!(
-    /// An external verb's output is recorded and the verb runs once; a
-    /// retry answers the first call's outcome, its position and output.
-    EXECUTOR_RECORDED = an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position,
+    EXECUTOR_RECORDED =
+        an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position,
     "seams, VerbExecutor, and 013: `describe` says the bound executor is bound; the executor's answer is recorded as output_recorded caused by the event that made the verb due and returned in the outcome's output; a failure is recorded as {\"error\": …} at a real position; a retry of the same call answers the first outcome, its position and output, `null` included, and like a rebuild runs nothing again"
 );
 
 async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     use crate::conformance::backing::executed;
     use lakelands_api::IdempotencyKey;
     let l = Lake::of(store.as_ref());
@@ -1034,34 +1003,27 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
 }
 
 check!(
-    /// A retry answers the call's own outcome, not a later write naming
-    /// the call as its cause.
-    RETRY_EXTERNAL_PAST_HOST = a_retried_external_verb_answers_its_call_though_a_host_write_names_it,
+    RETRY_EXTERNAL_PAST_HOST =
+        a_retried_external_verb_answers_its_call_though_a_host_write_names_it,
     "013 and 021, extended: a host write naming an external verb's `verb_called` as its cause does not become the call's outcome; a retry with the call's idempotency key answers the verb's position and its recorded output, for a verb on a record and one on its type"
 );
 
 check!(
-    /// A write verb's retry answers its own write.
     RETRY_WRITE_PAST_HOST = a_retried_write_verb_answers_its_own_write_though_a_host_write_names_it,
     "013 and 021, extended: a retry of a write verb answers the record write the verb itself made and its version, though a later host write names the verb's `verb_called` as its cause"
 );
 
 check!(
-    /// A retry of a proposed call answers the proposal, after its
-    /// acceptance too.
     RETRY_PROPOSED_PAST_ACCEPT = a_retried_proposed_call_answers_its_proposal_after_it_is_accepted,
     "013 and 015: a retry of a call that was proposed answers the proposal, its first outcome, after the proposal was accepted and a host write named the accepted call as its cause"
 );
 
 check!(
-    /// An accept sent again answers by the verb as it stood at the
-    /// acceptance.
     ACCEPT_AGAIN = an_accept_sent_again_answers_by_the_verb_as_it_was_accepted,
     "013, extended (lakelands#616): an accept sent again for a call of an external verb answers the first acceptance, its recorded output included, and runs nothing, whatever the verb is declared as since; for a write verb it is `decided`, though the verb is declared external since"
 );
 
 check!(
-    /// A call sent again while its executor still runs is `unanswered`.
     UNANSWERED = a_call_sent_again_while_its_executor_runs_is_unanswered,
     "013, extended (lakelands#616): while the executor of an external call still runs, the call sent again under its key, through `call`, `upsert`, `link`, `unlink` or `propose`, runs nothing and is refused as `unanswered`, naming the call's position, and so is the accept sent again while the executor of an accepted call runs; once the executor has answered, each answers the first outcome, its output included"
 );
@@ -1113,8 +1075,8 @@ async fn call_once(
 }
 
 async fn a_retried_external_verb_answers_its_call_though_a_host_write_names_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = jobs(store.as_ref(), "low", "retry-ext").await?;
     for (verb, key) in [("ship_low", Some("retry-ext")), ("ship_any_low", None)] {
         let once = format!("{verb}-once");
@@ -1145,8 +1107,8 @@ async fn a_retried_external_verb_answers_its_call_though_a_host_write_names_it(
 }
 
 async fn a_retried_write_verb_answers_its_own_write_though_a_host_write_names_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = jobs(store.as_ref(), "low", "retry-write").await?;
     let first = call_once(&l, "close", Some("retry-write"), "close-once")
         .await
@@ -1180,9 +1142,7 @@ async fn a_retried_write_verb_answers_its_own_write_though_a_host_write_names_it
     Ok(())
 }
 
-async fn a_retried_proposed_call_answers_its_proposal_after_it_is_accepted(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_retried_proposed_call_answers_its_proposal_after_it_is_accepted(store: Store) -> Held {
     let l = jobs(store.as_ref(), "medium", "retry-prop").await?;
     let first = call_once(&l, "ship_medium", Some("retry-prop"), "ship-medium-once")
         .await
@@ -1211,9 +1171,7 @@ async fn a_retried_proposed_call_answers_its_proposal_after_it_is_accepted(
     Ok(())
 }
 
-async fn an_accept_sent_again_answers_by_the_verb_as_it_was_accepted(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn an_accept_sent_again_answers_by_the_verb_as_it_was_accepted(store: Store) -> Held {
     use crate::conformance::backing::executed;
     let l = jobs(store.as_ref(), "medium", "again-ext").await?;
     let verb = |name: &str, effect: serde_json::Value| {
@@ -1261,9 +1219,7 @@ async fn an_accept_sent_again_answers_by_the_verb_as_it_was_accepted(
 /// The answers of one caller of a check: what it sent, and the answer.
 type Tries<'a> = Vec<(&'a str, lakelands_api::Result<Outcome>)>;
 
-async fn a_call_sent_again_while_its_executor_runs_is_unanswered(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_call_sent_again_while_its_executor_runs_is_unanswered(store: Store) -> Held {
     use crate::conformance::backing::{executed, release};
     use crate::conformance::fixture::{Caller, join_all, pause};
     let l = Lake::of(store.as_ref());
@@ -1405,9 +1361,7 @@ async fn a_call_sent_again_while_its_executor_runs_is_unanswered(
     Ok(())
 }
 
-async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store) -> Held {
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     let text = json!({"kind": "text"});
     let inv = |level: Value| {

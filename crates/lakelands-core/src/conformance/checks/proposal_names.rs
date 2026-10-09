@@ -6,8 +6,6 @@
 //! write out where its reader may see nothing of it, and answers its
 //! filters on what it shows.
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::write::{Declaration, Migration, Proposal, ProposalFilter, ProposedWrite};
@@ -15,20 +13,18 @@ use lakelands_api::{Access, LakeStore, Principal, WriteOpts};
 use serde_json::{Value, json};
 
 use super::rekey::{IBANS, lake, to_iban};
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, field_access, invalid_case, object_set_on, patch, refused_like, reviewer,
     trigger_on,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A proposed shape names only what its reader may know of.
     NAMES_AS_THE_READERS_VIEW = a_proposed_shape_names_only_what_its_reader_may_know_of,
     "013, 024 and 027, extended (lakelands#499): `proposals` shows of a proposed migration the renames, the dropped fields and link fields, the re-keyed types and the rewritten references only where its reader may see the type and know of the field, the totals whole; of a proposed bundle each declaration `describe` would show its reader once in force, a verb by the fields it names; an entry that holds more says `more` and names nothing else, and a bundle with nothing left shows no write; a migration or a bundle that names a type its reader may not see is not listed (lakelands#762); a valid time over a field its reader may not know of is named neither in a listed declaration nor in a migration's `to` and report (lakelands#726)"
 );
 
 check!(
-    /// A listing is filtered on what it shows, and an accept names no hidden field.
     LISTED_AS_SHOWN = a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_field,
     "013 and 024, extended (lakelands#499): a proposal on a restricted record without the grant is listed without its write and says `more`, and one on a type its reader may not see is not listed (lakelands#762); `type` and `kind` are answered on the entry as shown, so a hidden type answers what an undeclared one answers and an entry without a write is of no kind, while the unfiltered listing and `state` hold it; an accept refused because a declaration reads a field the migration takes away names neither to an accepter who may not know of the field"
 );
@@ -184,9 +180,7 @@ async fn entry(l: &Lake, who: &Principal, why: &str) -> Result<(Option<String>, 
     Ok((p.write.map(|w| json!(w).to_string()), p.more))
 }
 
-async fn a_proposed_shape_names_only_what_its_reader_may_know_of(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_proposed_shape_names_only_what_its_reader_may_know_of(store: Store) -> Held {
     let (s, l) = (store.as_ref(), proposed(store.as_ref()).await?);
     let ([hid, plain, unseeing], reads) = (readers(s), reviewer(s, true));
     let rekey = ["\"payment\"", "\"entry\"", "\"holder\""];
@@ -260,8 +254,8 @@ async fn a_proposed_shape_names_only_what_its_reader_may_know_of(
 }
 
 async fn a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_field(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let (s, l) = (store.as_ref(), proposed(store.as_ref()).await?);
     let [hid, plain, unseeing] = readers(s);
     // A record its reader is not answered: restricted, without the grant.

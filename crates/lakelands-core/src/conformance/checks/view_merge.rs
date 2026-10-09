@@ -5,52 +5,44 @@
 //! calories of an entry. The view `energy_balance` sums the food by day,
 //! merges the workouts summed by their date, and nets the two.
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::ontology::{StorageKind, TypeDecl, ViewParam, ViewSource};
 use lakelands_api::read::Find;
 use lakelands_api::{Access, Error, FieldName, LakeStore, Params, Refusal, Value};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, bound, field, field_access, invalid_case, invalid_like, log_events, measure, param,
     type_decl, view_of,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// Sources meet on their key.
     MERGED_ON_KEY = a_view_merges_its_sources_on_their_key_and_keeps_a_key_only_one_has,
     "018, extended: a view's merged sources meet its own where their keys are identical; every key any source has is a record, a source that lacks one measures its empty group (a sum of none is 0, a minimum null), and the view's measures read the merged ones by name, byte for byte the same on every engine"
 );
 
 check!(
-    /// Keys meet by identity.
     KEYS_MEET_BY_IDENTITY = keys_from_two_sources_meet_only_when_their_values_are_identical,
     "018 and 044: merged keys meet by the identity of their values, as a derived relation's do, so the text '010' and the text '10' are two keys, where 017's `=` would call them equal"
 );
 
 check!(
-    /// Parameters bind every source.
     PARAMS_BIND_EVERY_SOURCE = a_views_parameters_bind_every_source_it_merges,
     "018: a view's parameters are bound by the read and read by every source's `where` and measures, the merged ones too"
 );
 
 check!(
-    /// A merge is declared strictly.
     MERGE_DECLARED_STRICTLY = a_merge_declared_badly_is_refused_naming_it,
     "028 and 018: `declare` refuses a merged source that is not declared, read twice, grouped by another number of fields or a field of another kind than the one it lines up with, a measure named twice, a merged measure with no declared field or one that calls no aggregate, a view with parameters as any source, and a merge that closes a cycle of views, naming it"
 );
 
 check!(
-    /// A merge is written in format 9.
     FORMAT_9 = a_view_that_merges_is_written_in_log_format_9,
     "log format §6 and 018: the event that declares a view merging sources is written in format 9, as is every event after it; a view without a merge leaves the lake's format where it was"
 );
 
 check!(
-    /// Each source is read as a read of it.
     MERGE_PROBES_EACH_SOURCE = a_merged_sources_fields_are_probed_as_a_read_of_it,
     "024 and 018: a view reads each of its sources as a read of that source, so a principal who may not read a field a merged source's measures aggregate is not answered the view's definition by describe, and a read of the view is refused as not granted, naming neither that field nor its source (024, extended)"
 );
@@ -142,9 +134,7 @@ async fn rows(l: &Lake, view: &str, params: Params) -> Result<Value, Failure> {
     Ok(json!(found.iter().map(|r| &r.fields).collect::<Vec<_>>()))
 }
 
-async fn a_view_merges_its_sources_on_their_key_and_keeps_a_key_only_one_has(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_view_merges_its_sources_on_their_key_and_keeps_a_key_only_one_has(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     l.declare(energy_balance("energy_balance", Vec::new(), None, None))
         .await?;
@@ -166,9 +156,7 @@ async fn a_view_merges_its_sources_on_their_key_and_keeps_a_key_only_one_has(
     Ok(())
 }
 
-async fn keys_from_two_sources_meet_only_when_their_values_are_identical(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn keys_from_two_sources_meet_only_when_their_values_are_identical(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     for ty in ["left_log", "right_log"] {
         l.declare(type_decl(ty, vec![field("code", StorageKind::Text)]))
@@ -200,9 +188,7 @@ async fn keys_from_two_sources_meet_only_when_their_values_are_identical(
     Ok(())
 }
 
-async fn a_views_parameters_bind_every_source_it_merges(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_views_parameters_bind_every_source_it_merges(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     l.declare(energy_balance(
         "energy_until",
@@ -227,9 +213,7 @@ async fn a_views_parameters_bind_every_source_it_merges(
     Ok(())
 }
 
-async fn a_merge_declared_badly_is_refused_naming_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_merge_declared_badly_is_refused_naming_it(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let base = || energy_balance("bad_balance", Vec::new(), None, None);
     let mut cases: Vec<(&str, TypeDecl, Value)> = Vec::new();
@@ -315,9 +299,7 @@ async fn a_merge_declared_badly_is_refused_naming_it(
     Ok(())
 }
 
-async fn a_merged_sources_fields_are_probed_as_a_read_of_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_merged_sources_fields_are_probed_as_a_read_of_it(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     l.declare(energy_balance("energy_balance", Vec::new(), None, None))
         .await?;
@@ -366,9 +348,7 @@ async fn a_merged_sources_fields_are_probed_as_a_read_of_it(
     Ok(())
 }
 
-async fn a_view_that_merges_is_written_in_log_format_9(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_view_that_merges_is_written_in_log_format_9(store: Store) -> Held {
     // No record yet: the first one made takes the lake to format 11.
     let l = Lake::of(store.as_ref());
     l.declare(log("food_log", "day")).await?;

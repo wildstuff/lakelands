@@ -2,17 +2,14 @@
 //! (`docs/decisions/006-grants-not-roles.md`,
 //! `docs/decisions/014-four-doors-per-type-one-name-generator.md`).
 
-use std::sync::Arc;
-
 use lakelands_api::error::{Case, Naming, Said};
 use lakelands_api::ontology::{FieldDecl, StorageKind};
 use lakelands_api::query::{Projection, QueryResult, Search, SearchMode};
 use lakelands_api::read::{AggFunc, Direction, OrderBy};
 use lakelands_api::tools::{Door, tools};
-use lakelands_api::{Access, FieldName, Find, LakeStore, ReadAt, Refusal, Timestamp, TypeName};
+use lakelands_api::{Access, FieldName, Find, ReadAt, Refusal, Timestamp, TypeName};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
     Lake, Must, agg, aggregate, alike_each, alike_renamed, all_found, derived, describe_type,
@@ -20,22 +17,20 @@ use crate::conformance::fixture::{
     nobody, order, pattern, read, reads_all, refused_alike, refused_on, searchable, source_record,
     sourced, step, try_upsert, type_decl,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A masked field is named; an ungranted one is not there at all.
     MASKED_AND_ABSENT = a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent,
     "006 and 014: a field the principal may not read is masked (named, no value) or absent from get, find, describe and the tools' schemas"
 );
 
 check!(
-    /// A field built from a hidden one is hidden as it is.
     BUILT_FROM_HIDDEN = a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field,
     "024 and 006: a derived field, one derived from it in turn, and a vector embedded from a field are read as the field they are built from: absent where it is absent and masked where it is masked, on get, find, a pattern's rows and describe, which shows a definition only where every field it names is read; a filter, an order or an aggregate over them is refused naming them, as not granted where they are masked and as for an undeclared field where they are hidden",
     embedding
 );
 
 check!(
-    /// A relation carried by a field its reader may not read answers nothing of it.
     VIA_HIDDEN = a_relation_carried_by_a_hidden_field_is_walked_by_no_one_held_from_it,
     "024, extended (lakelands#727): a relation carried by a reference field is not shown to a reader who may not know of the field: `describe_type` does not list it, a walk out over it is answered as over a relation the type does not declare, and so is a graph from its type, while a walk in and a graph from its target reach only another type's relation of the same name; to a reader who sees the field masked it is shown, and a walk over it, out, in or as a graph, is refused as not granted, naming the field, and so is a walk of two hops, a graph or `components` that meets it past its first hop; an author held from the field who sends a relation of its name is refused, word for word, as the owner is for a type that declares a relation twice, and the type stays as it is"
 );
@@ -64,8 +59,8 @@ fn walked(answer: lakelands_api::Result<lakelands_api::Reply<QueryResult>>) -> S
 }
 
 async fn a_relation_carried_by_a_hidden_field_is_walked_by_no_one_held_from_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     use lakelands_api::query::Walk;
     let l = Lake::of(store.as_ref());
     let cat = l.cat.as_ref();
@@ -205,8 +200,8 @@ async fn a_relation_carried_by_a_hidden_field_is_walked_by_no_one_held_from_it(
 }
 
 async fn a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, .. } = &l;
     l.declare(type_decl(
@@ -328,14 +323,13 @@ async fn a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field
 }
 
 check!(
-    /// A field the principal may not know of is answered as one never declared.
     NONE_HIDES = a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared,
     "006 and 024: a field whose grant is none by name, sensitive or not, does not exist for that principal: it is absent from get, find, describe (a relation's link field too) and the tools, a search that names no fields never searches it, and a filter, an order, a pattern's `where`, a search's `fields`, an upsert and an ingest that name it are answered as for a field the type does not declare; a sensitive field whose none is inherited is listed as masked, and a filter on it is refused as not granted, to one who is shown the type: one whose grants give it nothing of the type is answered by describe, get, find and upsert as on a type that is not declared, a sensitive field or none"
 );
 
 async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let mut staff_decl = type_decl(
@@ -545,20 +539,16 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
 }
 
 check!(
-    /// A write-only field is written and never read.
     WRITE_ONLY = a_write_only_field_is_written_and_never_shown,
     "006, extended (lakelands#393): a field granted write_only is written by upsert and retire like a writable one, while get, find, query, search, describe and the tools' read schemas never show it, a filter or a search that names it is refused not_granted naming it, and the write answers no value; a writable field built from one the principal may not read, write-only or masked, is write-only in turn: written, and probed as not granted, never as undeclared"
 );
 
 check!(
-    /// A valid-time read probes the valid-time fields.
     VALID_AT_PROBES = a_read_at_a_valid_time_probes_the_types_valid_time_fields,
     "024 and 006: a read at `valid_at` filters on the type's `valid_from` and `valid_to`, so `find`, `get` and a pattern started on the type probe them as a filter would: refused not_granted naming the field where it is masked; where it is hidden the type is described with no valid time, and the reads are answered as on a type with none (lakelands#726); without `valid_at` the same reads are answered"
 );
 
-async fn a_read_at_a_valid_time_probes_the_types_valid_time_fields(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_read_at_a_valid_time_probes_the_types_valid_time_fields(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, .. } = &l;
     let mut contract = type_decl(
@@ -631,9 +621,7 @@ async fn a_read_at_a_valid_time_probes_the_types_valid_time_fields(
     Ok(())
 }
 
-async fn a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, .. } = &l;
     let ty = type_decl(
@@ -730,9 +718,7 @@ async fn a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent(
     Ok(())
 }
 
-async fn a_write_only_field_is_written_and_never_shown(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_write_only_field_is_written_and_never_shown(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     // `summary` and `gist` are written from `note` (write-only) and

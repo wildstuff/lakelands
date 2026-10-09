@@ -9,33 +9,28 @@
 //! every total built on it quietly short, which is why the check reads
 //! the field back rather than trusting the declaration.
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
 use lakelands_api::write::Declaration;
-use lakelands_api::{Error, LakeStore, Origin, Refusal, TypeName};
+use lakelands_api::{Error, Origin, Refusal, TypeName};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, computed_by, dec, decimal, derived, field, get_at, head_unmoved, patch, refused_on,
     refused_unmoved, source_record, try_upsert, type_decl, value,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// The fold computes a derived field.
     COMPUTED_BY_THE_FOLD = a_derived_field_is_computed_by_the_fold_on_every_write,
     "the ontology and the log format: the fold computes a derived field from its expression in the event that changes its inputs"
 );
 
 check!(
-    /// No door writes a derived field.
     NO_DOOR_WRITES_IT = a_derived_field_written_through_a_door_is_refused_as_the_wrong_door,
     "015 and the ontology: no door writes a derived field; a patch carrying one is refused whole as the wrong door"
 );
 
 check!(
-    /// A derived field added later is computed from then on.
     ADDED_LATER = a_derived_field_added_to_a_live_type_is_computed_on_later_writes,
     "the ontology: a derived field added with add_field is kept by the fold for every write after it, like one declared with the type"
 );
@@ -44,9 +39,7 @@ fn gross() -> FieldDecl {
     derived("gross", StorageKind::Decimal, "amount * 1.19", &["amount"])
 }
 
-async fn a_derived_field_is_computed_by_the_fold_on_every_write(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_derived_field_is_computed_by_the_fold_on_every_write(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let ty = type_decl(
@@ -98,9 +91,7 @@ async fn a_derived_field_is_computed_by_the_fold_on_every_write(
     Ok(())
 }
 
-async fn a_derived_field_written_through_a_door_is_refused_as_the_wrong_door(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_derived_field_written_through_a_door_is_refused_as_the_wrong_door(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let ty = type_decl(
@@ -129,9 +120,7 @@ async fn a_derived_field_written_through_a_door_is_refused_as_the_wrong_door(
     Ok(())
 }
 
-async fn a_derived_field_added_to_a_live_type_is_computed_on_later_writes(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_derived_field_added_to_a_live_type_is_computed_on_later_writes(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let ty = type_decl("invoice", vec![field("amount", StorageKind::Decimal)]);
@@ -166,20 +155,17 @@ async fn a_derived_field_added_to_a_live_type_is_computed_on_later_writes(
 }
 
 check!(
-    /// No door at all writes a derived field.
     NO_DOOR_AT_ALL = a_derived_field_accepts_no_value_from_a_source_or_a_verb_either,
     "015 and 016: a derived field is the fold's alone; a source record or a verb that would set it is refused whole, not only an upsert"
 );
 
 check!(
-    /// A derived field follows its function's version.
-    FUNCTION_VERSION_RECOMPUTES = a_derived_field_reading_a_function_is_recomputed_when_the_function_changes,
+    FUNCTION_VERSION_RECOMPUTES =
+        a_derived_field_reading_a_function_is_recomputed_when_the_function_changes,
     "022: a derived field that names a function is computed by that function's declaration in force; a new version of the function recomputes it and names that version as its procedure"
 );
 
-async fn a_derived_field_accepts_no_value_from_a_source_or_a_verb_either(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_derived_field_accepts_no_value_from_a_source_or_a_verb_either(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let mut net = field("net", StorageKind::Decimal);
@@ -236,8 +222,8 @@ async fn a_derived_field_accepts_no_value_from_a_source_or_a_verb_either(
 }
 
 async fn a_derived_field_reading_a_function_is_recomputed_when_the_function_changes(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     let function = |expr: &str| -> Result<Declaration, Failure> {
         serde_json::from_value(json!({

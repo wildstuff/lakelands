@@ -17,13 +17,12 @@ use lakelands_api::seam::FeedFilter;
 use lakelands_api::{Catalog, Error, LakeStore, Position, RecordKey, Refusal, TypeName, WriteOpts};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Must, declare, doors, field, head_unmoved, limits, owner, patch, reason, type_decl,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A reaction past the ceiling is refused `TooDeep`.
     TOO_DEEP = a_chain_of_reactions_past_the_lakes_ceiling_is_refused_too_deep_and_appends_nothing,
     "021: a host writes each reaction one deeper than its cause; the store takes every write up to the lake's max_reactive_depth and refuses the next as too_deep naming the ceiling, an upsert and a retire alike and whatever origin the context names, appending nothing, while the log keeps the chain before it with each write's depth"
 );
@@ -82,8 +81,8 @@ async fn react(
 }
 
 async fn a_chain_of_reactions_past_the_lakes_ceiling_is_refused_too_deep_and_appends_nothing(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let max = limits().max_reactive_depth;
     let own = owner(store.as_ref());
     declare(

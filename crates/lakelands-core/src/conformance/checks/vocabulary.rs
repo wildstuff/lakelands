@@ -8,8 +8,6 @@
 //! names the store keeps for its own readers, is refused at the writer's
 //! open, naming the type, and nothing is appended.
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::seam::Seams;
@@ -17,17 +15,15 @@ use lakelands_api::{LakeStore, ReadAt, TypeName};
 use serde_json::json;
 
 use crate::conformance::fixture::{Lake, Must, doors, field, invalid_case, owner, type_decl};
-use crate::conformance::{Failure, Reopen, backing};
+use crate::conformance::{Failure, Held, Reopen, Store, backing};
 
 check!(
-    /// A host type is declared when a writer opens the lake.
     HOST_TYPES_AT_OPEN = a_host_type_is_declared_when_a_writer_opens_the_lake,
     "003 and seams, SystemVocabulary: each writer open declares the host's sys. types the lake may hold and does not hold yet; a type added later reaches the existing lake, and a withheld one never does",
     reopens
 );
 
 check!(
-    /// A vocabulary under a reserved name refuses the writer's open.
     RESERVED_NAME_REFUSES_OPEN = a_vocabulary_naming_a_reserved_type_refuses_the_writers_open,
     "003, 035 and seams, SystemVocabulary: a host vocabulary naming a type under sys.link. or one of the store's own four (sys.source, sys.provenance, sys.setting, sys.aging_rule) is refused at the writer's open as invalid, naming the type as reserved; nothing is appended, and the lake never holds it",
     reopens
@@ -47,9 +43,9 @@ async fn holds(store: &dyn LakeStore, ty: &str) -> bool {
 }
 
 async fn a_host_type_is_declared_when_a_writer_opens_the_lake(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     reopen: Reopen,
-) -> Result<(), Failure> {
+) -> Held {
     let note = || type_decl("sys.host_note", vec![field("text", StorageKind::Text)]);
     let tag = || type_decl("sys.host_tag", vec![field("label", StorageKind::Text)]);
     let hidden = || type_decl("sys.host_hidden", vec![field("x", StorageKind::Text)]);
@@ -115,9 +111,9 @@ async fn a_host_type_is_declared_when_a_writer_opens_the_lake(
 }
 
 async fn a_vocabulary_naming_a_reserved_type_refuses_the_writers_open(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     reopen: Reopen,
-) -> Result<(), Failure> {
+) -> Held {
     let with = |vocabulary| Seams {
         backings: backing::backings(),
         vocabulary,

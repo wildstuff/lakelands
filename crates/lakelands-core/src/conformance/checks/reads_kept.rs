@@ -4,21 +4,19 @@
 //! (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 //! extended).
 
-use std::sync::Arc;
-
+use lakelands_api::Access;
 use lakelands_api::error::Case;
 use lakelands_api::ontology::StorageKind::{self, Json, Text};
 use lakelands_api::ontology::{RelationDecl, TypeDecl};
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::write::{Declaration, Migration, ProposedWrite};
-use lakelands_api::{Access, LakeStore};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, derived, field, field_access, head_unmoved, migration, reads_all, refused_like,
     said_like, type_decl,
 };
+use crate::conformance::{Failure, Held, Store};
 
 /// A place a case is said at, on the wire: a declaration by its kind
 /// (`type`, `object_set`, `trigger`, `verb`) and its name.
@@ -33,7 +31,6 @@ fn names(e: &lakelands_api::Error, name: &str) -> bool {
 }
 
 check!(
-    /// A migration keeps the fields a declaration reads.
     MIGRATION_KEEPS_READ_FIELDS = a_migration_keeps_the_fields_a_declaration_reads,
     "027, extended: a migration that drops a field read by a derived field of its type, by another type's derived relation to it, or by an object set, a trigger or a verb on it (its `requires`, a field it sets, the value it sets one from, a field named `payload` read bare too) is refused as invalid by its preflight, naming the reader and the field, and one that renames such a field names the new name too; so is one that drops a relation's field a trigger on the relation's link type reads, naming the link type; a migration that drops a field no declaration reads goes through; an author who is not shown the reader, as `describe` shows it, is told that a declaration reads the field and not its name, nor a field hidden from it, which its migration does not take away"
 );
@@ -45,9 +42,7 @@ fn item(names: &[&str]) -> TypeDecl {
     type_decl("item", fields)
 }
 
-async fn a_migration_keeps_the_fields_a_declaration_reads(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_migration_keeps_the_fields_a_declaration_reads(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let all = ["a", "b", "c", "d", "e", "f", "g", "payload", "free"];
     l.declare(item(&all)).await?;
@@ -159,14 +154,11 @@ async fn a_migration_keeps_the_fields_a_declaration_reads(
 }
 
 check!(
-    /// A migration's refusal names a view only to an author shown it.
     MIGRATION_NAMES_A_SHOWN_VIEW = a_migration_names_a_view_only_to_an_author_who_is_shown_it,
     "027, extended: a migration that takes a field a view reads, or changes a kind the view cannot be declared over, is refused naming the view only to an author `describe` shows the view's definition to, in the sentence it had; an author who is not shown the view's type, or is shown it with its definition withheld, is told that a declaration reads the field, or that a declaration over the type could no longer be declared, without the view's name"
 );
 
-async fn a_migration_names_a_view_only_to_an_author_who_is_shown_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_migration_names_a_view_only_to_an_author_who_is_shown_it(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let bill = |team: StorageKind, names: &[&str]| {
         let mut fields: Vec<_> = names.iter().map(|n| field(n, Text)).collect();
@@ -239,14 +231,11 @@ async fn a_migration_names_a_view_only_to_an_author_who_is_shown_it(
 }
 
 check!(
-    /// A declaration reads only fields its type has.
     DECLARATION_READS_ITS_TYPE = a_declaration_reads_only_fields_its_type_has,
     "028, extended: `declare` and `apply` refuse as invalid, naming the declaration and the field and appending nothing, a derived field, an object set's `where`, a trigger's `when` (`changed` and `previous` included) and a verb's `requires` or the value it sets a field from that read a field the type does not have, and so does a migration's preflight for the type it migrates to; in a verb's value only `payload.<name>` is the call's and reads no field, so a bare `payload`, a longer path and one inside a function read the record's field of that name and are refused on a type without it and taken on one that has it, and a member the verb's payload does not have is refused, naming it (lakelands#470); `setting`, `now`, `today` and a guard's `retired` read no field and are accepted"
 );
 
-async fn a_declaration_reads_only_fields_its_type_has(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_declaration_reads_only_fields_its_type_has(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let invoice = |last| type_decl("invoice", vec![field("status", Text), last]);
     l.declare(invoice(field("old", Text))).await?;

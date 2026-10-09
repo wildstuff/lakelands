@@ -9,7 +9,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use lakelands_api::error::{Case, Flaw, Situation};
 use lakelands_api::event::EventBody;
@@ -21,85 +20,74 @@ use sha2::{Digest as _, Sha256};
 
 use super::rekey;
 use crate::canonical;
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, count_view, doors, find_at, invalid_case, log_events, owner, reason, type_of,
 };
+use crate::conformance::{Failure, Held, Store};
 use crate::export::{self, Manifest};
 
 check!(
-    /// One file per segment, the events' canonical lines.
     ONE_FILE_PER_SEGMENT = an_export_writes_one_file_per_segment_of_canonical_lines,
     "030 and log-format §4.2: an export writes one file per segment, named by its first position in 20 digits, holding each event's canonical bytes and a line feed, and the sealed file's digest is the one the checkpoint after it lists",
     scratch
 );
 
 check!(
-    /// The export verifies to the lake's own answer.
     VERIFIES = an_export_verifies_to_the_through_and_hash_the_lake_answers,
     "030: an export verifies from its files alone to the position and hash the lake's own verify answers; its manifest names the same pair and every file with its digest, and is never trusted: with a wrong manifest or none the export verifies the same",
     scratch
 );
 
 check!(
-    /// Both format versions, as they were written.
     MIXED_VERSIONS = a_lake_exports_both_format_versions_as_written,
     "030 and log-format §6: a lake exports its version-1 events, written before its first record was made, and its version-11 events as they were written, a re-key among them, and the export verifies",
     scratch
 );
 
 check!(
-    /// A later export repeats the earlier one's sealed files.
     PREFIX = a_later_export_repeats_the_sealed_files_and_extends_the_active_one,
     "030: an export reads through the head as it stood when it began; a lake never checkpointed exports one file 00000000000000000000.jsonl, and a later export has the earlier sealed files byte for byte and an active file the earlier one begins",
     scratch
 );
 
 check!(
-    /// A directory holding anything is refused.
     NOT_EMPTY = an_export_into_a_directory_that_holds_anything_is_refused,
     "030: an export writes only into an empty or absent directory; into any other it is refused as a failed precondition, the export's directory not empty (no path on the host is named), and writes nothing",
     scratch
 );
 
 check!(
-    /// A damaged export is refused at its position.
     DAMAGE = a_damaged_export_is_refused_naming_the_position,
     "030 and log-format §2.6 and §4.2: verifying an export refuses a changed byte, a space inserted, a missing last line feed, a format version below the first, past the newest or going down, a known_at going back, a checkpoint naming the wrong position before it, a missing file, an empty log/, a file too many, a file not named in 20 digits and two lines out of order, and names the position where the files stop being the log",
     scratch
 );
 
 check!(
-    /// An imported export is the lake it came from.
     IMPORT_IS_THE_LAKE = an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from,
     "030 and log-format §4: an export imported into a fresh lake of the engine holds every event unchanged at its position, of every format version the lake wrote (annotations included), a value type's renames among them, so the lake answers as the one exported (the head, verify, the feed from position 0, every type's records with provenance at the head and at an earlier position, describe) and exports the same files byte for byte; its next writer takes a lease greater than every fence in the log and continues it",
     given
 );
 
 check!(
-    /// An import refuses what is not a birth of the exported lake.
-    IMPORT_REFUSED = an_import_is_refused_for_a_damaged_export_another_lake_or_a_lake_holding_events,
+    IMPORT_REFUSED =
+        an_import_is_refused_for_a_damaged_export_another_lake_or_a_lake_holding_events,
     "030: an import verifies the whole export before it writes: a changed byte in a segment is refused naming its position, and an export of another lake (naming both lakes) and a lake that holds events (naming its head) are refused as failed preconditions; nothing is written into the lake it refuses",
     given
 );
 
 check!(
-    /// An import refuses a declaration member it does not know.
     IMPORT_UNKNOWN_MEMBER = an_import_refuses_a_declaration_member_it_does_not_know_naming_it,
     "028 and log-format §2: an export whose `declared` event carries a member its declaration does not take, its hash made right, is refused on import, naming the member and the declaration",
     given
 );
 
 check!(
-    /// A cycle of views from a log is refused on read.
     IMPORTED_VIEW_CYCLE = a_cycle_of_views_from_an_imported_log_is_refused_on_read,
     "018 and 030: a log can bring in a cycle of views over `source` that `declare` would have refused; a read of a view on it is refused as invalid, naming the chain, the process goes on, and a view off the cycle reads as before",
     given
 );
 
 check!(
-    /// A line whose `context` carries `cause`, or whose envelope the
-    /// origin `initial`, is refused.
     IMPORT_CONTEXT_CAUSE = an_import_refuses_a_context_carrying_cause_naming_it,
     "021, extended, and log-format §1.1: a host's cause is the envelope's and never written inside `context`; an export whose line carries `cause` in its `context`, its hash made right, is refused on import naming the member, and a write through the doors carries no cause; so is one whose envelope carries the origin `initial`, a field's provenance alone (050, lakelands#551)",
     given
@@ -165,9 +153,9 @@ async fn invoices(store: &dyn LakeStore, from: u32, n: u32) -> Result<Position, 
 }
 
 async fn an_export_writes_one_file_per_segment_of_canonical_lines(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     scratch: PathBuf,
-) -> Result<(), Failure> {
+) -> Held {
     let scratch = Scratch::new(scratch);
     invoices(store.as_ref(), 0, 3).await?;
     let sealed_at = store.checkpoint().await.must("checkpointing")?;
@@ -220,9 +208,9 @@ async fn an_export_writes_one_file_per_segment_of_canonical_lines(
 }
 
 async fn an_export_verifies_to_the_through_and_hash_the_lake_answers(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     scratch: PathBuf,
-) -> Result<(), Failure> {
+) -> Held {
     let scratch = Scratch::new(scratch);
     invoices(store.as_ref(), 0, 2).await?;
     store.checkpoint().await.must("checkpointing")?;
@@ -288,10 +276,7 @@ async fn an_export_verifies_to_the_through_and_hash_the_lake_answers(
     Ok(())
 }
 
-async fn a_lake_exports_both_format_versions_as_written(
-    store: Arc<dyn LakeStore>,
-    scratch: PathBuf,
-) -> Result<(), Failure> {
+async fn a_lake_exports_both_format_versions_as_written(store: Store, scratch: PathBuf) -> Held {
     let scratch = Scratch::new(scratch);
     rekey::lake(store.as_ref(), rekey::IBANS).await?;
     let at = rekey::apply(store.as_ref()).await?;
@@ -321,9 +306,9 @@ async fn a_lake_exports_both_format_versions_as_written(
 }
 
 async fn a_later_export_repeats_the_sealed_files_and_extends_the_active_one(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     scratch: PathBuf,
-) -> Result<(), Failure> {
+) -> Held {
     let scratch = Scratch::new(scratch);
     let first = invoices(store.as_ref(), 0, 2).await?;
     let (a, b, c) = (scratch.dir("a"), scratch.dir("b"), scratch.dir("c"));
@@ -364,9 +349,9 @@ async fn a_later_export_repeats_the_sealed_files_and_extends_the_active_one(
 }
 
 async fn an_export_into_a_directory_that_holds_anything_is_refused(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     scratch: PathBuf,
-) -> Result<(), Failure> {
+) -> Held {
     let scratch = Scratch::new(scratch);
     invoices(store.as_ref(), 0, 1).await?;
     let dir = scratch.dir("full");
@@ -392,7 +377,7 @@ async fn an_export_into_a_directory_that_holds_anything_is_refused(
 }
 
 /// Fails unless verifying `dir` is refused naming `position`.
-fn refused_at(dir: &Path, position: Position, damage: &str) -> Result<(), Failure> {
+fn refused_at(dir: &Path, position: Position, damage: &str) -> Held {
     let said = export::verify(dir);
     ensure!(
         matches!(said.as_ref().err().and_then(Error::situation), Some(Situation::Damaged { position: Some(p), .. })
@@ -415,7 +400,7 @@ fn lines_of(dir: &Path, file: &str) -> Result<Vec<Vec<u8>>, Failure> {
 }
 
 /// Writes `lines` as `file`, each with its line feed.
-fn rewrite(dir: &Path, file: &str, lines: &[Vec<u8>]) -> Result<(), Failure> {
+fn rewrite(dir: &Path, file: &str, lines: &[Vec<u8>]) -> Held {
     let mut bytes = lines.join(&b'\n');
     bytes.push(b'\n');
     fs::write(dir.join(file), bytes).map_err(|e| Failure::new(format!("damaging {file}: {e}")))
@@ -436,10 +421,7 @@ fn rehashed(line: &[u8], change: impl FnOnce(&mut Value)) -> Result<Vec<u8>, Fai
     Ok(canonical::to_vec(&event))
 }
 
-async fn a_damaged_export_is_refused_naming_the_position(
-    store: Arc<dyn LakeStore>,
-    scratch: PathBuf,
-) -> Result<(), Failure> {
+async fn a_damaged_export_is_refused_naming_the_position(store: Store, scratch: PathBuf) -> Held {
     let scratch = Scratch::new(scratch);
     // A re-key, so the last events are format 2; a checkpoint, so two files.
     let l = rekey::lake(store.as_ref(), rekey::IBANS).await?;
@@ -603,9 +585,9 @@ fn import_seams() -> lakelands_api::seam::Seams {
 /// Answers the
 /// second writer's handle and a position before the second checkpoint.
 async fn exported_lake(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     reopen: &crate::conformance::Reopen,
-) -> Result<(Arc<dyn LakeStore>, Position), Failure> {
+) -> Result<(Store, Position), Failure> {
     invoices(store.as_ref(), 0, 3).await?;
     store.checkpoint().await.must("checkpointing")?;
     let writer = reopen(store, import_seams())
@@ -834,9 +816,9 @@ async fn answers(store: &dyn LakeStore, earlier: Position) -> Result<Value, Fail
 }
 
 async fn an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     given: crate::conformance::Given,
-) -> Result<(), Failure> {
+) -> Held {
     let scratch = Scratch::new(given.scratch.clone());
     let (store, earlier) = exported_lake(store, &given.reopen).await?;
     let newest = log_events(store.as_ref())
@@ -926,9 +908,9 @@ async fn an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from(
 }
 
 async fn an_import_is_refused_for_a_damaged_export_another_lake_or_a_lake_holding_events(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     given: crate::conformance::Given,
-) -> Result<(), Failure> {
+) -> Held {
     let scratch = Scratch::new(given.scratch.clone());
     let (store, _) = exported_lake(store, &given.reopen).await?;
     let from = scratch.dir("from");
@@ -995,9 +977,9 @@ async fn an_import_is_refused_for_a_damaged_export_another_lake_or_a_lake_holdin
 }
 
 async fn an_import_refuses_a_declaration_member_it_does_not_know_naming_it(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     given: crate::conformance::Given,
-) -> Result<(), Failure> {
+) -> Held {
     let scratch = Scratch::new(given.scratch.clone());
     invoices(store.as_ref(), 0, 1).await?;
     let from = scratch.dir("from");
@@ -1032,9 +1014,9 @@ async fn an_import_refuses_a_declaration_member_it_does_not_know_naming_it(
 }
 
 async fn an_import_refuses_a_context_carrying_cause_naming_it(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     given: crate::conformance::Given,
-) -> Result<(), Failure> {
+) -> Held {
     let scratch = Scratch::new(given.scratch.clone());
     invoices(store.as_ref(), 0, 1).await?;
     let written = log_events(store.as_ref()).await?;
@@ -1109,9 +1091,9 @@ fn tally_view(name: &str, source: &str) -> lakelands_api::ontology::TypeDecl {
 }
 
 async fn a_cycle_of_views_from_an_imported_log_is_refused_on_read(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     given: crate::conformance::Given,
-) -> Result<(), Failure> {
+) -> Held {
     let scratch = Scratch::new(given.scratch.clone());
     let l = Lake::of(store.as_ref());
     let mut tally = type_of("tally", &[("k", Text)]);

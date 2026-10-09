@@ -8,8 +8,6 @@
 //! matches. A search of one axis reads no further than its page, and
 //! counts nothing.
 
-use std::sync::Arc;
-
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::principal::TypeGrants;
@@ -23,29 +21,25 @@ use crate::conformance::fixture::{
     Lake, Must, alike_renamed, field, field_access, field_writer, is_invalid, limits,
     no_such_field, restrict, searchable, try_upsert, type_decl, vector,
 };
-use crate::conformance::{Failure, Given};
+use crate::conformance::{Failure, Given, Held, Store};
 
 check!(
-    /// A search lists its axes, counted where it fuses.
     AXES_SAID = a_search_lists_its_axes_and_counts_them_where_it_fuses,
     "046, extended (lakelands#560): every search answers `axes`, one entry for each axis that ranked in the order the fusion sums them, a vector axis naming its field; a hybrid search and a vector search with `also` count each axis's candidates, so a text that matches nothing answers 0 beside the vector's count; a search of one axis lists it without a count; a page continued by a cursor answers the first page's axes"
 );
 
 check!(
-    /// An axis counts only what its reader is shown.
     AXES_READER = an_axis_counts_only_what_its_reader_is_shown,
     "046 and 024, extended (lakelands#560): an axis's count is of the candidates its reader may be answered, after the search's `where` and the rights that decide a hit, so a reader kept from a record the text matches by `restricted`, and one kept from it by its `where`, are each answered the count of what it is shown, and the two differ"
 );
 
 check!(
-    /// A fused axis is counted to its window on every page.
     AXES_WINDOW = a_fused_axis_is_counted_to_its_window_on_every_page,
     "046, extended (lakelands#560): a fused list is read to the lake's `max_limit` of what its reader may see, or to its end, before a page is answered, so an axis's count is the same on every page, also where hidden candidates leave a list short of its window when the first page could already be ranked",
     given
 );
 
 check!(
-    /// A type's setting weighs the rankings a search does not.
     WEIGHTS_SET = a_types_setting_weighs_what_a_search_does_not,
     "046, extended (lakelands#561): the setting `search_weights.<type>` weighs each ranking a fused search gives no weight, a vector field's by `fields` and the text's by `text_weight`, the search's own weight winning, and the axes name the weight that ranked; a read as of a position before the setting ranks without it; a field the setting names that a migration removed weighs nothing and is no error, and declared again it takes its weight again; the setting is refused as invalid for a field the type does not declare, one that is no vector, a weight a search could not give, a member it does not know, and an object or `fields` that names nothing; a reader not shown a weighted field is answered a search naming it as before the setting, and a writer of the setting not shown a field it names is refused as for a field the type does not declare (024)"
 );
@@ -125,9 +119,7 @@ async fn wrong(store: &dyn LakeStore, l: &Lake, table: &str) -> Result<Vec<Strin
     Ok(wrong)
 }
 
-async fn a_search_lists_its_axes_and_counts_them_where_it_fuses(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_search_lists_its_axes_and_counts_them_where_it_fuses(store: Store) -> Held {
     let l = harbours(store.as_ref()).await?;
     let mut wrong = wrong(store.as_ref(), &l, SAID).await?;
     let mut first = hybrid("harbour");
@@ -142,9 +134,7 @@ async fn a_search_lists_its_axes_and_counts_them_where_it_fuses(
     Ok(())
 }
 
-async fn an_axis_counts_only_what_its_reader_is_shown(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn an_axis_counts_only_what_its_reader_is_shown(store: Store) -> Held {
     let l = harbours(store.as_ref()).await?;
     let wrong = wrong(store.as_ref(), &l, READERS).await?;
     ensure!(
@@ -154,10 +144,7 @@ async fn an_axis_counts_only_what_its_reader_is_shown(
     Ok(())
 }
 
-async fn a_fused_axis_is_counted_to_its_window_on_every_page(
-    store: Arc<dyn LakeStore>,
-    given: Given,
-) -> Result<(), Failure> {
+async fn a_fused_axis_is_counted_to_its_window_on_every_page(store: Store, given: Given) -> Held {
     // Nine say "harbour"; the six restricted sort first by key, the three
     // others lie along the query. Under `max_limit` 4 a page of one ranks
     // its first eight candidates, which hold two of the three a reader
@@ -233,9 +220,7 @@ async fn weigh(l: &Lake, who: &Principal, value: &Value) -> lakelands_api::Resul
     .await
 }
 
-async fn a_types_setting_weighs_what_a_search_does_not(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_types_setting_weighs_what_a_search_does_not(store: Store) -> Held {
     let l = harbours(store.as_ref()).await?;
     // A reader, and a writer of settings, neither shown `w`.
     let hide = [("w", Access::None)];

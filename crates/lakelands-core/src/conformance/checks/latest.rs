@@ -4,21 +4,18 @@
 //! §`scan`). Every change a record's own events make moves it; a link
 //! carried by a link record moves the link record, not its ends.
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind};
 use lakelands_api::read::{Direction, OrderBy};
 use lakelands_api::write::WriteOpts;
-use lakelands_api::{Find, LakeStore, Position};
+use lakelands_api::{Find, Position};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, field, order, patch, read_at, reference, source_record, sourced, type_decl,
 };
+use crate::conformance::{Held, Store};
 
 check!(
-    /// `latest` orders by each record's last event.
     LATEST_ORDER = find_ordered_by_latest_lists_records_by_their_last_event,
     "029 and seams §scan: `find` ordered by `latest` lists records by the position of the event that made each one's state: an upsert, an ingest and a reference field move a record, a link record moves only itself, a retired record leaves; ascending is the reverse, a cursor continues it, a filter the store evaluates keeps it, and a read at an earlier position answers the order as it was then"
 );
@@ -30,9 +27,7 @@ fn latest(dir: Direction) -> Find {
     }
 }
 
-async fn find_ordered_by_latest_lists_records_by_their_last_event(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn find_ordered_by_latest_lists_records_by_their_last_event(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))

@@ -4,7 +4,6 @@
 //! (`docs/decisions/004-the-change-feed-is-the-log.md`, extended).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind::{self, Boolean, Text};
@@ -18,7 +17,7 @@ use crate::conformance::fixture::{
     Lake, Must, events_from, field, find_where, log_events, object_set_on, patch, reference,
     type_decl, type_of,
 };
-use crate::conformance::{Failure, Given};
+use crate::conformance::{Failure, Given, Held, Store};
 
 /// `name` with the required text fields `id` and `code`, keyed by `key`,
 /// and `more` fields.
@@ -50,14 +49,11 @@ async fn changed(store: &dyn LakeStore, at: Position) -> Result<Vec<String>, Fai
 }
 
 check!(
-    /// A re-key decides the sets that read a rewritten reference.
     SET_REKEYED_REFERENCES = a_rekey_decides_the_sets_that_read_a_rewritten_reference,
     "004, extended: a re-keying migration appends, caused by its `migrated`, an `object_set_changed` for each record whose membership changes once its references to the moved keys are rewritten: a record of the migrated type under its new key, and a record of another type that holds such a reference, naming that type; a set whose filter reads no rewritten reference gets none"
 );
 
-async fn a_rekey_decides_the_sets_that_read_a_rewritten_reference(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rekey_decides_the_sets_that_read_a_rewritten_reference(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let person = |key| keyed("person", key, vec![reference("boss", "person")]);
     l.declare(person("id")).await?;
@@ -91,7 +87,6 @@ async fn a_rekey_decides_the_sets_that_read_a_rewritten_reference(
 }
 
 check!(
-    /// A migration decides the sets over its link types.
     SET_OVER_LINKS = a_migration_decides_the_sets_over_its_link_types,
     "004, extended: a migration that converts a relation's field appends, directly after its `migrated` and caused by it, an `object_set_changed` for each link whose membership under a set of the link type changes, and its answer names those sets; a re-key of the owner moves a link's membership with it and changes only the set that reads a rewritten end; after either, and after the lake is opened again and its projection rebuilt, `find` under each set's filter returns exactly the links the log says are in it, and a later write of the link leaves a set under its new key",
     given
@@ -117,7 +112,7 @@ fn doc(key: &str, kind: StorageKind) -> TypeDecl {
 /// Fails unless `find` under each set's filter returns the links the log
 /// says are in it: the latest `object_set_changed` of each, a re-keyed
 /// link's under its new key.
-async fn sets_read_as_logged(store: &dyn LakeStore, when: &str) -> Result<(), Failure> {
+async fn sets_read_as_logged(store: &dyn LakeStore, when: &str) -> Held {
     let mut held = BTreeMap::new();
     for e in log_events(store).await? {
         match e.body {
@@ -159,10 +154,7 @@ async fn link(l: &Lake, from: &str, ok: serde_json::Value) -> Result<Outcome, Fa
     linked.await.must("linking the doc to `p1`")
 }
 
-async fn a_migration_decides_the_sets_over_its_link_types(
-    store: Arc<dyn LakeStore>,
-    given: Given,
-) -> Result<(), Failure> {
+async fn a_migration_decides_the_sets_over_its_link_types(store: Store, given: Given) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(type_of("person", &[("name", Text)])).await?;
     l.declare(doc("id", Text)).await?;

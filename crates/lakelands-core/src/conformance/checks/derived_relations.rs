@@ -5,8 +5,6 @@
 //! matched fields hold the same non-null value, as the read's position
 //! holds them, both ways and in every walk the store runs.
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::{
     Cardinality, Derived, MatchPair, RelationDecl, StorageKind, TypeDecl,
 };
@@ -15,50 +13,44 @@ use lakelands_api::write::WriteOpts;
 use lakelands_api::{Access, Catalog, LakeStore, Position, Principal, Refusal, Value};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, doors, field, field_access, head_unmoved, is_invalid, owner, patch, pattern,
     refused_alike, refused_like, refused_on, step, type_decl, type_of,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A walk finds exactly the matching records, both ways.
     BOTH_WAYS = a_walk_over_a_derived_relation_finds_exactly_the_matching_records_both_ways,
     "044: a pattern step over a derived relation reaches exactly the records whose matched fields hold the same value, out and in, over one pair and over two, at the head and as_of an earlier position; `'010'` does not match `'10'`"
 );
 
 check!(
-    /// A changed matched field moves the edge where it changed.
     EDGE_MOVES = changing_a_matched_field_moves_the_edge_at_that_position,
     "044 and 009: changing a matched field moves the edge at the position of that write: as_of before it the old record is reached, from it on the new one"
 );
 
 check!(
-    /// A null never matches.
     NULL_NEVER_MATCHES = a_null_never_matches,
     "044: a matched field that is null or absent on either side connects nothing, a null to a null included"
 );
 
 check!(
-    /// A walk probes the matched fields on both sides.
     PROBES_BOTH_SIDES = a_principal_without_read_on_a_matched_field_is_refused_naming_it,
     "024, 044 and 006: a walk over a derived relation, a step either way, a graph and a measure alike, past its first hop too, is answered as for a relation the type does not declare, naming only the relation, when the principal may not know of a matched field on either side; over a matched field it sees masked it is refused as not granted, naming the field"
 );
 
 check!(
-    /// Measures count derived edges as they count links.
-    MEASURES_AS_LINKS = degree_and_components_over_a_derived_relation_equal_those_over_the_same_links,
+    MEASURES_AS_LINKS =
+        degree_and_components_over_a_derived_relation_equal_those_over_the_same_links,
     "026 and 044: `degree` and `components` over a derived relation answer what they answer over the same connections written as link records"
 );
 
 check!(
-    /// A derived relation is declared, and never changes carrier.
     DECLARED_NOT_MIGRATED = a_derived_relation_is_declared_not_migrated_and_never_moves_carrier,
     "007, 027, 035 and 044: changing a derived relation's match is taken by `declare` and leaves the schema hash byte-identical; a relation carried by link records or by `via` is not redeclared as derived, nor a derived one as carried, each refused naming the relation"
 );
 
 check!(
-    /// A pair of two kinds is refused.
     PAIR_OF_TWO_KINDS = a_match_pair_of_two_kinds_is_refused_naming_both,
     "044: `declare` refuses a match pair whose fields are of different storage kinds, naming both fields, since identity would never match; a derived relation with `via` or fields of its own is refused too"
 );
@@ -186,8 +178,8 @@ async fn reach(
 }
 
 async fn a_walk_over_a_derived_relation_finds_exactly_the_matching_records_both_ways(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let before = lake(store.as_ref()).await?;
     let cat = doors(store.as_ref());
     let own = owner(store.as_ref());
@@ -218,9 +210,7 @@ async fn a_walk_over_a_derived_relation_finds_exactly_the_matching_records_both_
     Ok(())
 }
 
-async fn changing_a_matched_field_moves_the_edge_at_that_position(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn changing_a_matched_field_moves_the_edge_at_that_position(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -242,7 +232,7 @@ async fn changing_a_matched_field_moves_the_edge_at_that_position(
     Ok(())
 }
 
-async fn a_null_never_matches(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_null_never_matches(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -263,9 +253,7 @@ async fn a_null_never_matches(store: Arc<dyn LakeStore>) -> Result<(), Failure> 
     Ok(())
 }
 
-async fn a_principal_without_read_on_a_matched_field_is_refused_naming_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_principal_without_read_on_a_matched_field_is_refused_naming_it(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let cat = doors(store.as_ref());
     let blind = |ty: &str, f: &str| field_access(store.as_ref(), "blind", ty, &[(f, Access::None)]);
@@ -357,8 +345,8 @@ async fn a_principal_without_read_on_a_matched_field_is_refused_naming_it(
 }
 
 async fn degree_and_components_over_a_derived_relation_equal_those_over_the_same_links(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -436,9 +424,7 @@ async fn degree_and_components_over_a_derived_relation_equal_those_over_the_same
     Ok(())
 }
 
-async fn a_derived_relation_is_declared_not_migrated_and_never_moves_carrier(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_derived_relation_is_declared_not_migrated_and_never_moves_carrier(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let before = l.describe_type("invoice").await?.lifecycle.schema_hash;
@@ -484,9 +470,7 @@ async fn a_derived_relation_is_declared_not_migrated_and_never_moves_carrier(
     Ok(())
 }
 
-async fn a_match_pair_of_two_kinds_is_refused_naming_both(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_match_pair_of_two_kinds_is_refused_naming_both(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(customer()).await?;
     let mut numbered = customer();

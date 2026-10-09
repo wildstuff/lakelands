@@ -2,34 +2,29 @@
 //! and only when it is lossless
 //! (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::ontology::{FieldType, StorageKind, TypeDecl};
 use lakelands_api::write::{Migration, MigrationReport};
 use lakelands_api::{LakeStore, Refusal};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, count_view, declare, doors, field, head_unmoved, invalid_case, invalid_like,
     measure, migration, owner, reason, type_decl, value,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A migration applies only against the report it was shown.
     APPLY_NEEDS_ITS_REPORT = migrate_apply_requires_the_report_it_was_shown,
     "027: `migrate_apply` names the preflight's report; another report id, or a lake that moved since the report, is refused, after the preflight's own refusals (027, extended)"
 );
 
 check!(
-    /// A lossy migration is refused, with its report.
     LOSSY_REFUSED = a_migration_that_would_lose_information_is_refused_with_its_report,
     "027: a migration applies only when every stored value converts without loss; otherwise it is refused and the report names the records, after its report id is compared (027, extended)"
 );
 
 check!(
-    /// Values follow the conversion table, and renames keep them.
     CONVERSIONS_AND_RENAMES = migrated_values_follow_the_conversion_table_and_renames_keep_them,
     "027: a number becomes text in its canonical form, numeric text becomes the equal number, and a renamed field keeps its values"
 );
@@ -73,9 +68,7 @@ fn retype(ty: &TypeDecl, name: &str, kind: StorageKind) -> TypeDecl {
     to
 }
 
-async fn migrate_apply_requires_the_report_it_was_shown(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn migrate_apply_requires_the_report_it_was_shown(store: Store) -> Held {
     let ty = memo(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -118,9 +111,7 @@ async fn migrate_apply_requires_the_report_it_was_shown(
     Ok(())
 }
 
-async fn a_migration_that_would_lose_information_is_refused_with_its_report(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_migration_that_would_lose_information_is_refused_with_its_report(store: Store) -> Held {
     let ty = memo(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -154,9 +145,7 @@ async fn a_migration_that_would_lose_information_is_refused_with_its_report(
     Ok(())
 }
 
-async fn migrated_values_follow_the_conversion_table_and_renames_keep_them(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn migrated_values_follow_the_conversion_table_and_renames_keep_them(store: Store) -> Held {
     let ty = memo(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -202,24 +191,21 @@ async fn migrated_values_follow_the_conversion_table_and_renames_keep_them(
 }
 
 check!(
-    /// A relation's `via` cannot be migrated away.
     VIA_REMOVAL_REFUSED = a_migration_removing_the_field_a_relation_walks_is_refused,
     "027 and 018: a relation is carried by its `via` field; a migration that removes that field would leave the relation dangling and is refused"
 );
 
 check!(
-    /// The preflight names every field a migration drops.
     DROPPED_REPORTED = the_preflight_names_every_dropped_field_and_an_empty_type_migrates_cleanly,
     "027 and MigrationReport.dropped: the preflight names every removed field with how many values it discards, and a type with no records reports nothing to lose; the report is lossless and the apply discards them"
 );
 
 check!(
-    /// A view is never migrated.
     VIEW_NOT_MIGRATED = a_view_is_never_migrated,
     "027, extended: a migration reshapes stored records, and a view stores none, so a migration that would turn a stored type into a view, or a view into a stored type, is refused as invalid naming the type, at the preflight or when applied, and nothing is appended; a view changes, and becomes a stored type whatever its fields become, by being declared again"
 );
 
-async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_view_is_never_migrated(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(type_decl(
         "invoice",
@@ -287,14 +273,11 @@ async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) -> Result<(), Failu
 }
 
 check!(
-    /// A migration leaves every view over the type readable.
     VIEW_SOURCE_KEPT = a_migration_taking_a_field_a_view_reads_is_refused,
     "027 and 028, extended: a view over a type, as its source or a merged one, reads the shape a migration leaves, so the preflight refuses a migration that removes or renames a field the view reads, naming the view and the field as `declare` would refuse the view against the new shape; a field no view reads migrates as before"
 );
 
-async fn a_migration_taking_a_field_a_view_reads_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_migration_taking_a_field_a_view_reads_is_refused(store: Store) -> Held {
     use lakelands_api::ontology::{ViewDecl, ViewSource};
     use lakelands_api::{FieldName, TypeName};
     let l = Lake::of(store.as_ref());
@@ -413,9 +396,7 @@ async fn a_migration_taking_a_field_a_view_reads_is_refused(
     Ok(())
 }
 
-async fn a_migration_removing_the_field_a_relation_walks_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_migration_removing_the_field_a_relation_walks_is_refused(store: Store) -> Held {
     use lakelands_api::ontology::{FieldDecl, RelationDecl};
     let l = Lake::of(store.as_ref());
     l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
@@ -454,8 +435,8 @@ async fn a_migration_removing_the_field_a_relation_walks_is_refused(
 }
 
 async fn the_preflight_names_every_dropped_field_and_an_empty_type_migrates_cleanly(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     let wide = memo(store.as_ref()).await?;
     let mut narrow = wide.clone();

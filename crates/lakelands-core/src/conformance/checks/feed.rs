@@ -2,8 +2,6 @@
 //! append (`docs/decisions/004-the-change-feed-is-the-log.md`,
 //! `docs/decisions/001-the-log-is-the-truth.md`).
 
-use std::sync::Arc;
-
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::seam::FeedFilter;
@@ -11,11 +9,11 @@ use lakelands_api::write::ProposedWrite;
 use lakelands_api::{Access, LakeStore, Outcome, Position, RecordKey, SetOff, TypeName, WriteOpts};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, field_access, followed, log_events, patch, source_record, sourced, type_of, upsert,
     write_verb,
 };
+use crate::conformance::{Failure, Held, Store};
 
 /// What a write's answer says it set off.
 fn set_off(o: &Outcome) -> SetOff {
@@ -32,43 +30,36 @@ fn fired_at(events: &[Event]) -> Vec<Position> {
 }
 
 check!(
-    /// A key filter answers one record's events.
     BY_KEY = a_feed_filtered_by_key_answers_that_records_events_only,
     "004 and lakelands#146: a feed filtered by types and keys answers exactly the events about those records, in log order, each once: its upserts, a trigger it fired, its object-set changes, a restrict, an unrestrict and its retire; with types empty a key matches in any type and verb_called passes too; kinds narrow it further; no event that names no record passes"
 );
 
 check!(
-    /// A key filter does not follow a re-key.
     BY_OLD_KEY = a_key_filter_does_not_follow_a_rekey,
     "004, 027 and lakelands#146: a feed filtered by a record's old key answers its events up to the migration that re-keyed it and none after; the new key answers what came after"
 );
 
 check!(
-    /// The feed answers the log from a position.
     FEED_IS_THE_LOG = the_feed_answers_the_log_from_a_position_by_kind_and_type,
     "004: `poll` answers the events from a position in log order, filtered by kind and type, with the position to poll from next and the head"
 );
 
 check!(
-    /// A rebuild changes nothing the feed says.
     REBUILD_LEAVES_THE_FEED = rebuilding_the_projection_changes_nothing_in_the_feed,
     "001 and 004: the log is the truth and the projection an index; deleting and rebuilding the projection leaves every event as it was"
 );
 
 check!(
-    /// A trigger fires in the same append as the write that makes it hold.
     TRIGGER_FIRES = a_trigger_fires_on_every_write_whose_guard_holds,
     "004 and 015, extended: when a write makes a trigger's guard hold, `trigger_fired` is appended with it, and the write's answer names the trigger, `through` its position; a write under which the guard does not hold fires nothing and answers nothing more; a retry answers the same, and an acceptance what the write it applied set off"
 );
 
 check!(
-    /// An object set changes only when membership does.
     OBJECT_SET_CHANGES = an_object_set_change_is_written_only_when_membership_changes,
     "004 and 015, extended: a write that moves a record into or out of an object set appends `object_set_changed`, and its answer names the set as joined or left; one that leaves membership as it was appends none and names none"
 );
 
 check!(
-    /// A write names only the triggers and object sets its writer may know of.
     HIDDEN_TRIGGER = a_trigger_whose_guard_the_writer_may_not_read_is_not_named,
     "015, extended, and 024: a write's answer names a trigger it fired, or an object set its record joined or left, only if `describe` lists it to the writer; one whose condition reads a field the writer may not read is left out, and `through` still covers it"
 );
@@ -86,26 +77,21 @@ async fn all_events(store: &dyn LakeStore, from: Position) -> Result<Vec<Event>,
 }
 
 check!(
-    /// A record event says whether it made the record.
     MADE = a_record_event_says_whether_it_made_the_record,
     "004 and lakelands#572: `record_upserted` and `record_ingested` carry `made` where the write found no live record under the key and leave it out otherwise, so a consumer of the feed tells a record made from one changed without a read: a first creation with `version` 1, a record made again after its retirement with the version its history gives it, a change and a verb's write without; it is said where the event is made, of what the writer then holds: of two records of one ingest that name one key the first made it, and a proposal is judged when it is accepted, not when it was proposed"
 );
 
 check!(
-    /// Paging with `next` loses and repeats nothing.
     PAGED_FROM_NEXT = polling_from_next_in_small_pages_sees_every_matching_event_once_in_order,
     "004: a consumer that polls from the `next` each answer gives, in pages of one or two events and with writes landing between polls, sees every matching event once, in log order; this is the position a deliverer keeps"
 );
 
 check!(
-    /// A `limit` of 0 answers one event, not none.
     LIMIT_ZERO_IS_ONE = a_poll_with_a_limit_of_zero_answers_one_event,
     "seams, ChangeFeed: a limit of 0 is read as 1, so a consumer that passes 0 still moves forward instead of polling the same position for ever"
 );
 
-async fn a_record_event_says_whether_it_made_the_record(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_record_event_says_whether_it_made_the_record(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let mut bill = type_of("bill", &[("amount", Number)]);
@@ -181,9 +167,7 @@ async fn a_record_event_says_whether_it_made_the_record(
     Ok(())
 }
 
-async fn a_poll_with_a_limit_of_zero_answers_one_event(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_poll_with_a_limit_of_zero_answers_one_event(store: Store) -> Held {
     let l = invoices(store.as_ref()).await?;
     let from = store.head().await.must("reading the head")?.next();
     let first = l
@@ -208,9 +192,7 @@ async fn a_poll_with_a_limit_of_zero_answers_one_event(
     Ok(())
 }
 
-async fn the_feed_answers_the_log_from_a_position_by_kind_and_type(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn the_feed_answers_the_log_from_a_position_by_kind_and_type(store: Store) -> Held {
     let l = invoices(store.as_ref()).await?;
     let from = store.head().await.must("reading the head")?.next();
     let a = l
@@ -279,9 +261,7 @@ async fn the_feed_answers_the_log_from_a_position_by_kind_and_type(
     Ok(())
 }
 
-async fn rebuilding_the_projection_changes_nothing_in_the_feed(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn rebuilding_the_projection_changes_nothing_in_the_feed(store: Store) -> Held {
     let l = invoices(store.as_ref()).await?;
     for (k, s) in [("a", "open"), ("b", "paid"), ("a", "held")] {
         l.upsert("invoice", k, json!({ "status": s })).await?;
@@ -304,9 +284,7 @@ async fn rebuilding_the_projection_changes_nothing_in_the_feed(
     Ok(())
 }
 
-async fn a_trigger_fires_on_every_write_whose_guard_holds(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_trigger_fires_on_every_write_whose_guard_holds(store: Store) -> Held {
     let l = invoices(store.as_ref()).await?;
     l.declare_json(json!({
         "declare": "trigger", "name": "paid", "on": "invoice", "when": "status = 'paid'"
@@ -382,9 +360,7 @@ async fn a_trigger_fires_on_every_write_whose_guard_holds(
     Ok(())
 }
 
-async fn a_trigger_whose_guard_the_writer_may_not_read_is_not_named(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_trigger_whose_guard_the_writer_may_not_read_is_not_named(store: Store) -> Held {
     let l = invoices(store.as_ref()).await?;
     for (name, when) in [("noted", None), ("paid", Some("status = 'paid'"))] {
         let mut t = json!({"declare": "trigger", "name": name, "on": "invoice"});
@@ -426,9 +402,7 @@ async fn a_trigger_whose_guard_the_writer_may_not_read_is_not_named(
     Ok(())
 }
 
-async fn an_object_set_change_is_written_only_when_membership_changes(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn an_object_set_change_is_written_only_when_membership_changes(store: Store) -> Held {
     let l = invoices(store.as_ref()).await?;
     l.declare_json(json!({
         "declare": "object_set", "name": "open_ones", "of": "invoice", "where": "status = 'open'"
@@ -475,8 +449,8 @@ async fn an_object_set_change_is_written_only_when_membership_changes(
 }
 
 async fn polling_from_next_in_small_pages_sees_every_matching_event_once_in_order(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = invoices(store.as_ref()).await?;
     let invoices_only = filter(&["record_upserted"], &["invoice"], &[]);
     let mut next = store.head().await.must("reading the head")?.next();
@@ -572,9 +546,7 @@ fn positions(events: &[Event]) -> Vec<u64> {
     events.iter().map(|e| e.position.0).collect()
 }
 
-async fn a_feed_filtered_by_key_answers_that_records_events_only(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_feed_filtered_by_key_answers_that_records_events_only(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     for ty in ["invoice", "credit"] {
@@ -699,7 +671,7 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(
     Ok(())
 }
 
-async fn a_key_filter_does_not_follow_a_rekey(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_key_filter_does_not_follow_a_rekey(store: Store) -> Held {
     let l = super::rekey::lake(store.as_ref(), super::rekey::IBANS).await?;
     let at = super::rekey::apply(store.as_ref()).await?;
     l.upsert("account", "DE1", json!({"holder": "after the re-key"}))

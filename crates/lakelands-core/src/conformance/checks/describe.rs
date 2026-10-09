@@ -21,21 +21,19 @@ use lakelands_api::ontology::{
 use lakelands_api::write::{
     Declaration, FunctionDecl, Migration, ObjectSetDecl, ProposalFilter, ProposedWrite,
 };
-use std::sync::Arc;
 
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::{Access, Catalog, Grants, LakeStore, Principal, PrincipalKind, ReadAt};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
     Lake, Must, all, describe_type, doors, field, field_access, invalid_case, owner, principal,
     type_decl, upsert, view_of,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// `describe` answers the declaration whole.
     DESCRIBE_IS_THE_DECLARATION = describe_answers_the_declaration_whole,
     "014 and 024: for the owner, a described type projects back onto its declaration byte for byte — every field's function, embedding, initial value, searchable, sensitive, label and description, and the type's label, language and view; a masked field shows its shape only, without its initial value (050); functions, triggers, object sets and views are answered as declared, to a principal who reads every field they name or holds the schema grant, as in force at the read position; a type that is shown is one its principal may find and get, also where every field is masked",
     embedding
@@ -180,7 +178,7 @@ fn bytes<T: serde::Serialize>(v: &T) -> String {
 }
 
 /// The same declaration, byte for byte, or a failure naming both.
-fn same<T: serde::Serialize>(what: &str, got: &T, declared: &T) -> Result<(), Failure> {
+fn same<T: serde::Serialize>(what: &str, got: &T, declared: &T) -> Held {
     let (got, declared) = (bytes(got), bytes(declared));
     ensure!(
         got == declared,
@@ -215,7 +213,7 @@ async fn describe_at(
     Ok(cat.describe(who, at).await.must(what)?.data)
 }
 
-async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn describe_answers_the_declaration_whole(store: Store) -> Held {
     let store = store.as_ref();
     let cat = doors(store);
     let cat = cat.as_ref();
@@ -383,14 +381,11 @@ async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) -> Re
 }
 
 check!(
-    /// A description says only what its reader is shown.
     DESCRIBED_AS_SHOWN = a_description_says_only_what_its_reader_is_shown,
     "006 and 024, extended (lakelands#662): a type's `searchable` and `sourced` are said of the fields its reader is described, and a field it sees masked is searchable to it no more; a relation is described, listed in a proposal, named by a migration's refusal, offered to `link` and its link type shown only to a reader shown both its ends and, of a derived one, every field its match pairs, which a field it sees masked still is; a reader not shown a relation's target proposes the type as it is shown it, its declaration and its migration, and lists and rejects its own proposal (lakelands#762)"
 );
 
-async fn a_description_says_only_what_its_reader_is_shown(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_description_says_only_what_its_reader_is_shown(store: Store) -> Held {
     let (l, s) = (Lake::of(store.as_ref()), store.as_ref());
     let note = FieldDecl {
         searchable: true,

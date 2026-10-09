@@ -8,8 +8,6 @@
 //! key, under the grants of its type, by its declared risk, and its
 //! executor's answer is recorded as for any external verb.
 
-use std::sync::Arc;
-
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{StorageKind, VerbScope};
 use lakelands_api::principal::{Access, TypeGrants};
@@ -21,54 +19,44 @@ use lakelands_api::{
 };
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::backing::{EXECUTOR, executed};
 use crate::conformance::fixture::{
     Lake, Must, events_from, field, head_unmoved, owner, patch, principal, reads_all, reason,
     refused_like, reviewer, type_decl,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A verb's events name no type.
     VERB_EVENTS_UNTYPED = a_feed_filtered_by_type_passes_none_of_a_verbs_events,
     "004 and seams §ChangeFeed: a verb's events name no type, even for a verb on its type, so a feed filtered by that type passes none of `verb_called`, `write_proposed`, `write_accepted` and `output_recorded`, which a feed with no types passes; `proposals` filtered by the type lists the proposed call"
 );
 
 check!(
-    /// A verb on its type runs under its type's grants and records its
-    /// output.
     ON_TYPE_RUNS = a_verb_on_its_type_runs_under_its_types_grants_and_records_its_output,
     "013, extended: a `low` external verb declared with `scope: type` is described with that scope and called with no key by a principal with write on its type; it answers `applied` with its executor's output, its `verb_called` carries no key and is written in log format 8, and the output is recorded as `output_recorded` caused by it"
 );
 
 check!(
-    /// A verb on its type at a higher risk is proposed, and runs when
-    /// accepted.
     ON_TYPE_PROPOSED = a_verb_on_its_type_at_medium_risk_is_proposed_and_runs_when_accepted,
     "013, extended: a `medium` verb on its type is recorded as a proposal whose call carries no key and runs nothing; accepting it runs its executor once and records the output, caused by the acceptance"
 );
 
 check!(
-    /// A verb on its type needs write on its type.
     ON_TYPE_GRANTS = a_verb_on_its_type_without_write_on_its_type_is_not_granted,
     "006 and 013, extended: a principal that may write another type but only read the verb's type is refused not_granted when it calls the verb on that type, and nothing is appended"
 );
 
 check!(
-    /// A retry of a verb on its type answers the first outcome.
     ON_TYPE_IDEMPOTENT = a_verb_on_its_type_retried_with_its_key_answers_the_first_outcome,
     "013, extended, and 015: a verb on its type called again with the same idempotency key answers the first outcome, appends no second `verb_called` and runs its executor once"
 );
 
 check!(
-    /// A key that does not fit the verb's scope is refused, naming the
-    /// verb.
     ON_TYPE_KEY = a_key_that_does_not_fit_the_verbs_scope_is_refused_naming_the_verb,
     "013, extended: a key passed to a verb on its type, none passed to a verb on a record, and an expected version with no key are each refused as invalid naming the verb, before grants are read, and nothing is appended"
 );
 
 check!(
-    /// A verb on its type neither writes nor requires.
     ON_TYPE_DECLARED = a_verb_on_its_type_with_a_write_effect_or_requires_is_refused,
     "013, extended: a verb declared with `scope: type` and a `write` effect, or with `requires`, is refused as invalid naming the verb, since it has no record to set or to read, and nothing is appended"
 );
@@ -137,8 +125,8 @@ fn calls_of(events: &[lakelands_api::event::Event], verb: &str) -> Vec<(Position
 }
 
 async fn a_verb_on_its_type_runs_under_its_types_grants_and_records_its_output(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = ledger(store.as_ref(), "create_payment", "low").await?;
     let clerk = type_writer(store.as_ref(), "clerk", "payment");
     let described = l
@@ -200,8 +188,8 @@ async fn a_verb_on_its_type_runs_under_its_types_grants_and_records_its_output(
 }
 
 async fn a_verb_on_its_type_at_medium_risk_is_proposed_and_runs_when_accepted(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = ledger(store.as_ref(), "open_ticket", "medium").await?;
     let clerk = type_writer(store.as_ref(), "clerk", "payment");
     let runs = executed("open_ticket");
@@ -257,9 +245,7 @@ async fn a_verb_on_its_type_at_medium_risk_is_proposed_and_runs_when_accepted(
     Ok(())
 }
 
-async fn a_verb_on_its_type_without_write_on_its_type_is_not_granted(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_verb_on_its_type_without_write_on_its_type_is_not_granted(store: Store) -> Held {
     let l = ledger(store.as_ref(), "settle_payment", "low").await?;
     let outsider = type_writer(store.as_ref(), "outsider", "partner");
     let before = store.head().await.must("reading the head")?;
@@ -285,9 +271,7 @@ async fn a_verb_on_its_type_without_write_on_its_type_is_not_granted(
     .await
 }
 
-async fn a_verb_on_its_type_retried_with_its_key_answers_the_first_outcome(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_verb_on_its_type_retried_with_its_key_answers_the_first_outcome(store: Store) -> Held {
     let l = ledger(store.as_ref(), "book_payment", "low").await?;
     let before = store.head().await.must("reading the head")?;
     let runs = executed("book_payment");
@@ -327,9 +311,7 @@ async fn a_verb_on_its_type_retried_with_its_key_answers_the_first_outcome(
     Ok(())
 }
 
-async fn a_key_that_does_not_fit_the_verbs_scope_is_refused_naming_the_verb(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_key_that_does_not_fit_the_verbs_scope_is_refused_naming_the_verb(store: Store) -> Held {
     let l = ledger(store.as_ref(), "issue_payment", "low").await?;
     l.upsert("partner", "p1", json!({"name": "Acme"})).await?;
     // A principal that reads and writes nothing: the key is checked before
@@ -371,9 +353,7 @@ async fn a_key_that_does_not_fit_the_verbs_scope_is_refused_naming_the_verb(
     Ok(())
 }
 
-async fn a_verb_on_its_type_with_a_write_effect_or_requires_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_verb_on_its_type_with_a_write_effect_or_requires_is_refused(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(type_decl("payment", vec![field("ref", StorageKind::Text)]))
         .await?;
@@ -405,9 +385,7 @@ async fn a_verb_on_its_type_with_a_write_effect_or_requires_is_refused(
     Ok(())
 }
 
-async fn a_feed_filtered_by_type_passes_none_of_a_verbs_events(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_feed_filtered_by_type_passes_none_of_a_verbs_events(store: Store) -> Held {
     let l = ledger(store.as_ref(), "open_ticket", "medium").await?;
     let from = store.head().await.must("reading the head")?.next();
     let proposed = on_type(&l, &l.own, "open_ticket", json!({"amount": 3}))

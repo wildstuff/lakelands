@@ -8,27 +8,25 @@
 //! Both facts are in the log, in the same append, caused by that write.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
+use lakelands_api::Patch;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::write::Declaration;
-use lakelands_api::{LakeStore, Patch};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, events_after, events_from, field, find_where, object_set_on, trigger_on, type_decl,
     type_of, write_verb,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A trigger fires, and a set changes, on a verb's write.
     VERB_WRITE_REACTS = a_trigger_fires_on_a_verbs_write,
     "004 and 013: a verb's write fires the triggers whose guard holds and changes object sets in the same append, caused by that write, as any other write does"
 );
 
-async fn a_trigger_fires_on_a_verbs_write(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_trigger_fires_on_a_verbs_write(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let declarations = [
@@ -92,14 +90,11 @@ async fn a_trigger_fires_on_a_verbs_write(store: Arc<dyn LakeStore>) -> Result<(
 }
 
 check!(
-    /// A set's members are read through its filter.
     SET_READ_BY_ITS_FILTER = a_sets_filter_from_describe_finds_the_members_its_events_record,
     "004, and seams `Reading an object set`: for records written after a set is declared, `find` under the filter `describe` answers for the set returns exactly the records the latest `object_set_changed` of each says are in it, and `(f1) and not (f2)` returns the members of one set that are not in the other"
 );
 
-async fn a_sets_filter_from_describe_finds_the_members_its_events_record(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_sets_filter_from_describe_finds_the_members_its_events_record(store: Store) -> Held {
     use StorageKind::{Number, Text};
     let l = Lake::of(store.as_ref());
     l.declare(type_of("invoice", &[("status", Text), ("amount", Number)]))

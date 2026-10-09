@@ -4,26 +4,22 @@
 //! report's id is made over what the report shows, so that neither says
 //! that a type has a field its reader may not know of.
 
-use std::sync::Arc;
-
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::write::{Migration, MigrationReport, ProposalFilter, ProposedWrite};
-use lakelands_api::{Access, LakeStore, Outcome, Principal, ProposalId};
+use lakelands_api::{Access, Outcome, Principal, ProposalId};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{Lake, Must, describe_type, events_after, field_access};
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A hash covers the shape its reader is shown.
     HASH_OF_THE_SHOWN_SHAPE = a_schema_hash_is_that_of_the_shape_its_reader_is_shown,
     "024, extended (lakelands#644): a schema hash answered to a reader is that of the declaration it is shown, without the fields and link fields it may not know of, the relations it is not shown (lakelands#662) and a view it is not described, in `describe`, a preview and a listed proposal; `more` is decided before the hashes, a report's id is made over what it shows and the head, the `to` hash is judged through the migration's renames, a stale proposal's `from` is that of the type it was made from; the accept, the log and the owner keep the whole hash"
 );
 
 check!(
-    /// A stale proposal is judged by the names it was made with.
     STALE_BY_ITS_NAMES = a_stale_proposal_is_judged_by_the_names_it_was_made_with,
     "024 and 006, extended (lakelands#644): a proposed migration made while a field bore its old name, listed after the field was renamed and is hidden under its new name, names it in neither its `to`, its report nor its hashes, and says `more`: the reader's grants are followed to the proposal's position"
 );
@@ -84,15 +80,13 @@ async fn proposed(l: &Lake, who: &Principal, m: Migration) -> Result<ProposalId,
     }
 }
 
-async fn applied(l: &Lake, m: Migration) -> Result<(), Failure> {
+async fn applied(l: &Lake, m: Migration) -> Held {
     let report = l.cat.migrate(&l.own, m.clone()).await.must("previewing")?;
     let done = l.cat.migrate_apply(&l.own, m, &report.data.report_id).await;
     done.must("applying").map(drop)
 }
 
-async fn a_schema_hash_is_that_of_the_shape_its_reader_is_shown(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_schema_hash_is_that_of_the_shape_its_reader_is_shown(store: Store) -> Held {
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     let text = json!({"kind": "text"});
     let person =
@@ -238,9 +232,7 @@ async fn a_schema_hash_is_that_of_the_shape_its_reader_is_shown(
     check_listed(listed(&l, &hid).await?, &h1).map_err(Failure::new)
 }
 
-async fn a_stale_proposal_is_judged_by_the_names_it_was_made_with(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_stale_proposal_is_judged_by_the_names_it_was_made_with(store: Store) -> Held {
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     // Each field `name` of text, or `name:kind`.
     let ledger = |fields: &[&str]| {

@@ -4,23 +4,21 @@
 //! extended).
 
 use std::fmt::Debug;
-use std::sync::Arc;
 
 use lakelands_api::read::{Find, Get};
-use lakelands_api::{Access, Error, LakeStore, Refusal};
+use lakelands_api::{Access, Error, Refusal};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{Lake, Must, field_access, pattern, reads_all};
+use crate::conformance::{Held, Store};
 
 check!(
-    /// A view over a field its reader may not read names nothing.
     VIEW_OVER_A_HIDDEN_FIELD = a_view_over_a_field_its_reader_may_not_read_names_nothing,
     "024, extended: `find`, `get` and a pattern started on a view whose `where` or a measure reads a field its reader may not know of, or may not read, are refused as not granted, on no field and with neither the field nor its source in the text; a reader who may read every field the definition reads is answered, and one with the `schema` grant, whom `describe` shows the definition, is told the field as before"
 );
 
 /// Fails unless `answer` is a refusal as not granted that names no field.
-fn names_nothing<T: Debug>(what: &str, answer: lakelands_api::Result<T>) -> Result<(), Failure> {
+fn names_nothing<T: Debug>(what: &str, answer: lakelands_api::Result<T>) -> Held {
     let no_field = Error::Refused {
         field: None,
         reason: Refusal::NotGranted,
@@ -32,9 +30,7 @@ fn names_nothing<T: Debug>(what: &str, answer: lakelands_api::Result<T>) -> Resu
     Ok(())
 }
 
-async fn a_view_over_a_field_its_reader_may_not_read_names_nothing(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_view_over_a_field_its_reader_may_not_read_names_nothing(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let text = |n: &str| json!({"name": n, "type": {"kind": "text"}});
     let number = |n: &str| json!({"name": n, "type": {"kind": "number"}});

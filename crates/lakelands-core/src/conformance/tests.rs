@@ -25,8 +25,8 @@ use lakelands_api::{
 
 use super::fixture::Must;
 use super::{
-    Check, Failure, FreshLake, Harness, Relimit, Reopen, Report, Tally, checks, run_all,
-    run_checks, run_one,
+    Check, Failure, FreshLake, Harness, Held, Relimit, Reopen, Report, Store, Tally, checks,
+    run_all, run_checks, run_one,
 };
 
 /// Drives a future to completion on this thread. Everything the tests
@@ -193,7 +193,7 @@ impl Harness for DownHarness {
     }
     fn fresh(&self, _: Seams) -> FreshLake<'_> {
         Box::pin(async {
-            let store: Arc<dyn LakeStore> = Arc::new(DownStore(LakeId::from("conformance")));
+            let store: Store = Arc::new(DownStore(LakeId::from("conformance")));
             Ok(store)
         })
     }
@@ -269,20 +269,20 @@ fn a_harness_that_cannot_open_a_lake_fails_every_check() {
     );
 }
 
-async fn passes(_: Arc<dyn LakeStore>) -> std::result::Result<(), Failure> {
+async fn passes(_: Store) -> Held {
     Ok(())
 }
 
-async fn panics(_: Arc<dyn LakeStore>) -> std::result::Result<(), Failure> {
+async fn panics(_: Store) -> Held {
     panic!("on purpose")
 }
 
-async fn fails(_: Arc<dyn LakeStore>) -> std::result::Result<(), Failure> {
+async fn fails(_: Store) -> Held {
     ensure!(1 + 1 == 3, "arithmetic holds, so this fails");
     Ok(())
 }
 
-async fn asserts(_: Arc<dyn LakeStore>) -> std::result::Result<(), Failure> {
+async fn asserts(_: Store) -> Held {
     for n in 0..3 {
         ensure!(n < 3, "{n} is below three");
     }

@@ -3,8 +3,6 @@
 //! `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
 //! each extended): what the author may not know of is not its to remove.
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::ontology::{Derived, MatchPair, RelationDecl, StorageKind, TypeDecl};
 use lakelands_api::principal::TypeGrants;
@@ -12,21 +10,19 @@ use lakelands_api::write::{Declaration, Migration, ProposalFilter, ProposedWrite
 use lakelands_api::{Access, Catalog, FieldName, LakeStore, Outcome, Principal, ProposalId};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, alike_renamed, derived, field, field_access, invalid_case, invalid_like, migration,
     reference, refused_on, type_of, value,
 };
+use crate::conformance::{Failure, Held, Store};
 use crate::links::link_type_name;
 
 check!(
-    /// A migration keeps the fields its author may not know of.
     HIDDEN_FIELD_KEPT = a_migration_keeps_the_fields_its_author_may_not_know_of,
     "027 and 024, extended: a migration's `to` is read as its author's view, so a field hidden from the author stays as declared, with its values, whether the migration is applied by a principal with the schema grant or proposed and accepted; `dropped` lists only what the author saw and removed; the proposer reads its own proposal without the field, a reviewer who may see it reads it there"
 );
 
 check!(
-    /// No refusal of a change of shape names a hidden field.
     HIDDEN_NAME_NOT_LEARNED = a_change_of_shape_never_names_a_field_its_author_may_not_know_of,
     "027 and 024, extended: a type declared again from its author's view is taken, keeping the fields and the link fields hidden from the author, and the relations it is not shown, a reference to a type it is not shown kept as a field it may not know of (lakelands#718), whose target it names in vain, answered as one no type is (lakelands#716); a shape that names a hidden field is refused as a field declared twice; one that removes a field a hidden field or relation reads is refused on that field and names no other part; a rename from a hidden field is a rename from no field, and one from a hidden relation from no relation"
 );
@@ -46,7 +42,7 @@ fn without_salary(store: &dyn LakeStore, id: &str, schema: bool) -> Principal {
 
 /// Refuse unless `invoice` holds exactly the fields `want` and `i1` its
 /// salary still.
-async fn kept(l: &Lake, want: &[&str], after: &str) -> Result<(), Failure> {
+async fn kept(l: &Lake, want: &[&str], after: &str) -> Held {
     let fields = l.describe_type("invoice").await?.fields;
     let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
     let i1 = l.read("invoice", "i1").await?;
@@ -81,9 +77,7 @@ async fn shown(
     }
 }
 
-async fn a_migration_keeps_the_fields_its_author_may_not_know_of(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_migration_keeps_the_fields_its_author_may_not_know_of(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(invoice(&["no", "note", "salary", "team"]))
@@ -192,9 +186,7 @@ async fn hiding(l: &Lake, store: &dyn LakeStore) -> Result<Principal, Failure> {
     Ok(who)
 }
 
-async fn a_change_of_shape_never_names_a_field_its_author_may_not_know_of(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_change_of_shape_never_names_a_field_its_author_may_not_know_of(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let who = hiding(&l, store.as_ref()).await?;
@@ -318,14 +310,14 @@ async fn a_change_of_shape_never_names_a_field_its_author_may_not_know_of(
 }
 
 check!(
-    /// A migration's faults come in one order for a hidden name and an absent one.
-    HIDDEN_NAME_JUDGED_AS_ABSENT = a_migrations_faults_come_in_one_order_for_a_hidden_name_and_an_absent_one,
+    HIDDEN_NAME_JUDGED_AS_ABSENT =
+        a_migrations_faults_come_in_one_order_for_a_hidden_name_and_an_absent_one,
     "027 and 024, extended (lakelands#750): a migration's renames are judged against its author's view of the type, at the step that judges the lake's own, so a hidden field or relation renamed answers word for word as an absent one, alone and beside a fault judged before or after it; a shape naming a hidden field answers as one naming a field twice, and one also removing a field a hidden field reads is refused on that field first"
 );
 
 async fn a_migrations_faults_come_in_one_order_for_a_hidden_name_and_an_absent_one(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     let who = hiding(&l, store.as_ref()).await?;
     let m = |fields: &[&str], renames: &[(&str, &str)], relations: &[(&str, &str)]| {
@@ -443,14 +435,11 @@ async fn a_migrations_faults_come_in_one_order_for_a_hidden_name_and_an_absent_o
 }
 
 check!(
-    /// A shape names no field its author may not know of.
     HIDDEN_NAME_NOT_IN_THE_SHAPE = a_shape_names_no_field_its_author_may_not_know_of,
     "027 and 024, extended (lakelands#726): a valid time, a key or a relation's `via` its author gives anew names a field of its view, so a field it may not know of answers word for word as a name no field has, by `declare` and by `migrate`, and the type in force is unmoved; what stands as declared is taken, valid times left out as `describe` gives them, and a rename from a relation the author is not shown, or a relation of that name sent to a hidden type, answers as for no relation and no type; a valid time sent where one over such a field stands, the one in force restated too, is judged by its name first, answering as on a type with none, and only a field its author may name is refused, as the bound taken (lakelands#692); a valid-time bound over a field its reader may not know of is not described, and a read at a `valid_at`, its total and a `get` answer by the bounds shown, as on a type declared with those alone"
 );
 
-async fn a_shape_names_no_field_its_author_may_not_know_of(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_shape_names_no_field_its_author_may_not_know_of(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, .. } = &l;
     // `veiled` and `cloak` are hidden from the author, and so is `payroll`,

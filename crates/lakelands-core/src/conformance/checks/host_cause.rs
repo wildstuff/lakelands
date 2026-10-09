@@ -16,49 +16,42 @@ use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::principal::WriteContext;
 use lakelands_api::write::{Declaration, ProposedWrite};
-use lakelands_api::{Catalog, LakeStore, Position, RecordKey, Refusal, TypeName, WriteOpts};
+use lakelands_api::{Catalog, Position, RecordKey, Refusal, TypeName, WriteOpts};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, events_after, field, head_unmoved, ingest, invalid_case, limits, migration, nobody,
     patch, reactive, reads_all, reason, refused_on, source_record, sourced, trigger_on, try_upsert,
     type_decl, upsert, value_type, write_verb,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A host's cause lands on its write's own events.
     CAUSE_ON_OWN_EVENTS = a_reactive_write_with_a_cause_carries_it_on_each_of_its_events,
     "021, extended: a write through a catalog whose context names a cause carries it as the envelope's `cause` on each event the write itself appends (an upsert's record, a verb's `verb_called`, an ingest's record), while the events the store derives keep the store's cause (a trigger's firing names its write, a verb's write names its `verb_called`); no event's `context` carries `cause`"
 );
 
 check!(
-    /// A cause past the head is refused.
     CAUSE_PAST_HEAD = a_cause_past_the_head_is_refused_and_appends_nothing,
     "021, extended: a write whose context names a cause past the lake's head is refused as invalid naming both positions, appending nothing, after the door's own checks (016, extended); a cause at the head, and at position 0, is taken"
 );
 
 check!(
-    /// The ceiling holds on every door that writes.
     DEPTH_ON_EVERY_DOOR = the_reactive_ceiling_holds_on_every_door_that_writes,
     "021, as extended on 2026-09-25 (lakelands#257): a context deeper than the lake's max_reactive_depth is refused as too_deep naming that ceiling, appending nothing, through ingest, accept, reject, declare, apply, add_field, migrate_apply and migrate_value_type_apply as through the record doors"
 );
 
 check!(
-    /// The context comes first on every door.
     CONTEXT_FIRST = every_write_door_checks_the_context_before_anything_else,
     "021, extended (lakelands#344): a context past the ceiling is refused as too_deep before anything else a door checks, so a request that also breaks the door's own first rule (a principal without grants, a link type at an ordinary door, an undeclared type, relation, verb or proposal) is refused as too_deep on every write door; a principal of another lake is refused not_granted before that"
 );
 
 check!(
-    /// A trigger's ceiling is read where the cause is judged.
     TRIGGER_CEILING_AT_APPEND = a_triggers_ceiling_is_read_with_the_cause_at_the_append,
     "021, extended (lakelands#375): a reaction naming a cause past the head is refused as invalid even when the next append puts a firing there; once the firing is in the log, a reaction past its trigger's ceiling is refused too_deep naming the trigger, and that ceiling is read at the append, after the door's own checks, while the lake's ceiling comes first"
 );
 
-async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let reading = type_decl("reading", vec![sourced("value", StorageKind::Number)]);
@@ -181,9 +174,7 @@ async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(
     Ok(())
 }
 
-async fn a_cause_past_the_head_is_refused_and_appends_nothing(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_cause_past_the_head_is_refused_and_appends_nothing(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
         .await?;
@@ -251,9 +242,7 @@ async fn a_cause_past_the_head_is_refused_and_appends_nothing(
     Ok(())
 }
 
-async fn the_reactive_ceiling_holds_on_every_door_that_writes(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn the_reactive_ceiling_holds_on_every_door_that_writes(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     for t in [
@@ -394,9 +383,7 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
     Ok(())
 }
 
-async fn every_write_door_checks_the_context_before_anything_else(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn every_write_door_checks_the_context_before_anything_else(store: Store) -> Held {
     // Nothing is declared and nobody holds a grant: every door would
     // refuse each request below for its own reasons, after the context.
     let nobody = nobody(store.as_ref());
@@ -509,9 +496,7 @@ async fn every_write_door_checks_the_context_before_anything_else(
     head_unmoved(store.as_ref(), head, "the writes past the ceiling").await
 }
 
-async fn a_triggers_ceiling_is_read_with_the_cause_at_the_append(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_triggers_ceiling_is_read_with_the_cause_at_the_append(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("n", StorageKind::Number)]))

@@ -11,50 +11,42 @@
 //! later than the head, whose event's `known_at` is at or before it
 //! (`docs/log-format.md` §1.3).
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::{Error, Find, LakeStore, Missing, Position, ReadAt, Refusal, TypeName};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, all, all_found, before, declare, doors, field, get_at, log_events, owner, read_at,
     reason, type_decl, value,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// An instant answers the last position at or before it.
     POSITION_AT_AN_INSTANT = position_at_answers_the_last_position_at_or_before_an_instant,
     "009 and log-format §1.3: position_at answers, at each event's known_at, the last event at or before it; between two instants the earlier one's last; before the first event none; past the head the head; and a read as of the answer sees the lake as it stood then"
 );
 
 check!(
-    /// Writes and reads both answer their position.
     EVERY_REPLY_CARRIES_ITS_POSITION = every_reply_carries_the_position_it_reflects,
     "009: every answer to a read or a write carries the log position it reflects, so what a caller saw can be read again"
 );
 
 check!(
-    /// `as_of` a write's position sees that write and nothing later.
     AS_OF_SEES_THE_STATE_THERE = a_read_as_of_a_write_sees_that_write_and_nothing_later,
     "009: a read pinned with as_of answers the lake as it was at that position, not the head"
 );
 
 check!(
-    /// `as_of` the position before a write does not see it.
     AS_OF_BEFORE_A_WRITE = a_read_as_of_the_position_before_a_write_does_not_see_it,
     "009: the position a write answers is the first from which it is visible; one earlier, it is not"
 );
 
 check!(
-    /// Retiring removes a record from the head, not from history.
     RETIRE_KEEPS_HISTORY = retiring_a_record_does_not_erase_its_history,
     "the log format: a retired record is invisible at and after its retirement, and its history is kept"
 );
 
 check!(
-    /// A position the log has not reached is refused.
     PAST_THE_HEAD = a_read_as_of_a_position_past_the_head_is_refused_as_out_of_range,
     "015: a position that is not in the lake's log is refused as out of range, naming the head"
 );
@@ -66,9 +58,7 @@ async fn counter(store: &dyn LakeStore) -> Result<Lake, Failure> {
     Ok(Lake::of(store))
 }
 
-async fn every_reply_carries_the_position_it_reflects(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn every_reply_carries_the_position_it_reflects(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let ty = type_decl("counter", vec![field("n", StorageKind::Number)]);
@@ -126,9 +116,7 @@ async fn every_reply_carries_the_position_it_reflects(
     Ok(())
 }
 
-async fn a_read_as_of_a_write_sees_that_write_and_nothing_later(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_read_as_of_a_write_sees_that_write_and_nothing_later(store: Store) -> Held {
     let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let first = l.upsert("counter", "k", json!({"n": 1})).await?;
@@ -181,9 +169,7 @@ async fn a_read_as_of_a_write_sees_that_write_and_nothing_later(
     Ok(())
 }
 
-async fn a_read_as_of_the_position_before_a_write_does_not_see_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_read_as_of_the_position_before_a_write_does_not_see_it(store: Store) -> Held {
     let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let first = l.upsert("counter", "k", json!({"n": 1})).await?;
@@ -204,9 +190,7 @@ async fn a_read_as_of_the_position_before_a_write_does_not_see_it(
     Ok(())
 }
 
-async fn retiring_a_record_does_not_erase_its_history(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn retiring_a_record_does_not_erase_its_history(store: Store) -> Held {
     let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let counter = TypeName::from("counter");
@@ -238,9 +222,7 @@ async fn retiring_a_record_does_not_erase_its_history(
     Ok(())
 }
 
-async fn a_read_as_of_a_position_past_the_head_is_refused_as_out_of_range(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_read_as_of_a_position_past_the_head_is_refused_as_out_of_range(store: Store) -> Held {
     let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     l.upsert("counter", "k", json!({"n": 1})).await?;
@@ -258,9 +240,7 @@ async fn a_read_as_of_a_position_past_the_head_is_refused_as_out_of_range(
     Ok(())
 }
 
-async fn position_at_answers_the_last_position_at_or_before_an_instant(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn position_at_answers_the_last_position_at_or_before_an_instant(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("tick", vec![field("n", StorageKind::Number)]))

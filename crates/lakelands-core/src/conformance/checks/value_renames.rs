@@ -12,8 +12,6 @@
 //! computed again, the sets decide again, and a field's `initial` that
 //! names an old value is declared again with the new one.
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::ontology::{StorageKind, ValueTypeDecl};
@@ -24,113 +22,97 @@ use lakelands_api::write::{
 use lakelands_api::{Access, LakeStore, Position, Refusal, TypeName};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, all_found, computed_by, derived, events_after, field, field_access, find_at,
     followed, get_at, head_unmoved, migration, object_set_on, reason, refused_like, restrict,
     reviewer, trigger_on, try_upsert, type_decl,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A value renamed by its type's migration, in one event.
     RENAMES_IN_ONE_STEP = a_value_type_migration_renames_a_value_in_every_record_in_one_event,
     "027, extended (lakelands#553): a value type's migration with `renames` is preflighted through them, counting per field the values each pair rewrites, and applied as one `value_type_migrated` at the value type's next version, naming the types that use it; a record that held the old value holds the new one from that position, with its version and its field's provenance as they were, and as of the position before it holds the old; a record that held none is unchanged; a later write of the old value is refused"
 );
 
 check!(
-    /// Retired and restricted records are renamed too.
     RENAMES_EVERY_RECORD = a_value_rename_reaches_retired_and_restricted_records_and_leaves_them_so,
     "027, extended (lakelands#553): a value type's renames reach every stored record, retired and restricted ones included, in every field of every type that uses the value type, and leave a retired record retired and a restricted one restricted"
 );
 
 check!(
-    /// Renames that cannot be applied are refused before any walk.
     RENAMES_REFUSED = renames_that_name_a_value_twice_or_one_not_accepted_are_refused,
     "027, extended (lakelands#553): a rename of a value to itself, of a value twice, of a value the declaration in force does not accept, to one the new declaration does not accept, and any rename of a value type that is not text, are each refused as invalid, naming the pair, and nothing is appended; a stored value neither renamed nor accepted is a misfit, and the apply is refused"
 );
 
 check!(
-    /// Pairs map a value as it stood before.
     RENAMES_AT_ONCE = renames_apply_at_once_so_a_chain_and_a_swap_need_no_order,
     "027, extended (lakelands#553): every pair maps a value as it stood before the migration: `a → b, b → c` leaves no `a` at `c`, and `a → b, b → a` swaps them; two old values may take one new value"
 );
 
 check!(
-    /// A key field holding an old value refuses the rename.
     RENAMES_NO_KEY = a_rename_of_a_value_a_key_field_holds_is_refused,
     "027, extended (lakelands#553): a rename of a value a key field holds is refused as invalid, naming the type and the field and pointing to a re-key through the type's migration, and nothing is appended; a key field that holds no old value does not refuse it"
 );
 
 check!(
-    /// What reads a renamed value is computed again.
     RENAMES_COMPUTE_AGAIN = what_reads_a_renamed_value_is_computed_again_and_an_old_literal_refuses,
     "027, extended (lakelands#553): a derived field of the value type is renamed and computed again, a derived field that reads a renamed value is computed again as of the event, and a derived field of the value type whose expression holds an old value refuses the rename as invalid, naming the field"
 );
 
 check!(
-    /// Sets decide again in the same append.
     RENAMES_DECIDE_SETS = a_value_rename_decides_set_membership_in_its_append,
     "004 and 027, extended (lakelands#553): a value type's renames decide set membership again in their append, caused by the `value_type_migrated`, over the records as the step and the computation leave them: a set whose `where` names the new value, and one whose `where` reads a derived field over the renamed one; past the lake's `max_set_changes` the migration is refused `too_large`, naming the set, and appends nothing",
     given
 );
 
 check!(
-    /// A field's `initial` that names an old value is declared again.
     RENAMES_INITIAL = a_rename_declares_again_a_field_initial_that_names_an_old_value,
     "027 and 050, extended (lakelands#553): a field's `initial` that names an old value takes the new one: the system declares its type again after the `value_type_migrated`, in its append, and a record made later holds the new value"
 );
 
 check!(
-    /// No trigger fires at the step.
     RENAMES_FIRE_NOTHING = a_value_rename_fires_no_trigger,
     "021 and 027, extended (lakelands#553): a value type's renames change records by the fold, and no trigger fires at them"
 );
 
 check!(
-    /// A proposed rename is preflighted and accepted.
     RENAMES_PROPOSED = a_proposed_value_rename_is_accepted_only_over_the_fields_it_reported,
     "013 and 027, extended (lakelands#553): a proposed value type's migration carries its renames and its preflight's report; accepted, the `value_type_migrated` follows the `write_accepted`, caused by it; one whose report no longer names the fields that use the value type is refused as changed, and nothing is appended"
 );
 
 check!(
-    /// Renames need every using field shown.
     RENAMES_SHOWN = a_value_rename_is_not_granted_to_one_not_shown_every_field_it_writes,
     "024 and 027, extended (lakelands#553): a value type's migration with renames writes every field that uses it, so its preflight, its apply and its proposal are not granted, naming nothing, to a caller not shown one of them"
 );
 
 check!(
-    /// The feed names the event under each type it rewrites.
     RENAMES_IN_THE_FEED = the_feed_shows_a_value_rename_to_a_consumer_of_a_type_it_rewrites,
     "004 and 027, extended (lakelands#553): the change feed filtered by type shows a `value_type_migrated` to a consumer of a type it rewrites, and not to one of another type"
 );
 
 check!(
-    /// A rebuild leaves what the live fold left.
     RENAMES_REBUILT = a_rebuild_leaves_what_a_value_rename_left,
     "001 and 027, extended (lakelands#553): a projection rebuilt from a log that renames values, a page of the rebuild ending at the `value_type_migrated` over records earlier pages wrote, answers as the live one did, at the head and as of each position"
 );
 
 check!(
-    /// The report lists what may name an old value.
-    RENAMES_LIST_CONDITIONS = a_rename_report_lists_the_declarations_and_rules_that_may_name_an_old_value,
+    RENAMES_LIST_CONDITIONS =
+        a_rename_report_lists_the_declarations_and_rules_that_may_name_an_old_value,
     "024 and 027, extended (lakelands#553): the preflight of a rename lists, by kind and name, each declaration in force whose expressions hold an old value as a literal (a set, a trigger, a verb, a view, a function) and each aging rule on a type that uses the value type that moves from or to one, and changes none of them; a declaration the reader is not shown (a function too, judged as `describe` judges it, lakelands#770), and a rule whose `from` it may not read, is told only as one there may be, by its preflight and by the proposal listed to it, there with its grants followed to the proposal through the renames since"
 );
 
 check!(
-    /// A kept view counts by the new value.
     RENAMES_KEPT_VIEW = a_kept_view_over_a_renamed_value_counts_by_the_new_one,
     "027 and the `view_kept.` setting, extended (lakelands#553): a kept view grouped by a renamed field is ended and made again at the `value_type_migrated`, and counts by the new value, as its twin computes, live and after a rebuild"
 );
 
 check!(
-    /// An embedding over a renamed value is due, owed to the event.
     RENAMES_EMBED = an_embedding_over_a_renamed_value_is_embedded_again_caused_by_the_rename,
     "022 and 027, extended (lakelands#553): an embedding made from a renamed field is due on every record the rename changed, its answers recorded with the `value_type_migrated` as their cause, one call per new text; the lake's declaration again of a type whose `initial` a rename changes settles that type's records again, as every declaration of a type with a field computed outside the lake does",
     embedding
 );
 
 check!(
-    /// A backed answer holding an old value is a misfit.
     RENAMES_BACKED_MISFIT = a_backed_answer_that_holds_an_old_value_is_a_misfit_of_the_rename,
     "022 and 027, extended (lakelands#553): a field computed by a function with a backing is not renamed, since the lake does not write its answer: one that holds an old value is a misfit, named, and the rename is refused until the backing answers new values"
 );
@@ -246,9 +228,7 @@ async fn tasks(
     Ok(out)
 }
 
-async fn a_value_type_migration_renames_a_value_in_every_record_in_one_event(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_value_type_migration_renames_a_value_in_every_record_in_one_event(store: Store) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![]).await?;
     l.upsert("task", "t1", json!({"state": "open"})).await?;
     l.upsert("task", "t2", json!({"state": "done"})).await?;
@@ -301,8 +281,8 @@ async fn a_value_type_migration_renames_a_value_in_every_record_in_one_event(
 }
 
 async fn a_value_rename_reaches_retired_and_restricted_records_and_leaves_them_so(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![of_status("next")]).await?;
     for (key, state) in [("t1", "open"), ("t2", "open"), ("t3", "done")] {
         l.upsert("task", key, json!({"state": state, "next": "open"}))
@@ -339,9 +319,7 @@ async fn a_value_rename_reaches_retired_and_restricted_records_and_leaves_them_s
     Ok(())
 }
 
-async fn renames_that_name_a_value_twice_or_one_not_accepted_are_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn renames_that_name_a_value_twice_or_one_not_accepted_are_refused(store: Store) -> Held {
     let l = lake(store.as_ref(), &["open", "done", "void"], vec![]).await?;
     let score = Declaration::ValueType(vt(json!({"name": "score", "kind": "number"})));
     l.declare_as(score, "declaring `score`").await?;
@@ -383,9 +361,7 @@ async fn renames_that_name_a_value_twice_or_one_not_accepted_are_refused(
     head_unmoved(store.as_ref(), before, "a refused rename").await
 }
 
-async fn renames_apply_at_once_so_a_chain_and_a_swap_need_no_order(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn renames_apply_at_once_so_a_chain_and_a_swap_need_no_order(store: Store) -> Held {
     let l = lake(store.as_ref(), &["a", "b", "c"], vec![]).await?;
     for (key, state) in [("x1", "a"), ("x2", "b"), ("x3", "c")] {
         l.upsert("task", key, json!({ "state": state })).await?;
@@ -415,9 +391,7 @@ async fn renames_apply_at_once_so_a_chain_and_a_swap_need_no_order(
     Ok(())
 }
 
-async fn a_rename_of_a_value_a_key_field_holds_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rename_of_a_value_a_key_field_holds_is_refused(store: Store) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![]).await?;
     let mut keyed = type_decl("stage", vec![of_status("name")]);
     keyed.key = vec!["name".into()];
@@ -452,8 +426,8 @@ async fn a_rename_of_a_value_a_key_field_holds_is_refused(
 }
 
 async fn what_reads_a_renamed_value_is_computed_again_and_an_old_literal_refuses(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let mut copy = derived("shown", StorageKind::Text, "state", &["state"]);
     copy.ty.value_type = Some("status".into());
     let l = lake(store.as_ref(), &["open", "done"], vec![copy, is_active()]).await?;
@@ -485,9 +459,9 @@ async fn what_reads_a_renamed_value_is_computed_again_and_an_old_literal_refuses
 }
 
 async fn a_value_rename_decides_set_membership_in_its_append(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     given: crate::conformance::Given,
-) -> Result<(), Failure> {
+) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![is_active()]).await?;
     for d in [
         object_set_on("active", "task", "state = 'active'"),
@@ -552,9 +526,7 @@ async fn a_value_rename_decides_set_membership_in_its_append(
     head_unmoved(store.as_ref(), before, "a rename past the ceiling").await
 }
 
-async fn a_rename_declares_again_a_field_initial_that_names_an_old_value(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rename_declares_again_a_field_initial_that_names_an_old_value(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let decl = Declaration::ValueType(status(&["open", "done"]));
     l.declare_as(decl, "declaring `status`").await?;
@@ -592,7 +564,7 @@ async fn a_rename_declares_again_a_field_initial_that_names_an_old_value(
     Ok(())
 }
 
-async fn a_value_rename_fires_no_trigger(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_value_rename_fires_no_trigger(store: Store) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![]).await?;
     let woke = trigger_on("woke", "task", Some("state = 'active'"));
     l.declare_as(woke, "declaring a trigger").await?;
@@ -610,8 +582,8 @@ async fn a_value_rename_fires_no_trigger(store: Arc<dyn LakeStore>) -> Result<()
 }
 
 async fn a_proposed_value_rename_is_accepted_only_over_the_fields_it_reported(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![]).await?;
     l.upsert("task", "t1", json!({"state": "open"})).await?;
     let m = renamed(&["active", "done"], &[("open", "active")]);
@@ -646,8 +618,8 @@ async fn a_proposed_value_rename_is_accepted_only_over_the_fields_it_reported(
 }
 
 async fn a_value_rename_is_not_granted_to_one_not_shown_every_field_it_writes(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![]).await?;
     l.upsert("task", "t1", json!({"state": "open"})).await?;
     let mut blank = reviewer(store.as_ref(), true);
@@ -673,9 +645,7 @@ async fn a_value_rename_is_not_granted_to_one_not_shown_every_field_it_writes(
     head_unmoved(store.as_ref(), before, "a rename not granted").await
 }
 
-async fn the_feed_shows_a_value_rename_to_a_consumer_of_a_type_it_rewrites(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn the_feed_shows_a_value_rename_to_a_consumer_of_a_type_it_rewrites(store: Store) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![]).await?;
     l.declare(type_decl("note", vec![field("text", StorageKind::Text)]))
         .await?;
@@ -698,9 +668,7 @@ async fn the_feed_shows_a_value_rename_to_a_consumer_of_a_type_it_rewrites(
     Ok(())
 }
 
-async fn a_rebuild_leaves_what_a_value_rename_left(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rebuild_leaves_what_a_value_rename_left(store: Store) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![is_active()]).await?;
     let set = object_set_on("active", "task", "state = 'active'");
     l.declare_as(set, "declaring a set").await?;
@@ -739,8 +707,8 @@ async fn a_rebuild_leaves_what_a_value_rename_left(
 }
 
 async fn a_rename_report_lists_the_declarations_and_rules_that_may_name_an_old_value(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let more = ["note", "flag", "secret"].map(|f| field(f, StorageKind::Text));
     let l = lake(store.as_ref(), &["open", "done"], more.into()).await?;
     l.declare_json(
@@ -880,9 +848,7 @@ async fn a_rename_report_lists_the_declarations_and_rules_that_may_name_an_old_v
     Ok(())
 }
 
-async fn a_kept_view_over_a_renamed_value_counts_by_the_new_one(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_kept_view_over_a_renamed_value_counts_by_the_new_one(store: Store) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![]).await?;
     let mut by = crate::conformance::fixture::count_view("by_state", "task", "state");
     by.fields[0].ty.value_type = Some("status".into());
@@ -928,8 +894,8 @@ async fn a_kept_view_over_a_renamed_value_counts_by_the_new_one(
 }
 
 async fn an_embedding_over_a_renamed_value_is_embedded_again_caused_by_the_rename(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     use crate::conformance::backing::{EMBED_MODEL, embedded};
     let (old, new) = ("renames-553-open", "renames-553-active");
     let l = Lake::of(store.as_ref());
@@ -959,9 +925,7 @@ async fn an_embedding_over_a_renamed_value_is_embedded_again_caused_by_the_renam
     Ok(())
 }
 
-async fn a_backed_answer_that_holds_an_old_value_is_a_misfit_of_the_rename(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_backed_answer_that_holds_an_old_value_is_a_misfit_of_the_rename(store: Store) -> Held {
     use crate::conformance::backing::KIND;
     let l = Lake::of(store.as_ref());
     let decl = Declaration::ValueType(status(&["open", "done"]));

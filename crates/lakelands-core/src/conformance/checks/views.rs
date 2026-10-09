@@ -10,7 +10,6 @@
 //! partner).
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use lakelands_api::error::{Case, Place};
 use lakelands_api::key::UNGROUPED;
@@ -25,112 +24,95 @@ use rust_decimal::Decimal;
 use serde_json::json;
 
 use super::search::doc_search;
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, count_view, dec, decimal, delivered, embedding, field, field_access, find_where,
     get_at, head_unmoved, invalid_case, invalid_like, invalid_said, measure, object_set_on,
     partner_totals, pattern, refused_like, source_record, step, trigger_on, type_decl, type_of,
     value, vector, view_of,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A view record's key is its group.
     VIEW_KEY_IS_ITS_GROUP = a_view_record_is_keyed_by_its_group_by_fields,
     "018 and the log format §2.3: a view record's key is made from its `group_by` fields as any record key is, each value with `%` and `:` escaped, joined by `:` in declared order"
 );
 
 check!(
-    /// A view without `group_by` holds one record.
     UNGROUPED_HOLDS_ONE = an_ungrouped_view_holds_one_record_keyed_all_even_over_none,
     "018, extended: a view without `group_by` holds exactly one record, keyed `all`, the totals over every source record its `where` keeps, even when it keeps none (a count and a sum of none are 0, a minimum null); `get` answers it by that key and no other, and a read's parameters and a merged source measure into the same record"
 );
 
 check!(
-    /// A view groups its source and sums it exactly.
     GROUPS_AND_SUMS = a_view_groups_its_source_and_sums_it_exactly,
     "the ontology: a view type is computed from its source's records, one record per group, measures exact for decimals"
 );
 
 check!(
-    /// A view does not depend on when it was declared.
     SAME_EITHER_WAY = a_view_is_the_same_whether_declared_before_or_after_its_source_was_written,
     "the ontology: a view is a function of its source's state, so how the source got there cannot change a byte of it"
 );
 
 check!(
-    /// A group with no members left has no record.
     EMPTIED_GROUP_GOES = a_view_drops_a_group_whose_last_member_is_retired,
     "the ontology: a view holds a record per group that has members; retiring a group's last member removes the group"
 );
 
 check!(
-    /// A pattern may start on a view.
     PATTERN_STARTS_ON_A_VIEW = a_pattern_started_on_a_view_holds_the_records_find_returns,
     "018 and 026: a view is read like any other type, so a pattern started on it by key, by `where` or with neither has as its graph's nodes exactly the records `find` returns for that selection; a key with no group has none"
 );
 
 check!(
-    /// A walk reaches a view over a derived relation.
     WALK_REACHES_A_VIEW = a_walk_over_a_derived_relation_reaches_a_views_records_both_ways,
     "018, 026 and 044: a derived relation between a stored type and a view connects their records by matching values like any other, so a walk out from the stored type reaches the view's records, a step's `where` keeps those of them it holds for, and a walk in from the view reaches the stored ones"
 );
 
 check!(
-    /// A view's field asks for no search.
     VIEW_FIELD_NOT_SEARCHED = a_view_field_that_asks_to_be_searched_or_embedded_is_refused,
     "018: a view is not searched, so `declare` refuses a view field that is searchable, carries an embedding or is a vector, naming the view and the field"
 );
 
 check!(
-    /// Nothing that could never act is declared on a view.
     NO_TRIGGER_OR_SET_ON_A_VIEW = a_trigger_or_object_set_on_a_view_is_refused,
     "018, extended: a view is never written, so `declare` and `apply` refuse a trigger on a view, which no write would fire, and an object set over one, which holds stored records, naming both; nothing is appended"
 );
 
 check!(
-    /// A relation on a view is derived.
     VIEW_RELATIONS_DERIVED = a_relation_on_a_view_is_derived_or_refused,
     "018, extended, and 035: a view's records are computed and never written, so `declare` and `apply` refuse a relation on a view carried by link records or by a `via` field, which could never hold an edge, naming the view and the relation; a relation derived from matching values is taken"
 );
 
 check!(
-    /// A view reads only what its sources have.
     VIEW_READS_ITS_SOURCES = a_view_reading_a_field_its_source_lacks_is_refused,
     "028 and 018: `declare` and `apply` refuse a view whose `where` names, or whose measures aggregate, a field its source or a merged source does not have, naming the view, the source and the field; a name outside an aggregate is an earlier measure or a grouping field, and is taken"
 );
 
 check!(
-    /// A view is not searched.
     VIEW_NOT_SEARCHED = a_search_on_a_view_is_refused_naming_it,
     "018: a view's records are computed on read and no index holds them, so a lexical, vector or hybrid search on a view is refused as invalid, naming the view, never answered empty"
 );
 
 check!(
-    /// A view may not read itself.
     SOURCE_CYCLE_REFUSED = a_view_closing_a_cycle_over_source_is_refused_naming_the_chain,
     "018 and 028: a view may not read itself, directly or through other views, so `declare` refuses a view whose `source` closes a cycle of length 1, 2 or 3, and a set applied whole whose new views close one among themselves, naming the chain; the views keep what they read"
 );
 
 check!(
-    /// A view declares the fields it computes.
     VIEW_FIELDS_DECLARED = a_view_declares_exactly_the_fields_it_computes,
     "018 and 028: a read answers declared fields only, so `declare` refuses a view whose `group_by` field or measure has no declared field, or which declares a field nothing computes, naming it"
 );
 
 check!(
-    /// A measure read by name is no source field.
     MEASURE_BY_NAME_DESCRIBED = a_view_whose_measure_reads_another_is_described_to_its_readers,
     "024 and 018: `describe` answers a view's definition to a principal who reads every field of its source that it names; a measure that reads an earlier measure by name names no field, so it keeps the definition from no one, while a name inside an aggregate is the source's field, even where a measure has the same name"
 );
 
 check!(
-    /// Ingest keeps a view current.
     CURRENT_AFTER_INGEST = a_view_over_an_ingested_source_is_current_once_the_ingest_is_committed,
     "016 and the ontology: both write doors are folded by the same rules, so a view over ingested records is kept like any other"
 );
 
 check!(
-    /// Every door refuses a view alike.
     REFUSED_ALIKE = every_door_that_writes_or_holds_a_record_refuses_a_view_alike,
     "018, extended (lakelands#370): upsert, retire, link, unlink, ingest, propose, restrict and unrestrict each refuse a view as invalid naming it, as upsert does, before the grants; declaring a verb on a record of a view is refused naming both, while a verb on the view's type that reaches outside is taken"
 );
@@ -197,15 +179,13 @@ fn want(rows: &[(&str, &str, f64)]) -> Vec<(String, Option<Decimal>, Option<f64>
         .collect()
 }
 
-async fn write_invoice(l: &Lake, nr: &str, partner: &str, amount: &str) -> Result<(), Failure> {
+async fn write_invoice(l: &Lake, nr: &str, partner: &str, amount: &str) -> Held {
     let fields = json!({"partner": partner, "amount": amount});
     l.upsert("invoice", nr, fields).await?;
     Ok(())
 }
 
-async fn a_view_groups_its_source_and_sums_it_exactly(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_view_groups_its_source_and_sums_it_exactly(store: Store) -> Held {
     let l = invoiced(store.as_ref(), Some("partner_totals")).await?;
     for (nr, partner, amount) in [
         ("i1", "p1", "10.00"),
@@ -227,8 +207,8 @@ async fn a_view_groups_its_source_and_sums_it_exactly(
 }
 
 async fn a_view_is_the_same_whether_declared_before_or_after_its_source_was_written(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = invoiced(store.as_ref(), Some("totals_early")).await?;
     for (nr, partner, amount) in [
         ("i1", "p1", "10.00"),
@@ -269,9 +249,7 @@ async fn a_view_is_the_same_whether_declared_before_or_after_its_source_was_writ
     Ok(())
 }
 
-async fn a_view_drops_a_group_whose_last_member_is_retired(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_view_drops_a_group_whose_last_member_is_retired(store: Store) -> Held {
     let l = invoiced(store.as_ref(), Some("partner_totals")).await?;
     write_invoice(&l, "i1", "p1", "10.00").await?;
     write_invoice(&l, "i2", "p2", "3.00").await?;
@@ -292,8 +270,8 @@ async fn a_view_drops_a_group_whose_last_member_is_retired(
 }
 
 async fn a_view_over_an_ingested_source_is_current_once_the_ingest_is_committed(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(invoices(Authority::Source)).await?;
     l.declare(partner_totals("partner_totals", StorageKind::Decimal))
@@ -326,9 +304,7 @@ async fn a_view_over_an_ingested_source_is_current_once_the_ingest_is_committed(
     Ok(())
 }
 
-async fn a_view_record_is_keyed_by_its_group_by_fields(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_view_record_is_keyed_by_its_group_by_fields(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let mut source = invoices(Authority::Authored);
     source.fields.push(field("region", StorageKind::Text));
@@ -412,9 +388,7 @@ async fn nodes(l: &Lake, p: Pattern, far: &str) -> Result<Vec<String>, Failure> 
     Ok(got)
 }
 
-async fn a_pattern_started_on_a_view_holds_the_records_find_returns(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_pattern_started_on_a_view_holds_the_records_find_returns(store: Store) -> Held {
     let l = invoiced(store.as_ref(), Some("partner_totals")).await?;
     for (nr, partner, amount) in [
         ("i1", "p1", "10.00"),
@@ -455,9 +429,7 @@ async fn a_pattern_started_on_a_view_holds_the_records_find_returns(
     Ok(())
 }
 
-async fn a_walk_over_a_derived_relation_reaches_a_views_records_both_ways(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_walk_over_a_derived_relation_reaches_a_views_records_both_ways(store: Store) -> Held {
     let l = invoiced(store.as_ref(), Some("partner_totals")).await?;
     let mut partner = type_decl("partner", vec![field("name", StorageKind::Text)]);
     partner.key = vec![FieldName::from("name")];
@@ -511,9 +483,7 @@ async fn a_walk_over_a_derived_relation_reaches_a_views_records_both_ways(
     Ok(())
 }
 
-async fn a_view_field_that_asks_to_be_searched_or_embedded_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_view_field_that_asks_to_be_searched_or_embedded_is_refused(store: Store) -> Held {
     let l = invoiced(store.as_ref(), None).await?;
     let mut searchable = partner_totals("searched_totals", StorageKind::Decimal);
     searchable.fields[0].searchable = true;
@@ -538,9 +508,7 @@ async fn a_view_field_that_asks_to_be_searched_or_embedded_is_refused(
     Ok(())
 }
 
-async fn a_trigger_or_object_set_on_a_view_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_trigger_or_object_set_on_a_view_is_refused(store: Store) -> Held {
     use lakelands_api::write::Declaration;
     let l = invoiced(store.as_ref(), Some("pt")).await?;
     let Lake { cat, own } = &l;
@@ -586,9 +554,7 @@ async fn a_trigger_or_object_set_on_a_view_is_refused(
     head_unmoved(store.as_ref(), before, "every declaration on a view").await
 }
 
-async fn a_relation_on_a_view_is_derived_or_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_relation_on_a_view_is_derived_or_refused(store: Store) -> Held {
     use lakelands_api::write::Declaration;
     let l = invoiced(store.as_ref(), None).await?;
     let Lake { cat, own } = &l;
@@ -640,9 +606,7 @@ async fn a_relation_on_a_view_is_derived_or_refused(
     Ok(())
 }
 
-async fn a_view_reading_a_field_its_source_lacks_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_view_reading_a_field_its_source_lacks_is_refused(store: Store) -> Held {
     use lakelands_api::write::Declaration;
     let l = invoiced(store.as_ref(), None).await?;
     let Lake { cat, own } = &l;
@@ -707,7 +671,7 @@ async fn a_view_reading_a_field_its_source_lacks_is_refused(
     Ok(())
 }
 
-async fn a_search_on_a_view_is_refused_naming_it(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_search_on_a_view_is_refused_naming_it(store: Store) -> Held {
     use lakelands_api::query::{Search, SearchMode};
     let l = invoiced(store.as_ref(), Some("partner_totals")).await?;
     let Lake { cat, own } = &l;
@@ -746,9 +710,7 @@ fn counted(name: &str, source: &str) -> TypeDecl {
     count_view(name, source, "partner")
 }
 
-async fn a_view_closing_a_cycle_over_source_is_refused_naming_the_chain(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_view_closing_a_cycle_over_source_is_refused_naming_the_chain(store: Store) -> Held {
     use lakelands_api::write::Declaration;
     let l = invoiced(store.as_ref(), None).await?;
     let Lake { cat, own } = &l;
@@ -793,9 +755,7 @@ async fn a_view_closing_a_cycle_over_source_is_refused_naming_the_chain(
     Ok(())
 }
 
-async fn a_view_declares_exactly_the_fields_it_computes(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_view_declares_exactly_the_fields_it_computes(store: Store) -> Held {
     let l = invoiced(store.as_ref(), None).await?;
     let without = |name: &str| {
         let mut t = partner_totals("totals", StorageKind::Decimal);
@@ -820,9 +780,7 @@ async fn a_view_declares_exactly_the_fields_it_computes(
     Ok(())
 }
 
-async fn a_view_whose_measure_reads_another_is_described_to_its_readers(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_view_whose_measure_reads_another_is_described_to_its_readers(store: Store) -> Held {
     use lakelands_api::Access;
     let l = invoiced(store.as_ref(), None).await?;
     let Lake { cat, .. } = &l;
@@ -915,9 +873,7 @@ fn ungrouped(name: &str, filter: Option<&str>, limit: bool, credits: bool) -> Ty
     t
 }
 
-async fn an_ungrouped_view_holds_one_record_keyed_all_even_over_none(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn an_ungrouped_view_holds_one_record_keyed_all_even_over_none(store: Store) -> Held {
     let l = invoiced(store.as_ref(), None).await?;
     let Lake { cat, own } = &l;
     l.declare(type_of("credit", &[("amount", StorageKind::Decimal)]))
@@ -1000,9 +956,7 @@ async fn an_ungrouped_view_holds_one_record_keyed_all_even_over_none(
     Ok(())
 }
 
-async fn every_door_that_writes_or_holds_a_record_refuses_a_view_alike(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn every_door_that_writes_or_holds_a_record_refuses_a_view_alike(store: Store) -> Held {
     let l = invoiced(store.as_ref(), Some("pt")).await?;
     let Lake { cat, own } = &l;
     write_invoice(&l, "i1", "p1", "10.00").await?;

@@ -6,7 +6,6 @@
 //! `docs/decisions/029-every-answer-has-one-order.md`).
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use lakelands_api::error::Case;
 use lakelands_api::location::Limits;
@@ -21,42 +20,36 @@ use crate::conformance::fixture::{
     Lake, Must, doors, field, order, owner, patch, pattern, reads_all, reason, reference, restrict,
     searchable, step, type_decl,
 };
-use crate::conformance::{Failure, Given};
+use crate::conformance::{Failure, Given, Held, Store};
 
 check!(
-    /// Degree counts what a walk would follow.
     DEGREE_COUNTS = degree_counts_each_records_links_to_ends_it_may_see_highest_first,
     "026, 029 and 035: `degree` counts each start record's links over the steps' relations in each step's direction, a via reference and a link record alike, but not a link to a retired end or, without the grant, a restricted link; highest first, ties by key, paged by limit; a start by key or by `where` counts those records only, and a key no record has counts none"
 );
 
 check!(
-    /// Components partition what the start records reach.
     COMPONENTS_PARTITION = components_partition_what_the_start_reaches_largest_first,
     "026 and 029: `components` puts every record reached from the start over the steps' relations, both ways, in exactly one component, across types; components largest first, ties by their least (type, key), members by (type, key); a start by key or by a search reaches from those records only"
 );
 
 check!(
-    /// A measure reads the graph at its position.
     MEASURES_AT_THEIR_POSITION = a_measure_reads_the_graph_at_the_position_it_is_asked_at,
     "009 and 026: a measure `as_of` an earlier position counts the links live there, not a link written later"
 );
 
 check!(
-    /// Past the cap, components are refused, not cut.
     GRAPH_TOO_LARGE = components_past_the_lakes_max_graph_nodes_are_refused_too_large,
     "018 and the location's limits: `components` whose records, over all components, would number more than `max_graph_nodes` are refused as too_large naming the ceiling, and nothing partial is answered",
     given
 );
 
 check!(
-    /// A measure's page may be as large as its answer.
     MEASURE_IN_ONE_PAGE = a_measure_is_read_whole_in_one_page_up_to_max_graph_nodes,
     "026, extended, and the location's limits: a measure's `limit` may go up to the lake's `max_graph_nodes` where that is above `max_limit`, so one page answers the rows its small pages answer in turn, with no cursor; above that bound, and above `max_limit` for a `rows` projection, a `limit` is refused as invalid naming the bound",
     given
 );
 
 check!(
-    /// A measure refuses what it would otherwise ignore.
     MEASURE_REFUSALS = a_measure_refuses_depth_where_to_order_by_and_one_way_components,
     "018: a measure refuses a step `depth` or `where`, `to`, `order_by`, and a `components` step that does not walk `both`, each as invalid, rather than answer less than it seems to"
 );
@@ -117,7 +110,7 @@ async fn lake(store: &dyn LakeStore) -> Result<Position, Failure> {
     Ok(before)
 }
 
-async fn link(l: &Lake, from: &str, to: &str) -> Result<(), Failure> {
+async fn link(l: &Lake, from: &str, to: &str) -> Held {
     let (cat, who) = (l.cat.as_ref(), &l.own);
     cat.link(
         who,
@@ -186,9 +179,7 @@ fn show(row: &BTreeMap<String, Value>) -> String {
     }
 }
 
-async fn degree_counts_each_records_links_to_ends_it_may_see_highest_first(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn degree_counts_each_records_links_to_ends_it_may_see_highest_first(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -280,9 +271,7 @@ async fn degree_counts_each_records_links_to_ends_it_may_see_highest_first(
     Ok(())
 }
 
-async fn components_partition_what_the_start_reaches_largest_first(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn components_partition_what_the_start_reaches_largest_first(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -354,9 +343,7 @@ async fn components_partition_what_the_start_reaches_largest_first(
     Ok(())
 }
 
-async fn a_measure_reads_the_graph_at_the_position_it_is_asked_at(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_measure_reads_the_graph_at_the_position_it_is_asked_at(store: Store) -> Held {
     let before = lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -396,9 +383,9 @@ async fn a_measure_reads_the_graph_at_the_position_it_is_asked_at(
 }
 
 async fn components_past_the_lakes_max_graph_nodes_are_refused_too_large(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     given: Given,
-) -> Result<(), Failure> {
+) -> Held {
     lake(store.as_ref()).await?;
     let limits = |max_graph_nodes| Limits {
         max_graph_nodes,
@@ -446,9 +433,7 @@ async fn components_past_the_lakes_max_graph_nodes_are_refused_too_large(
         .await
 }
 
-async fn a_measure_refuses_depth_where_to_order_by_and_one_way_components(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_measure_refuses_depth_where_to_order_by_and_one_way_components(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -486,9 +471,9 @@ async fn a_measure_refuses_depth_where_to_order_by_and_one_way_components(
 }
 
 async fn a_measure_is_read_whole_in_one_page_up_to_max_graph_nodes(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     given: Given,
-) -> Result<(), Failure> {
+) -> Held {
     lake(store.as_ref()).await?;
     // Pages of two, and room for the eight records the components reach.
     let limits = Limits {
