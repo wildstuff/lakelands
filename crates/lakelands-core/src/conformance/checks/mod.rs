@@ -82,6 +82,7 @@ mod value_renames;
 mod value_types;
 mod values;
 mod vector_index;
+mod verb_reads;
 mod verbs_on_type;
 mod versions;
 mod view_kept;
@@ -257,6 +258,7 @@ pub const ALL: &[Check] = &[
     proposals::NOT_SHOWN_NOT_DECIDED,
     proposals::TOLD_AS_LISTED,
     readers_view::VALUES_AS_THE_READERS_VIEW,
+    verb_reads::VERB_READS_AS_A_FILTER,
     proposal_names::NAMES_AS_THE_READERS_VIEW,
     proposal_names::LISTED_AS_SHOWN,
     report_names::REPORT_AS_ITS_READERS_VIEW,

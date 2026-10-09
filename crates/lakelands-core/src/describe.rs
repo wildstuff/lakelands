@@ -646,17 +646,19 @@ fn relation_description(t: &TypeName, r: &RelationDecl, who: &Principal) -> Rela
 
 /// A verb is callable when every field its effect writes is granted to the
 /// principal, or — for a verb that reaches outside the lake — when the
-/// principal may write the type as a whole.
+/// principal may write the type as a whole; and it reads no field the
+/// principal may not read (024, extended).
 fn verb_callable(v: &VerbDecl, t: &TypeDecl, who: &Principal) -> bool {
-    match &v.effect {
-        VerbEffect::Write { set } => {
-            !set.is_empty()
-                && set
-                    .iter()
-                    .all(|a| who.grants.access(&t.name, &a.field).writes())
+    crate::rights::reads_what_verb_reads(who, t, v)
+        && match &v.effect {
+            VerbEffect::Write { set } => {
+                !set.is_empty()
+                    && set
+                        .iter()
+                        .all(|a| who.grants.access(&t.name, &a.field).writes())
+            }
+            VerbEffect::External { .. } => type_access(who, &t.name).writes(),
         }
-        VerbEffect::External { .. } => type_access(who, &t.name).writes(),
-    }
 }
 
 fn verb_description(

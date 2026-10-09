@@ -1897,10 +1897,11 @@ impl<'a> Reader<'a> {
             .into_iter()
             .filter(|p| self.who.grants.review || p.proposer == me)
             .filter(|p| !rights::holds_only(self.who) || !migration(p))
-            // A proposal on a type its reader is not shown is not there to
-            // it, as its accept answers (lakelands#762).
+            // A proposal on a type its reader is not shown, or of a call of
+            // a verb that reads a field it may not read, is not there to
+            // it, as its accept answers (lakelands#762; 024, extended).
             .filter(|p| {
-                let hidden = |w| crate::writes::hidden_by_type(&self.shape.ontology, self.who, w);
+                let hidden = |w| crate::writes::hidden_from(&self.shape.ontology, self.who, w);
                 !p.write.as_ref().is_some_and(hidden)
             })
             .collect();
@@ -2027,7 +2028,8 @@ impl<'a> Reader<'a> {
             // A payload is what the verb's fields become: whole to a reader
             // who may read each field the verb sets, or see the type an
             // executor acts on, and empty otherwise. The verb's name is its
-            // type's.
+            // type's. One whose verb reads a field the reader may not read
+            // is not listed ([`crate::writes::hidden_from`]).
             ProposedWrite::Call {
                 verb, key, payload, ..
             } => {

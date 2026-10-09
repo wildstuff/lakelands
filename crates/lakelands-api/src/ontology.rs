@@ -885,6 +885,33 @@ pub struct VerbDecl {
     pub description: Option<String>,
 }
 
+impl VerbDecl {
+    /// The record's fields the verb reads: those its `requires` reads, and
+    /// those its set values read but for `payload.<name>`, a member of the
+    /// call's payload. `None` where one of them does not parse.
+    pub fn fields_read(&self) -> Option<std::collections::BTreeSet<FieldName>> {
+        let set = match &self.effect {
+            VerbEffect::Write { set } => set.as_slice(),
+            VerbEffect::External { .. } => &[],
+        };
+        let mut read = std::collections::BTreeSet::new();
+        if let Some(r) = &self.requires {
+            read.extend(r.typed().ok()?.fields_read().into_iter().cloned());
+        }
+        for a in set {
+            read.extend(
+                a.value
+                    .typed()
+                    .ok()?
+                    .record_fields_read()
+                    .into_iter()
+                    .cloned(),
+            );
+        }
+        Some(read)
+    }
+}
+
 /// A verb as it is read: the effect's members beside the verb's own, each
 /// refused where the effect does not take it. serde cannot refuse an
 /// unknown member of a struct that flattens another, so the verb is read

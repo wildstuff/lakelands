@@ -154,7 +154,9 @@ pub trait Catalog: Send + Sync {
     /// grants as they were when it was proposed: the write was checked
     /// whole then, and a reviewer applies exactly what was checked. At
     /// acceptance the store checks again only what can have moved since —
-    /// the type's shape and the record's version. An accepted external
+    /// the type's shape and the record's version; a call is accepted only
+    /// by a reviewer who may read every field its verb reads (024). An
+    /// accepted external
     /// verb answers its executor's recorded `output`, as `call` does, and
     /// so does the accept sent again; any other accept sent again is
     /// `decided`.
