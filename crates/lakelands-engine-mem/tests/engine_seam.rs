@@ -42,3 +42,18 @@ fn every_engine_check_passes_on_the_memory_engine() {
     assert!(report.is_green(), "{report}");
     assert_eq!(report.passed.len(), ENGINE_CHECKS.len());
 }
+
+/// What every engine check asserts on the memory engine, one line per
+/// check, as the suite's tally prints it, by hand:
+/// `cargo test -p lakelands-engine-mem --test engine_seam -- --ignored --nocapture tally`.
+#[test]
+#[ignore = "prints the tallies; run by hand with --ignored"]
+fn the_tally_of_every_engine_check_on_the_memory_engine() {
+    let report = run_engine_checks(&Memory {
+        opener: MemoryOpener::new(),
+    });
+    for (check, tally) in &report.tallies {
+        println!("tally {} {} {check}", tally.evaluations, tally.sites);
+    }
+    assert!(report.is_green(), "{report}");
+}
