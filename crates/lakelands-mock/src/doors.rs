@@ -1044,11 +1044,13 @@ fn authored_writable(who: &Principal, t: &DeclaredType) -> bool {
 
 /// Whether a principal may retire records of a type: only if its grants
 /// let it write every field of the type, whatever the field's authority.
+/// As the store: a view's records are computed, and are never retired.
 fn may_retire(who: &Principal, t: &DeclaredType) -> bool {
-    t.decl
-        .fields
-        .iter()
-        .all(|f| who.grants.access(&t.decl.name, &f.name).writes())
+    t.decl.view.is_none()
+        && t.decl
+            .fields
+            .iter()
+            .all(|f| who.grants.access(&t.decl.name, &f.name).writes())
 }
 
 /// Whether `who` may read every field `v` reads, as the store judges a
@@ -1166,7 +1168,10 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
             .view
             .clone()
             .filter(|v| view_visible(st, who, v))
-            .map(|v| *v),
+            .map(|mut v| {
+                v.keep_measures(|n| fields.iter().any(|f| &f.name == n));
+                *v
+            }),
         fields,
         relations: d
             .relations
@@ -1188,7 +1193,7 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
             })
             .collect(),
         access: TypeAccess {
-            key: d.key.clone(),
+            key: d.key_fields().to_vec(),
             valid_from,
             valid_to,
             searchable,
@@ -1197,7 +1202,10 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
         may: TypeRights {
             find: true,
             get: true,
-            upsert: creates(who, d) && !links::is_link_type(&d.name) && authored_writable(who, t),
+            upsert: creates(who, d)
+                && d.view.is_none()
+                && !links::is_link_type(&d.name)
+                && authored_writable(who, t),
             retire: !links::is_link_type(&d.name) && may_retire(who, t),
             link: d
                 .relations
@@ -3091,6 +3099,18 @@ fn described_fields((st, who): (&State, &Principal), t: &mut TypeDecl) {
         t.valid_from.take().filter(held),
         t.valid_to.take().filter(held),
     );
+    // As the store: the key its records carry, and no measure of a field
+    // left out (lakelands#782).
+    t.key = t.key_fields().to_vec();
+    keep_known_measures(t);
+}
+
+/// As the store: `t`'s view without the measures that name a field `t`
+/// no longer holds.
+fn keep_known_measures(t: &mut TypeDecl) {
+    if let Some(v) = &mut t.view {
+        v.keep_measures(|n| t.fields.iter().any(|f| &f.name == n));
+    }
 }
 
 /// As the store: whether `t` declares `name`, a field or a link field
@@ -3380,6 +3400,7 @@ fn shown_hash(
     let mut shown = t.clone();
     known_fields((st, who), &mut shown);
     shown.view = shown.view.filter(|_| view_shown);
+    keep_known_measures(&mut shown);
     match shown == *t {
         true => whole.to_owned(),
         false => lakelands_api::shape::schema_hash(&shown).unwrap_or_default(),

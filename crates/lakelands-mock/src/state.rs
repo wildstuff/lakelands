@@ -439,12 +439,19 @@ impl State {
     /// sources, whatever a grant on its own name says.
     pub fn visible(&self, who: &Principal, ty: &TypeName) -> Option<&DeclaredType> {
         // As the store: a type keyed by a field its principal may not know
-        // of is not shown.
+        // of is not shown, a view's key judged where its values come from
+        // too (lakelands#782).
+        let known = |d: &TypeDecl, key: &[FieldName]| {
+            let mut key = d.fields.iter().filter(|f| key.contains(&f.name));
+            key.all(|f| access(who, d, f) != Access::None)
+        };
         let own = |t: &&DeclaredType| {
             let d = &t.decl;
             let given = |f| built_from(who, d, f, &mut Vec::new()).0 != Access::None;
-            let mut key = d.fields.iter().filter(|f| d.key.contains(&f.name));
-            key.all(|f| access(who, d, f) != Access::None)
+            let source = |s: &TypeName| self.types.get(s).map(|s| &s.decl);
+            let mut sources = d.key_sources().into_iter();
+            known(d, d.key_fields())
+                && sources.all(|(s, key)| source(s).is_none_or(|s| known(s, key)))
                 && (type_default(who, &d.name) != Access::None || d.fields.iter().any(given))
         };
         let shown = self.types.get(ty).filter(own)?;
@@ -677,10 +684,11 @@ fn built_from<'d>(
     let mut a = who.grants.access(&decl.name, &f.name);
     let mut from_source = false;
     seen.push(&f.name);
-    let sources = f
-        .depends_on
-        .iter()
-        .chain(f.embed.iter().flat_map(|e| &e.from));
+    // As the store: a view field is built from the measures its own reads.
+    let measured = decl.measure_reads(&f.name);
+    let sources = (f.depends_on.iter())
+        .chain(f.embed.iter().flat_map(|e| &e.from))
+        .chain(&measured);
     for name in sources {
         if seen.contains(&name) {
             continue;
@@ -689,7 +697,8 @@ fn built_from<'d>(
             a = match access_seen(who, decl, source, seen) {
                 s if s.reads() => a,
                 // Its value stays hidden; its write stays the principal's.
-                _ if a.writes() => Access::WriteOnly,
+                // As the store: a view's fields are never written.
+                _ if a.writes() && decl.view.is_none() => Access::WriteOnly,
                 Access::Masked if a.reads() => Access::Masked,
                 Access::Masked => a,
                 _ => {

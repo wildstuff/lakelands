@@ -1092,7 +1092,7 @@ async fn a_grant_that_cannot_be_applied_is_refused(
 check!(
     /// A grant that cannot be applied admits no record at any door.
     ONLY_UNAPPLIED_ADMITS_NONE = a_grant_that_cannot_be_applied_admits_no_record_at_any_door,
-    "051, extended (lakelands#771): a holder's `only` that cannot be applied admits none of the type's records, whatever a stored value holds: the proposal listing answers a reviewer every proposal on such a record without its write, and a reference into the type, a link's end too, is refused as naming no live record, exactly as an absent key is; an upsert, a verb, an unlink, a proposed upsert or retirement, a retirement and an ingest on a record whose value equals the pair answer as on one whose value does not, the link's end judged so too; a search as of a position admits no candidate where the grant cannot be applied to the head's declaration, a field made one the holder may not read there included, though its values stay, and no link whose end's type the grant so holds; a kept view grouped by the pair's field, and a view over it, answer nothing to such a grant through `find`, a sum, a count, groups, `total`, a read as of before and `get`, and refuse it where it hides the pair's field"
+    "051, extended (lakelands#771): a holder's `only` that cannot be applied admits none of the type's records, whatever a stored value holds: the proposal listing answers a reviewer every proposal on such a record without its write, and a reference into the type, a link's end too, is refused as naming no live record, exactly as an absent key is; an upsert, a verb, an unlink, a proposed upsert or retirement, a retirement and an ingest on a record whose value equals the pair answer as on one whose value does not, the link's end judged so too; a search as of a position admits no candidate where the grant cannot be applied to the head's declaration, a field made one the holder may not read there included, though its values stay, and no link whose end's type the grant so holds; a kept view grouped by the pair's field, and a view over it, answer nothing to such a grant through `find`, a sum, a count, groups, `total`, a read as of before and `get`, refuse it where it masks the pair's field, and answer as types not declared where it holds that field at `none`, since the view is grouped by it (lakelands#782)"
 );
 
 /// Grants on `claim` whose `only` cannot be applied though a stored value
@@ -1250,7 +1250,9 @@ async fn a_grant_that_cannot_be_applied_admits_no_record_at_any_door(
         );
         // A kept view grouped by the pair's field, and a view over it, admit
         // nothing; one whose pair she may not read refuses her outright.
-        let hidden = grant.get("fields").is_some();
+        // One she may not know of hides a view grouped by it (lakelands#782).
+        let unknown = grant["fields"]["owner"] == "none";
+        let hidden = grant.get("fields").is_some() && !unknown;
         for row in KEPT_UNAPPLIED
             .lines()
             .map(str::trim)
@@ -1270,6 +1272,7 @@ async fn a_grant_that_cannot_be_applied_admits_no_record_at_any_door(
                     reason: Refusal::NotGranted,
                     ..
                 }) if hidden => want.replace('-', ""),
+                Err(Error::NotFound { .. }) if unknown => want.replace('-', ""),
                 other => format!("{other:?}"),
             };
             if said != want.replace('-', "") {

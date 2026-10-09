@@ -452,11 +452,17 @@ pub fn type_shown<'a>(
     who: &Principal,
 ) -> bool {
     // A type keyed by a field its principal may not know of is not shown:
-    // every record key would hand out that field's value.
+    // every record key would hand out that field's value. A view's key is
+    // judged where its values come from too (lakelands#782).
+    let known = |t: &TypeDecl, key: &[FieldName]| {
+        let mut key = t.fields.iter().filter(|f| key.contains(&f.name));
+        key.all(|f| field_access(who, t, f) != Access::None)
+    };
     let own = |t: &TypeDecl| {
         let fields = &mut t.fields.iter();
-        let mut key = t.fields.iter().filter(|f| t.key.contains(&f.name));
-        key.all(|f| field_access(who, t, f) != Access::None)
+        let mut sources = t.key_sources().into_iter();
+        known(t, t.key_fields())
+            && sources.all(|(s, key)| find(s).is_none_or(|s| known(s, key)))
             && (type_access(who, &t.name) != Access::None
                 || fields.any(|f| granted_access(who, t, f) != Access::None))
     };
@@ -589,7 +595,10 @@ fn type_description(
         description: t.description.clone(),
         label: t.label.clone(),
         language: t.language.clone(),
-        view: view.map(|v| *v),
+        view: view.map(|mut v| {
+            v.keep_measures(|n| fields.iter().any(|f| &f.name == n));
+            *v
+        }),
         annotations: t.annotations.clone(),
         relations: t
             .relations
@@ -598,7 +607,8 @@ fn type_description(
             .map(|r| relation_description(&t.name, r, who))
             .collect(),
         access: TypeAccess {
-            key: t.key.clone(),
+            // The key its records carry (lakelands#782).
+            key: t.key_fields().to_vec(),
             // A valid time over a field its reader may not know of is not
             // named (024, extended).
             valid_from: (t.valid_from.clone()).filter(|v| fields.iter().any(|f| &f.name == v)),

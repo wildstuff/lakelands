@@ -345,7 +345,18 @@ read nor named the type in the pattern, search and subscribe tools.
   type that is not declared, and so does every type made of it, a link
   type of its relations and a view over it. A key field the principal
   sees masked or may only write still gives its value through the key:
-  the field is known, and only its value is withheld elsewhere.
+  the field is known, and only its value is withheld elsewhere. A grouped
+  view's records are keyed by its `group_by`, whatever its `key` says,
+  and that key is judged at its sources too: each key field on the
+  view, on its source and on each merge source by position, since the
+  key holds their values (lakelands#782). It is also the key `describe`,
+  the tools and a listed declaration name. A view's definition shown to
+  a principal names no measure of a field it may not know of, as its
+  fields do not. A measure that reads such a measure by name, directly
+  or through another, is not known either, as a field derived from one
+  is not: its value would give the hidden one away. This holds for a
+  principal who may write as for one who reads, since a view's fields
+  are never written.
 - **A step walks a relation by its owner.** A relation is declared on
   the type the principal is shown, so a step over it is answered the
   other end's key also where the principal's grants keep it from the

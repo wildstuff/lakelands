@@ -198,7 +198,8 @@ impl FieldDescription {
 /// How records of a type are addressed and read.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TypeAccess {
-    /// The fields that form the key; empty when the writer gives it.
+    /// The fields that form the key its records carry, a grouped view's
+    /// `group_by`; empty when the writer gives it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub key: Vec<FieldName>,
     /// The `date_time` or `date` field holding business start time, if

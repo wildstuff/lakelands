@@ -341,6 +341,48 @@ pub struct EmbedDecl {
 }
 
 impl TypeDecl {
+    /// The fields a record of the type is keyed by: its `key`, or, of a
+    /// grouped view, its `group_by`, which its records carry whatever
+    /// `key` says (lakelands#782).
+    pub fn key_fields(&self) -> &[FieldName] {
+        match &self.view {
+            Some(v) if !v.group_by.is_empty() => &v.group_by,
+            _ => &self.key,
+        }
+    }
+
+    /// Of a view, where its key's values come from: its source and the
+    /// fields it groups by, then each merge source and the fields it
+    /// groups by, which line up with them position by position (018).
+    /// None of a stored type.
+    pub fn key_sources(&self) -> Vec<(&TypeName, &[FieldName])> {
+        let Some(v) = &self.view else {
+            return Vec::new();
+        };
+        let merged = v.merge.iter().map(|m| (&m.source, m.group_by.as_slice()));
+        std::iter::once((&v.source, v.group_by.as_slice()))
+            .chain(merged)
+            .collect()
+    }
+
+    /// Of a view, the view fields the measure making `field` reads by
+    /// name, its own or a merged source's: a field is built from them as a
+    /// derived field from its `depends_on`, so one built from a measure its
+    /// reader may not know of is not known either (024, lakelands#782).
+    /// None of a stored type.
+    pub fn measure_reads(&self, field: &FieldName) -> Vec<FieldName> {
+        let Some(v) = &self.view else {
+            return Vec::new();
+        };
+        let mut measures = (v.measures.iter()).chain(v.merge.iter().flat_map(|s| &s.measures));
+        let expr = measures.find(|m| &m.name == field).map(|m| m.expr.typed());
+        let Some(Ok(expr)) = expr else {
+            return Vec::new();
+        };
+        let reads = expr.fields_read_by_name().into_iter();
+        reads.filter(|n| *n != field).cloned().collect()
+    }
+
     /// The types this declared shape names against the one in force,
     /// `held` (lakelands#762): itself and, of a view, its sources; and the
     /// target of each relation and reference field it adds, changes or
@@ -695,6 +737,18 @@ pub struct ViewDecl {
     /// of its own that line up with `group_by` (018).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub merge: Vec<ViewSource>,
+}
+
+impl ViewDecl {
+    /// The definition without each measure, its own or a merged source's,
+    /// whose view field `known` does not answer: shown beside a type's
+    /// fields, it names none that they leave out (lakelands#782).
+    pub fn keep_measures(&mut self, known: impl Fn(&FieldName) -> bool) {
+        self.measures.retain(|m| known(&m.name));
+        for s in &mut self.merge {
+            s.measures.retain(|m| known(&m.name));
+        }
+    }
 }
 
 /// A further source of a view: its records, filtered by its `where`,

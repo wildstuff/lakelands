@@ -363,6 +363,16 @@ impl Expr {
             .chain(children(self).flat_map(Expr::record_fields_read))
             .collect()
     }
+
+    /// The fields it reads outside every aggregate: of a view's measure,
+    /// the measures it reads by name (018).
+    pub fn fields_read_by_name(&self) -> std::collections::BTreeSet<&FieldName> {
+        match self {
+            Expr::Call { func, .. } if func.is_aggregate() => Default::default(),
+            Expr::Path { path } => path.first().into_iter().collect(),
+            _ => children(self).flat_map(Expr::fields_read_by_name).collect(),
+        }
+    }
 }
 
 impl Condition {

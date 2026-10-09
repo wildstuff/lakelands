@@ -240,6 +240,8 @@ macro_rules! door_checks {
             #[own_principals]
             a_grant_that_cannot_be_applied_admits_no_record,
             #[own_principals]
+            a_view_is_keyed_by_its_groups_where_their_values_come_from,
+            #[own_principals]
             a_hidden_target_is_not_learned_by_declaring_its_field,
             #[own_principals]
             a_relation_carried_by_a_hidden_field_answers_nothing_of_it,
@@ -11940,6 +11942,321 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
     assert!(
         matches!(&e, Error::Refused { field: Some(f), reason: Refusal::Constraint { .. } } if f.as_str() == "v"),
         "a record's `v` of [1e300, 0] is refused as a constraint naming `v`; it answered {e:?}"
+    );
+}
+
+/// A grouped view's key is its `group_by`, whatever `key` says, judged on the view
+/// and where its values come from (006, 024, extended, lakelands#782): a
+/// view grouped by a reference to a type its reader is not shown, by a
+/// field its source or its second source holds at `none`, or by one the
+/// view itself holds so, answers `describe_type`, `get` and `find` as a
+/// name that is not declared, and `describe` names none of them. A view
+/// shown is described, listed and its get tool's key told by its groups,
+/// its definition naming no measure of a field its reader may not know of,
+/// nor one that reads such a measure, which its records do not hold either.
+pub async fn a_view_is_keyed_by_its_groups_where_their_values_come_from(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    let f = |name: &str, kind: &str| json!({"name": name, "type": {"kind": kind}});
+    let zref = json!({"name": "zref", "type": {"kind": "reference", "target": "zsecret"}});
+    let count = json!([{"name": "n", "expr": "count()"}]);
+    let view = |name: &str, by: &str, field: &Value, key: bool| {
+        let mut v = json!({"declare": "type", "name": name, "fields": [field, f("n", "decimal")],
+            "view": {"source": "pub", "group_by": [by], "measures": count}});
+        if key {
+            v["key"] = json!([by]);
+        }
+        v
+    };
+    // Grouped by `name`, keyed by `n`: its records carry `name` all the same.
+    let keyed = |name: &str| {
+        let mut v = view(name, "name", &f("name", "text"), false);
+        v["key"] = json!(["n"]);
+        v
+    };
+    let mut merged = view("m_view", "name", &f("name", "text"), false);
+    merged["fields"] = json!([f("name", "text"), f("n", "decimal"), f("n2", "decimal")]);
+    let n2 = json!([{"name": "n2", "expr": "count()"}]);
+    merged["view"]["merge"] = json!([{"source": "aux", "group_by": ["hid2"], "measures": n2}]);
+    // Grouped by `[name, hid]`, keyed by `name`, over a source whose `hid` it reads.
+    let mut pair = view("knr_view", "name", &f("name", "text"), false);
+    pair["fields"] = json!([f("name", "text"), f("hid", "text"), f("n", "decimal")]);
+    pair["view"]["source"] = json!("pub2");
+    (pair["key"], pair["view"]["group_by"]) = (json!(["name"]), json!(["name", "hid"]));
+    // Measured from a measure: `m` reads `n`; `open`, and `due` merged
+    // beside it, read the merged `paid`;
+    // `m0_view` and `p0_view` are the same views without those measures.
+    let measured = |name: &str, fields: &[&str], measures: serde_json::Value| {
+        let mut v = view(name, "name", &f("name", "text"), false);
+        let decimal = |n: &&str| f(n, "decimal");
+        let fields = std::iter::once(f("name", "text")).chain(fields.iter().map(decimal));
+        v["fields"] = json!(fields.collect::<Vec<_>>());
+        v["view"]["measures"] = measures;
+        v
+    };
+    let (n, paid) = (
+        json!({"name": "n", "expr": "count()"}),
+        json!({"name": "paid", "expr": "count()"}),
+    );
+    let mut bare = vec![
+        measured(
+            "mm_view",
+            &["n", "m"],
+            json!([n, {"name": "m", "expr": "n + 1"}]),
+        ),
+        measured("m0_view", &[], json!([])),
+        measured(
+            "pm_view",
+            &["n", "paid", "open", "due"],
+            json!([n, {"name": "open", "expr": "paid + 1"}]),
+        ),
+        measured("p0_view", &["n"], json!([n])),
+    ];
+    let due = json!({"name": "due", "expr": "count() + paid"});
+    for (v, merged) in [(2, json!([paid, due])), (3, json!([]))] {
+        bare[v]["view"]["merge"] =
+            json!([{"source": "pub2", "group_by": ["name"], "measures": merged}]);
+    }
+    for d in [
+        json!({"declare": "type", "name": "zsecret", "fields": [f("n", "text")]}),
+        json!({"declare": "type", "name": "pub", "fields": [f("name", "text"), zref, f("hid", "text")]}),
+        json!({"declare": "type", "name": "aux", "fields": [f("hid2", "text")]}),
+        json!({"declare": "type", "name": "pub2", "fields": [f("name", "text"), f("hid", "text")]}),
+        view("z_view", "zref", &zref, false),
+        view("h_view", "hid", &f("hid", "text"), false),
+        view("h_viewk", "hid", &f("hid", "text"), true),
+        merged,
+        view("g_view", "name", &f("name", "text"), false),
+        keyed("kk_view"),
+        keyed("kn_view"),
+        pair,
+        view("n_view", "name", &f("name", "text"), false),
+        view("nh_view", "name", &f("name", "text"), true),
+    ]
+    .into_iter()
+    .chain(bare.iter().cloned())
+    {
+        let d = serde_json::from_value::<Declaration>(d).expect("a declaration reads");
+        c.declare(own, d).await.expect("the owner declares");
+    }
+    for (t, k, p) in [
+        ("zsecret", "z1", patch(&[("n", json!("x"))])),
+        (
+            "pub",
+            "p1",
+            patch(&[
+                ("name", json!("a")),
+                ("zref", json!("z1")),
+                ("hid", json!("a")),
+            ]),
+        ),
+        ("aux", "x1", patch(&[("hid2", json!("a"))])),
+        (
+            "pub2",
+            "q1",
+            patch(&[("name", json!("a")), ("hid", json!("a"))]),
+        ),
+    ] {
+        c.upsert(own, &ty(t), &key(k), p, WriteOpts::default())
+            .await
+            .expect("the owner writes");
+    }
+    let grants = json!({"default": "read", "review": true, "types": {"zsecret": {"default": "none"},
+        "pub": {"fields": {"hid": "none"}}, "aux": {"fields": {"hid2": "none"}},
+        "g_view": {"fields": {"name": "none"}},
+        "kk_view": {"fields": {"name": "none"}}, "kn_view": {"fields": {"n": "none"}},
+        "knr_view": {"fields": {"hid": "none"}}, "nh_view": {"fields": {"n": "none"}},
+        "mm_view": {"fields": {"n": "none"}}, "pm_view": {"fields": {"paid": "none"}}}});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let eve = &principal(store.lake(), PrincipalKind::Agent, "eve", grants);
+    let doors = |t: &'static str, k: &'static str| {
+        let c = c.clone();
+        async move {
+            let print = |e: Option<Error>| serde_json::to_string(&e).expect("an error prints");
+            [
+                print(c.describe_type(eve, &ty(t), Default::default()).await.err()),
+                print(c.get(eve, &ty(t), get(k)).await.err()),
+                print(c.find(eve, &ty(t), Find::default()).await.err()),
+            ]
+            .map(|e| e.replace(t, "no_such"))
+        }
+    };
+    let mut wrong = Vec::new();
+    for (t, k) in [
+        ("z_view", "z1"),
+        ("h_view", "a"),
+        ("h_viewk", "a"),
+        ("m_view", "a"),
+        ("g_view", "a"),
+        ("kk_view", "a"),
+        ("knr_view", "a:a"),
+    ] {
+        let (there, none) = (doors(t, k).await, doors("no_such", k).await);
+        if there != none || none.iter().any(|e| e == "null") {
+            wrong.push(format!("`{t}`: {there:?}"));
+        }
+    }
+    let d = c
+        .describe(eve, Default::default())
+        .await
+        .expect("a description")
+        .data;
+    let measured_views = ["mm_view", "m0_view", "pm_view", "p0_view"];
+    let names: Vec<&str> = (d.types.iter().map(|t| t.name.as_str()))
+        .filter(|n| n.contains("_view") && !measured_views.contains(n))
+        .collect();
+    if names != ["kn_view", "n_view", "nh_view"] {
+        wrong.push(format!("eve is described {names:?}"));
+    }
+    // Described, and in its tools, by the key its records carry.
+    let tools = tools(&d).expect("eve's tools");
+    for t in ["kn_view", "n_view"] {
+        let door = Door::Get { ty: ty(t) };
+        let get = tools.iter().find(|s| s.door == door);
+        let key = get.map(|s| &s.input_schema["properties"]["key"]["description"]);
+        let access = d.types.iter().find(|d| d.name.as_str() == t);
+        let access = access.map(|d| d.access.key.iter().map(|f| f.as_str()).collect::<Vec<_>>());
+        let text = format!("The key of the `{t}` record: the value of its `name`.");
+        if (&access, key) != (&Some(vec!["name"]), Some(&json!(text))) {
+            wrong.push(format!(
+                "`{t}` is described keyed {access:?}, its get tool {key:?}"
+            ));
+        }
+    }
+    // A shown view's definition names that key and no measure of a field
+    // left out, described and listed in a redeclaration of `kn_view`.
+    let shape = |key: &[FieldName], v: Option<&ViewDecl>| {
+        let measures = v.map(|v| v.measures.iter().map(|m| m.name.to_string()).collect());
+        (
+            key.iter().map(|f| f.to_string()).collect::<Vec<_>>(),
+            measures,
+        )
+    };
+    let mut said: Vec<(Vec<String>, Option<Vec<String>>)> = Vec::new();
+    for ty in ["kn_view", "n_view"] {
+        let t = d.types.iter().find(|t| t.name.as_str() == ty);
+        said.extend(t.map(|t| shape(&t.access.key, t.view.as_ref())));
+    }
+    let mut again = keyed("kn_view");
+    again["description"] = json!("again");
+    let declarations = vec![serde_json::from_value(again).expect("a declaration reads")];
+    let bundle = ProposedWrite::Declare { declarations };
+    (c.propose(own, bundle, "why".into()).await).expect("the owner proposes `kn_view` again");
+    let listed = c.proposals(eve, ProposalFilter::default()).await;
+    for p in listed.expect("eve lists").data {
+        let Some(ProposedWrite::Declare { declarations }) = p.write else {
+            continue;
+        };
+        for d in declarations {
+            if let Declaration::Type(t) = d {
+                said.push(shape(&t.key, t.view.as_deref()));
+            }
+        }
+    }
+    // And it is answered the hash of the definition it is shown.
+    let field = |f: &lakelands_api::describe::FieldDescription| json!({"name": f.name, "type": f.ty, "required": f.required});
+    for t in d.types.iter().filter(|t| t.name.as_str() == "nh_view") {
+        let fields: Vec<_> = t.fields.iter().map(field).collect();
+        let shown = json!({"name": t.name, "key": t.access.key, "fields": fields, "view": t.view});
+        let shown = serde_json::from_value(shown).expect("a description reads as a declaration");
+        let rebuilt = lakelands_api::shape::schema_hash(&shown).expect("a described view parses");
+        if rebuilt != t.lifecycle.schema_hash {
+            wrong.push(format!(
+                "`nh_view` is described {:?}, hashed {}",
+                t.view, t.lifecycle.schema_hash
+            ));
+        }
+    }
+    let one = |m: &[&str]| {
+        (
+            vec!["name".to_owned()],
+            Some(m.iter().map(|m| m.to_string()).collect()),
+        )
+    };
+    if said != [one(&[]), one(&["n"]), one(&[])] {
+        wrong.push(format!(
+            "eve is shown `kn_view`, `n_view`, and `kn_view` proposed, keyed and measured {said:?}"
+        ));
+    }
+    // `mm_view` and `pm_view` answer eve, and `wes` who may write, described,
+    // at `get` and `find`, filtered on the measure, and listed, as the views
+    // declared without the measures they may not know of.
+    let grants = json!({"default": "write", "review": true, "types": {
+        "mm_view": {"fields": {"n": "none"}}, "pm_view": {"fields": {"paid": "none"}}}});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let wes = &principal(store.lake(), PrincipalKind::Agent, "wes", grants);
+    let mut whole = std::collections::BTreeMap::new();
+    for who in [eve, wes] {
+        for t in ["mm_view", "m0_view", "pm_view", "p0_view"] {
+            let ty = TypeName::from(t);
+            let described = (c.describe_type(who, &ty, Default::default()).await).map(|d| d.data);
+            // A view is never written: no reader is offered `upsert` or `retire`.
+            if let Ok(d) = &described
+                && (d.may.upsert || d.may.retire)
+            {
+                wrong.push(format!(
+                    "`{t}` is offered writes to {}: {:?}",
+                    who.id, d.may
+                ));
+            }
+            let got = (c.get(who, &ty, get("a")).await).map(|g| g.data);
+            let found = (c.find(who, &ty, Find::default()).await).map(|f| f.data);
+            // Filtered on the measure of its pair: `m`, or `open` and `due`.
+            let on = if t.starts_with('m') {
+                "m > 2"
+            } else {
+                "open > 2 or due > 2"
+            };
+            let on: Find = serde_json::from_value(json!({"where": on})).expect("a find");
+            let filtered = (c.find(who, &ty, on).await).map(|f| f.data);
+            let said = format!("{described:?} {got:?} {found:?} {filtered:?}");
+            whole.insert((who.id.to_string(), t.to_owned()), said);
+        }
+    }
+    let again = bare.into_iter().map(|mut d| {
+        d["description"] = json!("again");
+        serde_json::from_value(d).expect("a declaration reads")
+    });
+    let bundle = ProposedWrite::Declare {
+        declarations: again.collect(),
+    };
+    (c.propose(own, bundle, "why".into()).await).expect("the owner proposes them again");
+    for who in [eve, wes] {
+        for p in c
+            .proposals(who, ProposalFilter::default())
+            .await
+            .expect("a reader lists")
+            .data
+        {
+            let Some(ProposedWrite::Declare { declarations }) = p.write else {
+                continue;
+            };
+            for d in declarations {
+                if let Declaration::Type(t) = d
+                    && let Some(w) = whole.get_mut(&(who.id.to_string(), t.name.to_string()))
+                {
+                    w.push_str(&serde_json::to_string(&t).expect("a declaration prints"));
+                }
+            }
+        }
+    }
+    for ((who, ty), there) in &whole {
+        let Some(bare) = [("mm_view", "m0_view"), ("pm_view", "p0_view")]
+            .into_iter()
+            .find_map(|(t, b)| (t == ty).then_some(b))
+        else {
+            continue;
+        };
+        let without = &whole[&(who.clone(), bare.to_owned())];
+        if *there != without.replace(bare, ty.as_str()) {
+            wrong.push(format!(
+                "`{ty}` answers {who}\n{there}\nwhere `{bare}` answers\n{without}"
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "a view keyed by a field its reader may not know of is not shown: {wrong:?}"
     );
 }
 
