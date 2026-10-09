@@ -176,7 +176,7 @@ async fn a_verb_on_its_type_runs_under_its_types_grants_and_records_its_output(
     );
     ensure!(
         events.iter().any(|e| e.cause == Some(*position)
-            && matches!(&e.body, EventBody::OutputRecorded { output: o, .. } if o == output)),
+            && matches!(&e.body, EventBody::OutputRecorded { output: Some(o), .. } if o == output)),
         "the executor's answer is recorded as `output_recorded` caused by the `verb_called` at \
          {position}"
     );
@@ -230,7 +230,7 @@ async fn a_verb_on_its_type_at_medium_risk_is_proposed_and_runs_when_accepted(
             .iter()
             .all(|(_, keyed)| !keyed)
             && events.iter().any(|e| e.cause == Some(at)
-                && matches!(&e.body, EventBody::OutputRecorded { output, .. }
+                && matches!(&e.body, EventBody::OutputRecorded { output: Some(output), .. }
                     if *output == json!({"done": "open_ticket", "record": null}))),
         "the acceptance at {at} runs `open_ticket` with no key and records the executor's \
          answer caused by it; the log holds {:?}",

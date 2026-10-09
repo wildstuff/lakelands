@@ -539,6 +539,30 @@ def main():
         check(sha(canonical(body)) == negative["hash"], "v13.json: a negative line's hash is its own")
         check(negative["v"] == 12 and thirteenth(negative),
               "v13.json: a negative line carries in format 12 what format 13 added, which a reader refuses")
+    v14 = json.loads((HERE / "v14.json").read_text("utf-8"))
+    named = lambda e: e["body"].get("kind") == "output_recorded" and "output_at" in e["body"]
+    for line, want in zip(v14["lines"], v14["hashes"]):
+        event = json.loads(line)
+        check(canonical(event) == line.encode("utf-8"), f"v14.json: position {event['position']} is canonical")
+        # A fill that names its output needs 14; one that carries it is
+        # written in the lake's version.
+        check(event["v"] == (14 if named(event) else 13) and ("output" in event["body"]) != named(event),
+              f"v14.json: position {event['position']} carries its output or names it, in the version it needs")
+        body = {k: v for k, v in event.items() if k != "hash"}
+        check(sha(canonical(body)) == event["hash"] == want, f"v14.json: hash {want[:12]}…")
+        check(event["prev"] == prev, f"v14.json: position {event['position']} follows the one before it")
+        prev = event["hash"]
+    for line in v14["negatives"]:
+        negative = json.loads(line)
+        body = {k: v for k, v in negative.items() if k != "hash"}
+        check(sha(canonical(body)) == negative["hash"], "v14.json: a negative line's hash is its own")
+        check(negative["v"] == 13 and named(negative),
+              "v14.json: a negative line names an output in format 13, which format 14 added, and a reader refuses")
+    misplaced14 = json.loads(v14["misplaced"])
+    body = {k: v for k, v in misplaced14.items() if k != "hash"}
+    check(sha(canonical(body)) == misplaced14["hash"], "v14.json: the misplaced line's hash is its own")
+    check(named(misplaced14) and "output" in misplaced14["body"],
+          "v14.json: the misplaced line carries both `output` and `output_at`, which a reader refuses")
     for name in ("negative_verb", "negative_call"):
         negative = json.loads(v8[name])
         body = {k: v for k, v in negative.items() if k != "hash"}

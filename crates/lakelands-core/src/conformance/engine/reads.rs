@@ -1423,8 +1423,9 @@ fn declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position(
             .must("reading an output at the head")?,
     );
     ensure!(
-        out_then.is_none() && out_now == Some(json!(42)),
-        "an output recorded at 3 read {out_then:?} at 2 and {out_now:?} at the head"
+        out_then.is_none() && out_now == Some((Position(3), json!(42))),
+        "an output recorded at 3 read {out_then:?} at 2 and {out_now:?} at the head, which \
+         answers it with the position 3"
     );
     let (id_then, id_now) = (
         then.applied(&seen).must("reading an applied id at 2")?,
@@ -1767,14 +1768,17 @@ fn a_later_output_for_the_same_call_replaces_the_earlier_from_its_position(
         })?;
     }
     for seam in ["embed:m", "sys:renames"] {
-        let at = |position: Option<Position>| -> Result<Option<serde_json::Value>, Failure> {
+        type Read = Option<(Position, serde_json::Value)>;
+        let at = |position: Option<Position>| -> Result<Read, Failure> {
             view(engine, position)?
                 .output(seam, &Digest::zero())
                 .must("reading an output")
         };
         let (before, between, after) = (at(Some(Position(1)))?, at(Some(Position(3)))?, at(None)?);
         ensure!(
-            before.is_none() && between == Some(failed.clone()) && after == Some(answer.clone()),
+            before.is_none()
+                && between == Some((Position(2), failed.clone()))
+                && after == Some((Position(4), answer.clone())),
             "under `{seam}`, a failure recorded at 2 and an answer for the same call at 4: at 1 \
              the view must answer nothing ({before:?}), at 3 the failure ({between:?}), at the \
              head the answer ({after:?})"
@@ -2511,7 +2515,7 @@ fn a_kept_name_answers_as_a_stored_type_holding_the_same_states(engine: &dyn Lak
         let v = view(engine, as_of.map(Position))?;
         let recorded = v.output(seam, &input).must("reading the output")?;
         ensure!(
-            recorded == Some(json!(at)),
+            recorded == Some((Position(at), json!(at))),
             "an output recorded at every position through {STATES} read {recorded:?} as of \
              {as_of:?}"
         );

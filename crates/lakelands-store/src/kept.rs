@@ -96,7 +96,7 @@ pub(crate) struct State {
 /// The state of `view` at the position `at` reads, if the fold kept one.
 pub(crate) fn state(at: &dyn ProjectionView, view: &TypeName) -> Result<Option<State>> {
     let input = crate::backed::digest(&Value::from(view.as_str()));
-    let recorded = at.output(KEPT, &input)?;
+    let recorded = at.output(KEPT, &input)?.map(|(_, v)| v);
     Ok(recorded.and_then(|s| serde_json::from_value(s).ok()))
 }
 

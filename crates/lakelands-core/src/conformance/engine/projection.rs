@@ -571,8 +571,14 @@ fn a_view_does_not_see_an_open_transaction(engine: &dyn LakeEngine) -> Held {
             .must("putting an output")?;
     }
     let outputs = (
-        before.output("seam", &held).must("reading an output")?,
-        before.output("seam", &new).must("reading an output")?,
+        before
+            .output("seam", &held)
+            .must("reading an output")?
+            .map(|(_, v)| v),
+        before
+            .output("seam", &new)
+            .must("reading an output")?
+            .map(|(_, v)| v),
     );
     p.put_record(&record("t", "b", json!({}), 2))
         .must("putting a record")?;
@@ -625,7 +631,7 @@ fn a_view_does_not_see_an_open_transaction(engine: &dyn LakeEngine) -> Held {
         .get(&TypeName::from("t"), &RecordKey::from("a"))
         .must("reading after the commit")?
         .and_then(|r| r.fields.get("n").cloned());
-    let output = after.output("seam", &held).must("reading an output")?;
+    let output = (after.output("seam", &held).must("reading an output")?).map(|(_, v)| v);
     ensure!(
         n == Some(json!(2)) && output == Some(json!("two")),
         "after the commit `a` reads n = {n:?} and the output {output:?}; they must be 2 and \

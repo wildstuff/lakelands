@@ -405,7 +405,7 @@ same fields itself
 |---|---|---|
 | `trigger_fired` | `trigger`, `type`, `key` | A write made a trigger's condition hold. Appended in the same append as that write, with `cause` naming it. The durable fact that something is due; acting on it is the host's (`docs/decisions/004-the-change-feed-is-the-log.md`). |
 | `object_set_changed` | `set`, `type`, `key`, `joined` (boolean) | A write moved a record into (`true`) or out of (`false`) an object set, in the write's append and caused by it; or a set's declaration did, in the declaration's append and caused by its `declared` (lakelands#453); or a migration did, in its append and caused by its `migrated` (lakelands#457), for a record of the migrated type, of one of its link types, or of another type whose reference to a moved key it rewrites (lakelands#465, lakelands#466); or a value type's migration did, in its append and caused by its `value_type_migrated`, for a record whose renamed values, and what is computed from them, move it (lakelands#553). |
-| `output_recorded` | `seam`, `input` (digest), `output`, `field` (optional `[type, key, field]`) | The output of a seam the store called: a function backing, an embedding backend, a verb executor. A replay reads this output instead of calling the seam (`docs/decisions/002-determinism-is-the-boundary.md`). |
+| `output_recorded` | `seam`, `input` (digest), `output` or `output_at` (a position), `field` (optional `[type, key, field]`) | The output of a seam the store called: a function backing, an embedding backend, a verb executor. A replay reads this output instead of calling the seam (`docs/decisions/002-determinism-is-the-boundary.md`). With `output_at` it names an output the log already holds and fills `field` from it (below). |
 
 `seam` names the seam and what was called in it: `function:<backing
 kind>:<function>`, `embed:<model>` or `verb:<executor>:<verb>`. `input`
@@ -466,6 +466,37 @@ failure (`docs/decisions/022-functions-are-declarations.md`, extended).
 The later output holds. The fold, and a projection's recorded outputs,
 answer the latest output recorded for a call from its position on, and
 the earlier one before it.
+
+A call's output is in the log once per answer. Where an output the lake
+holds fills a field again (two records whose texts are the same, a
+record whose fields return to a text embedded before), the event names
+it by `output_at`, the position of the `output_recorded` that carries
+it, and carries no `output`:
+
+```json
+{"kind":"output_recorded","seam":"embed:m","input":"6ff3…","output_at":1234,"field":["doc","d000042","near"]}
+```
+
+`output_at` names the call's latest output at this event's position:
+the same `seam` and `input`, an event that carries `output`. The fold
+fills `field` from that output and records no output of its own, so the
+projection's recorded outputs are those of the events that carry one.
+An event that carries both `output` and `output_at`, or neither, is
+refused; so is an `output_at` that names any other position, as a
+damaged log, never folded past. A failure, a new answer and a settle's
+second output for a call carry `output`. A verb's output fills no
+field, and is carried.
+
+The event at `output_at` is the fill of another record's field, or of
+the same record before. A reader that resolves it reads the log, and
+every reader of the log reads it whole: the feed is the log as it is,
+and opens over a network door only to a principal that reads every
+record (`docs/decisions/037-the-feed-over-a-network-door.md`), and an
+export holds every event (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`).
+So a consumer that may read the fill may read the event it names. The
+log is append-only, purge removes no event and a sealed segment never
+changes, so the event at `output_at` is there as long as the reference
+is (`docs/decisions/053-a-recorded-output-is-recorded-once.md`).
 
 `output` is written in the JSON form of §5. When `field` names the field
 the output fills, it is that field's kind's form: an embedding is a
@@ -712,6 +743,7 @@ them only before its first record.
 | 11 | What one release added to what the log keeps, each of which needs the version by itself: a call of `floor` in a declaration's expressions, a call of `date_bucket` by a width, with its third argument, and a call of `in_set` (Appendix B); a migration's `relation_renames`, in a `migrated` event or a proposed `migrate` (§2.2, §2.3); and a write of a `sys.setting` whose key begins `view_kept.`, in a `record_upserted` or `record_ingested` event or a proposed `upsert`: the setting asks for a view's records to be kept as its sources are written, and a store that keeps no view would append beside records it never moves, so it refuses the log and does not read past the setting. A lake writes the version it had until the append that holds its first event that carries one of them (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 11, as does every event after it; a version-10 (or older) event that carries one is refused, naming it. A version-10 reader refuses the version-11 events rather than folding a declaration it cannot evaluate. And the member `made` on a `record_upserted` or `record_ingested` event (§2.3), which the write of a record that is not live carries: so every lake reaches 11 with its first record made, and only a lake that holds no record stays at the version it had. And the member `restated` of a proposed migration's report (Appendix A), which says what the migration's `to` states otherwise than the declaration in force: a reader below 11 would take the proposal for one that restates nothing. And a field's `initial` (§2.2), in a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`: a reader below 11 would make records without the value the fold fills (§2.3). |
 | 12 | A declaration's `with_the_set` (§2.3), on every `declared` of a set but its last, where the set holds a function or a type the lake held before it: the set's records are computed again once, at its last declaration, and not at each. A lake writes the version it had until the append that holds its first such set; that append carries `v` 12, as does every event after it; a version-11 (or older) event that carries it is refused, naming it. A version-11 reader refuses the version-12 events rather than computing the records again at each declaration of the set, which leaves other values where a field reads `changed()` or `previous()`. A lake whose sets hold none of them stays at the version it had. A declaration with a field that says `computed_at`, in the places 5 names, needs 12 as well: a version-11 reader would store a value computed at the read, frozen at its last write. And the kind `value_type_migrated` (§2.2), and a proposed `migrate_value_type` whose `renames` is not empty: a reader below 12 knows no event that renames stored values, and would take the proposal for a plain tightening. |
 | 13 | What one release added, each of which needs the version by itself: a proposal's `pinned` (§2.4), on a `write_proposed` whose proposer holds `only` on the type its write reaches: its accept is refused once the record or the type changed after it; and the kind `date` (§1.3, §5): a field, a view's parameter or a value type of that kind, in a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`. A lake writes the version it had until the append that holds its first such proposal or declaration; that append carries `v` 13, as does every event after it; a version-12 (or older) event that carries one is refused, naming it. A version-12 reader refuses the version-13 events rather than accepting a pinned proposal on a record or a type that moved since, or failing on a kind it does not know. A lake that holds neither stays at the version it had. |
+| 14 | An `output_recorded` that names its output by `output_at` (§2.5). A lake writes the version it had until the append that holds its first such event; that append carries `v` 14, as does every event after it; a version-13 (or older) event that carries one is refused, naming it. A version-13 reader refuses the version-14 events rather than filling a field from an output it does not find. A lake whose fills each carry a new output stays at the version it had. |
 
 ## Appendix A. Encodings
 

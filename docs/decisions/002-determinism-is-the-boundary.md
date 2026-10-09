@@ -64,3 +64,11 @@ retries a recorded failure once, and the later output holds. Since
 lakelands#565 the door `recompute` appends that event; a declaration in
 force appends none (`docs/decisions/022-functions-are-declarations.md`,
 "Extended: `recompute` computes again, and retries a recorded failure").
+
+## Extended: an output the log holds is named, not carried again
+
+A replay still reads every output from the log, never from the seam:
+where an output the lake holds fills a field again, the event names the
+output by its position, and the fold reads it there and checks that it
+is the call's latest
+(`docs/decisions/053-a-recorded-output-is-recorded-once.md`).

@@ -148,7 +148,7 @@ impl Outputs<'_> {
         let read = |(at, _): &&(Position, Value)| self.before.is_none_or(|before| *at < before);
         match staged.and_then(|all| all.iter().rev().find(read)) {
             Some((_, v)) => Ok(Some(v.clone())),
-            None => self.view.output(seam, input),
+            None => Ok(self.view.output(seam, input)?.map(|(_, v)| v)),
         }
     }
 }
@@ -731,7 +731,7 @@ pub fn page(lake: &Lake, o: &Owed) -> Result<(Vec<(RecordKey, Vec<(Due, Option<V
         }
         let mut owes = Vec::new();
         for d in due {
-            let recorded = view.output(&d.seam, &d.input)?;
+            let recorded = view.output(&d.seam, &d.input)?.map(|(_, v)| v);
             owes.push((d, recorded));
         }
         out.push((r.key, owes));
@@ -1091,11 +1091,18 @@ async fn embed_each(backend: &dyn EmbedBackend, texts: &[String]) -> Vec<Value> 
 ///
 /// An output the lake already holds (`known`) is recorded again only when
 /// it fills something: a due issued twice appends nothing the second time.
+/// Where it is the call's latest output, and no failure, the fill names it
+/// by `output_at` instead of carrying it again
+/// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`).
 fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Position>> {
     let mut w = lake.for_write()?;
     let now = lake.clock(&mut w);
     let view = lake.engine.view(None)?;
     let at = Position(w.tip.as_ref().map_or(0, |t| t.0.0 + 1));
+    let latest = view.output(&d.seam, &d.input)?;
+    let output_at = latest
+        .filter(|(_, v)| *v == output && !is_failure(v))
+        .map(|(p, _)| p);
     let context = d.context;
     let draft = Draft {
         cause: Some(d.cause),
@@ -1106,7 +1113,8 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
             EventBody::OutputRecorded {
                 seam: d.seam.clone(),
                 input: d.input.clone(),
-                output: output.clone(),
+                output: output_at.is_none().then(|| output.clone()),
+                output_at,
                 field: Some((d.ty.clone(), d.key.clone(), d.field.clone())),
             },
         )

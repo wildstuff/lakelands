@@ -28,10 +28,10 @@ use crate::conformance::backing::{
 };
 use crate::conformance::fixture::{
     Caller, Lake, Must, derived, doors, embedding, field, field_access, get_at, head_unmoved,
-    join_all, migration, owner, principal, read, recorded_outputs, refused_on, source_record,
-    sourced, type_decl, value,
+    join_all, migration, outputs_from, owner, principal, read, recorded_outputs, refused_on,
+    source_record, sourced, type_decl, value,
 };
-use crate::conformance::{Failure, Held, Reopen, Store, backing};
+use crate::conformance::{Failure, Given, Held, Reopen, Store, backing};
 
 check!(
     VECTOR_COVERAGE = vector_coverage_counts_embedded_and_due_records_at_the_head,
@@ -86,6 +86,176 @@ check!(
     "022, extended: a failure is recorded, clears the field and puts its reason in the metadata; `recompute` calls again for that text once, the later output holds and the vector fills every record holding it",
     embedding
 );
+
+check!(
+    EMBED_NAMED = a_vector_the_log_holds_is_named_by_its_position_not_carried_again,
+    "053 and log-format §2.5: an embedding declared over ten records sharing two texts leaves two `output_recorded` that carry a vector and eight that name their call's by `output_at`, which the feed answers at that position, carrying the vector, for the same seam and input; every record holds the vector, after a rebuild, a reopen without a backend and an export's import too, and nothing is embedded again",
+    given,
+    embedding
+);
+
+check!(
+    EMBED_NAMES_LATEST = a_fill_after_a_retry_names_the_new_output_and_a_failure_is_carried,
+    "053, and 022, extended: a failure is carried, and so is the answer of the retry `recompute` makes; a second record's fill of the same call then names the new answer, not the failure, and holds its vector",
+    embedding
+);
+
+/// The `output_recorded` events from `from` on: those that carry their
+/// output, and those that name one by `output_at`.
+async fn carried_and_named(
+    store: &dyn LakeStore,
+    from: lakelands_api::Position,
+) -> Result<
+    (
+        Vec<lakelands_api::event::Event>,
+        Vec<lakelands_api::event::Event>,
+    ),
+    Failure,
+> {
+    let outputs = outputs_from(store, from).await?;
+    let named = |e: &lakelands_api::event::Event| {
+        matches!(
+            e.body,
+            EventBody::OutputRecorded {
+                output_at: Some(_),
+                ..
+            }
+        )
+    };
+    Ok(outputs.into_iter().partition(|e| !named(e)))
+}
+
+/// The seam, input and `output_at` of an `output_recorded`.
+fn call_of(
+    e: &lakelands_api::event::Event,
+) -> Option<(&str, &str, Option<lakelands_api::Position>)> {
+    match &e.body {
+        EventBody::OutputRecorded {
+            seam,
+            input,
+            output_at,
+            ..
+        } => Some((seam, &input.0, *output_at)),
+        _ => None,
+    }
+}
+
+async fn a_vector_the_log_holds_is_named_by_its_position_not_carried_again(
+    store: Store,
+    given: Given,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(notes_by(&["title"], EMBED_MODEL, 2)).await?;
+    let texts = ["Named harbour", "Named crane"];
+    let keys: Vec<String> = (0..10).map(|i| format!("n{i}")).collect();
+    for (i, key) in keys.iter().enumerate() {
+        l.upsert("note", key, json!({"body": texts[i % 2]})).await?;
+    }
+    let from = store.head().await.must("reading the head")?;
+    l.declare(notes_by(&["body"], EMBED_MODEL, 2)).await?;
+    let (carried, named) = carried_and_named(store.as_ref(), from).await?;
+    ensure!(
+        carried.len() == 2 && named.len() == 8,
+        "ten records share two texts: the log must hold two `output_recorded` carrying a \
+         vector and eight naming one by `output_at`; it holds {} and {}",
+        carried.len(),
+        named.len()
+    );
+    for e in &named {
+        let (seam, input, Some(at)) = call_of(e).expect("an output") else {
+            unreachable!("a named output")
+        };
+        let held = outputs_from(store.as_ref(), at).await?;
+        let first = held.first();
+        ensure!(
+            first.is_some_and(|h| h.position == at
+                && call_of(h) == Some((seam, input, None))
+                && matches!(&h.body, EventBody::OutputRecorded { output: Some(v), .. }
+                    if is_east(&Some(v.clone())))),
+            "the fill at {} names the output at {at}; the feed from there must answer first \
+             the event carrying that vector for the same seam and input; it answers {first:?}",
+            e.position
+        );
+    }
+    let all_east = async |store: &dyn LakeStore, what: &str| {
+        for key in &keys {
+            let r = read(doors(store).as_ref(), &owner(store), "note", key).await?;
+            let v = value(&r, "vec").cloned();
+            ensure!(
+                is_east(&v),
+                "{what}, `{key}` must hold (1, 0); it holds {v:?}"
+            );
+        }
+        Ok::<_, Failure>(())
+    };
+    let calls = texts.map(embedded);
+    all_east(store.as_ref(), "after the declaration").await?;
+    store.rebuild().await.must("rebuilding the lake")?;
+    all_east(store.as_ref(), "after a rebuild").await?;
+    let store = (given.reopen)(store, with_embedder(None))
+        .await
+        .map_err(|e| reopen_failed("without an embedding backend", e))?;
+    all_east(store.as_ref(), "opened again without a backend").await?;
+    let scratch = super::export::Scratch::new(given.scratch.clone());
+    let dir = scratch.dir("named");
+    crate::export::write(store.as_ref(), &dir)
+        .await
+        .must("exporting the lake")?;
+    let lake = store.lake().clone();
+    let imported = (given.import)(dir, lake, None, with_embedder(None))
+        .await
+        .map_err(|e| Failure::new(format!("importing the export into a fresh lake: {e}")))?;
+    all_east(imported.store.as_ref(), "imported from an export").await?;
+    ensure!(
+        texts.map(embedded) == calls && calls == [1, 1],
+        "each text is embedded once and never again by a rebuild, a reopen or an import; \
+         they were embedded {:?} times",
+        texts.map(embedded)
+    );
+    Ok(())
+}
+
+async fn a_fill_after_a_retry_names_the_new_output_and_a_failure_is_carried(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(notes_by(&["title"], EMBED_MODEL, 2)).await?;
+    let text = "Named retry";
+    unplug_text(text);
+    for key in ["n1", "n2"] {
+        l.upsert("note", key, json!({"body": text})).await?;
+    }
+    let from = store.head().await.must("reading the head")?;
+    l.declare(notes_by(&["body"], EMBED_MODEL, 2)).await?;
+    let (failed, named) = carried_and_named(store.as_ref(), from).await?;
+    ensure!(
+        failed.len() == 2 && named.is_empty(),
+        "the backend failed on {text:?} for both records: each failure is carried, so the \
+         log holds two carried outputs and none named; it holds {} and {}",
+        failed.len(),
+        named.len()
+    );
+    let head = store.head().await.must("reading the head")?;
+    let retried = lakelands_api::Position(head.0 + 1);
+    plug_text(text);
+    recomputed(&l).await?;
+    let (answered, named) = carried_and_named(store.as_ref(), retried).await?;
+    let new = answered.first().map(|e| e.position);
+    let names = named.first().and_then(call_of).and_then(|(_, _, at)| at);
+    let (n1, n2) = (
+        vec_of(store.as_ref(), "n1").await?,
+        vec_of(store.as_ref(), "n2").await?,
+    );
+    ensure!(
+        answered.len() == 1 && named.len() == 1 && names.is_some() && names == new,
+        "`recompute` retries the failure once: the new answer is carried and the second \
+         fill names it, the call's latest, not a failure; the log holds the carried \
+         {answered:?} and the named {named:?}"
+    );
+    ensure!(
+        is_east(&n1) && is_east(&n2),
+        "both records hold the new answer's vector; they hold {n1:?} and {n2:?}"
+    );
+    Ok(())
+}
 
 check!(
     EMBED_FILL_REACTS = an_embedded_vector_recomputes_the_derived_fields_that_read_it,

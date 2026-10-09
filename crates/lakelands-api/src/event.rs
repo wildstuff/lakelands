@@ -29,9 +29,9 @@ use crate::write::{Declaration, Migration, ProposedWrite};
 /// verb on its type; version 9 a view's `merge`; version 10 a proposed
 /// tightening of a value type; version 11 a call of `floor` in a
 /// declaration; version 12 a declaration `with_the_set`; version 13 a
-/// proposal `pinned` to the record it writes, and the kind `date`
-/// (`docs/log-format.md` §6).
-pub const LOG_FORMAT_VERSION: u32 = 13;
+/// proposal `pinned` to the record it writes, and the kind `date`;
+/// version 14 an output named by `output_at` (`docs/log-format.md` §6).
+pub const LOG_FORMAT_VERSION: u32 = 14;
 
 /// The version a lake is created with and writes until it needs a newer
 /// one: a lake that never re-keys a type stays at version 1, byte for
@@ -317,8 +317,19 @@ pub enum EventBody {
         seam: String,
         /// SHA-256 of the canonical bytes of the input.
         input: Digest,
-        /// The output.
-        output: Value,
+        /// The output; `None` where `output_at` names it. An output of
+        /// `null` is `Some(Null)`, and read back so.
+        #[serde(
+            default,
+            deserialize_with = "crate::write::present",
+            skip_serializing_if = "Option::is_none"
+        )]
+        output: Option<Value>,
+        /// The position of the call's latest output, which a fill of an
+        /// output the lake holds names instead of carrying it again
+        /// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_at: Option<Position>,
         /// The field it fills, if one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         field: Option<(TypeName, RecordKey, FieldName)>,

@@ -331,11 +331,14 @@ impl Call<'_> {
             .filter(|e| e.cause == Some(due))
             .map(|e| (e.position, e.body))
         {
-            Some((at, EventBody::OutputRecorded { seam, output, .. }))
-                if seam.starts_with("verb:") =>
-            {
-                Ok(with_output(outcome, (at, output)))
-            }
+            Some((
+                at,
+                EventBody::OutputRecorded {
+                    seam,
+                    output: Some(output),
+                    ..
+                },
+            )) if seam.starts_with("verb:") => Ok(with_output(outcome, (at, output))),
             _ => Err(unanswered(due, accepted)),
         }
     }
@@ -4463,7 +4466,8 @@ pub fn record_output(
             EventBody::OutputRecorded {
                 seam: format!("verb:{}:{}", ext.executor, ext.verb),
                 input: Digest(lakelands_core::canonical::sha256_hex(input)),
-                output,
+                output: Some(output),
+                output_at: None,
                 field: None,
             },
         )

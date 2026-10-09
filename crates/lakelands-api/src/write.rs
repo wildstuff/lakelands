@@ -84,7 +84,9 @@ pub enum Outcome {
 
 /// A member that is there, `null` included: an executor's answer of `null`
 /// is an answer, and only an absent `output` is none.
-fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<serde_json::Value>, D::Error> {
+pub(crate) fn present<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<serde_json::Value>, D::Error> {
     serde::Deserialize::deserialize(d).map(Some)
 }
 

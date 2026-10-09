@@ -365,7 +365,7 @@ masking are the store's.
 | `members(set, type)` | The keys of the type's records that are in the object set at the position; empty for a set never put. One read: the store asks it once for a set before it walks a type (a set declared again, a migration, a re-key), where `is_member` for each record would be a statement each on PostgreSQL (lakelands#477). |
 | `applied(id)` | The position `id` was applied at, if that is at or before the view's position. |
 | `matching(filter, from, through, limit)` | The positions in `[from, through]`, none past the view's position, whose applied events `filter` admits by the index `mark_applied` kept (`lakelands_core::feed::admits`), in order, each once, at most `limit`, and the last position decided: the last answered when `limit` is reached, else `through` or the view's position, or earlier where the engine bounds its work, and never past what the projection had folded where the index is read, in the same snapshot: a view taken before a rebuild's `clear` decides only what the refold has reached, and nothing (`through` none) where it has not reached `from`. An engine seeks a filter by its keys, else its types, else its kinds (`lakelands_core::feed::seek`), one ordered range a value, and checks the rest on each entry; one that checks a kind on every entry of a type decides at most `lakelands_core::feed::WINDOW` (65 536) positions at a time. |
-| `output(seam, input)` | The recorded output valid at the position, if any: the latest recorded for that seam and input at or before it. |
+| `output(seam, input)` | The recorded output valid at the position, if any, with the position it was recorded at: the latest recorded for that seam and input at or before it. The fold checks a fill that names an output by `output_at` against that position (`docs/decisions/053-a-recorded-output-is-recorded-once.md`). |
 
 **`scan`.** A record qualifies when all of these hold:
 
@@ -879,7 +879,10 @@ function (`docs/decisions/022-functions-are-declarations.md`, extended):
   batch at a time per lake: the embeddings of one model, or one call.
 - It records every answer as `output_recorded`. The answer is keyed by
   the seam `function:<kind>:<function>` and the digest of
-  `{ "function", "inputs", "config" }` (`docs/log-format.md` §2.5).
+  `{ "function", "inputs", "config" }` (`docs/log-format.md` §2.5). A
+  fill of an answer the lake already holds names it by `output_at`
+  instead of carrying it again; a failure is always carried
+  (`docs/decisions/053-a-recorded-output-is-recorded-once.md`).
 - It never sends one input to a backing twice: a recorded output is
   read back for every later call with the same input, failures
   included, and an answer is held, one per call, from the moment the

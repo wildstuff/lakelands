@@ -328,12 +328,12 @@ impl ProjectionView for MemView {
         }))
     }
 
-    fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
+    fn output(&self, seam: &str, input: &Digest) -> Result<Option<(Position, Value)>> {
         Ok(self.read(|p, at| {
             p.outputs
                 .get(&(seam.to_owned(), input.clone()))
-                .and_then(|h| h.at(at))
-                .cloned()
+                .and_then(|h| h.since(at))
+                .map(|(since, v)| (since, v.clone()))
         }))
     }
 

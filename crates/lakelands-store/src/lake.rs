@@ -637,7 +637,8 @@ impl Lake {
         let recorded = match head {
             Some(view) => view.output(RENAMES, &Digest::zero())?,
             None => self.engine.view(None)?.output(RENAMES, &Digest::zero())?,
-        };
+        }
+        .map(|(_, list)| list);
         match recorded {
             None => Ok(self.walked.get().cloned().unwrap_or_default()),
             recorded => renames_in(recorded),
@@ -1449,7 +1450,7 @@ impl Lake {
                     let key = (RENAMES.to_owned(), Digest::zero());
                     let mut list = match staged.outputs.get(&key).and_then(|l| l.last()) {
                         Some((_, list)) => renames_in(Some(list.clone()))?,
-                        None => renames_in(view.output(RENAMES, &key.1)?)?,
+                        None => renames_in(view.output(RENAMES, &key.1)?.map(|(_, l)| l))?,
                     };
                     list.extend(renamed);
                     let list = serde_json::json!(list);
@@ -1591,11 +1592,19 @@ impl Lake {
                 seam,
                 input,
                 output,
+                output_at,
                 field,
             } => {
-                projection.put_output(seam, input, output, e.position)?;
-                let recorded = staged.outputs.entry((seam.clone(), input.clone()));
-                recorded.or_default().push((e.position, output.clone()));
+                let output = match (output, output_at) {
+                    (Some(output), None) => {
+                        projection.put_output(seam, input, output, e.position)?;
+                        let recorded = staged.outputs.entry((seam.clone(), input.clone()));
+                        recorded.or_default().push((e.position, output.clone()));
+                        output
+                    }
+                    (None, Some(at)) => &named(view, &staged.outputs, seam, input, *at, e)?,
+                    _ => return Err(damaged(Part::Log, Some(e.position), Flaw::OutputOnce)),
+                };
                 if let Some((ty, key, name)) = field
                     && let Some(r) = staged.record(view, ty, key)?
                 {
@@ -2189,6 +2198,32 @@ pub(crate) fn walk(
     let mut walk = Walk::new(view, ty, retired);
     walk.by_ref().try_for_each(&mut each)?;
     walk.failed()
+}
+
+/// The output an `output_recorded` names by `output_at`: the call's
+/// latest, recorded earlier in the fold or in the view. A name of any
+/// other position is a damaged log, never folded past
+/// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`).
+fn named(
+    view: &dyn ProjectionView,
+    staged: &Recorded,
+    seam: &str,
+    input: &Digest,
+    at: Position,
+    e: &Event,
+) -> Result<Value> {
+    let latest = match staged.get(&(seam.to_owned(), input.clone())) {
+        Some(all) => all.last().cloned(),
+        None => view.output(seam, input)?,
+    };
+    match latest {
+        Some((p, output)) if p == at => Ok(output),
+        _ => Err(damaged(
+            Part::Log,
+            Some(e.position),
+            Flaw::NotLatestOutput { at },
+        )),
+    }
 }
 
 /// What an event names that only the store's fold makes, said as the

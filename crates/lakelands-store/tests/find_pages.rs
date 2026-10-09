@@ -99,7 +99,7 @@ impl ProjectionView for CountingView<'_> {
     fn applied(&self, id: &EventId) -> Result<Option<Position>> {
         self.inner.applied(id)
     }
-    fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
+    fn output(&self, seam: &str, input: &Digest) -> Result<Option<(Position, Value)>> {
         self.inner.output(seam, input)
     }
 

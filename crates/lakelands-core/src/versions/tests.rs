@@ -562,3 +562,34 @@ fn the_kind_date_needs_format_13_and_says_so_below_it() {
                       "fields": [{"name": "on", "type": {"kind": "date_time"}}]});
     assert_eq!(needed(&declared_event(1, time).body, false), 1);
 }
+
+#[test]
+fn an_output_named_by_output_at_needs_format_14_and_one_of_the_two_members_is_carried() {
+    let output = |members: serde_json::Value| {
+        let mut body = json!({"kind": "output_recorded", "seam": "embed:m", "input": "0".repeat(64),
+                              "field": ["t", "k", "v"]});
+        body.as_object_mut()
+            .unwrap()
+            .extend(members.as_object().unwrap().clone());
+        body
+    };
+    let named = output(json!({"output_at": 7}));
+    assert_eq!(needed(&event_json(14, named.clone()).body, false), 14);
+    assert_eq!(
+        below(&event_json(13, named.clone()))
+            .map(|f| f.to_string())
+            .as_deref(),
+        Some("a format 13 event names an output by `output_at`, which format 14 added")
+    );
+    assert_eq!(misplaced(&event_json(14, named)), None);
+    let carried = event_json(1, output(json!({"output": null})));
+    assert_eq!(needed(&carried.body, false), 1);
+    assert!(
+        matches!(&carried.body, EventBody::OutputRecorded { output: Some(v), .. } if v.is_null())
+    );
+    assert_eq!(misplaced(&carried), None);
+    for members in [json!({"output": [1, 0], "output_at": 7}), json!({})] {
+        let event = event_json(14, output(members));
+        assert_eq!(misplaced(&event), Some(Flaw::OutputOnce));
+    }
+}
