@@ -235,17 +235,15 @@ async fn a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
-    let declared_at = l
-        .declare_json(json!({
-            "declare": "type", "name": "entry",
-            "fields": [
-                {"name": "on", "type": {"kind": "date_time"}},
-                {"name": "month", "type": {"kind": "date_time"}, "authority": "derived",
-                 "derived": "date_bucket(on, 'month')", "depends_on": ["on"]}
-            ]
-        }))
-        .await?
-        .position();
+    let declared_at = l.declare_json(json!({
+        "declare": "type", "name": "entry",
+        "fields": [
+            {"name": "on", "type": {"kind": "date_time"}},
+            {"name": "month", "type": {"kind": "date_time"}, "authority": "derived",
+             "derived": "date_bucket(on, 'month')", "depends_on": ["on"]}
+        ]
+    }));
+    let declared_at = declared_at.await?.position();
     for (k, on) in [
         ("a", "2028-01-05T10:00:00Z"),
         ("b", "2028-01-30T23:59:59Z"),
@@ -253,9 +251,8 @@ async fn a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3
     ] {
         l.upsert("entry", k, json!({ "on": on })).await?;
     }
-    let rows = l
-        .all_found("entry", find_where("month = '2028-01-01T00:00:00Z'"))
-        .await?;
+    let rows = l.all_found("entry", find_where("month = '2028-01-01T00:00:00Z'"));
+    let rows = rows.await?;
     let mut keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
     keys.sort();
     ensure!(
@@ -336,17 +333,15 @@ async fn find_groups_records_by_windows_of_a_width_from_an_origin(store: Store) 
     }
     // A declaration may call it, written in format 11 as the lake's
     // records are; that it needs 11 is held by `versions`' rows.
-    let declared = l
-        .declare_json(json!({
-            "declare": "type", "name": "shift",
-            "fields": [
-                {"name": "on", "type": {"kind": "date_time"}},
-                {"name": "week", "type": {"kind": "date_time"}, "authority": "derived",
-                 "derived": "date_bucket(on, 7d, '2027-12-27T00:00:00Z')"}
-            ]
-        }))
-        .await?
-        .position();
+    let declared = l.declare_json(json!({
+        "declare": "type", "name": "shift",
+        "fields": [
+            {"name": "on", "type": {"kind": "date_time"}},
+            {"name": "week", "type": {"kind": "date_time"}, "authority": "derived",
+             "derived": "date_bucket(on, 7d, '2027-12-27T00:00:00Z')"}
+        ]
+    }));
+    let declared = declared.await?.position();
     l.upsert("shift", "s", json!({"on": "2028-01-05T10:00:00Z"}))
         .await?;
     let week = l.read("shift", "s").await?;

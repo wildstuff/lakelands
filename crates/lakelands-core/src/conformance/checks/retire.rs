@@ -79,11 +79,8 @@ async fn a_principal_who_may_write_only_some_fields_cannot_retire(store: Store) 
     let clerk = field_writer(store.as_ref(), "clerk", "invoice", &["status"]);
     let invoice = TypeName::from("invoice");
 
-    let d = cat
-        .describe_type(&clerk, &invoice, ReadAt::default())
-        .await
-        .must("describing `invoice` as the clerk")?
-        .data;
+    let d = cat.describe_type(&clerk, &invoice, ReadAt::default());
+    let d = d.await.must("describing `invoice` as the clerk")?.data;
     ensure!(
         d.may.upsert && !d.may.retire,
         "a clerk who may write only `status` may upsert but not retire; describe says \
@@ -120,9 +117,8 @@ async fn a_principal_who_may_write_only_some_fields_cannot_retire(store: Store) 
     // In retire's order, the grant before the record, the record before
     // the version (016, extended).
     let gone = lakelands_api::RecordKey::from("gone");
-    let ungranted = cat
-        .retire(&clerk, &invoice, &gone, WriteOpts::default())
-        .await;
+    let ungranted = cat.retire(&clerk, &invoice, &gone, WriteOpts::default());
+    let ungranted = ungranted.await;
     let at = WriteOpts {
         expected_version: Some(lakelands_api::Version(3)),
         ..WriteOpts::default()
@@ -162,9 +158,8 @@ async fn a_record_retired_at_a_position_is_readable_just_before_it(store: Store)
          `status` \"open\"; it read {:?}",
         then.fields
     );
-    let now = cat
-        .get(&reader, &invoice, get_at("i1", Some(retired)))
-        .await;
+    let now = cat.get(&reader, &invoice, get_at("i1", Some(retired)));
+    let now = now.await;
     ensure!(
         matches!(now, Err(Error::NotFound { .. })),
         "at {retired}, the position of its retirement, `i1` is gone; the read answered {:?}",

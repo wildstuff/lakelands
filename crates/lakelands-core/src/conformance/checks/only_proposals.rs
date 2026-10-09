@@ -244,20 +244,17 @@ async fn a_holder_of_only_proposes_its_own_records(store: Store) -> Held {
     let accept = |p: ProposalId| async move { said(cat.accept(own, &p).await) };
     let amount = |key: &str| upsert("bill", key, "amount", json!(5));
     // A rederive: `double` is declared again.
-    let p = proposes(&l, &alice, amount("k1"))
-        .await
-        .map_err(Failure::new)?;
+    let p = proposes(&l, &alice, amount("k1"));
+    let p = p.await.map_err(Failure::new)?;
     l.declare_json(json!({"declare": "function", "name": "double", "backing": "expr",
                           "inputs": [{"name": "amount", "type": {"kind": "number"}}], "expr": "amount * 3"}))
         .await?;
     row("after a rederive", accept(p).await, &moved("k1"));
     // A backed output: `k2`'s name, cleared by a failed call, is filled.
-    let p = proposes(&l, &alice, amount("k2"))
-        .await
-        .map_err(Failure::new)?;
-    let recomputed = cat
-        .recompute(&l.own, Recompute::Function("pin_lookup".into()))
-        .await;
+    let p = proposes(&l, &alice, amount("k2"));
+    let p = p.await.map_err(Failure::new)?;
+    let recomputed = cat.recompute(&l.own, Recompute::Function("pin_lookup".into()));
+    let recomputed = recomputed.await;
     recomputed.must("recomputing `pin_lookup`")?;
     let name = l.read("bill", "k2").await?.fields.get("name").cloned();
     ensure!(
@@ -266,9 +263,8 @@ async fn a_holder_of_only_proposes_its_own_records(store: Store) -> Held {
     );
     row("after a backed output", accept(p).await, &moved("k2"));
     // A record made again at the key.
-    let p = proposes(&l, &alice, amount("k3"))
-        .await
-        .map_err(Failure::new)?;
+    let p = proposes(&l, &alice, amount("k3"));
+    let p = p.await.map_err(Failure::new)?;
     l.retire("bill", "k3").await?;
     l.upsert(
         "bill",
@@ -278,9 +274,8 @@ async fn a_holder_of_only_proposes_its_own_records(store: Store) -> Held {
     .await?;
     row("after `k3` is made again", accept(p).await, &moved("k3"));
     // The type declared again, its records untouched; migrated; re-keyed.
-    let p = proposes(&l, &alice, amount("k1"))
-        .await
-        .map_err(Failure::new)?;
+    let p = proposes(&l, &alice, amount("k1"));
+    let p = p.await.map_err(Failure::new)?;
     bill.description = Some("a bill".into());
     l.declare(bill.clone()).await?;
     row(
@@ -288,15 +283,13 @@ async fn a_holder_of_only_proposes_its_own_records(store: Store) -> Held {
         accept(p).await,
         &moved("k1"),
     );
-    let p = proposes(&l, &alice, amount("k1"))
-        .await
-        .map_err(Failure::new)?;
+    let p = proposes(&l, &alice, amount("k1"));
+    let p = p.await.map_err(Failure::new)?;
     bill.fields.push(field("extra", Text));
     l.migrate(bill.clone()).await?;
     row("after `bill` is migrated", accept(p).await, &moved("k1"));
-    let p = proposes(&l, &alice, amount("k4"))
-        .await
-        .map_err(Failure::new)?;
+    let p = proposes(&l, &alice, amount("k4"));
+    let p = p.await.map_err(Failure::new)?;
     bill.key = vec!["code".into(), "owner".into()];
     l.migrate(bill).await?;
     row("after `bill` is re-keyed", accept(p).await, &moved("k4"));

@@ -273,9 +273,8 @@ async fn concurrent_writes_each_land_once_in_one_order_of_the_log(store: Store) 
             there.map(|e| (e.position, e.body.kind()))
         );
     }
-    store
-        .verify(None, None)
-        .await
+    let fut = store.verify(None, None);
+    fut.await
         .must("verifying the hash chain after the concurrent writes")?;
     Ok(())
 }
@@ -300,9 +299,8 @@ async fn writes_and_a_declaration_made_at_once_are_ordered_as_one_log(store: Sto
                 .must("adding `note` to `item` while others write")?;
             let extra: Declaration =
                 Declaration::Type(type_decl("extra", vec![field("x", StorageKind::Text)]));
-            dcat.declare(&downer, extra)
-                .await
-                .must("declaring `extra` while others write")?;
+            let fut = dcat.declare(&downer, extra);
+            fut.await.must("declaring `extra` while others write")?;
             Ok(vec![("note".to_owned(), 0, o.position())])
         }),
     );

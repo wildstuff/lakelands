@@ -177,9 +177,8 @@ async fn annotations_round_trip_through_declare_the_feed_and_describe(store: Sto
     let mut crate_ = shelf.clone();
     crate_.name = "crate".into();
     crate_.annotations = marks(&[("acme.icon", json!("box"))]);
-    cat.apply(own, vec![Declaration::Type(crate_.clone())])
-        .await
-        .must("applying the annotated `crate`")?;
+    let fut = cat.apply(own, vec![Declaration::Type(crate_.clone())]);
+    fut.await.must("applying the annotated `crate`")?;
     let d = l.describe_type("crate").await?;
     let (want, got) = (
         canonical(&declared_maps(&crate_)),

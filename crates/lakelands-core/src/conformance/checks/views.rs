@@ -326,12 +326,8 @@ async fn a_view_record_is_keyed_by_its_group_by_fields(store: Store) -> Held {
         let row = json!({"partner": partner, "region": region, "amount": "1"});
         l.upsert("invoice", k, row).await?;
     }
-    let mut keys: Vec<String> = l
-        .all_found("by_both", Find::default())
-        .await?
-        .into_iter()
-        .map(|r| r.key.0)
-        .collect();
+    let keys = l.all_found("by_both", Find::default());
+    let mut keys: Vec<String> = keys.await?.into_iter().map(|r| r.key.0).collect();
     keys.sort();
     ensure!(
         keys == ["acme:north", "acme:south%3Aeast"],
@@ -806,11 +802,8 @@ async fn a_view_whose_measure_reads_another_is_described_to_its_readers(store: S
         (reader("reader", Access::Read), true),
         (reader("blind", Access::None), false),
     ] {
-        let d = cat
-            .describe(&who, Default::default())
-            .await
-            .must("describing the lake")?
-            .data;
+        let d = cat.describe(&who, Default::default());
+        let d = d.await.must("describing the lake")?.data;
         for (view, how) in [
             (
                 "averaged",

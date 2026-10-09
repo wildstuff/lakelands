@@ -61,11 +61,8 @@ async fn migrate_to(l: &Lake, to: Value, renames: &[(&str, &str)]) -> Result<Out
             .collect(),
         relation_renames: Vec::new(),
     };
-    let report = l
-        .cat
-        .migrate(&l.own, m.clone())
-        .await
-        .must("the preflight")?;
+    let report = l.cat.migrate(&l.own, m.clone());
+    let report = report.await.must("the preflight")?;
     let applied = l.cat.migrate_apply(&l.own, m, &report.data.report_id).await;
     applied.must("applying the migration")
 }
@@ -280,15 +277,10 @@ async fn a_grant_holds_a_field_under_every_name_it_has_borne(store: Store, given
         renames: vec![("a".into(), "b".into()), ("b".into(), "a".into())],
         relation_renames: Vec::new(),
     };
-    let report = l
-        .cat
-        .migrate(&l.own, swap.clone())
-        .await
-        .must("the swap's preflight")?;
-    let swapped = l
-        .cat
-        .migrate_apply(&l.own, swap, &report.data.report_id)
-        .await;
+    let report = l.cat.migrate(&l.own, swap.clone());
+    let report = report.await.must("the swap's preflight")?;
+    let swapped = l.cat.migrate_apply(&l.own, swap, &report.data.report_id);
+    let swapped = swapped.await;
     swapped.must("applying the swap")?;
     let apart = field_access(s, "apart", "pair", &[("a", none), ("b", read)]);
     let shared = [
@@ -323,9 +315,8 @@ async fn a_grant_holds_a_field_under_every_name_it_has_borne(store: Store, given
     let log = log_events(s).await?;
     let scratch = Scratch::new(given.scratch.clone());
     let from = scratch.dir("from");
-    crate::export::write(s, &from)
-        .await
-        .must("exporting the lake")?;
+    let fut = crate::export::write(s, &from);
+    fut.await.must("exporting the lake")?;
     let lake = store.lake().clone();
     let imported = (given.import)(from, lake, None, Seams::default()).await;
     let imported = imported.map_err(|e| Failure::new(format!("importing the export: {e}")));

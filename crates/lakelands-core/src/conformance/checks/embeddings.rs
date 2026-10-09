@@ -244,9 +244,8 @@ async fn an_embedding_whose_model_the_backend_does_not_make_is_refused_at_declar
     store: Store,
 ) -> Held {
     let l = Lake::of(store.as_ref());
-    let other_model = l
-        .try_declare(notes_by(&["title"], "another-model", 2))
-        .await;
+    let other_model = l.try_declare(notes_by(&["title"], "another-model", 2));
+    let other_model = other_model.await;
     let other_dimensions = l.try_declare(notes_by(&["title"], EMBED_MODEL, 3)).await;
     ensure!(
         is_unbound(&other_model) && is_unbound(&other_dimensions),
@@ -434,9 +433,8 @@ async fn backlog(l: &Lake, tag: &str, held: &[usize]) -> Result<Vec<String>, Fai
             json!({"code": format!("a{i:03}"), "body": t}),
         )
     };
-    l.ingest("feed", texts.iter().enumerate().map(record).collect())
-        .await
-        .must("feeding the records")?;
+    let fut = l.ingest("feed", texts.iter().enumerate().map(record).collect());
+    fut.await.must("feeding the records")?;
     Ok(texts)
 }
 
@@ -952,9 +950,8 @@ async fn a_backend_bound_after_open_is_read_from_then_on(store: Store, reopen: R
     let l = Lake::of(store.as_ref());
     let early = "Bound late early quay";
     l.upsert("note", "early", json!({"title": early})).await?;
-    let before = quay(store.as_ref(), None)
-        .await
-        .must("a hybrid search with none bound")?;
+    let before = quay(store.as_ref(), None);
+    let before = before.await.must("a hybrid search with none bound")?;
     let head = store.head().await.must("reading the head")?;
     store
         .bind_embed(backing::embedder())
@@ -966,9 +963,8 @@ async fn a_backend_bound_after_open_is_read_from_then_on(store: Store, reopen: R
     );
     l.upsert("note", "late", json!({"title": "Bound late later quay"}))
         .await?;
-    let searched = quay(store.as_ref(), None)
-        .await
-        .must("a hybrid search once bound")?;
+    let searched = quay(store.as_ref(), None);
+    let searched = searched.await.must("a hybrid search once bound")?;
     let (late, waits) = (
         vec_of(store.as_ref(), "late").await?,
         vec_of(store.as_ref(), "early").await?,
@@ -996,9 +992,8 @@ async fn a_backend_bound_after_open_is_read_from_then_on(store: Store, reopen: R
         .bind_embed(backing::embedder_as("another-model", 2))
         .must("binding a backend of another model")?;
     let search = quay(store.as_ref(), None).await;
-    let other = l
-        .try_declare(notes_by(&["title", "body"], "another-model", 2))
-        .await;
+    let other = l.try_declare(notes_by(&["title", "body"], "another-model", 2));
+    let other = other.await;
     ensure!(
         other.is_ok() && is_unbound(&search),
         "a second bind replaces the first: a search over `note.vec`, of `{EMBED_MODEL}`, \
@@ -1020,10 +1015,8 @@ async fn a_declaration_that_keeps_an_embedding_needs_no_backend(
     l.declare(kept.clone()).await?;
     l.declare(berths()).await?;
     let set = vec![lakelands_api::write::Declaration::Type(kept.clone())];
-    l.cat
-        .apply(&l.own, set)
-        .await
-        .must("applying `note` as in force")?;
+    let fut = l.cat.apply(&l.own, set);
+    fut.await.must("applying `note` as in force")?;
     // Other dimensions reshape the field: a migration, checked the same way.
     let wider = migration(notes_by(&["title", "body"], EMBED_MODEL, 3));
     let report = l.cat.migrate(&l.own, wider.clone()).await;
@@ -1223,9 +1216,8 @@ async fn no_request_carries_more_than_sixty_four_texts(store: Store, reopen: Reo
             )
         })
         .collect();
-    l.ingest("batches", records)
-        .await
-        .must("ingesting 150 batches")?;
+    let fut = l.ingest("batches", records);
+    fut.await.must("ingesting 150 batches")?;
     l.declare(type_decl(
         "batch",
         vec![title(), embedding("vec", 2, &["title"], model)],
@@ -1260,9 +1252,8 @@ async fn piers(l: &Lake, titles: &[String]) -> Result<usize, Failure> {
     let records = titles.iter().enumerate();
     let records =
         records.map(|(n, t)| source_record("pier", &format!("p{n}"), json!({"title": t})));
-    l.ingest("piers", records.collect())
-        .await
-        .must("ingesting piers")?;
+    let fut = l.ingest("piers", records.collect());
+    fut.await.must("ingesting piers")?;
     let before = backing::embed_calls();
     let vec = embedding("vec", 2, &["title"], EMBED_MODEL);
     l.declare(type_decl("pier", vec![title(), vec])).await?;
@@ -1301,16 +1292,13 @@ async fn a_text_the_backend_refuses_fails_alone_in_its_batch(store: Store) -> He
     );
     let before = backing::embed_calls();
     let again = source_record("pier", "p8", json!({"title": titles[0]}));
-    l.ingest("piers", vec![again])
-        .await
-        .must("ingesting `p8`")?;
+    let fut = l.ingest("piers", vec![again]);
+    fut.await.must("ingesting `p8`")?;
     let p8 = pier_vecs(store.as_ref(), 9).await?.pop();
     let sent = embedded(&titles[5]);
     let what = lakelands_api::write::Recompute::Type("pier".into());
-    l.cat
-        .recompute(&l.own, what)
-        .await
-        .must("computing `pier` again")?;
+    let fut = l.cat.recompute(&l.own, what);
+    fut.await.must("computing `pier` again")?;
     let calls = backing::embed_calls() - before;
     ensure!(
         p8.as_deref() == Some("east") && calls == 1 && embedded(&titles[5]) == sent + 1,

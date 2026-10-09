@@ -96,9 +96,8 @@ async fn a_migration_keeps_the_fields_its_author_may_not_know_of(store: Store) -
          must list `team` alone as dropped; it listed {:?}",
         report.dropped
     );
-    cat.migrate_apply(&schemer, to, &report.report_id)
-        .await
-        .must("applying the migration without `team`")?;
+    let fut = cat.migrate_apply(&schemer, to, &report.report_id);
+    fut.await.must("applying the migration without `team`")?;
     kept(&l, &["no", "note", "salary"], "after the applied migration").await?;
 
     // Proposed: a principal without the grant removes `note`.
@@ -120,9 +119,8 @@ async fn a_migration_keeps_the_fields_its_author_may_not_know_of(store: Store) -
          `no` and `salary` with `note` alone dropped; they read {mine:?}, and {whole:?} with \
          {dropped:?}"
     );
-    cat.accept(own, &proposal)
-        .await
-        .must("accepting the shape without `note`")?;
+    let fut = cat.accept(own, &proposal);
+    fut.await.must("accepting the shape without `note`")?;
     kept(&l, &["no", "salary"], "after the accepted proposal").await
 }
 
@@ -339,10 +337,8 @@ async fn a_migrations_faults_come_in_one_order_for_a_hidden_name_and_an_absent_o
     let numbered = json!({"declare": "object_set", "name": "numbered", "of": "invoice",
         "where": "no = 'x'"});
     let numbered = serde_json::from_value(numbered).map_err(|e| Failure::new(e.to_string()))?;
-    l.cat
-        .declare(&l.own, numbered)
-        .await
-        .must("declaring `numbered`")?;
+    let fut = l.cat.declare(&l.own, numbered);
+    fut.await.must("declaring `numbered`")?;
     // Each row: the migration naming the hidden name, the one naming an
     // absent name in its place, and the two names; ("", "") where the
     // answer names neither.
@@ -421,10 +417,8 @@ async fn a_migrations_faults_come_in_one_order_for_a_hidden_name_and_an_absent_o
     }
     // A hidden field named again, and `gross` removed, which the hidden
     // `net` reads: the read is judged first, on the field.
-    let answer = l
-        .cat
-        .migrate(&who, m(&["no", "ref", "salary"], &[], &[]))
-        .await;
+    let answer = l.cat.migrate(&who, m(&["no", "ref", "salary"], &[], &[]));
+    let answer = answer.await;
     let says = json!({"code": "field_read_elsewhere", "field": "gross"});
     ensure!(
         refused_on(&answer).map(|(f, _)| f) == Some("gross") && invalid_like(&answer, &says),

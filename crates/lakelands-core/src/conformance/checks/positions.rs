@@ -76,18 +76,12 @@ async fn every_reply_carries_the_position_it_reflects(store: Store) -> Held {
 
     let head = store.head().await.must("reading the head")?;
     let counter = TypeName::from("counter");
-    let got = cat
-        .get(own, &counter, get_at("k", None))
-        .await
-        .must("reading `k` at the head")?;
-    let found = cat
-        .find(own, &counter, Find::default())
-        .await
-        .must("finding counters at the head")?;
-    let described = cat
-        .describe(own, ReadAt::default())
-        .await
-        .must("describing the lake")?;
+    let got = cat.get(own, &counter, get_at("k", None));
+    let got = got.await.must("reading `k` at the head")?;
+    let found = cat.find(own, &counter, Find::default());
+    let found = found.await.must("finding counters at the head")?;
+    let described = cat.describe(own, ReadAt::default());
+    let described = described.await.must("describing the lake")?;
     for (door, position) in [
         ("get", got.position),
         ("find", found.position),
@@ -102,10 +96,8 @@ async fn every_reply_carries_the_position_it_reflects(store: Store) -> Held {
         );
     }
 
-    let pinned = cat
-        .get(own, &counter, get_at("k", Some(first.position())))
-        .await
-        .must("reading `k` as of the first write")?;
+    let pinned = cat.get(own, &counter, get_at("k", Some(first.position())));
+    let pinned = pinned.await.must("reading `k` as of the first write")?;
     ensure!(
         pinned.position == first.position(),
         "a read pinned as_of {} answered position {}; a pinned read reflects exactly \
@@ -124,10 +116,8 @@ async fn a_read_as_of_a_write_sees_that_write_and_nothing_later(store: Store) ->
     l.upsert("counter", "other", json!({"n": 9})).await?;
 
     let counter = TypeName::from("counter");
-    let live = cat
-        .get(own, &counter, get_at("k", None))
-        .await
-        .must("reading `k` at the head")?;
+    let live = cat.get(own, &counter, get_at("k", None));
+    let live = live.await.must("reading `k` at the head")?;
     ensure!(
         value(&live.data, "n") == Some(&json!(2)),
         "the head must show the last write, n = 2; it shows {:?}",
@@ -135,10 +125,8 @@ async fn a_read_as_of_a_write_sees_that_write_and_nothing_later(store: Store) ->
     );
 
     let at = get_at("k", Some(first.position()));
-    let then = cat
-        .get(own, &counter, at.clone())
-        .await
-        .must("reading `k` as of the first write")?;
+    let then = cat.get(own, &counter, at.clone());
+    let then = then.await.must("reading `k` as of the first write")?;
     ensure!(
         value(&then.data, "n") == Some(&json!(1)),
         "as of position {} (the first write), `k` must read n = 1; it reads {:?}. \

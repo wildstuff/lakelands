@@ -60,17 +60,14 @@ async fn find_ordered_by_latest_lists_records_by_their_last_event(store: Store) 
     }
     // i1 changes another field; i2 then leaves; i3 changes by ingest; i4
     // gains a link record; i5 a reference.
-    let noted = l
-        .upsert("invoice", "i1", json!({"note": "late"}))
-        .await?
-        .position();
+    let noted = l.upsert("invoice", "i1", json!({"note": "late"}));
+    let noted = noted.await?.position();
     l.retire("invoice", "i2").await?;
-    l.ingest(
+    let fut = l.ingest(
         "erp",
         vec![source_record("invoice", "i3", json!({"seen": "yes"}))],
-    )
-    .await
-    .must("ingesting a change to i3")?;
+    );
+    fut.await.must("ingesting a change to i3")?;
     cat.link(
         own,
         &"invoice".into(),

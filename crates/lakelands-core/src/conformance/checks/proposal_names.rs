@@ -172,10 +172,8 @@ async fn listed(l: &Lake, who: &Principal, filter: Value) -> Result<Vec<Proposal
 /// What `who` lists of the proposal made for `why`: its write as JSON,
 /// `None` where it shows none, and whether it says there is more.
 async fn entry(l: &Lake, who: &Principal, why: &str) -> Result<(Option<String>, bool), Failure> {
-    let p = listed(l, who, json!({}))
-        .await?
-        .into_iter()
-        .find(|p| p.why == why);
+    let p = listed(l, who, json!({}));
+    let p = p.await?.into_iter().find(|p| p.why == why);
     let p = p.ok_or_else(|| Failure::new(format!("`{}` must be listed `{why}`", who.id)))?;
     Ok((p.write.map(|w| json!(w).to_string()), p.more))
 }

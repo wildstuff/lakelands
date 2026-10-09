@@ -48,9 +48,8 @@ async fn a_derived_field_is_computed_by_the_fold_on_every_write(store: Store) ->
     );
     l.declare(ty).await?;
 
-    let first = l
-        .upsert("invoice", "i1", json!({"amount": "100.00"}))
-        .await?;
+    let first = l.upsert("invoice", "i1", json!({"amount": "100.00"}));
+    let first = first.await?;
     let rec = l.read("invoice", "i1").await?;
     let got = rec.fields.get("gross");
     ensure!(
@@ -181,12 +180,11 @@ async fn a_derived_field_accepts_no_value_from_a_source_or_a_verb_either(store: 
     l.upsert("bill", "b", json!({"net": "1"})).await?;
 
     let before = store.head().await.must("reading the head")?;
-    let fed = l
-        .ingest(
-            "erp",
-            vec![source_record("bill", "b", json!({"gross": "5"}))],
-        )
-        .await;
+    let fed = l.ingest(
+        "erp",
+        vec![source_record("bill", "b", json!({"gross": "5"}))],
+    );
+    let fed = fed.await;
     ensure!(
         fed.is_err(),
         "a source record setting the derived `gross` must be refused; the ingest answered {fed:?}"

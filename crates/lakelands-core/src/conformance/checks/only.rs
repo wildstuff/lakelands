@@ -161,11 +161,8 @@ async fn migrate(
     if renamed {
         m.renames = vec![("owner".into(), m.to.fields[0].name.clone())];
     }
-    let report = l
-        .cat
-        .migrate(&l.own, m.clone())
-        .await
-        .must("previewing a migration of `claim`")?;
+    let report = l.cat.migrate(&l.own, m.clone());
+    let report = report.await.must("previewing a migration of `claim`")?;
     let done = l.cat.migrate_apply(&l.own, m, &report.data.report_id).await;
     Ok(done.must("migrating `claim`")?.position())
 }
@@ -289,9 +286,8 @@ async fn a_grant_admits_only_its_records_at_every_read(store: Store) -> Held {
     // The owner hands `c3` to bob: it is alice's as of before, not after.
     let handed = l.upsert("claim", "c3", json!({"owner": "bob"})).await?;
     let before = Position(handed.position().0 - 1);
-    get("c3", Some(before))
-        .await
-        .must("alice's `get` of `c3` as of before")?;
+    let fut = get("c3", Some(before));
+    fut.await.must("alice's `get` of `c3` as of before")?;
     not_found("alice's `get` of `c3` at the head", get("c3", None).await)?;
     finds(&l, &alice, HANDED, before).await
 }
@@ -352,10 +348,8 @@ async fn a_search_finds_only_admitted_records(store: Store) -> Held {
     // A link is judged by its ends at the head too.
     let link = json!({"type": "sys.link.claim.on_trip", "mode": "lexical", "text": "trip",
                       "as_of": before});
-    let hits = cat
-        .search(alice, de(link))
-        .await
-        .must("alice's search of the links")?;
+    let hits = cat.search(alice, de(link));
+    let hits = hits.await.must("alice's search of the links")?;
     if hit_keys(&hits.data) != "c1:t1" {
         wrong.push(format!(
             "the links as of before: `{}`",
@@ -560,9 +554,8 @@ async fn a_holder_of_only_writes_its_own_records_alone(store: Store) -> Held {
         let fields = json!({"from": from, "to": to});
         de(json!({"type": for_trip.as_str(), "key": key.as_str(), "fields": fields}))
     };
-    l.ingest("feed", vec![link("r2", "t1")])
-        .await
-        .must("ingesting bob's link of `r2`")?;
+    let fut = l.ingest("feed", vec![link("r2", "t1")]);
+    fut.await.must("ingesting bob's link of `r2`")?;
     let (desk, held_by) = (TypeName::from("desk"), RelationName::from("held_by"));
     for d in ["d1", "d2"] {
         l.upsert("desk", d, json!({"n": d})).await?;
@@ -571,9 +564,8 @@ async fn a_holder_of_only_writes_its_own_records_alone(store: Store) -> Held {
     let (ty, c1, on, t1) = names("c1");
     let (none, opts) = (Default::default, Default::default);
     let c2 = RecordKey::from("c2");
-    cat.link(&l.own, &desk, &d2, &held_by, &c2, none(), opts())
-        .await
-        .must("linking `d2` to bob's `c2`")?;
+    let fut = cat.link(&l.own, &desk, &d2, &held_by, &c2, none(), opts());
+    fut.await.must("linking `d2` to bob's `c2`")?;
     // Bob proposes a change to his claim and a claim of his; alice writes
     // `c1` under a key before her grant holds `only`, and a retry answers
     // as that did.
@@ -876,9 +868,8 @@ async fn a_holder_of_only_changes_no_shape(store: Store) -> Held {
     ];
     let mut proposals = Vec::new();
     for write in &writes {
-        let proposed = cat
-            .propose(own, de(write.clone()), "the owner's".into())
-            .await;
+        let proposed = cat.propose(own, de(write.clone()), "the owner's".into());
+        let proposed = proposed.await;
         let Outcome::Proposed { proposal, .. } = proposed.must("the owner's proposal")? else {
             return Err(Failure::new("a proposal must be proposed"));
         };
@@ -904,9 +895,8 @@ async fn a_holder_of_only_changes_no_shape(store: Store) -> Held {
     not_granted("`migrate_apply`", cat.migrate_apply(&alice, m(), "x").await)?;
     let vt = cat.migrate_value_type(&alice, label.clone().into()).await;
     not_granted("`migrate_value_type`", vt)?;
-    let vt = cat
-        .migrate_value_type_apply(&alice, label.into(), "x")
-        .await;
+    let vt = cat.migrate_value_type_apply(&alice, label.into(), "x");
+    let vt = vt.await;
     not_granted("`migrate_value_type_apply`", vt)?;
     for write in writes {
         not_granted(
@@ -921,10 +911,8 @@ async fn a_holder_of_only_changes_no_shape(store: Store) -> Held {
     let rejected = cat.reject(&alice, &proposals[0], why()).await;
     not_granted("`reject` of a declaration", rejected)?;
     head_unmoved(store.as_ref(), head, "every schema write by alice").await?;
-    let listed = cat
-        .proposals(&alice, Default::default())
-        .await
-        .must("alice's listing")?;
+    let listed = cat.proposals(&alice, Default::default());
+    let listed = listed.await.must("alice's listing")?;
     let listed: Vec<_> = listed.data.iter().map(|p| &p.id).collect();
     ensure!(
         listed == [&proposals[0]],

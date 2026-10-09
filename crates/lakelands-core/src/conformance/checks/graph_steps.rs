@@ -196,10 +196,8 @@ async fn a_graph_refuses_a_cursor_of_another_read_and_a_path_any(store: Store) -
         "a graph",
     )
     .await?;
-    let rows = cat
-        .query(own, paged(1, Projection::default(), None))
-        .await
-        .must("rows")?;
+    let rows = cat.query(own, paged(1, Projection::default(), None));
+    let rows = rows.await.must("rows")?;
     let QueryResult::Rows { next_cursor: r, .. } = rows.data else {
         return Err(Failure::new("a rows projection answered another shape"));
     };
@@ -351,14 +349,10 @@ async fn a_graph_shows_a_reader_no_more_than_its_rows(store: Store) -> Held {
     let as_graph = graph_of("hub", Some("h1"), vec![late.clone()]);
     late.depth.min = 1;
     let as_rows = pattern("hub", Some("h1"), vec![late], Projection::default());
-    let in_graph = cat
-        .query(&blind, as_graph)
-        .await
-        .must_fail("a graph's `where`")?;
-    let in_rows = cat
-        .query(&blind, as_rows)
-        .await
-        .must_fail("rows' `where`")?;
+    let in_graph = cat.query(&blind, as_graph);
+    let in_graph = in_graph.await.must_fail("a graph's `where`")?;
+    let in_rows = cat.query(&blind, as_rows);
+    let in_rows = in_rows.await.must_fail("rows' `where`")?;
     ensure!(
         reason(&in_graph).is_some() && reason(&in_graph) == reason(&in_rows),
         "a `where` on a field the reader may not read is refused in a graph as in rows; the \

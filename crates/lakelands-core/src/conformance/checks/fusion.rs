@@ -291,12 +291,8 @@ async fn a_search_fuses_its_rankings_each_by_its_weight(store: Store) -> Held {
     });
     for (mode, by, want) in fields.into_iter().chain(halves) {
         let what = format!("{mode:?}");
-        let got = l
-            .cat
-            .search(&reader, doc_search(mode))
-            .await
-            .must(&what)?
-            .data;
+        let got = l.cat.search(&reader, doc_search(mode));
+        let got = got.await.must(&what)?.data;
         ensure!(
             scored(&got) == want && got.ranked_by == by,
             "a reader without the restricted grant, searching {what}, must be answered the \

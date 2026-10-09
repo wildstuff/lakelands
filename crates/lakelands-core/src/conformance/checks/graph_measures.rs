@@ -391,13 +391,12 @@ async fn components_past_the_lakes_max_graph_nodes_are_refused_too_large(
         max_graph_nodes,
         ..crate::conformance::fixture::limits()
     };
-    let store = (given.relimit)(store, Seams::default(), limits(8))
-        .await
-        .map_err(|e| {
-            Failure::new(format!(
-                "opening the lake again with max_graph_nodes 7 failed: {e}"
-            ))
-        })?;
+    let store = (given.relimit)(store, Seams::default(), limits(8));
+    let store = store.await.map_err(|e| {
+        Failure::new(format!(
+            "opening the lake again with max_graph_nodes 7 failed: {e}"
+        ))
+    })?;
     let all = || measure("invoice", both(), Projection::Components);
     let (got, _) = rows(
         doors(store.as_ref()).as_ref(),
@@ -412,13 +411,12 @@ async fn components_past_the_lakes_max_graph_nodes_are_refused_too_large(
         got == 8,
         "under a cap of 8 the components answer eight rows; they answered {got}"
     );
-    let store = (given.relimit)(store, Seams::default(), limits(7))
-        .await
-        .map_err(|e| {
-            Failure::new(format!(
-                "opening the lake again with max_graph_nodes 6 failed: {e}"
-            ))
-        })?;
+    let store = (given.relimit)(store, Seams::default(), limits(7));
+    let store = store.await.map_err(|e| {
+        Failure::new(format!(
+            "opening the lake again with max_graph_nodes 6 failed: {e}"
+        ))
+    })?;
     let before = store.head().await.must("reading the head")?;
     let err = doors(store.as_ref())
         .query(&owner(store.as_ref()), all())
@@ -458,10 +456,8 @@ async fn a_measure_refuses_depth_where_to_order_by_and_one_way_components(store:
         measure("invoice", Vec::new(), Projection::Degree),
     ));
     for (what, p) in cases {
-        let err = cat
-            .query(own, p)
-            .await
-            .must_fail(&format!("a measure with {what}"))?;
+        let err = cat.query(own, p);
+        let err = err.await.must_fail(&format!("a measure with {what}"))?;
         ensure!(
             matches!(reason(&err), Some(Refusal::Invalid(..))),
             "a measure with {what} must be refused as invalid; it failed with {err:?}"
@@ -482,13 +478,12 @@ async fn a_measure_is_read_whole_in_one_page_up_to_max_graph_nodes(
         max_graph_nodes: 8,
         ..crate::conformance::fixture::limits()
     };
-    let store = (given.relimit)(store, Seams::default(), limits)
-        .await
-        .map_err(|e| {
-            Failure::new(format!(
-                "opening the lake again with max_limit 2 failed: {e}"
-            ))
-        })?;
+    let store = (given.relimit)(store, Seams::default(), limits);
+    let store = store.await.map_err(|e| {
+        Failure::new(format!(
+            "opening the lake again with max_limit 2 failed: {e}"
+        ))
+    })?;
     let (cat, own) = (doors(store.as_ref()), owner(store.as_ref()));
     let paged = |project: &Projection, limit, cursor| Pattern {
         limit: Some(limit),

@@ -348,9 +348,8 @@ async fn a_filled_field_recomputes_what_reads_it_and_fires_its_triggers(store: S
         vec![field("code", StorageKind::Text), name, greeting],
     ))
     .await?;
-    cat.declare(own, trigger_on("named", "place", Some("name = 'AT'")))
-        .await
-        .must("declaring the trigger `named` on `place`")?;
+    let fut = cat.declare(own, trigger_on("named", "place", Some("name = 'AT'")));
+    fut.await.must("declaring the trigger `named` on `place`")?;
     l.upsert("place", "p1", json!({"code": "AT"})).await?;
 
     let r = l.read("place", "p1").await?;
@@ -407,12 +406,11 @@ async fn computed_fields_that_read_each_other_in_a_cycle_are_refused(store: Stor
     let before = store.head().await.must("reading the head")?;
     let name = computed_by("name", StorageKind::Text, "lookup", &["label"]);
     let label = derived("label", StorageKind::Text, "concat(name, '-')", &["name"]);
-    let answer = cat
-        .declare(
-            own,
-            Declaration::Type(type_decl("place", vec![name, label])),
-        )
-        .await;
+    let answer = cat.declare(
+        own,
+        Declaration::Type(type_decl("place", vec![name, label])),
+    );
+    let answer = answer.await;
     let named_both = matches!(invalid_case(&answer), Some(Case::ComputedCycle { fields })
         if ["name", "label"].iter().all(|f| fields.0.iter().any(|n| n == f)));
     ensure!(
@@ -595,10 +593,8 @@ async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
     .await?;
     let before = store.head().await.must("reading the head")?;
     let spot = Recompute::Type("spot".into());
-    l.cat
-        .recompute(&l.own, spot)
-        .await
-        .must("the door, by a type")?;
+    let fut = l.cat.recompute(&l.own, spot);
+    fut.await.must("the door, by a type")?;
     let appended = events_from(store.as_ref(), before.next()).await?;
     let listed = appended.iter().find_map(|e| match &e.body {
         EventBody::Declared {

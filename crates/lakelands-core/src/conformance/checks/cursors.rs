@@ -48,10 +48,8 @@ async fn a_cursor_stays_on_the_position_of_its_first_page(store: Store) -> Held 
         ..Find::default()
     };
 
-    let first = cat
-        .find(own, &item, page(None))
-        .await
-        .must("reading the first page")?;
+    let first = cat.find(own, &item, page(None));
+    let first = first.await.must("reading the first page")?;
     let Found::Records {
         rows, next_cursor, ..
     } = first.data
@@ -68,10 +66,8 @@ async fn a_cursor_stays_on_the_position_of_its_first_page(store: Store) -> Held 
     l.retire(item.as_str(), "e").await?;
 
     loop {
-        let next = cat
-            .find(own, &item, page(Some(cursor)))
-            .await
-            .must("reading a later page")?;
+        let next = cat.find(own, &item, page(Some(cursor)));
+        let next = next.await.must("reading a later page")?;
         ensure!(
             next.position == first.position,
             "a later page answered position {}, but its cursor is bound to the first \

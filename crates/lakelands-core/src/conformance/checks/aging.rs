@@ -286,12 +286,11 @@ async fn a_move_is_written_by_the_system_as_its_rule(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     invoices(&l).await?;
-    cat.declare(
+    let fut = cat.declare(
         own,
         trigger_on("went_overdue", "invoice", Some("status = 'overdue'")),
-    )
-    .await
-    .must("declaring the trigger `went_overdue`")?;
+    );
+    fut.await.must("declaring the trigger `went_overdue`")?;
     l.upsert("invoice", "i1", json!({"status": "open", "amount": 200}))
         .await?;
     // Written twice, so the rule record's version is 2.
@@ -793,14 +792,10 @@ async fn a_rule_is_skipped_when_its_field_is_dropped_or_its_value_no_longer_admi
     l.migrate(type_decl("case", vec![phase])).await?;
     // `late` leaves `stage`; every stored value (`open`) still fits.
     let tighter = stage_type(&["open", "closed"])?;
-    let vt = cat
-        .migrate_value_type(own, tighter.clone().into())
-        .await
-        .must("the preflight of tightening `stage`")?
-        .data;
-    cat.migrate_value_type_apply(own, tighter.into(), &vt.report_id)
-        .await
-        .must("tightening `stage`")?;
+    let vt = cat.migrate_value_type(own, tighter.clone().into());
+    let vt = vt.await.must("the preflight of tightening `stage`")?.data;
+    let fut = cat.migrate_value_type_apply(own, tighter.into(), &vt.report_id);
+    fut.await.must("tightening `stage`")?;
 
     let report = age(store.as_ref(), date(2026, 3, 1)).await?;
     let skipped = |name: &str| {

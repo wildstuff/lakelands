@@ -251,9 +251,8 @@ async fn walked(
     walk: Walk,
 ) -> Result<Vec<String>, Failure> {
     let p = pattern(ty, Some(key), vec![step(relation, walk)], Projection::Graph);
-    let reply = l
-        .cat
-        .query(&l.own, p)
+    let reply = l.cat.query(&l.own, p);
+    let reply = reply
         .await
         .must(&format!("walking `{relation}` from `{ty}` `{key}`"))?;
     let QueryResult::Graph { nodes, .. } = reply.data else {
@@ -322,10 +321,8 @@ async fn two_records_that_would_take_one_new_key_refuse_the_rekey(store: Store) 
         "accounts 1 and 2 would both be `DE1`; the report says {r:?}"
     );
     let before = store.head().await.must("reading the head")?;
-    let e = cat
-        .migrate_apply(own, to_iban(), &r.report_id)
-        .await
-        .must_fail("applying a re-key with a collision")?;
+    let e = cat.migrate_apply(own, to_iban(), &r.report_id);
+    let e = e.await.must_fail("applying a re-key with a collision")?;
     ensure!(
         matches!(reason(&e), Some(Refusal::Migration { .. })),
         "the apply was refused as {e:?}; a migration refusal with its report was expected"
@@ -543,10 +540,8 @@ async fn a_rekey_is_written_at_the_lakes_format_and_the_log_verifies(store: Stor
         "the re-key at {at} and every later event carry the lake's `v`, 11; these do not: \
          {wrong:?}"
     );
-    store
-        .verify(None, None)
-        .await
-        .must("verifying a log that holds a re-key")?;
+    let fut = store.verify(None, None);
+    fut.await.must("verifying a log that holds a re-key")?;
     let before = (read("account", "DE1").await?, read("entry", "DE1:1").await?);
     store.rebuild().await.must("rebuilding")?;
     let after = (read("account", "DE1").await?, read("entry", "DE1:1").await?);
@@ -601,10 +596,8 @@ async fn a_migration_that_takes_every_key_field_away_is_refused(store: Store) ->
     to.insert("key".into(), json!([]));
     let m = migration(serde_json::from_value(Value::Object(to)).expect("a type"));
     let before = store.head().await.must("reading the head")?;
-    let e = cat
-        .migrate(own, m)
-        .await
-        .must_fail("migrating `account` to no key fields")?;
+    let e = cat.migrate(own, m);
+    let e = e.await.must_fail("migrating `account` to no key fields")?;
     ensure!(
         matches!(reason(&e), Some(Refusal::Invalid(..))),
         "taking every key field away was refused as {e:?}; invalid was expected"
@@ -714,11 +707,8 @@ async fn a_rekeyed_type_migrates_again(store: Store) -> Held {
     keep.to.fields.push(
         serde_json::from_value(json!({"name": "note", "type": {"kind": "text"}})).expect("a field"),
     );
-    let r = cat
-        .migrate(own, keep.clone())
-        .await
-        .must("a preflight")?
-        .data;
+    let r = cat.migrate(own, keep.clone());
+    let r = r.await.must("a preflight")?.data;
     ensure!(
         r.lossless && r.rekeyed.is_empty(),
         "a migration that keeps the key of a re-keyed type reports {r:?}"
@@ -731,32 +721,24 @@ async fn a_rekeyed_type_migrates_again(store: Store) -> Held {
         json!({"name": "account_kind", "kind": "text", "one_of": ["giro", "savings"]}),
     )
     .expect("a value type");
-    let v = cat
-        .migrate_value_type(own, kind.clone().into())
-        .await
-        .must("a value type's preflight")?
-        .data;
+    let v = cat.migrate_value_type(own, kind.clone().into());
+    let v = v.await.must("a value type's preflight")?.data;
     ensure!(
         v.fits && v.records_scanned == 4,
         "the four accounts, and no ended key, are scanned: {v:?}"
     );
-    cat.migrate_value_type_apply(own, kind.into(), &v.report_id)
-        .await
-        .must("tightening `account_kind` after a re-key")?;
+    let fut = cat.migrate_value_type_apply(own, kind.into(), &v.report_id);
+    fut.await.must("tightening `account_kind` after a re-key")?;
     // A second re-key, back to `number`, over the ended keys `1` to `4`.
     let mut back = account_to("number");
     back.to.fields.push(
         serde_json::from_value(json!({"name": "note", "type": {"kind": "text"}})).expect("a field"),
     );
-    let r = cat
-        .migrate(own, back.clone())
-        .await
-        .must("a preflight")?
-        .data;
+    let r = cat.migrate(own, back.clone());
+    let r = r.await.must("a preflight")?.data;
     ensure!(r.lossless, "a second re-key over ended keys reports {r:?}");
-    cat.migrate_apply(own, back, &r.report_id)
-        .await
-        .must("re-keying `account` back to `number`")?;
+    let fut = cat.migrate_apply(own, back, &r.report_id);
+    fut.await.must("re-keying `account` back to `number`")?;
     let one = found(&l, "account", "1", None).await?;
     ensure!(
         one.as_ref()
@@ -806,9 +788,8 @@ async fn a_key_is_made_after_every_key_it_reads_has_moved(store: Store) -> Held 
     let bundle = [first]
         .into_iter()
         .chain(rest.map(|(n, to)| by_acct(n, to)));
-    cat.apply(own, bundle.collect())
-        .await
-        .must("declaring the lake")?;
+    let fut = cat.apply(own, bundle.collect());
+    fut.await.must("declaring the lake")?;
     for (ty, key, fields) in [
         ("acct", "a1", json!({"code": "a1", "tag": "T1"})),
         ("acct", "a2", json!({"code": "a2", "tag": "T2"})),

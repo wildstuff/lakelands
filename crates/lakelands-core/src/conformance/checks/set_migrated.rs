@@ -170,10 +170,8 @@ async fn a_migration_decides_the_membership_of_the_records_it_migrates(
         Case::MigrationStale
     )?;
     let report = preflight(m.clone()).await?;
-    let r = l
-        .cat
-        .migrate_apply(&l.own, m.clone(), &report.report_id)
-        .await;
+    let r = l.cat.migrate_apply(&l.own, m.clone(), &report.report_id);
+    let r = r.await;
     ensure!(
         matches!(
             &r,

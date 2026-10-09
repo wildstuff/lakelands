@@ -50,14 +50,12 @@ async fn valid_at_and_as_of_combine_and_neither_stands_in_for_the_other(store: S
     l.declare(ty).await?;
 
     // Valid in January only, as first written; then extended to March.
-    let first = l
-        .upsert(
-            "contract",
-            "c",
-            json!({"party": "acme", "from": day(1, 1), "to": day(2, 1)}),
-        )
-        .await?
-        .position();
+    let first = l.upsert(
+        "contract",
+        "c",
+        json!({"party": "acme", "from": day(1, 1), "to": day(2, 1)}),
+    );
+    let first = first.await?.position();
     l.upsert("contract", "c", json!({"to": day(4, 1)})).await?;
 
     let contract = TypeName::from("contract");
@@ -70,18 +68,17 @@ async fn valid_at_and_as_of_combine_and_neither_stands_in_for_the_other(store: S
         let own = own.clone();
         let contract = contract.clone();
         async move {
-            let got = cat
-                .get(
-                    &own,
-                    &contract,
-                    Get {
-                        key: "c".into(),
-                        with_meta: false,
-                        at: at(as_of, valid),
-                        params: Default::default(),
-                    },
-                )
-                .await;
+            let got = cat.get(
+                &own,
+                &contract,
+                Get {
+                    key: "c".into(),
+                    with_meta: false,
+                    at: at(as_of, valid),
+                    params: Default::default(),
+                },
+            );
+            let got = got.await;
             match got {
                 Ok(_) => Ok(true),
                 Err(Error::NotFound {
@@ -160,10 +157,8 @@ async fn every_field_carries_its_own_provenance(store: Store) -> Held {
     let seen = Timestamp::from_date(2026, 2, 3);
     let mut rec = source_record("invoice", "i", json!({"amount": "12.50"}));
     rec.seen_at = seen;
-    let windows = l
-        .ingest("bank", vec![rec])
-        .await
-        .must("ingesting `i` from `bank`")?;
+    let windows = l.ingest("bank", vec![rec]);
+    let windows = windows.await.must("ingesting `i` from `bank`")?;
     windows_reach_head(store.as_ref(), &windows, "ingesting `i` from `bank`").await?;
     let ingested = windows.last().map(|w| w.position);
     let clerk = field_writer(store.as_ref(), "clerk", "invoice", &["status"]);
@@ -173,9 +168,8 @@ async fn every_field_carries_its_own_provenance(store: Store) -> Held {
         "invoice",
         "i",
         json!({"status": "open"}),
-    )
-    .await?
-    .position();
+    );
+    let authored = authored.await?.position();
 
     let r = l.read("invoice", "i").await?;
     let amount = r

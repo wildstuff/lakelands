@@ -441,10 +441,8 @@ async fn a_value_types_tightening_is_proposed_without_schema_and_applied_on_acce
          proposal pending; it answered {refused:?}"
     );
     let architect = reviewer(store.as_ref(), true);
-    l.cat
-        .accept(&architect, &id)
-        .await
-        .must("accepting the tightening")?;
+    let fut = l.cat.accept(&architect, &id);
+    fut.await.must("accepting the tightening")?;
     let void = l.upsert("ticket", "t3", json!({"state": "void"})).await;
     let paid = l.upsert("ticket", "t3", json!({"state": "paid"})).await;
     ensure!(
