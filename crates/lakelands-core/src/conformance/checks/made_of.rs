@@ -48,6 +48,12 @@ check!(
 );
 
 check!(
+    /// A view is keyed by its groups, judged where their values come from.
+    VIEW_KEY_AT_SOURCES = a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_not_shown,
+    "006 and 024, extended (lakelands#782): a grouped view's key is its `group_by`, which its records carry whatever its `key` says, an ungrouped one's its `key`, and each key field is judged on the view and where its values come from, its source's field and each merge source's by position: a view grouped by a reference to a type its reader is not shown, by a field its source holds at `none` for it, with `key` declared or not, one whose second source's group field it holds at `none`, one whose own group field it holds at `none`, one keyed by another field but grouped by such a field, and one keyed by part of its groups whose other it holds at `none`, answer `describe_type`, `get`, `find`, `search` and a pattern value for value as a name that is not declared, and `describe` names none of them; a view grouped by a field it reads is shown, so is one grouped so whose declared `key` names a field it holds at `none`, since its records carry its groups, and such a view, or one grouped without `key`, is described, listed in a proposal and its get tool's key told by its groups, its definition naming no measure of a field it holds at `none`, and a measure that reads such a measure, its own or a merged one, answers in `describe`, `get`, `find`, a filter on it and the listing as a view declared without both, to a reader and to one who may write, who is offered no write to a view"
+);
+
+check!(
     /// A type keyed by a field its reader may not know of is not shown.
     KEYED_BY_HIDDEN = a_type_keyed_by_a_field_its_reader_may_not_know_of_is_not_shown,
     "006 and 024, extended (lakelands#715): a type whose key names a field its principal may not know of is not shown to it, since every record key would hand out that field's value: to one who reads the whole lake but a key field held at `none`, the type, the link type of its relation and a view over it answer `describe_type`, `get`, `find`, `search`, a pattern, `upsert`, `retire` and `link`, and a verb on the type `call` and `propose` (lakelands#770), value for value as a name that is not declared, `describe` names none of them, nor any verb on the type, in its verbs or its tools, though the reader writes every field the verb sets, and nothing is written; one who reads the key field masked is shown them all, the verbs too"
@@ -576,6 +582,305 @@ async fn a_pattern_names_no_type_its_reader_is_not_shown(
     ensure!(
         apart.is_empty(),
         "a pattern names no type its reader is not shown; apart:\n{}",
+        apart.join("\n")
+    );
+    Ok(())
+}
+
+async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_not_shown(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let f = |name: &str, kind: &str| json!({"name": name, "type": {"kind": kind}});
+    let zref = json!({"name": "zref", "type": {"kind": "reference", "target": "zsecret"}});
+    let count = json!([{"name": "n", "expr": "count()"}]);
+    let view = |name: &str, source: &str, by: &str, field: &serde_json::Value, key: bool| {
+        let mut v = json!({"declare": "type", "name": name, "fields": [field, f("n", "decimal")],
+            "view": {"source": source, "group_by": [by], "measures": count}});
+        if key {
+            v["key"] = json!([by]);
+        }
+        v
+    };
+    // Grouped by `name`, keyed by `n`: its records carry `name` all the same.
+    let keyed = |name: &str| {
+        let mut v = view(name, "pub", "name", &f("name", "text"), false);
+        v["key"] = json!(["n"]);
+        v
+    };
+    let mut merged = view("m_view", "pub", "name", &f("name", "text"), false);
+    merged["fields"] = json!([f("name", "text"), f("n", "decimal"), f("n2", "decimal")]);
+    let n2 = json!([{"name": "n2", "expr": "count()"}]);
+    merged["view"]["merge"] = json!([{"source": "aux", "group_by": ["hid2"], "measures": n2}]);
+    // Grouped by `[name, hid]`, keyed by `name`, over a source whose `hid` it reads.
+    let mut pair = view("knr_view", "pub2", "name", &f("name", "text"), false);
+    pair["fields"] = json!([f("name", "text"), f("hid", "text"), f("n", "decimal")]);
+    (pair["key"], pair["view"]["group_by"]) = (json!(["name"]), json!(["name", "hid"]));
+    // Measured from a measure: `m` reads `n`; `open`, and `due` merged
+    // beside it, read the merged `paid`;
+    // `m0_view` and `p0_view` are the same views without those measures.
+    let measured = |name: &str, fields: &[&str], measures: serde_json::Value| {
+        let mut v = view(name, "pub", "name", &f("name", "text"), false);
+        let decimal = |n: &&str| f(n, "decimal");
+        let fields = std::iter::once(f("name", "text")).chain(fields.iter().map(decimal));
+        v["fields"] = json!(fields.collect::<Vec<_>>());
+        v["view"]["measures"] = measures;
+        v
+    };
+    let (n, paid) = (
+        json!({"name": "n", "expr": "count()"}),
+        json!({"name": "paid", "expr": "count()"}),
+    );
+    let mut bare = vec![
+        measured(
+            "mm_view",
+            &["n", "m"],
+            json!([n, {"name": "m", "expr": "n + 1"}]),
+        ),
+        measured("m0_view", &[], json!([])),
+        measured(
+            "pm_view",
+            &["n", "paid", "open", "due"],
+            json!([n, {"name": "open", "expr": "paid + 1"}]),
+        ),
+        measured("p0_view", &["n"], json!([n])),
+    ];
+    let due = json!({"name": "due", "expr": "count() + paid"});
+    for (v, merged) in [(2, json!([paid, due])), (3, json!([]))] {
+        bare[v]["view"]["merge"] =
+            json!([{"source": "pub2", "group_by": ["name"], "measures": merged}]);
+    }
+    for d in [
+        json!({"declare": "type", "name": "zsecret", "fields": [f("n", "text")]}),
+        json!({"declare": "type", "name": "pub", "fields": [f("name", "text"), zref, f("hid", "text")]}),
+        json!({"declare": "type", "name": "aux", "fields": [f("hid2", "text")]}),
+        json!({"declare": "type", "name": "pub2", "fields": [f("name", "text"), f("hid", "text")]}),
+        view("z_view", "pub", "zref", &zref, false),
+        view("h_view", "pub", "hid", &f("hid", "text"), false),
+        view("h_viewk", "pub", "hid", &f("hid", "text"), true),
+        merged,
+        view("g_view", "pub", "name", &f("name", "text"), false),
+        keyed("kk_view"),
+        keyed("kn_view"),
+        pair,
+        view("n_view", "pub", "name", &f("name", "text"), false),
+        view("nh_view", "pub", "name", &f("name", "text"), true),
+    ]
+    .into_iter()
+    .chain(bare.iter().cloned())
+    {
+        l.declare_json(d).await?;
+    }
+    l.upsert("zsecret", "z1", json!({"n": "x"})).await?;
+    l.upsert("pub2", "q1", json!({"name": "a", "hid": "a"}))
+        .await?;
+    l.upsert("pub", "p1", json!({"name": "a", "zref": "z1", "hid": "a"}))
+        .await?;
+    l.upsert("aux", "x1", json!({"hid2": "a"})).await?;
+    let grants = json!({"default": "read", "review": true, "types": {"zsecret": {"default": "none"},
+        "pub": {"fields": {"hid": "none"}}, "aux": {"fields": {"hid2": "none"}}, "g_view": {"fields": {"name": "none"}},
+        "kk_view": {"fields": {"name": "none"}}, "kn_view": {"fields": {"n": "none"}},
+        "knr_view": {"fields": {"hid": "none"}}, "nh_view": {"fields": {"n": "none"}},
+        "mm_view": {"fields": {"n": "none"}}, "pm_view": {"fields": {"paid": "none"}}}});
+    let eve = principal(
+        store.as_ref(),
+        PrincipalKind::Agent,
+        "eve",
+        serde_json::from_value(grants).expect("grants"),
+    );
+    let mut apart = Vec::new();
+    for (ty, key) in [
+        ("z_view", "z1"),
+        ("h_view", "a"),
+        ("h_viewk", "a"),
+        ("m_view", "a"),
+        ("g_view", "a"),
+        ("kk_view", "a"),
+        ("knr_view", "a:a"),
+    ] {
+        let there = doors(l.cat.as_ref(), &eve, ty, key).await;
+        let none = doors(l.cat.as_ref(), &eve, "no_such", key).await;
+        let said = |a: &[lakelands_api::Result<()>]| {
+            serde_json::to_string(&a.iter().map(|r| r.as_ref().err()).collect::<Vec<_>>())
+                .expect("errors print")
+        };
+        if said(&there).replace(ty, "no_such") != said(&none) {
+            apart.push(format!("`{ty}`: {there:?}"));
+        }
+    }
+    let d = l
+        .cat
+        .describe(&eve, Default::default())
+        .await
+        .must("describing the lake")?
+        .data;
+    let measured_views = ["mm_view", "m0_view", "pm_view", "p0_view"];
+    let names: Vec<&str> = d
+        .types
+        .iter()
+        .map(|t| t.name.as_str())
+        .filter(|n| n.contains("_view") && !measured_views.contains(n))
+        .collect();
+    if names != ["kn_view", "n_view", "nh_view"] {
+        apart.push(format!("eve is described {names:?}"));
+    }
+    // Described, and in its tools, by the key its records carry.
+    let tools = lakelands_api::tools::tools(&d).expect("eve's tools");
+    for ty in ["kn_view", "n_view"] {
+        let door = lakelands_api::tools::Door::Get { ty: ty.into() };
+        let get = tools.iter().find(|t| t.door == door);
+        let key = get.map(|t| &t.input_schema["properties"]["key"]["description"]);
+        let access = d.types.iter().find(|t| t.name.as_str() == ty);
+        let access = access.map(|t| t.access.key.iter().map(|f| f.as_str()).collect::<Vec<_>>());
+        let text = format!("The key of the `{ty}` record: the value of its `name`.");
+        if (&access, key) != (&Some(vec!["name"]), Some(&json!(text))) {
+            apart.push(format!(
+                "`{ty}` is described keyed {access:?}, its get tool {key:?}"
+            ));
+        }
+    }
+    // A shown view's definition names that key and no measure of a field
+    // left out, described and listed in a redeclaration of `kn_view`.
+    let shape = |key: &[FieldName], v: Option<&lakelands_api::ontology::ViewDecl>| {
+        let measures = v.map(|v| v.measures.iter().map(|m| m.name.to_string()).collect());
+        (
+            key.iter().map(|f| f.to_string()).collect::<Vec<_>>(),
+            measures,
+        )
+    };
+    let mut said: Vec<(Vec<String>, Option<Vec<String>>)> = Vec::new();
+    for ty in ["kn_view", "n_view"] {
+        let t = d.types.iter().find(|t| t.name.as_str() == ty);
+        said.extend(t.map(|t| shape(&t.access.key, t.view.as_ref())));
+    }
+    let mut again = keyed("kn_view");
+    again["description"] = json!("again");
+    let declarations = vec![serde_json::from_value(again).expect("a declaration reads")];
+    let bundle = ProposedWrite::Declare { declarations };
+    let proposed = l.cat.propose(&l.own, bundle, "why".into()).await;
+    proposed.must("proposing `kn_view` again")?;
+    let listed = l.cat.proposals(&eve, ProposalFilter::default()).await;
+    for p in listed.must("listing")?.data {
+        let Some(ProposedWrite::Declare { declarations }) = p.write else {
+            continue;
+        };
+        for d in declarations {
+            if let lakelands_api::write::Declaration::Type(t) = d {
+                said.push(shape(&t.key, t.view.as_deref()));
+            }
+        }
+    }
+    // And it is answered the hash of the definition it is shown.
+    let field = |f: &lakelands_api::describe::FieldDescription| json!({"name": f.name, "type": f.ty, "required": f.required});
+    for t in d.types.iter().filter(|t| t.name.as_str() == "nh_view") {
+        let fields: Vec<_> = t.fields.iter().map(field).collect();
+        let shown = json!({"name": t.name, "key": t.access.key, "fields": fields, "view": t.view});
+        let shown = serde_json::from_value(shown).expect("a description reads as a declaration");
+        let rebuilt = lakelands_api::shape::schema_hash(&shown).expect("a described view parses");
+        if rebuilt != t.lifecycle.schema_hash {
+            apart.push(format!(
+                "`nh_view` is described {:?}, hashed {}",
+                t.view, t.lifecycle.schema_hash
+            ));
+        }
+    }
+    let one = |m: &[&str]| {
+        (
+            vec!["name".to_owned()],
+            Some(m.iter().map(|m| m.to_string()).collect()),
+        )
+    };
+    if said != [one(&[]), one(&["n"]), one(&[])] {
+        apart.push(format!(
+            "eve is shown `kn_view`, `n_view`, and `kn_view` proposed, keyed and measured {said:?}"
+        ));
+    }
+    // `mm_view` and `pm_view` answer eve, and `wes` who may write, described,
+    // at `get` and `find`, filtered on the measure, and listed, as the views
+    // declared without the measures they may not know of.
+    let grants = json!({"default": "write", "review": true, "types": {
+        "mm_view": {"fields": {"n": "none"}}, "pm_view": {"fields": {"paid": "none"}}}});
+    let wes = principal(
+        store.as_ref(),
+        PrincipalKind::Agent,
+        "wes",
+        serde_json::from_value(grants).expect("grants"),
+    );
+    let mut whole = std::collections::BTreeMap::new();
+    for who in [&eve, &wes] {
+        for t in ["mm_view", "m0_view", "pm_view", "p0_view"] {
+            let ty = TypeName::from(t);
+            let described =
+                (l.cat.describe_type(who, &ty, Default::default()).await).map(|d| d.data);
+            // A view is never written: no reader is offered `upsert` or `retire`.
+            if let Ok(d) = &described
+                && (d.may.upsert || d.may.retire)
+            {
+                apart.push(format!(
+                    "`{t}` is offered writes to {}: {:?}",
+                    who.id, d.may
+                ));
+            }
+            let got = (l.cat.get(who, &ty, get_at("a", None)).await).map(|g| g.data);
+            let found = (l.cat.find(who, &ty, Find::default()).await).map(|f| f.data);
+            // Filtered on the measure of its pair: `m`, or `open` and `due`.
+            let on = if t.starts_with('m') {
+                "m > 2"
+            } else {
+                "open > 2 or due > 2"
+            };
+            let on: Find = serde_json::from_value(json!({"where": on})).expect("a find");
+            let filtered = (l.cat.find(who, &ty, on).await).map(|f| f.data);
+            let said = format!("{described:?} {got:?} {found:?} {filtered:?}");
+            whole.insert((who.id.to_string(), t.to_owned()), said);
+        }
+    }
+    let again = bare.into_iter().map(|mut d| {
+        d["description"] = json!("again");
+        serde_json::from_value(d).expect("a declaration reads")
+    });
+    let bundle = ProposedWrite::Declare {
+        declarations: again.collect(),
+    };
+    let proposed = l.cat.propose(&l.own, bundle, "why".into()).await;
+    proposed.must("proposing the measured views again")?;
+    for who in [&eve, &wes] {
+        for p in l
+            .cat
+            .proposals(who, ProposalFilter::default())
+            .await
+            .must("listing")?
+            .data
+        {
+            let Some(ProposedWrite::Declare { declarations }) = p.write else {
+                continue;
+            };
+            for d in declarations {
+                if let lakelands_api::write::Declaration::Type(t) = d
+                    && let Some(w) = whole.get_mut(&(who.id.to_string(), t.name.to_string()))
+                {
+                    w.push_str(&serde_json::to_string(&t).expect("a declaration prints"));
+                }
+            }
+        }
+    }
+    for ((who, ty), there) in &whole {
+        let Some(bare) = [("mm_view", "m0_view"), ("pm_view", "p0_view")]
+            .into_iter()
+            .find_map(|(t, b)| (t == ty).then_some(b))
+        else {
+            continue;
+        };
+        let without = &whole[&(who.clone(), bare.to_owned())];
+        if *there != without.replace(bare, ty.as_str()) {
+            apart.push(format!(
+                "`{ty}` answers {who}\n{there}\nwhere `{bare}` answers\n{without}"
+            ));
+        }
+    }
+    ensure!(
+        apart.is_empty(),
+        "a view keyed by a field its reader may not know of, on the view or where its values come from, answers as a name that is not declared:\n{}",
         apart.join("\n")
     );
     Ok(())

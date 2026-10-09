@@ -90,10 +90,10 @@ fn built_from<'d>(
     let mut access = who.grants.access(&decl.name, &field.name);
     let mut from_source = false;
     seen.push(&field.name);
-    let sources = field
-        .depends_on
-        .iter()
-        .chain(field.embed.iter().flat_map(|e| &e.from));
+    let measured = decl.measure_reads(&field.name);
+    let sources = (field.depends_on.iter())
+        .chain(field.embed.iter().flat_map(|e| &e.from))
+        .chain(&measured);
     for name in sources {
         if seen.contains(&name) {
             continue;
@@ -104,8 +104,9 @@ fn built_from<'d>(
         access = match access_of(who, decl, source, seen) {
             s if s.reads() => access,
             // The field's value stays hidden; its write stays the
-            // principal's, as the store's write check grants it.
-            _ if access.writes() => Access::WriteOnly,
+            // principal's, as the store's write check grants it. A view's
+            // fields are never written (lakelands#782).
+            _ if access.writes() && decl.view.is_none() => Access::WriteOnly,
             Access::Masked if access.reads() => Access::Masked,
             Access::Masked => access,
             _ => {
@@ -586,6 +587,7 @@ pub fn shown_hash<'a>(
     let mut shown = t.clone();
     known_fields(who, &mut shown, find);
     shown.view = shown.view.filter(|_| view_shown);
+    keep_known_measures(&mut shown);
     match shown == *t {
         true => whole.to_owned(),
         false => crate::shape::schema_hash(&shown).unwrap_or_default(),
@@ -637,6 +639,16 @@ pub fn described_fields<'a>(who: &Principal, t: &mut TypeDecl, find: Find<'_, 'a
         t.valid_from.take().filter(held),
         t.valid_to.take().filter(held),
     );
+    // The key its records carry, as `describe` names it (lakelands#782).
+    t.key = t.key_fields().to_vec();
+    keep_known_measures(t);
+}
+
+/// `t`'s view without the measures that name a field `t` no longer holds.
+fn keep_known_measures(t: &mut TypeDecl) {
+    if let Some(v) = &mut t.view {
+        v.keep_measures(|n| t.fields.iter().any(|f| &f.name == n));
+    }
 }
 
 /// Whether `t` declares `name`, a field or a link field
