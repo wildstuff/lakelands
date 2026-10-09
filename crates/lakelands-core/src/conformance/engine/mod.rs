@@ -36,7 +36,7 @@ use lakelands_api::id::LakeId;
 use lakelands_api::id::Position;
 use serde_json::{Value, json};
 
-use super::{Failure, Report, panic_message};
+use super::{Counting, Failure, Report, counting, panic_message};
 
 /// Turns a check function into an [`EngineCheck`] constant whose `name`
 /// is the function's own name.
@@ -178,7 +178,10 @@ pub fn run_engine_checks(harness: &dyn EngineHarness) -> Report {
         ..Report::default()
     };
     for check in ENGINE_CHECKS {
-        match run_engine_check(harness, check) {
+        let mut count = Counting::default();
+        let outcome = counting(&mut count, || run_engine_check(harness, check));
+        report.tallies.push((check.name, count.tally()));
+        match outcome {
             Ok(()) => report.passed.push(check.name),
             Err(failure) => report.failed.push((check.name, failure)),
         }

@@ -103,12 +103,14 @@ pub fn invalid_case(a: &impl Answer) -> Option<&Case> {
 
 /// `answer`, to `what`, must be a refusal as invalid that `fits` holds for,
 /// `expected` saying which: what the suite's `refused_as!` writes.
+#[track_caller]
 pub fn refused_as<T: Debug>(
     what: &str,
     answer: lakelands_api::Result<T>,
     expected: &str,
     fits: impl FnOnce(&Said) -> bool,
 ) -> Result<(), Failure> {
+    super::tally();
     match invalid_said(&answer) {
         Some(said) if fits(said) => Ok(()),
         Some(said) => Err(Failure::new(format!(
@@ -124,6 +126,7 @@ pub fn refused_as<T: Debug>(
 /// on the wire, hold every member `expected` holds: `{"code": …}` and the
 /// parameters a row names, `"at": [{"code": "field", …}]` for places it
 /// is said at, in their order (the others are not compared).
+#[track_caller]
 pub fn refused_like<T: Debug>(
     what: &str,
     answer: lakelands_api::Result<T>,
@@ -221,11 +224,15 @@ pub trait Must<T> {
 }
 
 impl<T: Debug> Must<T> for lakelands_api::Result<T> {
+    #[track_caller]
     fn must(self, what: &str) -> Result<T, Failure> {
+        super::tally();
         self.map_err(|e| Failure::new(format!("{what} failed: {e} ({e:?})")))
     }
 
+    #[track_caller]
     fn must_fail(self, what: &str) -> Result<Error, Failure> {
+        super::tally();
         match self {
             Ok(v) => Err(Failure::new(format!(
                 "{what} should have been refused, but it answered {v:?}"

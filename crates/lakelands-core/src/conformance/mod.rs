@@ -37,7 +37,15 @@
 //! A failure message is written for the person who reads the report: it
 //! says what was done, what came back and what the rule is, so the
 //! engine's author can act on it without opening the check.
+//!
+//! The report keeps each check's [`Tally`]: the assertions it evaluated
+//! and the places in the suite they are written at. A rewrite of checks
+//! proves it dropped no comparison when every tally on one engine is
+//! equal or higher after it (a check polling while writes run varies in
+//! evaluations from run to run, never in places).
 
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::fmt;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
@@ -93,11 +101,12 @@ macro_rules! check {
 
 /// Fails the check with a formatted message unless the condition holds.
 macro_rules! ensure {
-    ($cond:expr, $($msg:tt)+) => {
+    ($cond:expr, $($msg:tt)+) => {{
+        $crate::conformance::tally();
         if !$cond {
             return Err($crate::conformance::Failure::new(format!($($msg)+)));
         }
-    };
+    }};
 }
 
 /// Fails the check unless the answer is a refusal as invalid whose case
@@ -326,6 +335,8 @@ pub struct Report {
     pub passed: Vec<&'static str>,
     /// The checks that failed, in registry order, with why.
     pub failed: Vec<(&'static str, Failure)>,
+    /// Every check run, in registry order, with what it asserted.
+    pub tallies: Vec<(&'static str, Tally)>,
 }
 
 impl Report {
@@ -351,6 +362,62 @@ impl fmt::Display for Report {
     }
 }
 
+/// What one check asserted while it ran.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tally {
+    /// The assertions evaluated, each time one was.
+    pub evaluations: u64,
+    /// The distinct places in the suite those assertions are written at.
+    pub sites: usize,
+}
+
+/// What the check being run has asserted so far.
+#[derive(Default)]
+struct Counting {
+    evaluations: u64,
+    sites: HashSet<(&'static str, u32, u32)>,
+}
+
+thread_local! {
+    static COUNTING: RefCell<Counting> = RefCell::default();
+}
+
+/// Counts one assertion of the check being run, at the place that wrote
+/// it: `ensure!`, `refused_as!` and [`Must`](fixture::Must) call it.
+#[track_caller]
+pub fn tally() {
+    let at = std::panic::Location::caller();
+    COUNTING.with_borrow_mut(|c| {
+        c.evaluations += 1;
+        c.sites.insert((at.file(), at.line(), at.column()));
+    });
+}
+
+/// Runs `step` with `counting` as this thread's count, so that checks
+/// polled in turn on one thread, or on several, never mix their counts.
+fn counting<T>(counting: &mut Counting, step: impl FnOnce() -> T) -> T {
+    let outer = COUNTING.replace(std::mem::take(counting));
+    let out = step();
+    *counting = COUNTING.replace(outer);
+    out
+}
+
+impl Counting {
+    fn tally(&self) -> Tally {
+        Tally {
+            evaluations: self.evaluations,
+            sites: self.sites.len(),
+        }
+    }
+}
+
+/// Drives `fut` with a count of its own, answering what it asserted too.
+async fn counted<F: Future>(fut: F) -> (F::Output, Tally) {
+    let (mut count, mut fut) = (Counting::default(), std::pin::pin!(fut));
+    let out = std::future::poll_fn(|cx| counting(&mut count, || fut.as_mut().poll(cx))).await;
+    (out, count.tally())
+}
+
 /// Runs every registered check against fresh lakes from `harness`, in
 /// registry order, and reports them all.
 pub async fn run_all(harness: &dyn Harness) -> Report {
@@ -370,7 +437,9 @@ async fn run_checks(harness: &dyn Harness, checks: &[Check]) -> Report {
         ..Report::default()
     };
     for check in checks {
-        match run_check(harness, check).await {
+        let (outcome, tally) = counted(run_check(harness, check)).await;
+        report.tallies.push((check.name, tally));
+        match outcome {
             Ok(()) => report.passed.push(check.name),
             Err(failure) => report.failed.push((check.name, failure)),
         }

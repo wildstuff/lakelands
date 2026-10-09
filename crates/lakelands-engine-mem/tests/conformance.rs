@@ -178,6 +178,24 @@ async fn every_registered_check_passes_on_the_memory_engine() {
     assert_eq!(report.passed.len(), ALL.len());
 }
 
+/// What every check asserts on the memory engine, one line per check
+/// (`tally <evaluations> <sites> <check>`), for a change to the suite to
+/// compare before and after, by hand:
+/// `cargo test -p lakelands-engine-mem --test conformance -- --ignored --nocapture tally`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "prints the tallies; run by hand with --ignored"]
+async fn the_tally_of_every_check_on_the_memory_engine() {
+    let report = run_all(&Memory {
+        opener: MemoryOpener::new(),
+        large: LARGE_LAKE,
+    })
+    .await;
+    for (check, tally) in &report.tallies {
+        println!("tally {} {} {check}", tally.evaluations, tally.sites);
+    }
+    assert!(report.is_green(), "{report}");
+}
+
 /// The streaming check at 25 000 and 100 000 records, by hand:
 /// `cargo test --release -p lakelands-engine-mem --test conformance -- --ignored --nocapture`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
