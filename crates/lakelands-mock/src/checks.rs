@@ -149,6 +149,8 @@ macro_rules! door_checks {
             only_a_reviewer_decides_proposals,
             #[own_principals]
             a_reviewer_not_shown_a_type_finds_no_proposal_on_it,
+            #[own_principals]
+            an_accepts_refusal_names_only_what_its_reviewer_is_listed,
             sys_types_cannot_be_declared,
             add_field_without_the_schema_grant_tells_nothing_of_the_type,
             a_type_its_proposer_is_not_shown_is_a_type_that_is_not_declared,
@@ -4772,6 +4774,174 @@ pub async fn only_a_reviewer_decides_proposals(store: Arc<dyn LakeStore>) {
             missing: Missing::Proposal { .. }
         }
     ));
+}
+
+/// As the store (lakelands#780): a refusal of the proposer's write at its
+/// accept is whole to a reviewer shown all it names and to its proposer,
+/// and to one kept from a field or a type it names answers a write
+/// changed since it was proposed: an upsert's reference retired since and
+/// a value its field no longer takes, a call's payload reference and its
+/// `requires`, judged by the fields it reads; a conflict and a retirement
+/// of a record retired since name only what is listed.
+pub async fn an_accepts_refusal_names_only_what_its_reviewer_is_listed(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let (c, own) = (&f.catalog, &f.cast.owner);
+    let de = |v: serde_json::Value| serde_json::from_value::<Declaration>(v).unwrap();
+    let inv = |level: serde_json::Value| {
+        json!({"declare": "type", "name": "inv", "fields": [
+            {"name": "note", "type": {"kind": "text"}}, {"name": "level", "type": level},
+            {"name": "name", "type": {"kind": "reference", "target": "vault"}}]})
+    };
+    let to = json!([{"name": "to", "type": {"kind": "reference", "target": "vault"}}]);
+    for d in [
+        json!({"declare": "type", "name": "vault", "fields": [{"name": "name", "type": {"kind": "text"}}]}),
+        inv(json!({"kind": "text"})),
+        json!({"declare": "value_type", "name": "grade", "kind": "text", "one_of": ["low", "high"]}),
+        json!({"declare": "verb", "name": "refile", "on": "inv", "risk": "high", "effect": "write",
+               "payload": to, "set": [{"field": "name", "value": "payload.to"}]}),
+        json!({"declare": "verb", "name": "close", "on": "inv", "risk": "high", "effect": "write",
+               "requires": "level = 'low'", "set": [{"field": "note", "value": "'shut'"}]}),
+    ] {
+        c.declare(own, de(d)).await.unwrap();
+    }
+    let upsert = async |t: &str, k: &str, pairs: &[(&str, Value)]| {
+        let opts = WriteOpts::default();
+        c.upsert(own, &ty(t), &key(k), patch(pairs), opts)
+            .await
+            .unwrap();
+    };
+    for (t, k, pairs) in [
+        ("vault", "v1", [("name", json!("v1"))]),
+        ("vault", "v2", [("name", json!("v2"))]),
+        ("inv", "i2", [("note", json!("n"))]),
+        ("inv", "i3", [("note", json!("n"))]),
+        ("inv", "i6", [("level", json!("low"))]),
+    ] {
+        upsert(t, k, &pairs).await;
+    }
+    let grants = |default, types: serde_json::Value| {
+        let grants =
+            json!({"default": default, "review": true, "restricted": true, "types": types});
+        serde_json::from_value::<Grants>(grants).unwrap()
+    };
+    let kept = || json!({"inv": {"fields": {"name": "none", "level": "none"}}});
+    let who = |id: &str, g| principal(f.store.lake(), PrincipalKind::Human, id, g);
+    let field = who("field", grants("read", kept()));
+    let typed = who(
+        "typed",
+        grants("read", json!({"vault": {"default": "none"}})),
+    );
+    let clerk = who("clerk", grants("write", kept()));
+    let all = who("all", grants("read", json!({})));
+    let mut shown = all.clone();
+    (shown.id, shown.grants.restricted) = ("shown".into(), false);
+    let propose = async |by: &Principal, write: serde_json::Value| {
+        let write = serde_json::from_value(write).unwrap();
+        match c.propose(by, write, "a write".into()).await.unwrap() {
+            Outcome::Proposed { proposal, .. } => proposal,
+            other => panic!("the write is proposed: {other:?}"),
+        }
+    };
+    let upserted = |k: &str, p: serde_json::Value| {
+        json!({"write": "upsert", "type": "inv", "key": k, "patch": p,
+               "opts": {"expected_version": (k == "i2").then_some(1)}})
+    };
+    let called = |verb: &str, k: &str, p: serde_json::Value| json!({"write": "call", "verb": verb, "key": k, "payload": p});
+    let retired = propose(own, upserted("i1", json!({"note": "v1", "name": "v1"}))).await;
+    let retyped = propose(own, upserted("i4", json!({"level": "mid"}))).await;
+    let moved = propose(own, upserted("i2", json!({"note": "b"}))).await;
+    let refiled = propose(own, called("refile", "i2", json!({"to": "v2"}))).await;
+    let closed = propose(&clerk, called("close", "i6", json!({}))).await;
+    let gone = propose(own, json!({"write": "retire", "type": "inv", "key": "i3"})).await;
+    for (t, k) in [("vault", "v1"), ("vault", "v2"), ("inv", "i3")] {
+        c.retire(own, &ty(t), &key(k), WriteOpts::default())
+            .await
+            .unwrap();
+    }
+    upsert("inv", "i2", &[("note", json!("m"))]).await;
+    upsert("inv", "i6", &[("level", json!("high"))]).await;
+    let Declaration::Type(to) = de(inv(json!({"kind": "text", "value_type": "grade"}))) else {
+        unreachable!("a type");
+    };
+    let m = Migration {
+        to,
+        renames: Vec::new(),
+        relation_renames: Vec::new(),
+    };
+    let report = c.migrate(own, m.clone()).await.unwrap().data;
+    c.migrate_apply(own, m, &report.report_id).await.unwrap();
+    let stale = |k: &str| {
+        let case = Case::WriteChangedSinceProposed {
+            ty: ty("inv"),
+            key: Some(key(k)),
+        };
+        Err(invalid(None, case))
+    };
+    let head = f.head().await;
+    for (id, k, hidden, whole, said) in [
+        (
+            &retired,
+            "i1",
+            vec![&field, &typed],
+            vec![&shown],
+            "not_live",
+        ),
+        (
+            &retyped,
+            "i4",
+            vec![&field],
+            vec![&typed, &shown],
+            "not_one_of",
+        ),
+        (
+            &moved,
+            "i2",
+            vec![],
+            vec![&field, &typed, &shown],
+            "conflict",
+        ),
+        (
+            &refiled,
+            "i2",
+            vec![&field, &typed],
+            vec![&shown],
+            "not_live",
+        ),
+        (
+            &closed,
+            "i6",
+            vec![&field],
+            vec![&typed, &shown, &clerk],
+            "requires_unmet",
+        ),
+        (
+            &gone,
+            "i3",
+            vec![],
+            vec![&field, &typed, &shown],
+            "not_found",
+        ),
+    ] {
+        let to_all = c.accept(&all, id).await.map(drop);
+        let wire = json!(to_all.as_ref().err()).to_string();
+        assert!(
+            wire.contains(&format!("\"{said}\"")),
+            "`{k}` to `all`: {wire}"
+        );
+        for (who, expected) in
+            (hidden.iter().map(|w| (w, stale(k)))).chain(whole.iter().map(|w| (w, to_all.clone())))
+        {
+            let told = c.accept(who, id).await.map(drop);
+            assert_eq!(told, expected, "the accept of `{k}` by `{}`", who.id);
+        }
+    }
+    assert_eq!(f.head().await, head, "nothing was appended");
+    let listed = c
+        .proposals(own, ProposalFilter::default())
+        .await
+        .unwrap()
+        .data;
+    assert!(listed.iter().all(|p| p.state == ProposalState::Pending));
 }
 
 /// As the store (lakelands#762): to a reviewer not shown a proposal's

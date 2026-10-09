@@ -38,7 +38,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use lakelands_api::engine::ProjectionView;
-use lakelands_api::error::{Case, Flaw, Part, Place, RecordName, Retry, Said, Seam, Situation};
+use lakelands_api::error::{
+    Case, Flaw, Named, Part, Place, RecordName, Retry, Said, Seam, Situation,
+};
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
 use lakelands_api::ontology::{
     Authority, FieldDecl, RelationDecl, Risk, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl,
@@ -2134,6 +2136,7 @@ impl Call<'_> {
         };
         let (mut external, mut renamed) = (None, Vec::new());
         let mut pending = Pending::default();
+        let told = |e| self.told(&w.ontology, &p, write, e);
         match write {
             ProposedWrite::Upsert {
                 ty,
@@ -2141,20 +2144,22 @@ impl Call<'_> {
                 patch,
                 opts,
             } => {
-                let plan = self.plan_record(
-                    &w,
-                    view.as_ref(),
-                    &pending,
-                    ty,
-                    key,
-                    patch,
-                    Door::Authored,
-                    opts.expected_version,
-                    now,
-                    1,
-                    &proposer,
-                    &|_| {},
-                )?;
+                let plan = self
+                    .plan_record(
+                        &w,
+                        view.as_ref(),
+                        &pending,
+                        ty,
+                        key,
+                        patch,
+                        Door::Authored,
+                        opts.expected_version,
+                        now,
+                        1,
+                        &proposer,
+                        &|_| {},
+                    )
+                    .map_err(told)?;
                 // What the write leaves is judged by the reviewer's pairs
                 // too: a holder of `only` accepts no write that takes a
                 // record out of its reach, as it writes none (051).
@@ -2229,18 +2234,20 @@ impl Call<'_> {
                         position: accepted_at,
                     });
                 }
-                let (own, reactions, after) = self.run_verb(
-                    &w,
-                    view.as_ref(),
-                    &mut pending,
-                    &decl,
-                    key,
-                    payload.clone(),
-                    opts.expected_version,
-                    now,
-                    1,
-                    &proposer,
-                )?;
+                let (own, reactions, after) = self
+                    .run_verb(
+                        &w,
+                        view.as_ref(),
+                        &mut pending,
+                        &decl,
+                        key,
+                        payload.clone(),
+                        opts.expected_version,
+                        now,
+                        1,
+                        &proposer,
+                    )
+                    .map_err(told)?;
                 if let Some(after) = after {
                     let on = w.ontology.ty(&decl.on)?;
                     granted(owns(
@@ -2335,6 +2342,54 @@ impl Call<'_> {
         let by = MadeDue::Accepted;
         let events = appended.map_err(|e| not_handed(e, external.is_some() && w.behind, by))?;
         Ok((self.answered(&events, renamed), external))
+    }
+
+    /// A refusal of the proposer's plan as an accept answers its reviewer
+    /// (lakelands#780), judged by the reviewer's view as its listing is:
+    /// whole where the listing shows the reviewer all it names, and else
+    /// as a proposal stale since it was proposed, which names only what
+    /// the listing does. A conflict names versions only, and the proposer
+    /// is told what its own write would be.
+    fn told(
+        &self,
+        o: &Ontology,
+        p: &lakelands_api::write::Proposal,
+        write: &ProposedWrite,
+        e: Error,
+    ) -> Error {
+        let (ty, key) = match write {
+            ProposedWrite::Upsert { ty, key, .. } | ProposedWrite::Retire { ty, key, .. } => {
+                (ty.clone(), Some(key.clone()))
+            }
+            ProposedWrite::Call { verb, key, .. } => match o.verb(verb) {
+                Ok(v) => (v.on.clone(), key.clone()),
+                Err(_) => return e,
+            },
+            _ => return e,
+        };
+        let judged = matches!(e, Error::Refused { .. } | Error::NotFound { .. });
+        if !judged || self.who.grants.reads_everything() || p.proposer == self.who.writer() {
+            return e;
+        }
+        let read = |f: &FieldName| {
+            let t = shown_type(o, &ty, self.who).ok();
+            let f = t.and_then(|t| Some((t, t.fields.iter().find(|x| &x.name == f)?)));
+            f.is_some_and(|(t, f)| rights::field_access(self.who, t, f).reads())
+        };
+        let sees = |t: &TypeName| shown_type(o, t, self.who).is_ok();
+        let requires = |v: &VerbName| o.verb(v).ok().and_then(|v| v.requires.clone());
+        let mut named = Named::default();
+        e.names(&mut named);
+        let listed = (self.lake.engine.view(None)).and_then(|view| {
+            let shape = self.lake.shape(view.as_ref())?;
+            let read =
+                crate::reads::Reader::open(self.lake, self.who, Default::default(), view, shape)?;
+            Ok(read.listed(write, p.position))
+        });
+        match listed {
+            Ok(Some(l)) if named.shown_by(&l, &sees, &read, &requires) => e,
+            _ => invalid(Case::WriteChangedSinceProposed { ty, key }),
+        }
     }
 
     /// The writer, held by this call. Its grants were followed through the

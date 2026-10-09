@@ -21,8 +21,8 @@ mod case;
 mod outage;
 
 pub use case::{
-    Case, Form, JsonFault, Names, Naming, Operand, Place, RecordName, Regexp, Revision, Said,
-    Segment, Shape, Unmocked,
+    Case, Form, JsonFault, Named, Names, Naming, Operand, Place, RecordName, Regexp, Revision,
+    Said, Segment, Shape, Unmocked,
 };
 pub(crate) use case::{Param, catalog, render};
 pub use outage::{
@@ -205,6 +205,32 @@ impl Error {
     pub fn unbound(seam: Seam) -> Error {
         let seam = Box::new(seam);
         Error::Unbound { seam }
+    }
+
+    /// Adds what it names to `n` (lakelands#780): a version or a bound
+    /// names nothing, and what it does not judge leaves `n` unjudged.
+    pub fn names(&self, n: &mut Named) {
+        match self {
+            Error::Refused { field, reason } => {
+                field.names(n);
+                match reason.said() {
+                    Some(said) => said.names(n),
+                    None => {
+                        let unjudged =
+                            matches!(reason, Refusal::Migration { .. } | Refusal::Unknown(_));
+                        n.unjudged |= unjudged;
+                    }
+                }
+            }
+            Error::NotFound {
+                missing: Missing::Record { ty, key },
+            } => {
+                ty.names(n);
+                key.names(n);
+            }
+            Error::Conflict { .. } => {}
+            _ => n.unjudged = true,
+        }
     }
 
     /// The sentence of what went wrong, without the words that say which

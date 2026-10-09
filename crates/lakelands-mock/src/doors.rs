@@ -9,7 +9,7 @@ use lakelands_api::describe::{
     TypeDescription, TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
 };
 use lakelands_api::error::{
-    Case, Error, Missing, Names, Place, Refusal, Result, Revision, Said, Seam, Unmocked,
+    Case, Error, Missing, Named, Names, Place, Refusal, Result, Revision, Said, Seam, Unmocked,
 };
 use lakelands_api::event::{Event, EventBody, EventId};
 use lakelands_api::expr::kind::Kind;
@@ -4793,6 +4793,7 @@ impl Catalog for MockCatalog {
             cause: Some(accepted),
         };
         let mut renamed = Vec::new();
+        let told = |e| told(&st, who, p, e);
         let version = match write {
             ProposedWrite::Upsert {
                 ty,
@@ -4800,7 +4801,8 @@ impl Catalog for MockCatalog {
                 patch,
                 opts,
             } => {
-                let version = plan_upsert(&by, &mut batch, &ty, &key, patch, &opts)?;
+                let version = plan_upsert(&by, &mut batch, &ty, &key, patch, &opts);
+                let version = version.map_err(told)?;
                 reviewed(&st, who, &batch, &ty, &key)?;
                 Some(version)
             }
@@ -4823,10 +4825,11 @@ impl Catalog for MockCatalog {
                         return Err(invalid(Case::VerbRedeclared { verb }));
                     }
                 }
-                let v = check_call(&st, &proposer, &verb, key.as_ref(), &payload, &opts)?.clone();
+                let v = check_call(&st, &proposer, &verb, key.as_ref(), &payload, &opts);
+                let v = v.map_err(told)?.clone();
                 let key = record_key(&v, key.as_ref())?;
                 check_version(&st, &v.on, key, &opts)?;
-                let version = plan_run(&by, &mut batch, &v, key, payload, &opts)?;
+                let version = plan_run(&by, &mut batch, &v, key, payload, &opts).map_err(told)?;
                 reviewed(&st, who, &batch, &v.on, key)?;
                 Some(version)
             }
@@ -5762,6 +5765,39 @@ fn migrates(w: &ProposedWrite) -> bool {
         w,
         ProposedWrite::Migrate { .. } | ProposedWrite::MigrateValueType { .. }
     )
+}
+
+/// As the store (lakelands#780): a refusal of the proposer's plan as an
+/// accept answers its reviewer, whole where its listing shows the reviewer
+/// all it names, or to its proposer, and else as a proposal stale since it
+/// was proposed.
+fn told(st: &State, who: &Principal, p: &Proposal, e: Error) -> Error {
+    let (ty, key) = match &p.write {
+        Some(ProposedWrite::Upsert { ty, key, .. } | ProposedWrite::Retire { ty, key, .. }) => {
+            (ty.clone(), Some(key.clone()))
+        }
+        Some(ProposedWrite::Call { verb, key, .. }) => match st.verbs.get(verb) {
+            Some(v) => (v.on.clone(), key.clone()),
+            None => return e,
+        },
+        _ => return e,
+    };
+    let judged = matches!(e, Error::Refused { .. } | Error::NotFound { .. });
+    if !judged || who.grants.reads_everything() || p.proposer == who.writer() {
+        return e;
+    }
+    let mut listed = p.write.clone().expect("a held proposal holds its write");
+    let shown = known_shape(st, who, &mut listed, (who, None, p.position));
+    let sees = |t: &TypeName| st.visible(who, t).is_some();
+    let read =
+        |f: &FieldName| (st.visible(who, &ty)).is_some_and(|d| readable(st, who, d, f).is_ok());
+    let requires = |v: &VerbName| st.verbs.get(v).and_then(|v| v.requires.clone());
+    let mut named = Named::default();
+    e.names(&mut named);
+    match shown && named.shown_by(&listed, &sees, &read, &requires) {
+        true => e,
+        false => invalid(Case::WriteChangedSinceProposed { ty, key }),
+    }
 }
 
 /// As the store (lakelands#762): whether a proposed write names a type

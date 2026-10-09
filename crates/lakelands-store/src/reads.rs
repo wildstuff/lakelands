@@ -1969,8 +1969,14 @@ impl<'a> Reader<'a> {
     /// writing `write`, whole: a reviewer holding `only` decides no other
     /// (051).
     pub(crate) fn shows_whole(&self, write: &ProposedWrite, at: Position) -> bool {
+        self.listed(write, at).as_ref() == Some(write)
+    }
+
+    /// The proposal logged at `at`, writing `write`, as the listing shows
+    /// it to its reader, where it shows it.
+    pub(crate) fn listed(&self, write: &ProposedWrite, at: Position) -> Option<ProposedWrite> {
         let mut shown = write.clone();
-        self.known_shape(&mut shown, (&OnceCell::new(), self.who, at)) && shown == *write
+        (self.known_shape(&mut shown, (&OnceCell::new(), self.who, at))).then_some(shown)
     }
 
     /// A proposed write as its reader may know it (013 and 024, extended):
