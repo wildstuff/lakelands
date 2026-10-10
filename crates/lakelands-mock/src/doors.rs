@@ -5581,10 +5581,20 @@ fn plan_window(
     };
     for r in chunk {
         st.visible(who, &r.ty).ok_or_else(|| no_type(&r.ty))?;
-        if r.fields.is_empty() {
-            return Err(invalid(Case::PatchEmpty));
-        }
         let t = check_patch(st, who, &r.ty, &r.fields, Origin::Source)?;
+        // As the store: a link type no relation carries takes no link, a
+        // re-delivery of an unchanged one included.
+        let carried = st.types.values().any(|o| {
+            let by_links =
+                (o.decl.relations.iter()).filter(|x| x.via.is_none() && x.derived.is_none());
+            by_links
+                .into_iter()
+                .any(|x| links::name(&o.decl.name, &x.name) == r.ty)
+        });
+        if links::is_link_type(&r.ty) && !carried {
+            let ty = r.ty.clone();
+            return Err(invalid(Case::UnclaimedLinkType { ty }));
+        }
         let checked = canonical_patch(t, r.fields.clone());
         let slot = (r.ty.clone(), r.key.clone());
         let before = w
@@ -5618,6 +5628,11 @@ fn plan_window(
             w.duplicates += 1;
             continue;
         }
+        // As the store (016): an empty record is judged after the duplicate
+        // test, so on a live key of its own it counts as one.
+        if r.fields.is_empty() {
+            return Err(invalid(Case::PatchEmpty));
+        }
         let mut fields = checked;
         with_key_fields(
             t,
@@ -5628,18 +5643,6 @@ fn plan_window(
             &mut fields,
             Origin::Source,
         )?;
-        // As the store: a link type no relation carries takes no link.
-        let carried = st.types.values().any(|o| {
-            let by_links =
-                (o.decl.relations.iter()).filter(|x| x.via.is_none() && x.derived.is_none());
-            by_links
-                .into_iter()
-                .any(|x| links::name(&o.decl.name, &x.name) == r.ty)
-        });
-        if links::is_link_type(&r.ty) && !carried {
-            let ty = r.ty.clone();
-            return Err(invalid(Case::UnclaimedLinkType { ty }));
-        }
         // A record earlier in this window counts as there.
         check_references(st, who, t, &fields, &w.versions)?;
         check_required(t, now.as_ref(), &fields)?;

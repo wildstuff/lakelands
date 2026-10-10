@@ -193,6 +193,7 @@ macro_rules! door_checks {
             a_row_binds_each_record_under_a_name_of_its_own,
             #[own_principals]
             a_verb_names_no_system_type_but_a_link_type,
+            ingest_judges_a_record_around_its_duplicate_test,
             a_dependent_field_declared_clear_is_cleared_with_its_input,
             two_writers_keep_each_others_fields,
             per_field_meta_names_the_writer_and_the_position,
@@ -6924,6 +6925,91 @@ pub async fn every_path_a_pattern_names_is_one_its_rows_hold(store: Arc<dyn Lake
     assert!(
         rows.len() == 1 && rows[0].is_empty(),
         "a masked field projected: {rows:?}"
+    );
+}
+
+/// Ingest judges a record in 016's order around its duplicate test
+/// (lakelands#761): an empty record on the source's own live key changes
+/// nothing and counts as a duplicate, and on a free key it is refused as
+/// empty; an unchanged record of a link type whose relation was renamed
+/// is refused before the test, not taken as a duplicate.
+pub async fn ingest_judges_a_record_around_its_duplicate_test(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let (c, own, importer) = (&f.catalog, &f.cast.owner, &f.cast.importer);
+    let feed = |who: &Principal, ty: &str, k: &str, fields: Value| {
+        let c = c.clone();
+        let (who, ty, k) = (who.clone(), ty.to_owned(), k.to_owned());
+        async move {
+            let r = SourceRecord {
+                upstream: None,
+                ty: ty.into(),
+                key: k.into(),
+                fields: serde_json::from_value(fields).expect("a patch"),
+                seen_at: None,
+            };
+            lakelands_api::ingest_all(c.as_ref(), &who, &"feed".into(), vec![r]).await
+        }
+    };
+    feed(importer, INVOICE, "INV-9", json!({"amount": "5"}))
+        .await
+        .expect("the importer feeds `INV-9`");
+    let head = f.head().await;
+    let again = feed(importer, INVOICE, "INV-9", json!({})).await;
+    let counted = again
+        .as_ref()
+        .ok()
+        .and_then(|w| w.first())
+        .map(|w| (w.records, w.duplicates));
+    assert_eq!(
+        counted,
+        Some((0, 1)),
+        "an empty record on its own `INV-9`: {again:?}"
+    );
+    assert_eq!(f.head().await, head, "and nothing is appended");
+    let e = feed(importer, INVOICE, "INV-10", json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e,
+        invalid(None, Case::PatchEmpty),
+        "an empty record on a free key"
+    );
+    let bag = |relation: &str| -> TypeDecl {
+        serde_json::from_value(json!({"name": "bag",
+            "fields": [{"name": "n", "type": {"kind": "text"}}],
+            "relations": [{"name": relation, "target": "box", "authority": "source"}]}))
+        .expect("a type")
+    };
+    let mut boxes = bag("none");
+    (boxes.name, boxes.relations) = ("box".into(), Vec::new());
+    for (t, k) in [(boxes, "x1"), (bag("in_box"), "b1")] {
+        let name = t.name.clone();
+        c.declare(own, Declaration::Type(t)).await.unwrap();
+        let p = patch(&[("n", json!(k))]);
+        c.upsert(own, &name, &key(k), p, WriteOpts::default())
+            .await
+            .unwrap();
+    }
+    let old = "sys.link.bag.in_box";
+    let link = || json!({"from": "b1", "to": "x1"});
+    feed(own, old, "b1:x1", link())
+        .await
+        .expect("a link over `in_box`");
+    let m = Migration {
+        to: bag("inside"),
+        renames: Vec::new(),
+        relation_renames: vec![("in_box".into(), "inside".into())],
+    };
+    let report = c.migrate(own, m.clone()).await.expect("the preflight").data;
+    c.migrate_apply(own, m, &report.report_id)
+        .await
+        .expect("`in_box` is renamed `inside`");
+    let e = feed(own, old, "b1:x1", link()).await.unwrap_err();
+    let ty = TypeName::from(old);
+    assert_eq!(
+        e,
+        invalid(None, Case::UnclaimedLinkType { ty }),
+        "the old link again"
     );
 }
 

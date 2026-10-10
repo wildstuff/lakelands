@@ -1682,7 +1682,9 @@ source type (`docs/decisions/042-water-crosses-only-as-a-mirror.md`).
 
 `types()` carries type declarations only. A host whose vocabulary also
 needs value types, verbs, triggers or functions applies them itself,
-after open, on the writer, through `declare` or `apply`. Neither is
+after open, on the writer, through `declare` or `apply`. A verb names
+no `sys.` type but a relation's link type (003, extended): a host's own
+system type is written through `upsert`, under its grant. Neither is
 idempotent: declaring again is a new version and has meaning (a
 recorded failure is retried once; 022), so the
 host first compares what it would apply with what the lake holds

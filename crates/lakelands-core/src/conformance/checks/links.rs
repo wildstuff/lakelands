@@ -95,7 +95,7 @@ check!(
 
 check!(
     INGEST_CARDINALITY = ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_window,
-    "§2.3: a link that arrives by ingest holds the relation's cardinality over the lake's live links and the window's, its ends read from the key when the record leaves them out"
+    "§2.3: a link that arrives by ingest holds the relation's cardinality over the lake's live links and the window's, an end read from the key when the record leaves it out"
 );
 
 check!(
