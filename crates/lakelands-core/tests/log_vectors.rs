@@ -8,12 +8,20 @@
 //! drift apart without it going red. `verify.py` beside the vectors checks
 //! the same bytes with an implementation that shares no code with this
 //! one.
+//!
+//! The vectors are one lake's log in the one format version this release
+//! reads and writes, `LOG_FORMAT_VERSION`
+//! (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`):
+//! the two segments, then `rekey.json`, then `v3.json` to `v14.json`, each
+//! following the one before it. `verify.py --stamp N` writes them in
+//! another.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-use lakelands_api::event::{Event, EventBody};
+use lakelands_api::error::{Flaw, Situation};
+use lakelands_api::event::{Event, EventBody, LOG_FORMAT_VERSION};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::Declaration;
@@ -46,6 +54,83 @@ fn assert_one_form(t: &str, at: u64) {
         parsed.to_string(),
         t,
         "position {at}: `{t}` is not the one form"
+    );
+}
+
+/// Every line of the vectors' lake in the order its positions run: the
+/// segments, `rekey.json`, then `v3.json` to `v14.json`.
+fn chain() -> Vec<Event> {
+    let mut lines: Vec<String> = Vec::new();
+    for seg in read_json("expected.json")["segments"].as_array().unwrap() {
+        let text = fs::read_to_string(vectors().join(str_of(seg, "file"))).unwrap();
+        lines.extend(text.lines().map(str::to_owned));
+    }
+    lines.push(str_of(&read_json("rekey.json"), "line").to_owned());
+    for n in 3..=14 {
+        let file = read_json(&format!("v{n}.json"));
+        let held = file["lines"].as_array().unwrap();
+        lines.extend(held.iter().map(|l| l.as_str().unwrap().to_owned()));
+    }
+    lines
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+/// A release writes one format: every line of the vectors' lake carries
+/// `LOG_FORMAT_VERSION` as `v`, from position 0, whose `lake_created`
+/// says the same number. The lines are one chain without a gap, and none
+/// carries a member where it never sits.
+#[test]
+fn every_line_of_the_lake_is_in_the_one_format_this_release_writes() {
+    let chain = chain();
+    let mut prev = "0".repeat(64);
+    for (at, event) in chain.iter().enumerate() {
+        assert_eq!(event.position.0, at as u64, "the positions run on");
+        assert_eq!(event.prev.0, prev, "position {at}: prev");
+        assert_eq!(event.v, LOG_FORMAT_VERSION, "position {at}: its format");
+        assert_eq!(log::misplaced(event), None, "position {at}");
+        prev = event.hash.0.clone();
+    }
+    assert!(
+        matches!(&chain[0].body, EventBody::LakeCreated { format } if *format == LOG_FORMAT_VERSION),
+        "position 0 says the lake's format: {:?}",
+        chain[0].body
+    );
+}
+
+/// The page and the release name one format: `docs/log-format.md` opens
+/// with `**Format version N.**`, and N is `LOG_FORMAT_VERSION`.
+#[test]
+fn the_page_names_the_format_this_release_writes() {
+    let page = fs::read_to_string(vectors().join("../../log-format.md")).unwrap();
+    let named = page
+        .lines()
+        .find_map(|l| l.strip_prefix("**Format version "))
+        .and_then(|rest| rest.split_once(".**"))
+        .expect("the page opens with `**Format version N.**`")
+        .0;
+    assert_eq!(
+        named.parse(),
+        Ok(LOG_FORMAT_VERSION),
+        "the page names format {named}"
+    );
+}
+
+/// The independent reader reads the format this release writes:
+/// `verify.py` holds its one format as `FORMAT = N`, the line its
+/// `--stamp N` rewrites, and N is `LOG_FORMAT_VERSION`.
+#[test]
+fn the_independent_verifier_reads_the_format_this_release_writes() {
+    let script = fs::read_to_string(vectors().join("verify.py")).unwrap();
+    let named = script
+        .lines()
+        .find_map(|l| l.strip_prefix("FORMAT = "))
+        .expect("verify.py holds `FORMAT = N`");
+    assert_eq!(
+        named.parse(),
+        Ok(LOG_FORMAT_VERSION),
+        "verify.py reads format {named}"
     );
 }
 
@@ -211,11 +296,11 @@ fn a_view_hashes_its_conditions_in_typed_form() {
     );
 }
 
-/// Format version 2's one addition, `migrated.rekeyed`, in a worked event
-/// (`docs/log-format.md` §6): its line is canonical, it reads into the
-/// contract's event with the moved key, and its hash recomputes.
+/// `rekey.json`: `migrated.rekeyed` in a worked event. Its line is
+/// canonical, it reads into the contract's event with the moved key, and
+/// its hash recomputes.
 #[test]
-fn the_version_2_rekey_event_recomputes() {
+fn the_rekey_event_recomputes() {
     let v2 = read_json("rekey.json");
     let line = str_of(&v2, "line");
     let value: Value = serde_json::from_str(line).unwrap();
@@ -230,7 +315,7 @@ fn the_version_2_rekey_event_recomputes() {
         line.as_bytes(),
         "the contract writes the event exactly as the line"
     );
-    assert_eq!(event.v, 2);
+    assert_eq!(event.v, LOG_FORMAT_VERSION);
     let EventBody::Migrated { rekeyed, .. } = &event.body else {
         panic!("a migrated event")
     };
@@ -245,15 +330,13 @@ fn the_version_2_rekey_event_recomputes() {
     assert_eq!(event.prev.0, str_of(last, "hash"), "it follows position 7");
 }
 
-/// Format version 3's additions (`docs/log-format.md` §6) in worked
-/// events: an ingest with `upstream`, whose id leaves the member out, and
-/// a declaration calling `date_bucket`. Each line is canonical, reads into
-/// the contract's event and back byte for byte, hashes to its hash and
-/// follows the one before it, and needs version 3; the negative line, the
-/// ingest written as version 2, is refused for carrying `upstream`, and the
-/// misplaced line, a `record_retired` carrying it, for its kind.
+/// `v3.json`: an ingest with `upstream`, whose id leaves the member out,
+/// and a declaration calling `date_bucket`. Each line is canonical, reads
+/// into the contract's event and back byte for byte, hashes to its hash
+/// and follows the one before it; the misplaced line, a `record_retired`
+/// carrying `upstream`, is refused for its kind.
 #[test]
-fn the_version_3_events_recompute_and_a_version_2_upstream_is_refused() {
+fn the_upstream_and_the_date_bucket_recompute_and_an_upstream_on_another_kind_is_refused() {
     let v3 = read_json("v3.json");
     let mut prev = str_of(&read_json("rekey.json"), "hash").to_owned();
     let lines = v3["lines"].as_array().unwrap();
@@ -278,12 +361,7 @@ fn the_version_3_events_recompute_and_a_version_2_upstream_is_refused() {
         assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
         assert_eq!(event.hash.0, want.as_str().unwrap());
         assert_eq!(event.prev.0, prev, "it follows the event before it");
-        assert_eq!(event.v, 3);
-        assert_eq!(
-            lakelands_core::versions::needed(&event.body, event.upstream.is_some()),
-            3,
-            "it needs version 3"
-        );
+        assert_eq!(event.v, LOG_FORMAT_VERSION);
         prev = event.hash.0.clone();
         events.push(event);
     }
@@ -296,34 +374,18 @@ fn the_version_3_events_recompute_and_a_version_2_upstream_is_refused() {
         lakelands_core::log::ingest_id(ingested.source.as_ref().unwrap(), ty, key, 0, patch),
         "the id leaves `upstream` out"
     );
-    let negative: Event = serde_json::from_str(v3["negative"].as_str().unwrap()).unwrap();
-    let why = lakelands_core::versions::below(&negative)
-        .expect("refused")
-        .to_string();
-    assert!(
-        why.contains("`upstream`") && why.contains("format 3 added"),
-        "{why}"
-    );
     let misplaced: Event = serde_json::from_str(v3["misplaced"].as_str().unwrap()).unwrap();
-    assert_eq!(
-        lakelands_core::versions::below(&misplaced),
-        None,
-        "its version is right"
-    );
-    let why = lakelands_core::versions::misplaced(&misplaced)
-        .expect("refused")
-        .to_string();
+    assert_eq!(misplaced.v, LOG_FORMAT_VERSION, "its format is right");
+    let why = log::misplaced(&misplaced).expect("refused").to_string();
     assert!(why.contains("`record_retired`"), "{why}");
 }
 
-/// Format version 4's addition (`docs/log-format.md` §6): a proposed
-/// declaration and a proposed migration after `v3.json`'s position 10.
-/// Each line is canonical, reads into the contract's event and back byte
-/// for byte, hashes to its hash, follows the one before it and needs
-/// version 4; the negative line, the declaration proposed as version 3,
-/// is refused.
+/// `v4.json`: a proposed declaration and a proposed migration after
+/// `v3.json`'s position 10. Each line is canonical, reads into the
+/// contract's event and back byte for byte, hashes to its hash and
+/// follows the one before it.
 #[test]
-fn the_version_4_proposals_recompute_and_a_version_3_one_is_refused() {
+fn the_proposed_declaration_and_migration_recompute() {
     let v4 = read_json("v4.json");
     let v3 = read_json("v3.json");
     let mut prev = v3["hashes"]
@@ -358,28 +420,19 @@ fn the_version_4_proposals_recompute_and_a_version_3_one_is_refused() {
         assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
         assert_eq!(event.hash.0, want.as_str().unwrap());
         assert_eq!(event.prev.0, prev, "it follows the event before it");
-        assert_eq!(event.v, 4);
-        assert_eq!(lakelands_core::versions::needed(&event.body, false), 4);
+        assert_eq!(event.v, LOG_FORMAT_VERSION);
         prev = event.hash.0.clone();
     }
-    let negative: Event = serde_json::from_str(v4["negative"].as_str().unwrap()).unwrap();
-    let why = lakelands_core::versions::below(&negative)
-        .expect("refused")
-        .to_string();
-    assert!(
-        why.contains("proposes a declaration or a migration") && why.contains("format 4 added"),
-        "{why}"
-    );
 }
 
-/// Format version 5's addition (`docs/log-format.md` §6): a `declared`
-/// type carrying annotations, after `v4.json`'s position 12. The line is
-/// canonical, reads into the contract's event and back byte for byte,
-/// hashes to its hash, follows the one before it and needs version 5; its
-/// schema hash is the one the same type without annotations hashes to;
-/// the negative line, the same event written as version 4, is refused.
+/// `v5.json`: a `declared` type carrying annotations, after `v4.json`'s
+/// position 12. The line is canonical, reads into the contract's event
+/// and back byte for byte, hashes to its hash and follows the one before
+/// it; its schema hash is the one the same type without annotations
+/// hashes to; the misplaced line, the same event with `cause` inside its
+/// `context`, is refused.
 #[test]
-fn the_version_5_annotations_recompute_and_a_version_4_one_is_refused() {
+fn the_annotations_recompute_and_a_cause_inside_context_is_refused() {
     let v5 = read_json("v5.json");
     let v4 = read_json("v4.json");
     let prev = v4["hashes"]
@@ -407,8 +460,7 @@ fn the_version_5_annotations_recompute_and_a_version_4_one_is_refused() {
     assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
     assert_eq!(event.hash.0, v5["hashes"][0].as_str().unwrap());
     assert_eq!(event.prev.0, prev, "it follows the event before it");
-    assert_eq!(event.v, 5);
-    assert_eq!(lakelands_core::versions::needed(&event.body, false), 5);
+    assert_eq!(event.v, LOG_FORMAT_VERSION);
     let lakelands_api::event::EventBody::Declared {
         declaration: lakelands_api::write::Declaration::Type(t),
         schema_hash,
@@ -429,27 +481,17 @@ fn the_version_5_annotations_recompute_and_a_version_4_one_is_refused() {
         "annotations are not shape"
     );
     let misplaced: Event = serde_json::from_str(v5["misplaced"].as_str().unwrap()).unwrap();
-    let why = lakelands_core::versions::misplaced(&misplaced)
-        .expect("refused")
-        .to_string();
+    assert_eq!(misplaced.v, LOG_FORMAT_VERSION, "its format is right");
+    let why = log::misplaced(&misplaced).expect("refused").to_string();
     assert!(why.contains("`context` carries `cause`"), "{why}");
-    let negative: Event = serde_json::from_str(v5["negative"].as_str().unwrap()).unwrap();
-    let why = lakelands_core::versions::below(&negative)
-        .expect("refused")
-        .to_string();
-    assert!(
-        why.contains("`annotations`") && why.contains("format 5 added"),
-        "{why}"
-    );
 }
 
-/// Format version 6's addition (`docs/log-format.md` §6): a `declared`
-/// type with a derived relation, after `v5.json`'s position 13. The line
-/// recomputes, needs version 6, and its schema hash is the one the same
-/// type with the relation carried by links hashes to; the negative line,
-/// the same event written as version 5, is refused.
+/// `v6.json`: a `declared` type with a derived relation, after
+/// `v5.json`'s position 13, and a trigger with `max_depth`. The lines
+/// recompute, and the type's schema hash is the one the same type with
+/// the relation carried by links hashes to.
 #[test]
-fn the_version_6_derived_relation_recomputes_and_a_version_5_one_is_refused() {
+fn the_derived_relation_and_the_max_depth_recompute() {
     let v6 = read_json("v6.json");
     let v5 = read_json("v5.json");
     let prev = v5["hashes"]
@@ -477,8 +519,7 @@ fn the_version_6_derived_relation_recomputes_and_a_version_5_one_is_refused() {
     assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
     assert_eq!(event.hash.0, v6["hashes"][0].as_str().unwrap());
     assert_eq!(event.prev.0, prev, "it follows the event before it");
-    assert_eq!(event.v, 6);
-    assert_eq!(lakelands_core::versions::needed(&event.body, false), 6);
+    assert_eq!(event.v, LOG_FORMAT_VERSION);
     let lakelands_api::event::EventBody::Declared {
         declaration: lakelands_api::write::Declaration::Type(t),
         schema_hash,
@@ -498,15 +539,7 @@ fn the_version_6_derived_relation_recomputes_and_a_version_5_one_is_refused() {
         ),
         "`derived` is not shape"
     );
-    let negative: Event = serde_json::from_str(v6["negative"].as_str().unwrap()).unwrap();
-    let why = lakelands_core::versions::below(&negative)
-        .expect("refused")
-        .to_string();
-    assert!(
-        why.contains("derived relation") && why.contains("format 6 added"),
-        "{why}"
-    );
-    // Position 15: a trigger's `max_depth`, which version 6 also added.
+    // Position 15: a trigger's `max_depth`.
     let line = v6["lines"][1].as_str().unwrap();
     let value: Value = serde_json::from_str(line).unwrap();
     let capped: Event = serde_json::from_value(value.clone()).unwrap();
@@ -520,17 +553,12 @@ fn the_version_6_derived_relation_recomputes_and_a_version_5_one_is_refused() {
     assert_eq!(sha(&canonical::to_vec(&body)), capped.hash.0);
     assert_eq!(capped.hash.0, v6["hashes"][1].as_str().unwrap());
     assert_eq!(capped.prev, event.hash, "it follows position 14");
-    assert_eq!(lakelands_core::versions::needed(&capped.body, false), 6);
-    let mut below = capped.clone();
-    below.v = 5;
-    let why = lakelands_core::versions::below(&below)
-        .expect("refused")
-        .to_string();
-    assert!(why.contains("`max_depth`"), "{why}");
+    assert_eq!(capped.v, LOG_FORMAT_VERSION);
+    assert!(line.contains("\"max_depth\":1"), "{line}");
 }
 
 #[test]
-fn the_version_7_retired_guard_recomputes_and_a_version_6_one_is_refused() {
+fn the_retired_guard_recomputes() {
     let v6 = read_json("v6.json");
     let v7 = read_json("v7.json");
     let line = v7["lines"][0].as_str().unwrap();
@@ -555,21 +583,11 @@ fn the_version_7_retired_guard_recomputes_and_a_version_6_one_is_refused() {
         v6["hashes"][1].as_str().unwrap(),
         "it follows position 15"
     );
-    assert_eq!(event.v, 7);
-    assert_eq!(lakelands_core::versions::needed(&event.body, false), 7);
-    let negative: Event = serde_json::from_str(v7["negative"].as_str().unwrap()).unwrap();
-    assert_eq!(negative.v, 6);
-    let why = lakelands_core::versions::below(&negative)
-        .expect("refused")
-        .to_string();
-    assert!(
-        why.contains("`retired`") && why.contains("format 7 added"),
-        "{why}"
-    );
+    assert_eq!(event.v, LOG_FORMAT_VERSION);
 }
 
 #[test]
-fn the_version_8_view_with_parameters_recomputes_and_a_version_7_one_is_refused() {
+fn the_view_with_parameters_recomputes() {
     let v7 = read_json("v7.json");
     let v8 = read_json("v8.json");
     let line = v8["lines"][0].as_str().unwrap();
@@ -594,27 +612,14 @@ fn the_version_8_view_with_parameters_recomputes_and_a_version_7_one_is_refused(
         v7["hashes"][0].as_str().unwrap(),
         "it follows position 16"
     );
-    assert_eq!(event.v, 8);
-    assert_eq!(lakelands_core::versions::needed(&event.body, false), 8);
-    let negative: Event = serde_json::from_str(v8["negative"].as_str().unwrap()).unwrap();
-    assert_eq!(negative.v, 7);
-    let why = lakelands_core::versions::below(&negative)
-        .expect("refused")
-        .to_string();
-    assert!(
-        why.contains("parameters") && why.contains("format 8 added"),
-        "{why}"
-    );
+    assert_eq!(event.v, LOG_FORMAT_VERSION);
 }
 
 #[test]
-fn the_version_8_verb_on_its_type_recomputes_and_a_version_7_one_is_refused() {
+fn the_verb_on_its_type_and_its_call_recompute() {
     let v8 = read_json("v8.json");
     let mut prev = v8["hashes"][0].as_str().unwrap().to_owned();
-    for (i, what) in [
-        (1, "declares a verb on its type"),
-        (2, "calls a verb with no key"),
-    ] {
+    for i in [1, 2] {
         let line = v8["lines"][i].as_str().unwrap();
         let value: Value = serde_json::from_str(line).unwrap();
         assert_eq!(
@@ -633,23 +638,8 @@ fn the_version_8_verb_on_its_type_recomputes_and_a_version_7_one_is_refused() {
         assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
         assert_eq!(event.hash.0, v8["hashes"][i].as_str().unwrap());
         assert_eq!(event.prev.0, prev, "it follows the event before it");
-        assert_eq!(event.v, 8);
-        assert_eq!(lakelands_core::versions::needed(&event.body, false), 8);
+        assert_eq!(event.v, LOG_FORMAT_VERSION);
         prev = event.hash.0.clone();
-        let name = if i == 1 {
-            "negative_verb"
-        } else {
-            "negative_call"
-        };
-        let negative: Event = serde_json::from_str(v8[name].as_str().unwrap()).unwrap();
-        assert_eq!(negative.v, 7);
-        let why = lakelands_core::versions::below(&negative)
-            .expect("refused")
-            .to_string();
-        assert!(
-            why.contains(what) && why.contains("format 8 added"),
-            "{why}"
-        );
     }
     let lakelands_api::event::EventBody::Declared {
         declaration: Declaration::Verb(verb),
@@ -664,18 +654,11 @@ fn the_version_8_verb_on_its_type_recomputes_and_a_version_7_one_is_refused() {
 }
 
 #[test]
-fn the_version_10_proposed_tightening_recomputes_and_a_version_9_one_is_refused() {
+fn the_value_type_and_its_proposed_tightening_recompute() {
     let v9 = read_json("v9.json");
     let v10 = read_json("v10.json");
     let mut prev = v9["hashes"][0].as_str().unwrap().to_owned();
-    // The declared value type needs no format of its own; it is written in
-    // the version the lake had. The proposal needs 10.
-    for (line, want) in v10["lines"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .zip([(9, 1), (10, 10)])
-    {
+    for line in v10["lines"].as_array().unwrap() {
         let line = line.as_str().unwrap();
         let value: Value = serde_json::from_str(line).unwrap();
         let event: Event = serde_json::from_value(value.clone()).unwrap();
@@ -688,24 +671,14 @@ fn the_version_10_proposed_tightening_recomputes_and_a_version_9_one_is_refused(
         body.as_object_mut().unwrap().remove("hash");
         assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
         assert_eq!(event.prev.0, prev, "it follows the event before it");
-        let needed = lakelands_core::versions::needed(&event.body, false);
-        assert_eq!((event.v, needed), want);
+        assert_eq!(event.v, LOG_FORMAT_VERSION);
         prev = event.hash.0;
     }
     assert_eq!(prev, v10["hashes"][1].as_str().unwrap());
-    let negative: Event = serde_json::from_str(v10["negative"].as_str().unwrap()).unwrap();
-    assert_eq!(negative.v, 9);
-    let why = lakelands_core::versions::below(&negative)
-        .expect("refused")
-        .to_string();
-    assert!(
-        why.contains("tightening") && why.contains("format 10 added"),
-        "{why}"
-    );
 }
 
 #[test]
-fn the_version_11_lines_recompute_and_each_written_as_version_10_is_refused() {
+fn the_lines_of_v11_recompute() {
     let v11 = read_json("v11.json");
     let mut prev = read_json("v10.json")["hashes"][1]
         .as_str()
@@ -724,24 +697,15 @@ fn the_version_11_lines_recompute_and_each_written_as_version_10_is_refused() {
         body.as_object_mut().unwrap().remove("hash");
         assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
         assert_eq!(event.prev.0, prev, "it follows the event before it");
-        let needed = lakelands_core::versions::needed(&event.body, false);
-        assert_eq!((event.v, needed), (11, 11));
+        assert_eq!(event.v, LOG_FORMAT_VERSION);
         prev = event.hash.0;
     }
     let hashes = v11["hashes"].as_array().unwrap();
     assert_eq!(prev, hashes.last().unwrap().as_str().unwrap());
-    for negative in v11["negatives"].as_array().unwrap() {
-        let negative: Event = serde_json::from_str(negative.as_str().unwrap()).unwrap();
-        assert_eq!(negative.v, 10);
-        let why = lakelands_core::versions::below(&negative)
-            .expect("refused")
-            .to_string();
-        assert!(why.contains("format 11 added"), "{why}");
-    }
 }
 
 #[test]
-fn the_version_12_line_recomputes_and_written_as_version_11_is_refused() {
+fn the_lines_of_v12_recompute() {
     let v12 = read_json("v12.json");
     let mut prev = read_json("v11.json")["hashes"][7]
         .as_str()
@@ -760,24 +724,15 @@ fn the_version_12_line_recomputes_and_written_as_version_11_is_refused() {
         body.as_object_mut().unwrap().remove("hash");
         assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
         assert_eq!(event.prev.0, prev, "it follows the event before it");
-        let needed = lakelands_core::versions::needed(&event.body, false);
-        assert_eq!((event.v, needed), (12, 12));
+        assert_eq!(event.v, LOG_FORMAT_VERSION);
         prev = event.hash.0;
     }
     let hashes = v12["hashes"].as_array().unwrap();
     assert_eq!(prev, hashes.last().unwrap().as_str().unwrap());
-    for negative in v12["negatives"].as_array().unwrap() {
-        let negative: Event = serde_json::from_str(negative.as_str().unwrap()).unwrap();
-        assert_eq!(negative.v, 11);
-        let why = lakelands_core::versions::below(&negative)
-            .expect("refused")
-            .to_string();
-        assert!(why.contains("format 12 added"), "{why}");
-    }
 }
 
 #[test]
-fn the_version_13_lines_recompute_and_written_as_version_12_are_refused() {
+fn the_lines_of_v13_recompute() {
     let v13 = read_json("v13.json");
     let mut prev = read_json("v12.json")["hashes"][2]
         .as_str()
@@ -796,32 +751,21 @@ fn the_version_13_lines_recompute_and_written_as_version_12_are_refused() {
         body.as_object_mut().unwrap().remove("hash");
         assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
         assert_eq!(event.prev.0, prev, "it follows the event before it");
-        // A pinned proposal and a declaration that names a date need 13;
-        // a record holding a date is written in the lake's version.
-        let needed = lakelands_core::versions::needed(&event.body, false);
-        let added = !matches!(event.body, EventBody::RecordUpserted { .. });
-        assert_eq!((event.v, added), (13, needed == 13));
+        assert_eq!(event.v, LOG_FORMAT_VERSION);
         prev = event.hash.0;
     }
     let hashes = v13["hashes"].as_array().unwrap();
     assert_eq!(prev, hashes.last().unwrap().as_str().unwrap());
-    for negative in v13["negatives"].as_array().unwrap() {
-        let negative: Event = serde_json::from_str(negative.as_str().unwrap()).unwrap();
-        assert_eq!(negative.v, 12);
-        let why = lakelands_core::versions::below(&negative)
-            .expect("refused")
-            .to_string();
-        assert!(why.contains("format 13 added"), "{why}");
-    }
 }
 
 #[test]
-fn the_version_14_fill_recomputes_and_written_as_version_13_or_with_both_members_is_refused() {
+fn the_fill_that_names_its_output_recomputes_and_one_with_both_members_is_refused() {
     let v14 = read_json("v14.json");
     let mut prev = read_json("v13.json")["hashes"][3]
         .as_str()
         .unwrap()
         .to_owned();
+    let mut names = Vec::new();
     for line in v14["lines"].as_array().unwrap() {
         let line = line.as_str().unwrap();
         let value: Value = serde_json::from_str(line).unwrap();
@@ -835,39 +779,28 @@ fn the_version_14_fill_recomputes_and_written_as_version_13_or_with_both_members
         body.as_object_mut().unwrap().remove("hash");
         assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
         assert_eq!(event.prev.0, prev, "it follows the event before it");
-        // A fill that names its output needs 14; one that carries it is
-        // written in the lake's version.
-        let needed = lakelands_core::versions::needed(&event.body, false);
-        let named = matches!(
+        names.push(matches!(
             event.body,
             EventBody::OutputRecorded {
                 output_at: Some(_),
                 ..
             }
-        );
-        assert_eq!((event.v, needed), if named { (14, 14) } else { (13, 1) });
-        assert_eq!(lakelands_core::versions::misplaced(&event), None);
+        ));
+        assert_eq!(event.v, LOG_FORMAT_VERSION);
+        assert_eq!(log::misplaced(&event), None);
         prev = event.hash.0;
     }
+    // A fill that carries its output, then one that names it.
+    assert_eq!(names, [false, true]);
     let hashes = v14["hashes"].as_array().unwrap();
     assert_eq!(prev, hashes.last().unwrap().as_str().unwrap());
-    for negative in v14["negatives"].as_array().unwrap() {
-        let negative: Event = serde_json::from_str(negative.as_str().unwrap()).unwrap();
-        assert_eq!(negative.v, 13);
-        let why = lakelands_core::versions::below(&negative)
-            .expect("refused")
-            .to_string();
-        assert!(why.contains("format 14 added"), "{why}");
-    }
     let misplaced: Event = serde_json::from_str(v14["misplaced"].as_str().unwrap()).unwrap();
-    assert_eq!(
-        lakelands_core::versions::misplaced(&misplaced),
-        Some(lakelands_api::error::Flaw::OutputOnce)
-    );
+    assert_eq!(misplaced.v, LOG_FORMAT_VERSION, "its format is right");
+    assert_eq!(log::misplaced(&misplaced), Some(Flaw::OutputOnce));
 }
 
 #[test]
-fn the_version_9_view_that_merges_recomputes_and_a_version_8_one_is_refused() {
+fn the_view_that_merges_recomputes() {
     let v8 = read_json("v8.json");
     let v9 = read_json("v9.json");
     let line = v9["lines"][0].as_str().unwrap();
@@ -889,17 +822,7 @@ fn the_version_9_view_that_merges_recomputes_and_a_version_8_one_is_refused() {
     assert_eq!(event.hash.0, v9["hashes"][0].as_str().unwrap());
     let last = v8["hashes"].as_array().unwrap().last().unwrap();
     assert_eq!(event.prev.0, last.as_str().unwrap(), "it follows v8.json");
-    assert_eq!(event.v, 9);
-    assert_eq!(lakelands_core::versions::needed(&event.body, false), 9);
-    let negative: Event = serde_json::from_str(v9["negative"].as_str().unwrap()).unwrap();
-    assert_eq!(negative.v, 8);
-    let why = lakelands_core::versions::below(&negative)
-        .expect("refused")
-        .to_string();
-    assert!(
-        why.contains("merges sources") && why.contains("format 9 added"),
-        "{why}"
-    );
+    assert_eq!(event.v, LOG_FORMAT_VERSION);
 }
 
 /// The negative vector `negative/known-at-goes-back`: the first segment
@@ -928,6 +851,47 @@ fn the_negative_vector_whose_known_at_goes_back_is_refused_at_its_position() {
         ),
         other => {
             panic!("a known_at going back is refused at position 6, and it answered {other:?}")
+        }
+    }
+}
+
+/// The negative vector `negative/another-format`: the first segment of
+/// the vectors with the last event written in the format before this
+/// release's, its hash made right. `export::verify` refuses it at that
+/// position by both numbers
+/// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`),
+/// as `verify.py` does.
+#[test]
+fn the_negative_vector_in_another_format_is_refused_at_its_position() {
+    let dir = vectors().join("negative/another-format");
+    // Only the format is wrong: position 6's hash is its line's own, it
+    // names position 5's as the hash before it, and every line before it
+    // is in the release's format.
+    let text = fs::read_to_string(dir.join("log").join(format!("{:020}.jsonl", 0))).unwrap();
+    let lines: Vec<Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let (six, five) = (&lines[6], &lines[5]);
+    let mut body = six.clone();
+    body.as_object_mut().unwrap().remove("hash");
+    assert_eq!(sha(&canonical::to_vec(&body)), str_of(six, "hash"));
+    assert_eq!(str_of(six, "prev"), str_of(five, "hash"));
+    let formats: Vec<u64> = lines.iter().map(|l| l["v"].as_u64().unwrap()).collect();
+    let reads = u64::from(LOG_FORMAT_VERSION);
+    assert_eq!(formats[..6], [reads; 6]);
+    assert_eq!(formats[6], reads - 1);
+    match lakelands_core::export::verify(&dir) {
+        Err(lakelands_api::Error::Unavailable { situation }) => assert!(
+            matches!(
+                &*situation,
+                Situation::Damaged { position: Some(at), flaw: Flaw::FormatOther { v, reads: r }, .. }
+                    if at.0 == 6 && *v == reads - 1 && *r == reads
+            ),
+            "{situation}"
+        ),
+        other => {
+            panic!("an event in another format is refused at position 6, and it answered {other:?}")
         }
     }
 }

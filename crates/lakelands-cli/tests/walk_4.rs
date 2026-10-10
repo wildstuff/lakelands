@@ -169,10 +169,6 @@ fn the_walks_commands_run_a_procedure_from_an_order_to_its_payment() {
          type `order`\n  type `payment`\n  type `revenue_7d`\n  verb `create_payment`\n  \
          trigger `order_paid`\n  trigger `order_settled`\n"
     );
-    let events = feed(&w);
-    for e in &events[4..=10] {
-        assert_eq!(e["v"], json!(8), "the apply's append is in format 8");
-    }
     for (file, through, n) in [("customers.ndjson", 13, 2), ("orders.ndjson", 17, 3)] {
         assert_eq!(
             ok(&["--root", &w, "ingest", &data(file), "--source", "shop"]).trim_end(),

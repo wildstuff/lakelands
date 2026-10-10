@@ -33,7 +33,7 @@ check!(
 
 check!(
     RETIREMENT = a_guard_tells_a_retirement_from_an_update,
-    "004, extended: a guard `status = 'closed' and not retired()` fires on closing a record and on updating a closed one but not on retiring it, and a guard `retired()` fires on the retirement only, caused by it, as it does on a proposed retirement when it is accepted; the declaration calling `retired` is written in log format 7"
+    "004, extended: a guard `status = 'closed' and not retired()` fires on closing a record and on updating a closed one but not on retiring it, and a guard `retired()` fires on the retirement only, caused by it, as it does on a proposed retirement when it is accepted"
 );
 
 check!(
@@ -158,26 +158,12 @@ async fn a_guard_tells_a_retirement_from_an_update(store: Store) -> Held {
         ],
     ))
     .await?;
-    let before = store.head().await.must("reading the head")?;
     for d in [
         trigger("closed", Some("status = 'closed' and not retired()"), None),
         trigger("retired", Some("retired()"), None),
     ] {
         cat.declare(own, d).await.must("declaring the triggers")?;
     }
-    let declared = events_after(store.as_ref(), before)
-        .await?
-        .into_iter()
-        .find(|e| {
-            matches!(&e.body, EventBody::Declared { declaration: Declaration::Trigger(t), .. }
-                if t.name.as_str() == "retired")
-        })
-        .ok_or_else(|| Failure::new("the feed must hold the trigger `retired` declared"))?;
-    ensure!(
-        declared.v == 7,
-        "a declaration calling `retired` is written in log format 7; it was written in {}",
-        declared.v
-    );
     let names = ["closed", "retired"];
     for (step, write, want) in [
         (

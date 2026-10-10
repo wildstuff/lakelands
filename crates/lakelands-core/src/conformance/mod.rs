@@ -188,6 +188,20 @@ pub trait Harness: Send + Sync {
         })
     }
 
+    /// How this harness writes to a lake's log below the store and opens
+    /// the lake again: the [`Continue`] a check of a lake that another
+    /// release's writer left is given. A harness that reaches no engine
+    /// answers `unbound`.
+    fn continuer(&self) -> Continue {
+        Arc::new(|_, _, _, _, _| {
+            Box::pin(async {
+                let op = "continue".to_owned();
+                let seam = lakelands_api::error::Seam::Operation { op };
+                Err(lakelands_api::Error::unbound(seam))
+            })
+        })
+    }
+
     /// How many records the suite's large lake holds at its first size;
     /// it grows to four times this. [`LARGE_LAKE`] unless the engine's
     /// test asks for more, as a long run does.
@@ -233,6 +247,9 @@ pub struct Given {
     pub harness: String,
     /// How the harness imports an export as a lake of its engine.
     pub import: Import,
+    /// How the harness writes to a lake's log below the store and opens
+    /// the lake again.
+    pub continued: Continue,
 }
 
 /// Closes a lake the harness opened and opens it again for writing with
@@ -257,6 +274,98 @@ pub type Import = Arc<
         + Send
         + Sync,
 >;
+
+/// Closes the lake a store holds, if one is given, appends lines to the
+/// log of the lake named, through its engine's seam and below the store,
+/// as another release's writer would, and opens the lake through the
+/// store in the mode named. A harness makes it of [`continue_below`] and
+/// [`below`].
+pub type Continue = Arc<
+    dyn Fn(
+            Option<Arc<dyn LakeStore>>,
+            lakelands_api::LakeId,
+            Lines,
+            lakelands_api::engine::OpenMode,
+            Seams,
+        ) -> ContinueFuture
+        + Send
+        + Sync,
+>;
+
+/// The lines a [`Continue`] appends, made from the log's tip and the
+/// fence of the lease they are appended under; none, to append nothing.
+pub type Lines = Box<
+    dyn FnOnce(
+            (lakelands_api::Position, lakelands_api::event::Digest),
+            u64,
+        ) -> Vec<lakelands_api::engine::CanonicalEvent>
+        + Send,
+>;
+
+/// The future a [`Continue`] answers.
+pub type ContinueFuture =
+    Pin<Box<dyn Future<Output = lakelands_api::Result<Continued>> + Send + 'static>>;
+
+/// What a [`Continue`] found.
+pub struct Continued {
+    /// What the store's open answered.
+    pub opened: lakelands_api::Result<Arc<dyn LakeStore>>,
+    /// The lake below the store after the lines were appended, before
+    /// that open.
+    pub before: Below,
+    /// The lake below the store after that open, where it was refused.
+    pub after: Option<Below>,
+}
+
+/// What a lake says below the store: its log's tip, the position its
+/// projection is folded through, and whether its lease is free.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Below {
+    /// The log's tip.
+    pub tip: Option<(lakelands_api::Position, lakelands_api::event::Digest)>,
+    /// The position the projection is folded through.
+    pub folded_through: Option<lakelands_api::Position>,
+    /// Whether the lease could be taken, and was given back.
+    pub lease_free: bool,
+}
+
+/// Reads a lake below the store, through its engine's seam: for a
+/// harness's [`Continue`].
+pub fn below(
+    opener: &dyn lakelands_api::engine::EngineOpener,
+    location: &lakelands_api::Location,
+) -> lakelands_api::Result<Below> {
+    let engine = opener.open(location, lakelands_api::engine::OpenMode::Write)?;
+    let lease = engine.take_lease("the suite, below the store");
+    if let Ok(lease) = &lease {
+        engine.release_lease(lease)?;
+    }
+    Ok(Below {
+        tip: engine.tip()?,
+        folded_through: engine.projection().folded_through()?,
+        lease_free: lease.is_ok(),
+    })
+}
+
+/// Appends `lines` to a lake's log through its engine's seam, under a
+/// lease taken for it and given back, and reads the lake [`below`]: for a
+/// harness's [`Continue`].
+pub fn continue_below(
+    opener: &dyn lakelands_api::engine::EngineOpener,
+    location: &lakelands_api::Location,
+    lines: Lines,
+) -> lakelands_api::Result<Below> {
+    let engine = opener.open(location, lakelands_api::engine::OpenMode::Write)?;
+    let lease = engine.take_lease("another release")?;
+    let appended = match engine.tip()? {
+        Some(tip) => engine.append(&lease, &lines(tip, lease.fence)),
+        None => Ok(()),
+    };
+    engine.release_lease(&lease)?;
+    drop(engine);
+    appended?;
+    below(opener, location)
+}
 
 /// The future an [`Import`] answers.
 pub type ImportFuture =
@@ -485,6 +594,7 @@ async fn run_check(harness: &dyn Harness, check: &Check) -> Result<(), Failure> 
         large_lake: harness.large_lake(),
         harness: harness.name().to_owned(),
         import: harness.importer(),
+        continued: harness.continuer(),
     };
     match caught((check.run)(store, given)).await {
         Ok(outcome) => outcome,

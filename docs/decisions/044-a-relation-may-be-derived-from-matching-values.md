@@ -55,8 +55,8 @@ of a field of the owning type and a field of the target type:
   records is not redeclared as derived, nor a derived one as carried
   (035). The refusal names the relation; the other kind is declared
   under another name.
-- **Log format version 6.** `derived` is a new member of a relation
-  declaration. An event whose declaration holds one needs version 6
+- **A step of the log format.** `derived` is a new member of a relation
+  declaration, so it came with a step of the format
   (`docs/log-format.md` §6).
 
 ## Why

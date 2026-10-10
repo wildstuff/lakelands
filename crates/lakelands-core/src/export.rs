@@ -14,17 +14,16 @@
 //! ```
 //!
 //! A lake that was never checkpointed exports one file,
-//! `00000000000000000000.jsonl`. Each event keeps the format version it was
-//! written in, so a lake that re-keyed a type exports version-1 lines up
-//! to its first re-key and version-2 lines from there. The export reads
-//! through the head as it stood when it began, a page of the feed at a
+//! `00000000000000000000.jsonl`. Every line is in the release's one format
+//! version. The export reads through the head as it stood when it began,
+//! a page of the feed at a
 //! time, writing each line as it comes; it writes only into an empty or
 //! absent directory, and an export that fails leaves nothing behind.
 //!
 //! [`verify`] reads only `log/`, a line at a time: canonical lines,
 //! consecutive positions, the hash chain from 64 zeros, every checkpoint
-//! against the files before it, and versions that are known and never go
-//! down.
+//! against the files before it, and every line in the one format version
+//! this release reads.
 
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write as _};
@@ -32,7 +31,7 @@ use std::path::{Path, PathBuf};
 
 use lakelands_api::catalog::Verification;
 use lakelands_api::error::{Case, Detail, Doing, Flaw, Part};
-use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_BASE, LOG_FORMAT_VERSION};
+use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_VERSION};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::{Error, LakeStore, Position, Result};
 use serde::{Deserialize, Serialize};
@@ -66,8 +65,8 @@ pub struct Manifest {
     pub through: Position,
     /// The hash of the event at `through`.
     pub hash: Digest,
-    /// The lowest and the highest format version among its events.
-    pub versions: [u32; 2],
+    /// The one format version its events are written in.
+    pub format: u32,
     /// The segment files, in order.
     pub segments: Vec<SegmentFile>,
 }
@@ -176,7 +175,6 @@ async fn write_into(store: &dyn LakeStore, dir: &Path) -> Result<Manifest> {
     let mut segments = Vec::new();
     let mut open: Option<Segment> = None;
     let mut next = Position::GENESIS;
-    let mut versions: Option<[u32; 2]> = None;
     let mut hash = Digest::zero();
     'feed: while next <= through {
         let batch = feed.poll(next, &FeedFilter::default(), PAGE).await?;
@@ -202,15 +200,11 @@ async fn write_into(store: &dyn LakeStore, dir: &Path) -> Result<Manifest> {
             if let Some(segment) = open.as_mut() {
                 segment.line(&event)?;
             }
-            versions = Some(match versions {
-                None => [event.v, event.v],
-                Some([lo, hi]) => [lo.min(event.v), hi.max(event.v)],
-            });
             hash = event.hash;
             next = next.next();
         }
     }
-    let (Some(segment), Some(versions)) = (open, versions) else {
+    let Some(segment) = open else {
         let flaw = Flaw::NoEvent { position: next };
         return Err(crate::damaged(Part::Feed, None, flaw));
     };
@@ -223,7 +217,7 @@ async fn write_into(store: &dyn LakeStore, dir: &Path) -> Result<Manifest> {
         lake: store.lake().clone(),
         through,
         hash,
-        versions,
+        format: LOG_FORMAT_VERSION,
         segments,
     };
     let path = dir.join("export.json");
@@ -233,12 +227,11 @@ async fn write_into(store: &dyn LakeStore, dir: &Path) -> Result<Manifest> {
 }
 
 /// Where a verification stands: the next position, the hash before it,
-/// the last format version seen (0 before the first line), the last
-/// `known_at` (none before the first line), and the files sealed so far.
+/// the last `known_at` (none before the first line), and the files sealed
+/// so far.
 struct Chain {
     next: Position,
     prev: Digest,
-    version: u32,
     known_at: Option<lakelands_api::Timestamp>,
     sealed: Vec<(Position, Position, String)>,
 }
@@ -259,14 +252,10 @@ impl Chain {
             return damaged(at, Flaw::NotCanonical);
         }
         let v = value.get("v").and_then(Value::as_u64).unwrap_or(0);
-        if v < u64::from(LOG_FORMAT_BASE) || v > u64::from(LOG_FORMAT_VERSION) {
-            let (lowest, highest) = (LOG_FORMAT_BASE.into(), LOG_FORMAT_VERSION.into());
-            return damaged(at, Flaw::FormatOutside { v, lowest, highest });
-        }
-        let v = v as u32;
-        if v < self.version {
-            let (v, before) = (v.into(), self.version.into());
-            return damaged(at, Flaw::FormatBack { v, before });
+        // An export of another release's format is not read in part.
+        if v != u64::from(LOG_FORMAT_VERSION) {
+            let reads = LOG_FORMAT_VERSION.into();
+            return damaged(at, Flaw::FormatOther { v, reads });
         }
         // The parser's own words, which name the member it does not know:
         // an export is verified for its operator, from its own files.
@@ -284,6 +273,9 @@ impl Chain {
         if event.position != at {
             let (expected, found) = (at, Some(event.position));
             return damaged(at, Flaw::Position { expected, found });
+        }
+        if let Some(flaw) = crate::log::created_in_another(&event) {
+            return damaged(at, flaw);
         }
         // `known_at` never goes back (log-format §1.3).
         if let Some(before) = self.known_at
@@ -329,7 +321,6 @@ impl Chain {
             }
             _ => {}
         }
-        self.version = v;
         self.prev = event.hash;
         self.next = at.next();
         Ok(())
@@ -366,7 +357,6 @@ pub fn verify(dir: &Path) -> Result<Verification> {
     let mut chain = Chain {
         next: Position::GENESIS,
         prev: Digest::zero(),
-        version: 0,
         known_at: None,
         sealed: Vec::new(),
     };

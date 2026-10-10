@@ -69,7 +69,7 @@ lake and the position of the event there whose state it is, beside
 can follow a value back to the log it came from. It is provenance the
 writer states, and it has the same standing as `seen_at`: nothing checks
 it against the other lake. A later write of the field without it leaves
-the field without it. It is a log format version 3 member
+the field without it. The member came with a step of the log format
 (`docs/log-format.md` §1.1, §6; lakelands#174).
 
 ## Extended: a value no writer chose

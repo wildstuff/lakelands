@@ -539,7 +539,7 @@ async fn a_trigger_and_a_set_on_the_link_type_follow_the_rename(store: Store) ->
 
 check!(
     RENAMED_EVERY_CARRIER = every_carrier_keeps_its_edges_through_renames_and_a_rebuild,
-    "035, extended (lakelands#429): a relation carried by a `via` field, by link records or derived from matching values keeps its edges under its new name, and the report says how each is carried and how many links move; the walk backwards by the relation's inverse name follows; the `migrated` event is written in format 11 and a migration that renames no relation leaves the format where it was; renamed a second time the links are records of the third name's link type alone; a read as of a position between answers by the name borne there; and a rebuilt projection answers all of it as the live one did"
+    "035, extended (lakelands#429): a relation carried by a `via` field, by link records or derived from matching values keeps its edges under its new name, and the report says how each is carried and how many links move; the walk backwards by the relation's inverse name follows; renamed a second time the links are records of the third name's link type alone; a read as of a position between answers by the name borne there; and a rebuilt projection answers all of it as the live one did"
 );
 
 async fn every_carrier_keeps_its_edges_through_renames_and_a_rebuild(store: Store) -> Held {
@@ -598,12 +598,6 @@ async fn every_carrier_keeps_its_edges_through_renames_and_a_rebuild(store: Stor
         (report.relations.iter().map(|r| (r.carrier, r.links))).collect();
     let applied = l.cat.migrate_apply(&l.own, m, &report.report_id).await;
     let between = applied.must("the first rename")?.position();
-    let formats: Vec<u32> = (events_after(store.as_ref(), Position(before.0 - 1))
-        .await?
-        .iter())
-    .take(2)
-    .map(|e| e.v)
-    .collect();
     let third = ["countersigned_by", "settled_by", "close_to"];
     apply(&l, renamed(third, second)).await?;
     let mut answers = Vec::new();
@@ -648,10 +642,8 @@ async fn every_carrier_keeps_its_edges_through_renames_and_a_rebuild(store: Stor
             (Carrier::Links, 1),
             (Carrier::Via, 0),
             (Carrier::Derived, 0)
-        ] && formats == [11, 11]
-            && answers == [want.clone(), want.clone()],
-        "the report says {how:?}; the migration before and the renaming one are written in \
-         the lake's format, 11, and carry {formats:?}; live and rebuilt answer {answers:?}, each must be {want}"
+        ] && answers == [want.clone(), want.clone()],
+        "the report says {how:?}; live and rebuilt answer {answers:?}, each must be {want}"
     );
     Ok(())
 }

@@ -14,8 +14,8 @@ use lakelands_api::{LakeStore, Params, Value};
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, bound, field, find_where, invalid_case, invalid_like, log_events, param, pattern,
-    step, type_decl, view_of,
+    Lake, Must, bound, field, find_where, invalid_case, invalid_like, param, pattern, step,
+    type_decl, view_of,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -42,11 +42,6 @@ check!(
 check!(
     PATTERN_START_BINDS = a_pattern_started_on_a_view_binds_its_parameters,
     "018 and 026: a pattern that starts on a view binds its parameters with the start, by key and by `where`, and its nodes are the window `find` answers; a `degree` started on it by key answers that key's row of the whole view's; a start that leaves one out is refused, naming it"
-);
-
-check!(
-    FORMAT_8 = a_view_with_parameters_is_written_in_log_format_8,
-    "log format §6 and 018: the event that declares a view with parameters is written in format 8, as is every event after it; a view without them leaves the lake's format where it was"
 );
 
 check!(
@@ -455,43 +450,5 @@ async fn a_step_arriving_at_a_view_with_parameters_is_refused_before_reading(sto
     let fut = l.cat.query(&l.own, out);
     fut.await
         .must("a pattern started on `account_window` with its anchor, stepping over `window`")?;
-    Ok(())
-}
-
-async fn a_view_with_parameters_is_written_in_log_format_8(store: Store) -> Held {
-    let l = Lake::of(store.as_ref());
-    l.declare(payment()).await?;
-    let mut plain = account_window();
-    plain.name = "account_totals".into();
-    if let Some(v) = plain.view.as_mut() {
-        v.params.clear();
-        v.r#where = None;
-        v.measures.truncate(1);
-    }
-    plain.fields.truncate(2);
-    l.declare(plain).await?;
-    let before = log_events(store.as_ref()).await?;
-    let highest = before.iter().map(|e| e.v).max().unwrap_or(0);
-    ensure!(
-        highest < 8,
-        "a view without parameters needs no format 8, yet the lake writes {highest}"
-    );
-    let declared = l.declare(account_window()).await?.position();
-    let p1 = json!({"account": "a", "date": "2026-06-30", "amount": "1.00"});
-    l.upsert("payment", "p1", p1).await?;
-    for e in log_events(store.as_ref()).await? {
-        let want = match e.position.cmp(&declared) {
-            std::cmp::Ordering::Less => e.v.min(7),
-            std::cmp::Ordering::Equal => 8,
-            std::cmp::Ordering::Greater => 11,
-        };
-        ensure!(
-            e.v == want,
-            "the event at {} is written in format {}; the one declaring a view with \
-             parameters must be 8 and none before it, and the record made after it 11",
-            e.position,
-            e.v
-        );
-    }
     Ok(())
 }

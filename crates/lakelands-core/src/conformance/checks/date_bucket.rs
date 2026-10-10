@@ -18,8 +18,7 @@ use lakelands_api::{Find, Found, LakeStore, TypeName, Value};
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, agg, dec, decimal, doors, find_where, invalid_case, invalid_like, log_events,
-    owner, type_of,
+    Lake, Must, agg, dec, decimal, doors, find_where, invalid_case, invalid_like, owner, type_of,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -34,13 +33,13 @@ check!(
 );
 
 check!(
-    DECLARED = a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3,
-    "017, extended, and log-format §6: a declaration may call date_bucket (a derived field, a view's where, an object set's filter); the event that first declares such a call is written in format version 3, as is every event after it, and a derived bucket answers finds by it"
+    DECLARED = a_declaration_may_call_date_bucket,
+    "017, extended: a declaration may call date_bucket (a derived field, a view's where, an object set's filter), and a derived bucket answers finds by it"
 );
 
 check!(
     WINDOWS = find_groups_records_by_windows_of_a_width_from_an_origin,
-    "017, extended (lakelands#559), and log format §6: date_bucket(x, width, origin) answers the start of the window of that width holding x, the windows counted from the origin in both directions, the same on every engine; a width without its origin, a width that is not above zero, a quoted width and a calendar unit with an origin are refused as invalid, each naming what to write; a declaration that calls it by a width is written in format version 11, as is every event after it"
+    "017, extended (lakelands#559): date_bucket(x, width, origin) answers the start of the window of that width holding x, the windows counted from the origin in both directions, the same on every engine; a width without its origin, a width that is not above zero, a quoted width and a calendar unit with an origin are refused as invalid, each naming what to write; a declaration may call it by a width"
 );
 
 /// The days of the lake, as `YYYY-MM-DD`.
@@ -229,13 +228,10 @@ async fn a_where_selects_the_records_of_one_date_bucket(store: Store) -> Held {
     Ok(())
 }
 
-async fn a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3(
-    store: Store,
-) -> Held {
+async fn a_declaration_may_call_date_bucket(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
-    let before = store.head().await.must("reading the head")?;
-    let declared_at = l.declare_json(json!({
+    let declared = l.declare_json(json!({
         "declare": "type", "name": "entry",
         "fields": [
             {"name": "on", "type": {"kind": "date_time"}},
@@ -243,7 +239,7 @@ async fn a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3
              "derived": "date_bucket(on, 'month')", "depends_on": ["on"]}
         ]
     }));
-    let declared_at = declared_at.await?.position();
+    declared.await?;
     for (k, on) in [
         ("a", "2028-01-05T10:00:00Z"),
         ("b", "2028-01-30T23:59:59Z"),
@@ -275,22 +271,6 @@ async fn a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3
     cat.apply(own, more)
         .await
         .must("applying a view and an object set calling date_bucket")?;
-    let events = log_events(store.as_ref()).await?;
-    for e in &events {
-        let want = if e.position > declared_at { 11 } else { 3 };
-        ensure!(
-            if e.position >= declared_at {
-                e.v == want
-            } else {
-                e.v < 3 && e.position <= before
-            },
-            "the event at {} carries format {}; the declaration at {declared_at} first calls \
-             date_bucket, so it carries 3 and none before it does, and the lake writes 11 from \
-             the first record made after it",
-            e.position,
-            e.v
-        );
-    }
     Ok(())
 }
 
@@ -331,8 +311,7 @@ async fn find_groups_records_by_windows_of_a_width_from_an_origin(store: Store) 
             "`{bucket}` is refused as invalid, as {case}; find answered {refused:?}"
         );
     }
-    // A declaration may call it, written in format 11 as the lake's
-    // records are; that it needs 11 is held by `versions`' rows.
+    // A declaration may call it.
     let declared = l.declare_json(json!({
         "declare": "type", "name": "shift",
         "fields": [
@@ -341,20 +320,16 @@ async fn find_groups_records_by_windows_of_a_width_from_an_origin(store: Store) 
              "derived": "date_bucket(on, 7d, '2027-12-27T00:00:00Z')"}
         ]
     }));
-    let declared = declared.await?.position();
+    declared.await?;
     l.upsert("shift", "s", json!({"on": "2028-01-05T10:00:00Z"}))
         .await?;
     let week = l.read("shift", "s").await?;
-    let events = log_events(store.as_ref()).await?;
     ensure!(
         crate::conformance::fixture::value(&week, "week")
-            == Some(&json!("2028-01-03T00:00:00.000000Z"))
-            && events.iter().all(|e| e.position < declared || e.v == 11),
-        "a derived window of seven days from Monday 2027-12-27 holds 2028-01-03 for 2028-01-05, \
-         and its declaration and every event after it are written in format 11; the record \
-         holds {:?}, the events carry {:?}",
-        week.fields,
-        events.iter().map(|e| (e.position, e.v)).collect::<Vec<_>>()
+            == Some(&json!("2028-01-03T00:00:00.000000Z")),
+        "a derived window of seven days from Monday 2027-12-27 holds 2028-01-03 for 2028-01-05; \
+         the record holds {:?}",
+        week.fields
     );
     Ok(())
 }

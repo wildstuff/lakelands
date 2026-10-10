@@ -33,7 +33,7 @@ check!(
 
 check!(
     ON_TYPE_RUNS = a_verb_on_its_type_runs_under_its_types_grants_and_records_its_output,
-    "013, extended: a `low` external verb declared with `scope: type` is described with that scope and called with no key by a principal with write on its type; it answers `applied` with its executor's output, its `verb_called` carries no key and is written in log format 8, and the output is recorded as `output_recorded` caused by it"
+    "013, extended: a `low` external verb declared with `scope: type` is described with that scope and called with no key by a principal with write on its type; it answers `applied` with its executor's output, its `verb_called` carries no key, and the output is recorded as `output_recorded` caused by it"
 );
 
 check!(
@@ -168,11 +168,6 @@ async fn a_verb_on_its_type_runs_under_its_types_grants_and_records_its_output(
     ensure!(
         calls == [(*position, false)],
         "one `verb_called` without a key at {position}; the log holds {calls:?}"
-    );
-    let called_in = events.iter().find(|e| e.position == *position).map(|e| e.v);
-    ensure!(
-        called_in == Some(8),
-        "a call with no key is written in log format 8; it was written in {called_in:?}"
     );
     ensure!(
         events.iter().any(|e| e.cause == Some(*position)

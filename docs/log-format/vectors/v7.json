@@ -1,10 +1,9 @@
 {
-  "about": "Format version 7's addition (log-format §6): a call of `retired` in a declaration's expressions (Appendix B). Position 16, following v6.json's position 15: a `declared` trigger on `slip` whose guard is `retired()`, so it fires only when a write retires a slip. `negative` is position 16 written as version 6, its hash made right: a reader refuses it, since version 7 added the call.",
+  "about": "A call of `retired` in a declaration's expressions (Appendix B). Position 16, following v6.json's position 15: a `declared` trigger on `slip` whose guard is `retired()`, so it fires only when a write retires a slip.",
   "hashes": [
-    "a9e7114a1ee550c3d8cb5d15ad870d4f89a878d570a917648602308ef93547f0"
+    "86567d8cc1630ad5785b231405626ab6410f0afc078671aa3145b497366f7770"
   ],
   "lines": [
-    "{\"body\":{\"declaration\":{\"declare\":\"trigger\",\"name\":\"slip_retired\",\"on\":\"slip\",\"when\":\"retired()\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"a9e7114a1ee550c3d8cb5d15ad870d4f89a878d570a917648602308ef93547f0\",\"id\":\"8d3b0f5a2c9e4d7b1f6a3c0e9b5d2f74\",\"known_at\":\"2026-10-01T08:00:02.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":16,\"prev\":\"84b53ce3102230f81eabd2e7f89b6098ba564aabc02baaad154a26d65a42c363\",\"v\":7,\"writer\":\"agent:agent\"}"
-  ],
-  "negative": "{\"body\":{\"declaration\":{\"declare\":\"trigger\",\"name\":\"slip_retired\",\"on\":\"slip\",\"when\":\"retired()\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"db259b6fa610657f1aea65acc2b4bfa40d10bb240bb75f0d81a36db66f373f7d\",\"id\":\"8d3b0f5a2c9e4d7b1f6a3c0e9b5d2f74\",\"known_at\":\"2026-10-01T08:00:02.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":16,\"prev\":\"84b53ce3102230f81eabd2e7f89b6098ba564aabc02baaad154a26d65a42c363\",\"v\":6,\"writer\":\"agent:agent\"}"
+    "{\"body\":{\"declaration\":{\"declare\":\"trigger\",\"name\":\"slip_retired\",\"on\":\"slip\",\"when\":\"retired()\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"86567d8cc1630ad5785b231405626ab6410f0afc078671aa3145b497366f7770\",\"id\":\"8d3b0f5a2c9e4d7b1f6a3c0e9b5d2f74\",\"known_at\":\"2026-10-01T08:00:02.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":16,\"prev\":\"286702c3a930838d0882ae1945cdddda849da74c735a420a3cdb53ad93a38c2b\",\"v\":14,\"writer\":\"agent:agent\"}"
+  ]
 }

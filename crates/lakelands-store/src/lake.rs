@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use lakelands_api::engine::{CanonicalEvent, LakeEngine, Lease, OpenMode, ProjectionView};
 use lakelands_api::error::{Detail, Flaw, Part, Seam, Situation};
-use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_BASE, SegmentDigest};
+use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_VERSION, SegmentDigest};
 use lakelands_api::location::{EngineConfig, Limits, Location};
 use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
 use lakelands_api::principal::Renamed;
@@ -79,9 +79,6 @@ pub struct Writer {
     /// catches up hands out the calls of its events from there on, and
     /// forgets it once it has folded them.
     pub failed: Option<Position>,
-    /// The log format version the lake writes: the version of its last
-    /// event, raised by an append that needs a newer one, never lowered.
-    pub format: u32,
     /// The executors' answers whose append failed `unavailable`, oldest
     /// first: the next write appends them before it is decided (013).
     pub answers: Vec<Draft>,
@@ -294,6 +291,9 @@ impl Lake {
     /// first, so the whole log is folded: that open is the rebuild.
     pub fn open(location: &Location, seams: Seams, mode: OpenMode) -> Result<Lake> {
         let opener = opener(location, &seams)?;
+        // A lake of another release's format is not opened: its engine
+        // judges, makes and changes nothing of it, in any mode (054).
+        log::one_format(&location.lake, opener.log_ends(location)?.as_ref())?;
         let engine: Arc<dyn LakeEngine> = Arc::from(opener.open(location, mode)?);
         let lease = match mode {
             OpenMode::Read => None,
@@ -314,7 +314,7 @@ impl Lake {
                 drafts.push(Draft::system(
                     now,
                     EventBody::LakeCreated {
-                        format: LOG_FORMAT_BASE,
+                        format: LOG_FORMAT_VERSION,
                     },
                 ));
             }
@@ -400,7 +400,6 @@ impl Lake {
                 held: BTreeMap::new(),
                 behind: false,
                 failed: None,
-                format: LOG_FORMAT_BASE,
                 answers: Vec::new(),
                 plans: record::Plans::default(),
             }),
@@ -486,11 +485,11 @@ impl Lake {
         for mut d in std::mem::take(&mut w.answers).into_iter().chain(d) {
             d.known_at = self.clock(w);
             let stamped = self.stamp(w, vec![d.clone()]);
-            let held = stamped.and_then(|(lease, v, events, stored)| {
-                self.engine.append(&lease, &stored).map(|()| (v, events))
+            let held = stamped.and_then(|(lease, events, stored)| {
+                self.engine.append(&lease, &stored).map(|()| events)
             });
             answer = match held {
-                Ok((v, events)) => self.landed(w, v, events, Reads::default()),
+                Ok(events) => self.landed(w, events, Reads::default()),
                 Err(e) => {
                     w.answers
                         .extend(matches!(e, Error::Unavailable { .. }).then_some(d));
@@ -519,13 +518,11 @@ impl Lake {
             w.ontology = Ontology::at(view.as_ref())?;
             w.settings = settings_in(view.as_ref(), &w.ontology)?;
         }
-        // The last event's time and format: versions only go up, so the
-        // tip's is the log's newest.
+        // The last event's time.
         if let Some((pos, _)) = &w.tip
             && let Some(e) = self.read_events(*pos, 1)?.first()
         {
             w.last_known_at = e.known_at;
-            w.format = w.format.max(e.v);
         }
         // Only the writer folds; a handle opened read-only reads what the
         // writer folded, and writes nothing.
@@ -708,14 +705,14 @@ impl Lake {
         drafts: Vec<Draft>,
         reads: Reads,
     ) -> Result<Vec<Event>> {
-        let (lease, v, events, stored) = self.stamp(w, drafts)?;
+        let (lease, events, stored) = self.stamp(w, drafts)?;
         self.engine.append(&lease, &stored)?;
-        self.landed(w, v, events, reads)
+        self.landed(w, events, reads)
     }
 
-    /// The events `drafts` become after the tip, as the log's format `v`
-    /// writes them and as the engine stores them, under the writer's
-    /// lease: refused where an append of them would be. Nothing is changed.
+    /// The events `drafts` become after the tip, as the log writes them
+    /// and as the engine stores them, under the writer's lease: refused
+    /// where an append of them would be. Nothing is changed.
     ///
     /// The seal judges every event as the log's own reading will
     /// (`docs/log-format.md` §1.2, §1.3): one that holds a number written
@@ -728,7 +725,7 @@ impl Lake {
         &self,
         w: &Writer,
         drafts: Vec<Draft>,
-    ) -> Result<(Lease, u32, Vec<Event>, Vec<CanonicalEvent>)> {
+    ) -> Result<(Lease, Vec<Event>, Vec<CanonicalEvent>)> {
         let Some(lease) = w.lease.clone() else {
             return Err(no_lease());
         };
@@ -755,12 +752,6 @@ impl Lake {
         if let Some(d) = drafts.iter().find(|d| d.context.cause.is_some()) {
             self.check_trigger_ceiling(w, d.context)?;
         }
-        // An event that needs a newer format raises the lake to it, from
-        // this append on (`lakelands_core::versions`).
-        let v = drafts
-            .iter()
-            .map(|d| lakelands_core::versions::needed(&d.body, d.upstream.is_some()))
-            .fold(w.format, u32::max);
         let mut events = Vec::with_capacity(drafts.len());
         let mut stored: Vec<CanonicalEvent> = Vec::with_capacity(drafts.len());
         let mut prev_pos = head;
@@ -773,8 +764,7 @@ impl Lake {
             } else {
                 lease.fence
             };
-            let (event, canon, fault) =
-                log::seal_judged(v, &self.id, position, &prev_hash, fence, d);
+            let (event, canon, fault) = log::seal_judged(&self.id, position, &prev_hash, fence, d);
             if let Some(case) = fault {
                 return Err(lakelands_core::invalid(case));
             }
@@ -783,19 +773,12 @@ impl Lake {
             events.push(event);
             stored.push(canon);
         }
-        Ok((lease, v, events, stored))
+        Ok((lease, events, stored))
     }
 
-    /// What follows once the engine holds `events`, stamped in format `v`:
-    /// the writer stands on them, and they are folded and published.
-    fn landed(
-        &self,
-        w: &mut Writer,
-        v: u32,
-        events: Vec<Event>,
-        reads: Reads,
-    ) -> Result<Vec<Event>> {
-        w.format = v;
+    /// What follows once the engine holds `events`: the writer stands on
+    /// them, and they are folded and published.
+    fn landed(&self, w: &mut Writer, events: Vec<Event>, reads: Reads) -> Result<Vec<Event>> {
         if let Some(last) = events.last() {
             w.tip = Some((last.position, last.hash.clone()));
             w.last_known_at = w.last_known_at.max(last.known_at);
@@ -1757,23 +1740,12 @@ impl Lake {
         // Where a segment after the first begins: behind each sealed one.
         let begins: BTreeSet<Position> = segments.iter().map(|s| s.last.next()).collect();
         let mut last = None;
-        let mut last_v = 0;
         'pages: for page in self.pages(from) {
             for e in page? {
                 if through.is_some_and(|t| e.position > t) {
                     break 'pages;
                 }
                 log::check_link(before.as_ref().map(|(p, h)| (p, h)), &e)?;
-                // Versions go only upward (`docs/log-format.md` §6).
-                if e.v < last_v {
-                    let (v, before) = (e.v.into(), last_v.into());
-                    return Err(damaged(
-                        Part::Log,
-                        Some(e.position),
-                        Flaw::FormatBack { v, before },
-                    ));
-                }
-                last_v = e.v;
                 // `known_at` never goes back (`docs/log-format.md` §1.3).
                 if let Some(k) = known
                     && e.known_at < k
@@ -1918,14 +1890,14 @@ impl Lake {
                 hash: hash.clone(),
                 segments,
             };
-            let (_, v, events, stored) = self.stamp(&w, vec![Draft::system(now, body)])?;
-            stamped = Some((v, events));
+            let (_, events, stored) = self.stamp(&w, vec![Draft::system(now, body)])?;
+            stamped = Some(events);
             Ok(stored)
         })?;
-        let Some((v, events)) = stamped else {
+        let Some(events) = stamped else {
             return Ok(through);
         };
-        let events = self.landed(&mut w, v, events, Reads::default())?;
+        let events = self.landed(&mut w, events, Reads::default())?;
         Ok(events.last().map_or(through, |e| e.position))
     }
 

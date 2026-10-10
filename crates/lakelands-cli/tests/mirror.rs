@@ -607,6 +607,74 @@ async fn a_mirror_reads_on_past_a_bounded_poll() {
     );
 }
 
+/// A connection's source is a lake of the same root, opened by the
+/// process that mirrors it. One whose log another release wrote, in
+/// another format, is refused at that open by its name and both formats,
+/// so no mirror of it starts and nothing of it is read
+/// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+#[tokio::test]
+async fn a_source_lake_of_another_format_is_refused_at_its_open() {
+    use lakelands_api::canonical;
+    use lakelands_api::error::Situation;
+    use lakelands_api::event::LOG_FORMAT_VERSION;
+    for engine in engines() {
+        let two = Two::new("format", &engine).await;
+        two.upsert("partner", "acme", json!({"name": "acme"})).await;
+        two.crm.close().await.unwrap();
+        let (crm_at, seams) = (two.crm_at.clone(), two.seams.clone());
+        // The source's next event as the release before wrote it: its
+        // format one below, its hash made right.
+        let other = LOG_FORMAT_VERSION - 1;
+        {
+            let name = match engine {
+                Engine::Memory => "memory",
+                Engine::Sqlite => "sqlite",
+                Engine::Postgres(_) => "pg",
+            };
+            let opener = seams.engines.iter().find(|e| e.name() == name).unwrap();
+            let seam = opener.open(&crm_at, OpenMode::Write).unwrap();
+            let lease = seam.take_lease("the release before").unwrap();
+            let (tip, prev) = seam.tip().unwrap().unwrap();
+            let taken = lakelands_store::log::Draft::system(
+                lakelands_api::Timestamp(i64::MAX / 2),
+                EventBody::LeaseTaken {
+                    fence: lease.fence,
+                    holder: lease.holder.clone(),
+                },
+            );
+            let (_, stored) =
+                lakelands_store::log::seal(&crm_at.lake, tip.next(), &prev, lease.fence, taken);
+            let mut event: Value = serde_json::from_slice(&stored.bytes).unwrap();
+            event["v"] = json!(other);
+            event.as_object_mut().unwrap().remove("hash");
+            let hash = canonical::sha256_hex(&event);
+            event["hash"] = json!(hash);
+            let stored = lakelands_api::engine::CanonicalEvent {
+                hash: lakelands_api::event::Digest(hash),
+                bytes: canonical::to_vec(&event),
+                ..stored
+            };
+            seam.append(&lease, &[stored]).unwrap();
+            seam.release_lease(&lease).unwrap();
+        }
+        let Err(e) = lakelands_store::open(crm_at, seams, OpenMode::Read).await else {
+            panic!("a source lake in format {other} opened to be mirrored");
+        };
+        assert!(
+            matches!(e.situation(), Some(Situation::LogFormat { lake, found, reads })
+                if lake == "crm" && *found == u64::from(other)
+                    && *reads == u64::from(LOG_FORMAT_VERSION)),
+            "{}: {e:?}",
+            engine.name()
+        );
+        let said = format!(
+            "lake `crm` is written in log format {other}, and this release reads and writes \
+             format {LOG_FORMAT_VERSION} alone; nothing was read from it and nothing appended"
+        );
+        assert!(e.to_string().contains(&said), "{e}");
+    }
+}
+
 /// A mirror that reads held records writes their copies only with a
 /// writer that holds `restricted` in the target: it is refused before
 /// anything is copied, naming the writer and the grant (042).

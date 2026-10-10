@@ -89,8 +89,8 @@ stay out of it without a rule of their own. A suite check holds this
 byte for byte, so that a member added to the allowlist later cannot
 pull them in unnoticed. A type whose annotations alone change keeps its
 schema hash, and its version counts the change like a changed
-description. Carrying annotations in the log is a new member, so it is
-format version 5 (`docs/log-format.md` §6).
+description. Carrying annotations in the log is a new member, so it
+came with a step of the log format (`docs/log-format.md` §6).
 
 ## Extended: a field's initial value is not shape
 

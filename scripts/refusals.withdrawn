@@ -1,0 +1,36 @@
+# The codes that left the catalog (docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md,
+# "A code leaves by a recorded withdrawal"). One row a code:
+#   set | code | shipped in | left in | why
+# A row is for a sentence the product can no longer say, never for a rename, and it stays:
+# `scripts/refusals.py` refuses a shipped code that is gone without its row, and a code of a
+# row that is in the catalog, so a withdrawn code is not used again.
+Added | rekeyed | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | date_bucket | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | upstream | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | proposes_schema | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | annotations | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | derived_relation | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | trigger_depth | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | retired | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | view_params | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | no_key | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | verb_on_type | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | merged_sources | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | tightening | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | floor | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | date_bucket_by_width | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | in_set | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | relation_rename | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | kept_setting | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | made | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | restated | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | initial | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | with_the_set | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | computed_at | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | value_renames | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | proposes_value_renames | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | pinned | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Added | date | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
+Flaw | format_outside | v0.12.0 | 0.13.0 | a release reads one log format, not a range of them
+Flaw | format_back | v0.12.0 | 0.13.0 | every event of a lake is in one log format, so none goes down
+Flaw | format_below | v0.12.0 | 0.13.0 | no format is read but the release's one, so no event is below what it needs

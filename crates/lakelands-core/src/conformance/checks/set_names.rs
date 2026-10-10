@@ -25,7 +25,7 @@ use crate::conformance::{Failure, Given, Held, Store};
 
 check!(
     COMPOSED = a_set_names_a_set_and_follows_it,
-    "004, extended (lakelands#552), and log format §6: in_set('name') holds for a record where the named set's filter holds: union, intersection and difference are or, and, and not, through two levels; a read's where names a set and reads its filter, as of an earlier position the filter in force there; a set declared again decides the sets built on it in the same append; a write joins and leaves them; a trigger whose when names a set fires as the filter holds; the declaration that names a set is written in format version 11"
+    "004, extended (lakelands#552): in_set('name') holds for a record where the named set's filter holds: union, intersection and difference are or, and, and not, through two levels; a read's where names a set and reads its filter, as of an earlier position the filter in force there; a set declared again decides the sets built on it in the same append; a write joins and leaves them; a trigger whose when names a set fires as the filter holds"
 );
 
 check!(
@@ -116,7 +116,6 @@ async fn a_set_names_a_set_and_follows_it(store: Store) -> Held {
     let (s, l) = (store.as_ref(), lake(store.as_ref()).await?);
     let own = &l.own;
     // Union, intersection, difference, and a set two levels up.
-    let first = s.head().await.must("the head")?.next();
     for (name, filter, members) in [
         (
             "either",
@@ -138,13 +137,6 @@ async fn a_set_names_a_set_and_follows_it(store: Store) -> Held {
              {joined} and a read naming it answered {read:?}"
         );
     }
-    let events = events_from(s, Position(0)).await?;
-    let formats: Vec<_> = events.iter().map(|e| (e.position, e.v)).collect();
-    ensure!(
-        formats.iter().all(|(p, v)| *p < first || *v == 11),
-        "the lake writes format 11 from the first declaration that names a set, at {first}, as \
-         it does from its first record made; its events carry {formats:?}"
-    );
     // `open` declared again takes `i4`: the sets built on it follow in the
     // same append, two levels up, and a read as of before reads as before.
     let before = s.head().await.must("the head")?;

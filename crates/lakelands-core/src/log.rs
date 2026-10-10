@@ -1,12 +1,14 @@
 //! What the log format derives from content: event ids and record keys
-//! (`docs/log-format.md` §2.3 and §3).
+//! (`docs/log-format.md` §2.3 and §3), and the members an event never
+//! carries where it is ([`misplaced`]).
 //!
 //! These are pure functions of the values they name, so a writer, a
 //! verifier and the published vectors compute them the same way; the
 //! store calls them, and so does the vector test. The key rule itself
 //! lives in `lakelands_api::key`, where a host reaches it too.
 
-use lakelands_api::event::EventId;
+use lakelands_api::error::Flaw;
+use lakelands_api::event::{Event, EventBody, EventId, LOG_FORMAT_VERSION};
 use lakelands_api::{
     IdempotencyKey, LakeId, Patch, Position, ProposalId, RecordKey, SourceId, TypeName,
 };
@@ -100,6 +102,60 @@ pub fn positional_id(lake: &LakeId, position: Position) -> EventId {
         lake.as_str().as_bytes(),
         position.0.to_string().as_bytes(),
     ])
+}
+
+/// The flaw of a `lake_created` that says another log format than the
+/// release's one, at whatever position it stands: its lake was made by
+/// another release
+/// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+/// A caller asks this of an event whose own `v` it has judged.
+pub fn created_in_another(event: &Event) -> Option<Flaw> {
+    let reads = u64::from(LOG_FORMAT_VERSION);
+    match event.body {
+        EventBody::LakeCreated { format } if u64::from(format) != reads => {
+            let format = format.into();
+            Some(Flaw::CreatedInAnother { format, reads })
+        }
+        _ => None,
+    }
+}
+
+/// Why an event carries a member where it never sits, if it does:
+/// `cause` inside `context`, since a host's cause is the envelope's
+/// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`); and
+/// `upstream` on any kind but `record_ingested`, since only a source's
+/// record is read from another lake (`docs/log-format.md` §1.1); and the
+/// origin `initial`, a field's provenance alone, never an event's
+/// (`docs/decisions/050-a-field-declares-its-initial-value.md`); and an
+/// output both carried and named by `output_at`, or neither
+/// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`). No door
+/// puts any there; a reader holds the rule for a log written by something
+/// else.
+pub fn misplaced(event: &Event) -> Option<Flaw> {
+    if event.context.cause.is_some() {
+        return Some(Flaw::CauseInContext);
+    }
+    if let EventBody::OutputRecorded {
+        output, output_at, ..
+    } = &event.body
+        && output.is_some() == output_at.is_some()
+    {
+        return Some(Flaw::OutputOnce);
+    }
+    if event.origin == lakelands_api::record::Origin::Initial {
+        return Some(Flaw::InitialOrigin);
+    }
+    let kind = event_kind(&event.body);
+    (event.upstream.is_some() && !matches!(event.body, EventBody::RecordIngested { .. }))
+        .then_some(Flaw::UpstreamOn { kind })
+}
+
+/// An event body's kind, as the log writes it.
+fn event_kind(body: &EventBody) -> String {
+    serde_json::to_value(body)
+        .ok()
+        .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_owned))
+        .unwrap_or_else(|| "unknown".to_owned())
 }
 
 #[cfg(test)]

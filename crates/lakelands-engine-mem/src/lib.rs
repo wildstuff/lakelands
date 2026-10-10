@@ -46,7 +46,7 @@ mod view;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
+use lakelands_api::engine::{CanonicalEvent, EngineOpener, LakeEngine, OpenMode};
 use lakelands_api::error::{Case, Error, Result, Situation};
 use lakelands_api::id::LakeId;
 use lakelands_api::location::{EngineConfig, Location};
@@ -104,6 +104,11 @@ impl std::fmt::Debug for MemoryOpener {
 impl EngineOpener for MemoryOpener {
     fn name(&self) -> &str {
         NAME
+    }
+
+    fn log_ends(&self, location: &Location) -> Result<Option<(CanonicalEvent, CanonicalEvent)>> {
+        let lakes = lock(&self.lakes);
+        Ok((lakes.get(&location.lake)).and_then(|lake| lock(lake).log.ends()))
     }
 
     /// Opens the lake `location` names. `Create` makes it when it does not

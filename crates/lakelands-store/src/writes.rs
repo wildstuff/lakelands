@@ -3593,7 +3593,7 @@ pub(crate) fn conditions(
     let (mut shown, mut unshown) = (Vec::new(), false);
     for d in declared
         .iter()
-        .filter(|d| lakelands_core::versions::declares(&d.declaration, &old))
+        .filter(|d| lakelands_core::expr::declares(&d.declaration, &old))
     {
         match describe::shown(&d.declaration, &declared, who) {
             true => shown.push(d.declaration.what()),
@@ -3738,7 +3738,7 @@ impl Call<'_> {
                     .as_ref()
                     .or(function.and_then(|e| e.decl.expr.as_ref()));
                 if expr.is_some_and(|c| {
-                    lakelands_core::versions::names_text(c, &|t| renames.contains_key(t))
+                    lakelands_core::expr::names_text(c, &|t| renames.contains_key(t))
                 }) {
                     let (ty, field) = (name.clone(), f.name.clone());
                     return Err(invalid(Case::ComputedHoldsRenamed { ty, field }));

@@ -18,25 +18,13 @@ use crate::record::{Origin, Patch, Value};
 use crate::time::Timestamp;
 use crate::write::{Declaration, Migration, ProposedWrite};
 
-/// The newest log format version this contract reads and writes. Every
-/// event carries the version it was written under; a reader refuses a
-/// version newer than the one it knows, by name and with a message, never
-/// by guessing. Version 2 adds `migrated.rekeyed`; version 3 the member
-/// `upstream` and `date_bucket` in a declaration; version 4 a proposed
-/// declaration or migration; version 5 a declaration's `annotations`;
-/// version 6 a derived relation; version 7 a call of `retired` in a
-/// declaration; version 8 a view's `params` and a call of `param`, and a
-/// verb on its type; version 9 a view's `merge`; version 10 a proposed
-/// tightening of a value type; version 11 a call of `floor` in a
-/// declaration; version 12 a declaration `with_the_set`; version 13 a
-/// proposal `pinned` to the record it writes, and the kind `date`;
-/// version 14 an output named by `output_at` (`docs/log-format.md` §6).
+/// The one log format version this release reads and writes. Every event
+/// of a lake carries it as `v`, from position 0, and `lake_created.format`
+/// says the same number. A lake written in another format is refused by
+/// name, with both numbers, and nothing of it is read
+/// (`docs/log-format.md` §6,
+/// `docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 pub const LOG_FORMAT_VERSION: u32 = 14;
-
-/// The version a lake is created with and writes until it needs a newer
-/// one: a lake that never re-keys a type stays at version 1, byte for
-/// byte.
-pub const LOG_FORMAT_BASE: u32 = 1;
 
 /// A SHA-256 digest, as 64 lower-case hexadecimal digits.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -96,8 +84,7 @@ pub struct Event {
     /// When the source observed the values, for an event from a source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seen_at: Option<Timestamp>,
-    /// For values read from another lake's log: that lake and position
-    /// (format version 3).
+    /// For values read from another lake's log: that lake and position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<crate::record::Upstream>,
     /// The procedure that produced the values, if one did.
@@ -148,7 +135,7 @@ pub enum EventBody {
         version: u32,
         /// Whether another declaration of the same set follows in this
         /// append: the records the set computes again are computed once,
-        /// at its last declaration (format version 12).
+        /// at its last declaration.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         with_the_set: bool,
     },
@@ -163,13 +150,13 @@ pub enum EventBody {
         /// The preflight report it was applied against.
         report_id: String,
         /// Every record key the migration moves, over every type it
-        /// re-keys (format version 2); empty when no key changes.
+        /// re-keys; empty when no key changes.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         rekeyed: Vec<crate::write::Rekey>,
     },
     /// A value type's migration that renames values: its declaration is
     /// put in force and every stored record that holds an old value takes
-    /// the new one in the fold (format version 12).
+    /// the new one in the fold.
     ValueTypeMigrated {
         /// The value type's new declaration.
         declaration: crate::ontology::ValueTypeDecl,
@@ -195,8 +182,8 @@ pub enum EventBody {
         version: Version,
         /// The sparse patch.
         patch: Patch,
-        /// Whether the write found no live record under the key (format
-        /// version 11): with `version` 1 the first, above it made again.
+        /// Whether the write found no live record under the key: with
+        /// `version` 1 the first, above it made again.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         made: bool,
     },
@@ -211,8 +198,8 @@ pub enum EventBody {
         version: Version,
         /// The sparse patch.
         patch: Patch,
-        /// Whether the write found no live record under the key (format
-        /// version 11): with `version` 1 the first, above it made again.
+        /// Whether the write found no live record under the key: with
+        /// `version` 1 the first, above it made again.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         made: bool,
     },
@@ -254,7 +241,7 @@ pub enum EventBody {
         /// The verb.
         verb: VerbName,
         /// The record it was called on; absent for a verb called on its
-        /// type (log format 8).
+        /// type.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<RecordKey>,
         /// Its payload.
@@ -270,7 +257,7 @@ pub enum EventBody {
         why: String,
         /// Whether its proposer's grant admits only some records of the
         /// type it writes: its accept is refused once the record or the
-        /// type changed after it (format version 13).
+        /// type changed after it.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         pinned: bool,
     },

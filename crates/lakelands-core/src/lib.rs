@@ -28,7 +28,6 @@ pub mod shape;
 pub mod stem;
 pub mod valid_time;
 pub mod value;
-pub mod versions;
 
 use lakelands_api::error::{Detail, Doing, Flaw, Part, Said, Situation};
 use lakelands_api::{Error, Position};

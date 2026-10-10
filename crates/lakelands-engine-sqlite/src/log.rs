@@ -353,6 +353,21 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// The first and the last committed event of the log in `dir`, read
+/// from its files alone: no file is made or changed, and a directory
+/// with no log answers none.
+pub(crate) fn ends(dir: &Path) -> Result<Option<(CanonicalEvent, CanonicalEvent)>> {
+    if !dir.join("log").is_dir() {
+        return Ok(None);
+    }
+    let mut log = Log::open(dir, false)?;
+    let Some((tip, _)) = log.tip() else {
+        return Ok(None);
+    };
+    let mut at = |position| log.read(position, 1).map(|mut e| e.pop());
+    Ok(at(Position(0))?.zip(at(tip)?))
+}
+
 /// The lines `events` add to a segment file from byte `offset` on, and
 /// their index lines, closed by one commit line.
 fn lines_of(events: &[CanonicalEvent], mut offset: u64) -> (Vec<u8>, Vec<u8>) {

@@ -199,41 +199,6 @@ A TLS setup that failed, on the side of the lake's own connection.
 | `cert_empty` | — | the location's `tls.client_cert` holds no certificate | The client certificate file holds no certificate. |
 | `cert_unusable` | — | the client certificate cannot be used | The client certificate cannot be used. |
 
-## `Added`
-
-What a format version added that an event carries, written in an older format.
-
-| code | parameters | sentence | about |
-|---|---|---|---|
-| `rekeyed` | — | carries `rekeyed` | It carries `rekeyed`. |
-| `date_bucket` | — | declares a call of `date_bucket` | It declares a call of `date_bucket`. |
-| `upstream` | — | carries `upstream` | It carries `upstream`. |
-| `proposes_schema` | — | proposes a declaration or a migration | It proposes a declaration or a migration. |
-| `annotations` | — | carries `annotations` in a declaration | It carries `annotations` in a declaration. |
-| `derived_relation` | — | declares a derived relation | It declares a derived relation. |
-| `trigger_depth` | — | declares a trigger's `max_depth` | It declares a trigger's `max_depth`. |
-| `retired` | — | declares a call of `retired` | It declares a call of `retired`. |
-| `view_params` | — | declares a view's parameters | It declares a view's parameters. |
-| `no_key` | — | calls a verb with no key | It calls a verb with no key. |
-| `verb_on_type` | — | declares a verb on its type | It declares a verb on its type. |
-| `merged_sources` | — | declares a view that merges sources | It declares a view that merges sources. |
-| `tightening` | — | proposes a value type's tightening | It proposes a value type's tightening. |
-| `floor` | — | declares a call of `floor` | It declares a call of `floor`. |
-| `date_bucket_by_width` | — | declares a call of `date_bucket` by a width | It declares a call of `date_bucket` by a width. |
-| `in_set` | — | declares a call of `in_set` | It declares a call of `in_set`. |
-| `relation_rename` | — | renames a relation | It renames a relation. |
-| `kept_setting` | — | writes a `view_kept.` setting | It writes a `view_kept.` setting. |
-| `made` | — | carries `made` | It carries `made`. |
-| `restated` | — | proposes a migration whose report holds `restated` | It proposes a migration whose report holds `restated`. |
-| `initial` | — | declares an `initial` value | It declares an `initial` value. |
-| `with_the_set` | — | declares `with_the_set` | It declares `with_the_set`. |
-| `computed_at` | — | declares when a field is computed | It declares when a field is computed. |
-| `value_renames` | — | renames a value type's values | It renames a value type's values. |
-| `proposes_value_renames` | — | proposes a value type's migration that renames values | It proposes a value type's migration that renames values. |
-| `pinned` | — | proposes a write pinned to its record | It proposes a write pinned to its record. |
-| `date` | — | declares the kind `date` | It declares the kind `date`. |
-| `output_at` | — | names an output by `output_at` | It names an output by `output_at`. |
-
 ## `Place`
 
 Where in a declaration or a request a case is said.
@@ -851,9 +816,8 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `not_an_event` | `detail` (Detail) | a line is not an event: {detail} | A line is not an event. |
 | `not_canonical` | — | the bytes are not canonical | The bytes are not canonical. |
 | `not_one_form` | — | a member is not in its one written form | A member is not in its one written form. |
-| `format_outside` | `v` (u64), `lowest` (u64), `highest` (u64) | written in log format {v}, and the formats read are {lowest} to {highest} | It is written in a format outside the formats read. |
-| `format_back` | `v` (u64), `before` (u64) | written in format {v} after an event in format {before} | It is written in a format before that of the event before it. |
-| `format_below` | `v` (u64), `carries` (Added), `need` (u64) | a format {v} event {carries}, which format {need} added | It carries what a later format added. |
+| `format_other` | `v` (u64), `reads` (u64) | written in log format {v}, and this release reads and writes format {reads} alone | It is written in a log format this release does not read. |
+| `created_in_another` | `format` (u64), `reads` (u64) | its `lake_created` says log format {format}, and this release reads and writes format {reads} alone | Its `lake_created` says another log format than the release's. |
 | `cause_in_context` | — | `context` carries `cause`, which the envelope carries | `context` carries `cause`, which the envelope carries. |
 | `initial_origin` | — | the envelope carries the origin `initial`, a field's alone | The envelope carries the origin `initial`, a field's alone. |
 | `upstream_on` | `kind` (String) | a `{kind}` event carries `upstream`, which only a `record_ingested` event carries | An event other than `record_ingested` carries `upstream`. |
@@ -919,6 +883,7 @@ Why the lake cannot answer now. Retrying may help; the sentence says what the op
 | `unmade` | `part` (Part) | this engine did not create what is there: {part} is missing | A part every lake of this engine has is missing: something else made what is there. |
 | `no_projection` | `lake` (String) | lake `{lake}` has no projection yet; open it for writing first | The lake has no projection yet. |
 | `projection_layout` | `lake` (String), `found` (u64, optional), `wanted` (u64) | lake `{lake}`'s projection [has layout {found}\|has no layout number], and this build reads layout {wanted}; nothing was read from it: rebuild it from the log with `lakelands rebuild` | The lake's projection was laid out by another build: nothing reads it, and a rebuild makes it anew from the log. |
+| `log_format` | `lake` (String), `found` (u64), `reads` (u64) | lake `{lake}` is written in log format {found}, and this release reads and writes format {reads} alone; nothing was read from it and nothing appended | The lake's log is written in the format of another release: nothing reads it and nothing is appended. |
 | `busy` | `lake` (String) | lake `{lake}` could not be compacted: a reader holds a snapshot of its projection; nothing a read answers has changed, so compact again when the reader is done | The lake could not be compacted while a reader holds a snapshot. |
 | `behind` | `cause` (Error, optional) | the lake's projection is behind its log and could not catch up; nothing was appended[ ({cause})] | The projection is behind the log and could not catch up; nothing was appended. |
 | `decided_behind` | — | this write was decided while the lake's projection was behind its log; nothing was appended | The write was decided while the projection was behind the log; nothing was appended. |
@@ -963,6 +928,45 @@ Why a lake's declarations cannot all become tools. The store refuses a declarati
 | `collision` | `name` (String), `from` (list of NameSource) | the tool name `{name}` would come from {from} | Two declarations produce the same tool name. |
 | `too_long` | `name` (String) | the tool name `{name}` is longer than 64 characters | A tool name would be longer than [`MAX_TOOL_NAME`]. |
 | `empty` | `from` (NameSource) | {from} gives an empty tool name | A declaration's name has nothing left once made a tool name. |
+
+## Withdrawn
+
+Codes a release shipped that the product no longer says. No later
+release uses one again; a host may still meet one from an older server,
+whose own page says its sentence.
+
+| code | shipped in | left in | why |
+|---|---|---|---|
+| `Added::rekeyed` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::date_bucket` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::upstream` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::proposes_schema` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::annotations` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::derived_relation` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::trigger_depth` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::retired` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::view_params` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::no_key` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::verb_on_type` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::merged_sources` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::tightening` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::floor` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::date_bucket_by_width` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::in_set` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::relation_rename` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::kept_setting` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::made` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::restated` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::initial` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::with_the_set` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::computed_at` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::value_renames` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::proposes_value_renames` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::pinned` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::date` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Flaw::format_outside` | v0.12.0 | 0.13.0 | a release reads one log format, not a range of them |
+| `Flaw::format_back` | v0.12.0 | 0.13.0 | every event of a lake is in one log format, so none goes down |
+| `Flaw::format_below` | v0.12.0 | 0.13.0 | no format is read but the release's one, so no event is below what it needs |
 
 ## Parameter types
 

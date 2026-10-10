@@ -206,6 +206,21 @@ impl PgLake {
     }
 }
 
+/// The first and the last event of the log in the target's schema, when
+/// it holds a lake with any: read, never made or changed.
+pub(crate) fn log_ends(target: &Target) -> Result<Option<(CanonicalEvent, CanonicalEvent)>> {
+    let names = Names::new(target.quoted_schema()?);
+    let mut db = connect::connect(target)?;
+    if !matches!(shape(&mut db, &target.schema)?, Shape::Lake) {
+        return Ok(None);
+    }
+    let Some((tip, _)) = log::tip(&mut db, &names)? else {
+        return Ok(None);
+    };
+    let mut at = |position| log::read(&mut db, &names, position, 1).map(|mut e| e.pop());
+    Ok(at(Position(0))?.zip(at(tip)?))
+}
+
 /// What a schema holds, as the engine sees it at open.
 enum Shape {
     /// No schema, or one holding no table.

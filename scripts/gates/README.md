@@ -30,7 +30,7 @@ what it counts.
 | `no-external-decisions` | no citation of the platform's decision records, planning threads or issue numbers, in files or commit messages |
 | `doc-heads-its-item` | a new item is never inserted between another item and its doc comment: no added `fn`, `struct`, `enum`, `const`, `static`, `type`, `trait`, `impl` or `mod` whose doc block is headed by an unchanged `///` line |
 | `detail-sources` | an error's foreign words (`scrubbed`, by any path or alias) are made only in the product files the gate lists, each with why its words quote no record and no host path, and no product file outside the client reads a closed set (`Error`, `Situation`, `Detail`, `Seam`, `Exchange`, `Flaw`, `Remote`, `Case`, `Place`, `Said`, `Refusal`, `Missing`, `NameProblem`, `NameSource`) from JSON by name |
-| `refusals` | `docs/refusals.md` is what the catalog says; no two templates of a closed set can say the same sentence; no code the last release shipped is gone, renamed or lost a parameter; no case is built with a parameter made by `format!`; only the wire's reader makes an `Unknown` |
+| `refusals` | `docs/refusals.md` is what the catalog says; no two templates of a closed set can say the same sentence; no code the last release shipped is gone without its row in `scripts/refusals.withdrawn`, renamed or lost a parameter, and no code with a row is in the catalog; no row the last release's page lists as withdrawn has left the list, and that page's "Withdrawn" table is the one the gate reads; no case is built with a parameter made by `format!`; only the wire's reader makes an `Unknown` |
 
 The three budget gates (`core-size`, `seam-width`, `cfg-budget`) let a
 number go down by itself. A ceiling or a ratchet base that is higher

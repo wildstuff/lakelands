@@ -209,7 +209,7 @@ fn merged_sources(
             let e = condition(&x.expr, Eval::Group, &on)?;
             // A merged measure measures its source's group; one with no
             // aggregate would read nothing of it.
-            if !lakelands_core::versions::calls(&e, &Func::is_aggregate) {
+            if !lakelands_core::expr::calls(&e, &Func::is_aggregate) {
                 let source = m.source.clone();
                 return Err(invalid(at(&on, Case::MeasuresNothing { source })));
             }
@@ -314,13 +314,11 @@ fn view_params(owner: &[Place], v: &ViewDecl, read: &BTreeSet<String>) -> Result
 }
 
 /// A condition in its typed form, checked for its place, refused said at
-/// `on`. One a declaration carries, which the log keeps, may call
-/// `date_bucket` from log format version 3 on; the event that declares it
-/// is written at 3 (`lakelands_core::versions`, `docs/log-format.md` §6).
+/// `on`.
 pub fn condition(c: &Condition, place: Eval, on: &[Place]) -> Result<Expr> {
     let e = typed(c, place).map_err(|c| invalid(at(on, c)))?;
     // A set is named only where its filter is put in the name's place.
-    if lakelands_core::versions::calls(&e, &|f| f == Func::InSet) {
+    if lakelands_core::expr::calls(&e, &|f| f == Func::InSet) {
         return Err(invalid(at(on, Case::InSetHere)));
     }
     Ok(e)

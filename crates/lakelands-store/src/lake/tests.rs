@@ -231,7 +231,7 @@ fn declared_at(at: u64) -> Event {
         with_the_set: false,
     };
     let draft = Draft::system(Timestamp(5), body);
-    log::seal_at(1, &"l".into(), Position(at), &Digest::zero(), 1, draft).0
+    log::seal(&"l".into(), Position(at), &Digest::zero(), 1, draft).0
 }
 
 #[test]

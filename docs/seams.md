@@ -251,6 +251,7 @@ An engine is found by name and opened through `EngineOpener`:
 | Method | Contract |
 |---|---|
 | `name` | The name the engine answers to in `EngineConfig`. |
+| `log_ends(location)` | The first and the last event of the lake's log, read without opening the lake: nothing is made or changed, in the log's files or tables or in the projection, nothing of a lake is judged, and a place with no lake stays with nothing (no directory, file or schema). None where there is no lake or its log is empty. An engine may refuse a place that holds something other than a lake, as its `open` does: PostgreSQL refuses a schema with tables that are not a lake's (`schema_not_a_lake`) or whose `meta` or `lease` table is not the one it wrote (`schema_meta_foreign`). The store asks this before every `open` and before an import, and opens only a lake written in the format it reads: it judges the first event's `v`, the format its `lake_created` says and the last event's `v`, and refuses another as `log_format` without calling `open`, in every mode; an import onto a lake of the format it reads is refused as `import_not_empty` from the tip, without calling `open` either (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`). A tip that moves between the two calls is harmless: its writer passed the same judgement, so it wrote the same format. The disk engines read the log alone: SQLite its files, PostgreSQL its table over a connection of its own. |
 | `open(location, mode)` | Open the lake `Read`, `Write` or `Create` (write, creating it if absent, opening it if present). `Read` or `Write` of a lake that does not exist is `Unavailable`; a location configured for another engine is `Invalid`. Opening never takes the lease; a writer takes it afterwards with `take_lease`. A handle opened `Read` refuses `take_lease`, `append` and `seal_segment` as `Unavailable`, and writes nothing to the projection (`begin`, the puts, `clear` and `compact` are `Unavailable`), so any number of readers can hold the lake while one process writes (`docs/decisions/008-one-writer-per-lake.md`). A read-only open of a lake that does not exist creates nothing. The store folds only on the writer's handle; a reader reads what the writer folded. A disk engine's `Read`, `Write` and `Create` refuse a projection marked with another layout, or none, as `Unavailable` (`projection_layout`) before any of its tables is read or made; `Rebuild` opens an existing lake as `Write` does whatever layout made its projection, and nothing is read from it before `clear` makes it anew at the engine's layout (`docs/decisions/004-the-change-feed-is-the-log.md`). The memory engine opens `Rebuild` as `Write`. |
 
 ### `ProjectionStore`: what the fold writes
@@ -620,13 +621,12 @@ cannot compute for a record is null, so that record falls in the null
 group, which sorts last. `date_bucket(x, unit)` answers the instant in
 UTC at which the bucket holding `x` starts, for `day`, `week` (ISO, from
 Monday), `month`, `quarter` and `year`. A declaration may call it too,
-from log format version 3 on, so a derived field can hold the bucket
+so a derived field can hold the bucket
 (`docs/decisions/017-one-expression-grammar.md`, extended).
 `date_bucket(x, 30d, origin)` answers the start of the window of that
 width holding `x`, the windows counted from `origin` in both directions:
 a width is a duration, written unquoted, and always takes its origin (a
-literal instant, a field, `today()`); a declaration may call it from log
-format version 11 on. **The
+literal instant, a field, `today()`); a declaration may call it too. **The
 ceiling:** buckets are UTC only, and there is no number bucket.
 
 ### Reading an object set
@@ -1362,10 +1362,7 @@ matches nothing, one record's history and its checkpoints):
   for the first time; above 1 it was retired before and is made again,
   which a consumer that filters by kind would otherwise miss, since it
   never sees the `record_retired` between (`docs/log-format.md` §2.3;
-  suite: `a_record_event_says_whether_it_made_the_record`). An event
-  below format 11 carries no such member, and its absence says nothing
-  there: for those a consumer takes `version` 1 as the first creation or
-  reads the record as of the position before.
+  suite: `a_record_event_says_whether_it_made_the_record`).
 - `next`: the position after the last position the poll decided, by
   the index or by reading the log, matched or not, which is where the
   next poll starts.
@@ -1520,7 +1517,7 @@ refuses to start when it holds that lake but not as its writer.
   the source's `known_at` as `seen_at` and, as `upstream`, the source
   lake and the position of the state that was read: a field read with
   `with_meta` in the target says which state of the source it reflects
-  (`docs/log-format.md`, format version 3). The copy's fields are `source`
+  (`docs/log-format.md` §1.1). The copy's fields are `source`
   fields that nobody in the target can author, and `purge_source` of
   the connection's source removes the copies whole
   (`docs/decisions/039-a-source-is-retracted-as-one.md`). A window
@@ -2257,8 +2254,8 @@ retired and restricted ones included, with every type keyed by a
 reference to a re-keyed type (link types among them) and every reference
 value that names a moved key; two records that would take one key, or a
 record without a value for a new key field, make it not lossless. Applied,
-it is one `migrated` event listing every move (`rekeyed`, log format
-version 2, `docs/log-format.md` §2.3 and §6): each record keeps its
+it is one `migrated` event listing every move (`rekeyed`,
+`docs/log-format.md` §2.3): each record keeps its
 fields, version and per-field provenance at its new key, the old key is
 ended as of that position (kept as a retired state at version 0 with no
 field, which every scan of stored history skips), object-set memberships

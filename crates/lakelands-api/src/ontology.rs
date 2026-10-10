@@ -922,7 +922,7 @@ pub struct VerbDecl {
     /// is called on.
     pub on: TypeName,
     /// Whether it is called on a record of `on` (the default, never
-    /// written) or on `on` itself (log format 8).
+    /// written) or on `on` itself.
     #[serde(default, skip_serializing_if = "VerbScope::is_record")]
     pub scope: VerbScope,
     /// The payload's fields.

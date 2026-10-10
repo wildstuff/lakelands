@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use lakelands_api::engine::{EngineOpener, OpenMode};
-use lakelands_api::event::{Digest, EventBody, LOG_FORMAT_BASE};
+use lakelands_api::event::{Digest, EventBody, LOG_FORMAT_VERSION};
 use lakelands_api::ontology::{FieldDecl, TypeDecl};
 use lakelands_api::seam::{Seams, setting_type};
 use lakelands_api::write::Declaration;
@@ -52,7 +52,7 @@ async fn a_declaration_the_log_holds_is_folded_as_before_and_judged_when_declare
         let now = Timestamp(1_790_000_000_000_000);
         let bodies = vec![
             EventBody::LakeCreated {
-                format: LOG_FORMAT_BASE,
+                format: LOG_FORMAT_VERSION,
             },
             EventBody::LeaseTaken {
                 fence: lease.fence,

@@ -22,10 +22,10 @@ it, and carries no `output` (`docs/log-format.md` §2.5).
   the events that carry one, and its answers are what they were.
 - **One of the two members.** An `output_recorded` that carries both
   `output` and `output_at`, or neither, is refused when the log is read.
-- **Format 14.** The first append that holds an `output_at` carries
-  `v` 14 (`docs/log-format.md` §6); a reader below 14 refuses it rather
-  than filling a field from nothing. A lake whose fills each carry a new
-  output stays at the version it had.
+- **Format 14.** `output_at` is a new member, so the release that adds
+  it writes log format 14 (`docs/log-format.md` §6); a release that
+  reads another format refuses the lake rather than filling a field from
+  nothing.
 - **Every reader of the log may read the event named.** The event at
   `output_at` fills another record's field, or the same record's before.
   The feed is the log: it withholds no event for its reader's rights,
@@ -33,8 +33,7 @@ it, and carries no `output` (`docs/log-format.md` §2.5).
   it (`docs/decisions/037-the-feed-over-a-network-door.md`); an export
   holds every event (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`).
   So whoever may read the fill may read the output it names, by one read
-  of the log at `output_at`. A consumer whose own filter left that event
-  out of its polls reads the position without the filter.
+  of the log at `output_at`.
 
 This extends `docs/decisions/002-determinism-is-the-boundary.md` and
 `docs/decisions/022-functions-are-declarations.md`.
