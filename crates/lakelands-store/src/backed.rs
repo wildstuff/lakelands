@@ -1156,15 +1156,8 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
                 followed: None,
                 shown: None,
             };
-            drafts = call.reactions(
-                &w,
-                view.as_ref(),
-                &mut crate::writes::Pending::default(),
-                Some(&before),
-                &after,
-                at,
-                now,
-            )?;
+            let mut d = call.decide(&w, view.as_ref(), now, 0);
+            drafts = d.reactions(Some(&before), &after)?;
         }
     }
     drop(view);
