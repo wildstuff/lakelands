@@ -78,7 +78,7 @@ record that does not exist.
   cardinality names the other link's end only where its writer is
   answered that record, `restricted` judged as for any reader, and
   `ingest` judges a link's cardinality only once the record its writer
-  leaves is admitted, as the mock does: a link from another's record
+  leaves is admitted: a link from another's record
   answers as one from a free key, and a link a grant's `only` on the
   link type admits by its own fields holds the relation's cardinality
   as any other.

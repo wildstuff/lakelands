@@ -62,7 +62,7 @@ its own framing lines. What would otherwise tie a second implementation
 to the first one's wording is left free.
 
 (Superseded by "a refusal says a case" below: the case is the contract
-now, and the mock builds the store's cases.)
+now. The mock this paragraph names is retired, lakelands#800.)
 
 ## Extended: an outcome says what the write set off (lakelands#431)
 
@@ -115,7 +115,7 @@ holds it, which part of the log is damaged and how (a closed `Flaw`),
 which remote end failed and in what exchange, which seam and which name.
 
 - **One sentence source.** A case's sentence is its `Display`, and no
-  sentence is built anywhere else. The store, the engines, the mock, the
+  sentence is built anywhere else. The store, the engines, the
   backings and the client build the case. A door that advises what to do
   decides by the case, never by the words.
 - **On the wire** a case is an object: its `code`, its parameters, and
@@ -211,8 +211,8 @@ What part 1 did for an outage, part 2 does for every refusal of
   name or a value the caller gave, never words built elsewhere; the gate
   refuses a case built from `format!`. Foreign words are a `Detail`, as
   in part 1.
-- **The suite compares cases,** and the mock builds the store's: a door
-  check compares the two `Error`s whole. A row keeps words only where
+- **The suite compares cases:** a door check asserts the case a refusal
+  says, with its places and parameters. A row keeps words only where
   the words are its subject.
 - **What stays out of the catalog, and why.** Each of these is said to
   the operator who runs the tool, never answered by a lake to a caller:

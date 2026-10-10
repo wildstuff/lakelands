@@ -25,8 +25,8 @@ tower-service = "0.3"
 
 [dev-dependencies]
 lakelands-core.workspace = true
+lakelands-door-checks.workspace = true
 lakelands-engine-mem.workspace = true
-lakelands-mock.workspace = true
 lakelands-server = { path = "../lakelands-server" }
 lakelands-store.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "test-util"] }

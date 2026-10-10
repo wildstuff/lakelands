@@ -226,8 +226,8 @@ one of other dimensions it spent the call and was then refused.
   a vector field without `embed` it is refused as invalid on that field
   (`search_needs_vector`), whether or not a backend is bound: the fault
   is in the request read against the declaration, not in the host's
-  configuration, and the mock, which binds none, says the same. Its
-  writers chose the space; the search brings its own vector there.
+  configuration. Its writers chose the space; the search brings its own
+  vector there.
 - **Both come after the caller's rights and before any embedding
   call.** A hidden field answers as an absent one and a masked one as
   not granted, as lakelands#741 orders them; a refused search costs no

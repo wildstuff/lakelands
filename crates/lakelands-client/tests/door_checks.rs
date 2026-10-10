@@ -44,4 +44,4 @@ fn remote() -> Arc<dyn LakeStore> {
     Arc::new(common::remote(addr, store.lake(), keys))
 }
 
-lakelands_mock::door_checks!(remote, block_on, remote);
+lakelands_door_checks::door_checks!(remote, block_on, remote);

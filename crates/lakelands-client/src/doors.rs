@@ -822,7 +822,7 @@ mod tests {
     }
 
     fn importer() -> Principal {
-        lakelands_mock::checks::Cast::of(&"finance".into()).importer
+        lakelands_door_checks::checks::Cast::of(&"finance".into()).importer
     }
 
     fn record() -> SourceRecord {
@@ -967,7 +967,7 @@ mod tests {
             .ingest(&importer(), &"bank".into(), records)
             .await
             .expect("the ingest starts");
-        let out = lakelands_mock::stream::collect(&mut commits).await;
+        let out = lakelands_door_checks::stream::collect(&mut commits).await;
         let out = out.into_iter().map(|c| c.map(|c| c.records)).collect();
         (out, asked.elapsed())
     }
@@ -997,7 +997,7 @@ mod tests {
             // Nothing more is said, and the connection is held.
             tokio::time::sleep(SILENCE * 60).await;
         });
-        let (out, waited) = ingest(&lake, lakelands_mock::stream::of(vec![record()])).await;
+        let (out, waited) = ingest(&lake, lakelands_door_checks::stream::of(vec![record()])).await;
         let message = unavailable(&out);
         assert!(message.contains("after the records ended"), "{message}");
         assert_eq!(waited, SILENCE);
@@ -1038,7 +1038,7 @@ mod tests {
         });
         let records = match sending {
             true => Box::pin(Endless) as SourceStream,
-            false => lakelands_mock::stream::of(vec![record()]),
+            false => lakelands_door_checks::stream::of(vec![record()]),
         };
         let (out, waited) = ingest(&lake, records).await;
         let (message, said) = (
@@ -1251,7 +1251,7 @@ mod tests {
             drop(commits);
             // Until the connection has seen the answer end.
             tokio::time::sleep(ALIVE).await;
-            let (out, _) = ingest(&lake, lakelands_mock::stream::of(vec![record()])).await;
+            let (out, _) = ingest(&lake, lakelands_door_checks::stream::of(vec![record()])).await;
             assert_eq!(out, [Ok(1)]);
             let read = server.await.unwrap();
             assert!(

@@ -668,7 +668,7 @@ impl Migration {
     /// once, and no new name is a field `before` keeps. Otherwise the case
     /// that says why. Judged against an author's view of the type, a field
     /// it may not know of is no field to it (lakelands#750). It lives in
-    /// the contract so that the mock refuses the same.
+    /// the contract; the store and the core's conversion call it.
     pub fn renamed_fields(&self, before: &TypeDecl) -> Result<Vec<(&FieldName, &FieldName)>, Case> {
         let has = |t: &TypeDecl, n: &FieldName| t.fields.iter().any(|f| &f.name == n);
         let mut out: Vec<(&FieldName, &FieldName)> = Vec::new();
@@ -703,7 +703,7 @@ impl Migration {
     /// and changes none: the carrier, the target, the cardinality and, for
     /// a relation carried by link records, its fields and who writes them
     /// stay. Otherwise the case that says why, said at the rename. It
-    /// lives in the contract so that the mock refuses the same.
+    /// lives in the contract; the store is its one caller.
     pub fn renamed_relations<'a>(
         &'a self,
         before: &'a TypeDecl,
@@ -743,8 +743,8 @@ impl Migration {
     /// for [`MigrationReport::restated`]: the two compared member by member
     /// as they serialise, a field with the one it takes its values from, a
     /// relation with the one it is renamed from, a link field as
-    /// `relation.field`. It lives in the contract so that the mock reports
-    /// the same.
+    /// `relation.field`. It lives in the contract; the store is its one
+    /// caller.
     pub fn restated(&self, before: &TypeDecl) -> Vec<Restated> {
         let mut out = Vec::new();
         let own = ["name", "fields", "relations"];
@@ -908,7 +908,7 @@ impl ValueTypeMigration {
     /// `before` does not accept, a new one `to` does not, a value renamed
     /// to itself or twice. A merge, a chain and a swap are allowed, unlike
     /// a type's relation renames: each pair maps a value as it stood before.
-    /// Here so that the mock refuses the same; `accepts` is the caller's
+    /// The store is its one caller; `accepts` is the caller's
     /// check of a value.
     pub fn check_renames(
         &self,

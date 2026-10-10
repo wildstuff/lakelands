@@ -641,7 +641,7 @@ pub struct Hit {
 
 /// The score of a vector search: the cosine of the angle between two
 /// vectors of one length, computed in `f64`; 0 when either is all zeros.
-/// The store, every engine and the mock score with this one definition,
+/// Every engine scores with this one definition,
 /// so a ranking never depends on whose arithmetic made it.
 pub fn cosine(a: &[f32], b: &[f32]) -> f64 {
     let (mut dot, mut na, mut nb) = (0.0f64, 0.0f64, 0.0f64);

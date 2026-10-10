@@ -21,6 +21,6 @@ async fn main() -> std::io::Result<()> {
     };
     let opened = lakelands_store::open(Location::memory("finance"), seams, OpenMode::Create).await;
     let store: Arc<dyn LakeStore> = opened.map_err(std::io::Error::other)?;
-    let fixture = lakelands_mock::checks::setup(store.clone()).await;
+    let fixture = lakelands_door_checks::checks::setup(store.clone()).await;
     lakelands_server::serve_stdio(store, fixture.cast.owner).await
 }

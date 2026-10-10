@@ -4,7 +4,7 @@
 //! A key is its components joined by `:`, each component a key field's
 //! value in its JSON string form with `%` written `%25` and `:` written
 //! `%3A`. The rule is a pure function of the values, so the store, every
-//! engine, the mock and a host that mirrors records between lakes compute
+//! engine and a host that mirrors records between lakes compute
 //! the same key from the same values; this module is the one definition
 //! they all call.
 //!

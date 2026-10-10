@@ -4,8 +4,8 @@
 //! [`tools`] is a pure function of a [`LakeDescription`]. Because
 //! `describe` already answers as one principal may see the lake, the
 //! tools it yields — their names, and the JSON schemas in and out — are
-//! filtered by that principal's grants without a second rule. The mock,
-//! the store's catalog and every transport take names from here; the
+//! filtered by that principal's grants without a second rule. The
+//! store's catalog and every transport take names from here; the
 //! `single-catalog` gate refuses a tool name written anywhere else.
 //!
 //! Per type: `<type>_find`, `<type>_get`, `<type>_upsert`,

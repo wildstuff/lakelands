@@ -11,7 +11,7 @@ use lakelands_api::location::Limits;
 use lakelands_api::seam::Seams;
 use lakelands_api::{LakeId, LakeStore, Location, Principal};
 use lakelands_client::{ApiKey, RemoteConfig, RemoteLake};
-use lakelands_mock::checks::Cast;
+use lakelands_door_checks::checks::Cast;
 use lakelands_server::resolver::{Entry, StaticResolver};
 use lakelands_server::{HttpConfig, serve_http};
 

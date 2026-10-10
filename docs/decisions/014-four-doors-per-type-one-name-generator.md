@@ -36,8 +36,8 @@ lake offer over two hundred tools; four per type make it about eighty.
 Nothing is lost: every read the eight verbs did is a `find` with
 arguments.
 
-One generator is what keeps the doors honest with each other. The mock,
-the store's catalog, the MCP server and any other transport take names
+One generator is what keeps the doors honest with each other. The
+store's catalog, the MCP server and any other transport take names
 from the same function, so a tool cannot be named one way in a test and
 another in production, and the `single-catalog` gate can refuse a tool
 name written anywhere else. Deriving the tools from `describe` means

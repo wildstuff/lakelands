@@ -88,13 +88,13 @@ pub async fn lake_on(backend: Backend) -> Arc<dyn LakeStore> {
 /// The fixture lake with one invoice written, opened with these limits.
 pub async fn lake_with(backend: Backend, limits: Limits) -> Arc<dyn LakeStore> {
     let store = empty_with(backend, limits).await;
-    let f = lakelands_mock::checks::setup(store.clone()).await;
+    let f = lakelands_door_checks::checks::setup(store.clone()).await;
     let c = store.catalog(WriteContext::default());
     c.upsert(
         &f.cast.owner,
         &"invoice".into(),
         &"INV-1".into(),
-        lakelands_mock::checks::patch(&[("status", json!("open"))]),
+        lakelands_door_checks::checks::patch(&[("status", json!("open"))]),
         WriteOpts::default(),
     )
     .await

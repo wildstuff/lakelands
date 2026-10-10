@@ -2,7 +2,7 @@
 //! the contract's [`LakeStore`], [`Catalog`] and [`ChangeFeed`] for a
 //! caller that does not hold the lake itself.
 //!
-//! One contract, a third implementation beside the store and the mock:
+//! One contract, a second implementation beside the store:
 //! the door checks run unchanged against it, behind `serve_http` over a
 //! store. Each door is its REST route and nothing more; the client adds
 //! no semantics of its own.
