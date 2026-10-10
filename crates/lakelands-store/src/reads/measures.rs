@@ -18,7 +18,7 @@ use lakelands_api::record::StoredRecord;
 use lakelands_api::{Cursor, Params, RecordKey, RelationName, Result, Value};
 use lakelands_core::graph::{self, Components, Node};
 
-use super::{CursorState, Reader, Visible, encode, invalid};
+use super::{CursorState, Judged, Pulled, Reader, Visible, encode, invalid};
 
 /// The records a seed page reads at once.
 const PAGE: usize = 256;
@@ -66,8 +66,14 @@ pub(super) fn check(p: &Pattern) -> Result<()> {
 
 impl Reader<'_> {
     /// A measure's answer; the pattern has passed [`check`] and its steps
-    /// have been checked against the declarations.
-    pub(super) fn measure(&self, p: &Pattern, limit: usize) -> Result<QueryResult> {
+    /// have been checked against the declarations. A start by search
+    /// judges `carried`, or hands a pull back, as `search` does.
+    pub(super) fn measure(
+        &self,
+        p: &Pattern,
+        limit: usize,
+        carried: Option<Pulled>,
+    ) -> Result<Judged<QueryResult>> {
         let params = self.bound_params(&p.start.ty);
         let offset = super::offset(p.cursor.as_ref(), p, &params)?;
         let hidden = Visible { reader: self };
@@ -95,13 +101,16 @@ impl Reader<'_> {
                     }
                     Ok(())
                 };
-                self.seeds(p, |node| {
+                let moved = self.seeds(p, carried, |node| {
                     seeds.push(node);
                     if seeds.len() == graph::PAGE {
                         rank(&mut seeds)?;
                     }
                     Ok(())
                 })?;
+                if let Some(moved) = moved {
+                    return Ok(Err(moved));
+                }
                 rank(&mut seeds)?;
                 let ty = &p.start.ty;
                 best.into_sorted_vec()
@@ -120,7 +129,9 @@ impl Reader<'_> {
                     p.steps.iter().map(|s| s.relation.clone()).collect();
                 let mut found =
                     Components::new(&hidden, relations, self.lake.limits.max_graph_nodes);
-                self.seeds(p, |node| found.add(node))?;
+                if let Some(moved) = self.seeds(p, carried, |node| found.add(node))? {
+                    return Ok(Err(moved));
+                }
                 let mut all = Vec::new();
                 for (i, component) in found.finish().into_iter().enumerate() {
                     let size = component.len();
@@ -136,7 +147,7 @@ impl Reader<'_> {
                 all
             }
         };
-        Ok(self.rows_page(p, all, offset, limit, params))
+        Ok(Ok(self.rows_page(p, all, offset, limit, params)))
     }
 
     /// One page of a pattern's rows already in their order, and the cursor
@@ -170,24 +181,32 @@ impl Reader<'_> {
 
     /// Hands every seed of the pattern's start to `each`, in key order: the
     /// one record a key names, what a search finds, or the records a filter
-    /// (or none) selects, read a page at a time.
-    fn seeds(&self, p: &Pattern, mut each: impl FnMut(Node) -> Result<()>) -> Result<()> {
+    /// (or none) selects, read a page at a time. A search's pull read at
+    /// another position than the read's head is handed back, and no seed.
+    fn seeds(
+        &self,
+        p: &Pattern,
+        carried: Option<Pulled>,
+        mut each: impl FnMut(Node) -> Result<()>,
+    ) -> Result<Option<Pulled>> {
         let decl = self.named_type(&p.start.ty)?.clone();
         let ty = decl.name.clone();
         if let Some(key) = &p.start.key {
-            return if self.start_found(p, key)? {
-                each((ty, key.clone()))
-            } else {
-                Ok(())
-            };
+            if self.start_found(p, key)? {
+                each((ty, key.clone()))?;
+            }
+            return Ok(None);
         }
         if let Some(mode) = &p.start.search {
-            let mut keys = self.start_hits(p, mode)?;
+            let mut keys = match self.start_hits(p, mode, carried)? {
+                Ok(keys) => keys,
+                Err(moved) => return Ok(Some(moved)),
+            };
             keys.sort();
             for key in keys {
                 each((ty.clone(), key))?;
             }
-            return Ok(());
+            return Ok(None);
         }
         let filter = self.record_filter(
             &decl,
@@ -195,6 +214,7 @@ impl Reader<'_> {
             &[Place::Start, Place::Where],
         )?;
         let seed = |r: &StoredRecord| each((r.ty.clone(), r.key.clone()));
-        self.each_member(&decl, filter.as_ref(), PAGE, seed)
+        self.each_member(&decl, filter.as_ref(), PAGE, seed)?;
+        Ok(None)
     }
 }

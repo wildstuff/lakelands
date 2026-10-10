@@ -17,7 +17,7 @@ use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
-use lakelands_api::{FieldName, Position, RecordKey, RelationName, Result, TypeName, Value};
+use lakelands_api::{Position, RecordKey, RelationName, Result, TypeName, Value};
 use lakelands_core::engines as core_engines;
 
 use crate::lake::Lake;
@@ -284,16 +284,6 @@ impl ProjectionView for HeldNow<'_> {
         walk: Walk,
     ) -> Result<Vec<Vec<Edge>>> {
         self.then.edges(ty, keys, relation, walk)
-    }
-
-    fn lexical(
-        &self,
-        ty: &TypeName,
-        text: &str,
-        fields: Option<&[FieldName]>,
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>> {
-        self.then.lexical(ty, text, fields, k)
     }
 
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {

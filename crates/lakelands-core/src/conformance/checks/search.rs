@@ -394,7 +394,7 @@ async fn a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused(sto
 
 check!(
     SEARCH_FOLLOWS_TEXT = a_search_finds_a_record_by_its_current_text_and_nothing_by_none,
-    "025: the index follows every write, so a record is found by its new words and no longer by its old ones, and a query of no words matches nothing"
+    "025: the index follows every write, so a record is found by its new words and no longer by its old ones, and a query of no words matches nothing; as of an earlier position the words are the head's and the hits the records there then: one written since is none, and one retired since is no candidate"
 );
 
 check!(
@@ -431,20 +431,42 @@ async fn a_search_finds_a_record_by_its_current_text_and_nothing_by_none(store: 
     let l = articles(store.as_ref()).await?;
     l.upsert("article", "a", json!({"text": "harbour crane"}))
         .await?;
-    l.upsert("article", "a", json!({"text": "mountain goat"}))
-        .await?;
+    let goat = json!({"text": "mountain goat"});
+    l.upsert("article", "c", goat.clone()).await?;
+    let then = store.head().await.must("reading the head")?;
+    l.upsert("article", "a", goat.clone()).await?;
+    l.upsert("article", "b", goat).await?;
+    l.retire("article", "c").await?;
     let old = hits(store.as_ref(), "harbour").await?;
     let new = hits(store.as_ref(), "goat").await?;
     let none = hits(store.as_ref(), "").await?;
     ensure!(
-        keys(&old).is_empty() && keys(&new) == ["a"] && none.hits.is_empty(),
+        keys(&old).is_empty() && keys(&new) == ["a", "b"] && none.hits.is_empty(),
         "after `a` was rewritten from \"harbour crane\" to \"mountain goat\", \
-         \"harbour\" must find nothing ({:?}), \"goat\" must find `a` ({:?}), and an \
-         empty query nothing ({:?})",
+         \"harbour\" must find nothing ({:?}), \"goat\" must find `a` and `b` ({:?}), and \
+         an empty query nothing ({:?})",
         keys(&old),
         keys(&new),
         keys(&none)
     );
+    // As of the position before: ranked by the words at the head, kept
+    // where the record was there then.
+    for (text, want) in [("goat", &["a"][..]), ("harbour", &[])] {
+        let asked = Search {
+            at: read_at(Some(then)),
+            ..lexical(text)
+        };
+        let (cat, own) = (&l.cat, &l.own);
+        let got = cat.search(own, asked).await;
+        let got = got.must("searching as of the earlier position")?;
+        ensure!(
+            keys(&got.data) == want,
+            "as of the position before `a` was rewritten, `b` written and `c` retired, {text:?} \
+             found {:?}, not {want:?}: the words are the head's, `b` was not there then, and \
+             `c`, retired since, is no candidate",
+            keys(&got.data)
+        );
+    }
     Ok(())
 }
 

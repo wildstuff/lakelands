@@ -15,6 +15,7 @@ use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposalState, ProposedWrite};
 use lakelands_api::{Error, Refusal};
+use lakelands_core::conformance::engine::reads::{lexical, nearest};
 use serde_json::{Value, json};
 
 use super::*;
@@ -723,8 +724,7 @@ fn lexical_search_scores_matched_tokens_over_searchable_text() {
         held.restricted = true;
         p.put_record(&held).unwrap();
     });
-    let v = e.view(None).unwrap();
-    let hits = v.lexical(&"doc".into(), "invoice runs", None, 10).unwrap();
+    let hits = lexical(e.as_ref(), &"doc".into(), "invoice runs", None, 10).unwrap();
     assert_eq!(
         hits,
         vec![
@@ -736,13 +736,13 @@ fn lexical_search_scores_matched_tokens_over_searchable_text() {
         "a restricted record is a candidate; a retired one is not"
     );
     assert_eq!(
-        v.lexical(&"doc".into(), "invoice runs", None, 1)
+        lexical(e.as_ref(), &"doc".into(), "invoice runs", None, 1)
             .unwrap()
             .len(),
         1
     );
     assert!(
-        v.lexical(&"nope".into(), "invoice", None, 10)
+        lexical(e.as_ref(), &"nope".into(), "invoice", None, 10)
             .unwrap()
             .is_empty()
     );
@@ -843,11 +843,7 @@ fn the_vector_index_is_shared_by_every_handle_to_the_lake() {
         .unwrap()
         .put(&ty, &key, "emb", &[1.0, 0.0])
         .unwrap();
-    let hits = b
-        .vectors()
-        .unwrap()
-        .nearest(&ty, "emb", &[1.0, 0.0], 5)
-        .unwrap();
+    let hits = nearest(b.as_ref(), &ty, "emb", &[1.0, 0.0], 5).unwrap();
     assert_eq!(hits, vec![(key.clone(), 1.0)]);
     a.vectors().unwrap().remove(&ty, &key, "emb").unwrap();
     assert_eq!(b.vectors().unwrap().count(&ty, "emb").unwrap(), 0);

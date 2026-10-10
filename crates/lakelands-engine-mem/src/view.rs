@@ -264,31 +264,6 @@ impl ProjectionView for MemView {
         }))
     }
 
-    fn lexical(
-        &self,
-        ty: &TypeName,
-        text: &str,
-        fields: Option<&[FieldName]>,
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>> {
-        Ok(self.read(|p, at| {
-            // Ranked by the text at the head; kept when live and
-            // live at the view's position (`docs/seams.md`).
-            let Some(decl) = p.type_at(ty, p.folded) else {
-                return Vec::new();
-            };
-            let visible = |key: &RecordKey| {
-                engines::searchable(
-                    p.records
-                        .get(&(ty.clone(), key.clone()))
-                        .and_then(|h| h.at(at)),
-                )
-            };
-            let head = p.records_at(ty, p.folded).map(|r| (r, visible(&r.key)));
-            engines::lexical(decl, head, text, fields, k)
-        }))
-    }
-
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
         Ok(self.read(|p, at| {
             engines::proposals(p.proposals.values().filter_map(|h| h.at(at)), filter, |v| {

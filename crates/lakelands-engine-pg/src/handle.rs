@@ -33,7 +33,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use lakelands_api::engine::{
     Applied, CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
-    ProjectionView, Reclaimed, VectorIndex,
+    ProjectionView, Ranked, Rankings, Reclaimed, VectorIndex,
 };
 use lakelands_api::error::{Act, Case, Error, Part, Result, Situation};
 use lakelands_api::event::{Digest, SegmentDigest};
@@ -390,6 +390,58 @@ impl LakeEngine for PgLake {
         Ok(Box::new(PgView { lake: self, at }))
     }
 
+    /// One transaction's snapshot holds the position and every list. A
+    /// snapshot does not hold back a rebuild's `clear`, which drops the
+    /// tables and makes them again: the tables read here are taken in
+    /// `ACCESS SHARE` mode before the snapshot is, in the order `clear`
+    /// drops them, so a list is never an emptied table's under the
+    /// position read before it (`crate::view`).
+    fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked> {
+        let mut db = lock(&self.reader);
+        let read = |t: &&&str| match **t {
+            "vectors" => !asked.vectors.is_empty(),
+            "declarations" | "declarations_head" | "records" | "records_head" | "full_text" => {
+                asked.text.is_some()
+            }
+            _ => false,
+        };
+        let tables: Vec<String> = PROJECTION_TABLES
+            .iter()
+            .filter(read)
+            .map(|t| self.names.t(t))
+            .collect();
+        let lock = match tables.is_empty() {
+            true => String::new(),
+            false => format!("LOCK TABLE {} IN ACCESS SHARE MODE; ", tables.join(", ")),
+        };
+        let folded = db.simple(&format!(
+            "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; {lock}\
+             SELECT n FROM {} WHERE k = 'folded'",
+            self.names.t("meta")
+        ));
+        let ranked = folded.and_then(|folded| {
+            let folded = folded.into_iter().flatten().next();
+            let position = folded.and_then(|f| f.parse().ok()).map(Position);
+            let mut lists = Vec::new();
+            if let Some((text, fields)) = &asked.text {
+                let fields = fields.as_deref();
+                lists.push(crate::view::lexical(
+                    &mut db,
+                    &self.names,
+                    ty,
+                    text,
+                    fields,
+                    k,
+                )?);
+            }
+            for (field, query) in &asked.vectors {
+                lists.push(self.nearest(&mut db, ty, field, query, k)?);
+            }
+            Ok(Ranked { position, lists })
+        });
+        db.end(ranked)
+    }
+
     fn vectors(&self) -> Option<&dyn VectorIndex> {
         Some(self)
     }
@@ -605,16 +657,64 @@ fn size(db: &mut Db, schema: &str, tables: &[&str]) -> Result<u64> {
     Ok(row.get::<_, i64>(0) as u64)
 }
 
-/// The vector index: each field's vectors in one table, searched by brute
-/// force with the one cosine every engine uses
-/// (`lakelands_api::query::cosine`), so its answers are those of every
-/// other engine to the last bit. A query streams every vector of the
-/// field from the server a row at a time and keeps only the best `k`
-/// (`lakelands_core::engines::TopK`), so its cost grows linearly with them
-/// and what it holds does not: the ceiling `docs/seams.md` states.
-/// Vectors are indexed at the head only, in the fold's
-/// transaction; filtering the candidates by what an earlier view could see
-/// is the store's.
+impl PgLake {
+    /// The `k` vectors of one field nearest to `query`, read through `db`
+    /// in its open transaction, by brute force with the one cosine every
+    /// engine uses (`lakelands_api::query::cosine`), so its answers are
+    /// those of every other engine to the last bit. It streams every
+    /// vector of the field from the server a row at a time and keeps only
+    /// the best `k` (`lakelands_core::engines::TopK`), so its cost grows
+    /// linearly with them and what it holds does not: the ceiling
+    /// `docs/seams.md` states.
+    fn nearest(
+        &self,
+        db: &mut Db,
+        ty: &TypeName,
+        field: &str,
+        query: &[f32],
+        k: u32,
+    ) -> Result<Vec<(RecordKey, f64)>> {
+        let mut top = lakelands_core::engines::TopK::new(k);
+        // The exact scan checks every vector's dimensions; the index holds
+        // only vectors of the query's.
+        let mut rank = |row: &postgres::Row, exact: bool| {
+            let key: String = row.get(0);
+            let v = vector_of(&row.get::<_, Vec<u8>>(1));
+            if exact && v.len() != query.len() {
+                return Err(engines::dimensions(query.len(), v.len(), ty, field));
+            }
+            top.push(&RecordKey::from(key), cosine(query, &v));
+            Ok(())
+        };
+        // A field the lake asks an index for, whose index describes the
+        // head, answers the index's `k` candidates, ranked by the one
+        // cosine (`crate::vector_index`); every other search scans. The
+        // index's settings end with its statement: the transaction reads
+        // other lists.
+        if let (Some(v), Some(unit)) = (&self.pgvector, vector_index::unit_text(query))
+            && let Some(n) = vector_index::usable(db, &self.names, ty, field)?
+            && n as usize == query.len()
+        {
+            let sql = vector_index::candidates_sql(&self.names, v, ty, field, n);
+            db.batch(&vector_index::search_settings(k))?;
+            db.query_each(&sql, &[&unit, &i64::from(k)], |row| rank(row, false))?;
+            db.batch("SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on")?;
+            return Ok(top.into_ranked());
+        }
+        db.query_each(
+            &format!(
+                "SELECT key, data FROM {} WHERE ty = $1 AND field = $2 ORDER BY key COLLATE \"C\"",
+                self.names.t("vectors")
+            ),
+            &[&ty.as_str(), &field],
+            |row| rank(row, true),
+        )?;
+        Ok(top.into_ranked())
+    }
+}
+
+/// The vector index's write side and its size: each field's vectors in
+/// one table, indexed at the head only, in the fold's transaction.
 impl VectorIndex for PgLake {
     fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()> {
         let writing = self.writing()?;
@@ -653,51 +753,6 @@ impl VectorIndex for PgLake {
             ),
             &[&ty.as_str(), &field, &key.as_str()],
         )
-    }
-
-    fn nearest(
-        &self,
-        ty: &TypeName,
-        field: &str,
-        query: &[f32],
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>> {
-        let mut top = lakelands_core::engines::TopK::new(k);
-        // The exact scan checks every vector's dimensions; the index holds
-        // only vectors of the query's.
-        let mut rank = |row: &postgres::Row, exact: bool| {
-            let key: String = row.get(0);
-            let v = vector_of(&row.get::<_, Vec<u8>>(1));
-            if exact && v.len() != query.len() {
-                return Err(engines::dimensions(query.len(), v.len(), ty, field));
-            }
-            top.push(&RecordKey::from(key), cosine(query, &v));
-            Ok(())
-        };
-        let mut db = lock(&self.reader);
-        // A field the lake asks an index for, whose index describes the
-        // head, answers the index's `k` candidates, ranked by the one
-        // cosine (`crate::vector_index`); every other search scans.
-        if let (Some(v), Some(unit)) = (&self.pgvector, vector_index::unit_text(query))
-            && let Some(n) = vector_index::usable(&mut db, &self.names, ty, field)?
-            && n as usize == query.len()
-        {
-            let sql = vector_index::candidates_sql(&self.names, v, ty, field, n);
-            db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY", |db| {
-                db.batch(&vector_index::search_settings(k))?;
-                db.query_each(&sql, &[&unit, &i64::from(k)], |row| rank(row, false))
-            })?;
-            return Ok(top.into_ranked());
-        }
-        db.query_each(
-            &format!(
-                "SELECT key, data FROM {} WHERE ty = $1 AND field = $2 ORDER BY key COLLATE \"C\"",
-                self.names.t("vectors")
-            ),
-            &[&ty.as_str(), &field],
-            |row| rank(row, true),
-        )?;
-        Ok(top.into_ranked())
     }
 
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64> {

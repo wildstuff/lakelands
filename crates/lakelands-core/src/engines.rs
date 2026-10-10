@@ -1071,20 +1071,21 @@ fn field_tokens(
         .collect()
 }
 
-/// Full-text hits, as `docs/seams.md` §`lexical` defines them: the
+/// Full-text hits, as `docs/seams.md` §`ranked` defines them: the
 /// records of one type as they stand at the head, `decl` the type's
-/// declaration there, are hits when their searchable text holds a query
-/// token — the text of the searchable fields `fields` names, when it
-/// names any; each comes with whether it is live at the view's own
-/// position, and only those are kept. A hit scores the distinct query
-/// tokens its head text holds; best first, ties by key, at most `k`.
+/// declaration there, are hits when they are live and their searchable
+/// text holds a query token — the text of the searchable fields `fields`
+/// names, when it names any. A restricted record is a candidate like any
+/// other; whether a principal may see it is the store's, as for `find`
+/// and `get`. A hit scores the distinct query tokens its text holds;
+/// best first, ties by key, at most `k`.
 ///
 /// An engine may hand in any superset of the hits as `head`: a record
 /// whose named fields hold no query token scores nothing and is dropped
 /// here, before the ranking is cut at `k`.
 pub fn lexical<'a>(
     decl: &TypeDecl,
-    head: impl IntoIterator<Item = (&'a StoredRecord, bool)>,
+    head: impl IntoIterator<Item = &'a StoredRecord>,
     text: &str,
     fields: Option<&[FieldName]>,
     k: u32,
@@ -1092,20 +1093,13 @@ pub fn lexical<'a>(
     let query = tokens(text, decl.language.as_deref().unwrap_or(""));
     let mut hits: Vec<(RecordKey, f64)> = head
         .into_iter()
-        .filter_map(|(r, live)| {
+        .filter_map(|r| {
             let score = query.intersection(&field_tokens(decl, r, fields)).count();
-            (score > 0 && live).then(|| (r.key.clone(), score as f64))
+            (score > 0 && !r.retired).then(|| (r.key.clone(), score as f64))
         })
         .collect();
     rank(&mut hits, k);
     hits
-}
-
-/// Whether a record's state is live: what `lexical` keeps at a view's
-/// position. A restricted record is a candidate like any other; whether a
-/// principal may see it is the store's, as for `find` and `get`.
-pub fn searchable(state: Option<&StoredRecord>) -> bool {
-    state.is_some_and(|r| !r.retired)
 }
 
 /// Why an event may not be added to a log, as far as its fence goes

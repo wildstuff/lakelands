@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use lakelands_api::engine::{
     Applied, CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
-    ProjectionView, Reclaimed, VectorIndex,
+    ProjectionView, Ranked, Rankings, Reclaimed, VectorIndex,
 };
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, SegmentDigest};
@@ -404,6 +404,24 @@ impl LakeEngine for SqliteLake {
         Ok(Box::new(SqliteView { lake: self, at }))
     }
 
+    /// One read transaction holds the position and every list.
+    fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked> {
+        let conn = lock(&self.reader);
+        conn.execute_batch("BEGIN").map_err(sql)?;
+        let ranked = projection::folded(&conn).and_then(|position| {
+            let mut lists = Vec::new();
+            if let Some((text, fields)) = &asked.text {
+                lists.push(crate::view::lexical(&conn, ty, text, fields.as_deref(), k)?);
+            }
+            for (field, query) in &asked.vectors {
+                lists.push(nearest(&conn, ty, field, query, k)?);
+            }
+            Ok(Ranked { position, lists })
+        });
+        let _ = conn.execute_batch("COMMIT");
+        ranked
+    }
+
     fn vectors(&self) -> Option<&dyn VectorIndex> {
         Some(self)
     }
@@ -605,15 +623,45 @@ fn truncate_journal(conn: &Connection) -> Result<bool> {
     Ok(busy == 0)
 }
 
-/// The vector index: each field's vectors in one table, searched by
-/// brute force with the one cosine every engine uses
+/// The `k` vectors of one field nearest to `query`, read through `conn`,
+/// by brute force with the one cosine every engine uses
 /// (`lakelands_api::query::cosine`), so its answers are those of every
-/// other engine to the last bit. A query steps through every vector of
-/// the field and keeps only the best `k`
-/// (`lakelands_core::engines::TopK`), so its cost grows linearly with them
-/// and what it holds does not: the ceiling `docs/seams.md` states.
-/// Vectors are indexed at the head only; filtering the candidates by what
-/// an earlier view could see is the store's.
+/// other engine to the last bit. It steps through every vector of the
+/// field and keeps only the best `k` (`lakelands_core::engines::TopK`), so
+/// its cost grows linearly with them and what it holds does not: the
+/// ceiling `docs/seams.md` states.
+fn nearest(
+    conn: &Connection,
+    ty: &TypeName,
+    field: &str,
+    query: &[f32],
+    k: u32,
+) -> Result<Vec<(RecordKey, f64)>> {
+    let mut stmt = conn
+        .prepare_cached("SELECT key, data FROM vectors WHERE ty = ?1 AND field = ?2 ORDER BY key")
+        .map_err(sql)?;
+    let rows = stmt
+        .query_map(params![ty.as_str(), field], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })
+        .map_err(sql)?;
+    let mut top = lakelands_core::engines::TopK::new(k);
+    for row in rows {
+        let (key, data) = row.map_err(sql)?;
+        let v = vector_of(&data);
+        if v.len() != query.len() {
+            return Err(engines::dimensions(query.len(), v.len(), ty, field));
+        }
+        top.push(
+            &RecordKey::from(key),
+            lakelands_api::query::cosine(query, &v),
+        );
+    }
+    Ok(top.into_ranked())
+}
+
+/// The vector index's write side and its size: each field's vectors in
+/// one table, indexed at the head only, in the fold's transaction.
 impl VectorIndex for SqliteLake {
     fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()> {
         self.write(|conn| {
@@ -633,39 +681,6 @@ impl VectorIndex for SqliteLake {
                 .map(|_| ())
                 .map_err(sql)
         })
-    }
-
-    fn nearest(
-        &self,
-        ty: &TypeName,
-        field: &str,
-        query: &[f32],
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>> {
-        let conn = lock(&self.reader);
-        let mut stmt = conn
-            .prepare_cached(
-                "SELECT key, data FROM vectors WHERE ty = ?1 AND field = ?2 ORDER BY key",
-            )
-            .map_err(sql)?;
-        let rows = stmt
-            .query_map(params![ty.as_str(), field], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
-            })
-            .map_err(sql)?;
-        let mut top = lakelands_core::engines::TopK::new(k);
-        for row in rows {
-            let (key, data) = row.map_err(sql)?;
-            let v = vector_of(&data);
-            if v.len() != query.len() {
-                return Err(engines::dimensions(query.len(), v.len(), ty, field));
-            }
-            top.push(
-                &RecordKey::from(key),
-                lakelands_api::query::cosine(query, &v),
-            );
-        }
-        Ok(top.into_ranked())
     }
 
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64> {

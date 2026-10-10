@@ -50,7 +50,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use lakelands_api::describe::{Kept, LakeDescription, NotKept, TypeDescription};
-use lakelands_api::engine::{After, ProjectionView, Scan};
+use lakelands_api::engine::{After, ProjectionView, Ranked, Rankings, Scan};
 use lakelands_api::error::{Case, Names, Naming, Place, Said};
 use lakelands_api::expr::{CmpOp, Expr, Func, Literal};
 use lakelands_api::ontology::{
@@ -127,11 +127,13 @@ pub(crate) use held::HeldNow;
 /// head would be in one and not in the other's moves, and a held record
 /// would be judged by another's hold.
 ///
-/// The vector index is not a view: `nearest` reads it as it stands when it
-/// is asked. A re-key that lands after this head was read moves vectors
-/// that `since` does not know of, so that one search may miss a record it
-/// moved or rank it under its old key; the read still judges each hit at
-/// its position.
+/// The indexes are not a view: the engine reads the text and the vectors
+/// as they stand when it is asked, and says the position they stood at
+/// ([`Pulled`]). A search's head is that position, at the head and as of
+/// an earlier one alike. A head taken before the rankings were read would
+/// not know a write that landed in between: a re-key's moves, so that a
+/// visible record bore a held record's score, or a hold, so that a record
+/// was ranked by a text its reader may not read (lakelands#826).
 pub struct Head<'a> {
     /// The projection at the head.
     view: Rc<dyn ProjectionView + 'a>,
@@ -144,9 +146,15 @@ pub struct Head<'a> {
 }
 
 impl<'a> Head<'a> {
-    /// The head of `lake` for `who`, as unfollowed, reading as of `at`.
-    pub fn new(lake: &'a Lake, who: &Principal, at: Position) -> Result<Head<'a>> {
-        let view: Rc<dyn ProjectionView + 'a> = Rc::from(lake.engine.view(None)?);
+    /// The head of `lake` for `who`, as unfollowed, reading as of `at`: as
+    /// it stands, or at exactly the position `head`.
+    pub fn new(
+        lake: &'a Lake,
+        who: &Principal,
+        at: Position,
+        head: Option<Position>,
+    ) -> Result<Head<'a>> {
+        let view: Rc<dyn ProjectionView + 'a> = Rc::from(lake.engine.view(head)?);
         let shape = lake.shape(view.as_ref())?;
         let (who, _) = lake.followed(who.clone(), None, Some(&shape.renames))?;
         let who = Lake::hidden(who, &shape.ontology).0;
@@ -159,6 +167,28 @@ impl<'a> Head<'a> {
         })
     }
 }
+
+/// One pull of a search's rankings, as the engine answered it: what was
+/// asked, under the head's names and to which depth, and the lists with
+/// the position they were read at.
+pub struct Pulled {
+    ty: TypeName,
+    asked: Rankings,
+    k: u32,
+    ranked: Ranked,
+}
+
+impl Pulled {
+    /// The position the lists were read at.
+    pub fn position(&self) -> Option<Position> {
+        self.ranked.position
+    }
+}
+
+/// What a read that ranks answers: its answer, or a pull read at another
+/// position than the head the read was given, which the door makes the
+/// read again for (`Doors::read_to`).
+pub type Judged<T> = std::result::Result<T, Pulled>;
 
 /// A view's parameters as one read binds them: as given, in canonical
 /// form, and as the literals `param()` is replaced by.
@@ -174,9 +204,9 @@ type Source = (aggregate::Grouping, Vec<(FieldName, Expr)>);
 /// A row's sort values and its tiebreak.
 type SortKey = (Vec<Value>, RecordKey);
 
-/// One ranked list of a search, read to the depth it is given: the
-/// candidates best first, with their scores.
-type Ranking<'a> = Box<dyn Fn(u32) -> Result<Vec<(RecordKey, f64)>> + 'a>;
+/// One ranked list of a search: the candidates best first, with their
+/// scores.
+type Ranking = Vec<(RecordKey, f64)>;
 
 /// A search as judged: its type, the fields its text is matched in if it
 /// names them, its `where`, and its rankings as the head declares them.
@@ -2347,8 +2377,9 @@ impl<'a> Reader<'a> {
         Ok(Ranks { ty, decl, fields })
     }
 
-    /// `search`.
-    pub fn search(&self, s: &Search) -> Result<Hits> {
+    /// `search`, `carried` the pull the door made this read for, if it did:
+    /// it is judged here, at the position it was read at.
+    pub fn search(&self, s: &Search, mut carried: Option<Pulled>) -> Result<Judged<Hits>> {
         let (decl, text_fields, filter, ranks) = self.searched(s)?;
         let vectors = s.mode.vectors();
         let vector_fields: Vec<&FieldName> = vectors.iter().map(|v| v.0).collect();
@@ -2381,23 +2412,6 @@ impl<'a> Reader<'a> {
         let k = s.k.max(1) as usize;
         // One more than the page, to know whether a next page exists.
         let want = offset + k + 1;
-        // The engines are asked under the head's names, and before the head
-        // the text is ranked as the head holds it, as the vectors are; a
-        // ranking over no field the head shows the reader has no candidate.
-        let lexical = |text: &str, pull: u32| match (text_fields, &self.head) {
-            (Some([]), _) => Ok(Vec::new()),
-            (fields, Some(h)) => h.view.lexical(&ranks.ty, text, fields, pull),
-            (fields, None) => self.view.lexical(&ranks.ty, text, fields, pull),
-        };
-        let vector = |field: &FieldName, v: &[f32], pull: u32| -> Result<Vec<(RecordKey, f64)>> {
-            let Some(field) = ranks.fields.get(field) else {
-                return Ok(Vec::new());
-            };
-            match self.lake.engine.vectors() {
-                Some(index) => index.nearest(&ranks.ty, field.name.as_str(), v, pull),
-                None => Err(Error::unbound(lakelands_api::error::Seam::VectorIndex)),
-            }
-        };
         // A search without a query vector ranks its text alone; one over
         // several vector fields answers an index's set when any of them is
         // asked for an index.
@@ -2423,10 +2437,15 @@ impl<'a> Reader<'a> {
             (SearchMode::Vector { .. }, false) => "vector",
         }
         .to_owned();
-        // The rankings a search fuses, each with its weight, in the order
-        // they are summed (046): a hybrid search's text, then each vector
-        // field. A search of one ranking fuses nothing.
-        let mut lists: Vec<(f64, Ranking<'_>)> = Vec::new();
+        // The rankings a search reads, each with its weight, in the order
+        // they are summed (046): its text, then each vector field; a search
+        // of one ranking fuses nothing, and its axis is listed without a
+        // count, since it reads no further than its page (lakelands#560).
+        // The engine is asked for all of them at once, under the head's
+        // names, and before the head the text is ranked as the head holds
+        // it, as the vectors are; a ranking over no field the head shows
+        // the reader has no candidate, and is not asked.
+        let (mut asked, mut lists, mut axes) = (Rankings::default(), Vec::new(), Vec::new());
         let axis = |field: Option<&FieldName>| Axis {
             axis: (if field.is_some() { "vector" } else { "lexical" }).into(),
             field: field.cloned(),
@@ -2439,61 +2458,73 @@ impl<'a> Reader<'a> {
         let key = format!("{}{}", lakelands_api::seam::SEARCH_WEIGHTS_SETTING, s.ty);
         let (field_weights, text_default) =
             lakelands_api::seam::search_weights(self.shape.settings.get(&key));
-        let mut axes = Vec::new();
-        if let (
-            SearchMode::Hybrid {
-                text, text_weight, ..
-            },
-            false,
-        ) = (&s.mode, by_text)
-        {
-            lists.push((
-                text_weight.or(text_default).unwrap_or(1.0),
-                Box::new(move |pull| lexical(text, pull)),
-            ));
+        if let SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. } = &s.mode {
+            let weight = match &s.mode {
+                SearchMode::Hybrid { text_weight, .. } => text_weight.or(text_default),
+                _ => None,
+            };
+            let ranked = text_fields != Some(&[]);
+            if ranked {
+                asked.text = Some((text.clone(), text_fields.map(<[FieldName]>::to_vec)));
+            }
+            lists.push((weight.unwrap_or(1.0), ranked));
             axes.push(axis(None));
         }
         for (field, v, weight) in vectors.iter().filter(|_| !by_text) {
             let set = || field_weights.get(field.as_str()).copied();
-            lists.push((
-                weight.or_else(set).unwrap_or(1.0),
-                Box::new(move |pull| vector(field, v, pull)),
-            ));
+            let at_head = ranks.fields.get(*field);
+            asked
+                .vectors
+                .extend(at_head.map(|f| (f.name.to_string(), v.to_vec())));
+            lists.push((weight.or_else(set).unwrap_or(1.0), at_head.is_some()));
             axes.push(axis(Some(field)));
         }
-        let hits = match &s.mode {
-            _ if lists.len() > 1 => {
-                let (hits, counts) =
-                    self.fused(&decl, &ranks.ty, filter.as_ref(), &lists, want, s.with_meta)?;
-                for ((a, n), (w, _)) in axes.iter_mut().zip(counts).zip(&lists) {
-                    (a.candidates, a.weight) = (Some(n), Some(*w));
-                }
-                hits
-            }
-            mode => {
-                // Candidates are pulled in growing batches until the page and
-                // one more are visible, or the engine has no more: a filter,
-                // `valid_at` or the grants never shorten a page silently.
-                let mut pull = u32::try_from(want.saturating_mul(4).max(64)).unwrap_or(u32::MAX);
-                loop {
-                    let ranked = match mode {
-                        SearchMode::Vector {
-                            field, vector: v, ..
-                        } => vector(field, v, pull)?,
-                        SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. } => {
-                            lexical(text, pull)?
-                        }
-                    };
-                    let exhausted = ranked.len() < pull as usize;
-                    let ranked = self.keyed_then(&ranks.ty, ranked);
-                    let hits = self.visible_hits(&decl, filter.as_ref(), ranked, s.with_meta)?;
-                    if hits.len() >= want || exhausted || pull == u32::MAX {
-                        break hits;
-                    }
-                    pull = pull.saturating_mul(4);
-                }
-            }
+        // Candidates are pulled in growing batches until the page and one
+        // more are visible, or the engine has no more: a filter, `valid_at`
+        // or the grants never shorten a page silently. A list read is a
+        // scan of its index whatever it is asked for, so a fused search's
+        // first pull asks for the whole window at once. Each pull stands
+        // alone: a page is judged from one pull, at the position it was read
+        // at, and a read made again for a pull goes on from its depth.
+        let fuses = lists.len() > 1;
+        let first = if fuses {
+            self.lake.limits.max_limit as usize
+        } else {
+            64
         };
+        let mut pull = u32::try_from(want.saturating_mul(4).max(first)).unwrap_or(u32::MAX);
+        pull = pull.max(carried.as_ref().map_or(0, |p| p.k));
+        let (hits, counts) = loop {
+            let mut read = match self.pull(&ranks.ty, &asked, pull, &mut carried)? {
+                Ok(read) => read.into_iter(),
+                Err(moved) => return Ok(Err(moved)),
+            };
+            let mut pulled: Vec<(f64, Ranking)> = (lists.iter())
+                .map(|(w, ranked)| {
+                    (
+                        *w,
+                        ranked.then(|| read.next()).flatten().unwrap_or_default(),
+                    )
+                })
+                .collect();
+            let filter = filter.as_ref();
+            let done = if fuses {
+                self.fused(&decl, &ranks.ty, filter, pulled, pull, want, s.with_meta)?
+            } else {
+                let ranked = pulled.pop().map_or_else(Vec::new, |l| l.1);
+                let exhausted = ranked.len() < pull as usize;
+                let ranked = self.keyed_then(&ranks.ty, ranked);
+                let hits = self.visible_hits(&decl, filter, ranked, s.with_meta)?;
+                (hits.len() >= want || exhausted || pull == u32::MAX).then(|| (hits, Vec::new()))
+            };
+            if let Some(done) = done {
+                break done;
+            }
+            pull = pull.saturating_mul(4);
+        };
+        for ((a, n), (w, _)) in axes.iter_mut().zip(counts).zip(&lists) {
+            (a.candidates, a.weight) = (Some(n), Some(*w));
+        }
         let more = hits.len() > offset + k;
         let page: Vec<Hit> = hits.into_iter().skip(offset).take(k).collect();
         let next_cursor = more.then(|| {
@@ -2507,44 +2538,72 @@ impl<'a> Reader<'a> {
                 of: search_read,
             })
         });
-        // A lexical search, and a hybrid one that fell back to its text,
-        // rank by the text alone: its axis is listed without a count, since
-        // it reads no further than its page (lakelands#560).
-        if axes.is_empty() {
-            axes.push(axis(vectors.first().map(|v| v.0).filter(|_| !by_text)));
-        }
-        Ok(Hits {
+        Ok(Ok(Hits {
             hits: page,
             ranked_by,
             next_cursor,
             axes,
+        }))
+    }
+
+    /// The lists of one pull to the depth `k`, as the engine ranks `asked`
+    /// under the head's name `ty`, all from one state: `carried`'s, where
+    /// the door made this read for them and it asks the same. They are
+    /// handed back unjudged where they were read at another position than
+    /// this read's head: a write landed since it was taken.
+    fn pull(
+        &self,
+        ty: &TypeName,
+        asked: &Rankings,
+        k: u32,
+        carried: &mut Option<Pulled>,
+    ) -> Result<Judged<Vec<Ranking>>> {
+        if *asked == Rankings::default() {
+            return Ok(Ok(Vec::new()));
+        }
+        let head = (self.head.as_ref()).map_or(self.view.position(), |h| h.view.position());
+        let same = |p: &Pulled| (&p.ty, &p.asked, p.k, p.position()) == (ty, asked, k, head);
+        let pulled = match carried.take().filter(same) {
+            Some(pulled) => pulled,
+            None if !asked.vectors.is_empty() && self.lake.engine.vectors().is_none() => {
+                return Err(Error::unbound(lakelands_api::error::Seam::VectorIndex));
+            }
+            None => Pulled {
+                ty: ty.clone(),
+                asked: asked.clone(),
+                k,
+                ranked: self.lake.engine.ranked(ty, asked, k)?,
+            },
+        };
+        Ok(match pulled.position() == head {
+            true => Ok(pulled.ranked.lists),
+            false => Err(pulled),
         })
     }
 
     /// A fused search's hits: its lists fused by weighted reciprocal rank
     /// ([`fuse`]), each ranked among the hits this read may see and to the
     /// lake's `max_limit` of them, so a record the read may not see moves
-    /// no score and every page reads one ranking (046). The lists
-    /// are pulled in growing batches until the first `want` fused hits and
-    /// their scores can no longer change, and each list is whole or holds
-    /// its window, so that its count, answered beside the hits, is the
-    /// same on every page.
+    /// no score and every page reads one ranking (046). `lists`
+    /// are one pull to the depth `pull`; none is answered until the first
+    /// `want` fused hits and their scores can no longer change, and each
+    /// list is whole or holds its window, so that its count, answered
+    /// beside the hits, is the same on every page: the search pulls again.
+    #[allow(clippy::too_many_arguments)]
     fn fused(
         &self,
         decl: &TypeDecl,
         named: &TypeName,
         filter: Option<&Expr>,
-        lists: &[(f64, Ranking<'_>)],
+        lists: Vec<(f64, Ranking)>,
+        pull: u32,
         want: usize,
         with_meta: bool,
-    ) -> Result<(Vec<Hit>, Vec<u64>)> {
+    ) -> Result<Option<(Vec<Hit>, Vec<u64>)>> {
         let window = self.lake.limits.max_limit as usize;
-        // A list read is a scan of its index whatever it is asked for, so
-        // the first asks for the whole window at once.
-        let mut pull = u32::try_from(want.saturating_mul(4).max(window)).unwrap_or(u32::MAX);
         // At the head, a read that sees every live record and narrows by
         // nothing sees every candidate an engine ranks, so it reads no
-        // record to rank them. That rests on two seam facts: `lexical`
+        // record to rank them. That rests on two seam facts: `ranked`
         // ranks live records only, restricted ones included (the engine
         // seam's `LEXICAL_HITS`), and the fold takes a retired record's
         // vectors out of the index, which is kept at the head (the suite's
@@ -2555,13 +2614,12 @@ impl<'a> Reader<'a> {
             && self.who.grants.restricted
             && filter.is_none()
             && !self.timed(decl);
-        loop {
+        {
             // Each list's visible candidates to the window, and what a
             // record it has not ranked yet could still gain from it:
             // nothing once the list is whole or its window full.
             let (mut keyed, mut gain, mut counted) = (Vec::new(), Vec::new(), true);
-            for (weight, list) in lists {
-                let candidates = list(pull)?;
+            for (weight, candidates) in lists {
                 let whole = candidates.len() < pull as usize;
                 let mut seen: Vec<(RecordKey, f64)> = if open {
                     candidates
@@ -2580,7 +2638,7 @@ impl<'a> Reader<'a> {
                 } else {
                     weight / (60.0 + seen.len() as f64)
                 });
-                keyed.push((*weight, seen));
+                keyed.push((weight, seen));
             }
             let fused = fuse(&keyed);
             let ranked: Vec<BTreeSet<&RecordKey>> = (keyed.iter())
@@ -2607,12 +2665,13 @@ impl<'a> Reader<'a> {
                         })
                 }
             };
-            if settled && counted {
-                let counts = keyed.iter().map(|(_, l)| l.len() as u64).collect();
-                let first = fused.into_iter().take(want).collect();
-                return Ok((self.visible_hits(decl, filter, first, with_meta)?, counts));
+            if !(settled && counted) {
+                return Ok(None);
             }
-            pull = pull.saturating_mul(4);
+            let counts = keyed.iter().map(|(_, l)| l.len() as u64).collect();
+            let first = fused.into_iter().take(want).collect();
+            let hits = self.visible_hits(decl, filter, first, with_meta)?;
+            Ok(Some((hits, counts)))
         }
     }
 
@@ -2750,7 +2809,7 @@ impl<'a> Reader<'a> {
     }
 
     /// `query`: the one pattern query.
-    pub fn query(&self, p: &Pattern) -> Result<QueryResult> {
+    pub fn query(&self, p: &Pattern, carried: Option<Pulled>) -> Result<Judged<QueryResult>> {
         // Its steps as declared: a step naming an inverse is rewritten below.
         let mut p = p.clone();
         let p = &mut p;
@@ -2860,7 +2919,7 @@ impl<'a> Reader<'a> {
             types.push(reached);
         }
         if measure {
-            return self.measure(p, limit);
+            return self.measure(p, limit, carried);
         }
         if p.to.is_some() && chain {
             return Err(invalid(Case::PatternToChain));
@@ -2892,7 +2951,10 @@ impl<'a> Reader<'a> {
                 Vec::new()
             }
         } else if let Some(mode) = &p.start.search {
-            let keys = self.start_hits(p, mode)?;
+            let keys = match self.start_hits(p, mode, carried)? {
+                Ok(keys) => keys,
+                Err(moved) => return Ok(Err(moved)),
+            };
             let held = keys
                 .iter()
                 .filter_map(|k| self.view.get(&p.start.ty, k).ok().flatten());
@@ -2920,7 +2982,7 @@ impl<'a> Reader<'a> {
                     return Err(invalid(Case::PathStarts { count }));
                 }
             };
-            return self.graph_result(nodes, edges, None);
+            return self.graph_result(nodes, edges, None).map(Ok);
         }
         // A graph: several starts are one walk, each record at the fewest
         // hops any start reaches it in, ordered by (depth, type, key) as
@@ -2936,7 +2998,7 @@ impl<'a> Reader<'a> {
                 .truncated
                 .then(|| self.page_cursor(p, offset + limit, params));
             let nodes = g.nodes.into_iter().map(|r| r.node).collect();
-            return self.graph_result(nodes, g.edges, next);
+            return self.graph_result(nodes, g.edges, next).map(Ok);
         }
         // Rows are ordered, projected and measured by their paths,
         // `name.field`, each read as the rows hold it, and a name they do
@@ -3007,7 +3069,7 @@ impl<'a> Reader<'a> {
             let refs: Vec<&BTreeMap<FieldName, Value>> = as_fields.iter().collect();
             let groups =
                 aggregate::aggregate(&refs, a, &self.shape.settings, self.now).map_err(invalid)?;
-            return Ok(QueryResult::Groups { rows: groups });
+            return Ok(Ok(QueryResult::Groups { rows: groups }));
         }
         if p.order_by.iter().any(|o| o.by == OrderBy::Latest) {
             return Err(invalid(Case::LatestNoChange { ty: None }));
@@ -3034,7 +3096,7 @@ impl<'a> Reader<'a> {
                 row.retain(|k, _| fields.iter().any(|f| f == k));
             }
         }
-        Ok(self.rows_page(p, rows, offset, limit, params))
+        Ok(Ok(self.rows_page(p, rows, offset, limit, params)))
     }
 
     /// Whether `get` answers the record a pattern's start names by key,
@@ -3054,7 +3116,12 @@ impl<'a> Reader<'a> {
     }
 
     /// The keys a pattern's start search finds, best first.
-    fn start_hits(&self, p: &Pattern, mode: &SearchMode) -> Result<Vec<RecordKey>> {
+    fn start_hits(
+        &self,
+        p: &Pattern,
+        mode: &SearchMode,
+        carried: Option<Pulled>,
+    ) -> Result<Judged<Vec<RecordKey>>> {
         let s = Search {
             ty: p.start.ty.clone(),
             mode: mode.clone(),
@@ -3064,12 +3131,8 @@ impl<'a> Reader<'a> {
             with_meta: false,
             at: ReadAt::default(),
         };
-        Ok(self
-            .search(&s)?
-            .hits
-            .into_iter()
-            .map(|h| h.record.key)
-            .collect())
+        let found = self.search(&s, carried)?;
+        Ok(found.map(|f| f.hits.into_iter().map(|h| h.record.key).collect()))
     }
 
     /// Refuse an order or a measure over a path of a pattern's rows, the
@@ -3650,9 +3713,10 @@ impl EdgeSource for Visible<'_, '_> {
 
 /// Reciprocal rank fusion of ranked lists, each with its weight: a list
 /// adds `weight / (60 + rank)` for every key it ranks (rank from 0, best
-/// first), in the lists' order. Ties are broken by key, so the fused
-/// order is the same on every engine. A search hands it only what the
-/// read may see (046).
+/// first), in the lists' order. Ties are broken by the key answered, the
+/// one a record bears at the read's position, so the fused order is the
+/// same on every engine and on every page (029). A search hands it only
+/// what the read may see (046).
 pub fn fuse(lists: &[(f64, Vec<(RecordKey, f64)>)]) -> Vec<(RecordKey, f64)> {
     const K: f64 = 60.0;
     let mut score: BTreeMap<RecordKey, f64> = BTreeMap::new();

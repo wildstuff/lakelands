@@ -112,7 +112,8 @@ no check yet.
 | `segments` | Every sealed segment's range and digest (`docs/log-format.md` §4.2), oldest first; the ranges start at 0 and follow each other with no gap. |
 | `projection` | The projection's write side. |
 | `view(as_of)` | A read view at `folded_through` (`None`), or as the projection was right after folding `as_of`, served from kept states. `OutOfRange`, with `folded_through` (0 when nothing is folded) as the head, for a position past it. A view keeps answering its own position while the fold moves on. |
-| `vectors` | The vector index, if the engine keeps one; a search that needs vectors is refused as `Unbound` on an engine that keeps none. |
+| `ranked(type, asked, k)` | The rankings of one pull of a search, all read from one state of the head's indexes, with the position the projection is folded through there (§`ranked`, below). |
+| `vectors` | The vector index's write side, if the engine keeps one; a search that needs vectors is refused as `Unbound` on an engine that keeps none. |
 
 **The lease across processes.** An engine that keeps a lake in files
 holds the lease with a lock the operating system keeps, on a file that
@@ -346,9 +347,9 @@ checks it on every engine.
 ### `ProjectionView`: what reads see
 
 A view reflects one position, and every answer is computed from the
-states valid there, except that `lexical` ranks by the index at the head
-(below). Records come back whole and unmasked; grants and
-masking are the store's.
+states valid there. Records come back whole and unmasked; grants and
+masking are the store's. A view ranks nothing: the full-text and vector
+indexes describe the head, and `ranked` reads them (below).
 
 | Method | Contract |
 |---|---|
@@ -359,7 +360,6 @@ masking are the store's.
 | `scan(type, scan)` | The records of `type` whose latest state at the position qualifies, as below. |
 | `count(type, scan)` | How many records `scan(type, scan)` would answer with its order, `after` and `limit` ignored: the flags, `valid_at`, `equal` and `filter` qualify them as below. Its cost is in **The ceiling of a count**, below. |
 | `edges(type, keys, relation, walk)` | The links of some records of one type, one list per key in the keys' order, each what the key alone answers; a link between two of the keys is in both lists. An engine answers them in one read, not one per key: the store's walks ask a page of records at a time (`lakelands_core::graph::PAGE`, 256), and PostgreSQL reads each page in a fixed number of statements (lakelands#227). For each record, its links over one relation or all: `Out` those it declares, `In` those that point at it, `Both` their union with each link once (a link from a record to itself included). Links to a retired or missing record are returned as they are; hiding that end is the store's (`docs/decisions/026-the-store-walks-the-graph.md`). No order is promised; the store's walks order their own answers. A relation with `via` is carried by that reference field: a record links to the target whose key is the field's text value, and `Edge.fields` is empty. A relation without `via` is carried by the live records of its link type `sys.link.<type>.<relation>` at the position (`docs/log-format.md` §2.3): `Out` gives the links whose `from` is the record, `In` those whose `to` is, and `Edge.fields` holds each link's own fields, `from` and `to` left out. A removed (retired) link is no edge. The rule is `lakelands_core::links::link_edges`: at the head an engine may find a link type's candidates through its own index (SQLite and PostgreSQL look `from` and `to` up in their exact-text index), and at an earlier position it reads the link type's records there. |
-| `lexical(type, text, fields, k)` | Full-text hits at the position, as below; with `fields`, in those of the type's searchable fields only. |
 | `proposals(filter)` | Every proposal whose latest state at the position matches `filter.state`, `filter.kind` (`upsert`, `retire`, `call`, `declare` or `migrate`) and `filter.type` (a `call`'s type is its verb's `on` type in force at the position; a `declare` touches every type it declares or a declaration of it acts on, a `migrate` its type), newest first — by the position of that latest state, descending, then by id — and at most `filter.limit`. `order_by`, `cursor` and the read position in the filter are the store's and the engine ignores them: the store applies the caller's `order_by` to the engine's answer, and refuses as `Invalid` an `order_by` naming a member a proposal does not have. |
 | `is_member(set, type, key)` | Whether the record is in the object set at the position; false if never put. |
 | `members(set, type)` | The keys of the type's records that are in the object set at the position; empty for a set never put. One read: the store asks it once for a set before it walks a type (a set declared again, a migration, a re-key), where `is_member` for each record would be a statement each on PostgreSQL (lakelands#477). |
@@ -592,31 +592,6 @@ lake's first size, the walk is refused at the ceiling at every size.
 Walk 3 (`docs/walks/walk-3.md`) asks both measures of a small network,
 and asks components again under a ceiling of five, which refuses them.
 
-**`lexical`.** Search is ranked retrieval: the view's position decides
-what may be seen, not how the current text ranks. A view answers from
-the engine's full-text index as it stands at the head, and keeps only
-records that are live at its own position, restricted ones included (the
-store applies the principal's grants to the hits, as for `find` and
-`get`); an engine is
-not required to keep a full-text index of earlier states. A record is a
-hit when one of its searchable fields' text at the head holds at least
-one token of `text`. Tokens are what the store's one pipeline makes of the text
-(`lakelands_core::stem::stem_text`, stemmed by the type's `language`, or only
-lower-cased and folded when it has none or the pipeline has no stemmer
-for it), applied the same way to the query and to the
-fields (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
-The set of hits is the same on every engine. Hits come best first, by a
-score that is higher for a better match and may differ between engines;
-equal scores are ordered by key ascending; at most `k`. The in-memory
-engine scores a hit by the number of distinct query tokens it holds.
-With `fields`, a record's text is only that of the named fields that are
-searchable in the type's declaration at the head: a record matching only
-in another field is no hit, and a record matching in a named field is a
-hit however many others match elsewhere, so an engine never cuts its
-candidates at `k` before it narrows them. The store has already refused
-a name that is not searchable or not readable
-(`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
-
 A view does not aggregate. Aggregates — over `find`, over a pattern's
 rows and in a view type's measures — are the store's: it computes them
 over the records it reads, decimal-exact and grouped in the one sort
@@ -704,6 +679,68 @@ The suite holds this (`SET_READ_BY_ITS_FILTER`): for records written
 after the set's declaration, `find` under the filter from `describe`
 answers what the events record, and `(f1) and not (f2)` the difference.
 
+### `ranked`: the head's rankings
+
+Search is ranked retrieval: a read's position decides what may be seen,
+not how the current text or vectors rank
+(`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
+The full-text and vector indexes describe the head only, so they are not
+read through a view. `LakeEngine::ranked(type, asked, k)` reads them:
+
+- `asked` is every ranking of one pull of a search: a text, with the
+  searchable fields it is matched in if it names any, and each vector
+  field with its query vector. The answer holds one list for each, the
+  text's first, each cut at `k`.
+- **One state.** The engine reads the lists and the position the
+  projection is folded through in one transaction (one lock on the
+  memory engine): the lists are of the head at exactly that position,
+  whatever is folded meanwhile, and an open transaction of the fold is in
+  none of them. A rebuild's `clear` is no fold: on PostgreSQL it drops
+  the tables and makes them again, which a transaction's snapshot does
+  not hold back, so `ranked` takes every table it reads in
+  `ACCESS SHARE` mode before its snapshot, in the order `clear` drops
+  them. The `clear` waits for the call, or the call for the `clear`, and
+  the call then reads the cleared projection: no position, and empty
+  lists. An engine never narrows the candidates to an earlier position:
+  it answers the records live at the head.
+- **The store judges at that position.** It takes its head at exactly
+  the position answered (a view of it serves that) and reads each
+  candidate's key, hold and grants there. A search that took its head
+  before it asked, and finds the rankings were read at a later position,
+  is made again with the head at that position and judges the candidates
+  it already has; it asks again only if the plan differs there (the
+  type or a ranked field was renamed in between). A search at the head
+  is then a read at that position, and its answer and cursor name it.
+  No search is refused or repeated for the writes beside it.
+
+**A text's list.** The engine answers from its full-text index as it
+stands at the head: the records live there, restricted ones included
+(the store applies the principal's grants to the hits, as for `find` and
+`get`); an engine is not required to keep a full-text index of earlier
+states. A record is a hit when one of its searchable fields' text at the
+head holds at least one token of the text. Tokens are what the store's one pipeline makes of the text
+(`lakelands_core::stem::stem_text`, stemmed by the type's `language`, or only
+lower-cased and folded when it has none or the pipeline has no stemmer
+for it), applied the same way to the query and to the
+fields (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
+The set of hits is the same on every engine. Hits come best first, by a
+score that is higher for a better match and may differ between engines;
+equal scores are ordered by key ascending; at most `k`. The in-memory
+engine scores a hit by the number of distinct query tokens it holds.
+With fields named, a record's text is only that of the named fields that are
+searchable in the type's declaration at the head: a record matching only
+in another field is no hit, and a record matching in a named field is a
+hit however many others match elsewhere, so an engine never cuts its
+candidates at `k` before it narrows them. The store has already refused
+a name that is not searchable or not readable
+(`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
+
+**A vector's list** holds at most `k` records, scored by the **cosine**
+of the angle between the query and the stored vector (higher is closer;
+a vector of zeros scores 0 against everything), best first, equal scores
+by key ascending. A field holding no vectors answers nothing; a query
+whose length differs from a stored vector's is `Invalid`.
+
 ### `VectorIndex`
 
 `LakeStore::vector_coverage(type)` answers, for each embedding field of
@@ -717,23 +754,16 @@ answers it `unbound`. Counting `due` walks the type's records without a
 vector, a page at a time, so its time is linear in them (suite:
 `vector_coverage_counts_embedded_and_due_records_at_the_head`).
 
-`put`, `remove`, `nearest(type, field, query, k)` and `count`, over the
-vectors of one field of one type:
+`put`, `remove` and `count`, over the vectors of one field of one type:
 
 - `put` replaces a record's vector for the field; `remove` forgets it,
-  and forgetting one that is absent does nothing.
-- `nearest` answers at most `k` records, scored by the **cosine** of the
-  angle between the query and the stored vector (higher is closer; a
-  vector of zeros scores 0 against everything), best first, equal scores
-  by key ascending. A field holding no vectors answers nothing; a query
-  whose length differs from a stored vector's is `Invalid`.
+  and forgetting one that is absent does nothing. Inside the fold's
+  transaction both take effect when it commits, as its puts do.
 - `count` is how many vectors the field holds.
 
 The store keeps the index in step while it folds: it puts a live
 record's vectors and removes a retired record's, or a cleared field's.
-Vectors are indexed at the head only. As for `lexical`, a read at an
-earlier position ranks by the index at the head and keeps only the
-candidates visible at that position.
+Vectors are indexed at the head only, and read by `ranked` (above).
 
 **The ceiling.** Every engine searches by brute force with the one
 cosine (`lakelands_api::query::cosine`) and keeps the best `k` as it
@@ -741,8 +771,8 @@ goes (`lakelands_core::engines::TopK`), whose answer is what ranking
 every vector and cutting at `k` answers, to the bit. So what a search
 holds is `k` entries, whatever the field holds; SQLite steps its
 statement, and PostgreSQL streams the field from the server a row at a
-time without buffering it. What a search costs is a scan: `nearest`
-reads every vector of the field, so its time grows linearly with the
+time without buffering it. What a search costs is a scan: a vector's
+list reads every vector of the field, so its time grows linearly with the
 vectors a field holds, and with their length. At 1,536 dimensions that
 is about 6 KiB read and one dot product per vector per query; a field
 of a hundred thousand vectors is a scan of some 600 MiB. The streaming
@@ -835,8 +865,11 @@ holds it to.
 | `count` is the number of records its scan selects, across batches, at the head and earlier; `find`'s `count()` is a full walk's length, holding a batch | engine: `a_count_is_the_number_of_records_its_scan_selects`; suite: `a_count_answers_as_many_records_as_a_full_find_walk`, the streaming check's `count` rows |
 | a `find` page crosses the seam as about `limit` rows, with or without a filter only the store evaluates | store: `tests/find_pages.rs` |
 | `scan`'s filter matches the evaluator exactly, including comparisons across kinds and filters that error; the flags and `valid_at` | engine: `scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors`, `scan_honours_retired_restricted_and_valid_at` |
-| `lexical`'s hit set, its language, searchable fields only, live only (restricted included), ties by key, `k`; at an earlier position, visibility from the position and text from the head | engine: `lexical_hits_are_the_pipelines_over_searchable_live_records`, `lexical_finds_every_token_the_pipeline_makes_beyond_ascii`, `lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_then`, `lexical_over_named_fields_is_the_pipelines_over_those_fields` |
-| `nearest`'s exact top `k` by cosine, ties, a zero vector, a wrong length; `put` replaces; `clear` empties the index | engine: `nearest_ranks_by_cosine_with_ties_by_key`, `a_zero_vector_scores_zero_and_a_wrong_length_is_invalid`, `put_replaces_a_vector_and_remove_forgets_it`, `clear_empties_the_projection_and_the_vector_index` |
+| `ranked`'s text list: its hit set, its language, searchable fields only, live at the head only (restricted included), ties by key, `k` | engine: `lexical_hits_are_the_pipelines_over_searchable_live_records`, `lexical_finds_every_token_the_pipeline_makes_beyond_ascii`, `lexical_over_named_fields_is_the_pipelines_over_those_fields` |
+| `ranked`'s lists are of one state, with its position: an open transaction moves neither, a commit both; a record retired at the head is no candidate | engine: `ranked_answers_every_list_from_one_state_and_says_its_position` |
+| a fold that commits between two statements of one `ranked` call is in none of its lists; on PostgreSQL the call holds every table it reads from its first statement, and a `clear` queued ahead of it is in its position | SQLite: `src/tests.rs`, `a_fold_committed_inside_one_ranked_call_is_in_none_of_its_lists` (the reader's statement trace commits the fold); PostgreSQL: `tests/ranked.rs`, `a_fold_committed_inside_one_call_is_in_none_of_its_lists`, `a_call_holds_every_table_it_reads_from_its_first_statement`, `a_clear_queued_ahead_of_a_call_is_in_its_position` |
+| A search's candidates are judged at the position they were read at: a re-key, a hold placed or lifted, a write between two pulls, a field or a link type renamed in between, a searchable field the reader may not read declared in between; a hold placed in between keeps its record out of a pattern started by a search and out of a fused search, and a record given to another is no hit of a holder of `only` | store: `tests/search_position.rs` (the memory engine, a write planted before `ranked` answers), the ten rows of the file |
+| `ranked`'s vector lists: the exact top `k` by cosine, ties, a zero vector, a wrong length; `put` replaces; `clear` empties the index | engine: `nearest_ranks_by_cosine_with_ties_by_key`, `a_zero_vector_scores_zero_and_a_wrong_length_is_invalid`, `put_replaces_a_vector_and_remove_forgets_it`, `clear_empties_the_projection_and_the_vector_index` |
 | `declarations`, `is_member`, `members`, `output` and `applied` at an earlier position; `mark_applied` keeps the first position | engine: `declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position`, `the_first_applied_position_is_kept` |
 | `matching` answers a filter's positions in order, each once, to its `through`, and nothing past the view or past what the projection has folded | engine: `the_index_answers_a_filters_positions_in_order_to_its_through`; store: `read_through`'s `past_the_views_position_a_poll_reads_the_log`; suite: `a_filtered_poll_answers_the_log_unmasked` and every row that follows the log through `the_index_answers_the_log` |
 | `proposals`' filters, a `call`'s type, and its order | engine: `proposals_filter_by_state_and_type_newest_first` |
@@ -1027,9 +1060,9 @@ a field that holds no vectors as any vector ranking is
 (`docs/decisions/046-a-hybrid-search-fuses-the-ranks-a-read-may-see.md`):
 a hybrid search its text (`text_weight`) and its vector (`weight`), a
 vector search its `field` and every further field it names in `also`.
-The store asks the engine for each ranking on its own, through `lexical`
-and `nearest` as before, and fuses them itself, so an engine sees
-neither a weight nor a second field. A ranking the search gives no
+The store asks the engine for every ranking of a pull in one `ranked`
+call, each a list of its own, and fuses them itself, so an engine sees
+no weight and fuses nothing. A ranking the search gives no
 weight takes the one its type's setting `search_weights.<type>` gives it
 (below), and a ranking neither weighs weighs 1.
 

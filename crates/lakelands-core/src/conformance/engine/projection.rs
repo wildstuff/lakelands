@@ -760,9 +760,8 @@ fn a_put_before_a_later_state_ends_where_that_state_begins(engine: &dyn LakeEngi
              {as_of:?} read {got:?}, but the state valid there is {expected:?}"
         );
     }
-    let head = view(engine, None)?;
-    let five = head.lexical(&ty, "five", None, 10).must("searching")?;
-    let three = head.lexical(&ty, "three", None, 10).must("searching")?;
+    let five = super::reads::lexical(engine, &ty, "five", None, 10).must("searching")?;
+    let three = super::reads::lexical(engine, &ty, "three", None, 10).must("searching")?;
     ensure!(
         five.len() == 1 && three.is_empty(),
         "at the head, `five` answered {five:?} and `three` {three:?}; the state put at 3 is \
@@ -812,11 +811,9 @@ fn several_puts_of_one_thing_in_one_transaction_leave_what_they_leave_one_by_one
             );
         }
     }
-    let head = view(engine, None)?;
     let mut hits = BTreeMap::new();
     for word in ["one", "four", "ten", "six", "zero", "three", "five"] {
-        let found: Vec<String> = head
-            .lexical(&ty, word, None, 10)
+        let found: Vec<String> = super::reads::lexical(engine, &ty, word, None, 10)
             .must("searching")?
             .into_iter()
             .map(|(k, _)| k.to_string())
