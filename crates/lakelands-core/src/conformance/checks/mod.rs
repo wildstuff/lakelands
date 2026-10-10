@@ -298,6 +298,7 @@ pub const ALL: &[Check] = &[
     ingest::REVERT_IS_A_CHANGE,
     views::VIEW_KEY_IS_ITS_GROUP,
     view_rights::VIEW_OVER_A_HIDDEN_FIELD,
+    view_rights::SHOWN_AS_READ,
     view_kept::KEPT_SHAPES,
     view_kept::KEPT_VALUES,
     view_kept::KEPT_POSITIONS,

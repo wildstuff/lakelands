@@ -25,6 +25,7 @@ pub mod log;
 pub mod names;
 pub mod rights;
 pub mod shape;
+pub mod sight;
 pub mod stem;
 pub mod valid_time;
 pub mod value;

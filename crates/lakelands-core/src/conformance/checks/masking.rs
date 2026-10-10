@@ -7,6 +7,7 @@ use lakelands_api::ontology::{FieldDecl, StorageKind};
 use lakelands_api::query::{Projection, QueryResult, Search, SearchMode};
 use lakelands_api::read::{AggFunc, Direction, OrderBy};
 use lakelands_api::tools::{Door, tools};
+use lakelands_api::write::{Outcome, ProposalFilter, ProposedWrite};
 use lakelands_api::{Access, FieldName, Find, ReadAt, Refusal, Timestamp, TypeName};
 use serde_json::json;
 
@@ -14,8 +15,8 @@ use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
     Lake, Must, agg, aggregate, alike_each, alike_renamed, all_found, derived, describe_type,
     embedding, field, field_access, field_writer, find_where, get_at, ingest, no_such_field,
-    nobody, order, pattern, read, reads_all, refused_alike, refused_on, searchable, source_record,
-    sourced, step, try_upsert, type_decl,
+    nobody, order, patch, pattern, read, reads_all, refused_alike, refused_on, searchable,
+    source_record, sourced, step, try_upsert, type_decl,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -549,7 +550,7 @@ check!(
 
 check!(
     VALID_AT_PROBES = a_read_at_a_valid_time_probes_the_types_valid_time_fields,
-    "024 and 006: a read at `valid_at` filters on the type's `valid_from` and `valid_to`, so `find`, `get` and a pattern started on the type probe them as a filter would: refused not_granted naming the field where it is masked; where it is hidden the type is described with no valid time, and the reads are answered as on a type with none (lakelands#726); without `valid_at` the same reads are answered"
+    "024 and 006: a read at `valid_at` filters on the type's `valid_from` and `valid_to`, so `find`, `get` and a pattern started on the type probe them as a filter would: refused not_granted naming the field where it is masked; where it is hidden the type is described with no valid time, and the reads are answered as on a type with none (lakelands#726); without `valid_at` the same reads are answered; what is shown does not turn on a read's valid time (lakelands#798): a reviewer with the field masked or hidden is listed a proposed upsert and a proposed call on the type at `valid_at` as without it, whole, and accepts the upsert"
 );
 
 async fn a_read_at_a_valid_time_probes_the_types_valid_time_fields(store: Store) -> Held {
@@ -566,6 +567,11 @@ async fn a_read_at_a_valid_time_probes_the_types_valid_time_fields(store: Store)
     contract.valid_from = Some("start".into());
     contract.valid_to = Some("end".into());
     l.declare(contract).await?;
+    l.declare_json(
+        json!({"declare": "verb", "name": "renew", "on": "contract", "risk": "high",
+        "effect": "write", "set": [{"field": "name", "value": "'r'"}]}),
+    )
+    .await?;
     l.upsert(
         "contract",
         "c1",
@@ -578,8 +584,52 @@ async fn a_read_at_a_valid_time_probes_the_types_valid_time_fields(store: Store)
         ..ReadAt::default()
     };
     let cases = ["start", "end"].map(|f| [(f, Access::None), (f, Access::Masked)]);
-    for (timed, access) in cases.into_iter().flatten() {
-        let who = field_access(store.as_ref(), "clerk", "contract", &[(timed, access)]);
+    for (i, (timed, access)) in cases.into_iter().flatten().enumerate() {
+        let mut who = field_access(store.as_ref(), "clerk", "contract", &[(timed, access)]);
+        who.grants.review = true;
+        // A proposed write to the type is listed at a valid time as without one.
+        let write = ProposedWrite::Upsert {
+            ty: ty.clone(),
+            key: format!("p{i}").as_str().into(),
+            patch: patch(json!({"name": "y"})),
+            opts: Default::default(),
+        };
+        let (renew, c1) = ("renew".into(), "c1".into());
+        let called = cat.call(
+            &l.own,
+            &renew,
+            Some(&c1),
+            Default::default(),
+            Default::default(),
+        );
+        let mut ids = Vec::new();
+        for proposed in [cat.propose(&l.own, write, "why".into()).await, called.await] {
+            let Outcome::Proposed { proposal, .. } = proposed.must("proposing a write")? else {
+                return Err(Failure::new(
+                    "a proposed upsert and a high-risk call must wait",
+                ));
+            };
+            ids.push(proposal);
+        }
+        let proposal = ids[0].clone();
+        let mut listed = Vec::new();
+        for at in [ReadAt::default(), april] {
+            let filter = ProposalFilter {
+                at,
+                ..Default::default()
+            };
+            let all = cat.proposals(&who, filter).await.must("listing")?.data;
+            let mine = all.into_iter().filter(|p| ids.contains(&p.id));
+            listed.push(mine.collect::<Vec<_>>());
+        }
+        let whole = |p: &lakelands_api::write::Proposal| p.write.is_some() && !p.more;
+        ensure!(
+            listed[0].len() == 2 && listed[0].iter().all(whole) && listed[0] == listed[1],
+            "a reviewer with `{timed}` {access:?} is listed a proposed upsert and a proposed \
+             call whole, at a valid time as without one; it was listed {listed:?}"
+        );
+        let accepted = cat.accept(&who, &proposal).await;
+        accepted.must("accepting the proposal it was listed")?;
         for at in [ReadAt::default(), april] {
             let mut start = pattern("contract", None, Vec::new(), Projection::Graph);
             start.at = at;

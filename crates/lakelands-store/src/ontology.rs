@@ -287,3 +287,17 @@ impl Ontology {
         out
     }
 }
+
+impl lakelands_core::sight::InForce for Ontology {
+    fn ty(&self, name: &TypeName) -> Option<&TypeDecl> {
+        self.types.get(name).map(|e| &e.decl)
+    }
+
+    fn types(&self) -> Vec<&TypeDecl> {
+        self.types.values().map(|e| &e.decl).collect()
+    }
+
+    fn declared(&self) -> std::borrow::Cow<'_, [Declared]> {
+        self.declared().into()
+    }
+}

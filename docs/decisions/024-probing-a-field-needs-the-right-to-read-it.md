@@ -652,3 +652,37 @@ declares when the proposal is read or decided. A field derived from one the call
 write-only field and a reference to a type the caller is not shown are
 judged the same way, since a filter on them is. A verb that reads no
 such field is unchanged.
+
+## Extended: a view's definition is shown to those its read answers (lakelands#798)
+
+`describe` and the read of a view each held a rule for the fields a view
+reads, and they differed twice. `describe` counted what a measure
+aggregates; the read probed every name in a measure that the source
+declares. And the read went on into a source that is itself a view,
+where `describe` stopped at the view's own sources. So a reader could be
+shown a definition and refused its read, with nothing in the definition
+to say why.
+
+There is one rule now. A view reads of each source its grouping, what
+its `where` reads and what its measures aggregate, and a source that is
+a view is read through, to what that view reads. `describe` shows a
+definition by it, a read of the view probes by it, and `declare` and the
+migration preflight ask the same of a view's own sources.
+
+A name a measure bears outside an aggregate is no field of the source.
+It is read from the group, an earlier measure or a grouping field,
+whatever the source holds under that name (027, 028). The read's probe
+of such a name guarded no value, and it told: of two views alike but
+for a measure's name, the one named as a field of the source is was
+refused to a reader kept from that field and the other answered, so
+the reader learned that the field is declared. The read no longer
+probes it. A view that names an earlier measure is shown and answered
+the same, byte for byte, whether or not its source holds a field of
+that name.
+
+So a definition is shown to a reader exactly where the view's read
+answers it. A holder of `schema` is the exception that stays: it is
+shown every definition, and is refused the read it may not make, on the
+field, since showing a definition is not reading what it reads. An
+object set is shown and read the same way: its definition to a holder of
+`schema`, its records to one who reads what its `where` reads.

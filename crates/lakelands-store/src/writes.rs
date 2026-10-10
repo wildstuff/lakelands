@@ -60,6 +60,7 @@ use lakelands_api::{
 };
 use lakelands_core::expr::{self, Place as Eval, RecordScope, Scope, WriteScope};
 use lakelands_core::rights::{self, Door};
+use lakelands_core::sight::Sight;
 use lakelands_core::{describe, invalid, links, shape, value};
 
 use crate::backed::Outputs;
@@ -186,7 +187,7 @@ pub struct Call<'a> {
 /// made (024, extended): its grants as asked, the types' versions, and
 /// the references to types it is not shown, held at `none` in `who`.
 pub struct Shown {
-    /// The principal before the references were hidden.
+    /// The principal as the call gave it: its sight is made again from it.
     pub asked: Principal,
     /// The types' versions it was shown by.
     pub versions: Vec<(TypeName, u32)>,
@@ -1209,20 +1210,8 @@ pub(crate) fn hidden_from(o: &Ontology, who: &Principal, write: &ProposedWrite) 
         }
         ProposedWrite::MigrateValueType { .. } => {}
     }
-    named
-        .iter()
-        .any(|ty| o.ty(ty).is_ok() && shown_type(o, ty, who).is_err())
-}
-
-/// The type `ty` for `who`: one it is not shown is answered as a type that
-/// is not declared, at every door that writes a record or authors a type
-/// (024, 027 and 028, extended). A refusal would tell that the type is
-/// there, so this is asked before anything else is judged.
-pub fn shown_type<'o>(o: &'o Ontology, ty: &TypeName, who: &Principal) -> Result<&'o TypeDecl> {
-    let t = o.ty(ty)?;
-    let missing = Missing::Type { name: ty.clone() };
-    (describe::type_shown(t, &|n| o.ty(n).ok(), who).then_some(t))
-        .ok_or(Error::NotFound { missing })
+    let sees = Sight::held(who, o);
+    (named.iter()).any(|ty| o.ty(ty).is_ok() && sees.ty(ty).is_err())
 }
 
 /// What a decision's own events carry beside the call's writer and
@@ -1373,18 +1362,16 @@ impl Decide<'_> {
     /// not there, and one not shown the relation a link door names as for
     /// a relation the type does not carry. A verb is shown by its door.
     fn sight(&self, op: Op<'_>) -> Result<()> {
-        let o = &self.w.ontology;
         let (ty, relation) = match op {
             Op::Upsert(ty, ..) | Op::Retire(ty, ..) => (ty, None),
             Op::Link((ty, _, r, _), _) | Op::Unlink((ty, _, r, _)) => (ty, Some(r)),
             Op::Call(..) => return Ok(()),
         };
-        let decl = shown_type(o, ty, self.who)?;
-        let shown =
-            |r: &RelationDecl| describe::relation_shown(decl, r, &|n| o.ty(n).ok(), self.who);
+        let sees = Sight::held(self.who, &self.w.ontology);
+        let decl = sees.ty(ty)?;
         let mut named = decl.relations.iter().filter(|r| Some(&r.name) == relation);
         match relation {
-            Some(n) if named.any(|r| !shown(r)) => Err(no_link_relation(ty, n)),
+            Some(n) if named.any(|r| !sees.relation(decl, r)) => Err(no_link_relation(ty, n)),
             _ => Ok(()),
         }
     }
@@ -1562,7 +1549,8 @@ impl Decide<'_> {
         }
         if after.ty.as_str() == SETTING_TYPE {
             let declared = |t: &TypeName| w.ontology.ty(t).ok();
-            let shown = |t: &TypeName| describe::one_type(t, &w.ontology.declared(), who);
+            let sees = Sight::held(who, &w.ontology);
+            let shown = |t: &TypeName| sees.describe_type(t);
             let value = after.fields.get("value");
             lakelands_api::seam::check_setting(after.key.as_str(), value, &declared, &shown)?;
         }
@@ -1846,19 +1834,8 @@ impl Call<'_> {
     fn shown_verb<'o>(&self, o: &'o Ontology, verb: &VerbName) -> Result<&'o VerbDecl> {
         let v = o.verb(verb)?;
         let missing = Missing::Verb { name: verb.clone() };
-        (shown_type(o, &v.on, self.who).map(|_| v)).map_err(|_| Error::NotFound { missing })
-    }
-
-    /// Whether the caller may call `verb` on `on`, its type: it may write
-    /// what the verb writes, and read what it reads (024, extended).
-    fn verb_callable(&self, on: &TypeDecl, verb: &VerbDecl) -> bool {
-        rights::reads_what_verb_reads(self.who, on, verb)
-            && match &verb.effect {
-                VerbEffect::Write { set } => set
-                    .iter()
-                    .all(|a| self.who.grants.access(&verb.on, &a.field).writes()),
-                VerbEffect::External { .. } => rights::type_access(self.who, &verb.on).writes(),
-            }
+        let shown = Sight::held(self.who, o).ty(&v.on);
+        shown.map(|_| v).map_err(|_| Error::NotFound { missing })
     }
 
     /// Check a verb's payload against its declaration: a member the verb
@@ -1904,7 +1881,7 @@ impl Call<'_> {
         let decl = self.shown_verb(&w.ontology, verb)?.clone();
         scoped(&decl, key, expected)?;
         let on = w.ontology.ty(&decl.on)?;
-        granted(self.verb_callable(on, &decl))?;
+        granted(Sight::held(self.who, &w.ontology).callable(on, &decl))?;
         let pinned = (proposed || decl.risk != Risk::Low) && self.pin(on, Some(&decl))?;
         if let VerbEffect::External { executor } = &decl.effect {
             bound_executor(self.lake, executor)?;
@@ -2026,7 +2003,7 @@ impl Call<'_> {
         granted(!write.is_schema() || !rights::holds_only(self.who))?;
         let pin = |ty: &TypeName| {
             ordinary_door(ty)?;
-            self.pin(shown_type(&w.ontology, ty, self.who)?, None)
+            self.pin(Sight::held(self.who, &w.ontology).ty(ty)?, None)
         };
         let mut d = self.decide(&w, view.as_ref(), now, 1);
         let mut pinned = false;
@@ -2156,8 +2133,9 @@ impl Call<'_> {
         }
         let view = self.lake.engine.view(None)?;
         let shape = self.lake.shape(view.as_ref())?;
-        let read =
-            crate::reads::Reader::open(self.lake, self.who, Default::default(), view, shape)?;
+        let sight = Sight::held(self.who, shape.as_ref());
+        let at = Default::default();
+        let read = crate::reads::Reader::open(self.lake, &sight, at, view, shape.clone())?;
         granted(read.shows_whole(write, p.position))
     }
 
@@ -2442,19 +2420,20 @@ impl Call<'_> {
         if !judged || self.who.grants.reads_everything() || p.proposer == self.who.writer() {
             return e;
         }
+        let sight = Sight::held(self.who, o);
         let read = |f: &FieldName| {
-            let t = shown_type(o, &ty, self.who).ok();
+            let t = sight.ty(&ty).ok();
             let f = t.and_then(|t| Some((t, t.fields.iter().find(|x| &x.name == f)?)));
             f.is_some_and(|(t, f)| rights::field_access(self.who, t, f).reads())
         };
-        let sees = |t: &TypeName| shown_type(o, t, self.who).is_ok();
+        let sees = |t: &TypeName| sight.ty(t).is_ok();
         let requires = |v: &VerbName| o.verb(v).ok().and_then(|v| v.requires.clone());
         let mut named = Named::default();
         e.names(&mut named);
         let listed = (self.lake.engine.view(None)).and_then(|view| {
             let shape = self.lake.shape(view.as_ref())?;
-            let read =
-                crate::reads::Reader::open(self.lake, self.who, Default::default(), view, shape)?;
+            let (sight, at) = (Sight::held(self.who, shape.as_ref()), Default::default());
+            let read = crate::reads::Reader::open(self.lake, &sight, at, view, shape.clone())?;
             Ok(read.listed(write, p.position))
         });
         match listed {
@@ -2470,19 +2449,18 @@ impl Call<'_> {
     /// (006, extended).
     pub(crate) fn writer(&self) -> Result<std::sync::MutexGuard<'_, crate::lake::Writer>> {
         let w = self.lake.for_write()?;
-        let moved = |s: &Shown| {
-            s.versions != w.ontology.versions()
-                && crate::lake::Lake::hidden(s.asked.clone(), &w.ontology).1 != s.hidden
-        };
-        match self.followed {
-            Some(n) if self.lake.renames(None)?.len() != n => {
-                Err(Error::unavailable(Situation::Moved))
-            }
-            _ if self.shown.as_ref().is_some_and(moved) => {
-                Err(Error::unavailable(Situation::TypesMoved))
-            }
-            _ => Ok(w),
+        if let Some(n) = self.followed
+            && self.lake.renames(None)?.len() != n
+        {
+            return Err(Error::unavailable(Situation::Moved));
         }
+        if let Some(s) = &self.shown
+            && s.versions != w.ontology.versions()
+            && (self.lake.sight(s.asked.clone(), None, None, &w.ontology)?.0).hidden() != s.hidden
+        {
+            return Err(Error::unavailable(Situation::TypesMoved));
+        }
+        Ok(w)
     }
 
     /// A migration's renames as the one answered may know of them, taken
@@ -2646,7 +2624,7 @@ impl Call<'_> {
                 }
             },
             Recompute::Type(name) => {
-                let t = shown_type(&w.ontology, name, self.who)?;
+                let t = Sight::held(self.who, &w.ontology).ty(name)?;
                 if t.view.is_some() || !crate::backed::computed_outside(&w.ontology, t) {
                     let ty = name.clone();
                     return Err(invalid(Case::NothingComputedOutside { ty }));
@@ -2696,10 +2674,8 @@ impl Call<'_> {
         // A type its author is not shown is a type that is not declared,
         // for whatever names it; to declare it is not granted, and names
         // nothing of it.
-        // The lake's declarations are listed once, and each type is judged
-        // against the list.
-        let declared = o.declared();
-        let shown = |ty: &TypeName| describe::one_type(ty, &declared, self.who).is_some();
+        let sees = Sight::held(self.who, o);
+        let shown = |ty: &TypeName| sees.ty(ty).is_ok();
         let hidden = |d: &Declaration| matches!(d, Declaration::Type(t) if o.types.contains_key(&t.name) && !shown(&t.name));
         granted(!sent.iter().any(hidden))?;
         let mut seen = o.clone();
@@ -2782,7 +2758,7 @@ impl Call<'_> {
         // A use is shown in a field the caller reads, of a type it is
         // shown: one keyed by a reference it may not know of is not (024).
         let read = |ty: &TypeName, field: &FieldName| {
-            let Ok(t) = shown_type(o, ty, self.who) else {
+            let Ok(t) = Sight::held(self.who, o).ty(ty) else {
                 return false;
             };
             let f = t.fields.iter().find(|f| &f.name == field);
@@ -2798,7 +2774,7 @@ impl Call<'_> {
     /// names against.
     fn authored(&self, o: &Ontology, m: &mut Migration) -> Result<Option<Authored>> {
         if o.types.contains_key(&m.to.name) {
-            shown_type(o, &m.to.name, self.who)?;
+            Sight::held(self.who, o).ty(&m.to.name)?;
         }
         self.reads_as_author(o, &[Declaration::Type(m.to.clone())], true)?;
         initials(o, &mut m.to);
@@ -2809,7 +2785,7 @@ impl Call<'_> {
         let (sent, mut known) = (m.clone(), before.decl.clone());
         rights::known_fields(self.who, &mut known, &find);
         let (to, pairs) = (&mut m.to, &m.relation_renames);
-        as_author(self.who, (&before.decl, &find), to, pairs)?;
+        as_author(&Sight::held(self.who, o), &before.decl, to, pairs)?;
         Ok(Some(Authored { sent, known }))
     }
 
@@ -2827,8 +2803,7 @@ impl Call<'_> {
             let Declaration::Type(t) = d else { continue };
             initials(&after, t);
             if let Some(before) = o.types.get(&t.name) {
-                let find = |n: &TypeName| o.ty(n).ok();
-                as_author(self.who, (&before.decl, &find), t, &[])?;
+                as_author(&Sight::held(self.who, o), &before.decl, t, &[])?;
             }
         }
         Ok(())
@@ -3006,7 +2981,7 @@ impl Call<'_> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema && !rights::holds_only(self.who))?;
         let w = self.writer()?;
-        let mut t = shown_type(&w.ontology, ty, self.who)?.clone();
+        let mut t = (Sight::held(self.who, &w.ontology).ty(ty)?).clone();
         // The field is added to its author's view of the type (027).
         rights::known_fields(self.who, &mut t, &|n| w.ontology.ty(n).ok());
         drop(w);
@@ -3054,16 +3029,16 @@ impl Call<'_> {
         m: &Migration,
         mut report: MigrationReport,
     ) -> Result<MigrationReport> {
-        let (view, declared) = (self.lake.engine.view(None)?, w.ontology.declared());
-        let seen = |ty: &TypeName| describe::one_type(ty, &declared, self.who).is_some();
-        let sees = |ty: &TypeName| w.ontology.ty(ty).ok().filter(|_| seen(ty));
+        let view = self.lake.engine.view(None)?;
+        let sight = Sight::held(self.who, &w.ontology);
+        let sees = |ty: &TypeName| sight.ty(ty).ok();
         let answered = |ty: &TypeName, key: &RecordKey| {
             let stored = view.get(ty, key).ok().flatten();
             self.who.grants.restricted || !stored.is_some_and(|r| r.restricted)
         };
         let (was, mut m) = (w.ontology.ty(&m.to.name)?, m.clone());
         w.ontology.complete(&mut m.to);
-        let described = || describe::lake(&self.who.lake, &declared, self.who);
+        let described = || sight.describe(&self.who.lake);
         rights::shown_report(self.who, was, &m, &mut report, described, sees, answered);
         rights::shown_hashes(self.who, was, &m, &mut report, &|n| w.ontology.ty(n).ok());
         report.report_id = report_id(&report, view.position());
@@ -3198,7 +3173,7 @@ impl Call<'_> {
             // definition to (027, extended); another is told that a
             // declaration reads the field, or that one could not be declared.
             let Err(named) = named else { continue };
-            if describe::shown(&view, &w.ontology.declared(), self.who) {
+            if Sight::held(self.who, &w.ontology).shows(&view) {
                 return Err(named);
             }
             return Err(taken(None).unwrap_or_else(|| {
@@ -3225,7 +3200,7 @@ impl Call<'_> {
                 // (lakelands#662). Another is told that a declaration reads
                 // the field. The field is one the author knows of: one
                 // hidden from it was put back (`as_author`).
-                if describe::shown(&d.declaration, &w.ontology.declared(), self.who) {
+                if Sight::held(self.who, &w.ontology).shows(&d.declaration) {
                     let Declaration::Type(t) = &d.declaration else {
                         return Err(named);
                     };
@@ -3435,9 +3410,8 @@ impl Call<'_> {
                 let mut referring = types.filter(|t| t.name != old && refers(t)).peekable();
                 if referring.peek().is_some() {
                     // The type is named only to an author `describe` shows it to.
-                    let declared = w.ontology.declared();
-                    let shown = |t: &&TypeDecl| describe::one_type(&t.name, &declared, self.who);
-                    let named = referring.find(|t| shown(t).is_some());
+                    let sees = Sight::held(self.who, &w.ontology);
+                    let named = referring.find(|t| sees.ty(&t.name).is_ok());
                     let ty = named.map(|t| t.name.clone());
                     let links = old.clone();
                     return Err(wrong(Case::RenameReferredLinks { ty, links }));
@@ -3653,12 +3627,13 @@ pub(crate) fn conditions(
     use lakelands_api::expr::{Expr, Literal};
     let old = |e: &Expr| matches!(e, Expr::Lit { value: Literal::Text(t) } if renames.contains_key(t.as_str()));
     let declared = ontology.declared();
+    let sees = Sight::held(who, &declared);
     let (mut shown, mut unshown) = (Vec::new(), false);
     for d in declared
         .iter()
         .filter(|d| lakelands_core::expr::declares(&d.declaration, &old))
     {
-        match describe::shown(&d.declaration, &declared, who) {
+        match sees.shows(&d.declaration) {
             true => shown.push(d.declaration.what()),
             false => unshown = true,
         }
@@ -3672,7 +3647,7 @@ pub(crate) fn conditions(
     let rule = TypeName::from(AGING_RULE_TYPE);
     let decl = ontology.ty(&rule).ok();
     let reads = |f: &str| {
-        let t = decl.filter(|_| describe::one_type(&rule, &declared, who).is_some());
+        let t = decl.filter(|_| sees.ty(&rule).is_ok());
         let f = t.and_then(|t| Some((t, t.fields.iter().find(|x| x.name.as_str() == f)?)));
         f.is_some_and(|(t, f)| rights::field_access(who, t, f).reads())
     };
@@ -4089,20 +4064,21 @@ fn initials(o: &Ontology, t: &mut TypeDecl) {
 /// keeps or renames that it is shown. No refusal names one: a rename from
 /// it is judged against its author's view, where it is no field or
 /// relation ([`Call::preflight_plan`]), and a field it reads is refused
-/// on that field. `find` answers a type by its name.
-fn as_author<'a>(
-    who: &Principal,
-    (before, find): (&TypeDecl, rights::Find<'_, 'a>),
+/// on that field. `sees` is its author's sight.
+fn as_author(
+    sees: &Sight<'_>,
+    before: &TypeDecl,
     to: &mut TypeDecl,
     relations: &[(RelationName, RelationName)],
 ) -> Result<()> {
+    let who = sees.who();
     fn put_back<T: Clone>(declared: &[T], hidden: impl Fn(&T) -> bool, into: &mut Vec<T>) {
         for (i, x) in declared.iter().enumerate().filter(|(_, x)| hidden(x)) {
             into.insert(i.min(into.len()), x.clone());
         }
     }
     let hidden = |t: &TypeDecl, f: &FieldDecl| rights::field_access(who, t, f) == Access::None;
-    let unshown = |r: &RelationDecl| !describe::relation_shown(before, r, find, who);
+    let unshown = |r: &RelationDecl| !sees.relation(before, r);
     let unknown: Vec<&FieldDecl> = (before.fields.iter().filter(|f| hidden(before, f))).collect();
     put_back(&before.fields, |f| hidden(before, f), &mut to.fields);
     // A valid time over a field it may not know of is not named to it, so

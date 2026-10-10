@@ -8,7 +8,8 @@ use lakelands_api::query::{Projection, Search, SearchMode, Walk};
 use lakelands_api::read::{AggFunc, Aggregate, Get, GroupKey, OrderBy};
 use lakelands_api::write::{ProposalFilter, ProposedWrite, WriteOpts};
 use lakelands_api::{
-    Access, Catalog, FieldName, Find, Grants, LakeStore, Principal, PrincipalKind, TypeName,
+    Access, Catalog, Error, FieldName, Find, Grants, LakeStore, Missing, Principal, PrincipalKind,
+    TypeName,
 };
 use serde_json::json;
 
@@ -34,7 +35,7 @@ check!(
 
 check!(
     KEPT_AT_EVERY_DOOR = a_type_kept_from_its_reader_is_kept_at_every_door,
-    "006, extended (lakelands#636, lakelands#635): to one whose grants give it nothing of a type that declares a sensitive field, the type, the link type of its relation and each view made of it (a count that reads no field, a grouping and a sum that read its fields, a view over that view, and a view that merges it beside a type the reader is shown) answer `describe_type`, `get` of a key that is there and of one that is not, `find`, with a total and with an aggregate, `search` and a pattern, and the type `upsert`, `retire` and `link`, value for value as a name that is not declared, and `describe` and the tools name none of them; so to one with no grant, to one granted to read each view and the link type by name, and to one who reads the whole lake but that type"
+    "006, extended (lakelands#636, lakelands#635): to one whose grants give it nothing of a type that declares a sensitive field, the type, the link type of its relation and each view made of it (a count that reads no field, a grouping and a sum that read its fields, a view over that view, and a view that merges it beside a type the reader is shown) answer `describe_type`, `get` of a key that is there and of one that is not, `find`, with a total and with an aggregate, `search` and a pattern, and the type `upsert`, `retire` and `link`, and a verb of each risk on the type `call` and `propose`, value for value as a name that is not declared, and `describe` and the tools name none of them; so to one with no grant, to one granted to read each view and the link type by name, and to one who reads the whole lake but that type; and the doors answer by what `describe` shows (lakelands#798): a type it names to a reader, and a verb on it, is at none of them a name that is not declared"
 );
 
 check!(
@@ -346,15 +347,16 @@ async fn doors(
 }
 
 /// `there`, to `what`, must be answered as `none`, at the same door of
-/// the type named `ghost` for `ledger`: an error alike in every member.
+/// the type named `ghost` for `name`: an error alike in every member.
 fn answered_alike(
     what: &str,
     there: &lakelands_api::Result<()>,
     none: &lakelands_api::Result<()>,
+    name: &str,
 ) -> Held {
     match (there, none) {
         (Ok(()), Ok(())) => Ok(()),
-        (Err(a), Err(b)) => alike_renamed(what, a, b, ("ghost", "ledger")),
+        (Err(a), Err(b)) => alike_renamed(what, a, b, ("ghost", name)),
         _ => Err(Failure::new(format!(
             "{what}: {there:?}; under the name `ghost`: {none:?}"
         ))),
@@ -380,7 +382,10 @@ async fn a_type_kept_from_its_reader_is_kept_at_every_door(store: Store) -> Held
     for mut d in [
         json!({"name": "ledger", "fields": [cat, amount, secret],
             "relations": [{"name": "cites", "target": "ledger"}]}),
-        json!({"name": "budget", "fields": [cat, cap]}),
+        json!({"name": "budget", "fields": [cat, cap],
+            "relations": [{"name": "cites", "target": "budget"}]}),
+        json!({"name": "budget_count", "fields": [n],
+            "view": {"source": "budget", "measures": count}}),
         json!({"name": "ledger_count", "fields": [n],
             "view": {"source": "ledger", "measures": count}}),
         json!({"name": "ledger_by_cat", "key": ["cat"], "fields": [cat, amount],
@@ -394,6 +399,17 @@ async fn a_type_kept_from_its_reader_is_kept_at_every_door(store: Store) -> Held
         d["declare"] = json!("type");
         l.declare_json(d).await?;
     }
+    // A verb of each risk on the kept type and on the shown one.
+    for (on, verb, risk) in [("ledger", "ok", "low"), ("ledger", "hold", "high")] {
+        for on in [on, "budget"] {
+            let name = format!("{on}_{verb}");
+            l.declare_json(
+                json!({"declare": "verb", "name": name, "on": on, "risk": risk,
+                "effect": "write", "set": [{"field": "cat", "value": "'b'"}]}),
+            )
+            .await?;
+        }
+    }
     for (ty, k, fields) in [
         (
             "ledger",
@@ -402,6 +418,7 @@ async fn a_type_kept_from_its_reader_is_kept_at_every_door(store: Store) -> Held
         ),
         ("ledger", "l2", json!({"cat": "b", "amount": "2"})),
         ("budget", "b1", json!({"cat": "a", "cap": "9"})),
+        ("budget", "b2", json!({"cat": "b", "cap": "8"})),
     ] {
         l.upsert(ty, k, fields).await?;
     }
@@ -411,7 +428,21 @@ async fn a_type_kept_from_its_reader_is_kept_at_every_door(store: Store) -> Held
         .cat
         .link(&l.own, ledger, l1, cites, l2, Default::default(), opts);
     linked.await.must("linking two ledger records")?;
-    let link = link_key(l1, l2);
+    let (budget, b1, b2, opts) = (
+        &"budget".into(),
+        &"b1".into(),
+        &"b2".into(),
+        WriteOpts::default(),
+    );
+    let linked = (l.cat).link(&l.own, budget, b1, cites, b2, Default::default(), opts);
+    linked.await.must("linking two budget records")?;
+    let (link, budgets) = (link_key(l1, l2), link_key(b1, b2));
+    // A type its readers are shown, its link type and a view over it.
+    let shown = [
+        ("budget", "b1"),
+        ("sys.link.budget.cites", budgets.as_str()),
+        ("budget_count", UNGROUPED),
+    ];
     let kept = [
         ("ledger", "l1"),
         ("sys.link.ledger.cites", link.as_str()),
@@ -437,7 +468,7 @@ async fn a_type_kept_from_its_reader_is_kept_at_every_door(store: Store) -> Held
         principal(store.as_ref(), PrincipalKind::Human, id, grants)
     };
     let mut given: Vec<&str> = kept[1..].iter().map(|k| k.0).collect();
-    given.push("budget");
+    given.extend(shown.iter().map(|k| k.0));
     let cast = [
         who("nothing", Access::None, &[], Access::None),
         who("given", Access::None, &given, Access::Read),
@@ -445,29 +476,39 @@ async fn a_type_kept_from_its_reader_is_kept_at_every_door(store: Store) -> Held
     ];
     let (head, mut apart) = (store.head().await.must("the head")?, Vec::new());
     for who in &cast {
-        for (ty, key) in kept {
-            let ghost = ty.replace("ledger", "ghost");
-            let there = doors(l.cat.as_ref(), who, ty, key).await;
-            let none = doors(l.cat.as_ref(), who, &ghost, key).await;
-            for (n, (a, b)) in there.iter().zip(&none).enumerate() {
-                let what = format!("{} on `{ty}`, door {n}", who.id);
-                if let Err(f) = answered_alike(&what, a, b) {
-                    apart.push(f.message);
-                }
-            }
-        }
         let d = l.cat.describe(who, Default::default()).await;
         let d = d.must("describing the lake")?.data;
-        let names: Vec<_> = d.types.iter().map(|t| &t.name).collect();
+        let names: Vec<_> = d.types.iter().map(|t| t.name.as_str()).collect();
         let said = format!("{names:?} {:?}", lakelands_api::tools::tools(&d));
         if said.contains("ledger") || (who.id != "nothing") != said.contains("budget") {
             apart.push(format!("{} is described {said}", who.id));
+        }
+        // The grid: at every door a type `describe` does not name is a
+        // name that is not declared, and one it names is at none.
+        for (ty, key) in kept.into_iter().chain(shown) {
+            let of = if ty.contains("ledger") {
+                "ledger"
+            } else {
+                "budget"
+            };
+            let there = doors(l.cat.as_ref(), who, ty, key).await;
+            let none = doors(l.cat.as_ref(), who, &ty.replace(of, "ghost"), key).await;
+            for (n, (a, b)) in there.iter().zip(&none).enumerate() {
+                let what = format!("{} on `{ty}`, door {n}", who.id);
+                let absent = matches!(a, Err(Error::NotFound { missing }) if matches!(missing, Missing::Type { .. } | Missing::Verb { .. }));
+                match (names.contains(&ty), answered_alike(&what, a, b, of)) {
+                    (false, Err(f)) => apart.push(f.message),
+                    (true, _) if absent => apart.push(format!("{what}, described: {a:?}")),
+                    _ => {}
+                }
+            }
         }
     }
     ensure!(
         apart.is_empty() && store.head().await.must("the head")? == head,
         "a type kept from its reader, its link type and each view made of it answer as a name \
-         that is not declared, and nothing is written; apart:\n{}",
+         that is not declared, one `describe` names answers at no door so, and nothing is \
+         written; apart:\n{}",
         apart.join("\n")
     );
     Ok(())
@@ -970,7 +1011,7 @@ async fn a_type_keyed_by_a_field_its_reader_may_not_know_of_is_not_shown(store: 
         let there = doors(l.cat.as_ref(), &hidden, ty, key).await;
         let none = doors(l.cat.as_ref(), &hidden, &ghost, key).await;
         for (n, (a, b)) in there.iter().zip(&none).enumerate() {
-            if let Err(f) = answered_alike(&format!("on `{ty}`, door {n}"), a, b) {
+            if let Err(f) = answered_alike(&format!("on `{ty}`, door {n}"), a, b, "ledger") {
                 apart.push(f.message);
             }
         }

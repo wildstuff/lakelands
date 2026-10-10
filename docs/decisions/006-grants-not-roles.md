@@ -429,3 +429,39 @@ as of the moment before the hold would hand it back whole, so a hold
 that cut only the head would withhold nothing. A record released from a
 hold is one its readers may see, and the history before its release is
 part of it.
+
+## Extended: one sight answers what a principal is shown (lakelands#798)
+
+Whether a type, a relation or a declaration is there for a principal was
+asked at every door by the door's own means: a read described the type,
+a write asked the type's rule, a listing built the whole description, and
+the call door and `describe` each held a rule of their own for a verb.
+Each rights finding of the rounds before closed one door, and its
+verifier then found a sibling that answered the same question another
+way. So the question has one place: a sight of the door's principal over
+the declarations in force at its position, which every door asks: `get`, `find`, `search`, a pattern and each of its hops,
+`describe`, `describe_type` and the tools made of them, `upsert`,
+`retire`, `link`, `unlink`, `call`, `propose`, `accept`, a listing, a
+migration's preflight and a refusal that would name a declaration.
+The sight is made of the principal the door is called with: its grants
+are held through the renames, and its references to types it is not
+shown are held at `none`. The listing of proposals alone still follows
+its reader's grants itself, to the position an entry was proposed at.
+Following comes first, since a grant held through a rename may hide what
+the grants as given do not. A write judges under its lock with the
+principal its call was made with, and is refused to be sent again where
+the types moved under it.
+
+What is shown does not turn on a read's valid time. A read at `valid_at`
+filters records by the type's valid-time fields, so the read that
+filters probes them, and is refused where its reader may not read one
+(024). A listing of proposals filters no record by them: a proposed
+write to such a type is listed at a valid time as without one, and the
+accept that follows judges it as the listing did. Before, a reviewer who
+knew of the field and might not read it was listed the entry with no
+write at a valid time, and whole without one.
+
+The doors are held together by one row: for each of a cast of principals
+and each type of a lake, a type `describe` names is at no door a name
+that is not declared, and one it does not name is at every door exactly
+that.

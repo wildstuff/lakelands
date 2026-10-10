@@ -36,7 +36,7 @@ check!(
 
 check!(
     RIGHTS = a_named_set_is_read_by_the_right_to_read_what_its_filter_reads,
-    "024, extended (lakelands#552): a reader kept from a field is answered, for in_set of a set whose filter reads it, directly or through the sets it names, as for a set that is not declared; describe lists it no such set; a write's answer names it no such set joined or left; an author kept from the field declares no set that names one"
+    "024, extended (lakelands#552): a reader kept from a field is answered, for in_set of a set whose filter reads it, directly or through the sets it names, as for a set that is not declared; describe lists it no such set; a write's answer names it no such set joined or left; an author kept from the field declares no set that names one, and with the `schema` grant is shown each set's definition and still refused the read of one (lakelands#798)"
 );
 
 const TYPE: &str = "invoice";
@@ -339,6 +339,16 @@ async fn a_named_set_is_read_by_the_right_to_read_what_its_filter_reads(store: S
     ensure!(
         mine.is_err(),
         "an author kept from `status` declares no set naming `open`; it answered {mine:?}"
+    );
+    // It is shown each set's definition, and reads no set it may not read.
+    let described = l.cat.describe(&author, Default::default()).await;
+    let shown = described.must("describing the lake to an author")?.data;
+    let read = found(&l, &author, "in_set('open')", None).await;
+    ensure!(
+        shown.object_sets.len() == 3 && read.is_err(),
+        "an author kept from `status` is shown the three sets and refused a read naming \
+         `open`; it was shown {:?}, and the read answered {read:?}",
+        shown.object_sets
     );
     head_unmoved(s, before, "the refused declaration").await
 }

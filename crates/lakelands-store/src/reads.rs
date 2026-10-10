@@ -70,9 +70,9 @@ use lakelands_api::{
 };
 use lakelands_core::expr::{self, Place as Eval, RecordScope, aggregate};
 use lakelands_core::graph::{self, EdgeSource};
+use lakelands_core::sight::Sight;
 use lakelands_core::{
-    canonical, derive as core_derive, describe, engines as core_engines, invalid, rights,
-    valid_time,
+    canonical, derive as core_derive, engines as core_engines, invalid, rights, valid_time,
 };
 
 use crate::declare::condition;
@@ -84,8 +84,10 @@ use crate::ontology::Ontology;
 pub struct Reader<'a> {
     /// The lake.
     pub lake: &'a Lake,
-    /// Who reads.
+    /// Who reads, as [`Self::sight`] judges it.
     pub who: &'a Principal,
+    /// What the reader is shown of the read's shape.
+    pub sight: &'a Sight<'a>,
     /// The projection at the read's position.
     pub view: Box<dyn ProjectionView + 'a>,
     /// What the lake declares then, shared with every read in its range.
@@ -156,8 +158,8 @@ impl<'a> Head<'a> {
     ) -> Result<Head<'a>> {
         let view: Rc<dyn ProjectionView + 'a> = Rc::from(lake.engine.view(head)?);
         let shape = lake.shape(view.as_ref())?;
-        let (who, _) = lake.followed(who.clone(), None, Some(&shape.renames))?;
-        let who = Lake::hidden(who, &shape.ontology).0;
+        let sight = lake.sight(who.clone(), None, Some(&shape.renames), shape.as_ref())?;
+        let who = sight.0.who().clone();
         let since = Rc::new(held::Since::new(lake, view.as_ref(), at)?);
         Ok(Head {
             view,
@@ -420,7 +422,7 @@ impl<'a> Reader<'a> {
     /// Open a read at `at`, of `view` and its `shape`.
     pub fn open(
         lake: &'a Lake,
-        who: &'a Principal,
+        sight: &'a Sight<'a>,
         at: ReadAt,
         view: Box<dyn ProjectionView + 'a>,
         shape: Arc<Shape>,
@@ -428,7 +430,8 @@ impl<'a> Reader<'a> {
         let position = view.position().unwrap_or(Position::GENESIS);
         Ok(Reader {
             lake,
-            who,
+            who: sight.who(),
+            sight,
             view,
             shape,
             at_head: at.as_of.is_none(),
@@ -612,24 +615,17 @@ impl<'a> Reader<'a> {
         Ok(canonical)
     }
 
-    fn declared(&self) -> &[lakelands_api::engine::Declared] {
-        &self.shape.declared
-    }
-
     /// The declarations in force at `at`, if the lake can be read there.
     fn ontology_at(&self, at: Position) -> Option<Ontology> {
         let view = self.lake.engine.view(Some(at)).ok()?;
         Ontology::at(view.as_ref()).ok()
     }
 
-    /// The type, if the principal may see it at all.
+    /// The type whose records a read reads, if the principal is shown it
+    /// ([`Sight::ty`]). What is shown does not turn on the read's valid
+    /// time: a listing asks the sight alone.
     fn visible_type(&self, ty: &TypeName) -> Result<&TypeDecl> {
-        let decl = self.shape.ontology.ty(ty)?;
-        if describe::one_type(ty, self.declared(), self.who).is_none() {
-            return Err(Error::NotFound {
-                missing: Missing::Type { name: ty.clone() },
-            });
-        }
+        let decl = self.sight.ty(ty)?;
         // A read at a valid time filters on the type's valid-time fields,
         // so it probes them as a `where` on them would (024): those it is
         // shown.
@@ -834,7 +830,7 @@ impl<'a> Reader<'a> {
 
     /// `describe`.
     pub fn describe(&self) -> LakeDescription {
-        let mut lake = describe::lake(&self.lake.id, self.declared(), self.who);
+        let mut lake = self.sight.describe(&self.lake.id);
         for t in &mut lake.types {
             self.name_sorted(t);
         }
@@ -849,10 +845,8 @@ impl<'a> Reader<'a> {
 
     /// `describe_type`.
     pub fn describe_type(&self, ty: &TypeName) -> Result<TypeDescription> {
-        let mut t =
-            describe::one_type(ty, self.declared(), self.who).ok_or_else(|| Error::NotFound {
-                missing: Missing::Type { name: ty.clone() },
-            })?;
+        let missing = Missing::Type { name: ty.clone() };
+        let mut t = (self.sight.describe_type(ty)).ok_or(Error::NotFound { missing })?;
         self.name_sorted(&mut t);
         Ok(t)
     }
@@ -1577,11 +1571,7 @@ impl<'a> Reader<'a> {
             })
             .collect::<Result<_>>()?;
         for (_, m) in &measures {
-            probed.extend(
-                core_derive::reads(m)
-                    .into_iter()
-                    .filter(|f| source.fields.iter().any(|d| &d.name == f)),
-            );
+            probed.extend(lakelands_core::describe::measure_reads(m));
         }
         // The probe is the view's own, so its refusal names nothing of the
         // source to a reader `describe` withholds the definition from (024).
@@ -2098,7 +2088,7 @@ impl<'a> Reader<'a> {
         (lake, then, at): (&OnceCell<LakeDescription>, &Principal, Position),
     ) -> bool {
         let read = |ty: &TypeName, field: &FieldName| {
-            let t = self.visible_type(ty).ok();
+            let t = self.sight.ty(ty).ok();
             let f = t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)));
             f.is_some_and(|(t, f)| rights::field_access(self.who, t, f).reads())
         };
@@ -2107,7 +2097,7 @@ impl<'a> Reader<'a> {
         // after it as proposed (051). An `only` that cannot be applied
         // admits none, whatever a record holds (lakelands#771).
         let only = |ty: &TypeName, f: &BTreeMap<_, _>| {
-            (self.visible_type(ty)).is_ok_and(|d| rights::admits(self.who, d, f))
+            (self.sight.ty(ty)).is_ok_and(|d| rights::admits(self.who, d, f))
         };
         let after = |ty: &TypeName, key: &RecordKey, patch: &lakelands_api::Patch| {
             let stored = self.view.get(ty, key).ok().flatten().filter(|r| !r.retired);
@@ -2118,7 +2108,7 @@ impl<'a> Reader<'a> {
         // Retired or not, as `restricted` is judged.
         let answered = |ty: &TypeName, key: &RecordKey| {
             let stored = self.view.get(ty, key).ok().flatten();
-            self.visible_type(ty).is_ok()
+            self.sight.ty(ty).is_ok()
                 && (self.who.grants.restricted || !stored.as_ref().is_some_and(|r| r.restricted))
                 && stored.is_none_or(|r| only(ty, &r.fields))
         };
@@ -2151,7 +2141,7 @@ impl<'a> Reader<'a> {
                 }
                 match key {
                     Some(key) => answered(&v.on, key),
-                    None => self.visible_type(&v.on).is_ok(),
+                    None => self.sight.ty(&v.on).is_ok(),
                 }
             }
             // The report names what the migration does to the type it was
@@ -2161,7 +2151,7 @@ impl<'a> Reader<'a> {
             // not convert or would collide. Its id is made again at the
             // head before the proposal.
             ProposedWrite::Migrate { migration, report } => {
-                let Ok(was) = self.visible_type(&migration.to.name) else {
+                let Ok(was) = self.sight.ty(&migration.to.name) else {
                     return false;
                 };
                 let head = self.shape.ontology.types.get(&migration.to.name);
@@ -2179,9 +2169,10 @@ impl<'a> Reader<'a> {
                 // Its references held as the type it was proposed against
                 // shows them (024, extended).
                 let shown = proposed.as_ref().unwrap_or(&self.shape.ontology);
-                let then = &crate::lake::Lake::hidden(then.clone(), shown).0;
-                let sees = |ty: &TypeName| self.visible_type(ty).ok();
-                let all = || describe::lake(&self.who.lake, self.declared(), self.who);
+                let then = Sight::new(then.clone(), &[], None, shown);
+                let then = then.who();
+                let sees = |ty: &TypeName| self.sight.ty(ty).ok();
+                let all = || self.sight.describe(&self.who.lake);
                 let described = || lake.get_or_init(all);
                 rights::shown_report(then, made, migration, report, described, sees, answered);
                 // One listing: its `to` hash is that of the `to` it lists.
@@ -2204,11 +2195,11 @@ impl<'a> Reader<'a> {
                 // The reader as the bundle in force would show it its
                 // references (024, extended), from its grants as asked: a
                 // reference hidden by the lake as it stands may be shown.
-                let who = &crate::lake::Lake::hidden(then.clone(), &after).0;
-                declarations.retain(|d| describe::listed(d, &declared, who));
+                let sight = Sight::new(then.clone(), &[], None, &declared);
+                declarations.retain(|d| sight.lists(d));
                 for d in declarations.iter_mut() {
                     if let Declaration::Type(t) = d {
-                        rights::described_fields(who, t, &|n| after.ty(n).ok());
+                        rights::described_fields(sight.who(), t, &|n| after.ty(n).ok());
                     }
                 }
                 !declarations.is_empty()
@@ -2238,8 +2229,8 @@ impl<'a> Reader<'a> {
                     // extended).
                     let judged = view.and_then(|v| {
                         let o = Ontology::at(v.as_ref())?;
-                        let then = crate::lake::Lake::hidden(then.clone(), &o).0;
-                        crate::writes::conditions(&o, v.as_ref(), &then, report, &old)
+                        let then = Sight::new(then.clone(), &[], None, &o);
+                        crate::writes::conditions(&o, v.as_ref(), then.who(), report, &old)
                     });
                     if judged.is_err() {
                         report.conditions.clear();
@@ -3191,17 +3182,16 @@ impl<'a> Reader<'a> {
                 .any(|f| &f.name == field && self.knows(decl, field))
     }
 
-    /// The relations the principal is shown (`describe::relation_shown`)
+    /// The relations the principal is shown ([`Sight::relation`])
     /// with their owners: those that leave or reach `around`, or all.
     /// A relation it is not shown is one no type declares, at every step,
     /// inverse name and edge.
     fn shown_relations(&self, around: Option<&TypeName>) -> Vec<(&TypeDecl, &RelationDecl)> {
-        let find = |n: &TypeName| self.shape.ontology.ty(n).ok();
         let near =
             |t: &TypeDecl, r: &RelationDecl| around.is_none_or(|a| &t.name == a || &r.target == a);
         let types = self.shape.ontology.types.values().map(|e| &e.decl);
         let all = types.flat_map(|t| t.relations.iter().map(move |r| (t, r)));
-        all.filter(|(t, r)| near(t, r) && describe::relation_shown(t, r, &find, self.who))
+        all.filter(|(t, r)| near(t, r) && self.sight.relation(t, r))
             .collect()
     }
 
@@ -3802,12 +3792,9 @@ impl EdgeSource for Visible<'_, '_> {
         let r = self.reader;
         let mut shown: BTreeSet<graph::Node> = BTreeSet::new();
         for (ty, keys) in graph::by_type(nodes) {
-            let Ok(decl) = r.shape.ontology.ty(ty) else {
+            let Ok(decl) = r.sight.ty(ty) else {
                 continue;
             };
-            if describe::one_type(ty, r.declared(), r.who).is_none() {
-                continue;
-            }
             let rows = r.get_many(ty, &keys)?;
             let (ends, pairs) = (r.admitted_ends(decl, &rows)?, r.pairs(ty));
             for (rec, _) in rows.into_iter().zip(ends).filter(|(_, ends)| *ends) {

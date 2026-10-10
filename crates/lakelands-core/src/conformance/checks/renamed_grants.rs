@@ -18,7 +18,7 @@ use crate::conformance::{Failure, Given, Held, ImportedLake, Store};
 
 check!(
     GRANT_FOLLOWS = a_grant_holds_a_field_under_every_name_it_has_borne,
-    "006 and 024, extended (lakelands#527): a field renamed by a migration is one field: its access is the lowest of what a principal's grants say under the name it bears at the position read and under every other name it has borne or will bear that they name, reading and writing judged apart; so a field held at none or masked stays so under its new name, through a chain of renames, and under its old name in a read as of before for a host that renamed its grant, at every door (`get`, a `where`, an `order_by`, an aggregate, a view's measure, a pattern, a search, `describe_type`, a write, a verb that sets it), but a search as of before finds it only where the head shows it too, since it ranks by the head's text; a permission stays with its name, and a host widens by naming the new name and dropping the old; two fields that have borne one name are restricted together by it; a proposed migration that renames is listed to a reader kept from the old name with neither the pair nor the new name, and its accept answers it no rename; a migration's answer names its renames; the list is kept through a reopen, made again by a rebuild and an import, and is no event of the log",
+    "006 and 024, extended (lakelands#527): a field renamed by a migration is one field: its access is the lowest of what a principal's grants say under the name it bears at the position read and under every other name it has borne or will bear that they name, reading and writing judged apart; so a field held at none or masked stays so under its new name, through a chain of renames, and under its old name in a read as of before for a host that renamed its grant, at every door (`get`, a `where`, an `order_by`, an aggregate, a view's measure, a pattern, a search, `describe_type`, a write, a verb that sets it), but a search as of before finds it only where the head shows it too, since it ranks by the head's text; a permission stays with its name, and a host widens by naming the new name and dropping the old; two fields that have borne one name are restricted together by it; a proposed migration that renames is listed to a reader kept from the old name with neither the pair nor the new name, and its accept answers it no rename; a migration's answer names its renames; a grant held through a rename may hide what the grants as given do not (a key field held at `write_only` under its old name leaves its type not shown), and the write door hides a reference to that type as a read does (lakelands#798); the list is kept through a reopen, made again by a rebuild and an import, and is no event of the log",
     given
 );
 
@@ -264,6 +264,27 @@ async fn a_grant_holds_a_field_under_every_name_it_has_borne(store: Store, given
     let x = json!({"nosuch": "x"});
     let nosuch = try_upsert(l.cat.as_ref(), &writer, "account", "1", x).await;
     refused_alike("an upsert of `owner`", &wrote, nosuch, ("nosuch", "owner"))?;
+
+    // Following can hide what the grants as given do not: `desk` is keyed
+    // by `tag`, once `code`, which `clerk` was to write and not read. Under
+    // the name it bears that is no access, so `desk` is a type `clerk` is
+    // not shown, and `seat.at`, which refers to it, a field it may not know
+    // of, at the write door as at a read (lakelands#798).
+    let text = |n: &str| json!({"name": n, "type": {"kind": "text"}, "required": true});
+    let desk = |n: &str| json!({"name": "desk", "key": [n], "fields": [text(n)]});
+    l.declare_json(over(desk("code"), json!({"declare": "type"})))
+        .await?;
+    let at = json!({"name": "at", "type": {"kind": "reference", "target": "desk"}});
+    l.declare_json(json!({"declare": "type", "name": "seat", "fields": [at]}))
+        .await?;
+    l.upsert("desk", "d1", json!({"code": "d1"})).await?;
+    migrate_to(&l, desk("tag"), &[("code", "tag")]).await?;
+    let mut clerk = field_access(s, "clerk", "desk", &[("code", Access::WriteOnly)]);
+    clerk.grants.types.entry("seat".into()).or_default().default = Some(write);
+    let (sat, x) = (json!({"at": "d1"}), json!({"nosuch": "x"}));
+    let sat = try_upsert(l.cat.as_ref(), &clerk, "seat", "1", sat).await;
+    let nosuch = try_upsert(l.cat.as_ref(), &clerk, "seat", "1", x).await;
+    refused_alike("an upsert of `at`", &sat, nosuch, ("nosuch", "at"))?;
 
     // A name taken again by another field, and a swap: two fields that
     // have borne one name are restricted together by it.

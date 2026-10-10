@@ -109,9 +109,8 @@ fn reading<T>(
     let renames = at.as_of.is_none().then_some(&shape.renames[..]);
     // A reference to a type it is not shown is a field it may not know of,
     // by the types the read reads (024, extended).
-    let (who, _) = lake.followed(who, at.as_of, renames)?;
-    let who = Lake::hidden(who, &shape.ontology).0;
-    let mut r = Reader::open(lake, &who, at, view, shape)?;
+    let (sight, _) = lake.sight(who, at.as_of, renames, shape.as_ref())?;
+    let mut r = Reader::open(lake, &sight, at, view, shape.clone())?;
     (r.head, r.held_now) = (at_head, held_now);
     let data = f(&r)?;
     Ok(Reply {
@@ -178,29 +177,27 @@ impl Doors {
         same_lake(&self.lake, who)?;
         let (lake, who, context) = (self.lake.clone(), who.clone(), self.context);
         exec::run(move || {
-            let (who, followed) = lake.followed(who, None, None)?;
             // A reference to a type it is not shown is a field it may not
             // know of, by the head's types; the writer judges it again
-            // under its lock (024, extended).
-            let (who, shown) = match rights::hides_some(&who) {
-                false => (who, None),
-                true => {
-                    let head = lake.shape(lake.engine.view(None)?.as_ref())?;
-                    let (hid, hidden) = Lake::hidden(who.clone(), &head.ontology);
-                    let versions = head.ontology.versions();
-                    (
-                        hid,
-                        Some(writes::Shown {
-                            asked: who,
-                            versions,
-                            hidden,
-                        }),
-                    )
-                }
-            };
+            // under its lock (024, extended). The head is read only for
+            // one whose grants hide something once they are followed:
+            // following may hide what the grants as given do not.
+            let none = Vec::<lakelands_api::engine::Declared>::new();
+            let (mut sight, mut followed) = lake.sight(who.clone(), None, None, &none)?;
+            let head = || lake.engine.view(None).and_then(|v| lake.shape(v.as_ref()));
+            let head = rights::hides_some(sight.who()).then(head).transpose()?;
+            if let Some(head) = &head {
+                let renames = Some(&head.renames[..]);
+                (sight, followed) = lake.sight(who.clone(), None, renames, head.as_ref())?;
+            }
+            let shown = head.as_ref().map(|head| writes::Shown {
+                asked: who,
+                versions: head.ontology.versions(),
+                hidden: sight.hidden().to_vec(),
+            });
             f(&Call {
                 lake: &lake,
-                who: &who,
+                who: sight.who(),
                 context,
                 followed,
                 shown,
