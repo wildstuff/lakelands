@@ -150,6 +150,11 @@ pub(crate) fn not_granted() -> Error {
     }
 }
 
+/// The pooled client every exchange goes through, over `connector`.
+fn pooled(connector: Connector) -> Client<Connector, Body> {
+    Client::builder(TokioExecutor::new()).build(connector)
+}
+
 impl Wire {
     pub(crate) fn new(
         config: &RemoteConfig,
@@ -214,7 +219,14 @@ impl Wire {
                 "`feed_key` names `{id}`, which has no key in `keys`"
             )));
         }
-        let client = Client::builder(TokioExecutor::new()).build(Connector { tls });
+        // The bound is waited out in quarters (`doors`), and a quarter under
+        // the timer's step of 1 ms would find every timer late: nothing
+        // would ever be judged silent. The door's bound is 30 s; only a
+        // test gives another.
+        if silence < Duration::from_millis(4) {
+            return Err(ConfigError("the silence bound must be 4 ms or more".into()));
+        }
+        let client = pooled(Connector::new(tls));
         let scheme = if secure { "https" } else { "http" };
         Ok(Wire {
             client,
@@ -230,6 +242,13 @@ impl Wire {
             silence,
             cap: config.max_answer_bytes,
         })
+    }
+
+    /// This wire over a connection a test holds the other end of.
+    #[cfg(test)]
+    pub(crate) fn over(mut self, conn: tokio::io::DuplexStream) -> Wire {
+        self.client = pooled(Connector::over(conn));
+        self
     }
 
     /// The key `who` acts with: refused before anything is sent when

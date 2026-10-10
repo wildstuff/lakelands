@@ -173,6 +173,22 @@ impl RemoteLake {
             limits: config.limits,
         })
     }
+
+    /// As [`connect_with_silence`](RemoteLake::connect_with_silence),
+    /// over a connection the test holds the server's end of, so a test
+    /// on a paused clock measures the bound exactly.
+    #[cfg(test)]
+    pub(crate) fn connect_over(
+        config: RemoteConfig,
+        silence: Duration,
+        conn: tokio::io::DuplexStream,
+    ) -> std::result::Result<RemoteLake, ConfigError> {
+        let wire = Wire::new(&config, silence)?.over(conn);
+        Ok(RemoteLake {
+            wire: Arc::new(wire),
+            limits: config.limits,
+        })
+    }
 }
 
 /// A host operation, which no network door offers.
