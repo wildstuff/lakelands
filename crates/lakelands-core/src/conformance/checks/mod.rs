@@ -338,6 +338,8 @@ pub const ALL: &[Check] = &[
     values::GEO_VALUES,
     values::JSON_VALUES,
     values::GEO_JSON_ORDER,
+    values::WRITTEN_FORM_AT_EVERY_DOOR,
+    filters::COMPARED_AS_ITS_INSTANT,
     derived_fields::NO_DOOR_AT_ALL,
     derived_fields::FUNCTION_VERSION_RECOMPUTES,
     derived_fields::SAME_INPUTS_NEW_BODY,

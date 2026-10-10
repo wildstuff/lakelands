@@ -222,6 +222,127 @@ fn integers_beyond_two_to_the_fifty_three_are_refused() {
     ));
 }
 
+/// A field's type with the value type it names, as `check` takes them.
+type Typed<'a> = (FieldType, Option<&'a ValueTypeDecl>);
+
+/// A value `check` answers is one it answers again, the same: one pass
+/// is enough at every door, and a value read from the log checks as it
+/// was written.
+#[test]
+fn a_checked_value_checks_to_itself() {
+    let money = ValueTypeDecl {
+        scale: Some(2),
+        ..value_type("money", StorageKind::Decimal)
+    };
+    let three = FieldType {
+        dimensions: Some(3),
+        ..kind(StorageKind::Vector)
+    };
+    let of = |k| (kind(k), None);
+    let cases: Vec<(Typed, Vec<Value>)> = vec![
+        (of(StorageKind::Text), vec![json!(""), json!("1e16")]),
+        (of(StorageKind::Reference), vec![json!("k")]),
+        (of(StorageKind::Boolean), vec![json!(true)]),
+        (
+            of(StorageKind::Number),
+            vec![
+                json!(1),
+                json!(2.0),
+                json!(-0.0),
+                json!(0.1),
+                json!(1.5e-7),
+                json!(9007199254740991.0),
+                json!(-9_007_199_254_740_991_i64),
+                json!(1e21),
+                json!(1e300),
+            ],
+        ),
+        (
+            of(StorageKind::Decimal),
+            vec![json!("1.50"), json!("-0"), json!("007")],
+        ),
+        (
+            (typed(StorageKind::Decimal, "money"), Some(&money)),
+            vec![json!("1.005"), json!("2"), json!("-0.004"), json!("007")],
+        ),
+        (
+            of(StorageKind::DateTime),
+            vec![
+                json!("2026-09-24T07:57:11+02:00"),
+                json!("2026-09-24"),
+                json!("2026-09-24t05:57:11.5z"),
+                json!("9999-12-31T23:30:00+01:00"),
+                json!("0000-01-01T00:30:00-01:00"),
+            ],
+        ),
+        (
+            of(StorageKind::Date),
+            vec![
+                json!("2026-09-24"),
+                json!("2026-09-24T02:00:00+02:00"),
+                json!("9999-12-31T01:00:00+01:00"),
+            ],
+        ),
+        (of(StorageKind::Bytes), vec![json!("aGk="), json!("")]),
+        (
+            of(StorageKind::Json),
+            vec![json!({"b": [2.0, 1e21, -0.0], "a": null}), json!(1.0)],
+        ),
+        ((three, None), vec![json!([1.0, 2, 0.5])]),
+        (
+            of(StorageKind::Geo),
+            vec![json!({"type": "Point", "coordinates": [1.0, 2]})],
+        ),
+    ];
+    for k in StorageKind::ALL {
+        assert!(cases.iter().any(|((ty, _), _)| ty.kind == k), "no {k}");
+    }
+    for ((ty, vt), values) in &cases {
+        for v in values {
+            let once = check(v, ty, *vt).unwrap_or_else(|e| panic!("{v} as {}: {e:?}", ty.kind));
+            assert_eq!(
+                check(&once, ty, *vt),
+                Ok(once.clone()),
+                "{v} as {}",
+                ty.kind
+            );
+        }
+    }
+}
+
+/// What a second check would refuse or change is refused by the first: a
+/// number the log writes as an integer too large, and an instant an
+/// offset carries out of the years of the one form.
+#[test]
+fn a_value_its_written_form_would_not_pass_is_refused() {
+    let n = kind(StorageKind::Number);
+    for v in [1e16, -1e16, 9007199254740993.0, 1e20] {
+        assert!(too_large(&json!(v), &n, None), "{v}");
+    }
+    assert!(too_large(
+        &json!({"a": [1e17]}),
+        &kind(StorageKind::Json),
+        None
+    ));
+    let three = FieldType {
+        dimensions: Some(3),
+        ..kind(StorageKind::Vector)
+    };
+    assert!(too_large(&json!([1e16, 0, 0]), &three, None));
+    let point = json!({"type": "Point", "coordinates": [1e16, 2]});
+    assert!(too_large(&point, &kind(StorageKind::Geo), None));
+    for v in ["9999-12-31T23:30:00-01:00", "0000-01-01T00:30:00+01:00"] {
+        let got = check(&json!(v), &kind(StorageKind::DateTime), None);
+        assert!(matches!(got, Err(Case::NotDateTime { .. })), "{v}: {got:?}");
+    }
+    let got = check(
+        &json!("9999-12-31T23:00:00-01:00"),
+        &kind(StorageKind::Date),
+        None,
+    );
+    assert!(matches!(got, Err(Case::NotDate { .. })), "{got:?}");
+}
+
 /// An unknown format name is refused when the value type is declared,
 /// and again here, should one ever reach a write.
 #[test]

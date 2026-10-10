@@ -354,6 +354,13 @@ fn an_annotation_is_refused_naming_the_declaration_the_key_and_where_it_sits() {
             },
         ),
         (
+            json!({"declare": "type", "name": "t", "annotations": {"acme.n": 1e16}}),
+            vec![ty.clone(), key("acme.n")],
+            Case::IntegerTooLarge {
+                n: serde_json::Number::from_f64(1e16).expect("finite"),
+            },
+        ),
+        (
             json!({"declare": "type", "name": "t", "relations": [{"name": "r", "target": "u",
                 "fields": [{"name": "s", "type": {"kind": "text"}, "annotations": {"acme.": 1}}]}]}),
             vec![

@@ -107,7 +107,7 @@ pub fn exact_text_term(filter: &Expr) -> Option<(FieldName, String)> {
                 Expr::Path { path },
             ) if path.len() == 1
                 && t.parse::<rust_decimal::Decimal>().is_err()
-                && Timestamp::parse(t).is_err() =>
+                && Timestamp::denoted(t).is_err() =>
             {
                 Some((path[0].clone(), t.clone()))
             }

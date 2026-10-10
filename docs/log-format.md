@@ -107,14 +107,23 @@ verifies what it reads back. Byte identity is therefore a property the
 conformance suite checks through the engine seam, on every engine.
 
 **Numbers.** Every number anywhere in an event is a finite IEEE 754
-double, and every integer-valued number, in the envelope or in a
+double, and every number written as an integer, in the envelope or in a
 payload, lies within ±(2^53 − 1). That covers `position`, `version`,
 `fence`, `depth`, `format`, `through`, the members of a segment, and
-every `number`, `json` or `geo` value a patch carries. Within that range
-every JSON implementation reads an integer exactly and RFC 8785 writes it
-as its plain digits, so no two implementations disagree on its bytes. A
-write carrying a larger integer is refused at the door, never rounded; a
-value that needs more digits is a `decimal`.
+every `number`, `json`, `vector` or `geo` value a patch carries. Within
+that range every JSON implementation reads an integer exactly and RFC
+8785 writes it as its plain digits, so no two implementations disagree
+on its bytes. A write carrying a larger integer is refused at the door,
+never rounded; a value that needs more digits is a `decimal`.
+
+A number is judged in the form it is written in, not the form it arrived
+in. A double of 2^53 or more is integer-valued, and below 10^21 its
+canonical form is its plain digits: `1e16` is written
+`10000000000000000`, an integer beyond the range, and is refused like
+one. From 10^21 on the canonical form has an exponent (`1e+21`), which
+every implementation reads as the same double, and the number is
+written. So a value a door has checked is one it checks to itself
+again: one check is enough, and what is in the log passes it.
 
 ### 1.3 Time
 
@@ -127,6 +136,19 @@ input from callers (a date alone, fewer fractional digits, an offset such
 as `+02:00`, a lower-case `t` or `z`, a space for `T`) and normalise it
 to the one form before an event is written. A reader refuses an event
 whose date-time is in any other form, even if it names a valid instant.
+
+The one form has four digits for the year, so an instant lies in the
+years 0000 to 9999 in UTC. An offset that would carry it out of them
+(`9999-12-31T23:30:00-01:00`, half an hour into the year 10000) is
+refused as no date-time, like any other text the one form cannot write.
+
+The bound is on what is written: a field's value, a payload, an
+`initial`, a setting, `seen_at`, a cursor's value, a view's parameter. A
+text that an expression only compares or computes with (a literal in a
+`where`, a measure, a constraint, a function) is read as the instant it
+denotes, in whatever year its offset leaves it: that literal is after
+every instant a field holds, and an expression that compares with it
+means what it says.
 
 A `date` value is a calendar date written `YYYY-MM-DD`: the instant at
 its UTC midnight, kept in the form a person writes it. The doors take a

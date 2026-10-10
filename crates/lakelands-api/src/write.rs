@@ -504,8 +504,8 @@ impl Declaration {
                 if value.is_null() {
                     return invalid(Case::AnnotationNull);
                 }
-                if let Some(n) = too_large(value) {
-                    return invalid(Case::IntegerTooLarge { n });
+                if let Some(n) = crate::canonical::integer_too_large(value) {
+                    return invalid(Case::IntegerTooLarge { n: n.clone() });
                 }
             }
             bytes += crate::canonical::of(map).len();
@@ -536,19 +536,6 @@ fn is_identifier(s: &str) -> bool {
         .next()
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-/// An integer anywhere in a value beyond ±(2^53 − 1), if there is one.
-fn too_large(value: &serde_json::Value) -> Option<serde_json::Number> {
-    const MAX: u64 = (1 << 53) - 1;
-    match value {
-        serde_json::Value::Number(n) => (n.as_u64().is_some_and(|u| u > MAX)
-            || n.as_i64().is_some_and(|i| i.unsigned_abs() > MAX))
-        .then(|| n.clone()),
-        serde_json::Value::Array(items) => items.iter().find_map(too_large),
-        serde_json::Value::Object(m) => m.values().find_map(too_large),
-        _ => None,
-    }
 }
 
 const DECLARATION_KINDS: &[&str] = &[

@@ -491,11 +491,15 @@ fn number(v: &Val) -> Result<Decimal> {
     as_number(v).ok_or_else(|| Case::NotANumber { value: operand(v) })
 }
 
-/// A value as an instant, if it reads as one.
+/// A value as the instant it denotes, if it reads as one. A text is read
+/// without the bound of the years 0000 to 9999: here it is compared or
+/// computed with, and `'9999-12-31T23:30:00-01:00'` is after every
+/// instant a field holds, not a text to compare letter by letter. What
+/// is written is judged where it lands.
 pub(crate) fn as_time(v: &Val) -> Option<Timestamp> {
     match v {
         Val::Time(t) => Some(*t),
-        Val::Text(s) => Timestamp::parse(s).ok(),
+        Val::Text(s) => Timestamp::denoted(s).ok(),
         _ => None,
     }
 }
@@ -529,8 +533,8 @@ fn order(l: &Val, r: &Val) -> Option<Ordering> {
     match (l, r) {
         (Val::Duration(a), Val::Duration(b)) => Some(a.cmp(b)),
         (Val::Time(_), _) | (_, Val::Time(_)) => Some(as_time(l)?.cmp(&as_time(r)?)),
-        (Val::Text(a), Val::Text(b)) => Some(match (Timestamp::parse(a), Timestamp::parse(b)) {
-            (Ok(x), Ok(y)) => x.cmp(&y),
+        (Val::Text(a), Val::Text(b)) => Some(match (as_time(l), as_time(r)) {
+            (Some(x), Some(y)) => x.cmp(&y),
             _ => a.cmp(b),
         }),
         _ => None,

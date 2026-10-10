@@ -4,15 +4,18 @@
 
 use std::cmp::Ordering;
 
-use lakelands_api::ontology::{ComputedAt, FieldDecl, FieldType, StorageKind, ValueTypeDecl};
+use lakelands_api::error::Case;
+use lakelands_api::ontology::{
+    Authority, ComputedAt, FieldDecl, FieldType, StorageKind, ValueTypeDecl,
+};
 use lakelands_api::read::{Direction, OrderBy};
-use lakelands_api::write::Declaration;
+use lakelands_api::write::{Declaration, ProposedWrite, WriteOpts};
 use lakelands_api::{Find, LakeStore, Record, Refusal};
 use serde_json::{Value, json};
 
 use crate::conformance::fixture::{
-    Lake, Must, derived, doors, field, head_unmoved, order, owner, refused_on, try_upsert,
-    type_decl, value, value_type,
+    Lake, Must, derived, doors, field, head_unmoved, order, owner, patch, refused_on,
+    source_record, try_upsert, type_decl, value, value_type,
 };
 use crate::conformance::{Failure, Held, Store};
 use crate::expr::order::cmp_values;
@@ -301,6 +304,11 @@ check!(
 );
 
 check!(
+    WRITTEN_FORM_AT_EVERY_DOOR = a_value_its_written_form_would_not_pass_is_refused_at_every_door,
+    "the log format §1.2 and §1.3: a value is judged in the form the log writes it in, by one check at every door; a number written as an integer beyond ±(2^53 − 1) (`1e16`, `9007199254740993.0`, `1e17` inside a `json` value) and a date-time an offset carries out of the years 0000 to 9999 are refused by `upsert`, `ingest`, a call whose verb sets a field from its payload and `propose`, on the field or the payload member, appending nothing; the largest integer, `1e21` and an offset that stays within the years are written and read back in their one form"
+);
+
+check!(
     GEO_JSON_ORDER = a_page_ordered_by_a_geo_or_json_field_takes_the_rulebooks_fallback_order,
     "029: a geo or json value has no order of its own, so a find ordered by one ranks it as `cmp_values` does, a JSON value by its canonical bytes, a missing value last either way, ties by key; paging walks the same order"
 );
@@ -552,4 +560,102 @@ async fn a_page_ordered_by_a_geo_or_json_field_takes_the_rulebooks_fallback_orde
         }
     }
     Ok(())
+}
+
+async fn a_value_its_written_form_would_not_pass_is_refused_at_every_door(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let kinds = [
+        ("n", StorageKind::Number),
+        ("j", StorageKind::Json),
+        ("at", StorageKind::DateTime),
+    ];
+    let shared = |(name, kind): &(&str, StorageKind)| FieldDecl {
+        authority: Authority::Shared,
+        ..field(name, *kind)
+    };
+    l.declare(type_decl("thing", kinds.iter().map(shared).collect()))
+        .await?;
+    for (f, kind) in kinds {
+        let payload = json!([{"name": "v", "type": {"kind": kind.to_string()}}]);
+        l.declare_json(
+            json!({"declare": "verb", "name": format!("put_{f}"), "on": "thing",
+            "risk": "low", "effect": "write", "payload": payload,
+            "set": [{"field": f, "value": "payload.v"}]}),
+        )
+        .await?;
+    }
+    let (cat, own) = (l.cat.as_ref(), &l.own);
+    let max = 9_007_199_254_740_991_i64;
+    for (f, written, one) in [
+        ("n", json!(9007199254740991.0), json!(max)),
+        ("n", json!(1e21), json!(1e21)),
+        (
+            "at",
+            json!("9999-12-31T23:30:00+01:00"),
+            json!("9999-12-31T22:30:00.000000Z"),
+        ),
+    ] {
+        l.upsert("thing", "k", json!({ f: written })).await?;
+        let r = l.read("thing", "k").await?;
+        ensure!(
+            value(&r, f) == Some(&one),
+            "`{f}` written {written} must read back as {one}; it reads {:?}",
+            value(&r, f)
+        );
+    }
+    // Each door at a record of its own, so that none answers what another wrote.
+    for key in ["upserted", "ingested", "called", "proposed"] {
+        l.upsert("thing", key, json!({"n": 1})).await?;
+    }
+    let before = store.head().await.must("reading the head")?;
+    let mut red = Vec::new();
+    for (f, v) in [
+        ("n", json!(1e16)),
+        ("n", json!(9007199254740993.0)),
+        ("j", json!({"a": [1e17]})),
+        ("at", json!("9999-12-31T23:30:00-01:00")),
+        ("at", json!("0000-01-01T00:30:00+01:00")),
+    ] {
+        let fields = json!({ f: v });
+        let upserted = try_upsert(cat, own, "thing", "upserted", fields.clone()).await;
+        let record = source_record("thing", "ingested", fields.clone());
+        let ingested = l.ingest("feed", vec![record]).await;
+        let (verb, key) = (format!("put_{f}").as_str().into(), "called".into());
+        let payload = patch(json!({ "v": v }));
+        let called = cat.call(own, &verb, Some(&key), payload, WriteOpts::default());
+        let called = called.await;
+        let write = ProposedWrite::Upsert {
+            ty: "thing".into(),
+            key: "proposed".into(),
+            patch: patch(fields),
+            opts: WriteOpts::default(),
+        };
+        let proposed = cat.propose(own, write, "later".into()).await;
+        for (door, on, got) in [
+            ("upsert", f, upserted.map(drop)),
+            ("ingest", f, ingested.map(drop)),
+            ("a call that sets it from `v`", "v", called.map(drop)),
+            ("propose", f, proposed.map(drop)),
+        ] {
+            let fits = match refused_on(&got) {
+                Some((named, Refusal::Constraint(said))) if named == on => match &said.case {
+                    Case::IntegerTooLarge { .. } => !v.is_string(),
+                    Case::NotDateTime { .. } => v.is_string(),
+                    _ => false,
+                },
+                _ => false,
+            };
+            if !fits {
+                red.push(format!("{door} of `{f}` = {v} answered {got:?}"));
+            }
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "a number the log writes as an integer beyond ±(2^53 − 1), and a date-time whose \
+         instant leaves the years 0000 to 9999, is refused at every door on the field it is \
+         sent in, a verb's on its payload member `v`: {}",
+        red.join("; ")
+    );
+    head_unmoved(store.as_ref(), before, "the refused values").await
 }
