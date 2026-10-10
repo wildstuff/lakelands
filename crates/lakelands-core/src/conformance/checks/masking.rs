@@ -139,9 +139,13 @@ async fn a_relation_carried_by_a_hidden_field_is_walked_by_no_one_held_from_it(
             }
         }
         let want = if access == Access::None { "o1 s1" } else { ng };
+        // The second hop comes back to `side`, and rows bind one type under
+        // a name (lakelands#680): theirs names `other`, and still walks on.
+        let mut far_rows = far(rows());
+        far_rows.steps[0].ty = Some("other".into());
         for (what, p) in [
             ("a graph from `s1`, two hops", far(Projection::Graph)),
-            ("rows from `s1`, two hops", far(rows())),
+            ("rows from `s1`, two hops", far_rows),
             ("the components from `s1`", components()),
         ] {
             let said = walked(cat.query(&who, p).await);

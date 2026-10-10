@@ -10,6 +10,7 @@ fn next(walk: Walk, min: u32, max: u32) -> Step {
         ty: None,
         filter: None,
         depth: Depth { min, max },
+        named: None,
     }
 }
 

@@ -4247,6 +4247,16 @@ impl Catalog for MockCatalog {
         view_readable(&st, who, t)?;
         let measure = matches!(pattern.project, Projection::Degree | Projection::Components);
         let limit = self.limit(pattern.limit, measure)?;
+        // As the store: only rows and an aggregate bind by name (018,
+        // extended).
+        let binds = matches!(
+            pattern.project,
+            Projection::Rows { .. } | Projection::Aggregate(_)
+        );
+        let mut given = std::iter::once(&start.named).chain(pattern.steps.iter().map(|s| &s.named));
+        if !binds && given.any(|n| n.is_some()) {
+            return Err(invalid(Case::PatternAsNotRows));
+        }
         if start.search.is_some() {
             let what = Unmocked::PatternStart;
             return Err(invalid(Case::MockCannot { what }));
@@ -4325,6 +4335,12 @@ impl Catalog for MockCatalog {
             .collect();
         let mut scope_ty = t;
         let mut bound = vec![t];
+        let mut names = vec![
+            start
+                .named
+                .clone()
+                .unwrap_or_else(|| t.decl.name.to_string()),
+        ];
         for (i, step) in pattern.steps.iter().enumerate() {
             // A step over a relation the type does not declare is
             // refused, not answered empty. A step naming a relation's
@@ -4391,9 +4407,19 @@ impl Catalog for MockCatalog {
                 && ty != &target
             {
                 let (reached, ty) = (target.clone(), ty.clone());
-                let said = Said::from(Case::StepReaches { reached, ty });
+                let said = Said::from(Case::StepReaches {
+                    reached,
+                    ty,
+                    also: None,
+                });
                 return Err(invalid(said.within(step_at(i, &step.relation))));
             }
+            let name = step.named.clone().unwrap_or_else(|| target.to_string());
+            if names.contains(&name) {
+                let said = Said::from(Case::PatternBindsTwice { name });
+                return Err(invalid(said.within(step_at(i, &step.relation))));
+            }
+            names.push(name);
             // A relation probes the reference field that carries it, and a
             // derived one its matched fields on both sides (024, 044).
             let (owner, target) = if forward {
@@ -4451,14 +4477,14 @@ impl Catalog for MockCatalog {
         };
         // Every order's path is read before one is probed, and every
         // projected path before one is judged, as the store does.
-        let orders = (pattern.order_by.iter()).map(|o| row_path(&bound, o.field.as_str()));
+        let orders = (pattern.order_by.iter()).map(|o| row_path(&names, &bound, o.field.as_str()));
         for (ot, f) in orders.collect::<Result<Vec<_>>>()? {
             if f.as_str() != "key" || known(ot, &f) {
                 readable(&st, who, ot, &f)?;
                 steady_order(&ot.decl, f.as_str())?;
             }
         }
-        let projected = fields.iter().map(|n| row_path(&bound, n));
+        let projected = fields.iter().map(|n| row_path(&names, &bound, n));
         for (ot, f) in projected.collect::<Result<Vec<_>>>()? {
             if f.as_str() != "key" && !known(ot, &f) {
                 return Err(no_field(&ot.decl.name, &f));
@@ -4468,11 +4494,11 @@ impl Catalog for MockCatalog {
             .iter()
             .map(|p| {
                 let mut row = BTreeMap::new();
-                for r in p {
+                for (r, name) in p.iter().zip(&names) {
                     let read = st.read(who, r, false);
-                    row.insert(format!("{}.key", r.ty), Value::from(r.key.as_str()));
+                    row.insert(format!("{name}.key"), Value::from(r.key.as_str()));
                     for (f, v) in read.fields {
-                        row.insert(format!("{}.{f}", r.ty), v);
+                        row.insert(format!("{name}.{f}"), v);
                     }
                 }
                 if !fields.is_empty() {
@@ -6066,18 +6092,19 @@ fn read_as_stored(st: &State, t: &TypeDecl) -> Result<()> {
 }
 
 /// As the store: a path a pattern's rows hold, named whole, is the
-/// longest of the types `bound` that starts it, then one field of that
-/// type or `key`; any other name is refused (018, extended).
-fn row_path<'t>(bound: &[&'t DeclaredType], name: &str) -> Result<(&'t DeclaredType, FieldName)> {
+/// longest of the `names` bound, each to its type in `bound`, that starts
+/// it, then one field of that type or `key`; any other name is refused
+/// (018, extended).
+fn row_path<'t>(
+    names: &[String],
+    bound: &[&'t DeclaredType],
+    name: &str,
+) -> Result<(&'t DeclaredType, FieldName)> {
     let path: Vec<&str> = name.split('.').collect();
-    let starts = |k: usize| {
-        bound
-            .iter()
-            .find(|b| b.decl.name.as_str() == path[..k].join("."))
-    };
+    let starts = |k: usize| names.iter().position(|n| *n == path[..k].join("."));
     match (1..path.len())
         .rev()
-        .find_map(|k| starts(k).map(|t| (k, *t)))
+        .find_map(|k| starts(k).map(|i| (k, bound[i])))
     {
         Some((k, t)) if k + 1 == path.len() => Ok((t, FieldName::from(path[k]))),
         _ => Err(invalid(Case::PatternNoPath { path: name.into() })),

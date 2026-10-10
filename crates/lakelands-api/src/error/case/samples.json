@@ -875,6 +875,10 @@
    "measure": "s"
   },
   {
+   "code": "measure_no_type",
+   "measure": "s"
+  },
+  {
    "code": "measure_no_where",
    "measure": "s"
   },
@@ -932,6 +936,13 @@
    "count": 1
   },
   {
+   "code": "pattern_as_not_rows"
+  },
+  {
+   "code": "pattern_binds_twice",
+   "name": "s"
+  },
+  {
    "code": "pattern_no_path",
    "path": "s"
   },
@@ -970,6 +981,9 @@
    "kind": "text"
   },
   {
+   "also": [
+    "a"
+   ],
    "code": "step_reaches",
    "reached": "t",
    "type": "t"

@@ -28,7 +28,7 @@ check!(
 
 check!(
     GRAPH_STEPS = a_graph_honours_each_steps_direction_depth_and_where,
-    "018, extended: a graph whose steps all start at depth 0 walks each relation in its own step's direction to its own `max`, keeping and walking on from a record only where its step's `where`, read against the type its relation reaches wherever it is declared, holds, and a step that reaches several types and reads a `where` names its `type`; any other is a chain walked as rows walk it, answered as the start, what rows bind, the records between and the links walked; an empty range and a chain's undeclared relation are refused; over a reference field and over link records alike"
+    "018, extended: a graph whose steps all start at depth 0 walks each relation in its own step's direction to its own `max`, keeping and walking on from a record only where its step's `where`, read against the type its relation reaches wherever it is declared, holds, and a step that reaches several types and reads a `where`, or whose records rows bind (lakelands#680), names its `type`; any other is a chain walked as rows walk it, answered as the start, what rows bind, the records between and the links walked; an empty range and a chain's undeclared relation are refused; over a reference field and over link records alike"
 );
 
 check!(
@@ -99,6 +99,7 @@ fn st(relation: &str, walk: Walk, min: u32, max: u32) -> Step {
         ty: None,
         filter: None,
         depth: Depth { min, max },
+        named: None,
     }
 }
 
@@ -184,10 +185,16 @@ async fn a_graph_cut_by_its_limit_pages_on_with_its_cursor(store: Store) -> Held
 async fn a_graph_refuses_a_cursor_of_another_read_and_a_path_any(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
-    let paged = |max, project, cursor| Pattern {
-        limit: Some(2),
-        cursor,
-        ..pattern("hub", Some("h1"), vec![st("of", In, 0, max)], project)
+    // From depth 0 the step reaches its hub too, and rows bind one type
+    // under a name (lakelands#680): it names its `type`.
+    let paged = |max, project, cursor| {
+        let mut of = st("of", In, 0, max);
+        of.ty = Some("spoke".into());
+        Pattern {
+            limit: Some(2),
+            cursor,
+            ..pattern("hub", Some("h1"), vec![of], project)
+        }
     };
     let (_, _, g) = graph(
         cat.as_ref(),
@@ -298,6 +305,15 @@ async fn a_graph_honours_each_steps_direction_depth_and_where(store: Store) -> H
         (
             graph_of("spoke", Some("s1"), vec![both]),
             "a step that reaches spokes and people, with a `where` and no `type`",
+        ),
+        (
+            pattern(
+                "spoke",
+                Some("s1"),
+                vec![st("owned_by", Walk::Both, 0, 1)],
+                Projection::Rows { fields: Vec::new() },
+            ),
+            "rows over a step that reaches spokes and people, with no `type`",
         ),
     ];
     refused(cat.as_ref(), own, cases).await

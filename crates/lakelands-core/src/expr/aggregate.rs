@@ -394,10 +394,10 @@ pub fn group_keys(keys: &[GroupKey]) -> Answer<Vec<(FieldName, Option<Expr>)>> {
 }
 
 /// A path a pattern's rows hold, named whole, as an order, a projected
-/// field, a field key or a measure's field names one: the longest type
-/// `bound` that starts it, then one field of that type or `key`. A name
-/// no bound type starts, or one that goes on past the field, is refused.
-/// Answers the type and the field.
+/// field, a field key or a measure's field names one: the longest name
+/// `bound` that starts it, then one field of its record or `key`. A path
+/// no bound name starts, or one that goes on past the field, is refused.
+/// Answers the name and the field.
 pub fn row_path(name: &str, bound: &dyn Fn(&str) -> bool) -> Answer<(String, FieldName)> {
     let path: Vec<&str> = name.split('.').collect();
     match (1..path.len()).rev().find(|&k| bound(&path[..k].join("."))) {
@@ -407,12 +407,12 @@ pub fn row_path(name: &str, bound: &dyn Fn(&str) -> bool) -> Answer<(String, Fie
 }
 
 /// A pattern's aggregate read over its rows, which hold each value under
-/// its path, `<type>.<field>` or `<type>.key`, for each type `bound`
+/// its path, `<name>.<field>` or `<name>.key`, for each name `bound`
 /// (018, extended). A measure's field and a field key name a path whole.
-/// Each path of a named key reads the longest type bound, a field of it,
-/// then members, and is rewritten to the row's one key. A name no bound
-/// type starts is refused. Answers the aggregate so read and each type
-/// and field it reads.
+/// Each path of a named key reads the longest name bound, a field of its
+/// record, then members, and is rewritten to the row's one key. A path no
+/// bound name starts is refused. Answers the aggregate so read and each
+/// name and field it reads.
 pub fn over_rows(
     agg: &Aggregate,
     bound: &dyn Fn(&str) -> bool,

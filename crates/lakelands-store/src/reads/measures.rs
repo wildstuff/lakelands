@@ -52,6 +52,10 @@ pub(super) fn check(p: &Pattern) -> Result<()> {
         if step.filter.is_some() {
             return Err(invalid(Case::MeasureNoWhere { measure }));
         }
+        // It reads every link of a relation, whatever type it reaches.
+        if step.ty.is_some() {
+            return Err(invalid(Case::MeasureNoType { measure }));
+        }
         if p.project == Projection::Components && step.walk != Walk::Both {
             let relation = step.relation.clone();
             return Err(invalid(Case::ComponentsBothWays { relation }));

@@ -722,6 +722,7 @@ pub fn step(relation: &str, walk: Walk) -> Step {
         ty: None,
         filter: None,
         depth: Depth::default(),
+        named: None,
     }
 }
 
@@ -735,6 +736,7 @@ pub fn pattern(ty: &str, key: Option<&str>, steps: Vec<Step>, project: Projectio
             filter: None,
             search: None,
             params: Default::default(),
+            named: None,
         },
         steps,
         to: None,

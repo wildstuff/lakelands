@@ -32,6 +32,7 @@ What a declared name names.
 | `backing` | — | backing | A function's backing. |
 | `aging_rule` | — | aging rule | An aging rule. |
 | `group` | — | group | An aggregate's group key. |
+| `binding` | — | binding | A name a pattern binds a record under. |
 
 ## `Shape`
 
@@ -485,6 +486,7 @@ What a refusal is about.
 | `measure_no_order` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no `order_by`: its rows come in the measure's own order | A measure with an order. |
 | `measure_no_steps` | `measure` (String) | `{measure}` walks the relations its steps name; name at least one | A measure with no step. |
 | `measure_no_to` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no `to` | A measure with a `to`. |
+| `measure_no_type` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `type`: it reads every link of a relation, whatever it reaches | A measure's step with a `type`. |
 | `measure_no_where` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `where` | A measure's step with a `where`. |
 | `no_relation_to_walk` | `type` (TypeName), `relation` (RelationName), `walk` (Walk) | `{type}` has no relation `{relation}` to walk {walk} | A step over a relation that its type does not walk that way. |
 | `not_searchable` | `field` (FieldName), `type` (TypeName) | `{field}` of `{type}` is not searchable | A field a search names that is not searchable. |
@@ -496,7 +498,9 @@ What a refusal is about.
 | `param_unknown` | `type` (TypeName), `name` (ParamName), `declared` (Names, optional) | `{type}` declares no parameter `{name}`, so it binds nothing[; its parameters are {declared}] | A parameter given that the type does not declare. |
 | `param_value` | `name` (ParamName), `type` (TypeName), `kind` (StorageKind), `value` (Value) | parameter `{name}` of view `{type}` is {kind}, and {value} is not one | A parameter's value not of its kind. |
 | `path_starts` | `count` (usize) | a path has one start, and this pattern's start names {count} records | A path with several starts. |
-| `pattern_no_path` | `path` (String) | `{path}` is no path the pattern's rows hold; a row holds `<type>.<field>` for each type the pattern binds | A path a pattern orders, projects or aggregates by that no row holds. |
+| `pattern_as_not_rows` | — | `as` names what a row binds, and only rows and an aggregate bind by name | A pattern naming a binding where no row binds by name. |
+| `pattern_binds_twice` | `name` (String) | the pattern binds `{name}` already; give this step another name with `as` | A pattern that binds two records under one name. |
+| `pattern_no_path` | `path` (String) | `{path}` is no path the pattern's rows hold; a row holds `<name>.<field>` for each name the pattern binds, its type's or the one `as` gives | A path a pattern orders, projects or aggregates by that no row holds. |
 | `pattern_to_chain` | — | a pattern with `to` walks its steps as one walk from its start; every step's depth starts at 0 | A pattern with `to` whose steps are a chain. |
 | `pattern_to_not_graph` | — | a pattern with `to` answers the walk to it as a graph; ask `project` `graph` | A pattern with `to` not projected as a graph. |
 | `position_not_integer` | — | a position is a non-negative integer | A position of an `after` that is no whole number. |
@@ -505,8 +509,8 @@ What a refusal is about.
 | `search_fields_empty` | — | `fields` names no field; leave it out to search every searchable field | A search's `fields` that names none. |
 | `search_needs_vector` | `field` (FieldName) | `{field}` holds vectors its writers make, in a space the lake does not know; a hybrid search over it brings its own query vector | A hybrid search without a vector over a vector field no model fills: its writers chose the space, so no bound model may stand in for one. |
 | `search_not_vector` | `field` (FieldName), `kind` (StorageKind) | `{field}` is a {kind} field; a vector ranking reads a vector field | A vector ranking over a field that holds no vectors. |
-| `step_reaches` | `reached` (TypeName), `type` (TypeName) | it reaches `{reached}`, not `{type}` | A step that reaches another type than it names. |
-| `step_several_types` | — | it reaches several types and reads a `where`; name the step's `type` | A step reaching several types that reads a `where`. |
+| `step_reaches` | `reached` (TypeName), `type` (TypeName), `also` (Names, optional) | it reaches `{reached}`[, {also}], not `{type}` | A step that reaches another type than it names. |
+| `step_several_types` | — | it reaches several types, and a `where`, a row or the step after it reads one; name the step's `type` | A step reaching several types where a `where`, a row or the next step reads one. |
 | `step_too_deep` | `max` (u32), `asked` (u32) | a step may walk at most {max} hops; this one asks for {asked} | A step deeper than the lake walks. |
 | `text_weight_range` | — | `text_weight` must be above 0 and at most 1000000 | A `text_weight` out of range. |
 | `total_with_aggregate` | — | `total` counts the records a page lists; an `aggregate` answers groups, so give one | A `total` beside an aggregate. |

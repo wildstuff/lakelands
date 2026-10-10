@@ -26,7 +26,7 @@ check!(
 
 check!(
     PATTERN_AGGREGATE_READS_PATHS = a_pattern_aggregate_reads_its_rows_by_their_paths,
-    "018, extended (lakelands#720): a pattern's aggregate names each value as its rows hold it, `<type>.<field>` or `<type>.key` of a type the pattern binds: a field key and a measure by the path, a named key's paths through a field into members, over a step too; a name no bound type starts is refused alike for a type absent and one not shown, over a step binding it too, a named key reading a field its reader may not know of is refused as a field key on it is, one reading a masked or a write-only field as not granted, as `find` refuses it, and one with no meaning as `find` refuses it; a holder of `only` is grouped, counted and keyed over its admitted records alone, at the start and over a step; a null and a missing value fall into one null group; `<type>.key` is a field `key` its reader may know of, judged by its kind as `find` judges it, null where a record holds none, grouping, summing and ordering as `find` does, and the record's key to one kept from it, as over a type with none, by whose `<type>.key` rows are ordered (lakelands#752); a step at depth 0 walked both ways binds each type it reaches, for an order, `fields` and a group key alike, at the default depth a relation two types declare binds both, whose `where` names the step's `type`, and rows are sorted before `fields` leaves out a path an order reads"
+    "018, extended (lakelands#720): a pattern's aggregate names each value as its rows hold it, `<type>.<field>` or `<type>.key` of a type the pattern binds: a field key and a measure by the path, a named key's paths through a field into members, over a step too; a name no bound type starts is refused alike for a type absent and one not shown, over a step binding it too, a named key reading a field its reader may not know of is refused as a field key on it is, one reading a masked or a write-only field as not granted, as `find` refuses it, and one with no meaning as `find` refuses it; a holder of `only` is grouped, counted and keyed over its admitted records alone, at the start and over a step; a null and a missing value fall into one null group; `<type>.key` is a field `key` its reader may know of, judged by its kind as `find` judges it, null where a record holds none, grouping, summing and ordering as `find` does, and the record's key to one kept from it, as over a type with none, by whose `<type>.key` rows are ordered (lakelands#752); a step walked both ways at depth 0, or over a relation two types declare at the default depth, names its `type` where rows or an aggregate bind it or it reads a `where` (lakelands#680), and then binds that type, for an order, `fields` and a group key alike, and rows are sorted before `fields` leaves out a path an order reads"
 );
 
 check!(
@@ -616,21 +616,22 @@ async fn a_pattern_aggregate_reads_its_rows_by_their_paths(store: Store) -> Held
             }
         }
     };
-    // A depth-0 step walked both ways reaches `bill` and `customer`, and
-    // its rows hold both types' paths.
-    let both = || {
+    // A depth-0 step walked both ways reaches `bill` and `customer`: rows
+    // that bind it name its `type` (lakelands#680), and then hold its
+    // paths.
+    let both = |ty: Option<&str>| {
         let mut s = step("of", Walk::Both);
-        s.depth.min = 0;
+        (s.depth.min, s.ty) = (0, ty.map(Into::into));
         vec![s]
     };
-    let tiers = grouped("bill", both(), "customer.tier").await;
-    if tiers != r#""gold"="2"|"tin"="1"|null="3""# {
+    let tiers = grouped("bill", both(Some("customer")), "customer.tier").await;
+    if tiers != r#""gold"="2"|"tin"="1""# {
         wrong.push(format!(
             "grouped by `customer.tier` over a step both ways: {tiers}"
         ));
     }
     // A relation two types declare, walked in at the default depth: the
-    // step reaches bills and quotes, and its rows hold both types' paths.
+    // step reaches bills and quotes, and names its `type` alike.
     let mut quote = type_decl("quote", vec![field("x", StorageKind::Text)]);
     quote.fields.push(reference("cust", "customer"));
     quote.relations = vec![RelationDecl {
@@ -640,9 +641,25 @@ async fn a_pattern_aggregate_reads_its_rows_by_their_paths(store: Store) -> Held
     l.declare(quote).await?;
     l.upsert("quote", "q1", json!({"x": "qx", "cust": "c1"}))
         .await?;
-    let into = || vec![step("of", Walk::In)];
-    let quotes = grouped("customer", into(), "quote.x").await;
-    if quotes != r#""qx"="1"|null="3""# {
+    let into = |ty: Option<&str>| {
+        let mut s = step("of", Walk::In);
+        s.ty = ty.map(Into::into);
+        vec![s]
+    };
+    for (start, steps, path) in [
+        ("bill", both(None), "customer.tier"),
+        ("customer", into(None), "quote.x"),
+    ] {
+        let untyped = rows(start, steps.clone(), &[path], path, path).await;
+        let groups = grouped(start, steps, path).await;
+        if !untyped.contains("StepSeveralTypes") || !groups.contains("StepSeveralTypes") {
+            wrong.push(format!(
+                "rows and groups by `{path}` over a step with no `type`: {untyped}, {groups}"
+            ));
+        }
+    }
+    let quotes = grouped("customer", into(Some("quote")), "quote.x").await;
+    if quotes != r#""qx"="1""# {
         wrong.push(format!(
             "grouped by `quote.x` over a relation two types declare: {quotes}"
         ));
@@ -673,17 +690,17 @@ async fn a_pattern_aggregate_reads_its_rows_by_their_paths(store: Store) -> Held
         ),
         (
             "bill",
-            both(),
+            both(Some("customer")),
             &["customer.tier"][..],
             "customer.tier",
-            r#""tin","gold","gold",-,-,-"#,
+            r#""tin","gold","gold""#,
         ),
         (
             "customer",
-            into(),
+            into(Some("quote")),
             &["quote.x"][..],
             "quote.x",
-            r#""qx",-,-,-"#,
+            r#""qx""#,
         ),
     ]
     .map(|(start, steps, fields, by, want)| {

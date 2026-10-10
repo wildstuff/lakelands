@@ -110,7 +110,7 @@ pub enum Expr {
         /// The constant's value.
         value: Literal,
     },
-    /// A field of the record in scope, or `<type>.<field>` in a pattern.
+    /// A field of the record in scope, or `<name>.<field>` in a pattern.
     Path {
         /// The path's segments.
         path: Vec<FieldName>,
