@@ -22,7 +22,7 @@ what it counts.
 | `no-external-platform-deps` | nothing from the originating platform in any `Cargo.lock`; no manifest path leaves the repository |
 | `cfg-budget` | at most 20 `cfg(feature)` sites; features are engine names only |
 | `vocabulary` | the platform's words stay out of `src/` and every `.rs` under `crates/`; one of them stays out of the repository and its commit messages |
-| `single-catalog` | tool names come only from the generator in `lakelands-api` |
+| `single-catalog` | tool names come only from the generator in `lakelands-api`; the generic names are read from the generator's `GENERIC_TOOLS`, so the gate keeps no list of its own |
 | `seam-width` | the store facade (`LakeStore`) and the engine traits have at most 110 methods together |
 | `core-size` | api + core + store + sqlite and pg engines (`lakelands-api`, `lakelands-core`, `lakelands-store`, `lakelands-engine-sqlite`, `lakelands-engine-pg`) in two budgets, each against a ratchet base that only moves down: the product code at most 38k lines (`core-size.product.base`), and the specification at most 46.5k (`core-size.spec.base`), which is `src/conformance/**`, every `tests.rs` and everything under a `tests/` directory in `src/`; a product file holding a test, or a `#[cfg(test)]` other than before `mod tests;`, is red |
 | `conformance-required` | every engine crate is on `conformance/roster`, and CI runs the suite for every required one |
