@@ -69,13 +69,40 @@ pub(crate) fn tls(ca_file: Option<&Path>) -> Result<Arc<rustls::ClientConfig>, S
 #[derive(Clone)]
 pub(crate) struct Connector {
     /// The TLS configuration, for an `https` server.
-    pub(crate) tls: Option<Arc<rustls::ClientConfig>>,
+    tls: Option<Arc<rustls::ClientConfig>>,
+    /// A connection a test holds the other end of, taken in place of the
+    /// first one dialed.
+    #[cfg(test)]
+    over: Arc<std::sync::Mutex<Option<tokio::io::DuplexStream>>>,
+}
+
+impl Connector {
+    pub(crate) fn new(tls: Option<Arc<rustls::ClientConfig>>) -> Connector {
+        Connector {
+            tls,
+            #[cfg(test)]
+            over: Arc::default(),
+        }
+    }
+
+    /// A connector whose first connection is `conn`: no socket, so
+    /// nothing in the exchange waits on the wall clock.
+    #[cfg(test)]
+    pub(crate) fn over(conn: tokio::io::DuplexStream) -> Connector {
+        Connector {
+            tls: None,
+            over: Arc::new(std::sync::Mutex::new(Some(conn))),
+        }
+    }
 }
 
 /// One connection: plain, or TLS.
 pub(crate) enum Conn {
     Plain(TokioIo<TcpStream>),
     Tls(Box<TokioIo<tokio_rustls::client::TlsStream<TcpStream>>>),
+    /// A test's in-memory connection.
+    #[cfg(test)]
+    Duplex(TokioIo<tokio::io::DuplexStream>),
 }
 
 impl tower_service::Service<Uri> for Connector {
@@ -89,7 +116,13 @@ impl tower_service::Service<Uri> for Connector {
 
     fn call(&mut self, uri: Uri) -> Self::Future {
         let tls = self.tls.clone();
+        #[cfg(test)]
+        let over = self.over.lock().unwrap_or_else(|e| e.into_inner()).take();
         Box::pin(async move {
+            #[cfg(test)]
+            if let Some(conn) = over {
+                return Ok(Conn::Duplex(TokioIo::new(conn)));
+            }
             let secure = uri.scheme_str() == Some("https");
             let host = uri
                 .host()
@@ -129,6 +162,8 @@ impl Read for Conn {
         match self.get_mut() {
             Conn::Plain(s) => Pin::new(s).poll_read(cx, buf),
             Conn::Tls(s) => Pin::new(s.as_mut()).poll_read(cx, buf),
+            #[cfg(test)]
+            Conn::Duplex(s) => Pin::new(s).poll_read(cx, buf),
         }
     }
 }
@@ -142,6 +177,8 @@ impl Write for Conn {
         match self.get_mut() {
             Conn::Plain(s) => Pin::new(s).poll_write(cx, buf),
             Conn::Tls(s) => Pin::new(s.as_mut()).poll_write(cx, buf),
+            #[cfg(test)]
+            Conn::Duplex(s) => Pin::new(s).poll_write(cx, buf),
         }
     }
 
@@ -149,6 +186,8 @@ impl Write for Conn {
         match self.get_mut() {
             Conn::Plain(s) => Pin::new(s).poll_flush(cx),
             Conn::Tls(s) => Pin::new(s.as_mut()).poll_flush(cx),
+            #[cfg(test)]
+            Conn::Duplex(s) => Pin::new(s).poll_flush(cx),
         }
     }
 
@@ -156,6 +195,8 @@ impl Write for Conn {
         match self.get_mut() {
             Conn::Plain(s) => Pin::new(s).poll_shutdown(cx),
             Conn::Tls(s) => Pin::new(s.as_mut()).poll_shutdown(cx),
+            #[cfg(test)]
+            Conn::Duplex(s) => Pin::new(s).poll_shutdown(cx),
         }
     }
 }

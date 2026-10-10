@@ -266,7 +266,15 @@ named, and nothing from the environment.
   caller's own timeout is the bound for that. An ingest is held to the
   same silence bound: while records are sent, when the server stops
   taking them (time spent waiting on the source never counts), and once
-  they have all been sent, when its answer goes quiet.
+  they have all been sent, when its answer goes quiet. Only a client
+  that ran calls an ingest's answer silent: a silent server is refused
+  at exactly the bound, and a client that did not run for a while (a
+  suspended process, a stalled machine) first hears the server for one
+  more quarter of the bound. One stop it cannot tell from listening:
+  one that begins in the last quarter of the bound and ends within a
+  quarter after it. So a client stopped for up to just under half the
+  bound (15 s of 30 s) can still take a working server for silent; a
+  longer stop, or one that began earlier, cannot.
 - No answer is held past `max_answer_bytes`: a whole answer, one event
   of the feed or one line of an ingest's answer that grows past it is
   `unavailable`, and the client stops reading.
