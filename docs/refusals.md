@@ -72,20 +72,6 @@ The form a REST query parameter's value takes.
 | `order` | — | fields separated by commas, `-field` for descending | Sort keys. |
 | `given` | — | a value that is not empty | A value given, not empty. |
 
-## `Unmocked`
-
-What the in-memory mock of a lake does not do, which the store does.
-
-| code | parameters | sentence | about |
-|---|---|---|---|
-| `rekey` | — | re-key a type, which keeps its key fields here | A migration that changes the key. |
-| `aggregate` | — | aggregate | A `find`'s aggregate. |
-| `pattern_start` | — | start a pattern but from a key or a filter | A pattern's start of another kind. |
-| `pattern_to` | — | walk a pattern to a record it names | A pattern walked to a record it names. |
-| `pattern_projection` | — | project a pattern but as rows | A pattern's projection of another kind. |
-| `hops` | — | walk a step but one hop in one direction | A step's depth or a walk both ways. |
-| `proposer` | — | know who made this proposal | The proposer of a proposal it did not log. |
-
 ## `Segment`
 
 What a REST path segment a client sends names.
@@ -675,8 +661,6 @@ What a refusal is about.
 | `segment_empty` | `part` (Segment) | {part} is empty; over REST it is a path segment, and an empty one names another route | An empty path segment. |
 | `value_type_no_relations` | — | a value type has no relations to rename; `relation_renames` belongs to `to` | A value type's migration naming relations to rename. |
 | `verb_type_header` | `header` (String), `verb` (VerbName) | `POST …/verbs/<verb>` takes no `{header}`: verb `{verb}` is called on its type, which has no record version | A compare-and-set header on a verb called on its type. |
-| `mock_cannot` | `what` (Unmocked) | the in-memory mock does not {what} | What the in-memory mock does not do, which the store does. |
-| `mock_unevaluated` | `name` (String) | the in-memory mock does not evaluate {name}() here | A function the in-memory mock does not evaluate where it is called. |
 
 ## `Operand`
 
@@ -967,6 +951,15 @@ whose own page says its sentence.
 | `Flaw::format_outside` | v0.12.0 | 0.13.0 | a release reads one log format, not a range of them |
 | `Flaw::format_back` | v0.12.0 | 0.13.0 | every event of a lake is in one log format, so none goes down |
 | `Flaw::format_below` | v0.12.0 | 0.13.0 | no format is read but the release's one, so no event is below what it needs |
+| `Case::mock_cannot` | v0.12.0 | 0.13.0 | only the in-memory mock said it, and the mock is retired (lakelands#800) |
+| `Case::mock_unevaluated` | v0.12.0 | 0.13.0 | only the in-memory mock said it, and the mock is retired (lakelands#800) |
+| `Unmocked::rekey` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
+| `Unmocked::aggregate` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
+| `Unmocked::pattern_start` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
+| `Unmocked::pattern_to` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
+| `Unmocked::pattern_projection` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
+| `Unmocked::hops` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
+| `Unmocked::proposer` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
 
 ## Parameter types
 

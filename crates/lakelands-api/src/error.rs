@@ -22,7 +22,7 @@ mod outage;
 
 pub use case::{
     Case, Form, JsonFault, Named, Names, Naming, Operand, Place, RecordName, Regexp, Revision,
-    Said, Segment, Shape, Unmocked,
+    Said, Segment, Shape,
 };
 pub(crate) use case::{Param, catalog, render};
 pub use outage::{

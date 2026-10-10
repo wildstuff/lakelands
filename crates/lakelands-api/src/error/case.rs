@@ -661,26 +661,6 @@ named! {
 }
 
 named! {
-    /// What the in-memory mock of a lake does not do, which the store does.
-    pub enum Unmocked {
-        /// A migration that changes the key.
-        Rekey = "rekey" => "re-key a type, which keeps its key fields here",
-        /// A `find`'s aggregate.
-        Aggregate = "aggregate" => "aggregate",
-        /// A pattern's start of another kind.
-        PatternStart = "pattern_start" => "start a pattern but from a key or a filter",
-        /// A pattern walked to a record it names.
-        PatternTo = "pattern_to" => "walk a pattern to a record it names",
-        /// A pattern's projection of another kind.
-        PatternProjection = "pattern_projection" => "project a pattern but as rows",
-        /// A step's depth or a walk both ways.
-        Hops = "hops" => "walk a step but one hop in one direction",
-        /// The proposer of a proposal it did not log.
-        Proposer = "proposer" => "know who made this proposal",
-    }
-}
-
-named! {
     /// What a REST path segment a client sends names.
     pub enum Segment {
         /// A type.
@@ -1624,12 +1604,6 @@ catalog! {
         ValueTypeNoRelations => "a value type has no relations to rename; `relation_renames` belongs to `to`",
         /// A compare-and-set header on a verb called on its type.
         VerbTypeHeader { header: String, verb: VerbName } => "`POST …/verbs/<verb>` takes no `{header}`: verb `{verb}` is called on its type, which has no record version",
-
-        // ---- the in-memory mock
-        /// What the in-memory mock does not do, which the store does.
-        MockCannot { what: Unmocked } => "the in-memory mock does not {what}",
-        /// A function the in-memory mock does not evaluate where it is called.
-        MockUnevaluated { name: String } => "the in-memory mock does not evaluate {name}() here",
     }
 }
 

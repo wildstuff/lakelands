@@ -1905,14 +1905,6 @@
    "code": "verb_type_header",
    "header": "s",
    "verb": "v"
-  },
-  {
-   "code": "mock_cannot",
-   "what": "rekey"
-  },
-  {
-   "code": "mock_unevaluated",
-   "name": "s"
   }
  ],
  "Place": [
