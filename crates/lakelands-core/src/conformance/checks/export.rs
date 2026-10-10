@@ -1228,6 +1228,52 @@ async fn a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_whe
     Ok(())
 }
 
+check!(
+    INTEGER_DAMAGE =
+        an_export_holding_an_integer_no_reader_reads_exactly_is_damaged_at_its_position,
+    "the log format §1.2 and §4.3: a log holds no number written as an integer beyond ±(2^53 − 1), whatever wrote it, so an export whose event holds one (`9007199254740993` in a patch, the line's hash made right) is refused by its verification as damaged at that position, naming the number, and an import of it is refused the same way; the line holding 2^53 − 1 is not",
+    given
+);
+
+async fn an_export_holding_an_integer_no_reader_reads_exactly_is_damaged_at_its_position(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let scratch = Scratch::new(given.scratch.clone());
+    let at = invoices(store.as_ref(), 0, 1).await?;
+    let too_large = |e: &Error| matches!(damaged(e), Some(Flaw::IntegerTooLarge { .. }));
+    for (n, held) in [
+        (9_007_199_254_740_991_u64, false),
+        (9_007_199_254_740_993, true),
+    ] {
+        let from = scratch.dir(&format!("from{held}"));
+        write(store.as_ref(), &from).await?;
+        let file = files(&from)?.remove(0);
+        let mut lines = lines_of(&from, &file)?;
+        let line = at.0 as usize;
+        lines[line] = rehashed(&lines[line], |e| e["body"]["patch"]["amount"] = json!(n))?;
+        rewrite(&from, &file, &lines)?;
+        let verified = export::verify(&from);
+        let named = matches!(verified.as_ref().err().and_then(Error::situation),
+            Some(Situation::Damaged { position: Some(p), flaw: Flaw::IntegerTooLarge { .. }, .. }) if *p == at);
+        ensure!(
+            named == held,
+            "an export whose event at {at} holds the amount {n} must {} refused as damaged \
+             there by that integer; its verification answered {verified:?}",
+            if held { "be" } else { "not be" }
+        );
+        let imported = (given.import)(from, store.lake().clone(), None, import_seams()).await;
+        let refusal = imported.map(|_| ()).err();
+        ensure!(
+            refusal.as_ref().is_some_and(too_large) == held,
+            "an import of an export whose event at {at} holds the amount {n} must {} refused \
+             as damaged by that integer; it answered {refusal:?}",
+            if held { "be" } else { "not be" }
+        );
+    }
+    Ok(())
+}
+
 /// The flaw an error says the log is damaged by, itself or as the cause
 /// an import's fold or its stop names.
 fn damaged(e: &Error) -> Option<&Flaw> {

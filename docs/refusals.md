@@ -828,6 +828,7 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `position` | `expected` (Position), `found` (Position, optional) | [position {found} stands where \|expected ]position {expected}[{?found} belongs] | Another position stands where one belongs, or none does. |
 | `prev_hash` | — | it does not name the hash of the event before it | It does not name the hash of the event before it. |
 | `known_at_back` | `known_at` (Timestamp), `before` (Timestamp) | its known_at {known_at} is before the {before} of the event before it | Its `known_at` is before that of the event before it. |
+| `integer_too_large` | `n` (Number) | the integer {n} in it is beyond ±(2^53 − 1), which not every reader reads exactly | It holds a number written as an integer beyond ±(2^53 − 1). |
 | `no_checkpoint` | — | a segment begins there, and its first event is no checkpoint | A segment begins there, and its first event is no checkpoint. |
 | `ends_before` | `position` (Position) | it ends before position {position} | It ends before a position it should hold. |
 | `ends_inside_set` | — | it ends inside a set of declarations: the set's last declaration is missing | It ends inside a set of declarations. |

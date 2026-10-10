@@ -175,8 +175,8 @@ impl<'a> Lower<'a> {
     }
 
     /// Report a declaration's annotations that cannot be declared: a key
-    /// in a reserved namespace, or one the contract refuses. And a
-    /// function's `config` the log would not write.
+    /// in a reserved namespace, or one the contract refuses. And a number
+    /// in it the log would not write, for a declaration of every kind.
     fn annotated(&mut self, d: &Declaration) {
         match d.annotation_fault() {
             Some(AnnotationFault::Reserved { said, .. }) => {
@@ -187,7 +187,7 @@ impl<'a> Lower<'a> {
             }
             None => {}
         }
-        if let Some(said) = d.config_fault() {
+        if let Some(said) = d.integer_fault() {
             self.fail(Problem::Malformed, said.to_string());
         }
     }
@@ -370,7 +370,7 @@ pub(super) fn value_type(l: &mut Lower<'_>, doc: ValueTypeDoc) -> ValueTypeDecl 
         );
     }
     let constraint = l.opt_cond("`constraint`", doc.constraint);
-    ValueTypeDecl {
+    let v = ValueTypeDecl {
         name: ValueTypeName::new(doc.name),
         kind: doc.kind,
         constraint,
@@ -378,7 +378,9 @@ pub(super) fn value_type(l: &mut Lower<'_>, doc: ValueTypeDoc) -> ValueTypeDecl 
         format: doc.format,
         scale: doc.scale,
         description: doc.description,
-    }
+    };
+    l.annotated(&Declaration::ValueType(v.clone()));
+    v
 }
 
 /// A type, with its fields, relations and view.
@@ -534,24 +536,28 @@ pub(super) fn verb(l: &mut Lower<'_>, doc: VerbDoc) -> VerbDecl {
 pub(super) fn trigger(l: &mut Lower<'_>, doc: TriggerDoc) -> TriggerDecl {
     let on = l.type_ref("`on`", &doc.on);
     let when = l.opt_cond("`when`", doc.when);
-    TriggerDecl {
+    let t = TriggerDecl {
         max_depth: doc.max_depth,
         name: TriggerName::new(doc.name),
         on,
         when,
         description: doc.description,
-    }
+    };
+    l.annotated(&Declaration::Trigger(t.clone()));
+    t
 }
 
 pub(super) fn object_set(l: &mut Lower<'_>, doc: ObjectSetDoc) -> ObjectSetDecl {
     let of = l.type_ref("`of`", &doc.of);
     let filter = l.cond("`where`", doc.filter);
-    ObjectSetDecl {
+    let s = ObjectSetDecl {
         name: doc.name,
         of,
         filter,
         description: doc.description,
-    }
+    };
+    l.annotated(&Declaration::ObjectSet(s.clone()));
+    s
 }
 
 /// An aging rule: the fields of its `sys.aging_rule` record. The type it

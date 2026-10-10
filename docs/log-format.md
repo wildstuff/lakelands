@@ -126,7 +126,19 @@ refuses it first and says where it stands:
 - a field's value and a payload's member, at the field or the member;
 - what a source states of a record beside its fields, at `seen_at` and
   at `upstream.position`;
-- a function's `config`, at the function and its `config`;
+- a declaration, which is written as it was declared, at the
+  declaration and the member that holds the number, by its path: a
+  function's `config.limits[0]`, the duration literal of an expression
+  in typed form at `where.rhs.value.value`. An expression in text form
+  is judged by the typed form it parses to, which is the form a schema
+  hash is taken over, and said at the member that holds the text
+  (`where`): a duration literal is a whole number of microseconds, so
+  `104250d` is refused where `104249d` is declared. A number literal is
+  kept as it is written, in both forms. The bound on a literal in text
+  form is the declaring door's: a reader judges what stands in an event,
+  and there text stands, so a log from another writer that holds such a
+  text verifies, and its schema hash is not one every reader computes
+  alike;
 - a seam's output, which no caller can correct: a backing's output or
   an embedding's vector that holds such an integer is recorded as that
   call's failure (§2.5), and an executor's answer that holds one is not
@@ -135,6 +147,17 @@ refuses it first and says where it stands:
 
 A refusal from the seal itself names no place. It means a value passed
 the place it entered at, which is a defect of that place.
+
+**A reader judges the same.** The seal is the store's own writer's. A
+log may come from elsewhere: an import, or a writer that did not seal.
+A verification refuses an event that holds a number written as an
+integer beyond the range as damaged at its position, naming the number
+(§4.3), and an import verifies before it writes. Nobody can correct
+another chain's bytes, so this is damage, not a refusal of a caller. A
+`known_at` or `seen_at` out of the years is no event at all to the
+parser. The fold does not judge a number that stands in an event: a
+lake that holds such an event opens and answers, and its `verify` says
+what is wrong. What the fold computes from events follows §2.3.
 
 ### 1.3 Time
 
@@ -408,6 +431,20 @@ the rules are deterministic, so a replay reproduces them. A field that
 declares `computed_at: read` is not computed by the fold
 and holds no value: every read computes it from the record as stored,
 with its own clock (`docs/decisions/052-a-field-may-be-computed-at-the-read.md`).
+
+What an expression computes is judged as what is written is. A derived
+field whose number would be written as an integer beyond ±(2^53 − 1)
+(§1.2) holds no value, as one whose date-time would leave the years of
+§1.3 does, and a verb that sets such a value is refused on the field it
+sets. A migration's conversion follows: text digits beyond that range
+become no number, and its preflight reports them as not convertible.
+This is the rule of this log format: a derived and a converted number is
+computed by it, and the fold replays a migration by it, so a reader
+that folds a log computes what its writer did. Where a migration the
+fold replays holds a stored value this rule does not convert, the event
+is damaged at its position: the lake neither opens for writing nor
+rebuilds, while `verify`, which reads the chain and not the fold, finds
+the log whole.
 
 Before it computes them, on an event that makes a record (no live record
 stood under the key before it: never written, or retired), the fold
@@ -683,6 +720,13 @@ start at 0 and follow each other with no gap or overlap.
 A missing or altered sealed segment is therefore always detected, at the
 first checkpoint that lists it, and reported as a break at that
 checkpoint. It is never skipped silently.
+
+A reader also refuses an event that holds a number written as an integer
+beyond ±(2^53 − 1), at that event's position (§1.2): its bytes may be
+canonical and its hash right for one implementation, and another, which
+reads the number as a double, would write other bytes and compute
+another hash. `LakeStore::verify`, the verification of an export and an
+import refuse it alike.
 
 ## 5. Values in payloads
 

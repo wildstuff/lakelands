@@ -146,3 +146,21 @@ fn an_integer_is_too_large_in_the_form_it_is_written_in() {
     let nested = json!({"a": [1, {"b": 1e17}]});
     assert_eq!(integer_too_large(&nested), json!(1e17).as_number());
 }
+
+/// The path of the first such number, as a member is written: names
+/// joined by dots, a list's items by their index.
+#[test]
+fn an_integer_too_large_is_found_with_its_path() {
+    let at = |v: Value| integer_too_large_at(&v).map(|(path, n)| (path, n.to_string()));
+    let found = |path: &str, n: &str| Some((path.to_owned(), n.to_owned()));
+    assert_eq!(
+        at(json!(9007199254740992_u64)),
+        found("", "9007199254740992")
+    );
+    assert_eq!(
+        at(json!({"a": 1, "b": {"c": [0, {"d": 1e16}]}})),
+        found("b.c[1].d", "1e+16")
+    );
+    assert_eq!(at(json!([[1], [2, 1e20]])), found("[1][1]", "1e+20"));
+    assert_eq!(at(json!({"a": [1e21, "1e16", 9007199254740991_u64]})), None);
+}

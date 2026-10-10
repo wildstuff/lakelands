@@ -98,7 +98,7 @@ check!(
 check!(
     RENAMES_LIST_CONDITIONS =
         a_rename_report_lists_the_declarations_and_rules_that_may_name_an_old_value,
-    "024 and 027, extended (lakelands#553): the preflight of a rename lists, by kind and name, each declaration in force whose expressions hold an old value as a literal (a set, a trigger, a verb, a view, a function) and each aging rule on a type that uses the value type that moves from or to one, and changes none of them; a declaration the reader is not shown (a function too, judged as `describe` judges it, lakelands#770), and a rule whose `from` it may not read, is told only as one there may be, by its preflight and by the proposal listed to it, there with its grants followed to the proposal through the renames since"
+    "024 and 027, extended (lakelands#553): the preflight of a rename lists, by kind and name, each declaration in force whose expressions hold an old value as a literal (a set, a trigger, a verb, a view, a function; a view that names it only in a merged source's `where` and a type that names it only in a relation's field's `derived` too) and each aging rule on a type that uses the value type that moves from or to one, and changes none of them; a declaration the reader is not shown (a function too, judged as `describe` judges it, lakelands#770), and a rule whose `from` it may not read, is told only as one there may be, by its preflight and by the proposal listed to it, there with its grants followed to the proposal through the renames since"
 );
 
 check!(
@@ -844,6 +844,36 @@ async fn a_rename_report_lists_the_declarations_and_rules_that_may_name_an_old_v
         ),
         "`kept`, held from `flag` under its new name, is told that a set it is not shown may \
          name a value; it is listed {report:?}"
+    );
+    // An old value named only in a merged source's `where`, and only in a
+    // relation's field's `derived`: each is an expression its declaration
+    // holds.
+    let (text, count) = (
+        json!({"kind": "text"}),
+        |n: &str| json!([{"name": n, "expr": "count()"}]),
+    );
+    l.declare_json(json!({"declare": "type", "name": "piles", "key": ["note"],
+        "fields": [{"name": "note", "type": text}, {"name": "boxes", "type": {"kind": "number"}},
+                   {"name": "tasks", "type": {"kind": "number"}}],
+        "view": {"source": "box", "group_by": ["note"], "measures": count("boxes"),
+                 "merge": [{"source": "task", "where": "state = 'open'", "group_by": ["note"],
+                            "measures": count("tasks")}]}}))
+        .await?;
+    let is_open = json!({"name": "is_open", "type": {"kind": "boolean"}, "authority": "derived",
+                         "derived": "label = 'open'", "depends_on": ["label"]});
+    l.declare_json(
+        json!({"declare": "type", "name": "shelf", "fields": [{"name": "n", "type": text}],
+        "relations": [{"name": "holds", "target": "task", "cardinality": "many_to_many",
+                       "fields": [{"name": "label", "type": text}, is_open]}]}),
+    )
+    .await?;
+    let report = preflight(&l, m).await?;
+    let named = |n: &str| report.conditions.iter().any(|c| c.contains(n));
+    ensure!(
+        named("`piles`") && named("`shelf`"),
+        "the report lists the view that names `open` in a merged source's `where` and the type \
+         that names it in a relation's field's `derived`; it lists {:?}",
+        report.conditions
     );
     Ok(())
 }

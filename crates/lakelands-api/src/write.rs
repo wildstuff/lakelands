@@ -514,18 +514,77 @@ impl Declaration {
         })
     }
 
-    /// A function's `config` is written as it was declared, so it is
-    /// judged as a written value is (`docs/log-format.md` §1.2): an
-    /// integer anywhere in it beyond ±(2^53 − 1) is said at the function
-    /// and its `config`. `None` for any other declaration.
-    pub fn config_fault(&self) -> Option<Said> {
-        let Declaration::Function(f) = self else {
-            return None;
-        };
-        let n = crate::canonical::integer_too_large(&f.config)?.clone();
-        let path = "config".to_owned();
-        let said = Said::from(Case::IntegerTooLarge { n }).within(Place::Member { path });
-        Some(said.within(self.place()))
+    /// A declaration is written into the log as it was declared, so it
+    /// is judged as a written value is (`docs/log-format.md` §1.2): a
+    /// number anywhere in it written as an integer beyond ±(2^53 − 1) is
+    /// said at the declaration and the member that holds it, by its path
+    /// in the declaration as it is written: a function's `config.limits[0]`,
+    /// the duration literal of an expression in typed form at
+    /// `where.rhs.value.value`. An expression in text form is judged by
+    /// the typed form it parses to, which is the form a schema hash is
+    /// taken over, and said at the member that holds the text (`where`).
+    pub fn integer_fault(&self) -> Option<Said> {
+        use crate::canonical::{integer_too_large, integer_too_large_at};
+        let written = serde_json::to_value(self).ok()?;
+        let typed = integer_too_large_at(&written).map(|(path, n)| (path, n.clone()));
+        let (path, n) = typed.or_else(|| {
+            self.conditions().into_iter().find_map(|(path, c)| {
+                let Condition::Text(text) = c else {
+                    return None;
+                };
+                let typed = serde_json::to_value(crate::expr::parse(text).ok()?).ok()?;
+                Some((path, integer_too_large(&typed)?.clone()))
+            })
+        })?;
+        let said = Said::from(Case::IntegerTooLarge { n });
+        Some(said.within(Place::Member { path }).within(self.place()))
+    }
+
+    /// Every expression the declaration holds, in either form, each with
+    /// the path of the member that holds it in the declaration as it is
+    /// written (`view.merge[0].where`).
+    pub fn conditions(&self) -> Vec<(String, &Condition)> {
+        let mut all: Vec<(String, Option<&Condition>)> = Vec::new();
+        match self {
+            Declaration::Type(t) => {
+                for (i, f) in t.fields.iter().enumerate() {
+                    all.push((format!("fields[{i}].derived"), f.derived.as_ref()));
+                }
+                for (i, r) in t.relations.iter().enumerate() {
+                    for (j, f) in r.fields.iter().enumerate() {
+                        let path = format!("relations[{i}].fields[{j}].derived");
+                        all.push((path, f.derived.as_ref()));
+                    }
+                }
+                let merged = t.view.iter().flat_map(|v| v.merge.iter().enumerate());
+                let merged =
+                    merged.map(|(i, m)| (format!("view.merge[{i}]"), &m.r#where, &m.measures));
+                let own = t
+                    .view
+                    .iter()
+                    .map(|v| ("view".to_owned(), &v.r#where, &v.measures));
+                for (source, filter, measures) in own.chain(merged) {
+                    all.push((format!("{source}.where"), filter.as_ref()));
+                    for (i, m) in measures.iter().enumerate() {
+                        all.push((format!("{source}.measures[{i}].expr"), Some(&m.expr)));
+                    }
+                }
+            }
+            Declaration::ValueType(v) => all.push(("constraint".into(), v.constraint.as_ref())),
+            Declaration::Verb(v) => {
+                all.push(("requires".into(), v.requires.as_ref()));
+                if let crate::ontology::VerbEffect::Write { set } = &v.effect {
+                    for (i, a) in set.iter().enumerate() {
+                        all.push((format!("set[{i}].value"), Some(&a.value)));
+                    }
+                }
+            }
+            Declaration::Trigger(t) => all.push(("when".into(), t.when.as_ref())),
+            Declaration::ObjectSet(s) => all.push(("where".into(), Some(&s.filter))),
+            Declaration::Function(f) => all.push(("expr".into(), f.expr.as_ref())),
+        }
+        let held = all.into_iter().filter_map(|(path, c)| Some((path, c?)));
+        held.collect()
     }
 }
 
