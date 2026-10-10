@@ -46,7 +46,7 @@ fn a_reads_holds_and_its_searchs_head_are_one_view() {
     };
     let then = || lake.engine.view(None).expect("a view");
     let at = then().position().unwrap_or(Position::GENESIS);
-    let head = super::super::Head::new(&lake, &who, at).expect("the head is read");
+    let head = super::super::Head::new(&lake, &who, at, None).expect("the head is read");
     let with = HeldNow::new(&lake, then(), Some(&head)).expect("the holds are read");
     assert!(
         Rc::ptr_eq(&with.head, &head.view) && Rc::ptr_eq(&with.since, &head.since),

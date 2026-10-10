@@ -164,7 +164,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::COUNT_IS_THE_SCAN,
     reads::LEXICAL_HITS,
     reads::LEXICAL_BEYOND_ASCII,
-    reads::LEXICAL_EARLIER,
+    reads::RANKED_ONE_STATE,
     reads::LEXICAL_NAMED_FIELDS,
     reads::CHANGED_ROWS,
     reads::MANY_PUTS,

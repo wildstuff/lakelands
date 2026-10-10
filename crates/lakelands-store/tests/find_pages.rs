@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use lakelands_api::engine::{
     CanonicalEvent, Declared, EngineOpener, LakeEngine, Lease, OpenMode, ProjectionStore,
-    ProjectionView, Scan, VectorIndex,
+    ProjectionView, Ranked, Rankings, Scan, VectorIndex,
 };
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::expr::Condition;
@@ -77,15 +77,6 @@ impl ProjectionView for CountingView<'_> {
         walk: Walk,
     ) -> Result<Vec<Vec<Edge>>> {
         self.inner.edges(ty, keys, relation, walk)
-    }
-    fn lexical(
-        &self,
-        ty: &TypeName,
-        text: &str,
-        fields: Option<&[lakelands_api::id::FieldName]>,
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>> {
-        self.inner.lexical(ty, text, fields, k)
     }
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
         self.inner.proposals(filter)
@@ -158,6 +149,9 @@ impl LakeEngine for Counting {
             inner: self.inner.view(as_of)?,
             handed: self.handed.clone(),
         }))
+    }
+    fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked> {
+        self.inner.ranked(ty, asked, k)
     }
     fn vectors(&self) -> Option<&dyn VectorIndex> {
         self.inner.vectors()

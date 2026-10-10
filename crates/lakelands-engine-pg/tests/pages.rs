@@ -170,7 +170,14 @@ fn a_search_reads_the_committed_vectors_while_a_page_is_written() {
     for i in 0..1_100 {
         put(&format!("b{i:05}"), [0.0, 1.0], 2);
     }
-    let near = index.nearest(&t, "e", &[0.0, 1.0], 3).unwrap();
+    let near = lakelands_core::conformance::engine::reads::nearest(
+        engine.as_ref(),
+        &t,
+        "e",
+        &[0.0, 1.0],
+        3,
+    )
+    .unwrap();
     let near: Vec<&str> = near.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(
         (near, index.count(&t, "e").unwrap()),

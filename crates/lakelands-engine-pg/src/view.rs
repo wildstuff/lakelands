@@ -261,6 +261,47 @@ pub fn read_statements(schema: &str, head: bool) -> [String; 5] {
     ]
 }
 
+/// The full-text hits of `text` over `ty` as the rows hold them, at the
+/// head (`docs/seams.md` §`ranked`), read through `db`.
+pub(crate) fn lexical(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    text: &str,
+    fields: Option<&[FieldName]>,
+    k: u32,
+) -> Result<Vec<(RecordKey, f64)>> {
+    let Some(decl) = projection::type_at(db, names, ty, None)? else {
+        return Ok(Vec::new());
+    };
+    let query: Vec<String> = engines::tokens(text, decl.language.as_deref().unwrap_or(""))
+        .into_iter()
+        .collect();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    // The candidates are the records holding any query token: the set the
+    // shared scoring counts. The rows do not say which field a token came
+    // from: limited to named fields, these are a superset, and the shared
+    // scoring keeps the records whose named fields match before it cuts
+    // at `k`.
+    let sql = format!(
+        "SELECT DISTINCT key FROM {} WHERE ty = $1 AND token = ANY($2::text[])",
+        names.t("full_text")
+    );
+    let keys: BTreeSet<String> = db.column(&sql, &[&ty.as_str(), &query])?;
+    let mut head = Vec::with_capacity(keys.len());
+    for key in keys {
+        head.extend(projection::head_record(
+            db,
+            names,
+            ty,
+            &RecordKey::from(key),
+        )?);
+    }
+    Ok(engines::lexical(&decl, &head, text, fields, k))
+}
+
 impl PgView<'_> {
     /// Run `f` in one read transaction at the view's position; an empty
     /// projection answers `empty`.
@@ -851,52 +892,6 @@ impl ProjectionView for PgView<'_> {
                 engines::order_edges(edges);
             }
             Ok(all)
-        })
-    }
-
-    fn lexical(
-        &self,
-        ty: &TypeName,
-        text: &str,
-        fields: Option<&[FieldName]>,
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>> {
-        self.read(Vec::new(), |r| {
-            // The full-text rows describe the head; a view keeps the hits
-            // live at its own position (`docs/seams.md`).
-            let Some(decl) = projection::type_at(r.db, r.names, ty, None)? else {
-                return Ok(Vec::new());
-            };
-            let query: Vec<String> = engines::tokens(text, decl.language.as_deref().unwrap_or(""))
-                .into_iter()
-                .collect();
-            if query.is_empty() {
-                return Ok(Vec::new());
-            }
-            // The candidates are the records holding any query token: the
-            // set the shared scoring counts. The rows do not say which
-            // field a token came from: limited to named fields, these are
-            // a superset, and the shared scoring keeps the records whose
-            // named fields match before it cuts at `k`.
-            let sql = format!(
-                "SELECT DISTINCT key FROM {} WHERE ty = $1 AND token = ANY($2::text[])",
-                r.names.t("full_text")
-            );
-            let keys: BTreeSet<String> = r.db.column(&sql, &[&ty.as_str(), &query])?;
-            let mut head = Vec::with_capacity(keys.len());
-            for key in keys {
-                let key = RecordKey::from(key);
-                if let Some(record) = projection::head_record(r.db, r.names, ty, &key)? {
-                    let then = if r.head {
-                        Some(record.clone())
-                    } else {
-                        r.record(ty, &key)?
-                    };
-                    head.push((record, engines::searchable(then.as_ref())));
-                }
-            }
-            let head = head.iter().map(|(state, live)| (state, *live));
-            Ok(engines::lexical(&decl, head, text, fields, k))
         })
     }
 

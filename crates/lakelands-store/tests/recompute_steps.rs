@@ -795,8 +795,14 @@ fn row_9_the_flush_indexes_the_vectors_it_fills() {
         (json!({"title": "c", "vec": [0, 0, 1]}), true, q[5]),
         "row 9: `c` is retired as the step left it, with its vector"
     );
-    let index = l.lake.engine.vectors().expect("the memory engine's index");
-    let found = index.nearest(&"doc".into(), "vec", &[0.0, 0.0, 1.0], 3);
+    let engine = l.lake.engine.as_ref();
+    let found = lakelands_core::conformance::engine::reads::nearest(
+        engine,
+        &"doc".into(),
+        "vec",
+        &[0.0, 0.0, 1.0],
+        3,
+    );
     let mut found: Vec<String> = (found.expect("a search").iter())
         .map(|(k, _)| k.to_string())
         .collect();

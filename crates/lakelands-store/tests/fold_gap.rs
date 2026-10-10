@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use lakelands_api::engine::{
     CanonicalEvent, EngineOpener, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
-    VectorIndex,
+    Ranked, Rankings, VectorIndex,
 };
 use lakelands_api::event::{Digest, EventBody, SegmentDigest};
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl};
@@ -102,6 +102,9 @@ impl LakeEngine for Failing {
     }
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
         self.inner.view(as_of)
+    }
+    fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked> {
+        self.inner.ranked(ty, asked, k)
     }
     fn vectors(&self) -> Option<&dyn VectorIndex> {
         self.inner.vectors()

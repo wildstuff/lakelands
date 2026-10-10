@@ -1,18 +1,19 @@
-//! What a view answers through the seam: scans, full text, the vector
-//! index, proposals and the other kept states (`docs/seams.md`
-//! §`ProjectionView`, §`VectorIndex`,
+//! What a view answers through the seam: scans, proposals and the other
+//! kept states, and what `ranked` answers of the head's indexes
+//! (`docs/seams.md` §`ProjectionView`, §`ranked`, §`VectorIndex`,
 //! `docs/decisions/029-every-answer-has-one-order.md`).
 //!
 //! The store asks the engine for its pages: a scan's order, continuation
 //! and limit are what `find` answers from. A scan ordered by the key alone
 //! is read in batches from `after` (`lakelands_core::engines::
-//! scan_in_key_order`), and answers as one scan over every state would. Full text ranks by the
-//! head and keeps what the view's position could see. The vector index is
-//! exact: the true top `k` by cosine, ties by key.
+//! scan_in_key_order`), and answers as one scan over every state would. Full text and the
+//! vectors rank the head's live records, all lists of one call from one
+//! state, with its position. A vector's list is exact: the true top `k`
+//! by cosine, ties by key.
 
-use lakelands_api::engine::{After, LakeEngine, ProjectionStore, ProjectionView, Scan};
+use lakelands_api::engine::{After, LakeEngine, ProjectionStore, ProjectionView, Rankings, Scan};
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{Position, RecordKey, TypeName};
+use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposalState, ProposedWrite};
@@ -80,7 +81,7 @@ engine_check!(
 
 engine_check!(
     LEXICAL_HITS = lexical_hits_are_the_pipelines_over_searchable_live_records,
-    "025 and seams §lexical: a hit holds a token the one pipeline makes of the query in a searchable field of a live record, restricted ones included (the store applies grants); the hit set is the same on every engine, ties by key, at most k"
+    "025 and seams §ranked: a hit holds a token the one pipeline makes of the query in a searchable field of a live record, restricted ones included (the store applies grants); the hit set is the same on every engine, ties by key, at most k"
 );
 
 engine_check!(
@@ -89,14 +90,13 @@ engine_check!(
 );
 
 engine_check!(
-    LEXICAL_EARLIER =
-        lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_then,
-    "seams §lexical: a view answers from the full-text index at the head and keeps only the records live at its own position"
+    RANKED_ONE_STATE = ranked_answers_every_list_from_one_state_and_says_its_position,
+    "025 and seams §ranked: one call answers its text's list and each vector's, in that order, from one state of the head's indexes, with the position the projection is folded through there; an open transaction has moved neither a list nor the position, and its commit moves both; a record retired at the head is no candidate, whatever it held before"
 );
 
 engine_check!(
     LEXICAL_NAMED_FIELDS = lexical_over_named_fields_is_the_pipelines_over_those_fields,
-    "025 and seams §lexical: a search limited to named fields matches, scores and ties over the head text of the named searchable fields only, and no engine cuts its candidates at k before it narrows them: a record matching in a named field is a hit however many others match only in fields not named"
+    "025 and seams §ranked: a search limited to named fields matches, scores and ties over the head text of the named searchable fields only, and no engine cuts its candidates at k before it narrows them: a record matching in a named field is a hit however many others match only in fields not named"
 );
 
 engine_check!(
@@ -107,12 +107,12 @@ engine_check!(
 
 engine_check!(
     NEAREST_BY_COSINE = nearest_ranks_by_cosine_with_ties_by_key,
-    "seams §VectorIndex: nearest answers the exact top k by the cosine of the angle, best first, equal scores by key"
+    "seams §ranked: a vector's list is the exact top k by the cosine of the angle, best first, equal scores by key"
 );
 
 engine_check!(
     ZERO_AND_WRONG_LENGTH = a_zero_vector_scores_zero_and_a_wrong_length_is_invalid,
-    "seams §VectorIndex: a vector of zeros scores 0 against everything, and a query whose length differs from a stored vector's is refused as invalid"
+    "seams §ranked: a vector of zeros scores 0 against everything, and a query whose length differs from a stored vector's is refused as invalid"
 );
 
 engine_check!(
@@ -718,6 +718,49 @@ fn hit_keys(hits: &[(RecordKey, f64)]) -> Vec<String> {
     hits.iter().map(|(k, _)| k.to_string()).collect()
 }
 
+/// The one list `ranked` answers for `asked`.
+fn one_list(
+    engine: &dyn LakeEngine,
+    ty: &TypeName,
+    asked: Rankings,
+    k: u32,
+) -> lakelands_api::Result<Vec<(RecordKey, f64)>> {
+    Ok(engine.ranked(ty, &asked, k)?.lists.swap_remove(0))
+}
+
+/// The head's full-text hits of `text` over `ty`, in the fields named.
+pub fn lexical(
+    engine: &dyn LakeEngine,
+    ty: &TypeName,
+    text: &str,
+    fields: Option<&[FieldName]>,
+    k: u32,
+) -> lakelands_api::Result<Vec<(RecordKey, f64)>> {
+    let text = Some((text.to_owned(), fields.map(<[FieldName]>::to_vec)));
+    let vectors = Vec::new();
+    one_list(engine, ty, Rankings { text, vectors }, k)
+}
+
+/// The head's nearest vectors of `ty.field` to `query`.
+pub fn nearest(
+    engine: &dyn LakeEngine,
+    ty: &TypeName,
+    field: &str,
+    query: &[f32],
+    k: u32,
+) -> lakelands_api::Result<Vec<(RecordKey, f64)>> {
+    let vectors = vec![(field.to_owned(), query.to_vec())];
+    one_list(
+        engine,
+        ty,
+        Rankings {
+            text: None,
+            vectors,
+        },
+        k,
+    )
+}
+
 fn lexical_hits_are_the_pipelines_over_searchable_live_records(engine: &dyn LakeEngine) -> Held {
     fold(engine, 1, |p| {
         p.put_declaration(&documents(), 1, None, Position(0))?;
@@ -737,9 +780,8 @@ fn lexical_hits_are_the_pipelines_over_searchable_live_records(engine: &dyn Lake
         p.put_record(&retired)?;
         p.put_record(&held)
     })?;
-    let at = view(engine, None)?;
     let ty = TypeName::from("doc");
-    let hits = at.lexical(&ty, "run rivers", None, 10).must("searching")?;
+    let hits = lexical(engine, &ty, "run rivers", None, 10).must("searching")?;
     ensure!(
         hit_keys(&hits) == ["two", "held", "one-a", "one-b"],
         "searching `run rivers` answered {:?}; the English pipeline makes `run` and `river` of \
@@ -751,64 +793,74 @@ fn lexical_hits_are_the_pipelines_over_searchable_live_records(engine: &dyn Lake
         hits[0].1 > hits[1].1 && hits[1].1 == hits[2].1 && hits[2].1 == hits[3].1,
         "the scores {hits:?} must rank the better match higher and tie the equal ones"
     );
-    let one = at
-        .lexical(&ty, "run rivers", None, 1)
-        .must("searching for one")?;
+    let one = lexical(engine, &ty, "run rivers", None, 1).must("searching for one")?;
     ensure!(
         hit_keys(&one) == ["two"],
         "searching with k = 1 answered {:?}",
         hit_keys(&one)
     );
-    let none = at
-        .lexical(&ty, "ocean", None, 10)
-        .must("searching for nothing")?;
+    let none = lexical(engine, &ty, "ocean", None, 10).must("searching for nothing")?;
     ensure!(none.is_empty(), "searching `ocean` answered {none:?}");
     Ok(())
 }
 
-fn lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_then(
-    engine: &dyn LakeEngine,
-) -> Held {
+fn ranked_answers_every_list_from_one_state_and_says_its_position(engine: &dyn LakeEngine) -> Held {
+    let (index, ty) = (vectors(engine)?, TypeName::from("doc"));
     fold(engine, 1, |p| {
         p.put_declaration(&documents(), 1, None, Position(0))?;
         p.put_record(&record("doc", "kept", json!({"body": "ocean"}), 1))?;
-        p.put_record(&record("doc", "later-retired", json!({"body": "ocean"}), 1))
+        p.put_record(&record("doc", "gone", json!({"body": "ocean"}), 1))?;
+        index.put(&ty, &"kept".into(), "emb", &[1.0, 0.0])?;
+        index.put(&ty, &"gone".into(), "emb", &[0.0, 1.0])
     })?;
-    fold(engine, 2, |p| {
+    let asked = Rankings {
+        text: Some(("river ocean".into(), None)),
+        vectors: vec![("emb".into(), vec![0.0, 1.0]), ("none".into(), vec![1.0])],
+    };
+    let read = || -> Result<(Option<Position>, Vec<Vec<String>>), Failure> {
+        let ranked = engine.ranked(&ty, &asked, 10).must("ranking")?;
+        Ok((
+            ranked.position,
+            ranked.lists.iter().map(|l| hit_keys(l)).collect(),
+        ))
+    };
+    let state = |at: u64, text: [&str; 2], near: [&str; 2]| {
+        let list = |keys: [&str; 2]| keys.map(str::to_owned).to_vec();
+        (Some(Position(at)), vec![list(text), list(near), Vec::new()])
+    };
+    let before = read()?;
+    ensure!(
+        before == state(1, ["gone", "kept"], ["gone", "kept"]),
+        "folded through 1, `river ocean`, the vectors nearest (0, 1) and a field that holds none          answered {before:?}; both records hold `ocean` (ties by key), `gone` points north, and          the position is 1"
+    );
+    let p = engine.projection();
+    p.begin().must("beginning a transaction")?;
+    let puts = || -> lakelands_api::Result<()> {
         p.put_record(&record("doc", "kept", json!({"body": "river"}), 2))?;
-        let mut gone = record("doc", "later-retired", json!({"body": "river"}), 2);
+        let mut gone = record("doc", "gone", json!({"body": "river"}), 2);
         gone.retired = true;
         p.put_record(&gone)?;
-        p.put_record(&record("doc", "new", json!({"body": "river"}), 2))
-    })?;
-    let ty = TypeName::from("doc");
-    let then = view(engine, Some(Position(1)))?;
-    let river = then
-        .lexical(&ty, "river", None, 10)
-        .must("searching at 1")?;
+        p.put_record(&record("doc", "new", json!({"body": "river"}), 2))?;
+        index.remove(&ty, &"gone".into(), "emb")?;
+        index.put(&ty, &"new".into(), "emb", &[0.0, 1.0])
+    };
+    puts().must("writing the projection")?;
+    let open = read()?;
     ensure!(
-        hit_keys(&river) == ["kept", "later-retired"],
-        "at position 1, `river` answered {:?}; the head's text holds `river` in `kept`, \
-         `later-retired` and `new`, and at 1 only the first two were live",
-        hit_keys(&river)
+        open == before,
+        "while the transaction through 2 was open the same call answered {open:?}, not {before:?};          lists that hold a put of it beside the position 1 are of two states"
     );
-    let ocean = then
-        .lexical(&ty, "ocean", None, 10)
-        .must("searching at 1")?;
+    p.commit(Position(2)).must("committing through 2")?;
+    let after = read()?;
     ensure!(
-        ocean.is_empty(),
-        "at position 1, `ocean` answered {:?}; ranking is by the text at the head, which no \
-         longer holds `ocean`",
-        hit_keys(&ocean)
+        after == state(2, ["kept", "new"], ["new", "kept"]),
+        "folded through 2, the same call answered {after:?}; `kept` and `new` hold `river`,          `gone` is retired there and no candidate of either list, `new` points north, and the          position is 2"
     );
-    let now = view(engine, None)?;
-    let head = now
-        .lexical(&ty, "river", None, 10)
-        .must("searching at the head")?;
+    let folded = p.folded_through().must("reading the folded position")?;
     ensure!(
-        hit_keys(&head) == ["kept", "new"],
-        "at the head, `river` answered {:?}; `later-retired` is retired there",
-        hit_keys(&head)
+        after.0 == folded,
+        "`ranked` said the position {:?}; the projection is folded through {folded:?}",
+        after.0
     );
     Ok(())
 }
@@ -836,20 +888,15 @@ fn lexical_over_named_fields_is_the_pipelines_over_those_fields(engine: &dyn Lak
         record("doc", "late", json!({"title": "river"}), 2),
     )?;
     let ty = TypeName::from("doc");
-    let title = [lakelands_api::id::FieldName::from("title")];
-    let body = [lakelands_api::id::FieldName::from("body")];
-    let now = view(engine, None)?;
-    let all = now
-        .lexical(&ty, "river run", None, 10)
-        .must("searching every field")?;
+    let title = [FieldName::from("title")];
+    let body = [FieldName::from("body")];
+    let all = lexical(engine, &ty, "river run", None, 10).must("searching every field")?;
     ensure!(
         hit_keys(&all) == ["both", "b-1", "b-2", "b-3", "late", "t-only"],
         "searching `river run` in every searchable field answered {:?}",
         hit_keys(&all)
     );
-    let titled = now
-        .lexical(&ty, "river run", Some(&title), 3)
-        .must("searching `title`")?;
+    let titled = lexical(engine, &ty, "river run", Some(&title), 3).must("searching `title`")?;
     ensure!(
         titled
             == [
@@ -861,9 +908,7 @@ fn lexical_over_named_fields_is_the_pipelines_over_those_fields(engine: &dyn Lak
          tokens in its title, `late` and `t-only` one each, and `b-1` to `b-3` match only in \
          `body`, which was not named: a hit set cut at k before it was narrowed loses them"
     );
-    let bodied = now
-        .lexical(&ty, "river run", Some(&body), 10)
-        .must("searching `body`")?;
+    let bodied = lexical(engine, &ty, "river run", Some(&body), 10).must("searching `body`")?;
     ensure!(
         bodied
             == [
@@ -874,27 +919,12 @@ fn lexical_over_named_fields_is_the_pipelines_over_those_fields(engine: &dyn Lak
             ],
         "searching `river run` in `body` answered {bodied:?}; `both` holds only `run` there"
     );
-    let noted = now
-        .lexical(
-            &ty,
-            "river",
-            Some(&[lakelands_api::id::FieldName::from("note")]),
-            10,
-        )
+    let noted = lexical(engine, &ty, "river", Some(&[FieldName::from("note")]), 10)
         .must("searching `note`")?;
     ensure!(
         noted.is_empty(),
         "searching `river` in `note`, which is not searchable, answered {:?}",
         hit_keys(&noted)
-    );
-    let then = view(engine, Some(Position(1)))?
-        .lexical(&ty, "river run", Some(&title), 10)
-        .must("searching `title` at 1")?;
-    ensure!(
-        hit_keys(&then) == ["both", "t-only"],
-        "at position 1, searching `river run` in `title` answered {:?}; `late` was not yet \
-         live",
-        hit_keys(&then)
     );
     Ok(())
 }
@@ -915,9 +945,7 @@ fn a_record_put_after_a_redeclaration_in_the_same_transaction_is_indexed_under_i
         p.put_declaration(&documents(), 2, None, Position(3))?;
         p.put_record(&record("doc", "late", json!({"body": "river"}), 4))
     })?;
-    let hits = view(engine, None)?
-        .lexical(&TypeName::from("doc"), "river", None, 10)
-        .must("searching")?;
+    let hits = lexical(engine, &TypeName::from("doc"), "river", None, 10).must("searching")?;
     ensure!(
         hit_keys(&hits) == ["early", "late"],
         "one transaction declared `doc` with an unsearchable `body`, put `early`, declared it \
@@ -972,7 +1000,7 @@ fn a_changed_record_is_found_by_what_it_holds_now_and_read_no_more(
         Ok((keys(&rows), crate::engines::rows_read() - before))
     };
     let search = |text: &str| -> Result<(Vec<String>, u64), Failure> {
-        let hits = head.lexical(&ty, text, None, 10).must("searching")?;
+        let hits = lexical(engine, &ty, text, None, 10).must("searching")?;
         Ok((hit_keys(&hits), 0))
     };
     let answers = [
@@ -1101,7 +1129,7 @@ fn a_transaction_of_many_puts_leaves_what_putting_them_one_by_one_leaves(
     // lookup, a page in the indexed order.
     let answers = |when: &str, rivers: u64| -> Held {
         let head = view(engine, None)?;
-        let found = |text: &str| head.lexical(&ty, text, None, 5_000).map(|h| hit_keys(&h));
+        let found = |text: &str| lexical(engine, &ty, text, None, 5_000).map(|h| hit_keys(&h));
         let (river, hill) = (
             found("river").must("searching")?,
             found("hill").must("searching")?,
@@ -1133,7 +1161,7 @@ fn a_transaction_of_many_puts_leaves_what_putting_them_one_by_one_leaves(
             key(0)
         );
         for vectors in ["d", "e"] {
-            let near = index.nearest(&vectors.into(), "emb", &[2.0, 0.0], 3);
+            let near = nearest(engine, &vectors.into(), "emb", &[2.0, 0.0], 3);
             let near = hit_keys(&near.must("searching the vectors")?);
             ensure!(
                 near == ["east", "north-east", "north"],
@@ -1209,8 +1237,8 @@ fn a_transaction_of_many_puts_leaves_what_putting_them_one_by_one_leaves(
         p.put_record(&state("a", "meadow", 12))?;
         p.put_record(&state("b", "hill", 11))
     })?;
-    let (head, o) = (view(engine, None)?, TypeName::from("o"));
-    let found = |text: &str| head.lexical(&o, text, None, 10).map(|h| hit_keys(&h));
+    let o = TypeName::from("o");
+    let found = |text: &str| lexical(engine, &o, text, None, 10).map(|h| hit_keys(&h));
     let (meadow, hill, river) = (
         found("meadow").must("searching")?,
         found("hill").must("searching")?,
@@ -1256,9 +1284,7 @@ fn nearest_ranks_by_cosine_with_ties_by_key(engine: &dyn LakeEngine) -> Held {
             .put(&ty, &key.into(), "emb", &v)
             .must("putting a vector")?;
     }
-    let hits = index
-        .nearest(&ty, "emb", &[2.0, 0.0], 4)
-        .must("searching the index")?;
+    let hits = nearest(engine, &ty, "emb", &[2.0, 0.0], 4).must("searching the index")?;
     ensure!(
         hit_keys(&hits) == ["also-east", "east", "north-east", "north"],
         "the nearest four to (2, 0) came as {:?}; by cosine the two eastward vectors tie at 1 \
@@ -1272,9 +1298,7 @@ fn nearest_ranks_by_cosine_with_ties_by_key(engine: &dyn LakeEngine) -> Held {
             .all(|((_, s), e)| (s - e).abs() < 1e-9),
         "the scores {hits:?} are not the cosines {expected:?}"
     );
-    let none = index
-        .nearest(&ty, "other", &[1.0, 0.0], 4)
-        .must("searching an empty field")?;
+    let none = nearest(engine, &ty, "other", &[1.0, 0.0], 4).must("searching an empty field")?;
     ensure!(
         none.is_empty(),
         "a field holding no vectors answered {none:?}"
@@ -1291,14 +1315,12 @@ fn a_zero_vector_scores_zero_and_a_wrong_length_is_invalid(engine: &dyn LakeEngi
     index
         .put(&ty, &"zero".into(), "emb", &[0.0, 0.0])
         .must("putting a zero vector")?;
-    let hits = index
-        .nearest(&ty, "emb", &[0.0, 0.0], 5)
-        .must("searching with a zero vector")?;
+    let hits = nearest(engine, &ty, "emb", &[0.0, 0.0], 5).must("searching with a zero vector")?;
     ensure!(
         hits.len() == 2 && hits.iter().all(|(_, s)| *s == 0.0),
         "a zero query answered {hits:?}; it scores 0 against everything"
     );
-    let wrong = index.nearest(&ty, "emb", &[1.0, 0.0, 0.0], 5);
+    let wrong = nearest(engine, &ty, "emb", &[1.0, 0.0, 0.0], 5);
     ensure!(
         matches!(reason(&wrong), Some(Refusal::Invalid(..))),
         "a query of three dimensions against vectors of two answered {wrong:?}; it must be \
@@ -1324,9 +1346,7 @@ fn put_replaces_a_vector_and_remove_forgets_it(engine: &dyn LakeEngine) -> Held 
         count == 2,
         "after a replacing put the field counts {count}; it holds two"
     );
-    let best = index
-        .nearest(&ty, "emb", &[0.0, 1.0], 2)
-        .must("searching")?;
+    let best = nearest(engine, &ty, "emb", &[0.0, 1.0], 2).must("searching")?;
     ensure!(
         best.iter().all(|(_, s)| (s - 1.0).abs() < 1e-9),
         "after `a` was replaced by (0, 2) both vectors point north, but the index answered \
@@ -1731,7 +1751,6 @@ fn lexical_finds_every_token_the_pipeline_makes_beyond_ascii(engine: &dyn LakeEn
         ))?;
         p.put_record(&record("note", "ascii", json!({"body": "hello world"}), 1))
     })?;
-    let at = view(engine, None)?;
     let ty = TypeName::from("note");
     for (query, expected) in [
         ("ωμέγα", vec!["greek"]),
@@ -1741,9 +1760,7 @@ fn lexical_finds_every_token_the_pipeline_makes_beyond_ascii(engine: &dyn LakeEn
         ("★★★", vec![]),
         ("hello мир ωμέγα", vec!["ascii", "cyrillic", "greek"]),
     ] {
-        let hits = at
-            .lexical(&ty, query, None, 10)
-            .must(&format!("searching `{query}`"))?;
+        let hits = lexical(engine, &ty, query, None, 10).must(&format!("searching `{query}`"))?;
         ensure!(
             hit_keys(&hits) == expected,
             "searching `{query}` answered {:?}; the pipeline's tokens are {:?}, and every record \

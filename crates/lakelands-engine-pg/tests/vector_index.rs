@@ -11,6 +11,7 @@ use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
 use lakelands_api::id::{Position, RecordKey, TypeName, Version};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::Declaration;
+use lakelands_core::conformance::engine::reads::nearest;
 use lakelands_core::engines;
 use lakelands_engine_pg::PgOpener;
 use serde_json::json;
@@ -195,7 +196,7 @@ fn an_indexed_field_reads_its_index_and_every_other_field_scans() {
         );
         for f in ["e", "f"] {
             assert_eq!(
-                index.nearest(&t, f, &query, 10).unwrap(),
+                nearest(engine.as_ref(), &t, f, &query, 10).unwrap(),
                 exact(&query, 10),
                 "without pgvector `{f}` answers the exact ranking"
             );
@@ -213,7 +214,7 @@ fn an_indexed_field_reads_its_index_and_every_other_field_scans() {
         !exact(&query, 10).iter().any(|(k, _)| k.as_str() == DECOY),
         "the decoy is no exact neighbour"
     );
-    let got = index.nearest(&t, "e", &query, 10).unwrap();
+    let got = nearest(engine.as_ref(), &t, "e", &query, 10).unwrap();
     assert_eq!(got.len(), 10, "the index answers k candidates");
     let mut ranked = got.clone();
     engines::rank(&mut ranked, 10);
@@ -237,11 +238,11 @@ fn an_indexed_field_reads_its_index_and_every_other_field_scans() {
     );
     decoy(&url, &schema, &query);
     assert!(
-        through_index(&index.nearest(&t, "e", &query, 10).unwrap()),
+        through_index(&nearest(engine.as_ref(), &t, "e", &query, 10).unwrap()),
         "a search of `e` reads its index"
     );
     assert_eq!(
-        index.nearest(&t, "f", &query, 10).unwrap(),
+        nearest(engine.as_ref(), &t, "f", &query, 10).unwrap(),
         exact10,
         "`f`, which the setting does not name, answers the exact ranking"
     );
@@ -265,7 +266,7 @@ fn an_indexed_field_reads_its_index_and_every_other_field_scans() {
     // Three unit vectors now point at the query: `k0007`'s, `near`'s and
     // the decoy's; the index offers all three, and the one cosine ranks the
     // two true ones first, their tie by key.
-    let got = index.nearest(&t, "e", &query, 3).unwrap();
+    let got = nearest(engine.as_ref(), &t, "e", &query, 3).unwrap();
     let keys: Vec<&str> = got.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(
         keys,
@@ -303,11 +304,7 @@ fn a_stale_index_is_not_read_and_a_writers_open_rebuilds_it() {
     decoy(&url, &schema, &query);
     let reader = PgOpener.open(&location, OpenMode::Read).unwrap();
     assert_eq!(
-        reader
-            .vectors()
-            .unwrap()
-            .nearest(&t, "e", &query, 10)
-            .unwrap(),
+        nearest(reader.as_ref(), &t, "e", &query, 10).unwrap(),
         exact(&query, 10),
         "a stale index is not read: the search scans, exactly"
     );
@@ -323,13 +320,7 @@ fn a_stale_index_is_not_read_and_a_writers_open_rebuilds_it() {
     );
     decoy(&url, &schema, &query);
     assert!(
-        through_index(
-            &reader
-                .vectors()
-                .unwrap()
-                .nearest(&t, "e", &query, 10)
-                .unwrap()
-        ),
+        through_index(&nearest(reader.as_ref(), &t, "e", &query, 10).unwrap()),
         "once rebuilt, the index is read again"
     );
     drop((reader, writer));
@@ -380,11 +371,7 @@ fn retiring_the_setting_drops_the_index_and_its_mark() {
     );
     let query = vector(7);
     assert_eq!(
-        engine
-            .vectors()
-            .unwrap()
-            .nearest(&TypeName::from("t"), "e", &query, 10)
-            .unwrap(),
+        nearest(engine.as_ref(), &TypeName::from("t"), "e", &query, 10).unwrap(),
         exact(&query, 10),
         "with the setting retired, `e` answers the exact ranking"
     );
@@ -471,7 +458,7 @@ fn a_setting_written_a_page_before_its_commit_builds_the_index_at_the_commit() {
     let (query, t) = (vector(7), TypeName::from("t"));
     decoy(&url, &schema, &query);
     assert!(
-        through_index(&index.nearest(&t, "e", &query, 10).unwrap()),
+        through_index(&nearest(engine.as_ref(), &t, "e", &query, 10).unwrap()),
         "a search of `e` reads the index the commit built"
     );
     // The setting written again, over an index that is there: its page drops
@@ -486,7 +473,7 @@ fn a_setting_written_a_page_before_its_commit_builds_the_index_at_the_commit() {
          and `f`'s not built before the commit"
     );
     assert!(
-        through_index(&index.nearest(&t, "e", &query, 10).unwrap()),
+        through_index(&nearest(engine.as_ref(), &t, "e", &query, 10).unwrap()),
         "while the transaction is open a search of `e` reads the index the last commit left"
     );
     p.commit(Position(2)).unwrap();

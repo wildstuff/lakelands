@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use lakelands_api::engine::{
     Applied, CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
-    ProjectionView, Reclaimed, VectorIndex,
+    ProjectionView, Ranked, Rankings, Reclaimed, VectorIndex,
 };
 use lakelands_api::error::{Act, Case, Error, Result, Situation};
 use lakelands_api::event::{Digest, SegmentDigest};
@@ -20,6 +20,7 @@ use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
 
 use crate::projection::Put;
+use crate::vectors::Indexed;
 use crate::view::MemView;
 use crate::{Lake, NAME, invalid, lock};
 
@@ -30,6 +31,8 @@ pub struct MemoryLake {
     shared: Arc<Mutex<Lake>>,
     /// The puts of the open transaction, if one is open.
     pending: Mutex<Option<Vec<Put>>>,
+    /// The vectors the open transaction indexes and takes out (`None`).
+    indexing: Mutex<Vec<Indexed>>,
     /// The lease this handle took and has not given up.
     held: Mutex<Option<Lease>>,
 }
@@ -41,6 +44,7 @@ impl MemoryLake {
             mode,
             shared,
             pending: Mutex::new(None),
+            indexing: Mutex::default(),
             held: Mutex::new(None),
         }
     }
@@ -67,6 +71,16 @@ impl MemoryLake {
             fence: Some(lease.fence),
             undone: Some(undone),
         }))
+    }
+
+    /// Indexes a vector or takes it out when the open transaction commits,
+    /// as its puts land, so that no ranking reads a vector of a state the
+    /// projection does not hold yet; at once where none is open.
+    fn index(&self, vector: Indexed) {
+        match lock(&self.pending).is_some() {
+            true => lock(&self.indexing).push(vector),
+            false => lock(&self.shared).vectors.set(vector),
+        }
     }
 
     /// Holds a put for the open transaction.
@@ -152,6 +166,25 @@ impl LakeEngine for MemoryLake {
         }))
     }
 
+    /// One lock holds the projection and the vectors: the lists and the
+    /// position are of one state.
+    fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked> {
+        let lake = lock(&self.shared);
+        let p = &lake.projection;
+        let mut lists = Vec::new();
+        if let Some((text, fields)) = &asked.text {
+            let head = p.records_at(ty, p.folded);
+            lists.push(p.type_at(ty, p.folded).map_or_else(Vec::new, |decl| {
+                lakelands_core::engines::lexical(decl, head, text, fields.as_deref(), k)
+            }));
+        }
+        for (field, query) in &asked.vectors {
+            lists.push(lake.vectors.nearest(ty, field, query, k)?);
+        }
+        let position = p.folded;
+        Ok(Ranked { position, lists })
+    }
+
     fn vectors(&self) -> Option<&dyn VectorIndex> {
         Some(self)
     }
@@ -174,6 +207,7 @@ impl ProjectionStore for MemoryLake {
     fn begin(&self) -> Result<()> {
         self.writable()?;
         *lock(&self.pending) = Some(Vec::new());
+        lock(&self.indexing).clear();
         Ok(())
     }
 
@@ -181,11 +215,16 @@ impl ProjectionStore for MemoryLake {
         let puts = lock(&self.pending)
             .take()
             .ok_or_else(|| invalid(Case::CommitUnbegun))?;
-        lock(&self.shared).projection.commit(puts, through)
+        let vectors = std::mem::take(&mut *lock(&self.indexing));
+        let mut lake = lock(&self.shared);
+        lake.projection.commit(puts, through)?;
+        vectors.into_iter().for_each(|v| lake.vectors.set(v));
+        Ok(())
     }
 
     fn rollback(&self) {
         *lock(&self.pending) = None;
+        lock(&self.indexing).clear();
     }
 
     fn folded_through(&self) -> Result<Option<Position>> {
@@ -261,7 +300,7 @@ impl ProjectionStore for MemoryLake {
     /// log and the lease stay. An open transaction is abandoned.
     fn clear(&self) -> Result<()> {
         self.writable()?;
-        *lock(&self.pending) = None;
+        self.rollback();
         let mut lake = lock(&self.shared);
         lake.projection = Default::default();
         lake.vectors.clear();
@@ -278,23 +317,18 @@ impl ProjectionStore for MemoryLake {
 
 impl VectorIndex for MemoryLake {
     fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()> {
-        lock(&self.shared).vectors.put(ty, key, field, vector);
+        self.index((
+            ty.clone(),
+            key.clone(),
+            field.to_owned(),
+            Some(vector.to_vec()),
+        ));
         Ok(())
     }
 
     fn remove(&self, ty: &TypeName, key: &RecordKey, field: &str) -> Result<()> {
-        lock(&self.shared).vectors.remove(ty, key, field);
+        self.index((ty.clone(), key.clone(), field.to_owned(), None));
         Ok(())
-    }
-
-    fn nearest(
-        &self,
-        ty: &TypeName,
-        field: &str,
-        query: &[f32],
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>> {
-        lock(&self.shared).vectors.nearest(ty, field, query, k)
     }
 
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64> {

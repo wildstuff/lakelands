@@ -8,7 +8,8 @@
 //! view's state, and keeps the last record put under each kept name and
 //! key, and the entries of the kept views' orders since the last clear;
 //! and it can hand one event of the log out damaged, and the head's view
-//! out at an earlier position.
+//! out at an earlier position, and let a write land just before the
+//! engine answers a `ranked`.
 //! [`calls`] reads what a lake owes as the drain would.
 
 #![allow(dead_code)]
@@ -19,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use lakelands_api::engine::{
     CanonicalEvent, Declared, EngineOpener, LakeEngine, Lease, OpenMode, ProjectionStore,
-    ProjectionView, Reclaimed, Scan, VectorIndex,
+    ProjectionView, Ranked, Rankings, Reclaimed, Scan, VectorIndex,
 };
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::query::{Edge, Walk};
@@ -41,6 +42,9 @@ pub enum Asked {
 
 /// A look at the lake before a commit through a position.
 pub type Look = Box<dyn FnMut(Position) + Send>;
+
+/// A write to the lake, made from inside a call of the engine.
+pub type Write = Box<dyn FnOnce() + Send>;
 
 /// What was asked of the engine, and what it is to fail.
 #[derive(Default)]
@@ -98,6 +102,11 @@ pub struct Probe {
     pub declarations: AtomicUsize,
     /// How often a view was asked for the lake's list of renames.
     pub renames: AtomicUsize,
+    /// A write to land just before the engine answers a `ranked`: the
+    /// n-th from now, counted from 1.
+    pub before_ranked: Mutex<Option<(usize, Write)>>,
+    /// How often the engine was asked for a search's rankings.
+    pub ranked: AtomicUsize,
     /// A reader to park inside the next `declarations`: it says so on the
     /// first and waits on the second before it reads.
     pub park: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
@@ -199,15 +208,6 @@ impl ProjectionView for ProbedView<'_> {
         walk: Walk,
     ) -> Result<Vec<Vec<Edge>>> {
         self.inner.edges(ty, keys, relation, walk)
-    }
-    fn lexical(
-        &self,
-        ty: &TypeName,
-        text: &str,
-        fields: Option<&[lakelands_api::id::FieldName]>,
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>> {
-        self.inner.lexical(ty, text, fields, k)
     }
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
         self.inner.proposals(filter)
@@ -330,6 +330,20 @@ impl LakeEngine for Probed {
             inner: self.inner.view(as_of.or(lags))?,
             probe: self.probe.clone(),
         }))
+    }
+    fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked> {
+        let mut planted = self.probe.before_ranked.lock().unwrap();
+        let now = planted.as_mut().is_some_and(|(n, _)| {
+            *n -= 1;
+            *n == 0
+        });
+        let write = planted.take_if(|_| now);
+        drop(planted);
+        if let Some((_, write)) = write {
+            write();
+        }
+        self.probe.ranked.fetch_add(1, Ordering::SeqCst);
+        self.inner.ranked(ty, asked, k)
     }
     fn vectors(&self) -> Option<&dyn VectorIndex> {
         self.inner.vectors()

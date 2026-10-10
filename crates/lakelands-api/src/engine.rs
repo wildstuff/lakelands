@@ -165,6 +165,17 @@ pub trait LakeEngine: Send + Sync {
     /// as `OutOfRange` for a position the projection has not folded.
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>>;
 
+    /// The rankings of one pull of a search over `ty`, each cut at `k`,
+    /// all read from one state of the head's indexes, with the position
+    /// the projection was folded through in that state. The indexes
+    /// describe the head only, so the candidates are the records live
+    /// there, restricted ones included; what a read at any position may
+    /// see of them is the store's, which judges them at the position
+    /// answered (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`). An
+    /// engine that keeps no vector index refuses a vector's ranking as
+    /// unbound.
+    fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked>;
+
     /// The engine's vector index, if it keeps one.
     fn vectors(&self) -> Option<&dyn VectorIndex>;
 }
@@ -353,6 +364,29 @@ pub struct Scan {
     pub equal: Vec<(FieldName, Value)>,
 }
 
+/// The rankings one pull of a search asks an engine for.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Rankings {
+    /// A text, matched in the type's searchable fields, or in those of
+    /// them it names.
+    pub text: Option<(String, Option<Vec<FieldName>>)>,
+    /// Each vector field asked, with its query vector.
+    pub vectors: Vec<(String, Vec<f32>)>,
+}
+
+/// What [`LakeEngine::ranked`] answers.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Ranked {
+    /// The position the projection was folded through in the state the
+    /// lists were read from; `None` for an empty one.
+    pub position: Option<Position>,
+    /// One list for each ranking asked, the text's first, then each
+    /// vector's: keys and scores, best first, equal scores by key. A
+    /// text scores as `docs/seams.md` §`ranked` says, a vector by the
+    /// cosine (higher is closer).
+    pub lists: Vec<Vec<(RecordKey, f64)>>,
+}
+
 /// A read view of the projection at one position. Records come back
 /// whole and unmasked; masking is the store's.
 pub trait ProjectionView {
@@ -388,16 +422,6 @@ pub trait ProjectionView {
         relation: Option<&RelationName>,
         walk: Walk,
     ) -> Result<Vec<Vec<Edge>>>;
-
-    /// Full-text search over a type's searchable fields, or those of them
-    /// `fields` names: keys and scores, best first.
-    fn lexical(
-        &self,
-        ty: &TypeName,
-        text: &str,
-        fields: Option<&[FieldName]>,
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>>;
 
     /// Proposals.
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>>;
@@ -438,25 +462,15 @@ pub trait ProjectionView {
     ) -> Result<Matched>;
 }
 
-/// The engine's vector index, beside the projection. Vectors are indexed
-/// at the head; a read at an earlier position filters the candidates by
-/// what was visible there.
+/// The engine's vector index, beside the projection: its write side and
+/// its size. Vectors are indexed at the head, in the fold's transaction,
+/// and read by [`LakeEngine::ranked`].
 pub trait VectorIndex: Send + Sync {
     /// Index a record's vector for one field.
     fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()>;
 
     /// Remove a record's vector for one field.
     fn remove(&self, ty: &TypeName, key: &RecordKey, field: &str) -> Result<()>;
-
-    /// The nearest records to `query`, best first, with similarity scores
-    /// (higher is closer).
-    fn nearest(
-        &self,
-        ty: &TypeName,
-        field: &str,
-        query: &[f32],
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>>;
 
     /// How many vectors one field holds.
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64>;

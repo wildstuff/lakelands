@@ -275,6 +275,46 @@ pub fn read_statements(ty: &TypeName, head: bool) -> [String; 4] {
     ]
 }
 
+/// The full-text hits of `text` over `ty` as the index holds them, at the
+/// head (`docs/seams.md` §`ranked`), read through `conn`.
+pub(crate) fn lexical(
+    conn: &Connection,
+    ty: &TypeName,
+    text: &str,
+    fields: Option<&[FieldName]>,
+    k: u32,
+) -> Result<Vec<(RecordKey, f64)>> {
+    let Some(decl) = projection::type_at(conn, ty, None)? else {
+        return Ok(Vec::new());
+    };
+    let query = engines::tokens(text, decl.language.as_deref().unwrap_or(""));
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Every pipeline token is one term of the table (its hex), so this
+    // finds exactly the records the shared scoring counts. A row holds
+    // every searchable field's tokens: limited to named fields, these are
+    // a superset, and the shared scoring keeps the records whose named
+    // fields match before it cuts at `k`.
+    let matching = query
+        .iter()
+        .map(|t| projection::fts_term(t))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let keys: BTreeSet<String> = column(
+        conn,
+        "SELECT s.key FROM full_text f JOIN search_rows s ON s.id = f.rowid \
+         WHERE full_text MATCH ?1 AND s.ty = ?2",
+        params![matching, ty.as_str()],
+        Ok,
+    )?;
+    let mut head = Vec::with_capacity(keys.len());
+    for key in keys {
+        head.extend(projection::head_record(conn, ty, &RecordKey::from(key))?);
+    }
+    Ok(engines::lexical(&decl, &head, text, fields, k))
+}
+
 impl SqliteView<'_> {
     /// Run `f` in one read transaction at the view's position; an empty
     /// projection answers `empty`.
@@ -760,55 +800,6 @@ impl ProjectionView for SqliteView<'_> {
                 engines::order_edges(edges);
             }
             Ok(all)
-        })
-    }
-
-    fn lexical(
-        &self,
-        ty: &TypeName,
-        text: &str,
-        fields: Option<&[FieldName]>,
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>> {
-        self.read(Vec::new(), |r| {
-            // The full-text index describes the head; a view keeps the hits
-            // live at its own position (`docs/seams.md`).
-            let Some(decl) = projection::type_at(r.conn, ty, None)? else {
-                return Ok(Vec::new());
-            };
-            let query = engines::tokens(text, decl.language.as_deref().unwrap_or(""));
-            if query.is_empty() {
-                return Ok(Vec::new());
-            }
-            // Every pipeline token is one term of the table (its hex), so
-            // this finds exactly the records the shared scoring counts. A
-            // row holds every searchable field's tokens: limited to named
-            // fields, these are a superset, and the shared scoring keeps
-            // the records whose named fields match before it cuts at `k`.
-            let matching = query
-                .iter()
-                .map(|t| projection::fts_term(t))
-                .collect::<Vec<_>>()
-                .join(" OR ");
-            let keys = r.keys(
-                "SELECT s.key FROM full_text f JOIN search_rows s ON s.id = f.rowid \
-                 WHERE full_text MATCH ?1 AND s.ty = ?2",
-                &[&matching, &ty.as_str()],
-            )?;
-            let mut head = Vec::with_capacity(keys.len());
-            for key in keys {
-                let key = RecordKey::from(key);
-                if let Some(record) = projection::head_record(r.conn, ty, &key)? {
-                    let then = if r.head {
-                        Some(record.clone())
-                    } else {
-                        r.record(ty, &key)?
-                    };
-                    head.push((record, engines::searchable(then.as_ref())));
-                }
-            }
-            let head = head.iter().map(|(state, live)| (state, *live));
-            Ok(engines::lexical(&decl, head, text, fields, k))
         })
     }
 

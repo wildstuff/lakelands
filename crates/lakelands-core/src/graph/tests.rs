@@ -69,15 +69,6 @@ impl ProjectionView for View {
         self.asked.borrow_mut().push(relation.cloned());
         Ok(vec![Vec::new(); keys.len()])
     }
-    fn lexical(
-        &self,
-        _: &TypeName,
-        _: &str,
-        _: Option<&[lakelands_api::id::FieldName]>,
-        _: u32,
-    ) -> Result<Vec<(RecordKey, f64)>> {
-        unreachable!()
-    }
     fn proposals(&self, _: &ProposalFilter) -> Result<Vec<Proposal>> {
         unreachable!()
     }

@@ -33,7 +33,7 @@ The same reasoning holds for the vector index. Which records are the
 of the contract rather than an engine's choice: every engine scores by
 the cosine of the angle between the query and a stored vector, a vector
 of zeros scores 0, and equal scores are ordered by key
-(`docs/seams.md`, `VectorIndex`). The answer is best first by that
+(`docs/seams.md`, `ranked`). The answer is best first by that
 score and then by key. Every engine ranks exactly, by one bounded
 selection (`lakelands_core::engines::TopK`): a search keeps its best `k`
 while it scans the field, never the field, and answers the reference
@@ -81,6 +81,40 @@ position and the head's holds see it (lakelands#797). Equal scores stay
 in the order of the keys at the head, which is the order its pages
 follow (029). Its text is ranked as the head holds it, as its vectors
 are, so a record retired since is no candidate, by either.
+
+## Extended: a search's candidates and its judgement are of one state
+
+The indexes are read as they stand when the engine is asked, and a
+search takes its head, the view it judges by, before it asks. A write
+that landed in between was in the candidates and not in the judgement:
+a re-key moved a held record's text and vector onto a key the earlier
+head knew as a visible record's, and that record was answered with the
+held record's score; a record restricted and written again was ranked
+by a text its reader may not read (lakelands#826). So the engine answers
+all rankings of one pull from one state of the head and says the
+position it is folded through there, and the store judges the
+candidates at exactly that position: the keys they bore, the holds and
+the reader's grants are read from one view of it.
+
+- A search whose head was taken earlier is made again with the head at
+  the position answered, and judges the candidates it has. It asks the
+  engine again only where the plan differs there, because a declaration
+  of the searched type changed in between.
+- **A search at the head is answered at the position its rankings were
+  read at.** That is the head its reader was answered from; the answer
+  and its cursor name it, and a search for a type that was removed in
+  between answers as one made after.
+- A search as of a position still reads its records there; only its head
+  moves.
+- Each pull of a search stands alone: a page is judged from one pull, at
+  that pull's position, so no page holds a record of two states.
+
+Reading the indexes again until no write landed in between was the other
+way, and was not taken: a ranking over a large field is a scan, an
+ingest commits every few milliseconds, and a search beside it would be
+void every time, or refused. Holding one snapshot over the whole search
+would put every call of a view inside one open transaction on each
+engine.
 
 ## Extended: a restricted record is a candidate
 
