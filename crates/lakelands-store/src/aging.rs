@@ -37,7 +37,7 @@ use crate::declare;
 use crate::lake::{AGING_RULE_TYPE, Lake, every};
 use crate::log;
 use crate::ontology::Ontology;
-use crate::writes::{self, Call, Pending};
+use crate::writes::{self, Call, Envelope};
 
 const MICROS_PER_DAY: i64 = 86_400 * 1_000_000;
 
@@ -208,7 +208,12 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
         let view = lake.engine.view(None)?;
         let now = lake.clock(&mut w);
         let from = canonical::to_vec(&rule.from);
-        let mut pending = Pending::default();
+        let mut d = call.decide(&w, view.as_ref(), now, 0);
+        d.envelope = Envelope {
+            origin: Origin::System,
+            procedure: Some(procedure),
+            id: None,
+        };
         let mut drafts = Vec::new();
         for record in view.scan(&rule.on, &all)? {
             if record.fields.get(&rule.field).map(canonical::to_vec) != Some(from.clone()) {
@@ -231,35 +236,13 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
             if view.applied(&id)?.is_some() {
                 continue;
             }
-            let stamp = |d: &mut log::Draft| {
-                d.origin = Origin::System;
-                d.procedure = Some(procedure.clone());
-                d.id = Some(id.clone());
-            };
+            d.envelope.id = Some(id);
             let patch: Patch = [(rule.field.clone(), rule.to.clone())].into();
-            let n = drafts.len();
-            let plan = match call.plan_record(
-                &w,
-                view.as_ref(),
-                &pending,
-                &rule.on,
-                &record.key,
-                &patch,
-                Door::Authored,
-                None,
-                now,
-                n,
-                &system,
-                &stamp,
-            ) {
-                Ok(plan) => plan,
-                Err(_) => {
-                    ran.failed_guards += 1;
-                    continue;
-                }
+            let Ok(plan) = d.record(&rule.on, &record.key, &patch, None, None) else {
+                ran.failed_guards += 1;
+                continue;
             };
-            let at = writes::position_after(&w, n);
-            drafts.extend(call.planned(&w, view.as_ref(), &mut pending, plan, at, now)?);
+            drafts.extend(d.planned(plan)?);
             ran.moved += 1;
         }
         drop(view);

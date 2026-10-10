@@ -32,6 +32,7 @@ use lakelands_api::catalog::{CommitStream, SourceStream};
 use lakelands_api::error::Case;
 use lakelands_api::event::EventId;
 use lakelands_api::principal::WriteContext;
+use lakelands_api::record::Origin;
 use lakelands_api::write::Committed;
 use lakelands_api::{Principal, Result, SourceId, SourceRecord};
 use lakelands_core::rights::Door;
@@ -39,7 +40,7 @@ use lakelands_core::rights::Door;
 use crate::exec;
 use crate::lake::Lake;
 use crate::log;
-use crate::writes::{Call, Pending};
+use crate::writes::Call;
 use lakelands_core::links;
 
 /// How long a window waits for more records after its first.
@@ -69,7 +70,8 @@ pub fn window(
     };
     let view = lake.engine.view(None)?;
     let now = lake.clock(&mut w);
-    let mut pending = Pending::default();
+    let mut d = call.decide(&w, view.as_ref(), now, 0);
+    (d.door, d.envelope.origin) = (Door::Source, Origin::Source);
     let mut seen: BTreeSet<EventId> = BTreeSet::new();
     let mut drafts = Vec::new();
     let mut committed = 0u32;
@@ -77,25 +79,15 @@ pub fn window(
     let mut duplicates = 0u32;
     for r in records {
         let decl = crate::writes::shown_type(&w.ontology, &r.ty, who)?;
-        // The key's form before the door, as `upsert` checks it.
-        crate::writes::check_key(&r.key)?;
-        // Then the door: a patch that carries a field the source is not
-        // the authority on is refused whole, even when that field's value
-        // is the one already stored.
-        lakelands_core::rights::check_write(who, decl, Door::Source, &r.fields)?;
-        let patch = crate::writes::check_values(&w.ontology, decl, &r.fields, &decl.fields)?;
-        let before = pending.record(view.as_ref(), &r.ty, &r.key)?;
+        // The key's form before the door, as `upsert` checks it. Then the
+        // door: a patch that carries a field the source is not the
+        // authority on is refused whole, even when that field's value is
+        // the one already stored.
+        let patch = d.checked(decl, &r.key, &r.fields)?;
         // A record a holder of `only` is not admitted is, to it, a key that
-        // is free: it is not compared, and `plan_record` refuses the write
-        // as on a free key with another's owner (051).
-        let own = crate::writes::owned(
-            view.as_ref(),
-            &pending,
-            &w.ontology,
-            who,
-            decl,
-            before.clone(),
-        )?;
+        // is free: it is not compared, and the write is refused as on a
+        // free key with another's owner (051).
+        let t = d.target(decl, &r.key)?;
         // A link type no relation carries, its relation renamed or
         // removed, stays declared for its history and takes no link.
         let types = w.ontology.types.values().map(|e| &e.decl);
@@ -104,10 +96,10 @@ pub fn window(
             let ty = r.ty.clone();
             return Err(lakelands_core::invalid(Case::UnclaimedLinkType { ty }));
         }
-        let other = own.is_none() && before.is_some();
-        let version_before = before.as_ref().map_or(0, |b| b.version.0);
+        let other = t.own().is_none() && t.before.is_some();
+        let version_before = t.before.as_ref().map_or(0, |b| b.version.0);
         let id = log::ingest_id(source, &r.ty, &r.key, version_before, &patch);
-        let unchanged = own.as_ref().filter(|b| !b.retired).is_some_and(|b| {
+        let unchanged = t.live().is_some_and(|b| {
             patch.iter().all(|(f, v)| match b.fields.get(f) {
                 Some(stored) => stored == v,
                 None => v.is_null(),
@@ -117,25 +109,15 @@ pub fn window(
             duplicates += 1;
             continue;
         }
-        let mut plan = call.plan_record(
-            &w,
-            view.as_ref(),
-            &pending,
-            &r.ty,
-            &r.key,
-            &patch,
-            Door::Source,
-            None,
-            now,
-            drafts.len(),
-            who,
-            &|_| {},
-        )?;
+        if patch.is_empty() {
+            return Err(lakelands_core::invalid(Case::PatchEmpty));
+        }
+        let mut plan = d.write(decl, &r.key, t, patch, None)?;
         // A link holds its relation's cardinality, over the lake's live
-        // links and those earlier in this window: judged once
-        // `plan_record` admitted the record its writer leaves, as the
-        // mock judges it, so that it names nothing of another's record
-        // and passes over no link a holder's `only` admits (051).
+        // links and those earlier in this window: judged once the plan
+        // admitted the record its writer leaves, as the mock judges it,
+        // so that it names nothing of another's record and passes over no
+        // link a holder's `only` admits (051).
         if let Some(Some((t, relation))) = relation {
             // The ends as the record holds them: the key rule fills
             // those the patch leaves out.
@@ -153,11 +135,11 @@ pub fn window(
         plan.draft.source = Some(source.clone());
         plan.draft.seen_at = r.seen_at;
         plan.draft.upstream = r.upstream.clone();
-        let at = crate::writes::position_after(&w, drafts.len());
-        drafts.extend(call.planned(&w, view.as_ref(), &mut pending, plan, at, now)?);
+        drafts.extend(d.planned(plan)?);
         seen.insert(id);
         committed += 1;
     }
+    let reads = d.pending.into_reads();
     drop(view);
     // A window that appends nothing committed no record, and answers the head.
     let position = if drafts.is_empty() {
@@ -165,7 +147,7 @@ pub fn window(
             .as_ref()
             .map_or(lakelands_api::Position::GENESIS, |t| t.0)
     } else {
-        let events = lake.append_after(&mut w, drafts, pending.into_reads())?;
+        let events = lake.append_after(&mut w, drafts, reads)?;
         events.last().expect("appended").position
     };
     Ok(Committed {
