@@ -1189,6 +1189,22 @@ fn a_function_has_exactly_one_definition() {
     );
 }
 
+/// A function's `config` is written into the log as it is declared, so
+/// an integer in it that no reader reads exactly is reported, at the
+/// function and its `config`, as the store refuses it.
+#[test]
+fn a_function_whose_config_the_log_would_not_write_is_refused() {
+    let f =
+        "name: f\nbacking: http\nconfig:\n  url: https://x.example\n  limits: [9007199254740993]\n";
+    let e = one(&[("functions/f.yaml", f)], Problem::Malformed);
+    assert!(
+        e.message.contains("function `f`") && e.message.contains("`config`"),
+        "{e}"
+    );
+    let fits = f.replace("9007199254740993", "9007199254740991");
+    load(&[("functions/f.yaml", &fits)]).expect("the largest integer");
+}
+
 #[test]
 fn a_type_that_names_fields_it_does_not_have_is_refused() {
     for body in [

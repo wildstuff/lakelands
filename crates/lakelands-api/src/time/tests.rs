@@ -72,6 +72,17 @@ fn a_text_denotes_its_instant_out_of_the_years_too() {
         assert_eq!(Timestamp::denoted(s), Ok(Timestamp(micros)), "{s}");
         assert!(Timestamp::parse(s).is_err(), "{s}");
     }
+    // The bound, for an instant that was never parsed.
+    for (t, within) in [
+        (first, true),
+        (last, true),
+        (Timestamp(first.0 - 1), false),
+        (Timestamp(last.0 + 1), false),
+        (Timestamp(i64::MIN), false),
+        (Timestamp(i64::MAX), false),
+    ] {
+        assert_eq!(t.in_years(), within, "{}", t.0);
+    }
     for s in [
         "9999-12-31T23:30:00+01:00",
         "0000-01-01",

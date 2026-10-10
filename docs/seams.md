@@ -902,7 +902,10 @@ function (`docs/decisions/022-functions-are-declarations.md`, extended):
   (`docs/decisions/022-functions-are-declarations.md`, extended).
 - A failure (an error, a timeout, or an output that is not a value of
   the field's type) clears the field, and the field's metadata carries
-  the reason as `error`. A cleared field without `error` is one whose
+  the reason as `error`. An output that holds an integer beyond
+  ±(2^53 − 1), a backing's or an embedding's vector, is recorded as a
+  failure itself, since the log writes no such integer
+  (`docs/log-format.md` §1.2). A cleared field without `error` is one whose
   output is not recorded yet.
 - A fill is a change of the field like any write's. Derived fields
   that read it are recomputed, triggers fire and object sets change,
@@ -1236,7 +1239,10 @@ that did not is lost but for that sentence, and its retry is
 `unanswered`. The network doors know these answers by their words
 (`THE_EXECUTOR` in the contract's errors) and never advise a retry:
 sent again without its key, a call whose executor answered would run
-twice.
+twice. An answer that holds an integer beyond ±(2^53 − 1) is lost
+that way too: the log writes no such integer (`docs/log-format.md`
+§1.2), so the answer is never recorded, and its call is answered with
+the answer and the number that kept it out.
 
 The append, the drain, the hand-out and the recording run in a task of
 their own, which the door awaits: a caller who goes away, as a request

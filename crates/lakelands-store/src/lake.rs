@@ -716,6 +716,14 @@ impl Lake {
     /// The events `drafts` become after the tip, as the log's format `v`
     /// writes them and as the engine stores them, under the writer's
     /// lease: refused where an append of them would be. Nothing is changed.
+    ///
+    /// The seal judges every event as the log's own reading will
+    /// (`docs/log-format.md` §1.2, §1.3): one that holds a number written
+    /// as an integer beyond ±(2^53 − 1), or a `known_at` or `seen_at` out
+    /// of the years 0000 to 9999, refuses the whole append, whatever door
+    /// its value came through. Every door refuses such a value itself and
+    /// names where it stands; a refusal from here names no place, and is a
+    /// defect of the door that let the value pass.
     fn stamp(
         &self,
         w: &Writer,
@@ -765,7 +773,11 @@ impl Lake {
             } else {
                 lease.fence
             };
-            let (event, canon) = log::seal_at(v, &self.id, position, &prev_hash, fence, d);
+            let (event, canon, fault) =
+                log::seal_judged(v, &self.id, position, &prev_hash, fence, d);
+            if let Some(case) = fault {
+                return Err(lakelands_core::invalid(case));
+            }
             prev_pos = Some(position);
             prev_hash = event.hash.clone();
             events.push(event);

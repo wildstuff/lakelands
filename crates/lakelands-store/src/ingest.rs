@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use futures_core::Stream;
 use lakelands_api::catalog::{CommitStream, SourceStream};
-use lakelands_api::error::Case;
+use lakelands_api::error::{Case, Place, Said};
 use lakelands_api::event::EventId;
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::Origin;
@@ -41,7 +41,7 @@ use crate::exec;
 use crate::lake::Lake;
 use crate::log;
 use crate::writes::Call;
-use lakelands_core::links;
+use lakelands_core::{canonical, links};
 
 /// How long a window waits for more records after its first.
 const WINDOW: Duration = Duration::from_millis(2);
@@ -84,6 +84,7 @@ pub fn window(
         // authority on is refused whole, even when that field's value is
         // the one already stored.
         let patch = d.checked(decl, &r.key, &r.fields)?;
+        stated(&r)?;
         // A record a holder of `only` is not admitted is, to it, a key that
         // is free: it is not compared, and the write is refused as on a
         // free key with another's owner (051).
@@ -155,6 +156,29 @@ pub fn window(
         records: committed,
         duplicates,
     })
+}
+
+/// What a source states of a record beside its fields is written as it
+/// was given, so it is judged as a written value is
+/// (`docs/log-format.md` §1.2, §1.3): a `seen_at` out of the years 0000 to
+/// 9999, which an instant built in process can be, and an upstream
+/// position beyond ±(2^53 − 1) are refused, each naming its member.
+fn stated(r: &SourceRecord) -> Result<()> {
+    let at = |path: &str, case: Case| {
+        let path = path.to_owned();
+        Err(lakelands_core::invalid(
+            Said::from(case).within(Place::Member { path }),
+        ))
+    };
+    if let Some(t) = r.seen_at.filter(|t| !t.in_years()) {
+        let value = t.to_string();
+        return at("seen_at", Case::NotDateTime { value });
+    }
+    let position = r.upstream.as_ref().map(|u| u.position.0.into());
+    match position.as_ref().and_then(canonical::integer_too_large) {
+        Some(n) => at("upstream.position", Case::IntegerTooLarge { n: n.clone() }),
+        None => Ok(()),
+    }
 }
 
 /// The next item of a stream, if it arrives before `deadline`.

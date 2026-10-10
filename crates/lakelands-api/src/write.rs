@@ -515,6 +515,20 @@ impl Declaration {
             said: Said::from(Case::AnnotationsTooLarge { bytes, max }).within(self.place()),
         })
     }
+
+    /// A function's `config` is written as it was declared, so it is
+    /// judged as a written value is (`docs/log-format.md` §1.2): an
+    /// integer anywhere in it beyond ±(2^53 − 1) is said at the function
+    /// and its `config`. `None` for any other declaration.
+    pub fn config_fault(&self) -> Option<Said> {
+        let Declaration::Function(f) = self else {
+            return None;
+        };
+        let n = crate::canonical::integer_too_large(&f.config)?.clone();
+        let path = "config".to_owned();
+        let said = Said::from(Case::IntegerTooLarge { n }).within(Place::Member { path });
+        Some(said.within(self.place()))
+    }
 }
 
 impl From<AnnotationFault> for crate::error::Error {

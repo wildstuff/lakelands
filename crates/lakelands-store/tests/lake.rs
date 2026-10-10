@@ -2607,3 +2607,72 @@ async fn verify_refuses_a_known_at_that_goes_back_naming_its_position() {
         }
     }
 }
+
+/// The seal refuses an event the log's own reading would not pass,
+/// whatever door its draft came through (lakelands#830): a number written
+/// as an integer beyond ±(2^53 − 1), a `seen_at` or a `known_at` out of
+/// the years 0000 to 9999. The whole append is refused, a draft before
+/// the refused one too, the refusal names no place, and the writer stands
+/// where it stood. No door checks these drafts: they are handed to the
+/// append as a door with a defect would hand them.
+#[test]
+fn the_seal_refuses_an_event_the_log_would_not_read() {
+    use lakelands_store::log::Draft;
+    let location = Location::memory(name());
+    let lake = lakelands_store::lake::Lake::open(&location, seams(), OpenMode::Create).unwrap();
+    let answer = |output| EventBody::OutputRecorded {
+        seam: "verb:bank:pay".into(),
+        input: Digest::zero(),
+        output: Some(output),
+        output_at: None,
+        field: None,
+    };
+    let mut w = lake.for_write().unwrap();
+    let (tip, now) = (w.tip.clone(), lake.clock(&mut w));
+    let good = Draft::system(now, answer(json!({"paid": 9_007_199_254_740_991_i64})));
+    let seen = |at| Draft {
+        seen_at: Some(lakelands_api::Timestamp(at)),
+        ..good.clone()
+    };
+    let refused = [
+        Draft::system(now, answer(json!({"paid": [1e16]}))),
+        seen(i64::MAX),
+        seen(i64::MIN),
+        Draft {
+            known_at: lakelands_api::Timestamp(i64::MIN),
+            ..good.clone()
+        },
+    ];
+    for draft in refused {
+        let what = format!("{draft:?}");
+        let answer = lake.append(&mut w, vec![good.clone(), draft]);
+        let fits = matches!(&answer, Err(Error::Refused { field: None, reason: Refusal::Invalid(said) })
+            if said.at.is_empty()
+                && matches!(said.case, Case::IntegerTooLarge { .. } | Case::NotDateTime { .. }));
+        assert!(fits, "the seal refuses {what}: {answer:?}");
+        assert_eq!(
+            (&w.tip, lake.engine.tip().unwrap()),
+            (&tip, tip.clone()),
+            "nothing of the append of {what} is in the log"
+        );
+    }
+    let events = lake
+        .append(&mut w, vec![good.clone(), seen(0)])
+        .expect("what the log reads");
+    assert_eq!(events.len(), 2, "the writer appends after a refusal");
+    drop(w);
+    // An executor's answer is drafted without a time: the writer's clock
+    // stamps it before the seal, which reads the clock's.
+    let ext = lakelands_store::writes::External {
+        executor: "bank".into(),
+        verb: "pay".into(),
+        ty: "bill".into(),
+        key: None,
+        payload: Patch::default(),
+        position: events[1].position,
+    };
+    let at = lakelands_store::writes::record_output(&lake, &ext, &json!({}), json!({"paid": 1}))
+        .expect("the answer is recorded");
+    let recorded = lake.read_events(at, 1).unwrap();
+    assert!(recorded[0].known_at >= now, "{recorded:?}");
+}

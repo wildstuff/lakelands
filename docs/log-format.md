@@ -125,6 +125,32 @@ every implementation reads as the same double, and the number is
 written. So a value a door has checked is one it checks to itself
 again: one check is enough, and what is in the log passes it.
 
+A JSON number of 10^21 or more is the double it reads as. An integer
+literal that long (`1000000000000000000001`) was read as a double by
+every JSON reader on its way, before the store saw it, and is written
+`1e+21`: its digits are not kept. A value that needs its digits is a
+`decimal`.
+
+**The seal.** The rule holds for every event, whatever wrote it. Before
+an append reaches the engine, the store judges each event it sealed: a
+number anywhere in it written as an integer beyond the range, or a
+`known_at` or `seen_at` out of the years of §1.3, refuses the whole
+append, and nothing of it is appended. Every place a value enters
+refuses it first and says where it stands:
+
+- a field's value and a payload's member, at the field or the member;
+- what a source states of a record beside its fields, at `seen_at` and
+  at `upstream.position`;
+- a function's `config`, at the function and its `config`;
+- a seam's output, which no caller can correct: a backing's output or
+  an embedding's vector that holds such an integer is recorded as that
+  call's failure (§2.5), and an executor's answer that holds one is not
+  recorded, its call answered as one whose answer was lost, with the
+  answer and the number.
+
+A refusal from the seal itself names no place. It means a value passed
+the place it entered at, which is a defect of that place.
+
 ### 1.3 Time
 
 `known_at`, `seen_at`, and every `date_time` value in a payload are UTC
@@ -142,8 +168,10 @@ years 0000 to 9999 in UTC. An offset that would carry it out of them
 (`9999-12-31T23:30:00-01:00`, half an hour into the year 10000) is
 refused as no date-time, like any other text the one form cannot write.
 
-The bound is on what is written: a field's value, a payload, an
-`initial`, a setting, `seen_at`, a cursor's value, a view's parameter. A
+The bound is on what is written as a date-time: a field's value, a
+payload, an `initial`, `seen_at`, a cursor's value, a view's parameter.
+A setting's value is JSON, and a text in it is typed as nothing: it is
+written as it is and bound by nothing here. A
 text that an expression only compares or computes with (a literal in a
 `where`, a measure, a constraint, a function) is read as the instant it
 denotes, in whatever year its offset leaves it: that literal is after
@@ -169,7 +197,8 @@ format version. The rule is what lets a reader find the position the
 log had at an instant by a binary search (`LakeStore::position_at`).
 
 `seen_at` is the source's capture time for values from a source, as the
-source reported it. The lake does not check it against anything.
+source reported it. The lake checks that it lies in the years above and
+compares it with nothing, `known_at` included.
 
 ## 2. Kinds
 
@@ -480,7 +509,9 @@ and `input` is
 A seam that failed is recorded with the output `{"error": "<why>"}`,
 an object whose one member is `error`, a string. A replay reads it like
 any other output: the call is not made again. A request that carried
-several texts and failed records a failure for each of them.
+several texts and failed records a failure for each of them. An output
+that holds an integer beyond ±(2^53 − 1) is recorded as such a failure,
+naming the number: the log writes no such integer (§1.2).
 
 The log may hold two outputs for one `seam` + `input`: a settle forced
 by a declaration calls again for an input whose recorded output is a
