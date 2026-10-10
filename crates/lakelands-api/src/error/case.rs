@@ -1351,6 +1351,8 @@ catalog! {
         MigrationStale => "the lake moved since that preflight report; run the preflight again",
         /// A migration that takes every key field away.
         MigrationTakesKey { #[serde(rename = "type")] ty: TypeName } => "the migration takes every key field of `{ty}` away, and leaves no rule to make its records' keys",
+        /// A migration that removes a relation a verb is declared on the link type of.
+        MigrationTakesLinkType { unnamed: bool, relation: RelationName, #[serde(rename = "type")] ty: TypeName } => "[{?unnamed}a declaration|it] is declared on `{ty}`, the link type of the relation `{relation}`, which the migration removes; declare it on another type first",
         /// A migration that takes away a field a declaration reads.
         MigrationTakesRead { unnamed: bool, field: FieldName, #[serde(rename = "type")] ty: TypeName, renamed: Option<FieldName> } => "[{?unnamed}a declaration|it] reads `{field}` of `{ty}`, which the migration [renames to `{renamed}`|drops]",
         /// A migration that would make a stored type a view.

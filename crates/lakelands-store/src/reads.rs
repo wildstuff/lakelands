@@ -2188,9 +2188,9 @@ impl<'a> Reader<'a> {
             // is in force; one it would not show leaves the list.
             ProposedWrite::Declare { declarations } => {
                 let mut after = self.shape.ontology.clone();
-                declarations
-                    .iter()
-                    .for_each(|d| after.put(d.clone(), 0, None));
+                for d in declarations.iter() {
+                    crate::writes::put_as_appended(&mut after, d, Some);
+                }
                 let declared = after.declared();
                 // The reader as the bundle in force would show it its
                 // references (024, extended), from its grants as asked: a

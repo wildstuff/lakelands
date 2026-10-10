@@ -24,7 +24,14 @@ preflight reads a view by the same rule
 A bundle's declarations are declared together through `Catalog::apply`:
 validated as one set, so a declaration may name one the set declares
 later, and appended in one append, so a lake holds all of the bundle or
-none of it.
+none of it. The set is judged against the lake it would make: a type's
+relations bring their link types with them (035), so a verb, a trigger,
+an object set or a view of the same set may name one (lakelands#844),
+and a field the set adds to one. A link type the lake holds is brought
+as the set sends it, less what its author is not shown: a link type the
+author is not shown is not brought and stays a type that is not
+declared, and a field the author is not shown is left out and stays
+unknown, in a set that declares its owner as in one that does not (006).
 
 ## Extended: a declaration is strict at every door
 

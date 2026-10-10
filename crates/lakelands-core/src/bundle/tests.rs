@@ -1176,13 +1176,61 @@ fn a_verb_on_a_link_type_sets_none_of_its_ends() {
     };
     for end in ["from", "to"] {
         let e = one(
-            &[PARTNER, ("verbs/v.yaml", &verb(end))],
+            &[KNOWS, ("verbs/v.yaml", &verb(end))],
             Problem::Contradiction,
         );
         assert!(e.message.contains("one of its ends"), "{e}");
     }
-    let loaded = load(&[PARTNER, ("verbs/v.yaml", &verb("since"))]);
+    let loaded = load(&[KNOWS, ("verbs/v.yaml", &verb("since"))]);
     assert!(loaded.is_ok(), "{:#?}", loaded.err());
+}
+
+/// `partner` with a relation carried by link records, `knows`, and one
+/// carried by a field, `led_by`.
+const KNOWS: (&str, &str) = (
+    "types/partner.yaml",
+    "name: partner\nkey: id\nfields:\n  id: text\n  lead: reference(partner)\nrelations:\n  \
+     knows: { target: partner, fields: { since: date_time } }\n  \
+     led_by: { target: partner, via: lead }\n",
+);
+
+#[test]
+fn a_verb_on_a_link_type_of_the_bundles_own_type_names_a_relation_it_carries() {
+    let verb = |on: &str| format!("name: v\non: {on}\nrisk: low\nset:\n  since: \"'x'\"\n");
+    // Carried by the bundle's own relation, or of a type the lake may hold.
+    for on in ["sys.link.partner.knows", "sys.link.other.knows"] {
+        let loaded = load(&[KNOWS, ("verbs/v.yaml", &verb(on))]);
+        assert!(loaded.is_ok(), "{on}: {:#?}", loaded.err());
+    }
+    // No relation of that name, and one a field carries.
+    for on in ["sys.link.partner.likes", "sys.link.partner.led_by"] {
+        let e = one(
+            &[KNOWS, ("verbs/v.yaml", &verb(on))],
+            Problem::UnknownReference,
+        );
+        assert!(
+            e.file == "verbs/v.yaml" && e.message.contains("carried by link"),
+            "{e}"
+        );
+    }
+    // A trigger, a set and a view may stand on one a removed relation left.
+    let on = "sys.link.partner.likes";
+    let view = "name: n\nfields:\n  n: number\nview:\n  measures:\n    n: count()\n  source: ";
+    for (file, body) in [
+        ("triggers/t.yaml", format!("name: t\non: {on}\n")),
+        (
+            "object_sets/s.yaml",
+            format!("name: s\nwhere: \"true\"\nof: {on}\n"),
+        ),
+        ("types/n.yaml", format!("{view}{on}\n")),
+    ] {
+        let loaded = load(&[KNOWS, (file, &body)]);
+        assert!(loaded.is_ok(), "{file}: {:#?}", loaded.err());
+    }
+    // An owner whose file does not parse is reported once, at its file.
+    let broken = ("types/partner.yaml", "name: partner\nextra: 1\n");
+    let e = one(&[broken, ("verbs/v.yaml", &verb(on))], Problem::Malformed);
+    assert_eq!(e.file, "types/partner.yaml", "{e}");
 }
 
 #[test]

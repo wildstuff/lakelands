@@ -2709,7 +2709,7 @@ impl Call<'_> {
             }
         }
         // A migration's shape is refused as a declaration; its preflight is next.
-        match self.check_bundle(&seen, &shaped) {
+        match self.check_set((&seen, o), &shaped) {
             Err(e) if reshapes => declare::unless_a_migration(e)?,
             checked => checked?,
         }
@@ -2814,6 +2814,16 @@ impl Call<'_> {
     /// every other declaration of the set already in it, every problem
     /// collected into one refusal.
     fn check_bundle(&self, ontology: &Ontology, declarations: &[Declaration]) -> Result<()> {
+        self.check_set((ontology, ontology), declarations)
+    }
+
+    /// [`Self::check_bundle`] against `ontology` as the set's author is
+    /// shown `held`, the lake's own.
+    fn check_set(
+        &self,
+        (ontology, held): (&Ontology, &Ontology),
+        declarations: &[Declaration],
+    ) -> Result<()> {
         if declarations.is_empty() {
             return Err(invalid(Case::SetEmpty));
         }
@@ -2832,7 +2842,20 @@ impl Call<'_> {
             let mut probe = ontology.clone();
             for (j, other) in declarations.iter().enumerate() {
                 if identities[j] != identities[i] {
-                    probe.put(other.clone(), 0, None);
+                    // A link type the lake holds is brought as the set's
+                    // author is shown it: not at all where it is not shown
+                    // the type, and without a field it is not shown.
+                    let shown = |mut t: TypeDecl| {
+                        let Some(h) = held.types.get(&t.name) else {
+                            return Some(t);
+                        };
+                        let seen = &ontology.types.get(&t.name)?.decl;
+                        let has =
+                            |d: &TypeDecl, f: &FieldDecl| d.fields.iter().any(|x| x.name == f.name);
+                        t.fields.retain(|f| has(seen, f) || !has(&h.decl, f));
+                        Some(t)
+                    };
+                    put_as_appended(&mut probe, other, shown);
                 }
             }
             if let Err(e) = declare::check_declaration(&probe, d, false)
@@ -3214,6 +3237,42 @@ impl Call<'_> {
                 }
                 gone(None, &reads, was, is).map_or(Ok(()), Err)?;
             }
+        }
+        // A verb is the one door left to a link type no relation carries,
+        // so a relation is not removed while a verb in force is declared on
+        // its link type (035; 027, extended). The verb is named to an author
+        // `describe` shows it to.
+        let (kept, sees) = (
+            links::link_types_of(&m.to),
+            Sight::held(self.who, &w.ontology),
+        );
+        for r in before
+            .relations
+            .iter()
+            .filter(|r| links::carried_by_links(r))
+        {
+            let ty = links::link_type_name(&before.name, &r.name);
+            // A renamed relation is the rename's to judge, below.
+            let renamed = m.relation_renames.iter().any(|(old, _)| old == &r.name);
+            if renamed || kept.iter().any(|t| t.name == ty) {
+                continue;
+            }
+            let on = (w.ontology.verbs.values()).filter(|e| e.decl.on == ty);
+            let mut on = on.map(|e| Declaration::Verb(e.decl.clone())).peekable();
+            if on.peek().is_none() {
+                continue;
+            }
+            let shown = on.find(|v| sees.shows(v));
+            let (unnamed, relation) = (shown.is_none(), r.name.clone());
+            let said = Said::from(Case::MigrationTakesLinkType {
+                unnamed,
+                relation,
+                ty,
+            });
+            return Err(after_it(match shown {
+                Some(verb) => said.within(verb.place()),
+                None => said,
+            }));
         }
         // And the type it migrates to reads only fields it has: `declare`'s
         // check above ends at the reshaping, before it comes to the reads.
@@ -4165,6 +4224,21 @@ fn link_type_drafts(o: &Ontology, t: &TypeDecl, now: Timestamp) -> Result<Vec<Dr
         out.push(system_declared(o, Declaration::Type(lt), now)?);
     }
     Ok(out)
+}
+
+/// Puts `d` into `o` as an append leaves it: a type with the link types
+/// its relations call for, each as `brings` admits it (035).
+pub(crate) fn put_as_appended(
+    o: &mut Ontology,
+    d: &Declaration,
+    brings: impl Fn(TypeDecl) -> Option<TypeDecl>,
+) {
+    let with = match d {
+        Declaration::Type(t) => links::link_types_of(t),
+        _ => Vec::new(),
+    };
+    let with = with.into_iter().filter_map(brings).map(Declaration::Type);
+    with.chain([d.clone()]).for_each(|d| o.put(d, 0, None));
 }
 
 /// The system's `declared` of a declaration, at its next version.
