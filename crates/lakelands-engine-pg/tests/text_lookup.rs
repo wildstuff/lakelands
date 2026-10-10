@@ -5,7 +5,9 @@
 //! The suite's check runs on the memory engine too, which keeps no index
 //! of exact text and reads the type, so its bound cannot tell the index
 //! from a walk of the type; this one can. Here the statements of a page
-//! under a text many hold are planned, the tables analysed, without a sort.
+//! under a text many hold are planned, the tables analysed, without a sort,
+//! and the cursor of a long page under a text few hold from the text's
+//! rows, a seek for each holder.
 
 mod common;
 
@@ -16,7 +18,7 @@ use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::Declaration;
 use lakelands_core::engines;
-use lakelands_engine_pg::{PgOpener, holding_statements};
+use lakelands_engine_pg::{PgOpener, few_holders_statements, holding_statements};
 use postgres::types::ToSql;
 use serde_json::json;
 
@@ -25,15 +27,15 @@ const N: u64 = 3000;
 
 /// The records of the walked type: `v` is `past` in one more than
 /// `FEW_HOLDERS` and `at` in exactly that many, a tenth each; `rare` in
-/// five, and `bare` in five that hold no `w`; three in a hundred of the
-/// others hold no `w` either. Those holding `w` hold one of seven `x`, and
+/// five that hold `w`, and `bare` in five that hold none; three in a
+/// hundred of the others hold no `w` either. Those holding `w` hold one of seven `x`, and
 /// one in thirteen is restricted.
 fn walked() -> Vec<StoredRecord> {
     let (mut past, mut at) = (0, 0);
     let states: Vec<StoredRecord> = (0..41_000_u64)
         .map(|i| {
             let v = match i {
-                _ if i % 10_000 == 500 => "rare",
+                _ if i % 10_000 == 505 => "rare",
                 _ if i % 10_000 == 700 => "bare",
                 _ if i % 10 == 1 && past <= engines::FEW_HOLDERS => {
                     past += 1;
@@ -129,9 +131,12 @@ fn a_count_and_a_page_under_an_exact_text_are_handed_the_records_holding_it() {
 /// page that passes from the indexed records to those without `w` asks
 /// each for one. Restricted records are passed over, ties in `x` are
 /// walked alone and under `w`, `only` pairs are kept, a page of one whose
-/// filter rejects most holders asks for a handful of batches, and a walk
-/// goes on across writes that move a text from one way to the other.
-fn walk_under_each_text(engine: &dyn LakeEngine) {
+/// filter rejects most holders asks for a handful of batches, and under a
+/// text few hold reads the first three as any page does and the holders
+/// left once. `planned` runs while `at` is held by exactly `FEW_HOLDERS`,
+/// and then a walk goes on across writes that move a text from one way to
+/// the other.
+fn walk_under_each_text(engine: &dyn LakeEngine, planned: impl FnOnce()) {
     let decl: Declaration = serde_json::from_value(json!({
         "declare": "type", "name": "t",
         "fields": [
@@ -204,30 +209,52 @@ fn walk_under_each_text(engine: &dyn LakeEngine) {
     }
     // A page of one under a filter that passes over all but a fortieth of
     // the holders: each batch the engine answers may read every holder.
+    // And pages of one under `at` that pass over its first holders in
+    // `w`'s order, none to eight of them.
+    let w = |r: &StoredRecord| r.fields.get("w").and_then(Value::as_u64);
+    let held = |r: &&StoredRecord| r.fields.get("v") == Some(&json!("at"));
+    let mut first: Vec<u64> = states.iter().filter(held).filter_map(w).collect();
+    first.sort_unstable();
+    let passing = first[..9].iter().map(|w| format!("v = 'at' and w >= {w}"));
+    let rejecting = ["at", "past"].map(|text| format!("v = '{text}' and w > 40000"));
     let view = engine.view(None).unwrap();
-    for text in ["at", "past"] {
-        let rejecting = Scan {
+    let mut asked_by_few = std::collections::BTreeSet::new();
+    for filter in passing.chain(rejecting) {
+        let page = Scan {
             limit: 1,
-            ..scan(
-                &format!("v = '{text}' and w > 40000"),
-                &[("w", Direction::Asc)],
-            )
+            ..scan(&filter, &[("w", Direction::Asc)])
         };
-        let expected = engines::scan(Some(t), &states, &rejecting);
-        let before = engines::batches_read();
-        let page = view.scan(&TypeName::from("t"), &rejecting).unwrap();
+        let expected = engines::scan(Some(t), &states, &page);
+        let (before, read) = (engines::batches_read(), engines::holder_reads());
+        let answered = view.scan(&TypeName::from("t"), &page).unwrap();
         let asked = engines::batches_read() - before;
+        // Few hold `at`: a page reads up to three batches as any page
+        // does, and declares its cursor when it asks for a fourth
+        // (lakelands#695). Many hold `past`, and the order index is walked.
+        let few = !filter.contains("past");
+        let (reads, once) = (engines::holder_reads() - read, few && asked > 3);
+        asked_by_few.extend(few.then_some(asked));
         assert!(
-            asked <= 16 && keys(&page) == keys(&expected),
-            "a page of one in `w`'s order under `v = '{text}' and w > 40000` asked for {asked} \
-             batches of the index; a page doubles its batch as its filter rejects rows"
+            (1..=16).contains(&asked)
+                && reads == u64::from(once)
+                && keys(&answered) == keys(&expected),
+            "a page of one in `w`'s order under `{filter}` asked for {asked} batches of the \
+             index and read the text's holders whole {reads} times; a page doubles its batch as \
+             its filter rejects rows, and under a text few hold reads the holders left once when \
+             it asks for a fourth batch, not before"
         );
     }
+    let asked = |n: std::ops::RangeInclusive<u64>| asked_by_few.range(n).next().is_some();
+    assert!(
+        asked(1..=2) && asked(3..=3) && asked(4..=4) && asked(5..=16),
+        "the pages under `at` asked for {asked_by_few:?} batches; they are to cover a page of \
+         fewer than three batches, of three, of four and a longer one"
+    );
     drop(view);
+    planned();
     // Between two pages of a walk, `at` gains a holder and goes to the
     // order index's way; between two pages of the next, `past` loses one
     // and goes to the text index's.
-    let w = |r: &StoredRecord| r.fields.get("w").and_then(Value::as_u64);
     let gained = StoredRecord {
         key: "k99999".into(),
         fields: serde_json::from_value(json!({"v": "at", "w": 50_000, "x": 1})).unwrap(),
@@ -326,6 +353,13 @@ fn keys(page: &[StoredRecord]) -> Vec<RecordKey> {
 /// the tables analysed first, so that the plan does not hang on whether
 /// the server's own analysis has run (lakelands#674): the order index's
 /// rows in its order, or the text index's in key order, and no sort.
+///
+/// The cursor a long page under a text few records hold declares
+/// (lakelands#695) has one plan, at five holders (`rare`) and at the
+/// ceiling (`at`, read while exactly `FEW_HOLDERS` hold it), in either
+/// direction: from the text's rows, each holder's order row sought by its
+/// key, sorted once, and each record sought by its key. It never reads a
+/// table whole, whatever the type's size, and every step of it ran.
 fn planned_without_a_sort(url: &str, schema: &str) {
     let (url, schema) = (url.to_owned(), schema.to_owned());
     let plans: Vec<Vec<String>> = std::thread::spawn(move || {
@@ -336,28 +370,52 @@ fn planned_without_a_sort(url: &str, schema: &str) {
                  ANALYZE {schema}.sort_index; SET plan_cache_mode = force_custom_plan"
             ))
             .unwrap();
-        let args: [&(dyn ToSql + Sync); 5] = [&"t", &"w", &10_i64, &"v", &"past"];
-        holding_statements(&schema)
-            .iter()
-            .map(|statement| {
+        let few = engines::FEW_HOLDERS as i64 + 1;
+        // A cursor continues after a row in the middle of `w`'s order.
+        let (after, key) = (engines::order_key(&json!(20_000)), "k");
+        let many: Vec<&(dyn ToSql + Sync)> = vec![&"t", &"w", &10_i64, &"v", &"past"];
+        let held =
+            |text| -> Vec<&(dyn ToSql + Sync)> { vec![&"t", &"w", &few, &"v", text, &after, &key] };
+        let holding = holding_statements(&schema).map(|s| (s, many.clone()));
+        let [up, down] = few_holders_statements(&schema);
+        let cursors = [&"at", &"rare"].map(|t| [(up.clone(), held(t)), (down.clone(), held(t))]);
+        (holding.iter().chain(cursors.as_flattened()))
+            .map(|(statement, args)| {
                 let explain =
                     format!("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) {statement}");
-                let rows = client.query(&explain, &args).unwrap();
+                let rows = client.query(&explain, args).unwrap();
                 rows.iter().map(|row| row.get(0)).collect()
             })
             .collect()
     })
     .join()
     .unwrap();
-    for (plan, index) in plans
-        .iter()
-        .zip(["sort_index_asc", "sort_index_desc", "text_index_value"])
+    let (holding, cursors) = plans.split_at(3);
+    for (plan, index) in
+        holding
+            .iter()
+            .zip(["sort_index_asc", "sort_index_desc", "text_index_value"])
     {
         let has = |step: &str| plan.iter().any(|line| line.contains(step));
         assert!(
             has(index) && !has("Sort") && !has("Seq Scan"),
             "a page under a text many records hold is not read from `{index}` in its order, \
              with no sort:\n{plan:#?}"
+        );
+    }
+    for plan in cursors {
+        let has = |step: &str| plan.iter().any(|line| line.contains(step));
+        let sorts = plan.iter().filter(|line| line.contains("Sort Key")).count();
+        assert!(
+            ["text_index_value", "sort_index_pkey", "records_head_pkey"]
+                .iter()
+                .all(|index| has(index))
+                && sorts == 1
+                && !has("Seq Scan")
+                && !has("never executed"),
+            "the cursor of a page under a text few records hold is not read from the text's \
+             rows, each holder's order row sought by its key, those sorted once, and each \
+             record sought by its key:\n{plan:#?}"
         );
     }
 }
@@ -371,8 +429,7 @@ fn a_page_in_a_fields_order_under_an_exact_text_is_handed_its_page() {
     let engine = PgOpener
         .open(&common::location(&url, "texts", &schema), OpenMode::Create)
         .unwrap();
-    walk_under_each_text(engine.as_ref());
-    planned_without_a_sort(&url, &schema);
+    walk_under_each_text(engine.as_ref(), || planned_without_a_sort(&url, &schema));
     drop(engine);
     common::drop_schema(&url, &schema);
 }

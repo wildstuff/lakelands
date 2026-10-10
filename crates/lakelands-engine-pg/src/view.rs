@@ -143,6 +143,40 @@ fn head_of_sql(records: &str, key: &str) -> String {
     )
 }
 
+/// The cursor of a page under a text few records hold
+/// ([`Read::few_after`]); at most one a page, in the page's transaction.
+const FEW_CURSOR: &str = "few_holders";
+
+/// A page under a text few records hold: the batches it has read by
+/// statements of their own, and its cursor over the holders after them:
+/// whether it is declared, whether it has answered its last row, and the
+/// rows fetched past a batch.
+#[derive(Default)]
+struct Few {
+    batches: u32,
+    declared: bool,
+    ended: bool,
+    waiting: std::collections::VecDeque<(Vec<u8>, StoredRecord)>,
+}
+
+/// The bound a page in `dir` continues after, the sort key `$k` and the
+/// key `$key`, as a condition on the order index's row `s`, and that
+/// direction's order.
+fn after_and_order(dir: Direction, k: u8, key: u8) -> (String, &'static str) {
+    match dir {
+        Direction::Asc => (
+            format!("AND (s.sort_key, s.key COLLATE \"C\") > (${k}, ${key} COLLATE \"C\")"),
+            "s.sort_key, s.key COLLATE \"C\"",
+        ),
+        Direction::Desc => (
+            format!(
+                "AND (s.sort_key < ${k} OR (s.sort_key = ${k} AND s.key COLLATE \"C\" > ${key}))"
+            ),
+            "s.sort_key DESC, s.key COLLATE \"C\"",
+        ),
+    }
+}
+
 /// The statement of [`Read::sorted_after`] over the tables `sorted`,
 /// `text` and `records`: the order index's rows of `$2` for the records
 /// `holders` names, `$4` and `$5` the field and text they hold, and then
@@ -163,18 +197,7 @@ fn sorted_after_sql(
         Holders::All => (4, 5),
         _ => (6, 7),
     };
-    let (seek, by) = match dir {
-        Direction::Asc => (
-            format!("AND (s.sort_key, s.key COLLATE \"C\") > (${k}, ${key} COLLATE \"C\")"),
-            "s.sort_key, s.key COLLATE \"C\"",
-        ),
-        Direction::Desc => (
-            format!(
-                "AND (s.sort_key < ${k} OR (s.sort_key = ${k} AND s.key COLLATE \"C\" > ${key}))"
-            ),
-            "s.sort_key DESC, s.key COLLATE \"C\"",
-        ),
-    };
+    let (seek, by) = after_and_order(dir, k, key);
     let seek = if from { seek.as_str() } else { "" };
     let (with, rows) = match holders {
         Holders::All => (String::new(), format!("{sorted} s WHERE")),
@@ -196,6 +219,28 @@ fn sorted_after_sql(
     format!(
         "{with}SELECT s.sort_key, r.state FROM \
          (SELECT s.sort_key, s.key FROM {rows} s.ty = $1 AND s.field = $2 {seek} \
+          ORDER BY {by} LIMIT $3) s \
+         {} ORDER BY {by}",
+        head_of_sql(records, "s.key")
+    )
+}
+
+/// The declaration of a page's cursor over its few holders
+/// ([`Read::few_after`]), with [`sorted_after_sql`]'s parameters and after
+/// a row, `$3` the most the cursor answers: the text's rows, materialized;
+/// each holder's order row sought by its key, a seek into the order
+/// index's primary key whatever the statistics say, so the read costs a
+/// seek a holder and never the type's order rows; those sorted once; and
+/// each record sought through its head as the cursor answers it.
+fn few_cursor_sql([sorted, text, records]: &[String; 3], dir: Direction) -> String {
+    let (seek, by) = after_and_order(dir, 6, 7);
+    format!(
+        "DECLARE {FEW_CURSOR} NO SCROLL CURSOR FOR WITH t AS MATERIALIZED \
+         (SELECT key FROM {text} WHERE ty = $1 AND field = $4 AND value = $5) \
+         SELECT s.sort_key, r.state FROM \
+         (SELECT s.sort_key, s.key FROM t CROSS JOIN LATERAL \
+          (SELECT s.sort_key, s.key FROM {sorted} s \
+           WHERE s.ty = $1 AND s.key = t.key AND s.field = $2 {seek} LIMIT 1) s \
           ORDER BY {by} LIMIT $3) s \
          {} ORDER BY {by}",
         head_of_sql(records, "s.key")
@@ -240,6 +285,18 @@ pub fn holding_statements(schema: &str) -> [String; 3] {
         sorted_after_sql(&tables, Direction::Desc, false, &many),
         unsorted_holding_sql(&tables, false),
     ]
+}
+
+/// The declarations of the cursor a page under an exact text that few
+/// records hold reads its later batches from in the lake's `schema`, in a
+/// field's order either way, for the engine's own test of their plans:
+/// each starts at the text's rows, seeks each holder's order row and sorts
+/// them, and seeks each record by its key (lakelands#695). Each takes what
+/// [`holding_statements`]' take, the limit the most it answers, and the
+/// sort key and the key of the row it continues after.
+pub fn few_holders_statements(schema: &str) -> [String; 2] {
+    let tables = ["sort_index", "text_index", "records"].map(|t| format!("{schema}.{t}"));
+    [Direction::Asc, Direction::Desc].map(|dir| few_cursor_sql(&tables, dir))
 }
 
 /// The statements the view reads records by in the lake's `schema`, as it
@@ -489,6 +546,58 @@ impl Read<'_> {
             .collect()
     }
 
+    /// At most `n` of the head records holding the text `holders` names, in
+    /// the order index's order for `order`, as [`Read::sorted_after`]
+    /// answers them, and by it for a page's first
+    /// [`engines::BATCHES_BEFORE_HELD`] batches. A page that asks for one more
+    /// declares a cursor ([`few_cursor_sql`]) after `from`, the last row it
+    /// read, so the holders left are read and sorted once, and every later
+    /// batch fetches from it
+    /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`, extended). A
+    /// fetch asks for a power of two, so a connection prepares a dozen
+    /// fetches at most, and the rows past the batch wait in `few` for the
+    /// next. The batches and the cursor read one snapshot: the page's
+    /// transaction ([`PgView::read`]), with which the cursor ends.
+    fn few_after(
+        &mut self,
+        ty: &TypeName,
+        order: &Order,
+        holders: &engines::Holders<'_>,
+        few: &mut Few,
+        from: Option<(&[u8], &str)>,
+        n: u32,
+    ) -> Result<Vec<(Vec<u8>, StoredRecord)>> {
+        // A batch with no row to continue after is a page's first.
+        let (Some((k, key)), true) = (from, few.batches >= engines::BATCHES_BEFORE_HELD) else {
+            few.batches += 1;
+            return self.sorted_after(ty, order, holders, from, n);
+        };
+        if !few.declared {
+            let declare = few_cursor_sql(&self.tables(), order.dir);
+            let limit = (engines::FEW_HOLDERS + 1) as i64;
+            let (ty, field) = (ty.as_str(), order.field.as_str());
+            let (f, t) = holders.text().unwrap_or_default();
+            self.db
+                .execute(&declare, &[&ty, &field, &limit, &f, &t, &k, &key])?;
+            engines::count_holder_read();
+            few.declared = true;
+        }
+        let n = n as usize;
+        while few.waiting.len() < n && !few.ended {
+            let ask = (n - few.waiting.len()).next_power_of_two();
+            let rows = self
+                .db
+                .query(&format!("FETCH {ask} FROM {FEW_CURSOR}"), &[])?;
+            few.ended = rows.len() < ask;
+            for r in rows {
+                few.waiting
+                    .push_back((r.get(0), decode_record(&r.get::<_, String>(1))?));
+            }
+        }
+        let take = n.min(few.waiting.len());
+        Ok(few.waiting.drain(..take).collect())
+    }
+
     /// The order index's, the exact-text index's and the records' tables.
     fn tables(&self) -> [String; 3] {
         ["sort_index", "text_index", "records"].map(|t| self.names.t(t))
@@ -723,8 +832,14 @@ impl ProjectionView for PgView<'_> {
                         (Some(changed), engines::Holders::All)
                     };
                     let r = std::cell::RefCell::new(r);
-                    let sorted = |from: Option<(&[u8], &str)>, n| {
-                        r.borrow_mut().sorted_after(ty, first, &holders, from, n)
+                    // Under a text few hold, a page that asks for many
+                    // batches reads the later ones from one cursor.
+                    let mut few = Few::default();
+                    let sorted = |from: Option<(&[u8], &str)>, n| match holders {
+                        engines::Holders::Few(..) => r
+                            .borrow_mut()
+                            .few_after(ty, first, &holders, &mut few, from, n),
+                        _ => r.borrow_mut().sorted_after(ty, first, &holders, from, n),
                     };
                     let missing = |after: Option<&str>, n| {
                         r.borrow_mut()

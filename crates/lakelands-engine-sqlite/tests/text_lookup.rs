@@ -127,8 +127,10 @@ fn a_count_and_a_page_under_an_exact_text_are_handed_the_records_holding_it() {
 /// page that passes from the indexed records to those without `w` asks
 /// each for one. Restricted records are passed over, ties in `x` are
 /// walked alone and under `w`, `only` pairs are kept, a page of one whose
-/// filter rejects most holders asks for a handful of batches, and a walk
-/// goes on across writes that move a text from one way to the other.
+/// filter rejects most holders asks for a handful of batches, and under a
+/// text few hold reads the first three as any page does and the holders
+/// left once, and a walk goes on across writes that move a text from one
+/// way to the other.
 fn walk_under_each_text(engine: &dyn LakeEngine) {
     let decl: Declaration = serde_json::from_value(json!({
         "declare": "type", "name": "t",
@@ -202,30 +204,51 @@ fn walk_under_each_text(engine: &dyn LakeEngine) {
     }
     // A page of one under a filter that passes over all but a fortieth of
     // the holders: each batch the engine answers may read every holder.
+    // And pages of one under `at` that pass over its first holders in
+    // `w`'s order, none to eight of them.
+    let w = |r: &StoredRecord| r.fields.get("w").and_then(Value::as_u64);
+    let held = |r: &&StoredRecord| r.fields.get("v") == Some(&json!("at"));
+    let mut first: Vec<u64> = states.iter().filter(held).filter_map(w).collect();
+    first.sort_unstable();
+    let passing = first[..9].iter().map(|w| format!("v = 'at' and w >= {w}"));
+    let rejecting = ["at", "past"].map(|text| format!("v = '{text}' and w > 40000"));
     let view = engine.view(None).unwrap();
-    for text in ["at", "past"] {
-        let rejecting = Scan {
+    let mut asked_by_few = std::collections::BTreeSet::new();
+    for filter in passing.chain(rejecting) {
+        let page = Scan {
             limit: 1,
-            ..scan(
-                &format!("v = '{text}' and w > 40000"),
-                &[("w", Direction::Asc)],
-            )
+            ..scan(&filter, &[("w", Direction::Asc)])
         };
-        let expected = engines::scan(Some(t), &states, &rejecting);
-        let before = engines::batches_read();
-        let page = view.scan(&TypeName::from("t"), &rejecting).unwrap();
+        let expected = engines::scan(Some(t), &states, &page);
+        let (before, read) = (engines::batches_read(), engines::holder_reads());
+        let answered = view.scan(&TypeName::from("t"), &page).unwrap();
         let asked = engines::batches_read() - before;
+        // Few hold `at`: a page reads up to three batches as any page
+        // does, and reads the holders left once when it asks for a fourth
+        // (lakelands#695). Many hold `past`, and the order index is walked.
+        let few = !filter.contains("past");
+        let (reads, once) = (engines::holder_reads() - read, few && asked > 3);
+        asked_by_few.extend(few.then_some(asked));
         assert!(
-            asked <= 16 && keys(&page) == keys(&expected),
-            "a page of one in `w`'s order under `v = '{text}' and w > 40000` asked for {asked} \
-             batches of the index; a page doubles its batch as its filter rejects rows"
+            (1..=16).contains(&asked)
+                && reads == u64::from(once)
+                && keys(&answered) == keys(&expected),
+            "a page of one in `w`'s order under `{filter}` asked for {asked} batches of the \
+             index and read the text's holders whole {reads} times; a page doubles its batch as \
+             its filter rejects rows, and under a text few hold reads the holders left once when \
+             it asks for a fourth batch, not before"
         );
     }
+    let asked = |n: std::ops::RangeInclusive<u64>| asked_by_few.range(n).next().is_some();
+    assert!(
+        asked(1..=2) && asked(3..=3) && asked(4..=4) && asked(5..=16),
+        "the pages under `at` asked for {asked_by_few:?} batches; they are to cover a page of \
+         fewer than three batches, of three, of four and a longer one"
+    );
     drop(view);
     // Between two pages of a walk, `at` gains a holder and goes to the
     // order index's way; between two pages of the next, `past` loses one
     // and goes to the text index's.
-    let w = |r: &StoredRecord| r.fields.get("w").and_then(Value::as_u64);
     let gained = StoredRecord {
         key: "k99999".into(),
         fields: serde_json::from_value(json!({"v": "at", "w": 50_000, "x": 1})).unwrap(),

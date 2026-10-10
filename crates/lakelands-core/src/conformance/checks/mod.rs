@@ -117,6 +117,7 @@ pub const ALL: &[Check] = &[
     paging::TOTAL_AND_OFFSET,
     paging::MISSING_SORT_VALUES_LAST,
     paging::UNNAMED_LIMIT,
+    paging::EACH_HOLDER_ONCE,
     latest::LATEST_ORDER,
     decimals::AS_WRITTEN,
     decimals::EXACT_SUM,
