@@ -552,8 +552,9 @@ A host that already has a store of its own moves in four steps.
   that is the one in force is answered `applied` at the head and appends
   nothing, by `declare` and by `apply`: a type, a value type, a function,
   a verb, a trigger, an object set. A computed field may be stated with
-  the inputs `describe` shows or without them. A declaration's version
-  counts its changes. See
+  the inputs `describe` shows or without them, and a grouped view with
+  its `key` or without it. A declaration's version counts its changes.
+  See
   `docs/decisions/027-shape-changes-are-declared-or-migrated.md`.
 - **A read costs the same however much the lake declares
   (lakelands#557).** A handle builds what the lake declares once for a

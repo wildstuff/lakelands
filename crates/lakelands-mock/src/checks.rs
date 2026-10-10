@@ -12177,9 +12177,10 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
     );
 }
 
-/// A grouped view's key is its `group_by`, whatever `key` says, judged on the view
-/// and where its values come from (006, 024, extended, lakelands#782): a
-/// view grouped by a reference to a type its reader is not shown, by a
+/// A grouped view's key is its `group_by`, judged on the view and where its
+/// values come from (006, 024, extended, lakelands#782; a view declares no
+/// other `key`, lakelands#788): a view
+/// grouped by a reference to a type its reader is not shown, by a
 /// field its source or its second source holds at `none`, or by one the
 /// view itself holds so, answers `describe_type`, `get` and `find` as a
 /// name that is not declared, and `describe` names none of them. A view
@@ -12200,21 +12201,15 @@ pub async fn a_view_is_keyed_by_its_groups_where_their_values_come_from(store: A
         }
         v
     };
-    // Grouped by `name`, keyed by `n`: its records carry `name` all the same.
-    let keyed = |name: &str| {
-        let mut v = view(name, "name", &f("name", "text"), false);
-        v["key"] = json!(["n"]);
-        v
-    };
     let mut merged = view("m_view", "name", &f("name", "text"), false);
     merged["fields"] = json!([f("name", "text"), f("n", "decimal"), f("n2", "decimal")]);
     let n2 = json!([{"name": "n2", "expr": "count()"}]);
     merged["view"]["merge"] = json!([{"source": "aux", "group_by": ["hid2"], "measures": n2}]);
-    // Grouped by `[name, hid]`, keyed by `name`, over a source whose `hid` it reads.
+    // Grouped by `[name, hid]`, over a source whose `hid` it reads.
     let mut pair = view("knr_view", "name", &f("name", "text"), false);
     pair["fields"] = json!([f("name", "text"), f("hid", "text"), f("n", "decimal")]);
     pair["view"]["source"] = json!("pub2");
-    (pair["key"], pair["view"]["group_by"]) = (json!(["name"]), json!(["name", "hid"]));
+    pair["view"]["group_by"] = json!(["name", "hid"]);
     // Measured from a measure: `m` reads `n`; `open`, and `due` merged
     // beside it, read the merged `paid`;
     // `m0_view` and `p0_view` are the same views without those measures.
@@ -12259,8 +12254,7 @@ pub async fn a_view_is_keyed_by_its_groups_where_their_values_come_from(store: A
         view("h_viewk", "hid", &f("hid", "text"), true),
         merged,
         view("g_view", "name", &f("name", "text"), false),
-        keyed("kk_view"),
-        keyed("kn_view"),
+        view("kn_view", "name", &f("name", "text"), false),
         pair,
         view("n_view", "name", &f("name", "text"), false),
         view("nh_view", "name", &f("name", "text"), true),
@@ -12296,7 +12290,7 @@ pub async fn a_view_is_keyed_by_its_groups_where_their_values_come_from(store: A
     let grants = json!({"default": "read", "review": true, "types": {"zsecret": {"default": "none"},
         "pub": {"fields": {"hid": "none"}}, "aux": {"fields": {"hid2": "none"}},
         "g_view": {"fields": {"name": "none"}},
-        "kk_view": {"fields": {"name": "none"}}, "kn_view": {"fields": {"n": "none"}},
+        "kn_view": {"fields": {"n": "none"}},
         "knr_view": {"fields": {"hid": "none"}}, "nh_view": {"fields": {"n": "none"}},
         "mm_view": {"fields": {"n": "none"}}, "pm_view": {"fields": {"paid": "none"}}}});
     let grants = serde_json::from_value(grants).expect("grants read");
@@ -12320,7 +12314,6 @@ pub async fn a_view_is_keyed_by_its_groups_where_their_values_come_from(store: A
         ("h_viewk", "a"),
         ("m_view", "a"),
         ("g_view", "a"),
-        ("kk_view", "a"),
         ("knr_view", "a:a"),
     ] {
         let (there, none) = (doors(t, k).await, doors("no_such", k).await);
@@ -12369,7 +12362,7 @@ pub async fn a_view_is_keyed_by_its_groups_where_their_values_come_from(store: A
         let t = d.types.iter().find(|t| t.name.as_str() == ty);
         said.extend(t.map(|t| shape(&t.access.key, t.view.as_ref())));
     }
-    let mut again = keyed("kn_view");
+    let mut again = view("kn_view", "name", &f("name", "text"), false);
     again["description"] = json!("again");
     let declarations = vec![serde_json::from_value(again).expect("a declaration reads")];
     let bundle = ProposedWrite::Declare { declarations };

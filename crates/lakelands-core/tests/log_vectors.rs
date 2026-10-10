@@ -203,6 +203,12 @@ fn a_view_hashes_its_conditions_in_typed_form() {
         str_of(&vector, "schema_hash"),
         "the declaration, conditions written as text, hashes to the vector's shape"
     );
+    let keyless = TypeDecl { key: vec![], ..ty };
+    assert_eq!(
+        shape::schema_hash(&keyless).unwrap(),
+        str_of(&vector, "key_left_out_schema_hash"),
+        "a grouped view hashes alike with its `key` left out"
+    );
 }
 
 /// Format version 2's one addition, `migrated.rekeyed`, in a worked event

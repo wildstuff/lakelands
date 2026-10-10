@@ -229,6 +229,18 @@ fn merged_sources(
     Ok(())
 }
 
+/// A view's `key` names what its records are keyed by, its `group_by`,
+/// field for field in order, or is left out. Any other would describe
+/// records the view does not make, and a rule that reads a type's key
+/// would judge a field no record of the view carries as one.
+fn view_key(owner: &[Place], t: &TypeDecl, v: &ViewDecl) -> Result<()> {
+    if t.key.is_empty() || t.key == v.group_by {
+        return Ok(());
+    }
+    let group_by = (!v.group_by.is_empty()).then(|| v.group_by.iter().collect());
+    Err(invalid(at(owner, Case::ViewKey { group_by })))
+}
+
 /// A view's declared fields are exactly what it computes: a field for each
 /// `group_by` field and each measure, in which its value lands, and no
 /// field that nothing fills (028). A read answers declared fields only, so
@@ -691,6 +703,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
                 return Err(invalid(at(&owner, Case::UnknownField { ty, field })));
             }
         }
+        view_key(&owner, t, v)?;
         view_fields(&owner, t, v)?;
         view_kinds(o, &owner, t, v)?;
         view_params(&owner, v, &read)?;

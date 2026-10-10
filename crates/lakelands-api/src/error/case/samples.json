@@ -428,6 +428,12 @@
    "field": "f"
   },
   {
+   "code": "view_key",
+   "group_by": [
+    "a"
+   ]
+  },
+  {
    "carrier": "via",
    "code": "view_relation",
    "type": "t"

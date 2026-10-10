@@ -52,13 +52,15 @@ fn the_hash_is_pinned_for_a_small_type() {
 }
 
 /// A view's conditions are hashed in their typed form, so the serde
-/// form of `Expr` is part of the log format; pinned for that reason.
+/// form of `Expr` is part of the log format; pinned for that reason. Its
+/// key is hashed as its `group_by`, written or left out (lakelands#788).
 #[test]
 fn the_hash_is_pinned_for_a_view() {
-    assert_eq!(
-        hash(&a_view("status = 'open'", "sum(amount)")),
-        "39bc4bc1ad9646574531399af2cc2e01245a57989f4e61280ec94c5c2ec3918b"
-    );
+    let view = a_view("status = 'open'", "sum(amount)");
+    let pinned = "3c74a5622f87f645cd0b09510f12798f58ed884d351984ebd48e048ca31019f7";
+    assert_eq!(hash(&view), pinned);
+    let key = vec!["customer".into()];
+    assert_eq!(hash(&TypeDecl { key, ..view }), pinned);
 }
 
 #[test]

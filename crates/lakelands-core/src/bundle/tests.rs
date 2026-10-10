@@ -1127,6 +1127,28 @@ fn one_of_on_a_value_type_that_is_not_text_is_refused() {
 }
 
 #[test]
+fn a_view_keyed_by_other_fields_than_its_groups_is_refused() {
+    let view = |key: &str| {
+        format!(
+            "name: v\n{key}fields:\n  id: text\n  n: decimal\nview:\n  source: partner\n  \
+             group_by: [id]\n  measures:\n    n: \"count()\"\n"
+        )
+    };
+    let e = one(
+        &[PARTNER, ("types/v.yaml", &view("key: \"n\"\n"))],
+        Problem::Contradiction,
+    );
+    assert!(e.message.contains("`group_by`"), "{e}");
+    let total = "name: v\nkey: \"n\"\nfields:\n  n: decimal\nview:\n  source: partner\n  \
+                 measures:\n    n: \"count()\"\n";
+    one(&[PARTNER, ("types/v.yaml", total)], Problem::Contradiction);
+    for key in ["", "key: id\n"] {
+        let loaded = load(&[PARTNER, ("types/v.yaml", &view(key))]);
+        assert!(loaded.is_ok(), "{key:?}: {:#?}", loaded.err());
+    }
+}
+
+#[test]
 fn a_verb_needs_exactly_one_effect() {
     one(
         &[

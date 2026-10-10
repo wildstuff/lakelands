@@ -90,10 +90,10 @@ pub fn reshapes(reason: &Reason) -> bool {
 pub fn classify(before: &TypeDecl, after: &TypeDecl) -> Change {
     let mut all = Vec::new();
     diff_fields(&before.fields, &after.fields, None, &mut all);
-    if before.key != after.key {
+    if before.key_fields() != after.key_fields() {
         all.push(Reason::KeyChanged {
-            from: before.key.iter().collect(),
-            to: after.key.iter().collect(),
+            from: before.key_fields().iter().collect(),
+            to: after.key_fields().iter().collect(),
         });
     }
     diff_relations(&before.relations, &after.relations, &mut all);

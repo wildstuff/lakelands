@@ -206,7 +206,7 @@ this object:
 
 ```
 {
-  "key":       [field names, in declared order],
+  "key":       [field names, in declared order; of a view, its `group_by`],
   "fields":    [{ "name", "type", "required" }, ...],
   "relations": [{ "name", "target", "cardinality", "fields": [...] }, ...],
   "view":      { "source", "where", "group_by", "measures": [{ "name", "expr" }] }
@@ -229,8 +229,8 @@ this object:
   name: identifiers joined by `.`), and on ASCII the order by code point
   and the order by UTF-16 code unit that §1.2 uses for members are the
   same order, so there is one sort in the whole format.
-  `key` keeps its declared order, because the order of key fields is part
-  of the key.
+  `key` keeps its declared order, a view's that of its `group_by`,
+  because the order of key fields is part of the key.
 - `view` is `{ "source", "where", "group_by", "measures" }` with every
   member present: `where` is `null` when absent, `group_by` is `[]` when
   empty. `group_by` and `measures` keep their declared order: a measure
@@ -956,4 +956,6 @@ the three in any version; a declaration from version 11 on (§6).
 
 `docs/log-format/vectors/schema-hash.json` shows a view whose conditions
 are written as text, its shape object with those conditions in typed
-form, and the resulting hash.
+form, and the resulting hash. A shape's `key` is the key the type's
+records carry, so a grouped view hashes alike whether its declaration
+writes its `key` or leaves it out; the vector holds that hash too.

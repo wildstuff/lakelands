@@ -105,7 +105,7 @@ pub fn rewritten(
 /// The types the key fields of `decl` reference: only a reference names a
 /// target.
 fn key_targets(decl: &TypeDecl) -> impl Iterator<Item = &TypeName> {
-    let keys = decl.fields.iter().filter(|f| decl.key.contains(&f.name));
+    let keys = (decl.fields.iter()).filter(|f| decl.key_fields().contains(&f.name));
     keys.filter_map(|f| f.ty.target.as_ref())
 }
 

@@ -94,7 +94,9 @@ The files:
   line, which is canonical, and its hash.
 - `schema-hash.json`: a view type whose conditions are written as text,
   the shape object it hashes (conditions in typed form, Appendix B), the
-  shape's canonical bytes, and the schema hash.
+  shape's canonical bytes, and the schema hash; and the hash of the same
+  view declared with its `key` left out, which is the same hash, since a
+  shape's key is the key its records carry.
 
 Two implementations check them, sharing no code:
 

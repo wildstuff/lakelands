@@ -602,7 +602,10 @@ pub fn shown_hash<'a>(
 ) -> String {
     let mut shown = t.clone();
     known_fields(who, &mut shown, find);
-    shown.view = shown.view.filter(|_| view_shown);
+    if !view_shown {
+        // Its key stays the one its records carry, which `describe` names.
+        (shown.key, shown.view) = (shown.key_fields().to_vec(), None);
+    }
     keep_known_measures(&mut shown);
     match shown == *t {
         true => whole.to_owned(),

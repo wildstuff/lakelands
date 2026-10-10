@@ -644,10 +644,11 @@ pub fn parse(files: &[(String, String)]) -> Result<Bundle, Vec<BundleError>> {
 /// Refuse a type whose declaration names fields or relations that do not
 /// exist: its `key`, `valid_from` / `valid_to`, a relation's `via`, a
 /// field's `depends_on`, a view's `group_by` (fields of the view's
-/// source). A relation's `inverse` must not already name a relation of
-/// its target. A `json` field may not carry the name of a type, because
-/// `name.member` would then read as a path into the field and as the
-/// field of a pattern step at once.
+/// source). A view's `key` is its `group_by` or left out. A relation's
+/// `inverse` must not already name a relation of its target. A `json`
+/// field may not carry the name of a type, because `name.member` would
+/// then read as a path into the field and as the field of a pattern step
+/// at once.
 fn check_references(
     types: &[(&str, lakelands_api::ontology::TypeDecl)],
     errors: &mut Vec<BundleError>,
@@ -694,6 +695,17 @@ fn check_references(
             for g in &v.group_by {
                 want("view, `group_by`".into(), g.as_str(), source);
             }
+        }
+        if let Some(v) = &t.view
+            && !t.key.is_empty()
+            && t.key != v.group_by
+        {
+            fail(
+                Problem::Contradiction,
+                "`key` names other fields than the view groups by, and a view's records are keyed \
+                 by its `group_by`"
+                    .into(),
+            );
         }
         for r in &t.relations {
             let (Some(inverse), Some(target)) = (&r.inverse, by_name.get(r.target.as_str())) else {

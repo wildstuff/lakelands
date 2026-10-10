@@ -268,6 +268,17 @@ fn a_view_stores_nothing_so_its_changes_are_declared() {
         classify(&view("b > 0"), &typed),
         Change::Declare { changes: vec![] }
     );
+    // So are a grouped view that writes its `key` and one that leaves it out.
+    let grouped = |key: &[&str]| {
+        let mut v = view("b > 0");
+        v.view.as_mut().unwrap().group_by = vec!["a".into()];
+        v.key = key.iter().map(|k| (*k).into()).collect();
+        v
+    };
+    assert_eq!(
+        classify(&grouped(&[]), &grouped(&["a"])),
+        Change::Declare { changes: vec![] }
+    );
 }
 
 #[test]
@@ -275,6 +286,19 @@ fn a_stored_type_turned_into_a_view_needs_a_migration() {
     let v = with(|t| t.view = view("b > 0").view);
     assert!(migrates(&base(), &v).contains(&Reason::BecameView));
     assert!(!classify(&v, &base()).needs_migration());
+    // Grouped by the fields that keyed it, it changes no key.
+    let grouped = with(|t| {
+        let mut view = view("b > 0").view;
+        view.as_mut().unwrap().group_by = std::mem::take(&mut t.key);
+        t.view = view;
+    });
+    let reasons = migrates(&base(), &grouped);
+    assert!(
+        !reasons
+            .iter()
+            .any(|r| matches!(r, Reason::KeyChanged { .. })),
+        "{reasons:?}"
+    );
 }
 
 #[test]
