@@ -484,8 +484,7 @@ checks, the append. Where a step runs "the record checks", they are
 016's, on the record the write makes.
 
 **`call`**: the retry; the verb is declared (`not_found`); the key fits
-its scope (`invalid`, naming the verb); a verb called on a record of a
-view (`invalid`, 018, extended); the principal may call it
+its scope (`invalid`, naming the verb); the principal may call it
 (`not_granted`); an external verb's executor is bound (`unbound`); the
 payload: a member the verb does not declare (`invalid`, naming the verb
 and the member, as one missing from the payload and never from the type,
@@ -512,7 +511,7 @@ grant is needed to propose a change of the ontology.
 (`not_found`); it is pending (`decided`); a change of the ontology also
 needs `schema` (`not_granted`); then the write, checked again at the
 head: an upsert through the record checks; a retirement for its record
-and version; a call for its verb, its scope, a view, the verb declared
+and version; a call for its verb, its scope, the verb declared
 differently since (`invalid`), its executor, then as `call` from the
 record on; a declaration as `apply` checks a set; a migration for the
 shape it was proposed on (`invalid`, lakelands#489), then by its
