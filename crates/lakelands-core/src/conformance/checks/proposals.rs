@@ -64,7 +64,7 @@ check!(
 
 check!(
     TOLD_AS_LISTED = an_accepts_refusal_names_what_its_reviewers_listing_shows,
-    "006 and 013, extended (lakelands#780): a refusal of the proposer's write at its accept is judged by the reviewer's view, as its listing is: whole to a reviewer shown each field, type, key and value it names, and to one kept from any of them as a write changed since it was proposed, naming only the type and key written: a reference to a record retired since, a value its field no longer takes; a call whose `requires` no longer holds is whole to a reviewer who reads what it reads, and not there to one kept from it (lakelands#779); a conflict names versions only and is whole to each; nothing is appended and the proposal stays pending"
+    "006 and 013, extended (lakelands#780): a refusal of the proposer's write at its accept is judged by the reviewer's view, as its listing is: whole to a reviewer shown each field, type, key and value it names, and to one kept from any of them as a write changed since it was proposed, naming only the type and key written: a reference to a record retired since, a value its field no longer takes; a call whose `requires` no longer holds is whole to a reviewer who reads what it reads, and not there to one kept from it (lakelands#779); a conflict names versions only and is whole to each, and so is a retirement's refusal, of a record gone or changed since, which names its type and key alone; nothing is appended and the proposal stays pending"
 );
 
 check!(
@@ -1426,6 +1426,9 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
         json!({"write": "retire", "type": "inv", "key": "i3"}),
     )
     .await?;
+    let outrun =
+        json!({"write": "retire", "type": "inv", "key": "i2", "opts": {"expected_version": 1}});
+    let outrun = propose(&l.own, outrun).await?;
     for v in ["v1", "v2"] {
         l.retire("vault", v).await?;
     }
@@ -1483,6 +1486,13 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
             vec![],
             vec![&field, &typed, &shown],
             "not_found",
+        ),
+        (
+            &outrun,
+            "i2",
+            vec![],
+            vec![&field, &typed, &shown],
+            "conflict",
         ),
     ];
     let told = async |who: &Principal, id| json!(l.cat.accept(who, id).await.err());

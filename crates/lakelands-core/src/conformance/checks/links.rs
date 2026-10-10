@@ -90,7 +90,7 @@ check!(
 
 check!(
     AUTHORITY_FLIP = a_relations_authority_changes_by_declaration_and_keeps_its_links,
-    "035, extended: a relation's authority changes by an ordinary declaration; the door its links arrive by swaps, and the links already written stay"
+    "035, extended: a relation's authority changes by an ordinary declaration; the door its links arrive by swaps, and the links already written stay; `unlink` removes a source relation's link as it does any, whatever the authority"
 );
 
 check!(
@@ -812,6 +812,15 @@ async fn a_relations_authority_changes_by_declaration_and_keeps_its_links(store:
         pairs(&arrived) == ["i2>p2"],
         "the ingested link, its ends read from its key, is walked; the walk answered {:?}",
         pairs(&arrived)
+    );
+    let unlinked = unlink(&l, "i2", "p2").await;
+    unlinked.must("unlinking the link a source wrote")?;
+    let left = walked(cat.as_ref(), own, "invoice", "i2", Walk::Out, None).await?;
+    ensure!(
+        left.is_empty(),
+        "`unlink` asks the link type's grants and not the relation's authority, so the \
+         source's link is gone; the walk answered {:?}",
+        pairs(&left)
     );
     Ok(())
 }
