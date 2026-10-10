@@ -50,7 +50,15 @@ pub fn neighbors<S: EdgeSource + ?Sized>(
     walk: Walk,
 ) -> Result<Vec<Reached>> {
     let one = Depth { min: 1, max: 1 };
-    walk_step(&mut Links::new(source), from, relation, walk, one, None)
+    walk_step(
+        &mut Links::new(source),
+        from,
+        relation,
+        walk,
+        one,
+        None,
+        None,
+    )
 }
 
 /// The records one step reaches from `from`, walking `step.relation` in
@@ -73,6 +81,7 @@ pub fn step<S: EdgeSource + ?Sized>(
         &step.relation,
         step.walk,
         step.depth,
+        None,
         None,
     )
 }
@@ -274,6 +283,7 @@ where
             &s.relation,
             s.walk,
             s.depth,
+            Some(i),
             routes.as_mut(),
         )?;
         if let (Some(span), Some(routes)) = (&mut self.span, routes) {
@@ -302,6 +312,7 @@ fn walk_step<S: EdgeSource + ?Sized>(
     relation: &RelationName,
     walk: Walk,
     depth: Depth,
+    step: Option<usize>,
     mut routes: Option<&mut Routes>,
 ) -> Result<Vec<Reached>> {
     // The start is not marked reached: a cycle back to it is reported at
@@ -311,7 +322,7 @@ fn walk_step<S: EdgeSource + ?Sized>(
     for hop in 1..=depth.max {
         let nears: Vec<Node> = frontier.iter().cloned().collect();
         let mut next = BTreeSet::new();
-        let around = links.around(&nears, slice::from_ref(relation), walk)?;
+        let around = links.around(&nears, slice::from_ref(relation), walk, step)?;
         for (near, around) in nears.iter().zip(around) {
             for (other, edge) in around {
                 if !best.contains_key(&other) {

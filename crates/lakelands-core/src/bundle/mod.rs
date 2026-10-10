@@ -645,7 +645,8 @@ pub fn parse(files: &[(String, String)]) -> Result<Bundle, Vec<BundleError>> {
 /// exist: its `key`, `valid_from` / `valid_to`, a relation's `via`, a
 /// field's `depends_on`, a view's `group_by` (fields of the view's
 /// source). A view's `key` is its `group_by` or left out. A relation's
-/// `inverse` must not already name a relation of its target. A `json`
+/// `inverse` must not already name a relation of its target, nor be the
+/// inverse of another relation onto it: it names one relation. A `json`
 /// field may not carry the name of a type, because `name.member` would
 /// then read as a path into the field and as the field of a pattern step
 /// at once.
@@ -717,6 +718,27 @@ fn check_references(
                     format!(
                         "relation `{}` names its inverse `{inverse}`, which `{}` already declares",
                         r.name, target.name
+                    ),
+                );
+            }
+        }
+        // An inverse names one relation onto its target: said once, of the
+        // later of the two by owner and name.
+        for r in t.relations.iter().filter(|r| r.inverse.is_some()) {
+            let same = |(o, x): &(&str, &lakelands_api::ontology::RelationDecl)| {
+                (*o, x.name.as_str()) < (t.name.as_str(), r.name.as_str())
+                    && (&x.inverse, &x.target) == (&r.inverse, &r.target)
+            };
+            let mut all = types
+                .iter()
+                .flat_map(|(_, o)| o.relations.iter().map(|x| (o.name.as_str(), x)));
+            if let Some((owner, other)) = all.find(same) {
+                fail(
+                    Problem::Contradiction,
+                    format!(
+                        "relation `{}` names an inverse that is the inverse of `{owner}`'s `{}` \
+                         onto `{}` already; an inverse names one relation",
+                        r.name, other.name, r.target
                     ),
                 );
             }

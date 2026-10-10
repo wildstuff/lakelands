@@ -521,6 +521,12 @@ says a hidden thing exists, and remains on purpose:
   lakelands#692). A name no field has, or a hidden one, sent there
   answers as on a type with no valid time: only a field the author may
   name tells it, as only a taken name does;
+- an inverse sent onto a type where a relation the author is not shown
+  bears it, which is refused as taken
+  (`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`,
+  extended, lakelands#829). An author, a proposer without `schema` and a
+  reviewer at an accept learn a yes or a no for a pair of inverse and
+  target, and neither the relation's name nor its owner;
 - `may.retire`, which says every field is writable.
 
 ## Extended: a relation carried by a field is walked by its reader only (lakelands#727)
@@ -547,6 +553,34 @@ extended).
 
 This is a change for a host: a reader held from such a field, which
 walked the relation before, is now told it is not there.
+
+### A step with a `type` probes what it keeps (lakelands#829)
+
+A step was probed over every relation of its name around the type it
+stands on, whatever its `type`. Where a bill and a quote are each `of` a
+customer, a step in over `of` with `type: bill` was refused to a reader
+masked from the quote's reference field alone, though no quote is in its
+answer.
+
+A step with a `type` now walks only the relations that can lead to a
+record it keeps, and what it does not walk it neither probes nor reads.
+A neighbourhood and a path keep a record at every hop, so their step
+walks a relation only towards its `type`. A chain's step, in rows, an
+aggregate and a chain's graph, walks its whole range before it keeps, and
+a record of another type may lie on the way: it walks a relation towards
+its `type` and towards each type its `type` is reached from within the
+step's range, so a relation it walks through is probed as before. Each
+step is read by its own rule, at every hop, though another step walks
+the same relation the same way. The probe and the read are one set: the
+engine's edges of a relation outside it are dropped before the walk sees
+them and before a link record is read for them, so the answer is, to
+the byte, the one a lake without those edges gives, and a refusal names
+only a field the walk would have read. A step with no `type` is probed
+as before.
+
+A step whose `type` it does not reach walks nothing, so it is told what
+it reaches, the types its reader is shown, where it was refused as not
+granted before when a relation of its name was masked.
 
 ## Extended: a database's error quotes no row (lakelands#735)
 

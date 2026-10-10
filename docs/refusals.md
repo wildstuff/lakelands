@@ -309,6 +309,7 @@ What a refusal is about.
 | `initial_not_authored` | — | only a field its authors alone write takes one, not one a source writes or the fold computes | An `initial` value on a field its authors do not write alone. |
 | `initial_not_of_type` | — | only a field of a type declares one | An `initial` value on a field of no type. |
 | `initial_reference` | — | a field that names a record is checked against that record by the door that writes it | An `initial` value on a field that names a record. |
+| `inverse_twice` | `inverse` (RelationName), `target` (TypeName) | `{inverse}` is already the inverse of a relation onto `{target}`; an inverse names one relation | An inverse two relations name onto one target. |
 | `json_named_as_type` | — | a json field may not carry the name of a type | A `json` field named as a type. |
 | `key_unkeyable` | `field` (FieldName) | it is keyed by `{field}`, whose kind has no string form for a key; a key field is text, a reference, a decimal, a number, a boolean, a date-time or a date | A type keyed by a field no key may be. |
 | `link_authority` | `authority` (Authority) | its links are written by `authored` or `source`, not `{authority}` | Links of an authority no door writes them by. |
@@ -467,6 +468,7 @@ What a refusal is about.
 | `pattern_as_not_rows` | — | `as` names what a row binds, and only rows and an aggregate bind by name | A pattern naming a binding where no row binds by name. |
 | `pattern_binds_twice` | `name` (String) | the pattern binds `{name}` already; give this step another name with `as` | A pattern that binds two records under one name. |
 | `pattern_no_path` | `path` (String) | `{path}` is no path the pattern's rows hold; a row holds `<name>.<field>` for each name the pattern binds, its type's or the one `as` gives | A path a pattern orders, projects or aggregates by that no row holds. |
+| `pattern_order_not_rows` | — | `order_by` orders rows; a graph and a path come by depth, type and key | A pattern with an `order_by` that answers no rows. |
 | `pattern_to_chain` | — | a pattern with `to` walks its steps as one walk from its start; every step's depth starts at 0 | A pattern with `to` whose steps are a chain. |
 | `pattern_to_not_graph` | — | a pattern with `to` answers the walk to it as a graph; ask `project` `graph` | A pattern with `to` not projected as a graph. |
 | `position_not_integer` | — | a position is a non-negative integer | A position of an `after` that is no whole number. |

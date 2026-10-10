@@ -114,6 +114,7 @@ impl EdgeSource for Graph {
         keys: &[RecordKey],
         relation: Option<&RelationName>,
         walk: Walk,
+        _step: Option<usize>,
     ) -> Result<Vec<Vec<Edge>>> {
         self.edges_asked.set(self.edges_asked.get() + 1);
         Ok(keys

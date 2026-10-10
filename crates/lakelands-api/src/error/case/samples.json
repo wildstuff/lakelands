@@ -205,6 +205,11 @@
    "code": "initial_reference"
   },
   {
+   "code": "inverse_twice",
+   "inverse": "r",
+   "target": "t"
+  },
+  {
    "code": "json_named_as_type"
   },
   {
@@ -951,6 +956,9 @@
   {
    "code": "pattern_no_path",
    "path": "s"
+  },
+  {
+   "code": "pattern_order_not_rows"
   },
   {
    "code": "pattern_to_chain"
