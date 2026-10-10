@@ -11,6 +11,8 @@
 //! later than the head, whose event's `known_at` is at or before it
 //! (`docs/log-format.md` §1.3).
 
+use std::collections::BTreeMap;
+
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::{Error, Find, LakeStore, Missing, Position, ReadAt, Refusal, TypeName};
 use serde_json::json;
@@ -49,6 +51,11 @@ check!(
 check!(
     PAST_THE_HEAD = a_read_as_of_a_position_past_the_head_is_refused_as_out_of_range,
     "015: a position that is not in the lake's log is refused as out of range, naming the head"
+);
+
+check!(
+    EVERY_STATE_AT_ITS_POSITION = a_record_written_many_times_answers_each_state_at_its_position,
+    "009, 027 and the log format (lakelands#537): a record written forty times beside two others, re-keyed with them and retired, answers at every position a write left, from its first on, the state written last at or before it, and none before its first write, at its old key from the re-key on or from its retirement on; `find` there answers the records then in key order, with their total, a page of two at a time"
 );
 
 async fn counter(store: &dyn LakeStore) -> Result<Lake, Failure> {
@@ -315,6 +322,106 @@ async fn position_at_answers_the_last_position_at_or_before_an_instant(store: St
             "`tick` `{key}` was written at {t}; as of position_at({t}) = {answer} it reads {:?}",
             value(&r.data, "n")
         );
+    }
+    Ok(())
+}
+
+/// The records of `tally` each write left, by key, with their `n`.
+type Tallies = BTreeMap<String, u64>;
+
+async fn a_record_written_many_times_answers_each_state_at_its_position(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let tally = |key: &str| {
+        json!({"name": "tally", "key": [key], "fields": [
+            {"name": "id", "type": {"kind": "text"}, "required": true},
+            {"name": "code", "type": {"kind": "text"}, "required": true},
+            {"name": "n", "type": {"kind": "number"}}]})
+    };
+    let mut declared = tally("id");
+    declared["declare"] = json!("type");
+    l.declare_json(declared).await?;
+    // `a` at every write, `b` at every tenth, `c` from the twentieth on.
+    let (mut held, mut left) = (Tallies::new(), Vec::<(Position, Tallies)>::new());
+    for i in 1..=40_u64 {
+        let keys = ["a", "b", "c"].into_iter().filter(|k| match *k {
+            "b" => i % 10 == 0,
+            "c" => i == 20,
+            _ => true,
+        });
+        for k in keys {
+            let fields = json!({"id": k, "code": format!("x-{k}"), "n": i});
+            let written = l.upsert("tally", k, fields).await?;
+            held.insert(k.to_owned(), i);
+            left.push((written.position(), held.clone()));
+        }
+    }
+    let to = serde_json::from_value(tally("code")).map_err(|e| Failure::new(e.to_string()))?;
+    let moved = l.migrate(to).await?;
+    held = held
+        .into_iter()
+        .map(|(k, n)| (format!("x-{k}"), n))
+        .collect();
+    left.push((moved.position(), held.clone()));
+    let retired = l.retire("tally", "x-a").await?;
+    held.remove("x-a");
+    left.push((retired.position(), held.clone()));
+    let again = l
+        .upsert("tally", "x-b", json!({"id": "b", "code": "x-b", "n": 41}))
+        .await?;
+    held.insert("x-b".to_owned(), 41);
+    left.push((again.position(), held));
+    let ty = TypeName::from("tally");
+    let first = left[0].0;
+    let mut expected = &left[0].1;
+    for (at, then) in &left {
+        // What the position before this write held, then what it left.
+        for (p, wanted) in [(Position(at.0 - 1), expected), (*at, then)] {
+            if p < first {
+                continue;
+            }
+            for key in ["a", "b", "c", "x-a", "x-b", "x-c"] {
+                let got = match l.cat.get(&l.own, &ty, get_at(key, Some(p))).await {
+                    Ok(r) => value(&r.data, "n").and_then(|n| n.as_u64()),
+                    Err(Error::NotFound { .. }) => None,
+                    Err(e) => return Err(Failure::new(format!("reading `{key}` as of {p}: {e}"))),
+                };
+                ensure!(
+                    got == wanted.get(key).copied(),
+                    "as of {p}, `{key}` reads n = {got:?}; the writes left {wanted:?}"
+                );
+            }
+            let page = Find {
+                at: read_at(Some(p)),
+                limit: Some(2),
+                total: true,
+                ..Find::default()
+            };
+            let counted = l.cat.find(&l.own, &ty, page.clone());
+            let total = match counted.await.must("finding")?.data {
+                lakelands_api::Found::Records { total, .. } => total,
+                lakelands_api::Found::Groups { .. } => None,
+            };
+            let rows = all_found(l.cat.as_ref(), &l.own, "tally", page).await?;
+            let found: Tallies = rows
+                .iter()
+                .map(|r| {
+                    (
+                        r.key.to_string(),
+                        value(r, "n").and_then(|n| n.as_u64()).unwrap_or(0),
+                    )
+                })
+                .collect();
+            let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
+            ensure!(
+                found == *wanted
+                    && keys.is_sorted()
+                    && keys.len() == wanted.len()
+                    && total == Some(wanted.len() as u64),
+                "as of {p}, `find` answered {keys:?} with {found:?} and a total of {total:?}; \
+                 the writes left {wanted:?}"
+            );
+        }
+        expected = then;
     }
     Ok(())
 }

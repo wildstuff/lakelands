@@ -95,9 +95,30 @@ configured. With `disable` the connection is plaintext.
     record's head indexes are written at the commit, from its latest
     state and under the declaration of its type in force then, which is
     also what a fold putting one record at a time ends with.
+- **A state is written once** (lakelands#537). Each history (records,
+  declarations, proposals, memberships, recorded outputs) keeps a row per
+  state from its position on, never changed afterwards; a state holds
+  until the next state of the same thing begins, and an ended record is
+  a state too, stored as the seam hands it (version 0), since the seam
+  reads an end as a state. Beside the declarations and the records, the
+  two histories read at the head, a heads table keeps one narrow row
+  per thing, the position of its latest state, keyed by the thing alone
+  and with room left on its pages (`fillfactor` 70). A put inserts its
+  state and moves its head: the head's one changing column is in no
+  index, so the move is an update in place. Writing the end of a state
+  onto its row instead wrote the whole state twice and every index entry
+  of both, and that was the most of what a migration of a large type
+  cost. A read at the head walks the heads and seeks each head's state;
+  a read at an earlier position seeks each key's latest state at or
+  before it. Proposals, members and outputs are read only by their
+  states in force at a position, so they keep no heads, which every put
+  would write and no read would use. A record's key is compared bytewise (`COLLATE "C"`), so the
+  primary keys hold the order keys are read in.
+- **The layout is 2.** These tables are not the ones layout 1 made, which
+  would be read as if they held no heads, so the engine's layout number
+  is 2, and a projection of layout 1 is refused at open and rebuilt (004).
 - **The rulebook decides.** The projection keeps its history as every
-  engine does (states valid from `since` until `until`), recorded
-  outputs included. A later output for the same call, a failed call made
+  engine does, recorded outputs included. A later output for the same call, a failed call made
   again after its function is declared again (lakelands#76), supersedes
   the earlier from its own position on: the head answers the latest, and
   an earlier view what was recorded by then. The head indexes
