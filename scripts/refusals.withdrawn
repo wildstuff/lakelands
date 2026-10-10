@@ -34,3 +34,12 @@ Added | date | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below`
 Flaw | format_outside | v0.12.0 | 0.13.0 | a release reads one log format, not a range of them
 Flaw | format_back | v0.12.0 | 0.13.0 | every event of a lake is in one log format, so none goes down
 Flaw | format_below | v0.12.0 | 0.13.0 | no format is read but the release's one, so no event is below what it needs
+Case | mock_cannot | v0.12.0 | 0.13.0 | only the in-memory mock said it, and the mock is retired (lakelands#800)
+Case | mock_unevaluated | v0.12.0 | 0.13.0 | only the in-memory mock said it, and the mock is retired (lakelands#800)
+Unmocked | rekey | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot`
+Unmocked | aggregate | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot`
+Unmocked | pattern_start | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot`
+Unmocked | pattern_to | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot`
+Unmocked | pattern_projection | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot`
+Unmocked | hops | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot`
+Unmocked | proposer | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot`
