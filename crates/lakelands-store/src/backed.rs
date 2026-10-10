@@ -28,7 +28,9 @@
 //! records each vector on its own. A batch the backend refuses for what
 //! it carries is asked again in halves, so a text it refuses fails alone.
 //!
-//! **Failure.** A backing that fails is recorded as `{"error": "<why>"}`.
+//! **Failure.** A backing that fails is recorded as `{"error": "<why>"}`,
+//! and so is one whose output holds an integer beyond ±(2^53 − 1), which
+//! the log does not write.
 //! That output, or one that is not a value of the field's type, clears the
 //! field and puts the reason in its metadata's `error`. A cleared field
 //! without `error` and without metadata is one whose output is not
@@ -999,6 +1001,7 @@ async fn make(lake: &Arc<Lake>, batch: Batch) -> Result<()> {
             }
         }
     };
+    let asked: Vec<(Key, Value)> = asked.into_iter().map(|(k, v)| (k, written(v))).collect();
     lake.writer().held.extend(asked.iter().cloned());
     answers.extend(asked);
     for (_, d, _) in &calls {
@@ -1022,6 +1025,18 @@ async fn make(lake: &Arc<Lake>, batch: Batch) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// An output as it is recorded. It is written as the seam gave it, so one
+/// that holds an integer beyond ±(2^53 − 1), a function's value or an
+/// embedding's vector, is recorded as its call's failure
+/// (`docs/log-format.md` §1.2): no event holds a number a reader would
+/// read as another.
+fn written(output: Value) -> Value {
+    match lakelands_core::canonical::integer_too_large(&output) {
+        Some(n) => json!({ "error": Case::IntegerTooLarge { n: n.clone() }.to_string() }),
+        None => output,
+    }
 }
 
 async fn record_async(lake: &Arc<Lake>, d: &Due, output: Value, known: bool) -> Result<()> {

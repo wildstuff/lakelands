@@ -67,6 +67,7 @@ mod restriction;
 mod retire;
 mod schema;
 mod schema_proposals;
+mod sealed;
 mod search;
 mod search_axes;
 mod search_fields;
@@ -592,4 +593,9 @@ pub const ALL: &[Check] = &[
     made_of::VIEW_KEY_AT_SOURCES,
     backings::OUTPUT_NOT_A_VALUE,
     made_of::REFERENCE_TO_UNSHOWN,
+    sealed::SEEN_AT_IN_THE_YEARS,
+    sealed::UPSTREAM_POSITION_EXACT,
+    sealed::FUNCTION_CONFIG_EXACT,
+    sealed::OUTPUT_EXACT,
+    sealed::ANSWER_EXACT,
 ];

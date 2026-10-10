@@ -30,7 +30,7 @@ use lakelands_api::{
     VerbName, Verification,
 };
 
-use lakelands_api::error::{Exchange, Remote, Seam, Situation};
+use lakelands_api::error::{Case, Exchange, Remote, Seam, Situation};
 use lakelands_core::{feed, invalid, rights};
 
 use crate::exec;
@@ -292,6 +292,20 @@ impl Doors {
             Ok(v) => v,
             Err(e) => serde_json::json!({ "error": e.to_string() }),
         };
+        // An answer is recorded as the executor gave it, and the log writes
+        // no integer beyond ±(2^53 − 1) (the log format §1.2): one that
+        // holds such a number is not recorded. The executor ran, so its
+        // answer is lost but for this sentence, and a retry is unanswered.
+        if let Some(n) = lakelands_core::canonical::integer_too_large(&output) {
+            let cause = Box::new(lakelands_core::invalid(Case::IntegerTooLarge {
+                n: n.clone(),
+            }));
+            let answered = output.clone();
+            return Err(Error::unavailable(Situation::AnswerLost {
+                answered,
+                cause,
+            }));
+        }
         let lake = self.lake.clone();
         let recorded = output.clone();
         let at = exec::run(move || Ok(writes::record_output(&lake, &ext, &input, output))).await?;

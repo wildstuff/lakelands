@@ -175,7 +175,8 @@ impl<'a> Lower<'a> {
     }
 
     /// Report a declaration's annotations that cannot be declared: a key
-    /// in a reserved namespace, or one the contract refuses.
+    /// in a reserved namespace, or one the contract refuses. And a
+    /// function's `config` the log would not write.
     fn annotated(&mut self, d: &Declaration) {
         match d.annotation_fault() {
             Some(AnnotationFault::Reserved { said, .. }) => {
@@ -185,6 +186,9 @@ impl<'a> Lower<'a> {
                 self.fail(Problem::Malformed, said.to_string())
             }
             None => {}
+        }
+        if let Some(said) = d.config_fault() {
+            self.fail(Problem::Malformed, said.to_string());
         }
     }
 

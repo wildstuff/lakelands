@@ -322,6 +322,39 @@ fn a_strict_declaration_is_read_back_from_what_it_writes() {
     }
 }
 
+/// A function's `config` is judged as a written value is: an integer in
+/// it beyond ±(2^53 − 1), in whatever form it arrived, is said at the
+/// function and its `config`; no other declaration has one.
+#[test]
+fn a_functions_config_is_refused_for_an_integer_no_reader_reads_exactly() {
+    use lakelands_api::error::{Case, Place};
+    use lakelands_api::write::Declaration;
+    let fault = |config: serde_json::Value| {
+        let f = json!({"declare": "function", "name": "f", "backing": "http", "config": config});
+        let d: Declaration = serde_json::from_value(f).unwrap();
+        d.config_fault()
+    };
+    let at = vec![
+        Place::Function { name: "f".into() },
+        Place::Member {
+            path: "config".into(),
+        },
+    ];
+    for config in [json!(1e16), json!({"a": [{"b": 9007199254740993_u64}]})] {
+        let said = fault(config.clone()).unwrap_or_else(|| panic!("{config}"));
+        assert_eq!(said.at, at, "{config}");
+        assert!(
+            matches!(said.case, Case::IntegerTooLarge { .. }),
+            "{config}"
+        );
+    }
+    for config in [json!(null), json!({"a": 9007199254740991_u64, "b": 1e21})] {
+        assert_eq!(fault(config.clone()), None, "{config}");
+    }
+    let ty: Declaration = serde_json::from_value(json!({"declare": "type", "name": "t"})).unwrap();
+    assert_eq!(ty.config_fault(), None);
+}
+
 #[test]
 fn an_annotation_is_refused_naming_the_declaration_the_key_and_where_it_sits() {
     use lakelands_api::error::{Case, Place};

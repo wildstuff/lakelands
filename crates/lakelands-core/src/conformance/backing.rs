@@ -8,6 +8,9 @@
 //! - `{"token": t, "echo": "<input>"}` answers that input's value;
 //! - `{"token": t, "echo": "<input>", "fail_on": v}` fails when that input
 //!   is `v`;
+//! - `{"token": t, "echo": "<input>", "vast_on": v}` answers `1e16`, which
+//!   the log writes as an integer no reader reads exactly, when that input
+//!   is `v`;
 //! - after [`unplug`] of `t`, every call fails, until [`plug`].
 //!
 //! It counts the calls made with each token, so a check can tell a value
@@ -18,7 +21,8 @@
 //! The suite's embedding backend, [`embedder`], is bound in the lakes of
 //! the checks that ask for it. Its model is [`EMBED_MODEL`], its vectors
 //! have two dimensions, and every text becomes `(1, 0)`, but one starting
-//! with [`NOWHERE`], which becomes the vector of zeros. A call fails
+//! with [`NOWHERE`], which becomes the vector of zeros, and one starting
+//! with [`VAST`], which becomes `(1e16, 0)`. A call fails
 //! when one of its texts starts with [`UNREACHABLE`], or was unplugged
 //! ([`unplug_text`], until [`plug_text`]): it refuses the request as
 //! `Invalid`, so the store asks again in halves until the text is alone.
@@ -87,6 +91,9 @@ impl FunctionBacking for Scripted {
             let function = call.function.clone();
             return Err(fail(Remote::Function { function }));
         }
+        if call.config.get("vast_on") == Some(&value) {
+            return Ok(serde_json::json!(1e16));
+        }
         Ok(value)
     }
 }
@@ -122,6 +129,10 @@ pub const WEATHER: &str = "weather";
 
 /// A text the suite's embedding backend makes the vector of zeros.
 pub const NOWHERE: &str = "nowhere";
+
+/// A text the suite's embedding backend makes a vector whose first
+/// component is `1e16`.
+pub const VAST: &str = "vast";
 
 #[derive(Default)]
 struct Embeds {
@@ -183,7 +194,7 @@ impl EmbedBackend for Embedder {
             .map(|t| {
                 let mut v = vec![0.0; dimensions];
                 if let (Some(first), false) = (v.first_mut(), t.starts_with(NOWHERE)) {
-                    *first = 1.0;
+                    *first = if t.starts_with(VAST) { 1e16 } else { 1.0 };
                 }
                 v
             })
@@ -274,7 +285,8 @@ fn executions() -> &'static Mutex<BTreeMap<String, usize>> {
 
 /// The scripted executor: it answers `{"done": <verb>, "record": <key>}`,
 /// the key null for a verb called on its type, `null` when the payload's
-/// `null` is `true`, or fails when its `fail` is `true`. It counts its
+/// `null` is `true`, `{"paid": 1e16}` when its `vast` is `true`, or fails
+/// when its `fail` is `true`. It counts its
 /// runs per record key, and per verb for a verb called on its type, so a
 /// check uses keys and such verbs of its own. A call on a record whose key
 /// begins with `held-` is counted and held until [`release`] of that key,
@@ -324,6 +336,9 @@ impl lakelands_api::seam::VerbExecutor for Executor {
         }
         if invocation.payload.get("null") == Some(&Value::Bool(true)) {
             return Ok(Value::Null);
+        }
+        if invocation.payload.get("vast") == Some(&Value::Bool(true)) {
+            return Ok(serde_json::json!({"paid": 1e16}));
         }
         if invocation.payload.get("fail") == Some(&Value::Bool(true)) {
             let name = invocation.verb.to_string();

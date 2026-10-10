@@ -101,10 +101,17 @@ impl Timestamp {
     /// is parsed here is written in it and read again.
     pub fn parse(s: &str) -> Result<Timestamp, TimestampError> {
         let t = Timestamp::denoted(s)?;
-        let in_years = (0..=9999).contains(&t.date().0);
-        in_years
+        (t.in_years())
             .then_some(t)
             .ok_or_else(|| TimestampError(s.to_owned()))
+    }
+
+    /// Whether the instant lies in the years 0000 to 9999 in UTC, which
+    /// the one form writes. `parse` answers no other; an instant built
+    /// from its microseconds, or computed, can be any, and one that is
+    /// written is asked this first.
+    pub fn in_years(self) -> bool {
+        (0..=9999).contains(&self.date().0)
     }
 
     /// The instant a text denotes, in the forms `parse` reads and in

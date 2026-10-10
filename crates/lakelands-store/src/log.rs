@@ -8,7 +8,7 @@
 //! link, so an engine that altered a byte is caught at the first read.
 
 use lakelands_api::engine::CanonicalEvent;
-use lakelands_api::error::{Detail, Flaw, Part};
+use lakelands_api::error::{Case, Detail, Flaw, Part};
 use lakelands_api::event::{
     Digest, Event, EventBody, EventId, LOG_FORMAT_BASE, LOG_FORMAT_VERSION, Procedure,
 };
@@ -103,6 +103,22 @@ pub fn seal_at(
     fence: u64,
     d: Draft,
 ) -> (Event, CanonicalEvent) {
+    let (event, stored, _) = seal_judged(v, lake, position, prev, fence, d);
+    (event, stored)
+}
+
+/// [`seal_at`], with what the log's own reading would not pass in the
+/// event, if anything (`docs/log-format.md` §1.2, §1.3): a number its
+/// bytes write as an integer beyond ±(2^53 − 1), anywhere in it, or a
+/// `known_at` or `seen_at` out of the years the one form writes.
+pub(crate) fn seal_judged(
+    v: u32,
+    lake: &LakeId,
+    position: Position,
+    prev: &Digest,
+    fence: u64,
+    d: Draft,
+) -> (Event, CanonicalEvent, Option<Case>) {
     let id = d.id.unwrap_or_else(|| positional_id(lake, position));
     let mut event = Event {
         upstream: d.upstream,
@@ -129,17 +145,34 @@ pub fn seal_at(
         body: d.body,
         hash: Digest(String::new()),
     };
-    event.hash = hash_without_hash(&event);
-    let bytes = canonical::of(&event);
+    // The event's value is built once: hashed without `hash`, judged, and
+    // written with it.
+    let mut value = serde_json::to_value(&event).expect("an event serialises to JSON");
+    let members = value.as_object_mut().expect("an event is an object");
+    members.remove("hash");
+    event.hash = Digest(canonical::sha256_hex(&value));
+    let out_of_years = [Some(event.known_at), event.seen_at]
+        .into_iter()
+        .flatten()
+        .find(|t| !t.in_years());
+    let fault = match canonical::integer_too_large(&value) {
+        Some(n) => Some(Case::IntegerTooLarge { n: n.clone() }),
+        None => out_of_years.map(|t| Case::NotDateTime {
+            value: t.to_string(),
+        }),
+    };
+    let hash = serde_json::Value::String(event.hash.0.clone());
+    let members = value.as_object_mut().expect("an event is an object");
+    members.insert("hash".to_owned(), hash);
     let stored = CanonicalEvent {
         position,
         id: event.id.clone(),
         prev: event.prev.clone(),
         hash: event.hash.clone(),
         fence,
-        bytes,
+        bytes: canonical::to_vec(&value),
     };
-    (event, stored)
+    (event, stored, fault)
 }
 
 fn corrupt(position: Position, flaw: Flaw) -> Error {

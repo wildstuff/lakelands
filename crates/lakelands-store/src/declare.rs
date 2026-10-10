@@ -995,6 +995,9 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
     if let Some(fault) = d.annotation_fault() {
         return Err(fault.into());
     }
+    if let Some(said) = d.config_fault() {
+        return Err(invalid(said));
+    }
     match d {
         Declaration::Type(t) => {
             if is_system(&t.name) && !who_is_system {
