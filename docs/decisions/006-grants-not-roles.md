@@ -349,8 +349,12 @@ read nor named the type in the pattern, search and subscribe tools.
   type of its relations and a view over it. A key field the principal
   sees masked or may only write still gives its value through the key:
   the field is known, and only its value is withheld elsewhere. A grouped
-  view's records are keyed by its `group_by`, whatever its `key` says,
-  and that key is judged at its sources too: each key field on the
+  view's records are keyed by its `group_by`, and an ungrouped view's one
+  record by no field. A view declares no other `key` (018, extended,
+  lakelands#788), and one that holds another all the same, a host's own
+  type, which passes no `declare`, is judged by its groups too: no view
+  is hidden for a field its records do not carry as their key. A grouped
+  view's key is judged at its sources too: each key field on the
   view, on its source and on each merge source by position, since the
   key holds their values (lakelands#782). It is also the key `describe`,
   the tools and a listed declaration name. A view's definition shown to

@@ -342,12 +342,14 @@ pub struct EmbedDecl {
 
 impl TypeDecl {
     /// The fields a record of the type is keyed by: its `key`, or, of a
-    /// grouped view, its `group_by`, which its records carry whatever
-    /// `key` says (lakelands#782).
+    /// view, its `group_by`, none where it groups by nothing. A view's
+    /// `key` names the same or is left out; one that came in past
+    /// `declare` and says otherwise keys nothing (lakelands#782,
+    /// lakelands#788).
     pub fn key_fields(&self) -> &[FieldName] {
         match &self.view {
-            Some(v) if !v.group_by.is_empty() => &v.group_by,
-            _ => &self.key,
+            Some(v) => &v.group_by,
+            None => &self.key,
         }
     }
 

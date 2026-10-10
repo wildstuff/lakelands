@@ -322,6 +322,13 @@ def main():
     shape = canonical(view["shape"])
     check(shape.decode("utf-8") == view["shape_canonical"], "schema-hash.json: the shape object's canonical bytes")
     check(sha(shape) == view["schema_hash"], f"schema-hash.json: schema hash {view['schema_hash'][:12]}…")
+    # A shape's key is the key the type's records carry: of a view its `group_by`, with `key` written or not.
+    declared = view["declaration"]
+    for form in (declared, {k: v for k, v in declared.items() if k != "key"}):
+        check(form["view"].get("group_by", []) == view["shape"]["key"],
+              "schema-hash.json: the shape's key is the view's `group_by`, its `key` written or left out")
+    check(view["key_left_out_schema_hash"] == view["schema_hash"],
+          "schema-hash.json: the view hashes alike with its `key` left out")
 
     v2 = json.loads((HERE / "rekey.json").read_text("utf-8"))
     event = json.loads(v2["line"])

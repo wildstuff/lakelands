@@ -66,14 +66,16 @@ pub fn schema_hash(ty: &TypeDecl) -> Result<String, ViewConditionError> {
     Ok(canonical::sha256_hex(&shape(ty)?))
 }
 
-/// The object the schema hash is taken over.
+/// The object the schema hash is taken over. Its key is the one the
+/// type's records carry, a view's `group_by` whether or not its
+/// declaration writes a `key`, so the two forms of one view hash alike.
 pub fn shape(ty: &TypeDecl) -> Result<Value, ViewConditionError> {
     let view = match &ty.view {
         Some(view) => view_shape(view)?,
         None => Value::Null,
     };
     Ok(json!({
-        "key": ty.key,
+        "key": ty.key_fields(),
         "fields": fields(&ty.fields),
         "relations": relations(&ty.relations),
         "view": view,

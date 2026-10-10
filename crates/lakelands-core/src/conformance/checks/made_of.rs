@@ -45,7 +45,7 @@ check!(
 check!(
     VIEW_KEY_AT_SOURCES =
         a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_not_shown,
-    "006 and 024, extended (lakelands#782): a grouped view's key is its `group_by`, which its records carry whatever its `key` says, an ungrouped one's its `key`, and each key field is judged on the view and where its values come from, its source's field and each merge source's by position: a view grouped by a reference to a type its reader is not shown, by a field its source holds at `none` for it, with `key` declared or not, one whose second source's group field it holds at `none`, one whose own group field it holds at `none`, one keyed by another field but grouped by such a field, and one keyed by part of its groups whose other it holds at `none`, answer `describe_type`, `get`, `find`, `search` and a pattern value for value as a name that is not declared, and `describe` names none of them; a view grouped by a field it reads is shown, so is one grouped so whose declared `key` names a field it holds at `none`, since its records carry its groups, and such a view, or one grouped without `key`, is described, listed in a proposal and its get tool's key told by its groups, its definition naming no measure of a field it holds at `none`, and a measure that reads such a measure, its own or a merged one, answers in `describe`, `get`, `find`, a filter on it and the listing as a view declared without both, to a reader and to one who may write, who is offered no write to a view"
+    "006 and 024, extended (lakelands#782): a grouped view's key is its `group_by`, an ungrouped one has none, and a `key` that says otherwise is refused at declare (lakelands#788): one naming a measure, part of the groups or the groups in another order, and any `key` of an ungrouped view; each key field is judged on the view and where its values come from, its source's field and each merge source's by position: a view grouped by a reference to a type its reader is not shown, by a field its source holds at `none` for it, with `key` declared or not, one whose second source's group field it holds at `none`, one whose own group field it holds at `none`, and one grouped by two fields of which it holds one at `none`, answer `describe_type`, `get`, `find`, `search` and a pattern value for value as a name that is not declared, and `describe` names none of them; a view grouped by a field it reads is shown, so is one grouped so whose measure it holds at `none`, and an ungrouped view to a reader held from its measure, since no record of it is keyed by a field, and each of them, a grouped view with `key` or without and one shown without its definition too, hashes as its description does (lakelands#788), and such a grouped view is described, listed in a proposal and its get tool's key told by its groups, its definition naming no measure of a field it holds at `none`, and a measure that reads such a measure, its own or a merged one, answers in `describe`, `get`, `find`, a filter on it and the listing as a view declared without both, to a reader and to one who may write, who is offered no write to a view"
 );
 
 check!(
@@ -578,6 +578,8 @@ async fn a_pattern_names_no_type_its_reader_is_not_shown(store: Store) -> Held {
 async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_not_shown(
     store: Store,
 ) -> Held {
+    use crate::conformance::fixture::invalid_said;
+    use lakelands_api::error::{Case, Place, Said};
     let l = Lake::of(store.as_ref());
     let f = |name: &str, kind: &str| json!({"name": name, "type": {"kind": kind}});
     let zref = json!({"name": "zref", "type": {"kind": "reference", "target": "zsecret"}});
@@ -590,20 +592,30 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
         }
         v
     };
-    // Grouped by `name`, keyed by `n`: its records carry `name` all the same.
-    let keyed = |name: &str| {
+    // A view's `key` is its `group_by` or left out (lakelands#788): one
+    // keyed by its measure, by part of its groups, by its groups in another
+    // order, and an ungrouped one keyed at all, are refused at the type.
+    let keyed = |name: &str, key: &[&str], by: &[&str]| {
         let mut v = view(name, "pub", "name", &f("name", "text"), false);
-        v["key"] = json!(["n"]);
+        let fields = by.iter().map(|g| f(g, "text")).chain([f("n", "decimal")]);
+        v["fields"] = json!(fields.collect::<Vec<_>>());
+        (v["key"], v["view"]["group_by"]) = (json!(key), json!(by));
         v
     };
+    let total = keyed("u_view", &[], &[]);
+    // Its measure reads `hid`, so eve is shown it without its definition.
+    let mut unread = view("dh_view", "pub", "name", &f("name", "text"), false);
+    unread["view"]["measures"] = json!([{"name": "n", "expr": "count(hid)"}]);
+    let mut keyed_total = total.clone();
+    keyed_total["key"] = json!(["n"]);
     let mut merged = view("m_view", "pub", "name", &f("name", "text"), false);
     merged["fields"] = json!([f("name", "text"), f("n", "decimal"), f("n2", "decimal")]);
     let n2 = json!([{"name": "n2", "expr": "count()"}]);
     merged["view"]["merge"] = json!([{"source": "aux", "group_by": ["hid2"], "measures": n2}]);
-    // Grouped by `[name, hid]`, keyed by `name`, over a source whose `hid` it reads.
+    // Grouped by `[name, hid]`, over a source whose `hid` it reads.
     let mut pair = view("knr_view", "pub2", "name", &f("name", "text"), false);
     pair["fields"] = json!([f("name", "text"), f("hid", "text"), f("n", "decimal")]);
-    (pair["key"], pair["view"]["group_by"]) = (json!(["name"]), json!(["name", "hid"]));
+    pair["view"]["group_by"] = json!(["name", "hid"]);
     // Measured from a measure: `m` reads `n`; `open`, and `due` merged
     // beside it, read the merged `paid`;
     // `m0_view` and `p0_view` are the same views without those measures.
@@ -648,9 +660,10 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
         view("h_viewk", "pub", "hid", &f("hid", "text"), true),
         merged,
         view("g_view", "pub", "name", &f("name", "text"), false),
-        keyed("kk_view"),
-        keyed("kn_view"),
+        view("kn_view", "pub", "name", &f("name", "text"), false),
         pair,
+        total,
+        unread,
         view("n_view", "pub", "name", &f("name", "text"), false),
         view("nh_view", "pub", "name", &f("name", "text"), true),
     ]
@@ -667,7 +680,7 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
     l.upsert("aux", "x1", json!({"hid2": "a"})).await?;
     let grants = json!({"default": "read", "review": true, "types": {"zsecret": {"default": "none"},
         "pub": {"fields": {"hid": "none"}}, "aux": {"fields": {"hid2": "none"}}, "g_view": {"fields": {"name": "none"}},
-        "kk_view": {"fields": {"name": "none"}}, "kn_view": {"fields": {"n": "none"}},
+        "kn_view": {"fields": {"n": "none"}}, "u_view": {"fields": {"n": "none"}},
         "knr_view": {"fields": {"hid": "none"}}, "nh_view": {"fields": {"n": "none"}},
         "mm_view": {"fields": {"n": "none"}}, "pm_view": {"fields": {"paid": "none"}}}});
     let eve = principal(
@@ -683,7 +696,6 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
         ("h_viewk", "a"),
         ("m_view", "a"),
         ("g_view", "a"),
-        ("kk_view", "a"),
         ("knr_view", "a:a"),
     ] {
         let there = doors(l.cat.as_ref(), &eve, ty, key).await;
@@ -705,12 +717,44 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
         .map(|t| t.name.as_str())
         .filter(|n| n.contains("_view") && !measured_views.contains(n))
         .collect();
-    if names != ["kn_view", "n_view", "nh_view"] {
+    if names != ["dh_view", "kn_view", "n_view", "nh_view", "u_view"] {
         apart.push(format!("eve is described {names:?}"));
+    }
+    // An ungrouped view is shown by what its one record carries, its key
+    // under no field: eve, held from the `n` a `key` could once name, reads
+    // it, described with no key.
+    let total = doors(l.cat.as_ref(), &eve, "u_view", UNGROUPED).await;
+    let keyless = d.types.iter().find(|t| t.name.as_str() == "u_view");
+    let read = [0, 1, 3, 4, 5, 7].iter().all(|&door| total[door].is_ok());
+    if !read || keyless.is_none_or(|t| !t.access.key.is_empty()) {
+        apart.push(format!(
+            "`u_view` answers eve {total:?}, described {keyless:?}"
+        ));
+    }
+    for (bad, group_by) in [
+        (keyed("bad_view", &["n"], &["name"]), Some(vec!["name"])),
+        (
+            keyed("bad_view", &["name"], &["name", "hid"]),
+            Some(vec!["name", "hid"]),
+        ),
+        (
+            keyed("bad_view", &["hid", "name"], &["name", "hid"]),
+            Some(vec!["name", "hid"]),
+        ),
+        (keyed_total, None),
+    ] {
+        let name = TypeName::from(bad["name"].as_str().unwrap_or_default());
+        let d = serde_json::from_value(bad.clone()).expect("a declaration reads");
+        let refused = l.cat.declare(&l.own, d).await;
+        let group_by = group_by.map(|g| g.into_iter().collect());
+        let want = Said::from(Case::ViewKey { group_by }).within(Place::Type { name });
+        if invalid_said(&refused) != Some(&want) {
+            apart.push(format!("declaring {bad}: {refused:?}"));
+        }
     }
     // Described, and in its tools, by the key its records carry.
     let tools = lakelands_api::tools::tools(&d).expect("eve's tools");
-    for ty in ["kn_view", "n_view"] {
+    for ty in ["kn_view", "n_view", "nh_view"] {
         let door = lakelands_api::tools::Door::Get { ty: ty.into() };
         let get = tools.iter().find(|t| t.door == door);
         let key = get.map(|t| &t.input_schema["properties"]["key"]["description"]);
@@ -737,7 +781,7 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
         let t = d.types.iter().find(|t| t.name.as_str() == ty);
         said.extend(t.map(|t| shape(&t.access.key, t.view.as_ref())));
     }
-    let mut again = keyed("kn_view");
+    let mut again = view("kn_view", "pub", "name", &f("name", "text"), false);
     again["description"] = json!("again");
     let declarations = vec![serde_json::from_value(again).expect("a declaration reads")];
     let bundle = ProposedWrite::Declare { declarations };
@@ -756,15 +800,21 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
     }
     // And it is answered the hash of the definition it is shown.
     let field = |f: &lakelands_api::describe::FieldDescription| json!({"name": f.name, "type": f.ty, "required": f.required});
-    for t in d.types.iter().filter(|t| t.name.as_str() == "nh_view") {
+    // The hash is taken over the key the records carry, so a view with its
+    // `key` left out hashes as its description, which names it: shown
+    // whole (`n_view`), without a measure (`kn_view`), and without its
+    // definition (`dh_view`); so does the ungrouped view, under no key.
+    let hashed = ["nh_view", "n_view", "kn_view", "dh_view", "u_view"];
+    for t in (d.types.iter()).filter(|t| hashed.contains(&t.name.as_str())) {
         let fields: Vec<_> = t.fields.iter().map(field).collect();
         let shown = json!({"name": t.name, "key": t.access.key, "fields": fields, "view": t.view});
         let shown = serde_json::from_value(shown).expect("a description reads as a declaration");
         let rebuilt = lakelands_api::shape::schema_hash(&shown).expect("a described view parses");
-        if rebuilt != t.lifecycle.schema_hash {
+        let bare = t.name.as_str() == "dh_view";
+        if rebuilt != t.lifecycle.schema_hash || bare != t.view.is_none() {
             apart.push(format!(
-                "`nh_view` is described {:?}, hashed {}",
-                t.view, t.lifecycle.schema_hash
+                "`{}` is described {:?}, hashed {}",
+                t.name, t.view, t.lifecycle.schema_hash
             ));
         }
     }

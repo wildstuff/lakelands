@@ -75,7 +75,7 @@ check!(
 
 check!(
     NO_KEY = a_migration_that_takes_every_key_field_away_is_refused,
-    "027: a migration is refused as invalid when it takes every key field away, names a key field that is not required or of a kind a key cannot be made of, or would re-key a view"
+    "027: a migration is refused as invalid when it takes every key field away, names a key field that is not required or of a kind a key cannot be made of, or would re-key a view, one that leaves its `key` out too; that view declared again with its `key` written is the one in force and appends nothing (lakelands#788)"
 );
 
 check!(
@@ -617,16 +617,26 @@ async fn a_migration_that_takes_every_key_field_away_is_refused(store: Store) ->
         );
     }
     head_unmoved(store.as_ref(), before, "refused key changes").await?;
-    // A view keyed by a reference to the type would be re-keyed with it.
-    l.declare_json(
-        json!({"declare": "type", "name": "per_account", "key": ["account"],
+    // A view keyed by a reference to the type would be re-keyed with it,
+    // whether its declaration writes its `key` or leaves it out: its
+    // records carry its `group_by` either way (lakelands#788).
+    let per_account = |key: &[&str]| {
+        json!({"declare": "type", "name": "per_account", "key": key,
         "fields": [{"name": "account", "type": {"kind": "reference", "target": "account"}},
                    {"name": "n", "type": {"kind": "number"}}],
         "view": {"source": "payment", "group_by": ["account"],
-                 "measures": [{"name": "n", "expr": "count()"}]}}),
-    )
-    .await?;
+                 "measures": [{"name": "n", "expr": "count()"}]}})
+    };
+    l.declare_json(per_account(&[])).await?;
     let before = store.head().await.must("reading the head")?;
+    // With its `key` written it is the view in force, and appends nothing.
+    l.declare_json(per_account(&["account"])).await?;
+    let after = store.head().await.must("reading the head")?;
+    ensure!(
+        after == before,
+        "a view declared again with its `key` written is the one in force and appends nothing; \
+         the head moved from {before} to {after}"
+    );
     let e = cat
         .migrate(own, to_iban())
         .await

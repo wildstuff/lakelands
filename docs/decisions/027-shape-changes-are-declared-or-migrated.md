@@ -577,7 +577,10 @@ declaration's changes, and the times `recompute` appended it again (022).
   completed each computed field's `depends_on`; the type in force is held
   the same way. So a computed field stated with no input and one stated
   with the inputs `describe` shows are the same declaration. The lists
-  the type was declared with stay as they were.
+  the type was declared with stay as they were. A grouped view is
+  compared by the key its records carry, its `group_by`, so one that
+  writes its `key` and one that leaves it out are the same declaration
+  too (lakelands#788).
 - **Every refusal comes first:** the context, the `schema` grant, the
   author's view, the declaration's own checks, the binding of a model or
   an executor. Only a declaration that would have been applied is

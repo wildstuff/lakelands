@@ -11,10 +11,12 @@
 use lakelands_api::error::Case;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::seam::Seams;
-use lakelands_api::{LakeStore, ReadAt, TypeName};
+use lakelands_api::{Access, LakeStore, ReadAt, TypeName};
 use serde_json::json;
 
-use crate::conformance::fixture::{Lake, Must, doors, field, invalid_case, owner, type_decl};
+use crate::conformance::fixture::{
+    Lake, Must, describe_type, doors, field, field_access, get_at, invalid_case, owner, type_decl,
+};
 use crate::conformance::{Failure, Held, Reopen, Store, backing};
 
 check!(
@@ -26,6 +28,12 @@ check!(
 check!(
     RESERVED_NAME_REFUSES_OPEN = a_vocabulary_naming_a_reserved_type_refuses_the_writers_open,
     "003, 035 and seams, SystemVocabulary: a host vocabulary naming a type under sys.link. or one of the store's own four (sys.source, sys.provenance, sys.setting, sys.aging_rule) is refused at the writer's open as invalid, naming the type as reserved; nothing is appended, and the lake never holds it",
+    reopens
+);
+
+check!(
+    HOST_VIEW_KEY = a_host_view_with_a_key_its_records_do_not_carry_is_judged_by_what_they_do,
+    "006 and 018, extended (lakelands#788): a host's vocabulary type passes no `declare`, so its view may hold a `key` that is not its `group_by`, and it is keyed by what its records carry all the same: an ungrouped `sys.` view with `key: [n]` is shown to a reader held from `n` as the same view without `key` is, `get` answers its one record, and each is described with no key; a `sys.` view grouped by `name` with `key: [n]` is shown to that reader too and described keyed by `name`, and is hidden from a reader held from `name`",
     reopens
 );
 
@@ -157,6 +165,61 @@ async fn a_vocabulary_naming_a_reserved_type_refuses_the_writers_open(
         ensure!(
             !holds(store.as_ref(), name).await,
             "a vocabulary naming `{name}` was refused; the lake holds `{name}` all the same"
+        );
+    }
+    Ok(())
+}
+
+async fn a_host_view_with_a_key_its_records_do_not_carry_is_judged_by_what_they_do(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl("item", vec![field("name", StorageKind::Text)]))
+        .await?;
+    l.upsert("item", "i1", json!({"name": "a"})).await?;
+    let host = |name: &str, key: &[&str], by: &[&str]| {
+        let text = |n: &&str| json!({"name": n, "type": {"kind": "text"}});
+        let mut fields: Vec<_> = by.iter().map(text).collect();
+        fields.push(json!({"name": "n", "type": {"kind": "decimal"}}));
+        let n = json!([{"name": "n", "expr": "count()"}]);
+        let view = json!({"source": "item", "group_by": by, "measures": n});
+        let v = json!({"name": name, "key": key, "fields": fields, "view": view});
+        serde_json::from_value(v).expect("a type reads")
+    };
+    let views = vec![
+        host("sys.keyed", &["n"], &[]),
+        host("sys.plain", &[], &[]),
+        host("sys.grouped", &["n"], &["name"]),
+    ];
+    let seams = Seams {
+        backings: backing::backings(),
+        vocabulary: Some(backing::vocabulary(views, &[])),
+        ..Seams::default()
+    };
+    let store = reopen(store, seams)
+        .await
+        .map_err(|e| reopened("of three views", e))?;
+    let cat = doors(store.as_ref());
+    let all = lakelands_api::key::UNGROUPED;
+    // The field its reader is held from, a record's key, and the key the
+    // view is described with where it is shown.
+    for (ty, held, key, shown) in [
+        ("sys.keyed", "n", all, Some(vec![])),
+        ("sys.plain", "n", all, Some(vec![])),
+        ("sys.grouped", "n", "a", Some(vec!["name"])),
+        ("sys.grouped", "name", "a", None),
+    ] {
+        let who = field_access(store.as_ref(), "held", ty, &[(held, Access::None)]);
+        let told = describe_type(cat.as_ref(), &who, ty).await;
+        let one = cat.get(&who, &ty.into(), get_at(key, None)).await;
+        let keyed = told.as_ref().ok().map(|t| &t.access.key);
+        let keyed = keyed.map(|k| k.iter().map(|f| f.as_str()).collect::<Vec<_>>());
+        ensure!(
+            keyed == shown && one.is_ok() == shown.is_some(),
+            "`{ty}`, a view of the host's, is judged by the key its records carry: to a reader \
+             held from `{held}` it is described keyed {shown:?} where it is shown; it is \
+             described {told:?}, and `get` answered {one:?}"
         );
     }
     Ok(())
