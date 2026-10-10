@@ -168,14 +168,16 @@ under the writer itself.
 event. The fold keeps the lake's list of them, each with its position
 and type, as one recorded output under a seam name of the store's own,
 `sys:renames` (`docs/seams.md`); it is no event, and no door answers it.
-A rebuild and an import fold the log and make the list again. A lake
-made before this holds no list: its first open finds one from what the
-projection keeps, without reading the log. A type's declaration is in
-force since the event that put it, so for each type past its first
-version the one event at that position is read, then the type as of the
-position before it, down to its first version. The handle that writes
-records the list; one opened read-only before any writer has opened
-keeps it in memory.
+A rebuild and an import fold the log and make the list again. An open
+reads the list there and looks nowhere else, in any mode: where none is
+recorded, no field was renamed. That holds because the fold records the
+list at every migration that renames, and every projection a store
+reads was made by such a fold: a disk engine refuses a projection
+marked with another layout, or with none, until it is rebuilt from the
+log (`docs/seams.md`), and the mark is younger than the list. The open
+rests on that mark: only a fold older than the list, writing into a
+marked projection, could leave a rename with no list, and no such build
+knows the mark.
 
 **A type's name follows the same rule (lakelands#429).** A renamed
 relation carried by link records moves them to the link type of its new

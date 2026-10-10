@@ -26,7 +26,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use lakelands_api::engine::{CanonicalEvent, LakeEngine, Lease, OpenMode, ProjectionView};
 use lakelands_api::error::{Detail, Flaw, Part, Seam, Situation};
@@ -184,9 +184,6 @@ pub struct Lake {
     /// change the writer made: read without the writer's lock, which an
     /// append holds across the engine's append and the whole fold.
     head: AtomicU64,
-    /// The renames an open found where no fold had recorded them, for a
-    /// handle that records nothing.
-    walked: OnceLock<Vec<Renamed>>,
     holds_lease: AtomicBool,
     /// The shapes reads were answered with, at most two, each with the
     /// positions it holds for: no event among them ends a range
@@ -408,7 +405,6 @@ impl Lake {
                 plans: record::Plans::default(),
             }),
             head: AtomicU64::new(0),
-            walked: OnceLock::new(),
             holds_lease: AtomicBool::new(false),
             shapes: Mutex::new(Vec::new()),
             rebuilds: AtomicU64::new(0),
@@ -522,20 +518,6 @@ impl Lake {
             let view = self.engine.view(None)?;
             w.ontology = Ontology::at(view.as_ref())?;
             w.settings = settings_in(view.as_ref(), &w.ontology)?;
-            // A lake made before the fold recorded renames: its list is
-            // found once, and recorded by the handle that writes.
-            let recorded = view.output(RENAMES, &Digest::zero())?.is_some();
-            if let (false, Some(list), Some(at)) = (recorded, self.walk(view.as_ref())?, folded) {
-                let p = self.engine.projection();
-                if w.lease.is_none() {
-                    let _ = self.walked.set(list);
-                } else {
-                    p.begin()?;
-                    let put = p.put_output(RENAMES, &Digest::zero(), &serde_json::json!(list), at);
-                    put.and_then(|()| p.commit(at))
-                        .inspect_err(|_| p.rollback())?;
-                }
-            }
         }
         // The last event's time and format: versions only go up, so the
         // tip's is the log's newest.
@@ -559,39 +541,6 @@ impl Lake {
             self.holds_lease.store(false, Ordering::Release);
         }
         Ok(())
-    }
-
-    /// The renames of a lake whose fold recorded none, from what the
-    /// projection keeps (006, extended): a rename happens only in a
-    /// `migrated` event, and a type's declaration is in force since the
-    /// event that put it. So for each type past its first version the event
-    /// at its `since` is read, then the type as of the position before it,
-    /// down to its first version. `None` where no type is past its first.
-    fn walk(&self, head: &dyn ProjectionView) -> Result<Option<Vec<Renamed>>> {
-        let key = lakelands_core::engines::declaration_key;
-        let mut list = Vec::new();
-        let later = |d: &lakelands_api::engine::Declared| d.version > 1;
-        let types = head.declarations()?.into_iter().filter(later);
-        let types: Vec<_> = types
-            .filter(|d| matches!(d.declaration, Declaration::Type(_)))
-            .collect();
-        for mut d in types.clone() {
-            while d.version > 1 && d.since > Position::GENESIS {
-                let event = self.read_events(d.since, 1)?.pop();
-                if let Some(EventBody::Migrated { migration, .. }) = event.map(|e| e.body) {
-                    list.extend(lakelands_core::links::renamed(&migration, d.since));
-                }
-                let before = self.engine.view(Some(Position(d.since.0 - 1)))?;
-                let was = before
-                    .declarations()?
-                    .into_iter()
-                    .find(|b| key(&b.declaration) == key(&d.declaration));
-                let Some(was) = was else { break };
-                d = was;
-            }
-        }
-        list.sort_by_key(|r| r.at);
-        Ok((!types.is_empty()).then_some(list))
     }
 
     /// The shape at `view`'s position: the one known for a range that
@@ -632,17 +581,16 @@ impl Lake {
     }
 
     /// The lake's list of renames: what the fold recorded, read from
-    /// `head` or from a view of the head, or what this handle's open found.
+    /// `head` or from a view of the head. No list is no rename: the fold
+    /// records it at every migration that renames, and every projection a
+    /// store reads was made by such a fold (006, extended).
     pub(crate) fn renames(&self, head: Option<&dyn ProjectionView>) -> Result<Vec<Renamed>> {
         let recorded = match head {
             Some(view) => view.output(RENAMES, &Digest::zero())?,
             None => self.engine.view(None)?.output(RENAMES, &Digest::zero())?,
         }
         .map(|(_, list)| list);
-        match recorded {
-            None => Ok(self.walked.get().cloned().unwrap_or_default()),
-            recorded => renames_in(recorded),
-        }
+        renames_in(recorded)
     }
 
     /// A principal with its grants held through the lake's renames

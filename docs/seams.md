@@ -1863,8 +1863,8 @@ and never evaluates `when` again.
   type ages.
 
 The suite's `aging` checks hold these sentences on every engine, with
-two held elsewhere: that a lake made before aging gains
-`sys.aging_rule` at its next writer's open is a store test
+two held elsewhere: that a lake which lacks `sys.aging_rule` gains
+it at its next writer's open is a store test
 (`lakelands-store/tests/older_lake.rs`), since the contract cannot make
 such a lake; and that writes wait for a rule's run is one of the
 `concurrency` checks. What `lakelands apply` and `lakelands age` print

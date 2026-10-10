@@ -1779,9 +1779,6 @@ impl Call<'_> {
         }
         let decl = self.shown_verb(&w.ontology, verb)?.clone();
         let key = scoped(&decl, key, opts.expected_version)?;
-        if key.is_some() {
-            rights::not_a_view(w.ontology.ty(&decl.on)?)?;
-        }
         granted(self.verb_callable(w.ontology.ty(&decl.on)?, &decl))?;
         if let VerbEffect::External { executor } = &decl.effect {
             bound_executor(self.lake, executor)?;
@@ -1951,9 +1948,7 @@ impl Call<'_> {
                 opts,
             } => {
                 let decl = self.shown_verb(&w.ontology, verb)?.clone();
-                if scoped(&decl, key.as_ref(), opts.expected_version)?.is_some() {
-                    rights::not_a_view(w.ontology.ty(&decl.on)?)?;
-                }
+                scoped(&decl, key.as_ref(), opts.expected_version)?;
                 granted(self.verb_callable(w.ontology.ty(&decl.on)?, &decl))?;
                 // A call that could not run when accepted is not proposed (013).
                 if let VerbEffect::External { executor } = &decl.effect {
@@ -2306,9 +2301,6 @@ impl Call<'_> {
                 // the head must still fit the proposal, or the accept is
                 // refused and the proposal stays pending.
                 let key = scoped(&decl, key.as_ref(), opts.expected_version)?;
-                if key.is_some() {
-                    rights::not_a_view(w.ontology.ty(&decl.on)?)?;
-                }
                 // The reviewer applies what was checked: a verb declared
                 // differently since the call was proposed refuses the
                 // accept, and the proposal stays pending (013).
