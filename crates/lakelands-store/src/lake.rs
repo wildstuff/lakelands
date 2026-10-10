@@ -290,15 +290,20 @@ impl Lake {
     /// Open a lake: find its engine among the openers the host passed,
     /// take the lease unless opening read-only, create the lake if asked
     /// and absent, and fold whatever the log holds beyond the projection.
+    /// Opened for a rebuild, the projection is cleared under the lease
+    /// first, so the whole log is folded: that open is the rebuild.
     pub fn open(location: &Location, seams: Seams, mode: OpenMode) -> Result<Lake> {
         let opener = opener(location, &seams)?;
         let engine: Arc<dyn LakeEngine> = Arc::from(opener.open(location, mode)?);
         let lease = match mode {
             OpenMode::Read => None,
-            OpenMode::Write | OpenMode::Create => {
+            OpenMode::Write | OpenMode::Create | OpenMode::Rebuild => {
                 Some(engine.take_lease(&format!("lakelands process {}", std::process::id()))?)
             }
         };
+        if mode == OpenMode::Rebuild {
+            engine.projection().clear()?;
+        }
         let lake = Lake::assemble(location, seams, engine, lease.clone());
         lake.catch_up()?;
         if let Some(lease) = lease {
@@ -699,6 +704,38 @@ impl Lake {
             if out.len() >= limit as usize {
                 break;
             }
+        }
+        Ok(out)
+    }
+
+    /// The events at `positions`, in order, opened and checked. A gap of
+    /// at most [`READ_THROUGH`] positions between two of them is read
+    /// through rather than sought again, and the events in it are dropped
+    /// unopened: nothing is answered from them.
+    pub fn read_these(&self, positions: &[Position]) -> Result<Vec<Event>> {
+        let mut out = Vec::with_capacity(positions.len());
+        let mut rest = positions;
+        while let Some(&first) = rest.first() {
+            let run = 1 + rest
+                .windows(2)
+                .take_while(|w| w[1].0 - w[0].0 <= READ_THROUGH)
+                .count();
+            let (these, after) = rest.split_at(run);
+            let end = these[these.len() - 1];
+            let mut at = first;
+            let mut wanted = these.iter().peekable();
+            while at <= end {
+                let span = (end.0 - at.0 + 1).min(u64::from(PAGE)) as u32;
+                let batch = self.engine.read(at, span)?;
+                let Some(last) = batch.last() else { break };
+                at = last.position.next();
+                for stored in &batch {
+                    if wanted.next_if(|p| **p == stored.position).is_some() {
+                        out.push(log::open(stored)?);
+                    }
+                }
+            }
+            rest = after;
         }
         Ok(out)
     }
@@ -1287,7 +1324,12 @@ impl Lake {
         if let Some(flaw) = foreign(&w.ontology, &e.body) {
             return Err(damaged(Part::Log, Some(e.position), flaw));
         }
-        projection.mark_applied(&e.id, e.position)?;
+        projection.mark_applied(&lakelands_api::engine::Applied {
+            id: e.id.clone(),
+            at: e.position,
+            kind: e.body.kind(),
+            about: lakelands_core::feed::about(&e.body),
+        })?;
         match &e.body {
             EventBody::LakeCreated { .. }
             | EventBody::LeaseTaken { .. }
@@ -1964,6 +2006,11 @@ pub fn find_proposal(view: &dyn ProjectionView, id: &ProposalId) -> Result<Propo
 
 /// How many events a page of the log holds at most.
 const PAGE: u32 = 1024;
+
+/// The widest gap between two positions [`Lake::read_these`] reads
+/// through: reading 64 events from the engine costs about what seeking one
+/// does (lakelands#678).
+const READ_THROUGH: u64 = 64;
 
 /// What a write is answered on a handle that does not hold the lease.
 fn no_lease() -> Error {

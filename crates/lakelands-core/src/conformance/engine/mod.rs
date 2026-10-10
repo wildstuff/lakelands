@@ -80,6 +80,16 @@ pub trait EngineHarness: Send + Sync {
     /// Another handle onto the lake `lake` names, opened in `mode`, as a
     /// second process would open it.
     fn reopen(&self, lake: &LakeId, mode: OpenMode) -> lakelands_api::Result<Box<dyn LakeEngine>>;
+
+    /// Leave the projection of the lake `lake` names as a build of
+    /// another layout would: marked with `layout`, or with none, as one
+    /// made before projections were marked, and its table `routes` holding
+    /// one column `x` and none of this build's. `false` for an engine
+    /// whose projection lives only as long as its handles, which no other
+    /// build opens. A mark that cannot be made panics.
+    fn mark_layout(&self, _lake: &LakeId, _layout: Option<u64>) -> bool {
+        false
+    }
 }
 
 /// One promise of the engine seam.
@@ -138,6 +148,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     projection::PUT_BEFORE_A_LATER_STATE,
     projection::PUTS_IN_ONE_TRANSACTION,
     projection::CLEAR,
+    projection::OTHER_LAYOUT,
     reads::MIXED_KINDS,
     reads::AFTER_AND_LIMIT,
     reads::KEY_BATCHES,
@@ -164,6 +175,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::EARLIER_STATES,
     reads::LATER_OUTPUT_HOLDS,
     reads::FIRST_APPLIED,
+    reads::ROUTES,
     reads::PROPOSALS,
     reads::LINK_EDGES,
     reads::EDGES_READ_WHAT_THEY_REACH,

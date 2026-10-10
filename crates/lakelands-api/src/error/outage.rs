@@ -903,6 +903,13 @@ catalog! {
         Unmade { part: Part } => "this engine did not create what is there: {part} is missing",
         /// The lake has no projection yet.
         NoProjection { lake: String } => "lake `{lake}` has no projection yet; open it for writing first",
+        /// The lake's projection was laid out by another build: nothing reads it, and a rebuild makes it anew from the log.
+        ProjectionLayout {
+            lake: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            found: Option<u64>,
+            wanted: u64,
+        } => "lake `{lake}`'s projection [has layout {found}|has no layout number], and this build reads layout {wanted}; nothing was read from it: rebuild it from the log with `lakelands rebuild`",
         /// The lake could not be compacted while a reader holds a snapshot.
         Busy { lake: String } => "lake `{lake}` could not be compacted: a reader holds a snapshot of its projection; nothing a read answers has changed, so compact again when the reader is done",
         /// The projection is behind the log and could not catch up; nothing was appended.

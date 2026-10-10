@@ -318,6 +318,17 @@ long run imported 257 606 events (100 000 records) in 40 s on the memory
 engine, 136 s on SQLite and 335 s on PostgreSQL, holding at most 23 MiB
 of heap, on a 12-core machine at a load of 17 to 31.
 
+**A projection is read only by the layout that made it.** A SQLite or
+PostgreSQL projection is marked with its engine's layout number when it
+is made, and a build whose engine lays the projection out otherwise
+refuses to open it, for reading or writing, naming the number found, the
+number wanted and `lakelands rebuild` (`projection_layout` in
+`docs/refusals.md`). Nothing repairs it in place. `lakelands rebuild`, or
+a host's own open with `OpenMode::Rebuild`, opens it, drops the
+projection under the lease, makes it anew and folds the whole log; the
+open is the rebuild. `LakeStore::rebuild` on an open lake does the same
+for a lake that opened.
+
 **Configuration is not a seam.** Engine configuration, tuning, limits
 and an optional key handle reach a lake through `Location`, and a
 server through its server configuration; Lakelands never reads the

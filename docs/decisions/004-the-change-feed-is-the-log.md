@@ -282,7 +282,67 @@ one call, and a `limit` without a filter held every event it asked for.
   follow that rule.
 - **It is a constant, not a lake's setting:** a remote consumer must be
   able to know it, and no door reads it from the caller.
-- **What it leaves:** a consumer that starts at 0 with a narrow filter
-  still reads the log once, now a bounded poll at a time. An index of the
-  log by kind, type or key would take that away; it changes every
-  engine's log, and is lakelands#678.
+- **What it left:** a consumer that started at 0 with a narrow filter
+  still read the log once, a bounded poll at a time. The index below
+  takes that away.
+
+## Extended: the projection keeps an index of the log (lakelands#678)
+
+A poll with a filter read and verified every event from its position to
+the head, whatever matched: about 24 µs an event, 2.4 s in 25 polls to
+catch up 100 000 events, on SQLite and PostgreSQL alike. Nine tenths of
+it was opening events the filter then dropped.
+
+- **The fold keeps an index.** It already remembers every event it
+  applies, to recognise a redelivery. It now also keeps the event's kind
+  and what it is about: one entry a type it concerns, with the record's
+  key where it names one. A `migrated` is about the link types it moves
+  records between, and a `value_type_migrated` about every type it
+  rewrites, as their filters always admitted them. One rule in
+  `lakelands-core` (`feed::about`, `feed::admits`) says what the fold
+  keeps and what a poll checks.
+- **The index narrows, the log answers.** Up to the view's position, a
+  poll asks the index for the positions its filter admits and reads only
+  those from the log, opening, verifying and checking each again. The
+  events a run reads through between two of them are dropped unopened,
+  since nothing is answered from them. Past the view's position, while
+  the projection is rebuilt, it reads the log as before.
+- **The index decides only what is folded.** A rebuild's `clear` and its
+  refold commit apart from the view a poll took, so an engine bounds what
+  it decides by the position the projection has folded, read in the same
+  snapshot as the index: a view taken before the `clear` decides only
+  what the refold has reached, and nothing where it has not reached the
+  poll's position, which then reads the log. Deciding by the view's
+  position alone would pass the events of the rest by, for good.
+- **What a consumer sees.** The same events in the same order. `next`
+  moves past what the index decided, so a filter that matches nothing
+  more is caught up in one poll, and one record's history from 0 reads
+  that record's events alone. `FEED_EXAMINED` now bounds the events a
+  poll reads and opens, not the positions the index skips.
+- **Not the log.** The log format, the events and the engine's log seam
+  are unchanged. The index is the projection's, so `rebuild` and an
+  import fold it from the log, and `compact` keeps it. A projection
+  made before it holds no index; such a lake is rebuilt
+  (`lakelands rebuild`), with no path that repairs it in place.
+- **A projection is read only by its layout.** An empty `routes` would
+  not fail: a filtered poll over it would find nothing, and a consumer
+  would skip events without being told. So the SQLite and PostgreSQL
+  engines mark a projection with their layout number in `meta` when they
+  make it, and a writer's, a creator's or a reader's open of one marked
+  otherwise, or not at all, is refused before any of its tables is read
+  or made (`projection_layout`, naming the number found, the number
+  wanted and `lakelands rebuild`). An engine raises its number whenever
+  a table changes so that an older projection would answer wrongly. A
+  lake is opened `OpenMode::Rebuild` to rebuild it: the store takes the
+  lease, `clear` drops the projection and makes it at the engine's
+  layout, and the whole log is folded. Nothing repairs a projection at an
+  open the host did not ask to rebuild.
+
+**Why in the projection.** This decision keeps a feed out of the
+projection because a feed kept there would be lost on a rebuild. An
+index is not a feed: it answers nothing a poll returns, it is folded
+again with everything else, and a poll that found it wrong would only
+read less. Kept beside the log in each engine's log store, it would have
+to be written in every engine's append and made whole after every crash
+the log survives; in the projection, the fold's transaction already
+makes it whole with the rest.

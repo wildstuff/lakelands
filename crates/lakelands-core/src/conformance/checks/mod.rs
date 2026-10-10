@@ -504,6 +504,7 @@ pub const ALL: &[Check] = &[
     feed::MADE,
     feed::BY_KEY,
     feed::BY_OLD_KEY,
+    feed::INDEX_UNMASKED,
     retire::SOURCE_ONLY_HAS_NO_UPSERT,
     search::HIT_IS_THE_RECORD,
     fusion::HIDDEN_MOVES_NO_SCORE,

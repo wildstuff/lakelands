@@ -32,11 +32,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use lakelands_api::engine::{
-    CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
-    Reclaimed, VectorIndex,
+    Applied, CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
+    ProjectionView, Reclaimed, VectorIndex,
 };
 use lakelands_api::error::{Act, Case, Error, Part, Result, Situation};
-use lakelands_api::event::{Digest, EventId, SegmentDigest};
+use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::query::cosine;
 use lakelands_api::record::{StoredRecord, Value};
@@ -104,6 +104,15 @@ impl PgLake {
             let (lake, schema) = (lake.to_string(), Some(target.schema.clone()));
             return Err(Error::unavailable(Situation::NoLake { lake, schema }));
         }
+        // A projection is read only by the layout it was made with, and
+        // its tables are not touched before that is known; a new one is
+        // made with this build's (`prepare`). One opened for a rebuild is
+        // made anew by `clear` before anything reads it.
+        if exists && mode != OpenMode::Rebuild {
+            let marked = format!("SELECT n FROM {} WHERE k = 'layout'", names.t("meta"));
+            let found: Option<i64> = reader.query_opt(&marked, &[])?.and_then(|r| r.get(0));
+            engines::layout(&lake, found.map(|n| n as u64), projection::LAYOUT)?;
+        }
         let (writing, pgvector) = match mode {
             OpenMode::Read => (None, vector_index::find(&mut reader, false).ok()),
             OpenMode::Write | OpenMode::Create => {
@@ -127,6 +136,17 @@ impl PgLake {
                     unanalysed: AtomicU64::new(0),
                 };
                 (Some(writing), found.ok())
+            }
+            OpenMode::Rebuild => {
+                let lease = connect::session_keeping_state(&target)?;
+                let mut projection = connect::connect(&target)?;
+                let found = vector_index::find(&mut projection, true).ok();
+                let writing = Writing {
+                    lease: Mutex::new(lease),
+                    projection: Mutex::new(projection),
+                    unanalysed: AtomicU64::new(0),
+                };
+                (Some(writing), found)
             }
         };
         check_name(&mut reader, &names, &target.schema, &lake)?;
@@ -239,6 +259,11 @@ fn prepare(db: &mut Db, names: &Names, schema: &str, lake: &LakeId, mode: OpenMo
             &[&schema],
         )?;
         db.batch(&names.schema_sql())?;
+        db.batch(&format!(
+            "INSERT INTO {} (k, n) VALUES ('layout', {}) ON CONFLICT DO NOTHING",
+            names.t("meta"),
+            projection::LAYOUT
+        ))?;
         if mode == OpenMode::Create {
             db.execute(
                 &format!(
@@ -507,13 +532,14 @@ impl ProjectionStore for PgLake {
         self.stage(at, |b| b.output(seam, input.0.as_str(), at, state))
     }
 
-    fn mark_applied(&self, id: &EventId, at: Position) -> Result<()> {
-        self.stage(at, |b| b.applied(&id.0, at))
+    fn mark_applied(&self, applied: &Applied) -> Result<()> {
+        self.stage(applied.at, |b| b.applied(applied))
     }
 
-    /// Drops the projection, its kept history and the vector index; the
-    /// log, the lease and the lake's name stay. An open transaction is
-    /// abandoned.
+    /// Drops the projection, its kept history and the vector index, and
+    /// makes the projection's tables again at this build's layout, marked
+    /// with it; the log, the lease and the lake's name stay. An open
+    /// transaction is abandoned.
     fn clear(&self) -> Result<()> {
         let writing = self.writing()?;
         *lock(&self.transaction) = None;
@@ -521,14 +547,22 @@ impl ProjectionStore for PgLake {
         writing.unanalysed.store(0, Ordering::Relaxed);
         let mut db = lock(&writing.projection);
         let _ = db.batch("ROLLBACK");
-        let statements: String = PROJECTION_TABLES
+        let dropped: String = PROJECTION_TABLES
             .iter()
-            .map(|t| format!("DELETE FROM {};", self.names.t(t)))
+            .map(|t| format!("DROP TABLE IF EXISTS {} CASCADE;", self.names.t(t)))
             .collect();
+        let vectors = match &self.pgvector {
+            Some(v) => vector_index::prepare_sql(&self.names, v),
+            None => String::new(),
+        };
         db.batch(&format!(
-            "BEGIN; {statements} DELETE FROM {m} WHERE k = 'folded' OR k LIKE 'vindex.%'; \
-             COMMIT;",
-            m = self.names.t("meta")
+            "BEGIN; {dropped} {schema} {vectors}; \
+             DELETE FROM {m} WHERE k = 'folded' OR k LIKE 'vindex.%'; \
+             INSERT INTO {m} (k, n) VALUES ('layout', {layout}) \
+             ON CONFLICT (k) DO UPDATE SET n = EXCLUDED.n; COMMIT;",
+            schema = self.names.schema_sql(),
+            m = self.names.t("meta"),
+            layout = projection::LAYOUT,
         ))
     }
 

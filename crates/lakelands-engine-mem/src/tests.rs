@@ -320,8 +320,16 @@ fn declarations_memberships_proposals_outputs_and_applied_ids_keep_history() {
             .unwrap();
         p.put_proposal(&proposal(ProposalState::Pending), Position(1))
             .unwrap();
-        p.mark_applied(&lakelands_api::event::EventId("e1".into()), Position(1))
-            .unwrap();
+        p.mark_applied(&lakelands_api::engine::Applied {
+            id: lakelands_api::event::EventId("e1".into()),
+            at: Position(1),
+            kind: "checkpoint",
+            about: vec![lakelands_api::engine::About {
+                ty: None,
+                key: None,
+            }],
+        })
+        .unwrap();
     });
     fold(e.as_ref(), 3, |p| {
         p.put_declaration(&ty, 2, Some("h2"), Position(3)).unwrap();

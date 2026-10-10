@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use lakelands_api::event::EventBody;
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::{Access, Grants, PrincipalKind, Refusal};
 use lakelands_engine_mem::MemoryOpener;

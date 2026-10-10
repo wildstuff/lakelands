@@ -87,7 +87,7 @@ check!(
 
 check!(
     RENAMES_IN_THE_FEED = the_feed_shows_a_value_rename_to_a_consumer_of_a_type_it_rewrites,
-    "004 and 027, extended (lakelands#553): the change feed filtered by type shows a `value_type_migrated` to a consumer of a type it rewrites, and not to one of another type"
+    "004 and 027, extended (lakelands#553): the change feed filtered by type shows a `value_type_migrated` to a consumer of a type it rewrites, and not to one of another type; and every filtered poll answers what the log does (lakelands#678)"
 );
 
 check!(
@@ -665,7 +665,7 @@ async fn the_feed_shows_a_value_rename_to_a_consumer_of_a_type_it_rewrites(store
         "a consumer of `task` hears of the rename and one of `note` does not; they read \
          {task:?} and {note:?}"
     );
-    Ok(())
+    super::feed::the_index_answers_the_log(store.as_ref(), "a value renamed").await
 }
 
 async fn a_rebuild_leaves_what_a_value_rename_left(store: Store) -> Held {

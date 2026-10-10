@@ -6687,11 +6687,13 @@ pub async fn the_feed_is_the_log_by_position(store: Arc<dyn LakeStore>) {
     // is the host's, and no door serves it.
 }
 
-/// A poll examines at most `FEED_EXAMINED` events (lakelands#558): one
-/// that matches nothing answers no events and `next` at the bound, short
-/// of the head, and following `next` reaches the head; a match at the last
-/// position a poll examines is in it, and not in the poll that stops just
-/// before it; and no `limit` answers more than the bound.
+/// A poll examines at most `FEED_EXAMINED` events (lakelands#558), and a
+/// filtered one reads only what its filter admits (lakelands#678): one that
+/// matches nothing answers no events and `next` past the head in one poll;
+/// one that matches answers its match however far from its position, with
+/// `next` past the match when the poll is full and past the head when it is
+/// not; and a poll with no filter answers at most the bound, whatever its
+/// `limit`, and `next` at it.
 pub async fn a_feed_poll_examines_at_most_the_bound(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let from = f.head().await.next();
@@ -6712,43 +6714,21 @@ pub async fn a_feed_poll_examines_at_most_the_bound(store: Arc<dyn LakeStore>) {
         keys: keys.iter().map(|k| key(k)).collect(),
         ..FeedFilter::default()
     };
-    let none = filter(&["trigger_fired"], &[]);
-    let (mut at, mut polls) = (from, 0);
-    loop {
-        let b = feed.poll(at, &none, 100).await.unwrap();
-        assert!(b.events.is_empty());
-        assert_eq!(
-            b.next.0,
-            (at.0 + bound).min(b.head.0 + 1),
-            "a poll from {at}"
-        );
-        (at, polls) = (b.next, polls + 1);
-        if at > b.head {
-            break;
-        }
-    }
-    assert_eq!(polls, (at.0 - from.0).div_ceil(bound));
+    let none = feed.poll(from, &filter(&["trigger_fired"], &[]), 100).await;
+    let none = none.unwrap();
+    assert!(none.events.is_empty());
+    assert_eq!(none.next, none.head.next(), "a poll from {from}");
     let last = filter(&[], &["B-4199"]);
-    let (mut at, mut p) = (from, None);
-    while p.is_none() {
-        let b = feed.poll(at, &last, 1).await.unwrap();
-        p = b.events.first().map(|e| e.position);
-        assert!(
-            p.is_some() || b.next <= b.head,
-            "`B-4199`'s event is in the log"
-        );
-        at = b.next;
-    }
-    let p = p.expect("found");
-    let mut b = feed.poll(Position(p.0 + 1 - bound), &last, u32::MAX).await;
-    assert_eq!(
-        b.as_ref().unwrap().events.last().map(|e| e.position),
-        Some(p)
-    );
-    assert_eq!(b.as_ref().unwrap().next, p.next());
-    b = feed.poll(Position(p.0 - bound), &last, u32::MAX).await;
-    assert!(b.as_ref().unwrap().events.is_empty());
-    assert_eq!(b.unwrap().next, p);
+    let full = feed.poll(from, &last, 1).await.unwrap();
+    let p = full
+        .events
+        .first()
+        .map(|e| e.position)
+        .expect("`B-4199`'s event");
+    assert_eq!((full.events.len(), full.next), (1, p.next()));
+    let rest = feed.poll(from, &last, u32::MAX).await.unwrap();
+    let found: Vec<_> = rest.events.iter().map(|e| e.position).collect();
+    assert_eq!((found, rest.next), (vec![p], rest.head.next()));
     let all = feed
         .poll(from, &FeedFilter::default(), u32::MAX)
         .await

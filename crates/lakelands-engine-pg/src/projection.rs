@@ -35,7 +35,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use lakelands_api::engine::Declared;
+use lakelands_api::engine::{Applied, Declared};
 use lakelands_api::error::Result;
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::ontology::TypeDecl;
@@ -128,6 +128,12 @@ CREATE TABLE IF NOT EXISTS {s}.outputs (
 CREATE TABLE IF NOT EXISTS {s}.applied (
     id TEXT PRIMARY KEY, at BIGINT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS {s}.routes (
+    at BIGINT NOT NULL, kind TEXT NOT NULL, ty TEXT, key TEXT
+);
+CREATE INDEX IF NOT EXISTS routes_kind ON {s}.routes (kind, at);
+CREATE INDEX IF NOT EXISTS routes_ty ON {s}.routes (ty, at);
+CREATE INDEX IF NOT EXISTS routes_key ON {s}.routes (key, at);
 CREATE TABLE IF NOT EXISTS {s}.text_index (
     ty TEXT NOT NULL, field TEXT NOT NULL, value TEXT NOT NULL, key TEXT NOT NULL
 );
@@ -173,9 +179,16 @@ pub(crate) fn kept_range() -> String {
     format!("ty COLLATE \"C\" >= '{KEPT_PREFIX}' AND ty COLLATE \"C\" < '{end}'")
 }
 
+/// The layout of the projection this build reads and writes, marked in
+/// `meta` as `layout` when the lake is made. It is raised whenever a
+/// table changes so that a projection made before would answer wrongly,
+/// not fail: one made with another layout is never read, and is rebuilt
+/// from the log.
+pub(crate) const LAYOUT: u64 = 1;
+
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
-pub(crate) const LAKE_TABLES: [&str; 15] = [
+pub(crate) const LAKE_TABLES: [&str; 16] = [
     "meta",
     "lease",
     "segments",
@@ -186,6 +199,7 @@ pub(crate) const LAKE_TABLES: [&str; 15] = [
     "members",
     "outputs",
     "applied",
+    "routes",
     "text_index",
     "edges",
     "full_text",
@@ -426,6 +440,29 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
 /// The condition that a history row holds at the position bound as `$n`.
 pub(crate) fn holds_at(n: usize) -> String {
     format!("since <= ${n} AND (until IS NULL OR until > ${n})")
+}
+
+/// The statement of a feed filter's positions in `routes` from `$2`
+/// through `$3`, at most `$4`: those of each value of `$1` in the column
+/// `by` the filter is sought by (`lakelands_core::feed::Seek`), or every
+/// row's without one, each row checked against the kinds `$5`, types `$6`
+/// and keys `$7` that are not empty.
+pub(crate) fn routes_sql(names: &Names, by: Option<&str>) -> String {
+    let routes = names.t("routes");
+    let checked = "at BETWEEN $2 AND $3 AND (cardinality($5::text[]) = 0 OR kind = ANY($5)) \
+         AND (cardinality($6::text[]) = 0 OR ty = ANY($6)) \
+         AND (cardinality($7::text[]) = 0 OR key = ANY($7))";
+    match by {
+        Some(column) => format!(
+            "SELECT DISTINCT r.at FROM unnest($1::text[]) v(value) CROSS JOIN LATERAL (\
+             SELECT DISTINCT at FROM {routes} WHERE {column} = v.value AND {checked} \
+             ORDER BY at LIMIT $4) r ORDER BY r.at LIMIT $4"
+        ),
+        None => format!(
+            "SELECT DISTINCT at FROM {routes} WHERE cardinality($1::text[]) = 0 AND {checked} \
+             ORDER BY at LIMIT $4"
+        ),
+    }
 }
 
 /// The position the projection reflects, if any.
@@ -855,6 +892,9 @@ pub(crate) struct Buffer {
     members: BTreeMap<(Vec<String>, i64), bool>,
     /// Applied ids, each with the first position it was marked at.
     applied: BTreeMap<String, i64>,
+    /// The feed index's rows of the events applied: position, kind, type
+    /// and key.
+    routes: Vec<(i64, &'static str, Option<String>, Option<String>)>,
 }
 
 impl Buffer {
@@ -901,8 +941,13 @@ impl Buffer {
         self.members.insert((ident, at.0 as i64), member);
     }
 
-    pub(crate) fn applied(&mut self, id: &str, at: Position) {
-        self.applied.entry(id.to_owned()).or_insert(at.0 as i64);
+    pub(crate) fn applied(&mut self, applied: &Applied) {
+        let at = applied.at.0 as i64;
+        self.applied.entry(applied.id.0.clone()).or_insert(at);
+        for a in &applied.about {
+            let (ty, key) = (a.ty.as_ref().map(|t| t.to_string()), a.key.as_ref());
+            (self.routes).push((at, applied.kind, ty, key.map(|k| k.to_string())));
+        }
     }
 
     /// Write every buffered put: one statement per history table, the
@@ -1013,6 +1058,23 @@ impl Buffer {
                     names.t("applied")
                 ),
                 &[&ids, &at],
+            )?;
+        }
+        if !self.routes.is_empty() {
+            let (mut at, mut kinds, mut tys, mut keys) = (vec![], vec![], vec![], vec![]);
+            for (p, kind, ty, key) in &self.routes {
+                at.push(*p);
+                kinds.push(*kind);
+                tys.push(ty.as_deref());
+                keys.push(key.as_deref());
+            }
+            db.execute(
+                &format!(
+                    "INSERT INTO {} (at, kind, ty, key) \
+                     SELECT * FROM unnest($1::int8[], $2::text[], $3::text[], $4::text[])",
+                    names.t("routes")
+                ),
+                &[&at, &kinds, &tys, &keys],
             )?;
         }
         Ok(rebuilt)

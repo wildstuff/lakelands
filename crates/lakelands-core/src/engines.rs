@@ -39,7 +39,7 @@ use lakelands_api::engine::{After, CanonicalEvent, Scan};
 use lakelands_api::error::{Case, Detail, Error, Flaw, Part, Place as At, Refusal, Result, Said};
 use lakelands_api::event::SegmentDigest;
 use lakelands_api::expr::Expr;
-use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
+use lakelands_api::id::{FieldName, LakeId, Position, RecordKey, RelationName, TypeName, VerbName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::Edge;
 use lakelands_api::read::{Direction, Order, OrderBy};
@@ -1193,6 +1193,23 @@ pub fn first_of_next(
 pub fn lease_held(holder: &str, fence: u64) -> Error {
     let holder = holder.to_owned();
     Error::unavailable(lakelands_api::error::Situation::LeaseHeld { holder, fence })
+}
+
+/// Refuses a projection of `lake` laid out by another build: `found`,
+/// where the engine's layout is `wanted`. Such a projection is never
+/// read, since a table it lacks or holds otherwise would answer wrongly
+/// without failing; it is rebuilt from the log.
+pub fn layout(lake: &LakeId, found: Option<u64>, wanted: u64) -> Result<()> {
+    if found == Some(wanted) {
+        return Ok(());
+    }
+    let lake = lake.to_string();
+    let situation = lakelands_api::error::Situation::ProjectionLayout {
+        lake,
+        found,
+        wanted,
+    };
+    Err(Error::unavailable(situation))
 }
 
 /// The refusal of a query vector of `query` dimensions where `ty.field`

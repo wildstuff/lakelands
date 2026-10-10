@@ -106,11 +106,16 @@ pub(crate) fn find(db: &mut Db, create: bool) -> std::result::Result<Pgvector, S
 
 /// Give `vectors` its `unit` column, once pgvector is there.
 pub(crate) fn prepare(db: &mut Db, names: &Names, v: &Pgvector) -> Result<()> {
-    db.batch(&format!(
+    db.batch(&prepare_sql(names, v))
+}
+
+/// The statement of [`prepare`].
+pub(crate) fn prepare_sql(names: &Names, v: &Pgvector) -> String {
+    format!(
         "ALTER TABLE {} ADD COLUMN IF NOT EXISTS unit {}",
         names.t("vectors"),
         v.ty(None)
-    ))
+    )
 }
 
 /// The meta row marking `ty.field`'s index kept through a position.

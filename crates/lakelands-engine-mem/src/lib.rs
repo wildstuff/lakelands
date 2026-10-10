@@ -127,7 +127,7 @@ impl EngineOpener for MemoryOpener {
                     .entry(location.lake.clone())
                     .or_insert_with(|| Arc::new(Mutex::new(Lake::default()))),
             ),
-            (None, OpenMode::Read | OpenMode::Write) => {
+            (None, OpenMode::Read | OpenMode::Write | OpenMode::Rebuild) => {
                 let lake = location.lake.to_string();
                 let schema = None;
                 return Err(Error::unavailable(Situation::NoLake { lake, schema }));

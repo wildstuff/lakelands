@@ -613,9 +613,10 @@ pub async fn purge(
     )
 }
 
-/// `rebuild`: rebuild the projection from the log.
+/// `rebuild`: rebuild the projection from the log. The lake was opened
+/// for a rebuild, and that open folded the whole log again.
 pub async fn rebuild(out: Out<'_>, store: &Arc<dyn LakeStore>) -> Result<(), Failure> {
-    let p = store.rebuild().await?;
+    let p = store.head().await?;
     put(
         out,
         format!("rebuilt the projection from the log through position {p}"),

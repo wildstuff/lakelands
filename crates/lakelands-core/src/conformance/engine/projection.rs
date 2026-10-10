@@ -13,14 +13,16 @@
 use std::collections::BTreeMap;
 
 use lakelands_api::Refusal;
-use lakelands_api::engine::{LakeEngine, ProjectionStore, ProjectionView};
+use lakelands_api::engine::{LakeEngine, OpenMode, ProjectionStore, ProjectionView};
+use lakelands_api::error::Situation;
 use lakelands_api::event::Digest;
-use lakelands_api::id::{Position, RecordKey, RelationName, TypeName, Version};
+use lakelands_api::id::{LakeId, Position, RecordKey, RelationName, TypeName, Version};
 use lakelands_api::query::Walk;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::Declaration;
 use serde_json::{Value, json};
 
+use super::EngineHarness;
 use crate::conformance::fixture::{Must, is_invalid, reason};
 use crate::conformance::{Failure, Held};
 
@@ -109,6 +111,95 @@ engine_check!(
     CLEAR = clear_empties_the_projection_and_the_vector_index,
     "seams §ProjectionStore: clear deletes every state, kept history and the vector index included, and leaves nothing folded, for a rebuild from the log"
 );
+
+engine_check!(
+    OTHER_LAYOUT = reopening a_projection_of_another_layout_is_refused_until_it_is_rebuilt,
+    "004 and seams §EngineOpener (lakelands#678): a disk engine marks a projection with the layout it was made with; a writer's open, a creator's and a reader's refuse one marked with another or with none, naming the layout found, the one wanted and `lakelands rebuild`, since a table it lacks would answer wrongly without failing; one opened for a rebuild is neither read nor made before `clear` makes it anew at the engine's layout, and every open then reads what was folded since"
+);
+
+fn a_projection_of_another_layout_is_refused_until_it_is_rebuilt(
+    engine: &dyn LakeEngine,
+    harness: &dyn EngineHarness,
+) -> Held {
+    let lake = engine.lake();
+    fold_one(engine, 1, record("t", "a", json!({}), 1))?;
+    // The memory engine's projection lives as long as its lake's handles:
+    // no other build opens it.
+    if !harness.mark_layout(lake, None) {
+        return Ok(());
+    }
+    let wanted = refused_for_its_layout(harness, lake, OpenMode::Write, None)?;
+    refused_for_its_layout(harness, lake, OpenMode::Read, None)?;
+    let other = Some(wanted + 1);
+    harness.mark_layout(lake, other);
+    for mode in [OpenMode::Write, OpenMode::Create, OpenMode::Read] {
+        let again = refused_for_its_layout(harness, lake, mode, other)?;
+        ensure!(
+            again == wanted,
+            "a {mode:?} open wants layout {again}, and another {wanted}"
+        );
+    }
+    // Opened for a rebuild, nothing of it is read or made before `clear`
+    // makes it anew; then it folds, and every open reads it.
+    let rebuilt = harness
+        .reopen(lake, OpenMode::Rebuild)
+        .map_err(|e| Failure::new(format!("opening the projection for a rebuild: {e}")))?;
+    rebuilt.projection().clear().must("clearing it")?;
+    fold_one(rebuilt.as_ref(), 2, record("t", "b", json!({}), 2))?;
+    drop(rebuilt);
+    for mode in [OpenMode::Write, OpenMode::Read] {
+        let opened = harness
+            .reopen(lake, mode)
+            .map_err(|e| Failure::new(format!("opening it {mode:?} after the rebuild: {e}")))?;
+        let head = view(opened.as_ref(), None)?;
+        let (a, b) = (
+            head.get(&"t".into(), &"a".into()),
+            head.get(&"t".into(), &"b".into()),
+        );
+        let (a, b) = (a.must("reading `a`")?, b.must("reading `b`")?);
+        ensure!(
+            a.is_none() && b.as_ref().is_some_and(|b| b.position == Position(2)),
+            "opened {mode:?} after the rebuild, the projection reads {a:?} and {b:?}: \
+             only what was folded since the rebuild"
+        );
+    }
+    Ok(())
+}
+
+/// Opens the lake in `mode` and expects the refusal of its projection,
+/// marked `found`; answers the layout the refusal wants.
+fn refused_for_its_layout(
+    harness: &dyn EngineHarness,
+    lake: &LakeId,
+    mode: OpenMode,
+    found: Option<u64>,
+) -> Result<u64, Failure> {
+    let error = match harness.reopen(lake, mode) {
+        Ok(_) => {
+            return Err(Failure::new(format!(
+                "a projection marked {found:?} opened {mode:?}"
+            )));
+        }
+        Err(e) => e,
+    };
+    let said = error.to_string();
+    match error.situation() {
+        Some(Situation::ProjectionLayout {
+            lake: named,
+            found: f,
+            wanted,
+        }) if named == lake.as_str()
+            && *f == found
+            && Some(*wanted) != found
+            && said.contains("`lakelands rebuild`") =>
+        {
+            Ok(*wanted)
+        }
+        _ => Err(Failure::new(format!(
+            "opening {mode:?} a projection marked {found:?} was refused otherwise: {said}"
+        ))),
+    }
+}
 
 /// A record state of `ty` at `position`, with version 1 and no flags.
 pub(super) fn record(ty: &str, key: &str, fields: Value, position: u64) -> StoredRecord {

@@ -146,6 +146,11 @@ engine_check!(
 );
 
 engine_check!(
+    ROUTES = the_index_answers_a_filters_positions_in_order_to_its_through,
+    "seams §ProjectionView and lakelands#678: `matching` answers the positions whose applied events a filter admits, by kind, by type, by key and by a type with its key, an event about several types to each of them and one about no type to no filter naming types, in order and each once however many of its values match or types it is about, at most `limit` with `through` the last of them, else through the range asked, and nothing past a view's position, through which it answers; nor past what the projection has folded where the index is read, so a view taken before a rebuild's `clear` answers through the refold, and decides nothing where the refold has not reached the range"
+);
+
+engine_check!(
     SORTED_PAGE_PINNED =
         a_page_at_an_earlier_position_reads_the_head_index_and_the_keys_changed_since,
     "041, extended: a page ordered by an indexed field at an earlier position reads the head's order index and the keys of the type changed since, with their states at the position, so it answers what one scan over the states there answers, a key changed, retired or written after the position in its place there, and reads its page, at most three rows more and two per changed key, not the type; a commit between two pages of one view changes neither"
@@ -1362,7 +1367,7 @@ fn declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position(
         p.put_membership("big", &"u".into(), &"x".into(), true, Position(3))?;
         p.put_membership("small", &ty, &"y".into(), true, Position(3))?;
         p.put_output("fn", &Digest::zero(), &json!(42), Position(3))?;
-        p.mark_applied(&seen, Position(3))
+        p.mark_applied(&unrouted(&seen, 3))
     })?;
     let then = view(engine, Some(Position(2)))?;
     let now = view(engine, None)?;
@@ -1433,10 +1438,171 @@ fn declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position(
     Ok(())
 }
 
+/// The event `id` applied at `at`, a checkpoint about nothing.
+fn unrouted(id: &EventId, at: u64) -> lakelands_api::engine::Applied {
+    lakelands_api::engine::Applied {
+        id: id.clone(),
+        at: Position(at),
+        kind: "checkpoint",
+        about: vec![lakelands_api::engine::About {
+            ty: None,
+            key: None,
+        }],
+    }
+}
+
+fn the_index_answers_a_filters_positions_in_order_to_its_through(engine: &dyn LakeEngine) -> Held {
+    use lakelands_api::engine::{About, Applied};
+    use lakelands_api::seam::FeedFilter;
+    let about = |ty: Option<&str>, key: Option<&str>| About {
+        ty: ty.map(Into::into),
+        key: key.map(Into::into),
+    };
+    let events: [(u64, &'static str, Vec<About>); 9] = [
+        (
+            1,
+            "record_upserted",
+            vec![about(Some("invoice"), Some("A"))],
+        ),
+        (
+            2,
+            "record_upserted",
+            vec![about(Some("invoice"), Some("B"))],
+        ),
+        (3, "trigger_fired", vec![about(Some("invoice"), Some("A"))]),
+        (4, "verb_called", vec![about(None, Some("A"))]),
+        (
+            5,
+            "migrated",
+            ["invoice", "sys.link.invoice.x", "sys.link.invoice.y"]
+                .map(|t| about(Some(t), None))
+                .to_vec(),
+        ),
+        (6, "checkpoint", vec![about(None, None)]),
+        (7, "record_upserted", vec![about(Some("memo"), Some("A"))]),
+        (
+            8,
+            "record_upserted",
+            vec![about(Some("invoice"), Some("A"))],
+        ),
+        (
+            9,
+            "migrated",
+            ["invoice", "memo", "note"]
+                .map(|t| about(Some(t), None))
+                .to_vec(),
+        ),
+    ];
+    let applied = |(at, kind, about): &(u64, &'static str, Vec<About>)| Applied {
+        id: EventId(format!("e{at}")),
+        at: Position(*at),
+        kind,
+        about: about.clone(),
+    };
+    let (first, rest) = events.split_at(5);
+    fold(engine, 5, |p| {
+        first.iter().try_for_each(|e| p.mark_applied(&applied(e)))
+    })?;
+    fold(engine, 9, |p| {
+        rest.iter().try_for_each(|e| p.mark_applied(&applied(e)))
+    })?;
+    let f = |kinds: &[&str], types: &[&str], keys: &[&str]| FeedFilter {
+        kinds: kinds.iter().map(|k| k.to_string()).collect(),
+        types: types.iter().map(|&t| t.into()).collect(),
+        keys: keys.iter().map(|&k| k.into()).collect(),
+    };
+    let (head, then) = (view(engine, None)?, view(engine, Some(Position(5)))?);
+    let ask = |v: &dyn lakelands_api::engine::ProjectionView, f: &FeedFilter, from, to, n| {
+        let m = v.matching(f, Position(from), Position(to), n);
+        let m = m.must(&format!(
+            "asking the index for {f:?} from {from} through {to}"
+        ))?;
+        Ok::<_, Failure>((
+            m.positions.iter().map(|p| p.0).collect::<Vec<_>>(),
+            m.through.map(|p| p.0),
+        ))
+    };
+    let invoice = f(&[], &["invoice"], &[]);
+    let rows: [(FeedFilter, Vec<u64>); 9] = [
+        (invoice.clone(), vec![1, 2, 3, 5, 8]),
+        (f(&[], &[], &["A"]), vec![1, 3, 4, 7, 8]),
+        (f(&[], &["invoice"], &["A"]), vec![1, 3, 8]),
+        (f(&["record_upserted"], &["invoice"], &[]), vec![1, 2, 8]),
+        (f(&[], &["sys.link.invoice.y"], &[]), vec![5]),
+        (f(&["checkpoint"], &[], &[]), vec![6]),
+        (f(&["checkpoint"], &["memo"], &[]), vec![]),
+        (f(&[], &["invoice", "memo"], &[]), vec![1, 2, 3, 5, 7, 8]),
+        (
+            f(&["migrated", "record_upserted"], &[], &[]),
+            vec![1, 2, 5, 7, 8],
+        ),
+    ];
+    for (filter, want) in rows {
+        let got = ask(head.as_ref(), &filter, 0, 8, 100)?;
+        ensure!(
+            got == (want.clone(), Some(8)),
+            "the index answered {got:?} for {filter:?} from 0 through 8; it answers {want:?} \
+             through 8"
+        );
+    }
+    let paged = [
+        ask(head.as_ref(), &invoice, 0, 8, 2)?,
+        ask(head.as_ref(), &invoice, 3, 8, 2)?,
+        ask(head.as_ref(), &invoice, 6, 8, 2)?,
+        ask(head.as_ref(), &invoice, 2, 4, 9)?,
+    ];
+    let want = [
+        (vec![1, 2], Some(2)),
+        (vec![3, 5], Some(5)),
+        (vec![8], Some(8)),
+        (vec![2, 3], Some(4)),
+    ];
+    ensure!(
+        paged == want,
+        "the index answered {paged:?} for `invoice` with limits of 2 from 0, 3 and 6, and from \
+         2 through 4; it answers {want:?}: at most the limit, through the last when it is \
+         reached and through the range asked when it is not"
+    );
+    let earlier = ask(then.as_ref(), &invoice, 0, 8, 100)?;
+    ensure!(
+        earlier == (vec![1, 2, 3, 5], Some(5)),
+        "a view at 5 answered {earlier:?} for `invoice` through 8; nothing past its position, \
+         and through it"
+    );
+    let migrated = ask(head.as_ref(), &f(&["migrated"], &[], &[]), 0, 9, 2)?;
+    ensure!(
+        migrated == (vec![5, 9], Some(9)),
+        "the index answered {migrated:?} for `migrated` with a limit of 2; it answers [5, 9] \
+         through 9: an event about three types is one position"
+    );
+    // A view taken before a rebuild's `clear` decides only what the refold
+    // has reached, and nothing where it has not reached the range.
+    let before = view(engine, None)?;
+    engine
+        .projection()
+        .clear()
+        .must("clearing the projection")?;
+    fold(engine, 3, |p| {
+        first[..3]
+            .iter()
+            .try_for_each(|e| p.mark_applied(&applied(e)))
+    })?;
+    let rebuilt = [
+        ask(before.as_ref(), &invoice, 0, 9, 100)?,
+        ask(before.as_ref(), &invoice, 4, 9, 100)?,
+    ];
+    ensure!(
+        rebuilt == [(vec![1, 2, 3], Some(3)), (vec![], None)],
+        "a view at 9 taken before a clear and a refold through 3 answered {rebuilt:?} for \
+         `invoice` from 0 and from 4; it answers [1, 2, 3] through 3, and decides nothing"
+    );
+    Ok(())
+}
+
 fn the_first_applied_position_is_kept(engine: &dyn LakeEngine) -> Held {
     let id = EventId("once".into());
-    fold(engine, 2, |p| p.mark_applied(&id, Position(2)))?;
-    fold(engine, 5, |p| p.mark_applied(&id, Position(5)))?;
+    fold(engine, 2, |p| p.mark_applied(&unrouted(&id, 2)))?;
+    fold(engine, 5, |p| p.mark_applied(&unrouted(&id, 5)))?;
     let at = view(engine, None)?
         .applied(&id)
         .must("reading an applied id")?;

@@ -163,8 +163,11 @@ pub struct FeedBatch {
     pub head: Position,
 }
 
-/// The most events one feed poll examines, matched or not, whatever its
-/// `limit`; a consumer is caught up when a batch's `next` passes `head`.
+/// The most events one feed poll reads from the log and opens, matched or
+/// not, whatever its `limit`: those the projection's index names for a
+/// filter, and each event past the index's position or of a filter that
+/// names nothing. A position the index decides without naming it is not
+/// read. A consumer is caught up when a batch's `next` passes `head`.
 pub const FEED_EXAMINED: u32 = 4096;
 
 /// The change feed: the log filtered by kind, read from a position
@@ -175,7 +178,7 @@ pub const FEED_EXAMINED: u32 = 4096;
 #[async_trait]
 pub trait ChangeFeed: Send + Sync {
     /// Events from `from` on that match `filter`, at most `limit`, of at
-    /// most [`FEED_EXAMINED`] examined. Answers at once, possibly empty; a
+    /// most [`FEED_EXAMINED`] read. Answers at once, possibly empty; a
     /// consumer that wants to wait polls again.
     async fn poll(&self, from: Position, filter: &FeedFilter, limit: u32) -> Result<FeedBatch>;
 

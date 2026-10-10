@@ -49,7 +49,7 @@ use crate::export;
 
 check!(
     ANSWERS_AS_BEFORE = a_compacted_lake_answers_every_read_as_before,
-    "040: after a compact of a churned lake (overwrites, a retire, a restrict, a derived field, a view, recorded outputs, embedded vectors, a proposal, a value-type migration, a re-key and a rebuild), every read answers byte for byte as before: every record with provenance at the head and as of every position, a lexical and a vector search, a walk and the proposals; a retry of a keyed write is still recognised and appends nothing; an input the lake recorded is not called again after the compact, and a rebuild after it answers as before",
+    "040: after a compact of a churned lake (overwrites, a retire, a restrict, a derived field, a view, recorded outputs, embedded vectors, a proposal, a value-type migration, a re-key and a rebuild), every read answers byte for byte as before: every record with provenance at the head and as of every position, a lexical and a vector search, a walk and the proposals; a retry of a keyed write is still recognised and appends nothing; an input the lake recorded is not called again after the compact, and a rebuild after it answers as before; every filtered poll answers after it what the log does (lakelands#678)",
     embedding
 );
 
@@ -359,6 +359,8 @@ async fn a_compacted_lake_answers_every_read_as_before(store: Store) -> Held {
     unmoved(&report, head)?;
     let after = answers(store.as_ref(), head).await?;
     same(&before, &after, "after a compact")?;
+    // The feed's index is not storage the projection no longer uses.
+    super::feed::the_index_answers_the_log(store.as_ref(), "a compacted lake").await?;
     // The retry is recognised from what the projection keeps of applied
     // ids: it answers what the write answered, and appends nothing.
     let retried = keyed(l.cat.as_ref(), &l.own).await?;

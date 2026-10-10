@@ -93,6 +93,16 @@ impl ProjectionView for View {
     fn output(&self, _: &str, _: &Digest) -> Result<Option<Value>> {
         unreachable!()
     }
+
+    fn matching(
+        &self,
+        _: &lakelands_api::seam::FeedFilter,
+        _: Position,
+        _: Position,
+        _: u32,
+    ) -> Result<lakelands_api::engine::Matched> {
+        unreachable!()
+    }
 }
 
 fn view() -> View {

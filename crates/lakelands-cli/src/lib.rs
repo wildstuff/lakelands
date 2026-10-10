@@ -101,6 +101,11 @@ pub fn open_store(location: Location, mode: OpenMode, host: Seams) -> Opening {
             .expect("a location serialises");
         let mut lakes = opened().lock().await;
         if let Some(store) = lakes.get(&key) {
+            // The lake is open in this process already: a rebuild is its
+            // store's own.
+            if mode == OpenMode::Rebuild {
+                store.rebuild().await?;
+            }
             return Ok(store.clone());
         }
         let seams = Seams {
@@ -110,6 +115,7 @@ pub fn open_store(location: Location, mode: OpenMode, host: Seams) -> Opening {
         let mode = match mode {
             OpenMode::Read => OpenMode::Read,
             OpenMode::Write | OpenMode::Create => OpenMode::Create,
+            OpenMode::Rebuild => OpenMode::Rebuild,
         };
         let store = lakelands_store::open(location, seams, mode).await?;
         lakes.insert(key, store.clone());
@@ -382,7 +388,11 @@ async fn dispatch(
     // export's head is the lake's as it stood
     // (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`).
     // A lake never opened yet is created by the first open.
-    let store = if name == "feed" || name == "export" {
+    // `rebuild` opens the lake for a rebuild, which that open is: a
+    // projection of another layout opens only so.
+    let store = if name == "rebuild" {
+        open(location, OpenMode::Rebuild, root.seams()).await?
+    } else if name == "feed" || name == "export" {
         match open(location.clone(), OpenMode::Read, root.seams()).await {
             Ok(store) => store,
             Err(Error::Unavailable { .. }) => {

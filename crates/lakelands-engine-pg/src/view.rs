@@ -10,10 +10,18 @@
 //! indexes; otherwise it reads the states at the position directly. Either way
 //! `lakelands_core::engines` decides what matches, where it sorts and what
 //! it scores, exactly as on every other engine.
+//!
+//! A snapshot does not hold back DDL, and a rebuild's `clear` drops the
+//! projection's tables and makes them again. So the feed's index, whose
+//! `routes` must agree with the folded marker read beside it, takes
+//! `routes` in `ACCESS SHARE` mode before its first `SELECT` takes the
+//! snapshot: a lock takes none, and the `DROP` waits for the read. Taken
+//! after the snapshot, the lock would find the table made again and empty
+//! under a marker that still names the old fold.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::engine::{Declared, ProjectionView, Scan};
+use lakelands_api::engine::{Declared, Matched, ProjectionView, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
@@ -21,9 +29,10 @@ use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::read::{Direction, Order};
 use lakelands_api::record::{StoredRecord, Value};
-use lakelands_api::seam::is_kept_name;
+use lakelands_api::seam::{FeedFilter, is_kept_name};
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
 use lakelands_core::engines::{self, decode};
+use lakelands_core::feed::{self, Seek};
 use postgres::types::ToSql;
 
 use crate::connect::Db;
@@ -277,15 +286,29 @@ impl PgView<'_> {
     /// Run `f` in one read transaction at the view's position; an empty
     /// projection answers `empty`.
     fn read<R>(&self, empty: R, f: impl FnOnce(&mut Read<'_>) -> Result<R>) -> Result<R> {
+        self.read_locked(None, empty, f)
+    }
+
+    /// [`Self::read`], holding the table `lock` in `ACCESS SHARE` mode
+    /// from before the transaction's snapshot is taken.
+    fn read_locked<R>(
+        &self,
+        lock: Option<&str>,
+        empty: R,
+        f: impl FnOnce(&mut Read<'_>) -> Result<R>,
+    ) -> Result<R> {
         let Some(at) = self.at else {
             return Ok(empty);
         };
         let mut db = crate::lock(&self.lake.reader);
         let names = &self.lake.names;
+        let lock = lock.map_or_else(String::new, |t| {
+            format!("LOCK TABLE {} IN ACCESS SHARE MODE; ", names.t(t))
+        });
         // The transaction opens and reads the folded marker in one round
         // trip, so the head flag is of the state every query in it sees.
         let folded = db.simple(&format!(
-            "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; \
+            "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; {lock}\
              SELECT n FROM {} WHERE k = 'folded'",
             names.t("meta")
         ));
@@ -971,6 +994,42 @@ impl ProjectionView for PgView<'_> {
                 .iter()
                 .map(|row| RecordKey::from(row.get::<_, String>(0)))
                 .collect())
+        })
+    }
+
+    fn matching(
+        &self,
+        filter: &FeedFilter,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<Matched> {
+        let to = feed::decides_through(filter, from, through);
+        // `routes` and the folded marker are read in one transaction, under
+        // the lock that holds a `clear` back (module doc).
+        self.read_locked(Some("routes"), feed::undecided(), |r| {
+            let folded = r.folded.map(|f| Position(f as u64));
+            let Some(last) = feed::last_decided(from, to.min(Position(r.at as u64)), folded) else {
+                return Ok(feed::undecided());
+            };
+            let strs = |v: Vec<&str>| v.into_iter().map(str::to_owned).collect::<Vec<String>>();
+            let kinds = strs(filter.kinds.iter().map(String::as_str).collect());
+            let types = strs(filter.types.iter().map(TypeName::as_str).collect());
+            let keys = strs(filter.keys.iter().map(RecordKey::as_str).collect());
+            let (by, values) = match feed::seek(filter) {
+                Some(Seek::Keys(_)) => (Some("key"), &keys),
+                Some(Seek::Types(_)) => (Some("ty"), &types),
+                Some(Seek::Kinds(_)) => (Some("kind"), &kinds),
+                None => (None, &kinds),
+            };
+            let (from, last_at, n) = (from.0 as i64, last.0 as i64, i64::from(limit.max(1)));
+            let query = projection::routes_sql(r.names, by);
+            let rows = (r.db).query(
+                &query,
+                &[values, &from, &last_at, &n, &kinds, &types, &keys],
+            )?;
+            let positions = rows.iter().map(|row| Position(row.get::<_, i64>(0) as u64));
+            Ok(feed::merged([positions.collect()], limit, last))
         })
     }
 
