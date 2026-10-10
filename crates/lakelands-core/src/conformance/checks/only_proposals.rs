@@ -18,7 +18,7 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     ONLY_PROPOSES = a_holder_of_only_proposes_its_own_records,
-    "051: a holder of `only` proposes an upsert, a retirement and a high-risk call on its own records, each logged `pinned`, another's proposals not; on another's record a proposal that would pass is not granted and one that reads the record is not found; a proposal is refused where a field its `only` names is derived or backed, or where the verb assigns one, and neither `describe` nor `describe_type` lists it such a verb; the accept of a pinned proposal applies while its record and type stand as proposed, and is refused once a rederive, a backed output, a record made again at the key, a redeclaration of the type that leaves its records as they are, a migration or a re-key moved them, or, for a link, once either end record moved"
+    "051: a holder of `only` proposes an upsert, a retirement and a high-risk call on its own records, each logged `pinned`, another's proposals not; on another's record a proposal that would pass is not granted and one that reads the record is not found; a proposal is refused where a field its `only` names is derived or backed, or where the verb assigns one, called or proposed, in a call's one order: after its scope, before an external verb's executor is asked and before its payload is read (lakelands#851); neither `describe` nor `describe_type` lists it such a verb; the accept of a pinned proposal applies while its record and type stand as proposed, and is refused once a rederive, a backed output, a record made again at the key, a redeclaration of the type that leaves its records as they are, a migration or a re-key moved them, or, for a link, once either end record moved"
 );
 
 check!(
@@ -104,6 +104,12 @@ async fn a_holder_of_only_proposes_its_own_records(store: Store) -> Held {
         {"name": "n", "type": {"kind": "text"}},
         {"name": "owner", "type": {"kind": "text"}, "authority": "derived", "derived": "n"}]}))
         .await?;
+    // A verb on `ticket` that reaches outside the lake, its executor not bound.
+    l.declare_json(
+        json!({"declare": "verb", "name": "mail", "on": "ticket", "risk": "high",
+        "effect": "external", "executor": "nobody"}),
+    )
+    .await?;
     for key in ["k1", "k2", "k3", "k4"] {
         if key == "k2" {
             unplug(token);
@@ -186,6 +192,53 @@ async fn a_holder_of_only_proposes_its_own_records(store: Store) -> Held {
         proposes(&l, &alice, given).await.unwrap_err_or(),
         &ng,
     );
+    // A call is judged in one order, called or proposed: its scope, the
+    // grant, then its payload. Bob is refused for the scope alone.
+    let (give, c1) = (VerbName::from("give"), RecordKey::from("c1"));
+    let keyless = cat.call(&bob, &give, None, Default::default(), Default::default());
+    let keyless = said(keyless.await);
+    for (what, key, payload, want) in [
+        ("no key", None, json!({}), &keyless),
+        ("an undeclared member", Some(&c1), json!({"x": 1}), &ng),
+    ] {
+        let sent = crate::conformance::fixture::patch(payload.clone());
+        let called = cat.call(&alice, &give, key, sent, Default::default()).await;
+        row(&format!("`give` called with {what}"), said(called), want);
+        let w = json!({"write": "call", "verb": "give", "key": key, "payload": payload});
+        let proposed = proposes(&l, &alice, w).await.unwrap_err_or();
+        row(&format!("`give` proposed with {what}"), proposed, want);
+    }
+    // Nor is the executor asked: `mail`'s is not bound, which bob, who
+    // needs no pin, is told, and she is not.
+    let (mail, t1) = (VerbName::from("mail"), RecordKey::from("t1"));
+    let nobody = cat.call(
+        &bob,
+        &mail,
+        Some(&t1),
+        Default::default(),
+        Default::default(),
+    );
+    let unbound = said(nobody.await);
+    row(
+        "bob's call of `mail`",
+        unbound.contains("nobody").to_string(),
+        "true",
+    );
+    let called = cat.call(
+        &alice,
+        &mail,
+        Some(&t1),
+        Default::default(),
+        Default::default(),
+    );
+    row(
+        "`mail` called, its executor unbound",
+        said(called.await),
+        &ng,
+    );
+    let w = json!({"write": "call", "verb": "mail", "key": "t1", "payload": {}});
+    let proposed = proposes(&l, &alice, w).await.unwrap_err_or();
+    row("`mail` proposed, its executor unbound", proposed, &ng);
     let p = proposes(&l, &alice, upsert("ticket", "t1", "n", json!("x"))).await;
     row(
         "a proposal on a type whose owner is derived",

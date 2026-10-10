@@ -44,7 +44,7 @@ check!(
 
 check!(
     ACCEPT_APPLIES = accepting_a_proposal_applies_its_write_as_the_proposers,
-    "013 and 004: a proposal is a `write_proposed` event; accepting it appends `write_accepted`, then the verb's run caused by that acceptance and its write caused by that run, written as the proposer"
+    "013 and 004: a proposal is a `write_proposed` event; accepting it appends `write_accepted`, then the verb's run caused by that acceptance and its write caused by that run, written as the proposer; an accepted upsert and an accepted retirement are written as their proposers too, each caused by its acceptance"
 );
 
 check!(
@@ -517,6 +517,40 @@ async fn accepting_a_proposal_applies_its_write_as_the_proposers(store: Store) -
             .any(|p| p.id == id && p.state == ProposalState::Accepted),
         "the proposal must now list as accepted; proposals list {listed:?}"
     );
+    // A proposed upsert and a proposed retirement, accepted.
+    let own = owner(store.as_ref());
+    for (who, write) in [
+        (
+            &clerk,
+            json!({"write": "upsert", "type": "invoice", "key": "i", "patch": {"status": "held"}}),
+        ),
+        (
+            &own,
+            json!({"write": "retire", "type": "invoice", "key": "i"}),
+        ),
+    ] {
+        let proposed = cat.propose(who, de(write), "a write".into()).await;
+        let (at, id) = proposal(&proposed.must("proposing a write")?)?;
+        let accepted = cat.accept(&reviewer, &id).await;
+        accepted.must("the reviewer accepting the write")?;
+        let events = events_from(store.as_ref(), at).await?;
+        let find = |is: fn(&EventBody) -> bool| events.iter().find(|e| is(&e.body));
+        let accepted_at =
+            find(|b| matches!(b, EventBody::WriteAccepted { .. })).map(|e| e.position);
+        let written = find(|b| {
+            matches!(
+                b,
+                EventBody::RecordUpserted { .. } | EventBody::RecordRetired { .. }
+            )
+        });
+        ensure!(
+            written.is_some_and(|e| e.writer == who.writer() && e.cause == accepted_at),
+            "an accepted write is written as its proposer `{}`, caused by its acceptance at \
+             {accepted_at:?}; the log holds {:?}",
+            who.id,
+            written.map(|e| (e.body.kind(), e.writer.clone(), e.cause))
+        );
+    }
     Ok(())
 }
 
@@ -1012,7 +1046,7 @@ check!(
 
 check!(
     UNANSWERED = a_call_sent_again_while_its_executor_runs_is_unanswered,
-    "013, extended (lakelands#616): while the executor of an external call still runs, the call sent again under its key, through `call`, `upsert`, `link`, `unlink` or `propose`, runs nothing and is refused as `unanswered`, naming the call's position, and so is the accept sent again while the executor of an accepted call runs; once the executor has answered, each answers the first outcome, its output included"
+    "013, extended (lakelands#616): while the executor of an external call still runs, the call sent again under its key, through `call`, `upsert`, `link`, `unlink` or `propose`, runs nothing and is refused as `unanswered`, naming the call's position, and so is the accept sent again while the executor of an accepted call runs; a link door asks its own questions before such a retry, so a link under that key naming `from` is refused for that (035, extended); once the executor has answered, each answers the first outcome, its output included"
 );
 
 /// A host's write of `job` `key`, naming `cause` as what it follows from.
@@ -1270,6 +1304,11 @@ async fn a_call_sent_again_while_its_executor_runs_is_unanswered(store: Store) -
                     let again = proposed("run_low", &call, Some("held-once"));
                     cat.propose(own, again, "again".into()).await
                 }),
+                ("link naming `from`", {
+                    let named = patch(json!({"from": "x"}));
+                    cat.link(own, &ty, &call, next, &accept, named, once())
+                        .await
+                }),
             ];
             release("held-call");
             tries
@@ -1282,7 +1321,17 @@ async fn a_call_sent_again_while_its_executor_runs_is_unanswered(store: Store) -
             vec![("accept", again)]
         }),
     ];
-    let answered = join_all(callers).await;
+    let mut answered = join_all(callers).await;
+    // The door's own question comes before a retry that cannot be answered.
+    let named = answered[1].pop().map(|(_, named)| named);
+    ensure!(
+        matches!(
+            named.as_ref().map(refused_on),
+            Some(Some(("from", Refusal::Invalid(..))))
+        ),
+        "a link naming `from`, under the key of a call whose executor runs, is refused for \
+         `from` before the retry; it answered {named:?}"
+    );
     for (firsts, tries) in [(&answered[0], &answered[1]), (&answered[2], &answered[3])] {
         let (what, first) = &firsts[0];
         let Ok(

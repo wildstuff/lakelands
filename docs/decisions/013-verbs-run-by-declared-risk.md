@@ -484,7 +484,9 @@ checks, the append. Where a step runs "the record checks", they are
 
 **`call`**: the retry; the verb is declared (`not_found`); the key fits
 its scope (`invalid`, naming the verb); the principal may call it
-(`not_granted`); an external verb's executor is bound (`unbound`); the
+(`not_granted`), which for a call that is proposed includes that a
+holder of `only` proposes what can be pinned to its record (051); an
+external verb's executor is bound (`unbound`); the
 payload: a member the verb does not declare (`invalid`, naming the verb
 and the member, as one missing from the payload and never from the type,
 even where the type has a field of that name), then field by field in
