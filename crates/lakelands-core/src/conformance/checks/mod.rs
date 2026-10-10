@@ -411,6 +411,8 @@ pub const ALL: &[Check] = &[
     embeddings::EMBED_REDECLARED,
     embeddings::EMBED_NO_TEXT,
     embeddings::EMBED_FAILURE_RETRIED,
+    embeddings::EMBED_NAMED,
+    embeddings::EMBED_NAMES_LATEST,
     embeddings::EMBED_FILL_REACTS,
     embeddings::EMBED_REFUSED_ALONE,
     embeddings::EMBED_WEATHER,

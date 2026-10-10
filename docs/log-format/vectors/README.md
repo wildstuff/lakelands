@@ -22,6 +22,12 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
+- `v14.json`: version 14's addition after `v13.json`'s position 37: an
+  `output_recorded` that carries its output, written in the lake's
+  version, and a fill of the same call that names it by `output_at`,
+  written as version 14; `negatives`, that fill written as version 13,
+  and `misplaced`, a fill carrying both members, each of which a reader
+  refuses.
 - `v13.json`: version 13's additions after `v12.json`'s position 33: a
   `write_proposed` upsert that carries `pinned`; a `declared` type with a
   field of the kind `date`, a `declared` value type over it, and a

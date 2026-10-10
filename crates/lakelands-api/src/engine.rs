@@ -412,8 +412,9 @@ pub trait ProjectionView {
     /// The position an event id was applied at, if it was.
     fn applied(&self, id: &EventId) -> Result<Option<Position>>;
 
-    /// A seam's recorded output for this input, if recorded.
-    fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>>;
+    /// A seam's recorded output for this input, if recorded, with the
+    /// position it was recorded at.
+    fn output(&self, seam: &str, input: &Digest) -> Result<Option<(Position, Value)>>;
 
     /// The positions from `from` through `through` whose events `filter`
     /// admits, by what [`ProjectionStore::mark_applied`] kept of them, in

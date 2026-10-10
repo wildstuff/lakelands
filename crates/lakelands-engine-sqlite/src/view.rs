@@ -225,7 +225,7 @@ const RECORD_AT: &str = "SELECT state FROM (SELECT state, until FROM records WHE
 /// seam and input at or before the position, and whether it still holds
 /// there. A view's state is recorded again at every change of its
 /// counters; none of its other states is read (lakelands#575).
-const OUTPUT_AT: &str = "SELECT state FROM (SELECT state, until FROM outputs WHERE seam = ?1 \
+const OUTPUT_AT: &str = "SELECT since, state FROM (SELECT since, state, until FROM outputs WHERE seam = ?1 \
      AND input = ?2 AND since <= ?3 ORDER BY since DESC LIMIT 1) WHERE until IS NULL OR until > ?3";
 
 /// The statements that seek one record's state, as the engine runs them:
@@ -863,10 +863,19 @@ impl ProjectionView for SqliteView<'_> {
         })
     }
 
-    fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
+    fn output(&self, seam: &str, input: &Digest) -> Result<Option<(Position, Value)>> {
+        use rusqlite::OptionalExtension;
         self.read(None, |r| {
-            let state: Option<String> = one(r.conn, OUTPUT_AT, params![seam, input.0, r.at()])?;
-            state.as_deref().map(|s| decode(s, "a state")).transpose()
+            let row = (r.conn.prepare_cached(OUTPUT_AT))
+                .and_then(|mut s| {
+                    let args = params![seam, input.0, r.at()];
+                    s.query_row(args, |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+                        .optional()
+                })
+                .map_err(sql)?;
+            let decoded =
+                row.map(|(since, s)| Ok((Position(since as u64), decode(&s, "a state")?)));
+            decoded.transpose()
         })
     }
 

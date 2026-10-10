@@ -364,7 +364,8 @@ fn declarations_memberships_proposals_outputs_and_applied_ids_keep_history() {
         now.proposals(&ProposalFilter::default()).unwrap()[0].state,
         ProposalState::Rejected
     );
-    assert_eq!(now.output("fn", &Digest::zero()).unwrap(), Some(json!(42)));
+    let output = now.output("fn", &Digest::zero()).unwrap();
+    assert_eq!(output, Some((Position(3), json!(42))));
 }
 
 // ---- scans ---------------------------------------------------------------

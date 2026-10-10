@@ -175,8 +175,9 @@ async fn a_lake_made_before_renames_were_recorded_holds_a_grant_through_them() {
     let recorded = || {
         let engine = opener.open(&location, OpenMode::Read).expect("the engine");
         let view = engine.view(None).expect("a view");
-        view.output("sys:renames", &Digest::zero())
+        (view.output("sys:renames", &Digest::zero()))
             .expect("an output")
+            .map(|(_, list)| list)
     };
     let (stayed, followed) = (kept_from("holder"), kept_from("owner"));
 

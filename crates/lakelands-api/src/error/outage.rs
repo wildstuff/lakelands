@@ -703,6 +703,8 @@ named! {
         Pinned = "pinned" => "proposes a write pinned to its record",
         /// It declares the kind `date`.
         Date = "date" => "declares the kind `date`",
+        /// It names an output by `output_at`.
+        OutputAt = "output_at" => "names an output by `output_at`",
     }
 }
 
@@ -759,6 +761,10 @@ catalog! {
         } => "a migration moves `{ty}` `{key}`, which the lake does not hold",
         /// A value type's renames reach other types than those that use it.
         RenamesOtherTypes { value_type: String } => "it renames values of `{value_type}` in other types than those that use it",
+        /// An `output_recorded` event carries both `output` and `output_at`, or neither.
+        OutputOnce => "an `output_recorded` event carries both `output` and `output_at`, or neither",
+        /// It names an output that is not its call's latest.
+        NotLatestOutput { at: Position } => "it names the output at position {at}, which is not its call's latest output",
         /// It records under a seam that is the store's own.
         OwnSeam { seam: String } => "it records under `{seam}`: a seam that begins `sys:` is the store's own",
         /// It declares or writes a type whose name is the store's own.

@@ -413,3 +413,11 @@ settles the type again, which calls again for each recorded failure;
 with none bound those calls are dropped, so the fields read as waiting,
 their `error` gone, until a backend is bound and `recompute` makes
 them. `vector_coverage` counts them as due either way.
+
+## Extended: a settle's second output is carried
+
+A settle forced by a declaration that calls again for a recorded failure
+records the new answer with its `output`, and a later fill of the same
+call names that second output, the call's latest, by `output_at`; a
+failure is always carried
+(`docs/decisions/053-a-recorded-output-is-recorded-once.md`).

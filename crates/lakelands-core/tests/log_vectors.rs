@@ -810,6 +810,57 @@ fn the_version_13_lines_recompute_and_written_as_version_12_are_refused() {
 }
 
 #[test]
+fn the_version_14_fill_recomputes_and_written_as_version_13_or_with_both_members_is_refused() {
+    let v14 = read_json("v14.json");
+    let mut prev = read_json("v13.json")["hashes"][3]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for line in v14["lines"].as_array().unwrap() {
+        let line = line.as_str().unwrap();
+        let value: Value = serde_json::from_str(line).unwrap();
+        let event: Event = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            canonical::of(&event),
+            line.as_bytes(),
+            "the contract writes it as the line"
+        );
+        let mut body = value;
+        body.as_object_mut().unwrap().remove("hash");
+        assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
+        assert_eq!(event.prev.0, prev, "it follows the event before it");
+        // A fill that names its output needs 14; one that carries it is
+        // written in the lake's version.
+        let needed = lakelands_core::versions::needed(&event.body, false);
+        let named = matches!(
+            event.body,
+            EventBody::OutputRecorded {
+                output_at: Some(_),
+                ..
+            }
+        );
+        assert_eq!((event.v, needed), if named { (14, 14) } else { (13, 1) });
+        assert_eq!(lakelands_core::versions::misplaced(&event), None);
+        prev = event.hash.0;
+    }
+    let hashes = v14["hashes"].as_array().unwrap();
+    assert_eq!(prev, hashes.last().unwrap().as_str().unwrap());
+    for negative in v14["negatives"].as_array().unwrap() {
+        let negative: Event = serde_json::from_str(negative.as_str().unwrap()).unwrap();
+        assert_eq!(negative.v, 13);
+        let why = lakelands_core::versions::below(&negative)
+            .expect("refused")
+            .to_string();
+        assert!(why.contains("format 14 added"), "{why}");
+    }
+    let misplaced: Event = serde_json::from_str(v14["misplaced"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        lakelands_core::versions::misplaced(&misplaced),
+        Some(lakelands_api::error::Flaw::OutputOnce)
+    );
+}
+
+#[test]
 fn the_version_9_view_that_merges_recomputes_and_a_version_8_one_is_refused() {
     let v8 = read_json("v8.json");
     let v9 = read_json("v9.json");

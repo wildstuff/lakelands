@@ -90,7 +90,7 @@ impl ProjectionView for View {
     fn applied(&self, _: &EventId) -> Result<Option<Position>> {
         unreachable!()
     }
-    fn output(&self, _: &str, _: &Digest) -> Result<Option<Value>> {
+    fn output(&self, _: &str, _: &Digest) -> Result<Option<(Position, Value)>> {
         unreachable!()
     }
 

@@ -53,9 +53,14 @@ impl<T> History<T> {
     /// The state valid at `at`: the latest put at or before it. Nothing is
     /// valid in a view of an empty projection.
     pub(crate) fn at(&self, at: Option<Position>) -> Option<&T> {
+        self.since(at).map(|(_, t)| t)
+    }
+
+    /// [`Self::at`] with the position the state is valid from.
+    pub(crate) fn since(&self, at: Option<Position>) -> Option<(Position, &T)> {
         let at = at?;
         let i = self.0.partition_point(|(p, _)| *p <= at);
-        i.checked_sub(1).map(|i| &self.0[i].1)
+        i.checked_sub(1).map(|i| (self.0[i].0, &self.0[i].1))
     }
 
     /// The latest state put.

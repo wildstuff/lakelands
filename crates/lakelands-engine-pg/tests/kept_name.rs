@@ -221,7 +221,7 @@ fn read(engine: &dyn LakeEngine, [many, few]: &[TypeName; 2], last: u64, middle:
             ..ten
         };
         assert_eq!(page(few, by_n)[0], ("a".to_owned(), n), "as of {as_of:?}");
-        let recorded = view.output(SEAM, &Digest("many".into())).unwrap();
+        let recorded = (view.output(SEAM, &Digest("many".into())).unwrap()).map(|(_, v)| v);
         assert_eq!(recorded, Some(json!({"at": n})), "as of {as_of:?}");
     }
 }

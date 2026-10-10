@@ -279,7 +279,7 @@ impl ProjectionView for HeldNow<'_> {
         self.then.applied(id)
     }
 
-    fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
+    fn output(&self, seam: &str, input: &Digest) -> Result<Option<(Position, Value)>> {
         self.then.output(seam, input)
     }
 

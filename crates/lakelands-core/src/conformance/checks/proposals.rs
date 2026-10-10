@@ -926,7 +926,7 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
     let recorded = outputs_from(store.as_ref(), *position).await?;
     ensure!(
         recorded.iter().any(|e| e.cause == Some(*position)
-            && matches!(&e.body, lakelands_api::event::EventBody::OutputRecorded { output: o, .. } if o == output)),
+            && matches!(&e.body, lakelands_api::event::EventBody::OutputRecorded { output: Some(o), .. } if o == output)),
         "the executor's answer is recorded as `output_recorded` caused by the event at \
          {position}; the log holds {recorded:?}"
     );
@@ -972,7 +972,7 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
     let recorded = outputs_from(store.as_ref(), failed_at).await?;
     ensure!(
         recorded.iter().any(|e| e.cause == Some(failed_at)
-            && matches!(&e.body, lakelands_api::event::EventBody::OutputRecorded { output: o, .. }
+            && matches!(&e.body, lakelands_api::event::EventBody::OutputRecorded { output: Some(o), .. }
                 if o.as_object().is_some_and(|m| m.len() == 1 && m["error"].is_string()))),
         "the executor's failure is recorded as `output_recorded` {{\"error\": …}}, caused by \
          the event at {failed_at}; the log holds {recorded:?}"

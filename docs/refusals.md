@@ -231,6 +231,7 @@ What a format version added that an event carries, written in an older format.
 | `proposes_value_renames` | — | proposes a value type's migration that renames values | It proposes a value type's migration that renames values. |
 | `pinned` | — | proposes a write pinned to its record | It proposes a write pinned to its record. |
 | `date` | — | declares the kind `date` | It declares the kind `date`. |
+| `output_at` | — | names an output by `output_at` | It names an output by `output_at`. |
 
 ## `Place`
 
@@ -862,6 +863,8 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `no_event` | `position` (Position) | it holds no event at position {position} | It holds no event at the position. |
 | `moves_unheld` | `type` (TypeName), `key` (RecordKey) | a migration moves `{type}` `{key}`, which the lake does not hold | A migration moves a key the lake does not hold. |
 | `renames_other_types` | `value_type` (String) | it renames values of `{value_type}` in other types than those that use it | A value type's renames reach other types than those that use it. |
+| `output_once` | — | an `output_recorded` event carries both `output` and `output_at`, or neither | An `output_recorded` event carries both `output` and `output_at`, or neither. |
+| `not_latest_output` | `at` (Position) | it names the output at position {at}, which is not its call's latest output | It names an output that is not its call's latest. |
 | `own_seam` | `seam` (String) | it records under `{seam}`: a seam that begins `sys:` is the store's own | It records under a seam that is the store's own. |
 | `own_type` | `type` (TypeName) | it declares or writes the type `{type}`: a name that begins `sys:` is the store's own, for what it keeps of a view | It declares or writes a type whose name is the store's own. |
 | `view_record` | `type` (TypeName) | it writes a record of `{type}`, a view, whose records are computed | It writes a record of a view. |

@@ -221,7 +221,7 @@ impl ProjectionView for ProbedView<'_> {
     fn applied(&self, id: &EventId) -> Result<Option<Position>> {
         self.inner.applied(id)
     }
-    fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
+    fn output(&self, seam: &str, input: &Digest) -> Result<Option<(Position, Value)>> {
         if seam == "sys:kept" {
             self.probe.states.fetch_add(1, Ordering::SeqCst);
         }

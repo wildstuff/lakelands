@@ -171,14 +171,14 @@ async fn a_backed_field_is_filled_from_the_output_the_store_records(store: Store
     };
     ensure!(
         seam == &format!("function:{KIND}:lookup")
-            && output == &json!("AT")
+            && output == &Some(json!("AT"))
             && filled
                 .as_ref()
                 .is_some_and(|(t, k, f)| t.as_str() == "place"
                     && k.as_str() == "p1"
                     && f.as_str() == "name"),
         "the output is recorded under the seam `function:{KIND}:lookup`, as \"AT\", naming \
-         the field `place` `p1` `name`; the log holds seam {seam:?}, output {output}, field \
+         the field `place` `p1` `name`; the log holds seam {seam:?}, output {output:?}, field \
          {filled:?}"
     );
     ensure!(
@@ -256,7 +256,7 @@ async fn a_failing_backing_clears_the_field_and_records_the_failure(store: Store
     let recorded = recorded_outputs(store.as_ref()).await?;
     let last = recorded.last().map(|e| &e.body);
     ensure!(
-        matches!(last, Some(EventBody::OutputRecorded { output, .. })
+        matches!(last, Some(EventBody::OutputRecorded { output: Some(output), .. })
             if output.as_object().is_some_and(|o| o.len() == 1 && o["error"].is_string())),
         "the failure is recorded as its output, {{\"error\": \"<why>\"}}; the last \
          `output_recorded` is {last:?}"

@@ -116,7 +116,7 @@ fn count_in_force_sql(records: &str, head: bool) -> String {
 /// of its other states is read (lakelands#575).
 fn output_sql(outputs: &str) -> String {
     format!(
-        "SELECT state FROM {outputs} WHERE seam = $1 AND input = $2 AND since <= $3 \
+        "SELECT since, state FROM {outputs} WHERE seam = $1 AND input = $2 AND since <= $3 \
          ORDER BY since DESC LIMIT 1"
     )
 }
@@ -996,13 +996,16 @@ impl ProjectionView for PgView<'_> {
         })
     }
 
-    fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
+    fn output(&self, seam: &str, input: &Digest) -> Result<Option<(Position, Value)>> {
         self.single(None, |r| {
             r.db.query_opt(
                 &output_sql(&r.names.t("outputs")),
                 &[&seam, &input.0, &r.at],
             )?
-            .map(|row| decode(&row.get::<_, String>(0), "an output"))
+            .map(|row| {
+                let since = Position(row.get::<_, i64>(0) as u64);
+                Ok((since, decode(&row.get::<_, String>(1), "an output")?))
+            })
             .transpose()
         })
     }

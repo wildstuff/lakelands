@@ -21,7 +21,8 @@ use sha2::{Digest as _, Sha256};
 use super::rekey;
 use crate::canonical;
 use crate::conformance::fixture::{
-    Lake, Must, count_view, doors, find_at, invalid_case, log_events, owner, reason, type_of,
+    Lake, Must, computed_by, count_view, doors, find_at, invalid_case, log_events, owner, reason,
+    type_of,
 };
 use crate::conformance::{Failure, Held, Store};
 use crate::export::{self, Manifest};
@@ -581,7 +582,9 @@ fn import_seams() -> lakelands_api::seam::Seams {
 /// derived field calling `floor` (version 11), a
 /// record ingested with an upstream, a set of declarations and a value
 /// type's renames, applied and proposed (version 12), a date written
-/// (version 13), a second checkpoint and more invoices.
+/// (version 13), a field computed over two records sharing its input,
+/// whose second fill names the first's output (version 14), a second
+/// checkpoint and more invoices.
 /// Answers the
 /// second writer's handle and a position before the second checkpoint.
 async fn exported_lake(
@@ -759,6 +762,21 @@ async fn exported_lake(
     ))
     .await?;
     l.upsert("due", "d1", json!({"on": "2026-07-05"})).await?;
+    // Format version 14: a field computed over two records that share its
+    // input; the sweep's second fill names the first one's output.
+    l.declare_json(json!({
+        "declare": "function", "name": "echo", "backing": crate::conformance::backing::KIND,
+        "inputs": [{"name": "word", "type": {"kind": "text"}}],
+        "config": {"token": "exported_named_output", "echo": "word"}
+    }))
+    .await?;
+    l.declare(type_of("said", &[("word", Text)])).await?;
+    for key in ["w1", "w2"] {
+        l.upsert("said", key, json!({"word": "same"})).await?;
+    }
+    let echoed = computed_by("echoed", Text, "echo", &["word"]);
+    let added = cat.add_field(own, &"said".into(), echoed).await;
+    added.must("adding `echoed` to `said`")?;
     let earlier = store.head().await.must("reading the head")?;
     store.checkpoint().await.must("checkpointing")?;
     invoices(store, 3, 2).await?;

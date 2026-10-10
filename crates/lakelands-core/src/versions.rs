@@ -41,6 +41,8 @@
 //! - **13**: what [`THIRTEENTH`] lists: a `write_proposed` event
 //!   `pinned` to the record it writes; a declaration that names the kind
 //!   `date`, in the places 5 names.
+//! - **14**: what [`FOURTEENTH`] lists: an `output_recorded` event that
+//!   names its output by `output_at`.
 //!
 //! The store writes every event of one append at the greatest of the
 //! lake's version and what [`needed`] answers for each event of the
@@ -56,6 +58,9 @@ use lakelands_api::write::{Declaration, ProposedWrite};
 /// The lowest format version that can carry `body`, with `upstream` or
 /// without it.
 pub fn needed(body: &EventBody, upstream: bool) -> u32 {
+    if carried(FOURTEENTH, body).is_some() {
+        return 14;
+    }
     if carried(THIRTEENTH, body).is_some() {
         return 13;
     }
@@ -168,6 +173,22 @@ pub const THIRTEENTH: &[Added] = &[
     ),
     (|body| any_declaration(body, names_a_date), A::Date),
 ];
+
+/// What format version 14 added, as [`ELEVENTH`] lists 11's: below 14
+/// every fill carried its output, so a reader there would fill a field
+/// from nothing.
+pub const FOURTEENTH: &[Added] = &[(
+    |body| {
+        matches!(
+            body,
+            EventBody::OutputRecorded {
+                output_at: Some(_),
+                ..
+            }
+        )
+    },
+    A::OutputAt,
+)];
 
 /// Whether a declaration names the kind `date`: a field's, a view's
 /// parameter's or a value type's kind.
@@ -359,7 +380,7 @@ pub fn below(event: &Event) -> Option<Flaw> {
     if event.v >= need {
         return None;
     }
-    let added = [THIRTEENTH, TWELFTH, ELEVENTH]
+    let added = [FOURTEENTH, THIRTEENTH, TWELFTH, ELEVENTH]
         .into_iter()
         .find_map(|added| carried(added, &event.body));
     let carries = if let Some(what) = added {
@@ -401,12 +422,21 @@ pub fn below(event: &Event) -> Option<Flaw> {
 /// `upstream` on any kind but `record_ingested`, since only a source's
 /// record is read from another lake (`docs/log-format.md` §1.1); and the
 /// origin `initial`, a field's provenance alone, never an event's
-/// (`docs/decisions/050-a-field-declares-its-initial-value.md`). No door
+/// (`docs/decisions/050-a-field-declares-its-initial-value.md`); and an
+/// output both carried and named by `output_at`, or neither
+/// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`). No door
 /// puts any there; a reader holds the rule for a log written by something
 /// else.
 pub fn misplaced(event: &Event) -> Option<Flaw> {
     if event.context.cause.is_some() {
         return Some(Flaw::CauseInContext);
+    }
+    if let EventBody::OutputRecorded {
+        output, output_at, ..
+    } = &event.body
+        && output.is_some() == output_at.is_some()
+    {
+        return Some(Flaw::OutputOnce);
     }
     if event.origin == lakelands_api::record::Origin::Initial {
         return Some(Flaw::InitialOrigin);
