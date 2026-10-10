@@ -14,10 +14,10 @@
 //! `<type>_<relation>_link` and `<type>_<relation>_unlink`, named by the
 //! type and the relation, since relation names are unique per type only. Per verb: the
 //! verb's name. Generic: `describe`, `query`, `search`, `propose`,
-//! `proposals`, `accept`, `reject`, `declare_type`, `add_field`,
-//! `migrate`, each only if the principal may use it, and `pin`, the MCP
-//! session's door for pinning `as_of` across a turn. A 20-type lake
-//! offers about 80 tools.
+//! `proposals`, `accept`, `reject`, `declare_type`, `add_field`, `recompute`,
+//! `migrate`, each only if the principal may use it, and the MCP session's
+//! doors: `pin`, for `as_of` across a turn, and `subscribe` and `unsubscribe`,
+//! for being told of changes. A 20-type lake offers about 80 tools.
 //!
 //! Four doors of [`Catalog`](crate::Catalog) have no tool of their own:
 //! `describe_type` is `describe` with a `type`, `migrate_apply` is

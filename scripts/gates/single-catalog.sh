@@ -11,10 +11,12 @@
 #   - a door suffix on its own, `"_find"` and the like, from which a name
 #     would be assembled;
 #   - a format string that assembles one, `"{t}_find"`, `"{}_upsert"`;
-#   - a generic tool name (GENERIC below) on a line that names a tool
-#     (the line mentions `name` or `tool` anywhere, inside an identifier
-#     such as `describe_tool` too), since the bare words are ordinary
-#     strings elsewhere.
+#   - a generic tool name on a line that names a tool (the line mentions
+#     `name` or `tool` anywhere, inside an identifier such as
+#     `describe_tool` too), since the bare words are ordinary strings
+#     elsewhere. The generic names are the generator's own, read from its
+#     `GENERIC_TOOLS` and the constants it lists: the gate keeps no list,
+#     so a tool added there is known here.
 # Untracked files are checked too, so a local run sees new work.
 # Tests may compare against literal names; they read the generator's
 # output, they do not serve it.
@@ -22,7 +24,19 @@
 
 GENERATOR='crates/lakelands-api/src/tools'   # tools.rs or tools/
 DOORS='find|get|upsert|retire|link|unlink'
-GENERIC='describe|pin|subscribe|unsubscribe|query|search|propose|proposals|accept|reject|declare_type|add_field|migrate'
+
+# The generic tool names, joined by `|`: the value of every constant
+# `GENERIC_TOOLS` lists. A constant it lists that is not declared as one
+# name, or a list whose length is not the one it declares, cannot be read.
+GENERIC="$(perl -0777 -ne '
+    my %value = /^const ([A-Z][A-Z0-9_]*): &str = "([a-z][a-z0-9_]*)";$/mg;
+    my ($n, $list) = /^pub const GENERIC_TOOLS: \[&str; (\d+)\] = \[(.*?)\];$/ms
+        or die "no GENERIC_TOOLS\n";
+    my @names = $list =~ /([A-Z][A-Z0-9_]*)/g;
+    @names == $n or die "GENERIC_TOOLS declares $n names and lists " . @names . "\n";
+    defined $value{$_} or die "GENERIC_TOOLS lists $_, which is no constant of one name\n" for @names;
+    print join "|", map { $value{$_} } @names;
+' "$GENERATOR.rs" 2>&1)" || die "$GENERATOR.rs: $GENERIC"
 
 files=0
 while IFS= read -r -d '' file; do
@@ -47,4 +61,4 @@ while IFS= read -r -d '' file; do
     ' "$DOORS" "$GENERIC" "$file" "$file")
 done < <(git ls-files -z --cached --others --exclude-standard -- ':(glob)**/src/**/*.rs')
 
-verdict "$files source file(s) outside $GENERATOR"
+verdict "$files source file(s) outside $GENERATOR, $(tr -cd '|' <<<"$GENERIC|" | wc -c | tr -d ' ') generic name(s)"
