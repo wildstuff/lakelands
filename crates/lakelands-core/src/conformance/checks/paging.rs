@@ -45,6 +45,11 @@ check!(
     given
 );
 
+check!(
+    EACH_HOLDER_ONCE = a_walk_under_an_exact_text_in_an_indexed_order_visits_each_holder_once,
+    "041, extended (lakelands#695): a `find` by an exact text in the order of a field with an order index, either way, paged to the end by three and by five, fewer than the rows a page passes over, answers each record holding the text once and in the field's order, ties by key; the retired holders are passed over, and the restricted ones for a reader without `restricted`; so does a walk by three and by five most of whose pages pass over more rows than their first batches hold, where an engine may go on reading another way, with a retired and a restricted record among the rows it passes over before and after, and the last row it read before going on one the page answers, so it is answered once"
+);
+
 async fn counter(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     let ty = type_of(
@@ -336,6 +341,115 @@ async fn a_page_answers_its_total_and_an_offset_jumps_to_the_walks_slice(store: 
         "an offset past the lake's {max} is refused as too_large, naming `offset`; it answered \
          {r:?}"
     );
+    Ok(())
+}
+
+async fn a_walk_under_an_exact_text_in_an_indexed_order_visits_each_holder_once(
+    store: Store,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    let fields = [
+        ("n", StorageKind::Number),
+        ("tag", StorageKind::Text),
+        ("m", StorageKind::Number),
+    ];
+    l.declare(type_of("counter", &fields)).await?;
+    let Lake { cat, own } = &l;
+    l.set("sort_index.counter", json!(["n"])).await?;
+    // Two records in three hold `a`, and each `n` is held twice. Of the
+    // holders one in five is retired and one in seven restricted, so a
+    // page of three passes over rows and asks its engine for more than
+    // one batch of them.
+    let mut holders = Vec::new();
+    for i in (0..60u32).filter(|i| i % 3 != 0) {
+        holders.push((format!("c{i:02}"), (i * 7) % 30, i % 5 == 1, i % 7 == 2));
+    }
+    for i in 0..60u32 {
+        let tag = if i % 3 == 0 { "b" } else { "a" };
+        let fields = json!({"n": (i * 7) % 30, "tag": tag});
+        l.upsert("counter", &format!("c{i:02}"), fields).await?;
+    }
+    // 72 hold `c`, each `n` twice. Of every sixteen of them in `n`'s
+    // order three hold `m = 1`: one as it is, one retired and one
+    // restricted. A page under `m = 1` passes over eight rows and more
+    // for each record it answers, so most pages of a walk ask their
+    // engine for more batches than an engine reads one by one (041,
+    // extended: three), and what the engine reads before and after holds
+    // a retired and a restricted record that the page would answer
+    // otherwise. Pages of three and of five put an answered record first
+    // after the hand-over, and after a later batch. In the second
+    // sixteen the last record holds `m = 1` too, as it is: a page whose
+    // three batches end on it has read, as its last row before the
+    // hand-over, one it answers, and an engine that went on from that
+    // row, not after it, would answer it twice.
+    let key_of = |j: u32| format!("d{:02}", (j * 29) % 72);
+    let mut rare = Vec::new();
+    for j in 0..72u32 {
+        let key = key_of(j);
+        // Of the two that share the second sixteen's last `n`, the later
+        // in key order.
+        let sixteenth = j / 16 == 1 && matches!(j % 16, 14 | 15) && key > key_of(j ^ 1);
+        let m = u32::from(matches!(j % 16, 0 | 1 | 5) || sixteenth);
+        l.upsert("counter", &key, json!({"n": j / 2, "tag": "c", "m": m}))
+            .await?;
+        if m == 1 {
+            rare.push((key, j / 2, j % 16 == 1, j % 16 == 5));
+        }
+    }
+    for (key, _, retired, restricted) in holders.iter().chain(&rare) {
+        if *retired {
+            l.retire("counter", key).await?;
+        } else if *restricted {
+            let (ty, key) = ("counter".into(), key.as_str().into());
+            let held = store.restrict(&ty, &key, "hold".into()).await;
+            held.must("restricting a holder")?;
+        }
+    }
+    let reader = Grants {
+        default: Access::Read,
+        ..Grants::default()
+    };
+    let reader = principal(store.as_ref(), PrincipalKind::Agent, "reader", reader);
+    // A page of three asks its engine for a power of two, one of five
+    // does not: an engine that fetches in powers of two then holds rows
+    // past a batch for the next.
+    let (all, few) = (("tag = 'a'", &holders), ("tag = 'c' and m = 1", &rare));
+    let walks = [
+        (all, own, true, 3),
+        (all, own, true, 5),
+        (all, &reader, false, 3),
+        (few, own, true, 3),
+        (few, own, true, 5),
+        (few, &reader, false, 3),
+        (few, &reader, false, 5),
+    ];
+    for ((filter, holders), who, sees_restricted, limit) in walks {
+        for dir in [Direction::Asc, Direction::Desc] {
+            let mut expected: Vec<(u32, &String)> = (holders.iter())
+                .filter(|h| !h.2 && (sees_restricted || !h.3))
+                .map(|h| (h.1, &h.0))
+                .collect();
+            expected.sort_by(|a, b| match dir {
+                Direction::Asc => a.cmp(b),
+                Direction::Desc => b.0.cmp(&a.0).then(a.1.cmp(b.1)),
+            });
+            let expected: Vec<&String> = expected.into_iter().map(|(_, key)| key).collect();
+            let find = Find {
+                filter: Some(filter.into()),
+                order_by: vec![order("n", OrderBy::Value, dir)],
+                limit: Some(limit),
+                ..Find::default()
+            };
+            let walked = keys(&all_found(cat.as_ref(), who, "counter", find).await?);
+            ensure!(
+                walked.iter().eq(expected.iter().copied()),
+                "paged by {limit} under `{filter}` in the indexed `n`'s order {dir:?}, a reader \
+                 who sees restricted records ({sees_restricted}) is answered each record holding \
+                 the text once, in order, the retired ones passed over: {expected:?}; the walk \
+                 answered {walked:?}"
+            );
+        }
+    }
     Ok(())
 }
 

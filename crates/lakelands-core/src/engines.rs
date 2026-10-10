@@ -489,14 +489,42 @@ thread_local! {
     static ROWS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static LINKS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static BATCHES_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static HOLDER_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// The batches of index rows [`scan_in_field_order`] asked for on this
-/// thread. An engine may read more than a batch to answer one (the text's
-/// every holder, sorted), so the engine checks count by it that a page
-/// whose filter rejects rows asks for few batches, not one per row.
+/// thread. An engine may read more than a batch to answer one (a text's
+/// few holders, read whole and sorted: [`holder_reads`]), so the engine
+/// checks count by it that a page whose filter rejects rows asks for few
+/// batches, not one per row.
 pub fn batches_read() -> u64 {
     BATCHES_READ.with(|n| n.get())
+}
+
+/// The batches a page read text first ([`Holders::Few`]) reads each by a
+/// statement of its own, cut at the batch, before its engine reads the
+/// holders left once and keeps them in order. The store asks for one row
+/// more than a page, so a page that passes over a retired or a restricted
+/// record or two asks for a second and a third batch, and costs what a
+/// small batch costs; a page that asks for a fourth is rejecting rows, and
+/// its batches grow
+/// (`docs/decisions/041-a-sorted-page-reads-its-page.md`, extended).
+pub const BATCHES_BEFORE_HELD: u32 = 3;
+
+/// The times an engine on this thread read a text's holders whole and
+/// kept them in order for the batches a page read text first still asks
+/// for: one for a page that asks for more than [`BATCHES_BEFORE_HELD`]
+/// batches, however many, and none for a shorter one. The engine checks
+/// count by it that a page whose filter rejects rows reads its holders
+/// once, not once a batch.
+pub fn holder_reads() -> u64 {
+    HOLDER_READS.with(|n| n.get())
+}
+
+/// Counts one read of a text's holders for [`holder_reads`]; an engine
+/// calls it where it reads them to keep.
+pub fn count_holder_read() {
+    HOLDER_READS.with(|n| n.set(n.get() + 1));
 }
 
 /// The rows the scans and counts on this thread were handed: the whole

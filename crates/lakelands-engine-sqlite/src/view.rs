@@ -152,6 +152,21 @@ fn unsorted_after_sql(after: bool) -> String {
     )
 }
 
+/// The seek past the sort key `?k` and key `?key` in the order index's
+/// order for `dir`, and that order.
+fn seek_in(dir: Direction, k: usize, key: usize) -> (String, &'static str) {
+    match dir {
+        Direction::Asc => (
+            format!("AND (s.sort_key, s.key) > (?{k}, ?{key})"),
+            "s.sort_key, s.key",
+        ),
+        Direction::Desc => (
+            format!("AND (s.sort_key < ?{k} OR (s.sort_key = ?{k} AND s.key > ?{key}))"),
+            "s.sort_key DESC, s.key",
+        ),
+    }
+}
+
 /// The statement of [`Read::sorted_after`]: the order index's rows of
 /// `?2` for the records `holders` names, `?4` and `?5` the field and text
 /// they hold, and then the sort key and key bound to seek past when `from`
@@ -162,16 +177,7 @@ fn sorted_after_sql(dir: Direction, from: bool, holders: &Holders<'_>) -> String
         Holders::All => (4, 5),
         _ => (6, 7),
     };
-    let (seek, by) = match dir {
-        Direction::Asc => (
-            format!("AND (s.sort_key, s.key) > (?{k}, ?{key})"),
-            "s.sort_key, s.key",
-        ),
-        Direction::Desc => (
-            format!("AND (s.sort_key < ?{k} OR (s.sort_key = ?{k} AND s.key > ?{key}))"),
-            "s.sort_key DESC, s.key",
-        ),
-    };
+    let (seek, by) = seek_in(dir, k, key);
     let seek = if from { seek.as_str() } else { "" };
     let rows = match holders {
         Holders::All => "sort_index s WHERE s.ty = ?1 AND s.field = ?2",
@@ -190,6 +196,32 @@ fn sorted_after_sql(dir: Direction, from: bool, holders: &Holders<'_>) -> String
          JOIN records r ON r.ty = ?1 AND r.key = s.key AND r.until IS NULL \
          ORDER BY {by}"
     )
+}
+
+/// The statement of [`Read::few_after`]'s one read a page: the order
+/// rows of `?2` of every record holding the text `?4` in `?3`, read from
+/// the text index and sorted, after the sort key and key `?5` and `?6`.
+/// Index rows only, at most [`engines::FEW_HOLDERS`].
+fn holders_in_order_sql(dir: Direction) -> String {
+    let (seek, by) = seek_in(dir, 5, 6);
+    format!(
+        "SELECT s.sort_key, s.key FROM text_index t CROSS JOIN sort_index s \
+         WHERE t.ty = ?1 AND t.field = ?3 AND t.value = ?4 \
+         AND s.ty = ?1 AND s.key = t.key AND s.field = ?2 {seek} ORDER BY {by}"
+    )
+}
+
+/// The statement of [`Read::few_after`]'s seek of one head record.
+const HEAD_RECORD: &str = "SELECT state FROM records WHERE ty = ?1 AND key = ?2 AND until IS NULL";
+
+/// A page under a text few records hold: the batches it has read by
+/// statements of their own, and the order rows of the holders after them,
+/// read once and held, with how many of those its batches have taken.
+#[derive(Default)]
+struct Held {
+    batches: u32,
+    rows: Option<Vec<(Vec<u8>, String)>>,
+    taken: usize,
 }
 
 /// The statement of [`Read::unsorted_after`] for the records holding the
@@ -241,7 +273,8 @@ pub fn seek_statements() -> [String; 2] {
 /// page's order, and of the read of one record, as the view runs it, for
 /// the engine's own test of their plans: none may sort (lakelands#580).
 /// A page under an exact text many records hold is among them; one few
-/// hold sorts them, at most [`engines::FEW_HOLDERS`].
+/// hold sorts them, at most [`engines::FEW_HOLDERS`], and a long page of
+/// it reads them once ([`few_holders_statements`]).
 pub fn first_page_statements() -> Vec<String> {
     let field = FieldName::from("f");
     let many = Holders::Many(&field, "x");
@@ -255,6 +288,21 @@ pub fn first_page_statements() -> Vec<String> {
         sorted_after_sql(Direction::Asc, false, &many),
         sorted_after_sql(Direction::Desc, false, &many),
         unsorted_holding_sql(false),
+    ]
+}
+
+/// The statements of a long page under an exact text few records hold
+/// ([`Read::few_after`]), as the view runs them, for the engine's own test
+/// of their plans: the one read of the holders' order rows after a row,
+/// in the order either way, and the seek of one head record. The read
+/// starts at the text's rows and seeks each one's order row by its key,
+/// so it reads the holders and never the type; it sorts what it read, at
+/// most [`engines::FEW_HOLDERS`] rows.
+pub fn few_holders_statements() -> [String; 3] {
+    [
+        holders_in_order_sql(Direction::Asc),
+        holders_in_order_sql(Direction::Desc),
+        HEAD_RECORD.to_owned(),
     ]
 }
 
@@ -468,7 +516,8 @@ impl Read<'_> {
     /// At most `n` head records of a type with a row in the order index for
     /// `order`'s field, with their sort keys, in the index's order for its
     /// direction, strictly after `from`: a seek into `sort_index_asc` or
-    /// `sort_index_desc`.
+    /// `sort_index_desc`, or, of few holders of a text, the text index's
+    /// rows sorted.
     fn sorted_after(
         &self,
         ty: &TypeName,
@@ -499,6 +548,60 @@ impl Read<'_> {
         rows.into_iter()
             .map(|(k, state)| Ok((k, decode_record(&state)?)))
             .collect()
+    }
+
+    /// At most `n` of the head records holding the text `holders` names, in
+    /// the order index's order for `order`, as [`Read::sorted_after`]
+    /// answers them, and by it for a page's first
+    /// [`engines::BATCHES_BEFORE_HELD`] batches. A page that asks for one
+    /// more reads the order rows of the holders after `from`, the last row
+    /// it read, once, and holds them; that batch and every later one takes
+    /// the next `n` and seeks their records
+    /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`, extended).
+    /// The batches and the held rows are of one snapshot: the page's read
+    /// transaction.
+    fn few_after(
+        &self,
+        ty: &TypeName,
+        order: &Order,
+        holders: &Holders<'_>,
+        held: &mut Held,
+        from: Option<(&[u8], &str)>,
+        n: u32,
+    ) -> Result<Vec<(Vec<u8>, StoredRecord)>> {
+        // A batch with no row to continue after is a page's first.
+        let (Some((k, key)), true) = (from, held.batches >= engines::BATCHES_BEFORE_HELD) else {
+            held.batches += 1;
+            return self.sorted_after(ty, order, holders, from, n);
+        };
+        if held.rows.is_none() {
+            let mut stmt = self
+                .conn
+                .prepare_cached(&holders_in_order_sql(order.dir))
+                .map_err(sql)?;
+            let (f, t) = holders.text().unwrap_or_default();
+            let row = |r: &rusqlite::Row<'_>| Ok((r.get(0)?, r.get(1)?));
+            let rows = stmt
+                .query_map(
+                    params![ty.as_str(), order.field.as_str(), f, t, k, key],
+                    row,
+                )
+                .and_then(Iterator::collect)
+                .map_err(sql)?;
+            engines::count_holder_read();
+            (held.rows, held.taken) = (Some(rows), 0);
+        }
+        let rows = held.rows.as_deref().unwrap_or_default();
+        let end = (held.taken + n as usize).min(rows.len());
+        let mut out = Vec::with_capacity(end - held.taken);
+        for (k, key) in &rows[held.taken..end] {
+            let state: Option<String> = one(self.conn, HEAD_RECORD, params![ty.as_str(), key])?;
+            if let Some(state) = state {
+                out.push((k.clone(), decode_record(&state)?));
+            }
+        }
+        held.taken = end;
+        Ok(out)
     }
 
     /// How many head records of a type hold `text` in `field`, counted up
@@ -692,10 +795,16 @@ impl ProjectionView for SqliteView<'_> {
                     let holders = Holders::of(lookup.as_ref(), |f, t, n| {
                         r.holders(ty, f, t, n)
                     })?;
+                    // Under a text few hold, a page that asks for many
+                    // batches reads the holders left once.
+                    let mut held = Held::default();
                     return engines::scan_in_field_order(
                         decl.as_ref(),
                         scan,
-                        |from, n| r.sorted_after(ty, first, &holders, from, n),
+                        |from, n| match holders {
+                            Holders::Few(..) => r.few_after(ty, first, &holders, &mut held, from, n),
+                            _ => r.sorted_after(ty, first, &holders, from, n),
+                        },
                         |after, n| r.unsorted_after(ty, &first.field, &holders, after, n),
                     );
                 }
