@@ -275,6 +275,17 @@ named, and nothing from the environment.
   quarter after it. So a client stopped for up to just under half the
   bound (15 s of 30 s) can still take a working server for silent; a
   longer stop, or one that began earlier, cannot.
+- The client reads an ingest's answer while it sends, at least every
+  512 KiB of records, so a window's line, or a refusal, reaches the
+  caller while the upload flows and not when it has ended. When the
+  answer's stream ends, the upload ends at its next record: the source
+  is not asked again, the body ends with its last chunk, and the source
+  is dropped at the connection's next turn. That holds for every
+  ending: a line that carries an error, an answer that went silent, was
+  cut off or grew too long, and a caller that drops the stream; and for
+  an ingest refused with a status before any line. A refused ingest
+  therefore sends a few hundred KiB past its refusal, not the rest of
+  its source.
 - No answer is held past `max_answer_bytes`: a whole answer, one event
   of the feed or one line of an ingest's answer that grows past it is
   `unavailable`, and the client stops reading.

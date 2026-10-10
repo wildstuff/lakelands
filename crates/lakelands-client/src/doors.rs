@@ -339,6 +339,18 @@ impl Catalog for RemoteCatalog {
     /// line that carries an error ends the stream with it, and what came
     /// before it is committed.
     ///
+    /// The answer is read while the records are sent, at least every
+    /// 512 KiB of them, so a line reaches the caller while the upload
+    /// flows. (The upload yields after every 256 KiB it has handed over,
+    /// and the connection reads at the latest at every second yield.)
+    /// When the answer's stream ends, the upload ends at its next record:
+    /// the source is not asked again, the body ends with its last chunk,
+    /// and the source is dropped at the connection's next turn, which is
+    /// at once unless the server has stopped reading.
+    /// That holds for every ending, an error line, a refusal below and a
+    /// caller that drops the stream alike, and for an ingest refused
+    /// before any line: nobody would hear what the rest is answered.
+    ///
     /// The answer is held to the feed's silence bound, in two phases.
     /// While records are sent, the bound counts only while the
     /// connection holds a record it has not taken and the answer says
@@ -374,11 +386,15 @@ impl Catalog for RemoteCatalog {
         let body = Ndjson {
             records,
             upload: upload.clone(),
+            since: 0,
         }
         .boxed_unsync();
         let call = Call::new(Method::POST, path.clone()).stream("application/x-ndjson", body);
         let r = self.wire.send(key, call).await?;
         if !r.status().is_success() {
+            // An ingest refused outright has no stream to end: its
+            // upload ends here.
+            upload.stop();
             return Err(self.wire.failure(r).await);
         }
         Ok(Box::pin(Commits {
@@ -391,18 +407,28 @@ impl Catalog for RemoteCatalog {
             upload,
             buf: Vec::new(),
             ended: false,
-            done: false,
         }))
     }
 }
 
-/// How the upload goes: whether the source has ended, when the
-/// connection last took a record, whether the source is what it waits
-/// on, and who waits to hear of a change.
+/// How much of an upload the body hands over before it yields, which
+/// lets the connection read the answer. A source that is always ready,
+/// to a server that always reads, never lets the connection off its
+/// writing by itself. The connection takes the body up once more before
+/// it reads, so the answer is read about every two of these.
+const READ_EVERY: usize = 256 << 10;
+
+/// How the upload goes: whether the answer's stream has ended, whether
+/// the source has, when the connection last took a record, whether the
+/// source is what it waits on, and who waits to hear of a change: the
+/// answer's stream of the upload, and the upload, while it waits on its
+/// source, of the stream's end.
 struct Upload {
+    over: AtomicBool,
     ended: AtomicBool,
     taken: Mutex<Taken>,
     waiting: Mutex<Option<Waker>>,
+    sending: Mutex<Option<Waker>>,
 }
 
 /// When the connection last took a record from the body, and whether it
@@ -416,12 +442,14 @@ struct Taken {
 impl Default for Upload {
     fn default() -> Upload {
         Upload {
+            over: AtomicBool::new(false),
             ended: AtomicBool::new(false),
             taken: Mutex::new(Taken {
                 at: Instant::now(),
                 on_source: false,
             }),
             waiting: Mutex::new(None),
+            sending: Mutex::new(None),
         }
     }
 }
@@ -439,24 +467,27 @@ impl Upload {
             on_source,
         };
         if !on_source {
-            self.wake();
+            wake(&self.waiting);
         }
     }
 
     fn end(&self) {
         self.ended.store(true, Ordering::SeqCst);
-        self.wake();
+        wake(&self.waiting);
     }
 
-    fn wake(&self) {
-        let waiting = self
-            .waiting
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
-        if let Some(w) = waiting {
-            w.wake();
-        }
+    /// The answer's stream has ended: nobody hears what more records
+    /// would be answered, so the upload ends at its next record.
+    fn stop(&self) {
+        self.over.store(true, Ordering::SeqCst);
+        wake(&self.sending);
+    }
+}
+
+fn wake(waiting: &Mutex<Option<Waker>>) {
+    let waiting = waiting.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(w) = waiting {
+        w.wake();
     }
 }
 
@@ -464,6 +495,8 @@ impl Upload {
 struct Ndjson {
     records: SourceStream,
     upload: Arc<Upload>,
+    /// The bytes handed over since the connection was last sent to read.
+    since: usize,
 }
 
 impl Body for Ndjson {
@@ -475,9 +508,33 @@ impl Body for Ndjson {
         cx: &mut Context<'_>,
     ) -> Poll<Option<std::result::Result<Frame<Bytes>, std::io::Error>>> {
         let this = self.as_mut().get_mut();
+        if this.upload.over.load(Ordering::SeqCst) {
+            // The source is not asked again: the body ends, and the
+            // connection drops it with its source.
+            this.upload.end();
+            return Poll::Ready(None);
+        }
+        if this.since >= READ_EVERY {
+            // Pending once lets the connection read the answer. It is not
+            // the source's pace: the silence bound counts on.
+            this.since = 0;
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
+        }
         match this.records.as_mut().poll_next(cx) {
             Poll::Pending => {
                 this.upload.asked(true);
+                // Hear when the answer's stream ends.
+                *this
+                    .upload
+                    .sending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(cx.waker().clone());
+                if this.upload.over.load(Ordering::SeqCst) {
+                    // It ended before this could hear of it.
+                    this.upload.end();
+                    return Poll::Ready(None);
+                }
                 Poll::Pending
             }
             Poll::Ready(None) => {
@@ -488,6 +545,7 @@ impl Body for Ndjson {
                 this.upload.asked(false);
                 let mut line = serde_json::to_vec(&r).expect("a record prints");
                 line.push(b'\n');
+                this.since += line.len();
                 Poll::Ready(Some(Ok(Frame::data(Bytes::from(line)))))
             }
         }
@@ -509,8 +567,9 @@ struct Commits {
     body: Incoming,
     upload: Arc<Upload>,
     buf: Vec<u8>,
+    /// The answer's body has ended. That the stream has is the upload's
+    /// `over`: a stream cannot end and leave its upload going.
     ended: bool,
-    done: bool,
 }
 
 impl Commits {
@@ -518,7 +577,7 @@ impl Commits {
         if let Ok(c) = serde_json::from_slice::<Committed>(text) {
             return Ok(c);
         }
-        self.done = true;
+        self.upload.stop();
         Err(serde_json::from_slice::<Error>(text)
             .unwrap_or_else(|_| self.wire.unavailable(Exchange::LineNotTheContract)))
     }
@@ -552,13 +611,20 @@ impl Commits {
     }
 }
 
+/// A caller that drops the stream has no use for the rest of the upload.
+impl Drop for Commits {
+    fn drop(&mut self) {
+        self.upload.stop();
+    }
+}
+
 impl Stream for Commits {
     type Item = Result<Committed>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Committed>>> {
         let this = self.get_mut();
         loop {
-            if this.done {
+            if this.upload.over.load(Ordering::SeqCst) {
                 return Poll::Ready(None);
             }
             if let Some(i) = this.buf.iter().position(|b| *b == b'\n') {
@@ -569,11 +635,11 @@ impl Stream for Commits {
                 return Poll::Ready(Some(this.line(&text)));
             }
             if this.buf.len() > this.wire.cap {
-                this.done = true;
+                this.upload.stop();
                 return Poll::Ready(Some(Err(this.wire.too_long())));
             }
             if this.ended {
-                this.done = true;
+                this.upload.stop();
                 if this.buf.iter().all(u8::is_ascii_whitespace) {
                     return Poll::Ready(None);
                 }
@@ -611,7 +677,7 @@ impl Stream for Commits {
                         Poll::Ready(false) => continue,
                         Poll::Ready(true) => {}
                     }
-                    this.done = true;
+                    this.upload.stop();
                     let secs = this.wire.silence.as_secs();
                     let e = this.wire.unavailable(match sending {
                         true => Exchange::Stalled { secs },
@@ -628,7 +694,7 @@ impl Stream for Commits {
                     }
                 }
                 Poll::Ready(Some(Err(e))) => {
-                    this.done = true;
+                    this.upload.stop();
                     let e = this.wire.unavailable(Exchange::CutOff {
                         detail: Detail::scrubbed(e),
                     });
@@ -643,15 +709,19 @@ impl Stream for Commits {
 mod tests {
     use std::collections::BTreeMap;
     use std::pin::Pin;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::{Context, Poll};
     use std::time::Duration;
 
     use futures_core::Stream;
+    use lakelands_api::catalog::{CommitStream, SourceStream};
     use lakelands_api::error::Error;
     use lakelands_api::location::Limits;
     use lakelands_api::record::SourceRecord;
     use lakelands_api::{LakeStore, Principal, WriteContext};
     use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
+    use tokio::sync::oneshot;
     use tokio::time::Instant;
 
     use crate::{DEFAULT_MAX_ANSWER_BYTES, RemoteConfig, RemoteLake};
@@ -686,7 +756,12 @@ mod tests {
 
     /// A client, and the server's end of its one connection.
     fn remote() -> (RemoteLake, DuplexStream) {
-        let (ours, theirs) = tokio::io::duplex(64 << 10);
+        remote_holding(64 << 10)
+    }
+
+    /// A client whose connection holds `bytes` the server has not read.
+    fn remote_holding(bytes: usize) -> (RemoteLake, DuplexStream) {
+        let (ours, theirs) = tokio::io::duplex(bytes);
         (
             RemoteLake::connect_over(config(), SILENCE, ours).unwrap(),
             theirs,
@@ -697,30 +772,48 @@ mod tests {
     async fn head(s: &mut DuplexStream) {
         let mut seen = Vec::new();
         let mut b = [0u8; 1];
-        while !seen.ends_with(b"\r\n\r\n") && s.read(&mut b).await.unwrap() > 0 {
-            seen.push(b[0]);
-        }
+        // Byte by byte, so that nothing of the body is taken with it, and
+        // unconstrained: a task that reads this often is else set back
+        // behind many turns of the connection's.
+        tokio::task::unconstrained(async {
+            while !seen.ends_with(b"\r\n\r\n") && s.read(&mut b).await.unwrap() > 0 {
+                seen.push(b[0]);
+            }
+        })
+        .await;
         let head = "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\n\
                     lakelands-position: 3\r\ntransfer-encoding: chunked\r\n\r\n";
         s.write_all(head.as_bytes()).await.unwrap();
     }
 
-    /// The server reads the upload to its last chunk, then answers
-    /// `line` and ends.
-    async fn answer(s: &mut DuplexStream, line: &str) {
+    /// The server reads the upload to its last chunk, and says how much
+    /// it read.
+    async fn rest(s: &mut DuplexStream) -> usize {
         let mut buf = vec![0u8; 64 << 10];
-        let mut tail = Vec::new();
+        let (mut tail, mut read) = (Vec::new(), 0);
         while !tail.ends_with(b"0\r\n\r\n") {
             let n = s.read(&mut buf).await.unwrap();
-            if n == 0 {
-                break;
-            }
+            assert!(n > 0, "the upload ends with its last chunk");
+            read += n;
             tail.extend_from_slice(&buf[..n]);
             let keep = tail.len().saturating_sub(8);
             tail.drain(..keep);
         }
+        read
+    }
+
+    /// The server reads the upload to its last chunk, then answers
+    /// `line` and ends.
+    async fn answer(s: &mut DuplexStream, line: &str) {
+        rest(s).await;
         let reply = format!("{:x}\r\n{line}\r\n0\r\n\r\n", line.len());
         s.write_all(reply.as_bytes()).await.unwrap();
+    }
+
+    /// The server writes one line of its answer.
+    async fn says(s: &mut DuplexStream, line: &str) {
+        let chunk = format!("{:x}\r\n{line}\n\r\n", line.len() + 1);
+        s.write_all(chunk.as_bytes()).await.unwrap();
     }
 
     /// The server says it works: an empty line.
@@ -756,6 +849,16 @@ mod tests {
         }
     }
 
+    /// A large record: four of them are past what the connection takes
+    /// before it reads the answer.
+    fn large(n: usize) -> SourceRecord {
+        serde_json::from_value(serde_json::json!({
+            "type": "invoice", "key": format!("INV-{n}"),
+            "fields": {"note": "n".repeat(64 << 10)}
+        }))
+        .unwrap()
+    }
+
     /// Records without end, each large, so the connection's buffers fill.
     struct Endless;
 
@@ -763,13 +866,7 @@ mod tests {
         type Item = SourceRecord;
 
         fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<SourceRecord>> {
-            Poll::Ready(Some(
-                serde_json::from_value(serde_json::json!({
-                    "type": "invoice", "key": "INV-1",
-                    "fields": {"note": "n".repeat(64 << 10)}
-                }))
-                .unwrap(),
-            ))
+            Poll::Ready(Some(large(1)))
         }
     }
 
@@ -784,20 +881,85 @@ mod tests {
                 return Poll::Ready(None);
             }
             self.0 -= 1;
-            Poll::Ready(Some(
-                serde_json::from_value(serde_json::json!({
-                    "type": "invoice", "key": format!("INV-{}", self.0),
-                    "fields": {"note": "n".repeat(64 << 10)}
-                }))
-                .unwrap(),
-            ))
+            Poll::Ready(Some(large(self.0)))
         }
+    }
+
+    /// How many records a watched source holds: 16 MiB of them, 64 times
+    /// what the connection takes before it reads the answer.
+    const WATCHED: usize = 256;
+
+    /// Large records, `left` of them, and then, if it `waits`, none for
+    /// ever. It counts how often it is asked, and whoever holds the other
+    /// end of `_held` hears when it is dropped.
+    struct Watched {
+        left: usize,
+        waits: bool,
+        asked: Arc<AtomicUsize>,
+        _held: oneshot::Sender<()>,
+    }
+
+    impl Stream for Watched {
+        type Item = SourceRecord;
+
+        fn poll_next(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<SourceRecord>> {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            if self.left == 0 {
+                return match self.waits {
+                    true => Poll::Pending,
+                    false => Poll::Ready(None),
+                };
+            }
+            self.left -= 1;
+            Poll::Ready(Some(large(self.left)))
+        }
+    }
+
+    /// What an ingest of a watched source answers at once, how often the
+    /// source was asked, and what ends when the source is dropped.
+    async fn begun(
+        lake: &RemoteLake,
+        left: usize,
+        waits: bool,
+    ) -> (
+        Result<CommitStream, Error>,
+        Arc<AtomicUsize>,
+        oneshot::Receiver<()>,
+    ) {
+        let (held, dropped) = oneshot::channel();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let source = Watched {
+            left,
+            waits,
+            asked: asked.clone(),
+            _held: held,
+        };
+        let (catalog, who) = (lake.catalog(WriteContext::default()), importer());
+        let commits = catalog.ingest(&who, &"bank".into(), Box::pin(source)).await;
+        (commits, asked, dropped)
+    }
+
+    /// An ingest of a watched source, begun: its answer, how often the
+    /// source was asked, and what ends when the source is dropped.
+    async fn watched(
+        lake: &RemoteLake,
+        left: usize,
+        waits: bool,
+    ) -> (CommitStream, Arc<AtomicUsize>, oneshot::Receiver<()>) {
+        let (commits, asked, dropped) = begun(lake, left, waits).await;
+        (commits.expect("the ingest starts"), asked, dropped)
+    }
+
+    /// The answer's next line.
+    async fn next(commits: &mut CommitStream) -> Option<Result<u32, Error>> {
+        let line = std::future::poll_fn(|cx| commits.as_mut().poll_next(cx)).await;
+        line.map(|c| c.map(|c| c.records))
     }
 
     /// What an ingest of `records` answers, and how long it took.
     async fn ingest(
         lake: &RemoteLake,
-        records: lakelands_api::catalog::SourceStream,
+        records: SourceStream,
     ) -> (Vec<Result<u32, Error>>, Duration) {
         let asked = Instant::now();
         let mut commits = lake
@@ -875,7 +1037,7 @@ mod tests {
             tokio::time::sleep(SILENCE * 60).await;
         });
         let records = match sending {
-            true => Box::pin(Endless) as lakelands_api::catalog::SourceStream,
+            true => Box::pin(Endless) as SourceStream,
             false => lakelands_mock::stream::of(vec![record()]),
         };
         let (out, waited) = ingest(&lake, records).await;
@@ -908,13 +1070,14 @@ mod tests {
         }
     }
 
-    /// A bound whose quarter is under the timer's step is refused when
-    /// the client is made: every timer would be late, and nothing judged.
+    /// A bound whose quarter is under two steps of the timer is refused
+    /// when the client is made: a timer fires up to a step late, so a
+    /// quarter of one step is judged late, or not at all.
     #[test]
-    fn a_silence_bound_under_four_milliseconds_is_refused() {
+    fn a_silence_bound_under_eight_milliseconds_is_refused() {
         let made = |silence| RemoteLake::connect_with_silence(config(), silence).map(drop);
-        assert!(made(Duration::from_micros(3_999)).is_err());
-        assert!(made(Duration::from_millis(4)).is_ok());
+        assert!(made(Duration::from_micros(7_999)).is_err());
+        assert!(made(Duration::from_millis(8)).is_ok());
     }
 
     /// A server that stops reading while a window commits, for three
@@ -1003,5 +1166,236 @@ mod tests {
         let (out, waited) = ingest(&lake, Box::pin(slow)).await;
         assert_eq!(out, [Ok(1)]);
         assert_eq!(waited, SILENCE * 2);
+    }
+
+    // The rows below hold what the connection reads and sends while a
+    // ready source's upload flows (lakelands#825). Their connection holds
+    // a whole upload, so no write ever waits for the server to read, and
+    // the connection is sent to read by nothing but the upload's own
+    // pauses.
+
+    /// A line a server refuses an ingest with.
+    const REFUSAL: &str = r#"{"error":"conflict","expected":1,"actual":2}"#;
+
+    /// How often a watched source may have been asked when the caller
+    /// has what the server wrote at once: an eighth of the upload. The
+    /// connection takes a few records, reads, and takes a few more, and
+    /// the answer's head and its line are the caller's a turn or two
+    /// after they came. An upload that reads nothing has given all of it.
+    const ASKED_AT_A_LINE: usize = WATCHED / 8;
+
+    /// A client whose connection holds a whole watched upload.
+    fn roomy() -> (RemoteLake, DuplexStream) {
+        remote_holding(2 * WATCHED * (64 << 10))
+    }
+
+    /// Runs a row's caller as a task, as the connection and the server
+    /// are. The test's own future is polled once in many turns of the
+    /// tasks, and a caller there would see a line that many turns late.
+    async fn as_a_task(caller: impl Future<Output = ()> + Send + 'static) {
+        tokio::spawn(caller).await.expect("the caller ends");
+    }
+
+    /// A line of the answer reaches the caller while the upload flows,
+    /// not when it has ended.
+    #[tokio::test(start_paused = true)]
+    async fn a_line_of_the_answer_is_seen_while_the_upload_flows() {
+        let (lake, mut s) = roomy();
+        tokio::spawn(async move {
+            head(&mut s).await;
+            says(&mut s, r#"{"position":5,"records":7,"duplicates":0}"#).await;
+            // Nothing is read, and the connection is held.
+            tokio::time::sleep(SILENCE * 60).await;
+        });
+        as_a_task(async move {
+            let (mut commits, asked, _dropped) = watched(&lake, WATCHED, false).await;
+            assert_eq!(next(&mut commits).await, Some(Ok(7)));
+            let asked = asked.load(Ordering::SeqCst);
+            assert!(asked <= ASKED_AT_A_LINE, "asked {asked} times");
+        })
+        .await;
+    }
+
+    /// A refusal ends the upload at the next record. The caller has it
+    /// while the upload flows; from then on the source is not asked
+    /// again, and it is dropped while the caller still holds the stream,
+    /// so what it holds (a file, a cursor) is released by the refusal.
+    /// The upload ends with its last chunk, so the exchange is a whole
+    /// one, and the connection serves the next call.
+    #[tokio::test(start_paused = true)]
+    async fn a_refusal_ends_the_upload_at_the_next_record() {
+        let (lake, mut s) = roomy();
+        let server = tokio::spawn(async move {
+            head(&mut s).await;
+            says(&mut s, REFUSAL).await;
+            // As the door does: it reads what still comes and drops it,
+            // then ends its answer.
+            let read = rest(&mut s).await;
+            s.write_all(b"0\r\n\r\n").await.unwrap();
+            head(&mut s).await;
+            answer(&mut s, r#"{"position":5,"records":1,"duplicates":0}"#).await;
+            read
+        });
+        as_a_task(async move {
+            let (mut commits, asked, dropped) = watched(&lake, WATCHED, false).await;
+            let refusal = next(&mut commits).await;
+            assert!(
+                matches!(refusal, Some(Err(Error::Conflict { .. }))),
+                "{refusal:?}"
+            );
+            let then = asked.load(Ordering::SeqCst);
+            assert!(then <= ASKED_AT_A_LINE, "asked {then} times");
+            dropped.await.expect_err("the source is dropped");
+            assert_eq!(asked.load(Ordering::SeqCst), then);
+            assert_eq!(next(&mut commits).await, None);
+            drop(commits);
+            // Until the connection has seen the answer end.
+            tokio::time::sleep(ALIVE).await;
+            let (out, _) = ingest(&lake, lakelands_mock::stream::of(vec![record()])).await;
+            assert_eq!(out, [Ok(1)]);
+            let read = server.await.unwrap();
+            assert!(
+                read < (then + 1) * (65 << 10),
+                "the server read {read} bytes"
+            );
+        })
+        .await;
+    }
+
+    /// An ingest the server refuses outright, with a status and no line,
+    /// ends its upload as a refused line does: the source is not asked
+    /// again and is dropped, and the upload ends with its last chunk.
+    #[tokio::test(start_paused = true)]
+    async fn an_ingest_refused_outright_ends_its_upload_at_the_next_record() {
+        let (lake, mut s) = roomy();
+        let server = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            let mut b = [0u8; 1];
+            tokio::task::unconstrained(async {
+                while !seen.ends_with(b"\r\n\r\n") && s.read(&mut b).await.unwrap() > 0 {
+                    seen.push(b[0]);
+                }
+            })
+            .await;
+            let refused = format!(
+                "HTTP/1.1 409 Conflict\r\ncontent-type: application/json\r\n\
+                 content-length: {}\r\n\r\n{REFUSAL}",
+                REFUSAL.len()
+            );
+            s.write_all(refused.as_bytes()).await.unwrap();
+            rest(&mut s).await
+        });
+        as_a_task(async move {
+            let (refusal, asked, dropped) = begun(&lake, WATCHED, false).await;
+            let refusal = refusal.map(drop);
+            assert!(
+                matches!(refusal, Err(Error::Conflict { .. })),
+                "{refusal:?}"
+            );
+            let then = asked.load(Ordering::SeqCst);
+            assert!(then <= ASKED_AT_A_LINE, "asked {then} times");
+            dropped.await.expect_err("the source is dropped");
+            assert_eq!(asked.load(Ordering::SeqCst), then);
+            let read = server.await.unwrap();
+            assert!(
+                read < (then + 1) * (65 << 10),
+                "the server read {read} bytes"
+            );
+        })
+        .await;
+    }
+
+    /// A source that waits for its next record when the stream ends is
+    /// dropped then too, not when a record comes that may never come. The
+    /// refusal comes with a window's line, in one read: when the caller
+    /// takes it from the stream, nothing has arrived that would have the
+    /// connection look at its upload, so the stream's end itself must.
+    #[tokio::test(start_paused = true)]
+    async fn a_source_that_waits_is_released_when_the_answer_ends() {
+        let (lake, mut s) = roomy();
+        tokio::spawn(async move {
+            head(&mut s).await;
+            tokio::time::sleep(ALIVE).await;
+            let window = r#"{"position":5,"records":1,"duplicates":0}"#;
+            says(&mut s, &format!("{window}\n{REFUSAL}")).await;
+            tokio::time::sleep(SILENCE * 60).await;
+        });
+        as_a_task(async move {
+            let (mut commits, asked, dropped) = watched(&lake, 1, true).await;
+            assert_eq!(next(&mut commits).await, Some(Ok(1)));
+            // Until the connection has nothing more to do.
+            tokio::time::sleep(ALIVE).await;
+            let refusal = next(&mut commits).await;
+            assert!(
+                matches!(refusal, Some(Err(Error::Conflict { .. }))),
+                "{refusal:?}"
+            );
+            let then = asked.load(Ordering::SeqCst);
+            let waited = tokio::time::timeout(SILENCE, dropped).await;
+            waited
+                .expect("the source is dropped by the refusal")
+                .expect_err("dropped");
+            assert_eq!(asked.load(Ordering::SeqCst), then);
+        })
+        .await;
+    }
+
+    /// A caller that drops the stream has no use for the rest: the source
+    /// is not asked again, and is dropped.
+    #[tokio::test(start_paused = true)]
+    async fn a_dropped_stream_ends_the_upload_at_the_next_record() {
+        let (lake, mut s) = roomy();
+        let server = tokio::spawn(async move {
+            head(&mut s).await;
+            rest(&mut s).await
+        });
+        as_a_task(async move {
+            let (commits, asked, dropped) = watched(&lake, WATCHED, false).await;
+            let then = asked.load(Ordering::SeqCst);
+            assert!(then <= ASKED_AT_A_LINE, "asked {then} times");
+            drop(commits);
+            dropped.await.expect_err("the source is dropped");
+            assert_eq!(asked.load(Ordering::SeqCst), then);
+            let read = server.await.unwrap();
+            assert!(
+                read < (then + 1) * (65 << 10),
+                "the server read {read} bytes"
+            );
+        })
+        .await;
+    }
+
+    /// A refusal of the connection's own ends the upload as the lake's
+    /// does. A server that stopped reading is `Stalled` at the bound; when
+    /// it reads again it finds the upload's last chunk after what the
+    /// connection held, and the source was not asked again.
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_upload_ends_at_the_next_record() {
+        let (lake, mut s) = remote();
+        let server = tokio::spawn(async move {
+            head(&mut s).await;
+            tokio::time::sleep(SILENCE * 2).await;
+            rest(&mut s).await
+        });
+        as_a_task(async move {
+            let asked_at = Instant::now();
+            let (mut commits, asked, dropped) = watched(&lake, WATCHED, false).await;
+            let refusal = next(&mut commits).await.expect("a refusal");
+            let message = unavailable(&[refusal]);
+            assert!(
+                message.contains("while records were being sent"),
+                "{message}"
+            );
+            assert_eq!(asked_at.elapsed(), SILENCE);
+            let then = asked.load(Ordering::SeqCst);
+            dropped.await.expect_err("the source is dropped");
+            assert_eq!(asked.load(Ordering::SeqCst), then);
+            let read = server.await.unwrap();
+            assert!(
+                read < (then + 1) * (65 << 10),
+                "the server read {read} bytes"
+            );
+        })
+        .await;
     }
 }

@@ -219,12 +219,13 @@ impl Wire {
                 "`feed_key` names `{id}`, which has no key in `keys`"
             )));
         }
-        // The bound is waited out in quarters (`doors`), and a quarter under
-        // the timer's step of 1 ms would find every timer late: nothing
-        // would ever be judged silent. The door's bound is 30 s; only a
-        // test gives another.
-        if silence < Duration::from_millis(4) {
-            return Err(ConfigError("the silence bound must be 4 ms or more".into()));
+        // The bound is waited out in quarters (`doors`), and a timer fires
+        // up to its step of 1 ms late. A quarter of that step or less would
+        // find every timer a quarter late, and nothing would be judged
+        // silent in time: a quarter is two steps or more. The door's bound
+        // is 30 s; only a test gives another.
+        if silence < Duration::from_millis(8) {
+            return Err(ConfigError("the silence bound must be 8 ms or more".into()));
         }
         let client = pooled(Connector::new(tls));
         let scheme = if secure { "https" } else { "http" };
