@@ -26,7 +26,7 @@ check!(
 
 check!(
     BUILT_FROM_HIDDEN = a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field,
-    "024 and 006: a derived field, one derived from it in turn, and a vector embedded from a field are read as the field they are built from: absent where it is absent and masked where it is masked, on get, find, a pattern's rows and describe, which shows a definition only where every field it names is read; a filter, an order or an aggregate over them is refused naming them, as not granted where they are masked and as for an undeclared field where they are hidden",
+    "024 and 006: a derived field, one derived from it in turn, and a vector embedded from a field are read as the field they are built from: absent where it is absent and masked where it is masked, on get, find, a pattern's rows (where a projected hidden one is refused as for an undeclared field, lakelands#752) and describe, which shows a definition only where every field it names is read; a filter, an order or an aggregate over them is refused naming them, as not granted where they are masked and as for an undeclared field where they are hidden",
     embedding
 );
 
@@ -256,18 +256,28 @@ async fn a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field
             found == [got.clone()],
             "find answers what get answers for the clerk ({got:?}); it answered {found:?}"
         );
+        // Rows that project them: a hidden one is a field `emp` does not
+        // declare (lakelands#752), a masked one is left out of the row.
         let fields = vec!["emp.g".into(), "emp.h".into(), "emp.k".into()];
         let rows = pattern("emp", Some("e1"), Vec::new(), Projection::Rows { fields });
-        let rows = cat.query(&who, rows);
-        let rows = rows.await.must("the clerk's pattern rows over `emp`")?.data;
-        let QueryResult::Rows { rows, .. } = rows else {
-            return Err(Failure::new("a pattern's rows answered something else"));
-        };
-        let row: Vec<&String> = rows.iter().flat_map(|r| r.keys()).collect();
-        ensure!(
-            row == ["emp.k"],
-            "the clerk's pattern rows hold `k` only, not `g` or `h`; they held {row:?}"
-        );
+        let rows = cat.query(&who, rows).await;
+        if access == Access::None {
+            ensure!(
+                no_such_field(&rows, "g"),
+                "the clerk's pattern rows projecting `g` are refused as for an undeclared \
+                 field; they answered {rows:?}"
+            );
+        } else {
+            let rows = rows.must("the clerk's pattern rows over `emp`")?.data;
+            let QueryResult::Rows { rows, .. } = rows else {
+                return Err(Failure::new("a pattern's rows answered something else"));
+            };
+            let row: Vec<&String> = rows.iter().flat_map(|r| r.keys()).collect();
+            ensure!(
+                row == ["emp.k"],
+                "the clerk's pattern rows hold `k` only, not `g` or `h`; they held {row:?}"
+            );
+        }
         let d = describe_type(cat.as_ref(), &who, "emp").await?;
         let defined: Vec<String> = (d.fields.iter())
             .filter(|f| f.derived.is_some() || !f.depends_on.is_empty())

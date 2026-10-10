@@ -265,9 +265,10 @@ does not exist is told the same of what is made of it.
   keeps such a relation as declared, at its place, as it keeps a hidden
   field (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
 - **A pattern's probes ask it too (lakelands#653, lakelands#654).** An
-  order, a measure or a grouping over a path `type.field` on a type the
-  principal is not shown reads nothing and is left alone, as a path on
-  a type that is not declared is. A step over a derived relation probes
+  order, a measure, a grouping or a projected field over a path on a
+  type the principal is not shown is refused as a path no bound type
+  starts, word for word as one on a type that is not declared (018,
+  extended by lakelands#752). A step over a derived relation probes
   the matched fields of the relations it walks and of no other: its
   own out of the type it leaves, and one into that type whose owner
   the principal is shown. A relation a hidden type derives under the

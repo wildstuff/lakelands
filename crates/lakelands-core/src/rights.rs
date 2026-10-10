@@ -418,6 +418,22 @@ pub fn check_probe<'a>(
     Ok(())
 }
 
+/// Refuse a name of a field that `decl` does not declare, or one the
+/// principal may not know of, alike. A masked field is not refused: a
+/// projection that names it reads it as the record does.
+pub fn check_known<'a>(
+    who: &Principal,
+    decl: &TypeDecl,
+    named: impl IntoIterator<Item = &'a FieldName>,
+) -> Result<(), Error> {
+    for name in named {
+        if field_access(who, decl, field_of(decl, name)?) == Access::None {
+            return Err(no_field(decl, name));
+        }
+    }
+    Ok(())
+}
+
 /// Refuse a search the principal may not make: a lexical search probes
 /// every searchable field of the type at once, so each must be readable;
 /// a vector search probes each vector field it names, in the order named,

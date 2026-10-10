@@ -189,6 +189,7 @@ macro_rules! door_checks {
             a_feed_poll_examines_at_most_the_bound,
             a_step_over_an_undeclared_relation_is_refused,
             a_step_naming_an_inverse_walks_the_relation_the_other_way,
+            every_path_a_pattern_names_is_one_its_rows_hold,
             a_dependent_field_declared_clear_is_cleared_with_its_input,
             two_writers_keep_each_others_fields,
             per_field_meta_names_the_writer_and_the_position,
@@ -6829,6 +6830,95 @@ pub async fn a_step_over_an_undeclared_relation_is_refused(store: Arc<dyn LakeSt
         .await
         .unwrap_err();
     assert!(matches!(refusal(&e).1, Refusal::Invalid { .. }));
+}
+
+/// Every path a pattern's rows are ordered or projected by is read as the
+/// rows hold it, a bound type and then one of its fields or `key`
+/// (lakelands#752): a name no bound type starts, one past a field, and a
+/// type declared but not bound are refused as `pattern_no_path`; a field
+/// its reader may not know of answers as one its type does not have,
+/// ordered or projected; `<type>.key` is answered, and a masked field
+/// projected is left out of the row. Of two faults, the path no row holds
+/// is answered first, as every path is read before one is probed.
+pub async fn every_path_a_pattern_names_is_one_its_rows_hold(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let own = &f.cast.owner;
+    let p1 = patch(&[("name", json!("Ada"))]);
+    let (pt, opts) = (ty(PARTNER), WriteOpts::default());
+    f.catalog
+        .upsert(own, &pt, &key("P1"), p1, opts)
+        .await
+        .unwrap();
+    f.write(
+        own,
+        "INV-1",
+        &[("partner", json!("P1")), ("note", json!("n"))],
+    )
+    .await;
+    let ask = |stepped: bool, path: &str, ordered: bool| {
+        let (c, who) = (f.catalog.clone(), f.cast.clerk.clone());
+        let steps = if stepped {
+            json!([{"relation": "billed_by"}])
+        } else {
+            json!([])
+        };
+        let mut p = json!({"start": {"type": INVOICE}, "steps": steps, "project": {"as": "rows"}});
+        match ordered {
+            true => p["order_by"] = json!([{"field": path}]),
+            false => p["project"]["fields"] = json!([path]),
+        }
+        async move {
+            let p: Pattern = serde_json::from_value(p).expect("a pattern");
+            c.query(&who, p).await
+        }
+    };
+    let no_path = |path: &str| invalid(None, Case::PatternNoPath { path: path.into() });
+    for ordered in [true, false] {
+        for (stepped, path) in [
+            (true, "ghost.x"),
+            (true, "zz"),
+            (true, "invoice.status.x"),
+            (false, "partner.name"),
+            (false, "partner.zz"),
+        ] {
+            let e = ask(stepped, path, ordered).await.unwrap_err();
+            assert_eq!(
+                e,
+                no_path(path),
+                "`{path}` (ordered {ordered}) names no path"
+            );
+        }
+        for (path, field) in [("invoice.secret", "secret"), ("partner.zz", "zz")] {
+            let e = ask(true, path, ordered).await.unwrap_err();
+            assert!(no_field(&e, field), "`{path}` (ordered {ordered}): {e:?}");
+        }
+        for (stepped, path) in [(true, "partner.key"), (false, "invoice.key")] {
+            let got = ask(stepped, path, ordered).await;
+            assert!(got.is_ok(), "`{path}` (ordered {ordered}): {got:?}");
+        }
+    }
+    // Two faults: every path is read before one is probed, on every lake.
+    for ordered in [true, false] {
+        let mut p = json!({"start": {"type": INVOICE}, "project": {"as": "rows"}});
+        let two = json!(["invoice.secret", "ghost.x"]);
+        match ordered {
+            true => p["order_by"] = json!([{"field": "invoice.secret"}, {"field": "ghost.x"}]),
+            false => p["project"]["fields"] = two,
+        }
+        let p: Pattern = serde_json::from_value(p).expect("a pattern");
+        let e = f.catalog.query(&f.cast.clerk, p).await.unwrap_err();
+        assert_eq!(e, no_path("ghost.x"), "two faults (ordered {ordered})");
+    }
+    // A masked field projected is left out of the row, as an absent one.
+    let got = ask(false, "invoice.note", false).await;
+    let rows = match got.map(|r| r.data) {
+        Ok(lakelands_api::query::QueryResult::Rows { rows, .. }) => rows,
+        other => panic!("a masked field projected: {other:?}"),
+    };
+    assert!(
+        rows.len() == 1 && rows[0].is_empty(),
+        "a masked field projected: {rows:?}"
+    );
 }
 
 /// A step naming a relation's `inverse` walks that relation the other way,

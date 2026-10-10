@@ -280,3 +280,41 @@ probed before a value is read (024), so a field its reader may not know
 of is answered as one the type does not have, as a field key on it is.
 An operation it can never compute is refused (028), checked over the
 row's shape: one field for each path, of its declared kind.
+
+## Extended: every path a pattern names is one its rows hold (lakelands#752)
+
+The aggregate was the only place that read a path as the rows hold it.
+An `order_by` read the text before its last dot as a type, and so did a
+projection's `fields`. When no type of that name existed, or the
+pattern did not bind it, or the path ran past a field into members, the
+order sorted by nothing and the projection kept nothing. In both cases
+the answer looked as if it had read something. An order by `<type>.key`
+over a type with no field `key` was refused, though every row holds that
+path.
+
+An order and a projected field now read their path by the aggregate's
+rule, named whole: the longest type the pattern binds, then one of its
+fields or `key`. Any other name is refused as the aggregate refuses it.
+`<type>.key` is the record's key, as in the aggregate, and is never
+probed. An order probes its field before a row is read (024). A
+projected field is named, not computed over, so it is not probed. A
+field its reader may not know of is refused as one the type does not
+have. A masked one is left out of the row, as an absent value is: a row
+holds values, and a masked field has none to give.
+
+A type the pattern binds is every type a step may reach. A step walked
+both ways, or over a relation several types declare, binds each type it
+reaches where it names no `type`, and its rows hold each one's paths.
+That holds at any depth: a chain's step used to bind only the first type
+that declares its relation, so which paths its rows could be read by
+depended on the order of the declarations. Such a step that reads a
+`where` names its `type` in a chain as in a neighbourhood, where it used
+to read the `where` against that first type and drop the other's
+records without a word. Its `type` may be any type its relation reaches
+from where it stands. Rows are sorted before `fields` is applied, so an
+order may read a path the projection leaves out.
+
+Two faults in one pattern are answered in one order on every lake: each
+order's path is read, then each order is probed, then each projected
+path is read, then each projected field is judged. The first fault in
+that order is the answer.

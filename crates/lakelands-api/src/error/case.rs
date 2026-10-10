@@ -1157,7 +1157,7 @@ catalog! {
         ParamValue { name: ParamName, #[serde(rename = "type")] ty: TypeName, kind: StorageKind, value: Box<Value> } => "parameter `{name}` of view `{ty}` is {kind}, and {value} is not one",
         /// A path with several starts.
         PathStarts { count: usize } => "a path has one start, and this pattern's start names {count} records",
-        /// A name a pattern's aggregate reads that no row holds.
+        /// A path a pattern orders, projects or aggregates by that no row holds.
         PatternNoPath { path: String } => "`{path}` is no path the pattern's rows hold; a row holds `<type>.<field>` for each type the pattern binds",
         /// A pattern with `to` whose steps are a chain.
         PatternToChain => "a pattern with `to` walks its steps as one walk from its start; every step's depth starts at 0",
