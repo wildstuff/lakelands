@@ -40,6 +40,26 @@ pub fn of<T: serde::Serialize>(value: &T) -> Vec<u8> {
     to_vec(&serde_json::to_value(value).expect("contract types serialise to JSON"))
 }
 
+/// The first number anywhere in `value` that its canonical bytes write as
+/// an integer beyond ±(2^53 − 1) (`docs/log-format.md` §1.2). A number is
+/// judged as it is written, not as it arrived: a double of 2^53 or more is
+/// integer-valued, and below 10^21 the canonical form writes it as its
+/// plain digits, so `1e16` is the integer `10000000000000000`. From 10^21
+/// on a number is written with an exponent, which every reader reads as
+/// the same double.
+pub fn integer_too_large(value: &Value) -> Option<&serde_json::Number> {
+    const MAX: f64 = ((1u64 << 53) - 1) as f64;
+    match value {
+        Value::Number(n) => {
+            let size = n.as_f64().map_or(0.0, f64::abs);
+            (size > MAX && size < 1e21).then_some(n)
+        }
+        Value::Array(items) => items.iter().find_map(integer_too_large),
+        Value::Object(m) => m.values().find_map(integer_too_large),
+        _ => None,
+    }
+}
+
 /// SHA-256 of a value's canonical bytes, as 64 lower-case hex digits.
 pub fn sha256_hex(value: &Value) -> String {
     hex(&Sha256::digest(to_vec(value)))

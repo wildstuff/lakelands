@@ -95,8 +95,23 @@ impl Timestamp {
     }
 
     /// Parses `YYYY-MM-DD`, or RFC 3339 with `Z` or a numeric offset and
-    /// up to six fractional digits. A date alone means midnight UTC.
+    /// up to six fractional digits. A date alone means midnight UTC. An
+    /// offset that carries the instant out of the years 0000 to 9999 in
+    /// UTC is refused: the one form has four digits for the year, and what
+    /// is parsed here is written in it and read again.
     pub fn parse(s: &str) -> Result<Timestamp, TimestampError> {
+        let t = Timestamp::denoted(s)?;
+        let in_years = (0..=9999).contains(&t.date().0);
+        in_years
+            .then_some(t)
+            .ok_or_else(|| TimestampError(s.to_owned()))
+    }
+
+    /// The instant a text denotes, in the forms `parse` reads and in
+    /// whatever year its offset leaves it. For a text that is only
+    /// compared or computed with, which names its instant wherever that
+    /// falls; a value that is written is read by `parse`.
+    pub fn denoted(s: &str) -> Result<Timestamp, TimestampError> {
         let err = || TimestampError(s.to_owned());
         let b = s.as_bytes();
         let num = |r: std::ops::Range<usize>| -> Result<i64, TimestampError> {

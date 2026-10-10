@@ -147,14 +147,14 @@ pub(crate) fn eval(e: &Expr, s: &Scope<'_>) -> Result<Value, Error> {
             // The difference of two instants is a duration, a number of
             // microseconds here.
             if let (Value::String(a), Value::String(b), ArithOp::Sub) = (&a, &b, arith)
-                && let (Ok(a), Ok(b)) = (Timestamp::parse(a), Timestamp::parse(b))
+                && let (Ok(a), Ok(b)) = (Timestamp::denoted(a), Timestamp::denoted(b))
             {
                 return Ok(num((a.0 - b.0) as f64));
             }
             // A date-time shifted by a duration (a number of microseconds).
             if let (Value::String(t), Value::Number(d), ArithOp::Add | ArithOp::Sub) =
                 (&a, &b, arith)
-                && let (Ok(t), Some(d)) = (Timestamp::parse(t), d.as_i64())
+                && let (Ok(t), Some(d)) = (Timestamp::denoted(t), d.as_i64())
             {
                 let d = if matches!(arith, ArithOp::Sub) { -d } else { d };
                 return Ok(Value::String(Timestamp(t.0 + d).to_string()));
@@ -284,13 +284,15 @@ pub(crate) fn compare(a: &Value, b: &Value) -> Option<Ordering> {
     match (a, b) {
         (Value::Null, _) | (_, Value::Null) => None,
         (Value::Bool(x), Value::Bool(y)) => Some(x.cmp(y)),
-        (Value::String(x), Value::String(y)) => match (Timestamp::parse(x), Timestamp::parse(y)) {
-            (Ok(x), Ok(y)) => Some(x.cmp(&y)),
-            _ => match (x.parse::<f64>(), y.parse::<f64>()) {
-                (Ok(x), Ok(y)) => x.partial_cmp(&y),
-                _ => Some(x.cmp(y)),
-            },
-        },
+        (Value::String(x), Value::String(y)) => {
+            match (Timestamp::denoted(x), Timestamp::denoted(y)) {
+                (Ok(x), Ok(y)) => Some(x.cmp(&y)),
+                _ => match (x.parse::<f64>(), y.parse::<f64>()) {
+                    (Ok(x), Ok(y)) => x.partial_cmp(&y),
+                    _ => Some(x.cmp(y)),
+                },
+            }
+        }
         (Value::Number(_) | Value::String(_), Value::Number(_) | Value::String(_)) => {
             number(a)?.partial_cmp(&number(b)?)
         }

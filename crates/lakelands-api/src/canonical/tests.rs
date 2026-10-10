@@ -106,3 +106,43 @@ fn a_digest_is_sha256_in_lower_case_hex() {
         "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
     );
 }
+
+/// A number is too large as the canonical bytes write it: an integer in
+/// plain digits beyond ±(2^53 − 1), whatever form it arrived in. What is
+/// written is judged the same when it is read back.
+#[test]
+fn an_integer_is_too_large_in_the_form_it_is_written_in() {
+    let max = 9_007_199_254_740_991_i64;
+    let written = |v: &Value| String::from_utf8(to_vec(v)).unwrap();
+    let again = |v: &Value| serde_json::from_slice::<Value>(&to_vec(v)).unwrap();
+    for fits in [
+        json!(max),
+        json!(-max),
+        json!(9007199254740991.0),
+        json!(2.0),
+        json!(0.5),
+        json!(1e21),
+        json!(-1e21),
+        json!(1e300),
+        json!("1e16"),
+        json!({"a": [1, 2.5, null]}),
+    ] {
+        assert_eq!(integer_too_large(&fits), None, "{fits}");
+        assert_eq!(integer_too_large(&again(&fits)), None, "{fits}, read back");
+    }
+    for (large, digits) in [
+        (json!(max + 1), "9007199254740992"),
+        (json!(-max - 1), "-9007199254740992"),
+        (json!(u64::MAX), "18446744073709551615"),
+        (json!(1e16), "10000000000000000"),
+        (json!(-1e16), "-10000000000000000"),
+        (json!(9007199254740993.0), "9007199254740992"),
+        (json!(1e20), "100000000000000000000"),
+    ] {
+        assert_eq!(written(&large), digits);
+        assert!(integer_too_large(&large).is_some(), "{large}");
+        assert!(integer_too_large(&again(&large)).is_some(), "{digits}");
+    }
+    let nested = json!({"a": [1, {"b": 1e17}]});
+    assert_eq!(integer_too_large(&nested), json!(1e17).as_number());
+}
