@@ -1,9 +1,0 @@
-{
-  "about": "A call of `retired` in a declaration's expressions (Appendix B). Position 16, following v6.json's position 15: a `declared` trigger on `slip` whose guard is `retired()`, so it fires only when a write retires a slip.",
-  "hashes": [
-    "86567d8cc1630ad5785b231405626ab6410f0afc078671aa3145b497366f7770"
-  ],
-  "lines": [
-    "{\"body\":{\"declaration\":{\"declare\":\"trigger\",\"name\":\"slip_retired\",\"on\":\"slip\",\"when\":\"retired()\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"86567d8cc1630ad5785b231405626ab6410f0afc078671aa3145b497366f7770\",\"id\":\"8d3b0f5a2c9e4d7b1f6a3c0e9b5d2f74\",\"known_at\":\"2026-10-01T08:00:02.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":16,\"prev\":\"286702c3a930838d0882ae1945cdddda849da74c735a420a3cdb53ad93a38c2b\",\"v\":14,\"writer\":\"agent:agent\"}"
-  ]
-}

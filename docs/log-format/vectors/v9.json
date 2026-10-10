@@ -1,9 +1,0 @@
-{
-  "about": "A view's `merge` (Appendix A). Position 20, following v8.json's position 19: a `declared` view `shelf_load` that counts the slips on each shelf and merges `shelf`, counted by its `code`, on the same key.",
-  "hashes": [
-    "48062163e2b1a91b5b667a5d9d7c38be0eb2f4233cd1473f30fa0f200edca0ba"
-  ],
-  "lines": [
-    "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"shelf_code\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"authored\",\"name\":\"slips\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}},{\"authority\":\"authored\",\"name\":\"shelves\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"key\":[\"shelf_code\"],\"name\":\"shelf_load\",\"view\":{\"group_by\":[\"shelf_code\"],\"measures\":[{\"expr\":\"count()\",\"name\":\"slips\"}],\"merge\":[{\"group_by\":[\"code\"],\"measures\":[{\"expr\":\"count()\",\"name\":\"shelves\"}],\"source\":\"shelf\"}],\"source\":\"slip\"}},\"kind\":\"declared\",\"schema_hash\":\"8ad6949d4e314cef5a6fbf5a696348c7a75dd20942b688d1e757b663086aea2c\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"48062163e2b1a91b5b667a5d9d7c38be0eb2f4233cd1473f30fa0f200edca0ba\",\"id\":\"4e1a7c9b2d6f0a3e8c5b1d7f9a2e6c40\",\"known_at\":\"2026-10-02T08:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":20,\"prev\":\"4f697e359f70e9a2d56e39c22ad2f49c6b7215ae4c615de5a78510de8da4f756\",\"v\":14,\"writer\":\"agent:agent\"}"
-  ]
-}
