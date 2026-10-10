@@ -163,17 +163,22 @@ The link doors refuse in this order, in the frame every write door
 shares (016, extended): the lake, the context, the door's own checks,
 the append.
 
-**`link`**: the type is declared (`not_found`); it is not a view
-(`invalid`, 018, extended); it declares the relation, carried by link
-records (`invalid`); the relation's links are authored (`wrong_door`);
-`from` and `to` are not among the fields (`invalid`, naming the field);
-the retry; the record checks of 016 on the link record; the relation's
+**`link`**: the type is declared and shown to the caller
+(`not_found`), and so is the relation (`invalid`), which alone give way
+to a retry: a call sent again under its key is answered as the first
+was, though the type or the relation is no longer there for its caller;
+it is not a view (`invalid`, 018, extended); it declares the relation,
+carried by link records (`invalid`); the relation's links are authored
+(`wrong_door`); `from` and `to` are not among the fields (`invalid`,
+naming the field); the retry, a retry that itself fails included; the
+record checks of 016 on the link record; the relation's
 cardinality over the live links (`constraint`, naming `to`), after the
 record's grants so that a principal who may not write the link learns
 nothing of the links there are (024, extended).
 
-**`unlink`**: the type is declared, it is not a view, it declares the
-relation carried by link records, as for `link`; then the retry and
+**`unlink`**: the type and the relation are declared and shown, or the
+call is a retry, it is not a view, it declares the relation carried by
+link records, as for `link`; then the retry and
 `retire`'s checks on the link record: its grants (`not_granted`), the
 link is live (`not_found`), the expected version (`conflict`). An
 unlink is not refused for the relation's authority (above).

@@ -210,9 +210,8 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
         let from = canonical::to_vec(&rule.from);
         let mut d = call.decide(&w, view.as_ref(), now, 0);
         d.envelope = Envelope {
-            origin: Origin::System,
             procedure: Some(procedure),
-            id: None,
+            ..Envelope::of(Origin::System)
         };
         let mut drafts = Vec::new();
         for record in view.scan(&rule.on, &all)? {
@@ -242,7 +241,7 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
                 ran.failed_guards += 1;
                 continue;
             };
-            drafts.extend(d.planned(plan)?);
+            drafts.extend(d.planned(plan)?.drafts);
             ran.moved += 1;
         }
         drop(view);

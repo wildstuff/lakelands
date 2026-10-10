@@ -247,6 +247,36 @@ pub struct RecordPlan {
     pub before: Option<StoredRecord>,
 }
 
+/// One write of a record as its door states it, which [`Decide::plan`]
+/// decides.
+#[derive(Clone, Copy)]
+pub(crate) enum Op<'a> {
+    /// `upsert`: the type, the key and the patch.
+    Upsert(&'a TypeName, &'a RecordKey, &'a Patch),
+    /// `retire`: the type and the key.
+    Retire(&'a TypeName, &'a RecordKey),
+    /// A verb's run from its record on, its key fit to its scope and its
+    /// payload checked.
+    Call(&'a VerbDecl, Option<&'a RecordKey>, &'a Patch),
+    /// `link`, with the link's own fields.
+    Link(Ends<'a>, &'a Patch),
+    /// `unlink`.
+    Unlink(Ends<'a>),
+}
+
+/// A link as its doors name it: the type and the key it starts from, its
+/// relation, and the key it ends at.
+type Ends<'a> = (&'a TypeName, &'a RecordKey, &'a RelationName, &'a RecordKey);
+
+/// An op, decided: what it appends, and the record it leaves written.
+pub(crate) struct Plan {
+    /// Its own event, then what that sets off.
+    pub drafts: Vec<Draft>,
+    /// The record an upsert, a link or a verb's write leaves; a
+    /// retirement and a verb that writes none leave none.
+    pub after: Option<StoredRecord>,
+}
+
 impl Call<'_> {
     fn draft(&self, now: Timestamp, origin: Origin, body: EventBody) -> Draft {
         Draft {
@@ -1196,15 +1226,45 @@ pub fn shown_type<'o>(o: &'o Ontology, ty: &TypeName, who: &Principal) -> Result
 }
 
 /// What a decision's own events carry beside the call's writer and
-/// context, set before the record they make is computed: aging writes as
-/// the system, with its rule as the procedure.
+/// context, set before the record they make is computed, so that what is
+/// judged on that record (a trigger's guard) reads the provenance the fold
+/// keeps: aging writes as the system, with its rule as the procedure,
+/// ingest as its source states each record, an accept as the proposer and
+/// caused by the acceptance, and a verb's write caused by its call.
+#[derive(Clone)]
 pub(crate) struct Envelope {
     /// The authority that writes them.
     pub origin: Origin,
+    /// Who writes them, where it is not the caller.
+    pub writer: Option<String>,
+    /// The event they follow from.
+    pub cause: Option<Position>,
     /// The procedure that produced their values.
     pub procedure: Option<Procedure>,
     /// A chosen id.
     pub id: Option<EventId>,
+    /// The source they come from.
+    pub source: Option<lakelands_api::SourceId>,
+    /// When the source observed the values.
+    pub seen_at: Option<Timestamp>,
+    /// Where the source read them.
+    pub upstream: Option<lakelands_api::Upstream>,
+}
+
+impl Envelope {
+    /// That of events `origin` writes, carrying nothing more.
+    pub(crate) fn of(origin: Origin) -> Envelope {
+        Envelope {
+            origin,
+            writer: None,
+            cause: None,
+            procedure: None,
+            id: None,
+            source: None,
+            seen_at: None,
+            upstream: None,
+        }
+    }
 }
 
 /// What one write is decided in, from the writer's lock to its append: the
@@ -1232,10 +1292,17 @@ pub(crate) struct Decide<'a> {
 impl Decide<'_> {
     /// One of the decision's own events.
     pub(crate) fn draft(&self, body: EventBody) -> Draft {
+        let e = self.envelope.clone();
+        let own = self.call.draft(self.now, e.origin, body);
         Draft {
-            procedure: self.envelope.procedure.clone(),
-            id: self.envelope.id.clone(),
-            ..self.call.draft(self.now, self.envelope.origin, body)
+            writer: e.writer.unwrap_or(own.writer),
+            cause: e.cause,
+            procedure: e.procedure,
+            id: e.id,
+            source: e.source,
+            seen_at: e.seen_at,
+            upstream: e.upstream,
+            ..own
         }
     }
 
@@ -1282,18 +1349,111 @@ impl Decide<'_> {
         }
     }
 
-    /// The record a retire of `ty` at `key` takes, for one who may retire
-    /// it.
-    fn retirable(
-        &self,
+    /// A retirement of `ty` at `key`. It answers in its own order: whether
+    /// the judged principal may retire the type before whether the record
+    /// is there, since a key it does not reach leaves nothing it could
+    /// make.
+    fn retire(
+        &mut self,
         ty: &TypeName,
         key: &RecordKey,
         expected: Option<Version>,
-    ) -> Result<StoredRecord> {
+    ) -> Result<Plan> {
         let decl = self.w.ontology.ty(ty)?;
         rights::not_a_view(decl)?;
         granted(rights::may_retire(self.who, decl))?;
-        self.reached(decl, key, expected)
+        let before = self.reached(decl, key, expected)?;
+        let own = self.draft(retirement(ty, key, before.version));
+        let (drafts, after) = (self.retiring(&before, own)?, None);
+        Ok(Plan { drafts, after })
+    }
+
+    /// What `op` names, as the judged principal is shown it (006 and 024,
+    /// extended): one not shown its type is answered as for a type that is
+    /// not there, and one not shown the relation a link door names as for
+    /// a relation the type does not carry. A verb is shown by its door.
+    fn sight(&self, op: Op<'_>) -> Result<()> {
+        let o = &self.w.ontology;
+        let (ty, relation) = match op {
+            Op::Upsert(ty, ..) | Op::Retire(ty, ..) => (ty, None),
+            Op::Link((ty, _, r, _), _) | Op::Unlink((ty, _, r, _)) => (ty, Some(r)),
+            Op::Call(..) => return Ok(()),
+        };
+        let decl = shown_type(o, ty, self.who)?;
+        let shown =
+            |r: &RelationDecl| describe::relation_shown(decl, r, &|n| o.ty(n).ok(), self.who);
+        let mut named = decl.relations.iter().filter(|r| Some(&r.name) == relation);
+        match relation {
+            Some(n) if named.any(|r| !shown(r)) => Err(no_link_relation(ty, n)),
+            _ => Ok(()),
+        }
+    }
+
+    /// A link door's own questions, with the link type and the relation
+    /// they find: the relation is carried by link records, on a type that
+    /// is no view; and for `link`, its links are authored and no end is
+    /// among the fields. Another door's op has none.
+    fn shape(&self, op: Op<'_>) -> Result<Option<(TypeName, RelationDecl)>> {
+        let ((ty, _, relation, _), fields) = match op {
+            Op::Link(ends, fields) => (ends, Some(fields)),
+            Op::Unlink(ends) => (ends, None),
+            _ => return Ok(None),
+        };
+        let decl = self.w.ontology.ty(ty)?;
+        rights::not_a_view(decl)?;
+        let mut carried = decl.relations.iter();
+        let r = carried.find(|r| &r.name == relation && links::carried_by_links(r));
+        let r = r.ok_or_else(|| no_link_relation(ty, relation))?;
+        let lt = links::link_type_name(ty, relation);
+        self.w.ontology.ty(&lt)?;
+        if fields.is_some() && r.authority != Authority::Authored {
+            return Err(refused(Refusal::WrongDoor));
+        }
+        let ends = [links::FROM, links::TO].map(FieldName::from);
+        let mut ends = ends
+            .iter()
+            .filter(|e| fields.is_some_and(|f| f.contains_key(*e)));
+        if let Some(end) = ends.next() {
+            return Err(invalid_field(
+                end,
+                Case::LinkEndAsField { end: end.clone() },
+            ));
+        }
+        Ok(Some((lt, r.clone())))
+    }
+
+    /// Decide `op` for the judged principal, its own event landing next,
+    /// in the one order every door shares: what the principal is shown of
+    /// what the op names ([`Self::sight`]); a link door's own questions
+    /// ([`Self::shape`]); the record's own checks, by [`Self::record`],
+    /// [`Self::retire`] or [`Self::run_verb`]; a link's cardinality, which
+    /// reads other records, so the grants come first (024); then what the
+    /// write sets off. `call`, `propose` and `accept` run it as the four
+    /// record doors do, so what one refuses the others refuse in the same
+    /// words.
+    pub(crate) fn plan(&mut self, op: Op<'_>, expected: Option<Version>) -> Result<Plan> {
+        self.sight(op)?;
+        match (op, self.shape(op)?) {
+            (Op::Upsert(ty, key, patch), _) => {
+                let plan = self.record(ty, key, patch, expected, None)?;
+                self.planned(plan)
+            }
+            (Op::Retire(ty, key), _) => self.retire(ty, key, expected),
+            (Op::Call(verb, key, payload), _) => self.run_verb(verb, key, payload, expected),
+            (Op::Link((ty, key, _, to), fields), Some((lt, r))) => {
+                let mut patch = fields.clone();
+                for (end, k) in [(links::FROM, key), (links::TO, to)] {
+                    patch.insert(end.into(), Value::String(k.to_string()));
+                }
+                let plan = self.record(&lt, &links::link_key(key, to), &patch, expected, None)?;
+                cardinality(self.view, self.who, ty, &r, key, to)?;
+                self.planned(plan)
+            }
+            (Op::Unlink((_, key, _, to)), Some((lt, _))) => {
+                self.retire(&lt, &links::link_key(key, to), expected)
+            }
+            (Op::Link(..) | Op::Unlink(..), None) => unreachable!("a link door has its relation"),
+        }
     }
 
     /// A patch as the door takes it from the judged principal: the key's
@@ -1516,12 +1676,13 @@ impl Decide<'_> {
         Ok(drafts)
     }
 
-    /// The drafts of a planned record write: its own, which lands next,
-    /// then the triggers and object-set changes it causes.
-    pub(crate) fn planned(&mut self, plan: RecordPlan) -> Result<Vec<Draft>> {
+    /// A planned record write with what it sets off: its own event, which
+    /// lands next, then the triggers and object-set changes it causes.
+    pub(crate) fn planned(&mut self, plan: RecordPlan) -> Result<Plan> {
         let mut drafts = self.reactions(plan.before.as_ref(), &plan.after)?;
         drafts.insert(0, plan.draft);
-        Ok(drafts)
+        let after = Some(plan.after);
+        Ok(Plan { drafts, after })
     }
 
     /// The events a verb's call appends when it runs: `verb_called`, and
@@ -1529,44 +1690,55 @@ impl Decide<'_> {
     /// and object-set changes that write causes, as for any other write;
     /// and the record that write leaves. `key` is `None` for a verb on its
     /// type, which reads no record and writes none. The record is read as
-    /// the judged principal's write reaches it (051).
+    /// the judged principal's write reaches it (051). The write is caused
+    /// by the call and carries the verb as its procedure before its record
+    /// is computed.
     fn run_verb(
         &mut self,
         verb: &VerbDecl,
         key: Option<&RecordKey>,
         payload: &Patch,
         expected: Option<Version>,
-    ) -> Result<(Vec<Draft>, Option<StoredRecord>)> {
+    ) -> Result<Plan> {
         let (w, now) = (self.w, self.now);
         let called = self.draft(EventBody::VerbCalled {
             verb: verb.name.clone(),
             key: key.cloned(),
             payload: payload.clone(),
         });
+        let mut plan = Plan {
+            drafts: vec![called],
+            after: None,
+        };
         // A verb on its type is external and declares no `requires`: it
         // reads no record and writes none.
         let Some(key) = key else {
-            return Ok((vec![called], None));
+            return Ok(plan);
         };
         let record = self.reached(w.ontology.ty(&verb.on)?, key, expected)?;
         requires(w, verb, key, &record, now)?;
         let called_at = self.next;
         self.next = called_at.next();
-        let (mut drafts, mut after) = (vec![called], None);
         if let VerbEffect::Write { .. } = &verb.effect {
             let patch = assigned(&w.ontology, &w.settings, verb, &record.fields, payload, now)?;
-            let mut plan = self.record(&verb.on, key, &patch, expected, Some(record))?;
-            plan.draft.cause = Some(called_at);
             let version = w.ontology.verbs.get(&verb.name).map_or(1, |e| e.version);
-            plan.draft.procedure = Some(Procedure {
+            let procedure = Some(Procedure {
                 name: verb.name.to_string(),
                 version: version.to_string(),
             });
-            drafts.push(plan.draft);
-            drafts.extend(self.reactions(plan.before.as_ref(), &plan.after)?);
-            after = Some(plan.after);
+            let of_the_write = Envelope {
+                cause: Some(called_at),
+                procedure,
+                ..self.envelope.clone()
+            };
+            let of_the_call = std::mem::replace(&mut self.envelope, of_the_write);
+            let write = self.record(&verb.on, key, &patch, expected, Some(record));
+            self.envelope = of_the_call;
+            let write = self.planned(write?)?;
+            plan.drafts.extend(write.drafts);
+            plan.after = write.after;
         }
-        Ok((drafts, after))
+        Ok(plan)
     }
 }
 
@@ -1590,11 +1762,7 @@ impl Call<'_> {
             next: position_after(w, n),
             who: self.who,
             door: Door::Authored,
-            envelope: Envelope {
-                origin: Origin::Authored,
-                procedure: None,
-                id: None,
-            },
+            envelope: Envelope::of(Origin::Authored),
         }
     }
 
@@ -1608,35 +1776,30 @@ impl Call<'_> {
     ) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         ordinary_door(ty)?;
-        if let Some(first) = self.retried_unshown(ty, None, &opts)? {
-            return Ok(first);
-        }
-        self.write_record(ty, key, patch, opts, |_, _| Ok(()))
+        self.write(Op::Upsert(ty, key, &patch), opts)
     }
 
-    /// An authored write of one record, as `upsert` and `link` make it,
-    /// their context already checked; `check` refuses it, under the
-    /// writer's lock, after the record's own checks: it reads other
-    /// records, so the grants come first (024).
-    fn write_record(
-        &self,
-        ty: &TypeName,
-        key: &RecordKey,
-        patch: Patch,
-        opts: WriteOpts,
-        check: impl FnOnce(&Writer, &dyn ProjectionView) -> Result<()>,
-    ) -> Result<Outcome> {
+    /// An authored write of one record, as `upsert`, `retire`, `link` and
+    /// `unlink` make it, their context already checked, under one hold of
+    /// the writer: the plan and its append. A retry of a write the caller
+    /// made is answered that write, as every retry is before the grants
+    /// are asked: before a refusal for what the caller is not shown, and
+    /// after a link door's own questions (035, extended).
+    fn write(&self, op: Op<'_>, opts: WriteOpts) -> Result<Outcome> {
         let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
-        if let Some(o) = self.replay(&w, &opts.idempotency_key, view.as_ref())? {
-            return Ok(o);
-        }
+        let first = self.replay(&w, &opts.idempotency_key, view.as_ref());
         let now = self.lake.clock(&mut w);
         let mut d = self.decide(&w, view.as_ref(), now, 0);
-        let mut plan = d.record(ty, key, &patch, opts.expected_version, None)?;
-        check(&w, view.as_ref())?;
-        self.keyed(&mut plan.draft, &opts.idempotency_key);
-        let drafts = d.planned(plan)?;
+        if let Err(gone) = d.sight(op) {
+            return first?.ok_or(gone);
+        }
+        d.shape(op)?;
+        if let Some(first) = first? {
+            return Ok(first);
+        }
+        let mut drafts = d.plan(op, opts.expected_version)?.drafts;
+        self.keyed(&mut drafts[0], &opts.idempotency_key);
         drop(view);
         let events = self.lake.append(&mut w, drafts)?;
         Ok(outcome_of(&events))
@@ -1646,10 +1809,7 @@ impl Call<'_> {
     pub fn retire(&self, ty: &TypeName, key: &RecordKey, opts: WriteOpts) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         ordinary_door(ty)?;
-        if let Some(first) = self.retried_unshown(ty, None, &opts)? {
-            return Ok(first);
-        }
-        self.retire_record(ty, key, opts)
+        self.write(Op::Retire(ty, key), opts)
     }
 
     /// `link`: the link over `relation` from `key` of `ty` to `to`, as a
@@ -1664,30 +1824,7 @@ impl Call<'_> {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
-        if let Some(first) = self.retried_unshown(ty, Some(relation), &opts)? {
-            return Ok(first);
-        }
-        let (lt, r) = link_relation(&*self.writer()?, ty, relation)?;
-        if r.authority != Authority::Authored {
-            return Err(refused(Refusal::WrongDoor));
-        }
-        for name in [links::FROM, links::TO] {
-            if fields.contains_key(name) {
-                let end = FieldName::from(name);
-                return Err(invalid_field(
-                    &end,
-                    Case::LinkEndAsField { end: end.clone() },
-                ));
-            }
-        }
-        let mut patch = fields;
-        patch.insert(links::FROM.into(), Value::String(key.to_string()));
-        patch.insert(links::TO.into(), Value::String(to.to_string()));
-        let link_key = links::link_key(key, to);
-        let (from, target) = (key.clone(), to.clone());
-        self.write_record(&lt, &link_key, patch, opts, move |_, view| {
-            cardinality(view, self.who, ty, &r, &from, &target)
-        })
+        self.write(Op::Link((ty, key, relation, to), &fields), opts)
     }
 
     /// `unlink`: the link's record retired, its history kept.
@@ -1700,60 +1837,7 @@ impl Call<'_> {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
-        if let Some(first) = self.retried_unshown(ty, Some(relation), &opts)? {
-            return Ok(first);
-        }
-        let (lt, _) = link_relation(&*self.writer()?, ty, relation)?;
-        self.retire_record(&lt, &links::link_key(key, to), opts)
-    }
-
-    /// The first question of `upsert`, `retire`, `link` and `unlink` (006
-    /// and 024, extended): a caller not shown `ty` is answered as for a
-    /// type that is not there, and one not shown the relation a link door
-    /// names as for a relation the type does not carry, before the write
-    /// is judged. Its retry of a write it made is answered that write, as
-    /// every retry is before the grants are asked.
-    fn retried_unshown(
-        &self,
-        ty: &TypeName,
-        relation: Option<&RelationName>,
-        opts: &WriteOpts,
-    ) -> Result<Option<Outcome>> {
-        let w = self.writer()?;
-        let find = |n: &TypeName| w.ontology.ty(n).ok();
-        let unshown = |t: &TypeDecl, n: &RelationName| {
-            let mut named = t.relations.iter().filter(|r| &r.name == n);
-            named.any(|r| !describe::relation_shown(t, r, &find, self.who))
-        };
-        let gone = match (shown_type(&w.ontology, ty, self.who), relation) {
-            (Ok(t), Some(n)) if unshown(t, n) => no_link_relation(ty, n),
-            (Ok(_), _) => return Ok(None),
-            (Err(gone), _) => gone,
-        };
-        let view = self.lake.engine.view(None)?;
-        let first = self.replay(&w, &opts.idempotency_key, view.as_ref())?;
-        first.map(Some).ok_or(gone)
-    }
-
-    /// A retirement of one record, as `retire` and `unlink` make it, their
-    /// context already checked.
-    fn retire_record(&self, ty: &TypeName, key: &RecordKey, opts: WriteOpts) -> Result<Outcome> {
-        let mut w = self.writer()?;
-        let view = self.lake.engine.view(None)?;
-        if let Some(o) = self.replay(&w, &opts.idempotency_key, view.as_ref())? {
-            return Ok(o);
-        }
-        // The checks read no time: the clock is taken once they have passed.
-        let checks = self.decide(&w, view.as_ref(), w.last_known_at, 0);
-        let before = checks.retirable(ty, key, opts.expected_version)?;
-        let now = self.lake.clock(&mut w);
-        let mut d = self.decide(&w, view.as_ref(), now, 0);
-        let mut own = d.draft(retirement(ty, key, before.version));
-        self.keyed(&mut own, &opts.idempotency_key);
-        let drafts = d.retiring(&before, own)?;
-        drop(view);
-        let events = self.lake.append(&mut w, drafts)?;
-        Ok(outcome_of(&events))
+        self.write(Op::Unlink((ty, key, relation, to)), opts)
     }
 
     /// The verb `verb` for its caller: one on a type the caller is not
@@ -1801,6 +1885,59 @@ impl Call<'_> {
         Ok(checked)
     }
 
+    /// A call's first questions, as `call` and `propose` ask them of the
+    /// caller, in one order (013, the order of refusals): the verb is
+    /// declared and shown, the key fits its scope, the caller may call it,
+    /// an external verb's executor is bound, and the payload. Whether a
+    /// call that is proposed may be pinned is part of whether its caller
+    /// may call it (051). Answers the verb, the payload as checked, and
+    /// whether its proposal is pinned.
+    fn callable(
+        &self,
+        w: &Writer,
+        verb: &VerbName,
+        proposed: bool,
+        key: Option<&RecordKey>,
+        payload: &Patch,
+        expected: Option<Version>,
+    ) -> Result<(VerbDecl, Patch, bool)> {
+        let decl = self.shown_verb(&w.ontology, verb)?.clone();
+        scoped(&decl, key, expected)?;
+        let on = w.ontology.ty(&decl.on)?;
+        granted(self.verb_callable(on, &decl))?;
+        let pinned = (proposed || decl.risk != Risk::Low) && self.pin(on, Some(&decl))?;
+        if let VerbEffect::External { executor } = &decl.effect {
+            bound_executor(self.lake, executor)?;
+        }
+        let payload = self.verb_payload(w, &decl, payload)?;
+        Ok((decl, payload, pinned))
+    }
+
+    /// The `write_proposed` of `write`, which lands next under the writer
+    /// `w`: its proposal is named by the event's id.
+    fn proposal(
+        &self,
+        w: &Writer,
+        now: Timestamp,
+        (write, why, pinned): (ProposedWrite, String, bool),
+        key: &Option<IdempotencyKey>,
+    ) -> Draft {
+        let id = key.as_ref().map_or_else(
+            || log::positional_id(&self.lake.id, position_after(w, 0)),
+            |k| log::authored_id(&self.who.writer(), k),
+        );
+        let proposal = ProposalId::from(id.0.as_str());
+        let body = EventBody::WriteProposed {
+            proposal,
+            write,
+            why,
+            pinned,
+        };
+        let mut d = self.draft(now, Origin::Authored, body);
+        self.keyed(&mut d, key);
+        d
+    }
+
     /// `call`. Answers the outcome, and for an external verb that ran,
     /// the invocation the caller must hand its executor.
     pub fn call(
@@ -1816,70 +1953,48 @@ impl Call<'_> {
         if let Some(o) = self.replay(&w, &opts.idempotency_key, view.as_ref())? {
             return Ok((o, None));
         }
-        let decl = self.shown_verb(&w.ontology, verb)?.clone();
-        let key = scoped(&decl, key, opts.expected_version)?;
-        granted(self.verb_callable(w.ontology.ty(&decl.on)?, &decl))?;
-        if let VerbEffect::External { executor } = &decl.effect {
-            bound_executor(self.lake, executor)?;
-        }
-        let payload = self.verb_payload(&w, &decl, &payload)?;
         let now = self.lake.clock(&mut w);
         let expected = opts.expected_version;
-        let mut drafts = if decl.risk == Risk::Low {
-            let mut d = self.decide(&w, view.as_ref(), now, 0);
-            d.run_verb(&decl, key, &payload, expected)?.0
+        let (decl, payload, pinned) = self.callable(&w, verb, false, key, &payload, expected)?;
+        // A low-risk call runs. Any other is proposed, and one that could
+        // not run now is not: the version, then `requires`, and the write
+        // it would make, as the caller, as when it runs; accepting it
+        // judges the record again (013).
+        let low = decl.risk == Risk::Low;
+        let mut d = self.decide(&w, view.as_ref(), now, usize::from(!low));
+        let mut drafts = d.plan(Op::Call(&decl, key, &payload), expected)?.drafts;
+        if low {
+            self.keyed(&mut drafts[0], &opts.idempotency_key);
         } else {
-            // A call that could not run now is not proposed: the version,
-            // then `requires`, and the write it would make, as the caller,
-            // as when it runs; accepting it judges the record again (013).
-            let pinned = self.pin(w.ontology.ty(&decl.on)?, Some(&decl))?;
-            let mut d = self.decide(&w, view.as_ref(), now, 1);
-            d.run_verb(&decl, key, &payload, expected)?;
-            let position = position_after(&w, 0);
-            let id = opts.idempotency_key.as_ref().map_or_else(
-                || log::positional_id(&self.lake.id, position),
-                |k| log::authored_id(&self.who.writer(), k),
-            );
+            let write = ProposedWrite::Call {
+                verb: verb.clone(),
+                key: key.cloned(),
+                payload: payload.clone(),
+                opts: opts.clone(),
+            };
             let why = format!(
                 "`{verb}` is declared {} risk; it runs when accepted",
                 risk_word(decl.risk)
             );
-            vec![self.draft(
-                now,
-                Origin::Authored,
-                EventBody::WriteProposed {
-                    proposal: ProposalId::from(id.0.as_str()),
-                    write: ProposedWrite::Call {
-                        verb: verb.clone(),
-                        key: key.cloned(),
-                        payload: payload.clone(),
-                        opts: opts.clone(),
-                    },
-                    why,
-                    pinned,
-                },
-            )]
-        };
-        self.keyed(&mut drafts[0], &opts.idempotency_key);
+            let proposed = (write, why, pinned);
+            drafts = vec![self.proposal(&w, now, proposed, &opts.idempotency_key)];
+        }
         drop(view);
-        let due = matches!(decl.effect, VerbEffect::External { .. })
-            && matches!(drafts[0].body, EventBody::VerbCalled { .. });
+        let due = low && matches!(decl.effect, VerbEffect::External { .. });
         let appended = self.lake.append(&mut w, drafts);
         let keyed = opts.idempotency_key.is_some();
         let by = MadeDue::Call { keyed };
         let events = appended.map_err(|e| not_handed(e, due && w.behind, by))?;
         let outcome = outcome_of(&events);
-        let external = match (&decl.effect, decl.risk, &events[0].body) {
-            (VerbEffect::External { executor }, Risk::Low, EventBody::VerbCalled { .. }) => {
-                Some(External {
-                    executor: executor.clone(),
-                    verb: verb.clone(),
-                    ty: decl.on.clone(),
-                    key: key.cloned(),
-                    payload,
-                    position: events[0].position,
-                })
-            }
+        let external = match &decl.effect {
+            VerbEffect::External { executor } if low => Some(External {
+                executor: executor.clone(),
+                verb: verb.clone(),
+                ty: decl.on.clone(),
+                key: key.cloned(),
+                payload,
+                position: events[0].position,
+            }),
             _ => None,
         };
         Ok((outcome, external))
@@ -1896,7 +2011,6 @@ impl Call<'_> {
         check_context(self.lake, &self.context)?;
         let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
-        let now = self.lake.clock(&mut w);
         let key_opt = match &write {
             ProposedWrite::Upsert { opts, .. }
             | ProposedWrite::Retire { opts, .. }
@@ -1906,12 +2020,16 @@ impl Call<'_> {
         if let Some(o) = self.replay(&w, &key_opt, view.as_ref())? {
             return Ok(o);
         }
-        if let ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } = &write {
+        let now = self.lake.clock(&mut w);
+        // A holder of `only` changes no shape, and proposes no write that
+        // anything but the write itself could move off its pairs (051).
+        granted(!write.is_schema() || !rights::holds_only(self.who))?;
+        let pin = |ty: &TypeName| {
             ordinary_door(ty)?;
-            shown_type(&w.ontology, ty, self.who)?;
-        }
-        let pinned = self.pinned(&w.ontology, &write)?;
+            self.pin(shown_type(&w.ontology, ty, self.who)?, None)
+        };
         let mut d = self.decide(&w, view.as_ref(), now, 1);
+        let mut pinned = false;
         match &mut write {
             ProposedWrite::Upsert {
                 ty,
@@ -1919,14 +2037,17 @@ impl Call<'_> {
                 patch,
                 opts,
             } => {
-                let plan = d.record(ty, key, patch, opts.expected_version, None)?;
-                let EventBody::RecordUpserted { patch: checked, .. } = plan.draft.body else {
+                pinned = pin(ty)?;
+                let mut plan = d.plan(Op::Upsert(ty, key, patch), opts.expected_version)?;
+                let EventBody::RecordUpserted { patch: checked, .. } = plan.drafts.remove(0).body
+                else {
                     unreachable!("an authored record write is an upsert")
                 };
                 *patch = checked;
             }
             ProposedWrite::Retire { ty, key, opts } => {
-                d.retirable(ty, key, opts.expected_version)?;
+                pinned = pin(ty)?;
+                d.plan(Op::Retire(ty, key), opts.expected_version)?;
             }
             ProposedWrite::Call {
                 verb,
@@ -1934,15 +2055,11 @@ impl Call<'_> {
                 payload,
                 opts,
             } => {
-                let decl = self.shown_verb(&w.ontology, verb)?.clone();
-                scoped(&decl, key.as_ref(), opts.expected_version)?;
-                granted(self.verb_callable(w.ontology.ty(&decl.on)?, &decl))?;
+                let (key, expected) = (key.as_ref(), opts.expected_version);
+                let (decl, checked, may) = self.callable(&w, verb, true, key, payload, expected)?;
                 // A call that could not run when accepted is not proposed (013).
-                if let VerbEffect::External { executor } = &decl.effect {
-                    bound_executor(self.lake, executor)?;
-                }
-                *payload = self.verb_payload(&w, &decl, payload)?;
-                d.run_verb(&decl, key.as_ref(), payload, opts.expected_version)?;
+                d.plan(Op::Call(&decl, key, &checked), expected)?;
+                (*payload, pinned) = (checked, may);
             }
             // A change of the ontology is checked now as its door would
             // check it, and nothing changes until it is accepted; the
@@ -1977,44 +2094,10 @@ impl Call<'_> {
                 **report = fits(found, false)?;
             }
         }
-        let position = position_after(&w, 0);
-        let id = key_opt.as_ref().map_or_else(
-            || log::positional_id(&self.lake.id, position),
-            |k| log::authored_id(&self.who.writer(), k),
-        );
-        let mut d = self.draft(
-            now,
-            Origin::Authored,
-            EventBody::WriteProposed {
-                proposal: ProposalId::from(id.0.as_str()),
-                write,
-                why,
-                pinned,
-            },
-        );
-        self.keyed(&mut d, &key_opt);
+        let d = self.proposal(&w, now, (write, why, pinned), &key_opt);
         drop(view);
         let events = self.lake.append(&mut w, vec![d])?;
         Ok(outcome_of(&events))
-    }
-
-    /// Whether this caller's proposal is pinned: it writes a record of a
-    /// type the caller holds `only` on. Such a caller changes no shape, and
-    /// proposes no write that anything but the write itself could move off
-    /// its pairs (051). A type it is not shown is answered as not there.
-    fn pinned(&self, o: &Ontology, write: &ProposedWrite) -> Result<bool> {
-        if !rights::holds_only(self.who) {
-            return Ok(false);
-        }
-        let (ty, verb) = match write {
-            ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => (ty, None),
-            ProposedWrite::Call { verb, .. } => {
-                let v = self.shown_verb(o, verb)?;
-                (&v.on, Some(v))
-            }
-            _ => return granted(false).map(|()| false),
-        };
-        self.pin(shown_type(o, ty, self.who)?, verb)
     }
 
     /// Whether a proposal by this caller on `decl`, or of a call of `verb`,
@@ -2178,49 +2261,42 @@ impl Call<'_> {
         };
         let accepted_at = position_after(&w, 0);
         let mut drafts = vec![accepted];
-        let as_proposer = |mut d: Draft| {
-            d.writer = p.proposer.clone();
+        let as_accepted = |mut d: Draft| {
+            if d.origin == Origin::Authored {
+                d.writer = p.proposer.clone();
+            }
             d.cause = d.cause.or(Some(accepted_at));
             d
         };
-        let as_accepted = |d: Draft| match d.origin {
-            Origin::Authored => as_proposer(d),
-            _ => Draft {
-                cause: d.cause.or(Some(accepted_at)),
-                ..d
-            },
-        };
         let (mut external, mut renamed) = (None, Vec::new());
+        // The proposer's events are written as the proposer and caused by
+        // the acceptance before their record is computed.
         let mut d = self.decide(&w, view.as_ref(), now, 1);
         d.who = &proposer;
-        let told = |e| self.told(&w.ontology, &p, write, e);
+        (d.envelope.writer, d.envelope.cause) = (Some(p.proposer.clone()), Some(accepted_at));
+        // What the write leaves is judged by the reviewer's pairs too: a
+        // holder of `only` accepts no write that takes a record out of its
+        // reach, as it writes none (051). A refusal of the plan is told as
+        // the reviewer's listing shows the write, whatever the op.
+        let mut run = |op: Op<'_>, opts: &WriteOpts| -> Result<Vec<Draft>> {
+            let told = |e| self.told(&w.ontology, &p, write, e);
+            let plan = d.plan(op, opts.expected_version).map_err(told)?;
+            if let Some(after) = &plan.after {
+                let (o, decl) = (&w.ontology, w.ontology.ty(&after.ty)?);
+                let reach = owns(view.as_ref(), &d.pending, o, self.who, decl, &after.fields)?;
+                granted(reach)?;
+            }
+            Ok(plan.drafts)
+        };
         match write {
             ProposedWrite::Upsert {
                 ty,
                 key,
                 patch,
                 opts,
-            } => {
-                let plan = d.record(ty, key, patch, opts.expected_version, None);
-                let plan = plan.map_err(told)?;
-                // What the write leaves is judged by the reviewer's pairs
-                // too: a holder of `only` accepts no write that takes a
-                // record out of its reach, as it writes none (051).
-                let decl = w.ontology.ty(ty)?;
-                granted(owns(
-                    view.as_ref(),
-                    &d.pending,
-                    &w.ontology,
-                    self.who,
-                    decl,
-                    &plan.after.fields,
-                )?)?;
-                drafts.extend(d.planned(plan)?.into_iter().map(&as_accepted));
-            }
+            } => drafts.extend(run(Op::Upsert(ty, key, patch), opts)?),
             ProposedWrite::Retire { ty, key, opts } => {
-                let before = d.reached(w.ontology.ty(ty)?, key, opts.expected_version)?;
-                let own = as_proposer(d.draft(retirement(ty, key, before.version)));
-                drafts.extend(d.retiring(&before, own)?);
+                drafts.extend(run(Op::Retire(ty, key), opts)?)
             }
             ProposedWrite::Call {
                 verb,
@@ -2255,20 +2331,7 @@ impl Call<'_> {
                         position: accepted_at,
                     });
                 }
-                let run = d.run_verb(&decl, key, payload, opts.expected_version);
-                let (own, after) = run.map_err(told)?;
-                if let Some(after) = after {
-                    let on = w.ontology.ty(&decl.on)?;
-                    granted(owns(
-                        view.as_ref(),
-                        &d.pending,
-                        &w.ontology,
-                        self.who,
-                        on,
-                        &after.fields,
-                    )?)?;
-                }
-                drafts.extend(own.into_iter().map(&as_accepted));
+                drafts.extend(run(Op::Call(&decl, key, payload), opts)?);
             }
             // Checked again on the head, which may have moved: a change it
             // no longer admits refuses the accept, and the proposal stays
@@ -4180,25 +4243,6 @@ fn ordinary_door(ty: &TypeName) -> Result<()> {
 fn no_link_relation(ty: &TypeName, relation: &RelationName) -> Error {
     let (ty, relation) = (ty.clone(), relation.clone());
     invalid(Case::NoLinkRelation { ty, relation })
-}
-
-/// The relation carried by link records that `ty` declares as `relation`,
-/// with its link type.
-fn link_relation(
-    w: &Writer,
-    ty: &TypeName,
-    relation: &RelationName,
-) -> Result<(TypeName, RelationDecl)> {
-    let decl = w.ontology.ty(ty)?;
-    rights::not_a_view(decl)?;
-    let r = decl
-        .relations
-        .iter()
-        .find(|r| &r.name == relation && links::carried_by_links(r))
-        .ok_or_else(|| no_link_relation(ty, relation))?;
-    let lt = links::link_type_name(ty, relation);
-    w.ontology.ty(&lt)?;
-    Ok((lt, r.clone()))
 }
 
 /// The relation's cardinality over live links, with the link from `from`

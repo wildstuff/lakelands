@@ -72,6 +72,7 @@ pub fn window(
     let now = lake.clock(&mut w);
     let mut d = call.decide(&w, view.as_ref(), now, 0);
     (d.door, d.envelope.origin) = (Door::Source, Origin::Source);
+    d.envelope.source = Some(source.clone());
     let mut seen: BTreeSet<EventId> = BTreeSet::new();
     let mut drafts = Vec::new();
     let mut committed = 0u32;
@@ -113,7 +114,11 @@ pub fn window(
         if patch.is_empty() {
             return Err(lakelands_core::invalid(Case::PatchEmpty));
         }
-        let mut plan = d.write(decl, &r.key, t, patch, None)?;
+        // The record is applied as the source states it, so a guard reads
+        // the `seen_at` the fold keeps.
+        let stated = (Some(id.clone()), r.seen_at, r.upstream.clone());
+        (d.envelope.id, d.envelope.seen_at, d.envelope.upstream) = stated;
+        let plan = d.write(decl, &r.key, t, patch, None)?;
         // A link holds its relation's cardinality, over the lake's live
         // links and those earlier in this window: judged once the plan
         // admitted the record its writer leaves,
@@ -132,11 +137,7 @@ pub fn window(
                 window_links.push((r.ty.clone(), from, to));
             }
         }
-        plan.draft.id = Some(id.clone());
-        plan.draft.source = Some(source.clone());
-        plan.draft.seen_at = r.seen_at;
-        plan.draft.upstream = r.upstream.clone();
-        drafts.extend(d.planned(plan)?);
+        drafts.extend(d.planned(plan)?.drafts);
         seen.insert(id);
         committed += 1;
     }

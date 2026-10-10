@@ -40,7 +40,7 @@ check!(
 
 check!(
     UNLINK_KEEPS_HISTORY = an_unlinked_link_leaves_the_walk_and_stays_in_its_history,
-    "035 and §2.3: unlink retires the link record; the walk no longer follows it, and a read as of before the unlink still does"
+    "035 and §2.3: unlink retires the link record; the walk no longer follows it, and a read as of before the unlink still does; an unlink answers in a retirement's order, the grant before the record"
 );
 
 check!(
@@ -297,9 +297,15 @@ async fn an_unlinked_link_leaves_the_walk_and_stays_in_its_history(store: Store)
         pairs(&then)
     );
     let missing = unlink(&l, "i1", "p1").await;
+    let reader = reads_all(store.as_ref(), "reader");
+    let (ty, rel, opts) = ("invoice".into(), "approved_by".into(), WriteOpts::default());
+    let (i1, p1) = ("i1".into(), "p1".into());
+    let ungranted = cat.unlink(&reader, &ty, &i1, &rel, &p1, opts).await;
     ensure!(
-        matches!(missing, Err(Error::NotFound { .. })),
-        "unlinking a link that is not live is not found; it answered {missing:?}"
+        matches!(missing, Err(Error::NotFound { .. }))
+            && matches!(reason(&ungranted), Some(Refusal::NotGranted)),
+        "unlinking a link that is not live is not found, and in a retirement's order not \
+         granted first to one who writes nothing; it answered {missing:?} and {ungranted:?}"
     );
     Ok(())
 }

@@ -13,7 +13,7 @@ use crate::conformance::{Held, Store};
 
 check!(
     RETIRE_NEEDS_EVERY_FIELD = a_principal_who_may_write_only_some_fields_cannot_retire,
-    "006 and TypeRights::retire: retiring removes every field of a record, so it needs a write grant on every field of the type, checked before the record is looked up, and the record before the expected version (016, extended)"
+    "006 and TypeRights::retire: retiring removes every field of a record, so it needs a write grant on every field of the type, checked before the record is looked up, and the record before the expected version (016, extended); a retirement that is proposed answers in the same order"
 );
 
 check!(
@@ -123,12 +123,25 @@ async fn a_principal_who_may_write_only_some_fields_cannot_retire(store: Store) 
         expected_version: Some(lakelands_api::Version(3)),
         ..WriteOpts::default()
     };
-    let missing = cat.retire(&all, &invoice, &gone, at).await;
+    let missing = cat.retire(&all, &invoice, &gone, at.clone()).await;
     ensure!(
         matches!(reason(&ungranted), Some(Refusal::NotGranted))
             && matches!(missing, Err(lakelands_api::Error::NotFound { .. })),
         "retiring a key never written is refused for the grant first, then as not found \
          before a version is compared; it answered {ungranted:?} and {missing:?}"
+    );
+    let proposed = async |who, opts| {
+        let (ty, key) = (invoice.clone(), gone.clone());
+        let write = lakelands_api::write::ProposedWrite::Retire { ty, key, opts };
+        cat.propose(who, write, "gone".into()).await
+    };
+    let ungranted = proposed(&clerk, WriteOpts::default()).await;
+    let missing = proposed(&all, at).await;
+    ensure!(
+        matches!(reason(&ungranted), Some(Refusal::NotGranted))
+            && matches!(missing, Err(lakelands_api::Error::NotFound { .. })),
+        "a retirement that is proposed answers in `retire`'s order, the grant, then the \
+         record, then the version; it answered {ungranted:?} and {missing:?}"
     );
     cat.retire(&all, &invoice, &"i".into(), WriteOpts::default())
         .await

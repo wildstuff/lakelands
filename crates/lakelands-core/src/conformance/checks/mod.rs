@@ -584,6 +584,7 @@ pub const ALL: &[Check] = &[
     triggers::TRANSITION,
     triggers::RETIREMENT,
     triggers::REVIVAL,
+    triggers::GUARD_PROVENANCE,
     triggers::RETIRED_ONLY_IN_A_GUARD,
     triggers::PER_TRIGGER_DEPTH,
     triggers::TRIGGER_CEILING,

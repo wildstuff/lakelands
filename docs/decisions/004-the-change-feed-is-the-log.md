@@ -87,6 +87,25 @@ the depth of the reactions that name its firing as their cause
 The firing is appended whatever the depth, since it is the durable fact a
 host reacts to.
 
+## Extended: a guard reads the provenance its write leaves (lakelands#850)
+
+A guard may read a field's provenance, `seen_at(f)` and `known_at(f)`
+(010). It is judged on the record its write leaves, and that record
+carries the write's own provenance, as the fold will keep it. So the
+store puts everything an event says of its origin on the event before it
+computes the record the event makes, at every door: the source, the
+instant the source states and where the source read the value, for an
+ingest; the proposer as the writer and the acceptance as the cause, for
+an accepted proposal; the call as the cause and the verb as the
+procedure, for a verb's write. A guard is a level, not an edge:
+`seen_at(status) >= '2026-03-01'` fires on every write that leaves a
+record whose `status` its source saw then. That is the ingest that
+brings the value, a record later in the same window that brings another
+field of that key, and an authored write of another field after it,
+since `status` keeps its `seen_at`. A guard that read less than the fold keeps would give one
+expression two answers, one at the write and one at every read after it
+(023).
+
 ## Extended: a guard tells a retirement from an update (lakelands#271)
 
 A retirement keeps the record's fields as they were and only retires it.
