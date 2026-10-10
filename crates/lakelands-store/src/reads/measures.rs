@@ -73,10 +73,10 @@ impl Reader<'_> {
         p: &Pattern,
         limit: usize,
         carried: Option<Pulled>,
+        hidden: &Visible<'_, '_>,
     ) -> Result<Judged<QueryResult>> {
         let params = self.bound_params(&p.start.ty);
         let offset = super::offset(p.cursor.as_ref(), p, &params)?;
-        let hidden = Visible { reader: self };
         let all = match p.project {
             Projection::Degree => {
                 let steps: Vec<(RelationName, Walk)> = p
@@ -92,7 +92,7 @@ impl Reader<'_> {
                 // a page at a time too.
                 let mut seeds: Vec<Node> = Vec::with_capacity(graph::PAGE);
                 let mut rank = |seeds: &mut Vec<Node>| -> Result<()> {
-                    let degrees = graph::degrees(&hidden, seeds, &steps)?;
+                    let degrees = graph::degrees(hidden, seeds, &steps)?;
                     for (node, d) in seeds.drain(..).zip(degrees) {
                         best.push((Reverse(d), node.1));
                         if best.len() > keep {
@@ -128,7 +128,7 @@ impl Reader<'_> {
                 let relations: Vec<RelationName> =
                     p.steps.iter().map(|s| s.relation.clone()).collect();
                 let mut found =
-                    Components::new(&hidden, relations, self.lake.limits.max_graph_nodes);
+                    Components::new(hidden, relations, self.lake.limits.max_graph_nodes);
                 if let Some(moved) = self.seeds(p, carried, |node| found.add(node))? {
                     return Ok(Err(moved));
                 }

@@ -396,3 +396,36 @@ A `type` a step does not reach is refused wherever the step reaches some
 type, a graph from depth 0 included, where it used to answer as if the
 step had reached nothing. A refusal at a step names the relation as the
 caller wrote it, so a step over an inverse is named by the inverse.
+
+## Extended: a pattern is refused for what it says (lakelands#829)
+
+Four things a pattern could say were passed over, each answered as if it
+had not been said or only where the lake happened to hold a record.
+
+- **An `order_by` on a graph or a path is refused.** A graph comes by
+  depth, type and key (029) and a path by its hops, so an order names
+  nothing they honour. It is refused as invalid where `as` is, before a
+  step is judged. A measure refuses it in its own words, as before. This
+  is a change for a host: one that sent an `order_by` with a graph was
+  answered as if it had sent none.
+- **A depth no walk takes is refused before a record is read.** A step
+  whose range is empty or goes past the lake's `max_depth` was refused by
+  the walk, once for each start, so rows and a path from a start no
+  record has answered nothing. The door judges every step's depth once
+  its steps are judged, so the refusal does not depend on what the lake
+  holds.
+- **A neighbourhood over a relation no type declares is refused.** A
+  graph whose steps all start at depth 0 is not judged step by step: a
+  step's relation may be declared by a type another step reaches. A
+  relation no type its reader is shown declares is walked from nowhere,
+  and the start alone was answered. It is refused as a chain's step is,
+  naming the type the step is read from (the start's, for a first step),
+  the relation as the reader sent it and the walk, with a `type` or
+  without. Only shown relations are read, so a
+  hidden relation and an absent one are answered alike (006), and an
+  inverse that is not around the type its step is read from is a
+  relation of that name: none.
+- **A step with a `type` reads what it keeps**, and a step by an inverse
+  the one relation that declares it: both are said where the rule is,
+  in `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`
+  and `docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`.

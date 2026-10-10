@@ -839,6 +839,8 @@ catalog! {
         InitialNotOfType => "only a field of a type declares one",
         /// An `initial` value on a field that names a record.
         InitialReference => "a field that names a record is checked against that record by the door that writes it",
+        /// An inverse two relations name onto one target.
+        InverseTwice { inverse: RelationName, target: TypeName } => "`{inverse}` is already the inverse of a relation onto `{target}`; an inverse names one relation",
         /// A `json` field named as a type.
         JsonNamedAsType => "a json field may not carry the name of a type",
         /// A type keyed by a field no key may be.
@@ -1169,6 +1171,8 @@ catalog! {
         PatternBindsTwice { name: String } => "the pattern binds `{name}` already; give this step another name with `as`",
         /// A path a pattern orders, projects or aggregates by that no row holds.
         PatternNoPath { path: String } => "`{path}` is no path the pattern's rows hold; a row holds `<name>.<field>` for each name the pattern binds, its type's or the one `as` gives",
+        /// A pattern with an `order_by` that answers no rows.
+        PatternOrderNotRows => "`order_by` orders rows; a graph and a path come by depth, type and key",
         /// A pattern with `to` whose steps are a chain.
         PatternToChain => "a pattern with `to` walks its steps as one walk from its start; every step's depth starts at 0",
         /// A pattern with `to` not projected as a graph.

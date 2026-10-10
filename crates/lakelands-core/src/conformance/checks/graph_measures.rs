@@ -51,7 +51,7 @@ check!(
 
 check!(
     MEASURE_REFUSALS = a_measure_refuses_depth_where_to_order_by_and_one_way_components,
-    "018: a measure refuses a step `depth` or `where`, `to`, `order_by`, and a `components` step that does not walk `both`, each as invalid, rather than answer less than it seems to"
+    "018: a measure refuses a step `depth`, `where` or `type`, `to`, `order_by`, and a `components` step that does not walk `both`, each as invalid, rather than answer less than it seems to"
 );
 
 /// Partners p1..p3; invoices i0..i5 (i0 linked to nothing); `billed_to` by the reference field
@@ -443,6 +443,9 @@ async fn a_measure_refuses_depth_where_to_order_by_and_one_way_components(store:
     let mut p = degree();
     p.steps[0].filter = Some("name = 'p1'".into());
     cases.push(("a step where", p));
+    let mut p = degree();
+    p.steps[0].ty = Some("partner".into());
+    cases.push(("a step `type`", p));
     let mut p = degree();
     p.to = Some(("partner".into(), "p1".into()));
     cases.push(("`to`", p));

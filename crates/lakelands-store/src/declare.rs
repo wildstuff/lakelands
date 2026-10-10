@@ -596,7 +596,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
     }
     // Before any relation is judged: one its author is not shown, put back
     // under a name the author sends again, is refused as any relation
-    // declared twice, and nothing else is said of it (024, extended).
+    // declared twice (024, extended). Its inverse is judged below.
     let mut named = BTreeSet::new();
     if let Some(r) = t.relations.iter().find(|r| !named.insert(&r.name)) {
         let (what, name) = (Naming::Relation, r.name.to_string());
@@ -666,6 +666,26 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
         for f in &r.fields {
             let pending = links::link_type_name(&t.name, &r.name);
             field_type(o, &on, f, &pending, None)?;
+        }
+    }
+    // An inverse names one relation onto its target (044, extended): a
+    // step by it from there is read as that relation walked the other way.
+    // A second is refused at the type its author sent, naming the inverse
+    // and the target it sent and no relation: the other may be one the
+    // author is not shown, on this type or another, and that one exists
+    // is told on purpose. A relation the type holds as it stands is not
+    // judged again.
+    let others = o.types.values().filter(|e| e.decl.name != t.name);
+    let theirs: Vec<_> = others.flat_map(|e| &e.decl.relations).collect();
+    let held = o.types.get(&t.name).map(|e| &e.decl.relations);
+    for r in &t.relations {
+        let same = |x: &RelationDecl| (&x.inverse, &x.target) == (&r.inverse, &r.target);
+        let stood = held.is_some_and(|h| h.iter().any(|x| x.name == r.name && same(x)));
+        let mine = t.relations.iter().filter(|x| x.name != r.name);
+        let twice = !stood && mine.chain(theirs.iter().copied()).any(same);
+        if let Some(inverse) = r.inverse.clone().filter(|_| twice) {
+            let target = r.target.clone();
+            return Err(invalid(at(&owner, Case::InverseTwice { inverse, target })));
         }
     }
     if let Some(v) = &t.view {

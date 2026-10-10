@@ -2786,17 +2786,17 @@ impl<'a> Reader<'a> {
     /// when it is `None`, over every relation it walks. Only a relation the
     /// hop walks and the principal is shown is probed, so a refusal never
     /// names a type or a field it is told is not there (006, extended):
-    /// what remains is a masked field.
+    /// what remains is a masked field. A relation the step the hop is
+    /// walked for does not walk (`reach`) is not probed, as it is not read.
     fn probe_derived(
         &self,
         here: &TypeName,
         relation: Option<&RelationName>,
         walk: Walk,
+        reach: &Reach,
     ) -> Result<()> {
         for (t, r) in self.shown_relations(Some(here)) {
-            let out = t.name == *here && walk != Walk::In;
-            let inn = r.target == *here && walk != Walk::Out;
-            if relation.is_some_and(|n| r.name != *n) || !(out || inn) {
+            if relation.is_some_and(|n| r.name != *n) || !reach.walks(here, walk, t, r) {
                 continue;
             }
             rights::check_probe(self.who, t, r.via.iter())?;
@@ -2835,6 +2835,10 @@ impl<'a> Reader<'a> {
         }
         if measures::is_measure(&p.project) {
             measures::check(p)?;
+        } else if !binds && !p.order_by.is_empty() {
+            // A graph and a path come by depth, type and key (029): an
+            // order they would pass over is refused, as `as` is.
+            return Err(invalid(Case::PatternOrderNotRows));
         }
         // What a pattern says and an arm cannot honour is refused, not
         // passed over: a path is a graph of one walk from one start. Rows
@@ -2848,6 +2852,7 @@ impl<'a> Reader<'a> {
         // The type each step reaches, checked against the declarations.
         let mut types = vec![start_decl.name.clone()];
         let mut filters = Vec::new();
+        let mut reach: Vec<Reach> = Vec::new();
         let measure = measures::is_measure(&p.project);
         // A graph whose steps all start at depth 0 is one walk over any of
         // their relations from the start (018): a step's relation may be
@@ -2871,16 +2876,29 @@ impl<'a> Reader<'a> {
                 step: i + 1,
                 relation: step.relation.clone(),
             };
-            self.as_declared(&here, step);
+            let owner = self.as_declared(&here, step);
+            let owner = owner.as_ref();
             // Rows are walked as a chain whatever their depths, so a step
             // that binds is judged from where it stands, as a chain's and a
             // measure's are.
             let walked = measure || chain || binds;
             let reached = match walked {
-                true => self.step_target(&here, &step.relation, step.walk, lenient)?,
+                true => self.step_target(&here, &step.relation, step.walk, (lenient, owner))?,
+                // A neighbourhood's step may stand anywhere, but a relation
+                // no type its reader is shown declares is walked from
+                // nowhere: hidden or absent, it is refused alike (006).
+                false if !self.out_any(&step.relation) => {
+                    let (ty, relation, walk) = (here, step.relation.clone(), step.walk);
+                    return Err(invalid(Case::NoRelationToWalk { ty, relation, walk }));
+                }
                 false => None,
             };
-            self.probe_derived(&here, Some(&step.relation), step.walk)?;
+            // A neighbourhood and a path keep a record at every hop; a chain
+            // walks a step's whole range first. A measure takes no `type`.
+            let far = self.through(step, !(binds || chain), owner);
+            let owner = owner.cloned();
+            reach.push(Reach { owner, far });
+            self.probe_derived(&here, Some(&step.relation), step.walk, &reach[i])?;
             // Such a step reaches every type of its whole range from `here`,
             // not only the first that declares its relation, and its `type`
             // may name any of them (a measure's has none); a neighbourhood's
@@ -2888,8 +2906,8 @@ impl<'a> Reader<'a> {
             // `here`, so one held from the field that carries it there is
             // answered that first.
             let all = match walked {
-                true => self.ranged(step, &here),
-                false => self.neighbours(step, None),
+                true => self.ranged(step, &here, reach[i].owner.as_ref()),
+                false => self.neighbours(step, None, reach[i].owner.as_ref()),
             };
             // A row binds the step's records under one name, and the step
             // after it in a chain is judged from one type.
@@ -2918,8 +2936,15 @@ impl<'a> Reader<'a> {
             filters.push(self.record_filter(&decl, step.filter.as_ref(), &at)?);
             types.push(reached);
         }
+        // A depth no walk takes is refused for what the pattern says,
+        // before a record is read: with no start there is no walk to say it.
+        for s in &p.steps {
+            graph::check_depth(s.depth, max_depth)?;
+        }
+        let (reader, reach) = (self, &reach[..]);
+        let hidden = Visible { reader, reach };
         if measure {
-            return self.measure(p, limit, carried);
+            return self.measure(p, limit, carried, &hidden);
         }
         if p.to.is_some() && chain {
             return Err(invalid(Case::PatternToChain));
@@ -2927,7 +2952,6 @@ impl<'a> Reader<'a> {
         // A cursor is checked before any arm answers: a path and an
         // aggregate hand out none, so every cursor is another read's there.
         let offset = offset(p.cursor.as_ref(), p, &params)?;
-        let hidden = Visible { reader: self };
         // Whether a record reached over step `i` is kept and walked from:
         // it is of the step's `type`, and its `where`, read against the type
         // the step reaches, holds of it.
@@ -3192,7 +3216,11 @@ impl<'a> Reader<'a> {
     /// target, and the step's `walk` counts from the name it gives. A
     /// relation declared under the name wins, so a step is read as an
     /// inverse only when it walks no relation of that name from `here`.
-    fn as_declared(&self, here: &TypeName, step: &mut Step) {
+    ///
+    /// An inverse is one relation (044, extended), so such a step walks
+    /// that relation alone, whatever else bears its name: its owner is
+    /// answered, for the step to be judged and walked by.
+    fn as_declared(&self, here: &TypeName, step: &mut Step) -> Option<TypeName> {
         let (name, walk) = (&step.relation, step.walk);
         // Whether a relation leaves `here` (out) or reaches it (in) by the
         // way the step walks.
@@ -3206,28 +3234,75 @@ impl<'a> Reader<'a> {
         let walked = |t: &TypeDecl, r: &RelationDecl, w: Walk| leaves(t, w) || reaches(r, w);
         let shown = self.shown_relations(Some(here));
         if (shown.iter()).any(|(t, r)| &r.name == name && walked(t, r, walk)) {
-            return;
+            return None;
         }
-        let inverse = (shown.iter())
-            .find(|(t, r)| r.inverse.as_ref() == Some(name) && walked(t, r, flipped))
-            .map(|(_, r)| r);
-        if let Some(r) = inverse {
-            step.relation = r.name.clone();
-            step.walk = flipped;
+        let inverse = |(t, r): &&(&TypeDecl, &RelationDecl)| {
+            r.inverse.as_ref() == Some(name) && walked(t, r, flipped)
+        };
+        let (t, r) = shown.iter().find(inverse)?;
+        (step.relation, step.walk) = (r.name.clone(), flipped);
+        Some(t.name.clone())
+    }
+
+    /// The relations a step walks by its name among those shown around
+    /// `around`, or anywhere: its `owner`'s alone where it names an inverse.
+    fn named(
+        &self,
+        around: Option<&TypeName>,
+        relation: &RelationName,
+        owner: Option<&TypeName>,
+    ) -> Vec<(&TypeDecl, &RelationDecl)> {
+        let mut shown = self.shown_relations(around);
+        shown.retain(|(t, r)| &r.name == relation && owner.is_none_or(|o| *o == t.name));
+        shown
+    }
+
+    /// The types a typed step's walk passes through, its `type` among
+    /// them: a neighbourhood and a path keep a record at `every_hop`, so
+    /// only that type; a chain's step walks its range and keeps at its end,
+    /// so each type its `type` is reached from in the hops left as well. A
+    /// relation that leads to none of them answers nothing the step keeps.
+    fn through(
+        &self,
+        step: &Step,
+        every_hop: bool,
+        owner: Option<&TypeName>,
+    ) -> Option<BTreeSet<TypeName>> {
+        let mut far = BTreeSet::from([step.ty.clone()?]);
+        let hops = if every_hop { 1 } else { step.depth.max };
+        let shown = self.named(None, &step.relation, owner);
+        for _ in 1..hops.min(self.lake.limits.max_depth) {
+            // One hop back from what the hops after it lead to.
+            let known = far.clone();
+            for (t, r) in &shown {
+                if step.walk != Walk::In && known.contains(&r.target) {
+                    far.insert(t.name.clone());
+                }
+                if step.walk != Walk::Out && known.contains(&t.name) {
+                    far.insert(r.target.clone());
+                }
+            }
+            if far.len() == known.len() {
+                break;
+            }
         }
+        Some(far)
     }
 
     /// The types a step reaches from `here`, or for a neighbourhood from
     /// wherever its relation is declared: its target walked out, its owner
     /// walked in.
-    fn neighbours(&self, step: &Step, here: Option<&TypeName>) -> BTreeSet<TypeName> {
+    fn neighbours(
+        &self,
+        step: &Step,
+        here: Option<&TypeName>,
+        owner: Option<&TypeName>,
+    ) -> BTreeSet<TypeName> {
         let at = |t: &TypeName| here.is_none_or(|h| h == t);
         let mut reached = BTreeSet::new();
-        for (t, r) in self.shown_relations(here) {
-            if r.name == step.relation {
-                (step.walk != Walk::In && at(&t.name)).then(|| reached.insert(r.target.clone()));
-                (step.walk != Walk::Out && at(&r.target)).then(|| reached.insert(t.name.clone()));
-            }
+        for (t, r) in self.named(here, &step.relation, owner) {
+            (step.walk != Walk::In && at(&t.name)).then(|| reached.insert(r.target.clone()));
+            (step.walk != Walk::Out && at(&r.target)).then(|| reached.insert(t.name.clone()));
         }
         reached
     }
@@ -3237,13 +3312,13 @@ impl<'a> Reader<'a> {
     /// of it reaches. A row would bind a record of each under the step's
     /// one name, and a `where` be read against each. A range that reaches
     /// none is judged by its first hop.
-    fn ranged(&self, step: &Step, here: &TypeName) -> BTreeSet<TypeName> {
+    fn ranged(&self, step: &Step, here: &TypeName, owner: Option<&TypeName>) -> BTreeSet<TypeName> {
         let mut reached = BTreeSet::new();
         let mut at = BTreeSet::from([here.clone()]);
         for hop in 0..=step.depth.max.min(self.lake.limits.max_depth) {
             if hop > 0 {
                 at = (at.iter())
-                    .flat_map(|t| self.neighbours(step, Some(t)))
+                    .flat_map(|t| self.neighbours(step, Some(t), owner))
                     .collect();
             }
             // A hop of the range that adds no type is the last that can.
@@ -3256,7 +3331,7 @@ impl<'a> Reader<'a> {
             }
         }
         match reached.is_empty() {
-            true => self.neighbours(step, Some(here)),
+            true => self.neighbours(step, Some(here), owner),
             false => reached,
         }
     }
@@ -3297,15 +3372,15 @@ impl<'a> Reader<'a> {
         here: &TypeName,
         relation: &RelationName,
         walk: Walk,
-        lenient: bool,
+        (lenient, owner): (bool, Option<&TypeName>),
     ) -> Result<Option<TypeName>> {
         self.shape.ontology.ty(here)?;
-        let shown = self.shown_relations(Some(here));
+        let shown = self.named(Some(here), relation, owner);
         let out = (shown.iter())
-            .find(|(t, r)| &t.name == here && &r.name == relation)
+            .find(|(t, _)| &t.name == here)
             .map(|(_, r)| r.target.clone());
         let inn = (shown.iter())
-            .find(|(_, r)| &r.name == relation && &r.target == here)
+            .find(|(_, r)| &r.target == here)
             .map(|(t, _)| t.name.clone());
         let found = match walk {
             Walk::Out => out,
@@ -3601,6 +3676,30 @@ fn ends_admitted(
 /// may see.
 struct Visible<'r, 'a> {
     reader: &'r Reader<'a>,
+    /// What each of the pattern's steps walks, by the step's index.
+    reach: &'r [Reach],
+}
+
+/// What a step walks of the relations that bear its relation's name
+/// (lakelands#829): a step naming an inverse walks the one relation that
+/// declares it, its `owner`'s, and a step with a `type` only towards the
+/// types its walk passes through, `far`. A relation a step does not walk
+/// is neither probed nor read, so an answer holds what was probed and a
+/// refusal names only what the walk would have read.
+struct Reach {
+    owner: Option<TypeName>,
+    far: Option<BTreeSet<TypeName>>,
+}
+
+impl Reach {
+    /// Whether the step walks relation `r` of `owner` around `here`:
+    /// out to its target, or in from its owner.
+    fn walks(&self, here: &TypeName, walk: Walk, owner: &TypeDecl, r: &RelationDecl) -> bool {
+        let far = |t: &TypeName| self.far.as_ref().is_none_or(|f| f.contains(t));
+        let out = owner.name == *here && walk != Walk::In && far(&r.target);
+        let inn = r.target == *here && walk != Walk::Out && far(&owner.name);
+        self.owner.as_ref().is_none_or(|o| *o == owner.name) && (out || inn)
+    }
 }
 
 impl EdgeSource for Visible<'_, '_> {
@@ -3610,12 +3709,21 @@ impl EdgeSource for Visible<'_, '_> {
         keys: &[RecordKey],
         relation: Option<&RelationName>,
         walk: Walk,
+        step: Option<usize>,
     ) -> Result<Vec<Vec<Edge>>> {
         let r = self.reader;
+        // Every relation, where the hop is no step's.
+        const ALL: &Reach = &Reach {
+            owner: None,
+            far: None,
+        };
+        let reach = step.and_then(|i| self.reach.get(i)).unwrap_or(ALL);
         // A hop past the first reaches types the step's own probe did not
         // look at.
-        r.probe_derived(ty, relation, walk)?;
-        let shown = r.shown_relations(Some(ty));
+        r.probe_derived(ty, relation, walk, reach)?;
+        // A relation the step does not walk around `ty` is not read either.
+        let mut shown = r.shown_relations(Some(ty));
+        shown.retain(|(t, x)| reach.walks(ty, walk, t, x));
         let mut lists = ProjectionView::edges(r.view.as_ref(), ty, keys, relation, walk)?;
         for (list, derived) in
             lists
@@ -3624,6 +3732,13 @@ impl EdgeSource for Visible<'_, '_> {
         {
             list.extend(derived);
         }
+        // An edge of a relation the principal is not shown, or the step
+        // does not walk, answers nothing, and no link record is read for
+        // it: a step over another type's relation of the same name walks
+        // its own (024, extended).
+        let read =
+            |e: &Edge| (shown.iter()).any(|(t, x)| t.name == e.from.0 && x.name == e.relation);
+        lists.iter_mut().for_each(|list| list.retain(read));
         // A link's edge comes from its own record: a restricted link is
         // walked only with the `restricted` grant, and its fields only as
         // far as the principal may read the link type's fields. The link
@@ -3657,12 +3772,6 @@ impl EdgeSource for Visible<'_, '_> {
         for list in lists {
             let mut kept = Vec::with_capacity(list.len());
             for mut e in list {
-                // An edge of a relation the principal is not shown answers
-                // nothing, whatever step asked for it: a step over another
-                // type's relation of the same name walks it (024, extended).
-                if !(shown.iter()).any(|(t, x)| t.name == e.from.0 && x.name == e.relation) {
-                    continue;
-                }
                 if carried(&e) {
                     let (lt, lk) = link_of(&e);
                     let Some(link) = links.get(&(lt.clone(), lk)) else {

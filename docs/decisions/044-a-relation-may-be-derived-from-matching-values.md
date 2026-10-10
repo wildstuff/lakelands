@@ -102,3 +102,60 @@ bundle checks that, within itself). Every answer a step gave before
 inverses were walked stays the same. The edges keep the declared
 relation, with its declaring side as `from`, whichever name the step
 gave.
+
+## Extended: an inverse is one relation (lakelands#829)
+
+A step by an inverse was rewritten to the relation's name walked the
+other way, and from there it walked every relation of that name: where a
+bill and a quote are each `of` a customer and `bills` is the inverse of
+the bill's, `bills` from a customer reached the quotes too. And two
+relations could name the same inverse onto one target, under different
+names, of which the step took the first it found.
+
+An inverse names one relation onto its target. A declaration is refused
+where a second relation names the same inverse onto the same target, by
+`declare`, `propose`, `apply` and a migration, which share the check.
+The refusal stands at the type its author sent and names the inverse and
+the target the author sent, and no relation. A relation the type holds
+as it stands, under the same name, inverse and target, is not judged
+again; one given another name, inverse or target is. Within a bundle the
+bundle check refuses a second inverse too, and names both relations,
+which are its author's own. The same inverse onto another target is
+another name there, and is taken. A host's vocabulary types pass no
+declaration check yet (lakelands#835); the rule is theirs when they do.
+
+**What the refusal tells, on purpose.** The other relation may be one
+its author is not shown: on a type the author is not shown; on the type
+it sent, where it is kept from the field that carries the relation; or
+on another type it is shown, where it may not know of the carrying field
+or of a field a derived relation pairs.
+The refusal then says that some relation the author is not shown points
+at a type it is shown, under that inverse. That is a yes or a no for a
+pair of inverse and target the author guesses, and neither the
+relation's name nor its owner. It is told to an author at `declare`, at
+`apply` and by a migration, to a proposer who does not hold `schema`,
+and to a reviewer at an accept where the pair was taken after the
+proposal, each word for word as an author shown the other relation is
+told. An inverse's name around a type is one namespace for everyone who
+walks to that type, as a type's name is one for the lake, and one who
+proposes a type named as a hidden one is refused too. A collision there
+has to be refused, and one relation for an inverse is worth that.
+
+A step by an inverse walks that relation alone, at every hop: an edge of
+another owner's relation of the same name is neither probed nor read,
+and the step is judged by what that relation reaches, so from its target
+it reaches its owner's type and a `type` that is another is refused as
+one the step does not reach. A measure counts that relation's links
+alone.
+
+A type may still own two relations with one inverse, onto two targets.
+Walked `out` from either target the inverse is one relation. Walked `in`
+from their owner, or `both` from a type that one such relation leaves
+and another reaches, it is read as the first of them found, by its
+owner's name and then as declared, as before; nothing is refused for
+it.
+
+This is a change for a host: a second relation with an inverse already
+named onto its target is refused, and a step by an inverse no longer
+answers records of another type that declares a relation of the same
+name.

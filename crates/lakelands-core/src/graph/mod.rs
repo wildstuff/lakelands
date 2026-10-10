@@ -81,13 +81,17 @@ pub const PAGE: usize = 256;
 pub trait EdgeSource {
     /// The links of many records of one type, over one relation or (with
     /// `None`) all, in one direction: one list per key, in the keys'
-    /// order. No order is promised within a list; the walks sort.
+    /// order. No order is promised within a list; the walks sort. `step`
+    /// is the pattern step the hop is walked for, where the walk has
+    /// steps: a source that reads each step's links by its own rule is
+    /// told which.
     fn edges(
         &self,
         ty: &TypeName,
         keys: &[RecordKey],
         relation: Option<&RelationName>,
         walk: Walk,
+        step: Option<usize>,
     ) -> Result<Vec<Vec<Edge>>>;
 
     /// Whether each record reached over a link may appear in an answer,
@@ -107,6 +111,7 @@ impl<V: ProjectionView + ?Sized> EdgeSource for V {
         keys: &[RecordKey],
         relation: Option<&RelationName>,
         walk: Walk,
+        _step: Option<usize>,
     ) -> Result<Vec<Vec<Edge>>> {
         ProjectionView::edges(self, ty, keys, relation, walk)
     }
@@ -140,6 +145,7 @@ fn edges_of<S: EdgeSource + ?Sized>(
     nodes: &[Node],
     relation: Option<&RelationName>,
     walk: Walk,
+    step: Option<usize>,
 ) -> Result<Vec<Vec<Edge>>> {
     let mut out = vec![Vec::new(); nodes.len()];
     let mut by_type: BTreeMap<&TypeName, Vec<usize>> = BTreeMap::new();
@@ -149,7 +155,10 @@ fn edges_of<S: EdgeSource + ?Sized>(
     for (ty, at) in by_type {
         for page in at.chunks(PAGE) {
             let keys: Vec<RecordKey> = page.iter().map(|&i| nodes[i].1.clone()).collect();
-            for (&i, edges) in page.iter().zip(source.edges(ty, &keys, relation, walk)?) {
+            for (&i, edges) in page
+                .iter()
+                .zip(source.edges(ty, &keys, relation, walk, step)?)
+            {
                 out[i].extend(edges);
             }
         }
@@ -231,15 +240,16 @@ impl<'a, S: EdgeSource + ?Sized> Links<'a, S> {
         nears: &[Node],
         relations: &[RelationName],
         walk: Walk,
+        step: Option<usize>,
     ) -> Result<Vec<Vec<(Node, Edge)>>> {
         let mut raw = vec![Vec::new(); nears.len()];
         if relations.is_empty() {
-            raw = edges_of(self.source, nears, None, walk)?;
+            raw = edges_of(self.source, nears, None, walk, step)?;
         } else {
             for relation in relations {
                 for (all, more) in
                     raw.iter_mut()
-                        .zip(edges_of(self.source, nears, Some(relation), walk)?)
+                        .zip(edges_of(self.source, nears, Some(relation), walk, step)?)
                 {
                     all.extend(more);
                 }
@@ -299,7 +309,7 @@ where
         if s.depth.max < hop {
             continue;
         }
-        let around = links.around(nears, slice::from_ref(&s.relation), s.walk)?;
+        let around = links.around(nears, slice::from_ref(&s.relation), s.walk, Some(i))?;
         for (all, one) in out.iter_mut().zip(around) {
             for (far, edge) in one {
                 if keep(i, &far)? {

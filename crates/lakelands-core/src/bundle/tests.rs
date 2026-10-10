@@ -1287,6 +1287,26 @@ fn an_inverse_may_not_take_a_name_its_target_already_uses() {
 }
 
 #[test]
+fn an_inverse_names_one_relation_onto_its_target() {
+    let owner = |name: &str, relation: &str| {
+        format!("name: {name}\nrelations:\n  {relation}: {{ target: c, inverse: docs }}\n")
+    };
+    let (a, b) = (owner("a", "of"), owner("b", "for"));
+    let c = ("types/c.yaml", "name: c\n");
+    let e = one(
+        &[("types/a.yaml", &a), ("types/b.yaml", &b), c],
+        Problem::Contradiction,
+    );
+    assert!(
+        e.file == "types/b.yaml" && e.message.contains("`a`'s `of`"),
+        "{e}"
+    );
+    // One relation alone names it, and the same inverse onto another type.
+    let d = "name: d\nrelations:\n  of: { target: a, inverse: docs }\n";
+    load(&[("types/a.yaml", &a), c, ("types/d.yaml", d)]).expect("each onto its own target");
+}
+
+#[test]
 fn a_json_field_may_not_carry_the_name_of_a_type() {
     one(
         &[

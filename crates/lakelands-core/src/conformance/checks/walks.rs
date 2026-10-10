@@ -33,7 +33,7 @@ check!(
 
 check!(
     STEP_BINDS_ONE_TYPE = a_step_whose_records_a_row_binds_reaches_one_type,
-    "018, extended (lakelands#680): a step whose records rows or an aggregate bind reaches one type over its whole range or names its `type`: over a relation two types declare it is refused at the first step and at a later one, in a chain and from depth 0, as is one whose second hop reaches other types and one from depth 0 that reaches another type than it stands on, each at its step under the relation as its caller wrote it, an inverse too; a `where` over such a step is refused alike for rows and a graph, and a chain's graph is judged over its range as its rows are, a second hop's type named and a step from depth 0 with a `where` naming one, and its step that another follows names its `type` while a last one keeps every type it reaches; a `type` the step does not reach is refused naming every type it does, at depth 0 as in a chain, and degree and components take no step `type` at all; with its `type` it binds that type alone, a range that reaches nothing is judged by its first hop, and the step after it is read from that type, by an order, `fields`, a group key, a `where` and a `type` of its own; a reader masked from the field that carries the first hop is answered that before the step is judged, in rows, an aggregate and a graph, and a relation a neighbourhood meets around another type when it is walked and not before; a path asked as rows or an aggregate is refused as that, and rows from depth 0 over a relation their type does not declare as a chain's are; a reader not shown one of the two types is answered as on a lake without it, by a measure too"
+    "018, extended (lakelands#680): a step whose records rows or an aggregate bind reaches one type over its whole range or names its `type`: over a relation two types declare it is refused at the first step and at a later one, in a chain and from depth 0, as is one whose second hop reaches other types and one from depth 0 that reaches another type than it stands on, each at its step under the relation as its caller wrote it; a `where` over such a step is refused alike for rows and a graph, and a chain's graph is judged over its range as its rows are, a second hop's type named and a step from depth 0 with a `where` naming one, and its step that another follows names its `type` while a last one keeps every type it reaches; a `type` the step does not reach is refused naming every type it does, at depth 0 as in a chain, and degree and components take no step `type` at all; with its `type` it binds that type alone, as a step by an inverse binds its owner's, a range that reaches nothing is judged by its first hop, and the step after it is read from that type, by an order, `fields`, a group key, a `where` and a `type` of its own; a reader masked from the field that carries the first hop is answered that before the step is judged, in rows, an aggregate and a graph, and a relation a neighbourhood meets around another type when it is walked and not before; a path asked as rows or an aggregate is refused as that, and rows from depth 0 over a relation their type does not declare as a chain's are; a reader not shown one of the two types is answered as on a lake without it, by a measure too"
 );
 
 check!(
@@ -302,8 +302,8 @@ async fn a_row_binds_each_record_under_its_name(store: Store) -> Held {
     Ok(())
 }
 
-/// Bills and quotes, each `of` a customer, whose `papers` both are; a bill
-/// is `by` a seller and a quote `by` a ware.
+/// Bills and quotes, each `of` a customer, whose `bills` the bills alone
+/// are; a bill is `by` a seller and a quote `by` a ware.
 async fn trade(store: &dyn LakeStore) -> Result<Lake, Failure> {
     use crate::conformance::fixture::type_of;
     let l = Lake::of(store);
@@ -317,7 +317,7 @@ async fn trade(store: &dyn LakeStore) -> Result<Lake, Failure> {
         ty.relations = vec![
             RelationDecl {
                 via: Some("cust".into()),
-                inverse: Some("papers".into()),
+                inverse: (name == "bill").then(|| "bills".into()),
                 ..RelationDecl::to("of", "customer")
             },
             RelationDecl {
@@ -361,9 +361,33 @@ async fn trade(store: &dyn LakeStore) -> Result<Lake, Failure> {
     Ok(l)
 }
 
+/// What `who` is answered: each row's values at `read`, the groups, a
+/// graph's size, or the refusal.
+async fn answered(
+    cat: &dyn lakelands_api::Catalog,
+    who: &lakelands_api::Principal,
+    p: Pattern,
+    read: &[&str],
+) -> String {
+    use crate::conformance::fixture::invalid_said;
+    let cell = |v: Option<&Value>| v.map_or("-".into(), |v| v.to_string());
+    let said = cat.query(who, p).await;
+    match said.as_ref().map(|r| &r.data) {
+        Ok(QueryResult::Rows { rows, .. }) => (rows.iter())
+            .map(|r| read.iter().map(|k| cell(r.get(*k))).collect::<String>())
+            .collect::<Vec<_>>()
+            .join(","),
+        Ok(QueryResult::Groups { rows }) => (rows.iter())
+            .map(|g| format!("{:?}={}", g.by.values().next(), g.values["n"]))
+            .collect(),
+        Ok(QueryResult::Graph { nodes, .. }) => format!("{} nodes", nodes.len()),
+        Err(e) => format!("{:?}", invalid_said(&said).ok_or(e)),
+    }
+}
+
 async fn a_step_whose_records_a_row_binds_reaches_one_type(store: Store) -> Held {
     use crate::conformance::fixture::{
-        alike_renamed, field_access, invalid_said, order, pattern, principal, refused_on,
+        alike_renamed, field_access, order, pattern, principal, refused_on,
     };
     use lakelands_api::error::{Case, Place, Said};
     use lakelands_api::principal::{Grants, PrincipalKind, TypeGrants};
@@ -390,25 +414,9 @@ async fn a_step_whose_records_a_row_binds_reaches_one_type(store: Store) -> Held
         step,
         relation: relation.into(),
     };
-    // What `who` is answered: each row's values at `read`, the groups, a
-    // graph's size, or the refusal.
     let answer = |who: &Principal, p: Pattern, read: &'static [&'static str]| {
         let (cat, who) = (cat.clone(), who.clone());
-        async move {
-            let cell = |v: Option<&Value>| v.map_or("-".into(), |v| v.to_string());
-            let said = cat.query(&who, p).await;
-            match said.as_ref().map(|r| &r.data) {
-                Ok(QueryResult::Rows { rows, .. }) => (rows.iter())
-                    .map(|r| read.iter().map(|k| cell(r.get(*k))).collect::<String>())
-                    .collect::<Vec<_>>()
-                    .join(","),
-                Ok(QueryResult::Groups { rows }) => (rows.iter())
-                    .map(|g| format!("{:?}={}", g.by.values().next(), g.values["n"]))
-                    .collect(),
-                Ok(QueryResult::Graph { nodes, .. }) => format!("{} nodes", nodes.len()),
-                Err(e) => format!("{:?}", invalid_said(&said).ok_or(e)),
-            }
-        }
+        async move { answered(cat.as_ref(), &who, p, read).await }
     };
     let said = |s: Said| format!("{:?}", Ok::<_, ()>(&s));
     let several =
@@ -464,13 +472,6 @@ async fn a_step_whose_records_a_row_binds_reaches_one_type(store: Store) -> Held
             vec![of(Walk::In, 2, 2)],
             1,
             "of",
-        ),
-        (
-            "an inverse name",
-            "customer",
-            vec![step("papers", Walk::Out, 1, 1)],
-            1,
-            "papers",
         ),
     ] {
         for project in [all(), grouped(&[])] {
@@ -562,6 +563,15 @@ async fn a_step_whose_records_a_row_binds_reaches_one_type(store: Store) -> Held
             &["customer.tier", "customer.amount"][..],
             r#""gold"-"#,
         ),
+        // An inverse is its one relation, whatever else bears its name.
+        (
+            "customer",
+            vec![step("bills", Walk::Out, 1, 1)],
+            all(),
+            "bill.amount",
+            &["bill.amount"][..],
+            r#""5""#,
+        ),
         // A range that reaches nothing is judged by its first hop.
         (
             "customer",
@@ -642,7 +652,7 @@ async fn a_step_whose_records_a_row_binds_reaches_one_type(store: Store) -> Held
     let held = field_access(store.as_ref(), "held", "bill", &[("cust", Access::Masked)]);
     let count = grouped(&[]);
     for (min, project) in [(1, all()), (0, all()), (1, count), (1, Graph), (0, Graph)] {
-        let s = typed("ware", of(Walk::In, min, 1));
+        let s = typed("bill", of(Walk::In, min, 1));
         let p = pattern("customer", None, vec![s], project.clone());
         let got = cat.query(&held, p).await;
         if !matches!(refused_on(&got), Some(("cust", Refusal::NotGranted))) {
@@ -775,4 +785,391 @@ async fn a_step_whose_records_a_row_binds_reaches_one_type(store: Store) -> Held
         &refused[1],
         ("ghost", "quote"),
     )
+}
+
+check!(
+    PATTERN_SAYS = a_pattern_is_refused_for_what_it_says_and_a_step_reads_what_it_keeps,
+    "018, 024 and 044, extended (lakelands#829): an `order_by` on a graph or a path is refused before a step is judged; a depth no walk takes is refused for rows and a path whose start no record has; a neighbourhood over a relation no shown type declares is refused as a chain's step is, with a `type` too, an inverse that is not around the type it is read from alike, and a relation whose carrying fields its reader may not know of as an absent one; an inverse is one relation onto its target: a second is refused by `declare`, `propose` and `apply` at the type, naming no relation, to a proposer without `schema` who is not shown the other's type word for word as to the owner, whose proposal under another inverse is taken, and to an author with `schema` who is not shown it at `declare` and by a migration that adds the relation, and taken onto another target, where the next is refused alone in a set with the first as it stands, a step by it reaches its owner's records alone in rows, a graph and a degree, in a component and over two hops both ways, on to a second bill, and a `type` it names that is another is one it does not reach; a step with a `type` probes and reads only the relations its walk keeps a record over: a reader masked from `quote.cust` is answered the bills in rows, a graph and a path, to the byte what it is answered once the quotes are gone, one masked from `bill.cust` is refused, and told what the step reaches where its `type` is one it does not reach, naming only the types it is shown, both are without the `type`, a relation a chain's step walks through to its `type` is probed, and each step reads by its own `type` where another walks the same relation the same way"
+);
+
+async fn a_pattern_is_refused_for_what_it_says_and_a_step_reads_what_it_keeps(
+    store: Store,
+) -> Held {
+    use crate::conformance::fixture::{
+        alike_renamed, field_access, invalid_said, migration, order, pattern, principal, refused_on,
+    };
+    use lakelands_api::error::{Case, Place, Said};
+    use lakelands_api::principal::{Grants, PrincipalKind, TypeGrants};
+    use lakelands_api::query::Projection::{self, Graph};
+    use lakelands_api::read::{Direction, OrderBy};
+    use lakelands_api::write::{Declaration, ProposedWrite};
+    use lakelands_api::{Access, Principal};
+    let l = trade(store.as_ref()).await?;
+    let Lake { cat, own } = &l;
+    let all = || Projection::Rows { fields: Vec::new() };
+    let of = |walk, min, max| step("of", walk, min, max);
+    let typed = |ty: &str, s: Step| Step {
+        ty: Some(ty.into()),
+        ..s
+    };
+    let to = |mut p: Pattern, key: &str| {
+        p.to = Some(("bill".into(), key.into()));
+        p
+    };
+    let said = |who: &Principal, p: Pattern| {
+        let (cat, who) = (cat.clone(), who.clone());
+        async move { invalid_said(&cat.query(&who, p).await).cloned() }
+    };
+    let mut wrong = Vec::new();
+    // An order a graph and a path would pass over, before a step is judged.
+    let ghost = || step("ghost", Walk::Out, 0, 1);
+    let path = to(
+        pattern("customer", Some("c1"), vec![of(Walk::In, 0, 1)], Graph),
+        "b1",
+    );
+    for mut p in [
+        pattern("customer", None, vec![of(Walk::In, 1, 1)], Graph),
+        pattern("customer", None, vec![ghost()], Graph),
+        path.clone(),
+    ] {
+        p.order_by = vec![order("customer.tier", OrderBy::Value, Direction::Asc)];
+        let got = said(own, p.clone()).await;
+        if got != Some(Case::PatternOrderNotRows.into()) {
+            wrong.push(format!(
+                "an `order_by` on {:?} to {:?}: {got:?}",
+                p.steps, p.to
+            ));
+        }
+    }
+    // A depth no walk takes, from a start no record has.
+    let nobody = |s, project| pattern("customer", Some("nobody"), vec![typed("bill", s)], project);
+    let (max, asked) = (limits().max_depth, limits().max_depth + 1);
+    for (p, case) in [
+        (
+            nobody(of(Walk::In, 2, 1), all()),
+            Case::DepthEmpty { min: 2, max: 1 },
+        ),
+        (
+            nobody(of(Walk::In, 1, asked), all()),
+            Case::StepTooDeep { max, asked },
+        ),
+        (
+            to(nobody(of(Walk::In, 0, asked), Graph), "b1"),
+            Case::StepTooDeep { max, asked },
+        ),
+    ] {
+        let got = said(own, p).await;
+        if got != Some(case.clone().into()) {
+            wrong.push(format!("from no record, {case:?}: {got:?}"));
+        }
+    }
+    // A neighbourhood over a relation no shown type declares, and over an
+    // inverse that is not around the type it is read from.
+    let around = |ty: &str, s| pattern(ty, None, vec![s], Graph);
+    for (ty, s, relation) in [
+        ("customer", ghost(), "ghost"),
+        ("customer", typed("bill", ghost()), "ghost"),
+        ("seller", step("bills", Walk::Out, 0, 1), "bills"),
+    ] {
+        let got = said(own, around(ty, s)).await;
+        let (ty, walk, over) = (ty.into(), Walk::Out, relation.into());
+        if got
+            != Some(
+                Case::NoRelationToWalk {
+                    ty,
+                    relation: over,
+                    walk,
+                }
+                .into(),
+            )
+        {
+            wrong.push(format!("a neighbourhood over `{relation}`: {got:?}"));
+        }
+    }
+    // An inverse is one relation: `bills` is `bill.of`, though a quote is
+    // `of` a customer too.
+    let bills = |ty: Option<&str>, project| {
+        let s = step("bills", Walk::Out, 1, 1);
+        let s = ty.map_or(s.clone(), |ty| typed(ty, s));
+        pattern("customer", Some("c1"), vec![s], project)
+    };
+    let mut got = Vec::new();
+    for (project, read) in [
+        (all(), "bill.amount"),
+        (Graph, ""),
+        (Projection::Degree, "degree"),
+        (all(), "quote.x"),
+    ] {
+        let ty = (read == "quote.x").then_some("quote");
+        got.push(answered(cat.as_ref(), own, bills(ty, project), &[read]).await);
+    }
+    let (reached, ty) = ("bill".into(), "quote".into());
+    let reaches = Said::from(Case::StepReaches {
+        reached,
+        ty,
+        also: None,
+    })
+    .within(Place::Step {
+        step: 1,
+        relation: "bills".into(),
+    });
+    let want = [
+        r#""5""#.to_owned(),
+        "2 nodes".into(),
+        "1".into(),
+        format!("{:?}", Ok::<_, ()>(&reaches)),
+    ];
+    if got != want {
+        wrong.push(format!("a step by the inverse `bills` from c1: {got:?}"));
+    }
+    // c1's component over it is c1 and b1; and over two hops both ways
+    // from b1 it comes to c1 and on to a second bill, to no quote.
+    let both = |max| vec![step("bills", Walk::Both, 1, max)];
+    let part = pattern("customer", Some("c1"), both(1), Projection::Components);
+    let part = answered(cat.as_ref(), own, part, &["size"]).await;
+    l.upsert("bill", "b2", json!({"cust": "c1"})).await?;
+    let hops = pattern("bill", Some("b1"), both(2), Graph);
+    let got = [answered(cat.as_ref(), own, hops, &[]).await, part];
+    l.retire("bill", "b2").await?;
+    if got != ["3 nodes", "2,2"] {
+        wrong.push(format!(
+            "the inverse `bills` over two hops from b1, and c1's component: {got:?}"
+        ));
+    }
+    let under = |inverse: &str, name: &str, target: &str| {
+        let mut ty = type_decl(name, vec![field("m", StorageKind::Text)]);
+        ty.relations = vec![RelationDecl {
+            inverse: Some(inverse.into()),
+            ..RelationDecl::to("for", target)
+        }];
+        Declaration::Type(ty)
+    };
+    let memo = |name: &str, target: &str| under("bills", name, target);
+    // Said at the type alone: the other relation may be one its author is
+    // not shown, and no place names either.
+    let twice = |name: &str, target: &str| {
+        let (inverse, target, name) = ("bills".into(), target.into(), name.into());
+        Some(Said::from(Case::InverseTwice { inverse, target }).within(Place::Type { name }))
+    };
+    let declarations = vec![memo("memo", "customer")];
+    let proposed = ProposedWrite::Declare { declarations };
+    let doors = [
+        cat.declare(own, memo("memo", "customer")).await,
+        cat.propose(own, proposed, "a memo".into()).await,
+        cat.apply(own, vec![memo("memo", "customer")]).await,
+    ];
+    let mut refused: Vec<_> = doors.iter().map(|o| invalid_said(o).cloned()).collect();
+    let other = cat.declare(own, memo("memo", "seller")).await;
+    // A relation a type holds already is not judged again: in a set with
+    // the memo as it stands, the second alone is refused.
+    let set = vec![memo("memo", "seller"), memo("note", "seller")];
+    let second = invalid_said(&cat.apply(own, set).await).cloned();
+    refused.dedup();
+    if refused != [twice("memo", "customer")] || other.is_err() || second != twice("note", "seller")
+    {
+        wrong.push(format!(
+            "a second relation with the inverse `bills` onto `customer`, by `declare`, `propose` \
+             and `apply`: {refused:?}; onto `seller`: {other:?}, and a second there: {second:?}"
+        ));
+    }
+    // Told on purpose (044, extended): a proposer without `schema` who is
+    // not shown `bill` is refused the pair it sent, word for word as the
+    // owner is, and taken under another inverse; and so is an author with
+    // `schema` who is not shown it, at `declare` and by a migration that
+    // adds the relation.
+    let mut grants = Grants {
+        default: Access::Read,
+        ..Grants::default()
+    };
+    let hidden = TypeGrants {
+        default: Some(Access::None),
+        ..Default::default()
+    };
+    grants.types.insert("bill".into(), hidden.clone());
+    let outsider = principal(
+        store.as_ref(),
+        PrincipalKind::Agent,
+        "outsider",
+        grants.clone(),
+    );
+    grants.schema = true;
+    let architect = principal(store.as_ref(), PrincipalKind::Human, "architect", grants);
+    let mut told = Vec::new();
+    for who in [&outsider, own] {
+        let declarations = vec![memo("slip", "customer")];
+        let slip = ProposedWrite::Declare { declarations };
+        told.push(invalid_said(&cat.propose(who, slip, "a slip".into()).await).cloned());
+    }
+    told.push(invalid_said(&cat.declare(&architect, memo("slip", "customer")).await).cloned());
+    let declarations = vec![under("zzz", "slip", "customer")];
+    let free = ProposedWrite::Declare { declarations };
+    let free = cat.propose(&outsider, free, "a slip".into()).await;
+    let mut added = type_decl("memo", vec![field("m", StorageKind::Text)]);
+    added.relations = [("for", "seller"), ("also", "customer")]
+        .map(|(name, target)| RelationDecl {
+            inverse: Some("bills".into()),
+            ..RelationDecl::to(name, target)
+        })
+        .into();
+    let moved = invalid_said(&cat.migrate(&architect, migration(added)).await).cloned();
+    let pair = told.iter().all(|t| *t == twice("slip", "customer")) && free.is_ok();
+    if !pair || moved != twice("memo", "customer") {
+        wrong.push(format!(
+            "a second inverse proposed by one not shown `bill` and by the owner, and declared \
+             by an author not shown it: {told:?}; under `zzz`: {free:?}; added by that author's \
+             migration: {moved:?}"
+        ));
+    }
+    // A step with a `type` probes what its walk keeps a record over.
+    let masked = |id, ty| field_access(store.as_ref(), id, ty, &[("cust", Access::Masked)]);
+    let (no_quote, no_bill) = (masked("no_quote", "quote"), masked("no_bill", "bill"));
+    // A `type` the step does not reach walks nothing, so a reader masked
+    // from `bill.cust` is told what the step reaches, of the types it is
+    // shown: one not shown `quote` beside is named `bill` alone.
+    let mut alone = masked("alone", "bill");
+    alone.grants.types.insert("quote".into(), hidden);
+    for (who, also) in [(&no_bill, &["quote"][..]), (&alone, &[])] {
+        let wares = vec![typed("ware", of(Walk::In, 1, 1))];
+        let got = said(who, pattern("customer", Some("c1"), wares, all())).await;
+        let also = (!also.is_empty()).then(|| also.iter().collect());
+        let (reached, ty) = ("bill".into(), "ware".into());
+        let want = Said::from(Case::StepReaches { reached, ty, also }).within(Place::Step {
+            step: 1,
+            relation: "of".into(),
+        });
+        if got != Some(want) {
+            wrong.push(format!("`of` in, typed `ware`, to `{}`: {got:?}", who.id));
+        }
+    }
+    let read = |ty: Option<&str>| {
+        let s = |min| ty.map_or(of(Walk::In, min, 1), |ty| typed(ty, of(Walk::In, min, 1)));
+        let rows = pattern("customer", Some("c1"), vec![s(1)], Graph);
+        let mut all = rows.clone();
+        all.project = Projection::Rows { fields: Vec::new() };
+        [
+            all,
+            rows,
+            to(pattern("customer", Some("c1"), vec![s(0)], Graph), "b1"),
+        ]
+    };
+    let not_granted = |got: &lakelands_api::Result<_>| {
+        matches!(refused_on(got), Some(("cust", Refusal::NotGranted)))
+    };
+    let mut kept = Vec::new();
+    for (i, p) in read(Some("bill")).into_iter().enumerate() {
+        let (bills, held) = (
+            cat.query(&no_quote, p.clone()).await,
+            cat.query(&no_bill, p).await,
+        );
+        let untyped = [&no_quote, &no_bill].map(|who| cat.query(who, read(None)[i].clone()));
+        let [a, b] = untyped;
+        if !not_granted(&held) || !not_granted(&a.await) || !not_granted(&b.await) {
+            wrong.push(format!(
+                "read {i}, masked from `bill.cust` or with no `type`: {held:?}"
+            ));
+        }
+        // Collected with the rest, so one run names every row that fails.
+        let wire = bills.as_ref().map(|r| serde_json::to_string(&r.data));
+        match wire {
+            Ok(Ok(wire)) => kept.push(wire),
+            _ => wrong.push(format!(
+                "read {i}, typed `bill`, masked from `quote.cust`: {bills:?}"
+            )),
+        }
+    }
+    // A chain's step walks its range before it keeps: over two hops both
+    // ways from b1 it comes to a quote through `bill.of`, and back to a
+    // bill through no quote.
+    let far = |ty| {
+        pattern(
+            "bill",
+            Some("b1"),
+            vec![typed(ty, of(Walk::Both, 1, 2))],
+            Graph,
+        )
+    };
+    let through = cat.query(&no_bill, far("quote")).await;
+    let back = answered(cat.as_ref(), &no_quote, far("bill"), &[]).await;
+    if !not_granted(&through)
+        || back != "2 nodes"
+        || !kept.first().is_some_and(|k| k.contains("\"5\""))
+    {
+        wrong.push(format!(
+            "two hops both ways: typed `quote`, masked from `bill.cust`, {through:?}; typed \
+             `bill`, masked from `quote.cust`, {back}; the bills of c1 {kept:?}"
+        ));
+    }
+    // Each step reads by its own `type`, though another walks the same
+    // relation the same way: the last step walks through quotes, and the
+    // first, from the customer, reads none.
+    let mut line = type_decl(
+        "line",
+        vec![reference("q", "quote"), reference("b", "bill")],
+    );
+    line.relations = [("of", "quote", "q"), ("about", "bill", "b")]
+        .map(|(name, target, via)| RelationDecl {
+            via: Some(via.into()),
+            ..RelationDecl::to(name, target)
+        })
+        .into();
+    l.declare(line).await?;
+    l.upsert("line", "l1", json!({"q": "q1", "b": "b1"}))
+        .await?;
+    let about = Step {
+        named: Some("l".into()),
+        ..step("about", Walk::In, 1, 1)
+    };
+    let steps = vec![
+        typed("bill", of(Walk::In, 1, 1)),
+        about,
+        of(Walk::Out, 1, 1),
+        typed("line", of(Walk::In, 1, 2)),
+    ];
+    let lines = pattern("customer", Some("c1"), steps, all());
+    let got = answered(cat.as_ref(), &no_quote, lines, &["line.key"]).await;
+    if got != r#""l1""# {
+        wrong.push(format!(
+            "bills of c1, then the lines of their lines' quotes, masked from `quote.cust`: {got}"
+        ));
+    }
+    ensure!(wrong.is_empty(), "{}", wrong.join("; "));
+    // A relation whose carrying fields its reader may not know of is one no
+    // type declares.
+    let mut grants = Grants {
+        default: Access::Read,
+        ..Grants::default()
+    };
+    for (ty, carries) in [("bill", "from"), ("quote", "item")] {
+        let fields = [(carries.into(), Access::None)].into();
+        let held = TypeGrants {
+            fields,
+            ..Default::default()
+        };
+        grants.types.insert(ty.into(), held);
+    }
+    let blind = principal(store.as_ref(), PrincipalKind::Agent, "blind", grants);
+    let by = |name: &str| cat.query(&blind, around("customer", step(name, Walk::Out, 0, 1)));
+    alike_renamed(
+        "a neighbourhood over `by` to a reader who may not know of the fields that carry it",
+        &by("by").await.must_fail("a neighbourhood over `by`")?,
+        &by("ghost")
+            .await
+            .must_fail("a neighbourhood over `ghost`")?,
+        ("ghost", "by"),
+    )?;
+    // The same reads once the quotes are gone.
+    for key in ["q1", "q2"] {
+        l.retire("quote", key).await?;
+    }
+    for (p, with) in read(Some("bill")).into_iter().zip(kept) {
+        let reply = cat.query(&no_quote, p).await.must("a step typed `bill`")?;
+        let without =
+            serde_json::to_string(&reply.data).map_err(|e| Failure::new(e.to_string()))?;
+        ensure!(
+            with == without,
+            "a reader masked from `quote.cust` is answered the bills as on a lake without the \
+             quotes: it answered {with}, and without them {without}"
+        );
+    }
+    Ok(())
 }
