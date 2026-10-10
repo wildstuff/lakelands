@@ -56,8 +56,9 @@ Every lake, whatever its engine, exports these files through its store:
 `log/<first position>.jsonl` exactly as above, one file per sealed
 segment and one for the active run after the last checkpoint (a lake
 never checkpointed exports the one file `00000000000000000000.jsonl`).
-Each event keeps the format version it was written in; nothing is
-rewritten.
+Every event is in the release's one format version
+(`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`), as
+the lake holds it; nothing is rewritten.
 
 - An export is the log as the host reads it: every event, every
   principal's writes, retired records' and restricted records' history
@@ -74,8 +75,8 @@ rewritten.
   and a verifier reads a line at a time, so neither holds the log in
   memory.
 - Beside `log/` it writes `export.json`, a manifest of the lake, the
-  position and hash it read through, the lowest and highest format
-  version, and each file with its range and digest. It is a convenience
+  position and hash it read through, its one format version, and each
+  file with its range and digest. It is a convenience
   for a reader and is never trusted: a verifier recomputes everything
   from `log/`.
 - An export verifies without Lakelands' engines:

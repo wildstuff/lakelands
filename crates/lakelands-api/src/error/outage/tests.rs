@@ -117,12 +117,7 @@ fn no_known_name_is_said_as_a_name_in_backticks() {
                     .unwrap()
                     .to_string(),
             );
-            out.push(
-                serde_json::from_value::<Tls>(n.clone())
-                    .unwrap()
-                    .to_string(),
-            );
-            out.push(serde_json::from_value::<Added>(n).unwrap().to_string());
+            out.push(serde_json::from_value::<Tls>(n).unwrap().to_string());
         }
         out
     };
@@ -156,32 +151,7 @@ fn no_known_name_is_said_as_a_name_in_backticks() {
         "key_unreadable",
         "cert_unreadable",
         "cert_empty",
-        "cert_unusable",
-        "rekeyed",
-        "date_bucket",
-        "upstream",
-        "proposes_schema",
-        "annotations",
-        "derived_relation",
-        "trigger_depth",
-        "retired",
-        "view_params",
-        "no_key",
-        "verb_on_type",
-        "merged_sources",
-        "tightening",
-        "floor",
-        "date_bucket_by_width",
-        "in_set",
-        "relation_rename",
-        "kept_setting",
-        "made",
-        "restated",
-        "initial",
-        "with_the_set",
-        "computed_at",
-        "value_renames",
-        "proposes_value_renames"
+        "cert_unusable"
     ]);
     let mut knowns = 0;
     for s in said(known) {
@@ -190,7 +160,7 @@ fn no_known_name_is_said_as_a_name_in_backticks() {
             knowns += 1;
         }
     }
-    assert_eq!(knowns, 55, "every name is known to exactly one set");
+    assert_eq!(knowns, 30, "every name is known to exactly one set");
 }
 
 /// No two of these cases, nor one case with other parameters, say the

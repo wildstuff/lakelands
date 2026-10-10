@@ -109,10 +109,10 @@ already depend on.
 a write. In a derived field, a filter, a verb's `requires` or an
 object set it is refused as invalid. A revival, an upsert of a retired
 record, is a creation to a guard: `previous` is null, `changed` is true
-and `retired()` is false. A declaration calling `retired` is written in
-log format 7 (`docs/log-format.md` §6), so a reader that does not know
-the function refuses the log instead of keeping a trigger it cannot
-evaluate, which would never fire.
+and `retired()` is false. The function came with a step of the log
+format (`docs/log-format.md` §6), so a release that does not know it
+refuses the lake instead of keeping a trigger it cannot evaluate, which
+would never fire.
 
 ## Extended: a set's declaration decides the records already there (lakelands#453)
 
@@ -262,8 +262,6 @@ refused.
   another type is another set.
 - **A read at an earlier position** takes each named set's filter as it
   was in force there.
-
-A declaration that names a set is written in log format 11.
 
 ## Extended: a poll examines a bounded part of the log (lakelands#558)
 

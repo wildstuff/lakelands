@@ -1,6 +1,6 @@
 //! An export read back by a verifier that shares no code with Lakelands:
 //! `docs/log-format/vectors/verify.py` in its directory mode, over a lake
-//! with a checkpoint (two files) and a re-key (both format versions); and
+//! with a checkpoint (two files) and a re-key; and
 //! an export whose feed breaks, which leaves nothing behind.
 //!
 //! The test needs `python3`, which CI has for the conformance page; a run
@@ -102,7 +102,11 @@ async fn verify_py_verifies_an_export_with_a_checkpoint_and_a_rekey() {
         .await
         .unwrap();
     assert_eq!(manifest.segments.len(), 2, "{manifest:?}");
-    assert_eq!(manifest.versions, [1, 11], "{manifest:?}");
+    assert_eq!(
+        manifest.format,
+        lakelands_api::event::LOG_FORMAT_VERSION,
+        "{manifest:?}"
+    );
 
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/verify.py");

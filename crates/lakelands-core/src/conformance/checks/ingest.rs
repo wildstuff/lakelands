@@ -48,7 +48,7 @@ check!(
 
 check!(
     UPSTREAM_PER_FIELD = an_ingested_record_carries_its_upstream_per_field,
-    "010, 016 and log-format §1.1 and §6: a record ingested with `upstream` names that lake and position on every field it sets, the event is written in format version 3, and the member is not in the event's id; a later write of a field without it leaves that field without it"
+    "010, 016 and log-format §1.1: a record ingested with `upstream` names that lake and position on every field it sets, the event carries the member, and the member is not in the event's id; a later write of a field without it leaves that field without it"
 );
 
 /// `feed`: a source's `body` and an author's `verdict`.
@@ -394,12 +394,10 @@ async fn an_ingested_record_carries_its_upstream_per_field(store: Store) -> Held
         &patch_first,
     );
     ensure!(
-        ingested.v >= 3 && ingested.upstream.as_ref() == Some(&from) && ingested.id == id,
-        "the ingest with an upstream must be an event of format 3 or newer carrying it, with \
-         the id its source, type, key, version and patch make, which leaves `upstream` out; it \
-         is format \
-         {} carrying {:?} with id {}, and the id without the member is {}",
-        ingested.v,
+        ingested.upstream.as_ref() == Some(&from) && ingested.id == id,
+        "the ingest with an upstream must be an event carrying it, with the id its source, \
+         type, key, version and patch make, which leaves `upstream` out; it carries {:?} with \
+         id {}, and the id without the member is {}",
         ingested.upstream,
         ingested.id.0,
         id.0

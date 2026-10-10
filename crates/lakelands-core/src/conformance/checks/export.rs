@@ -40,12 +40,6 @@ check!(
 );
 
 check!(
-    MIXED_VERSIONS = a_lake_exports_both_format_versions_as_written,
-    "030 and log-format §6: a lake exports its version-1 events, written before its first record was made, and its version-11 events as they were written, a re-key among them, and the export verifies",
-    scratch
-);
-
-check!(
     PREFIX = a_later_export_repeats_the_sealed_files_and_extends_the_active_one,
     "030: an export reads through the head as it stood when it began; a lake never checkpointed exports one file 00000000000000000000.jsonl, and a later export has the earlier sealed files byte for byte and an active file the earlier one begins",
     scratch
@@ -59,13 +53,13 @@ check!(
 
 check!(
     DAMAGE = a_damaged_export_is_refused_naming_the_position,
-    "030 and log-format §2.6 and §4.2: verifying an export refuses a changed byte, a space inserted, a missing last line feed, a format version below the first, past the newest or going down, a known_at going back, a checkpoint naming the wrong position before it, a missing file, an empty log/, a file too many, a file not named in 20 digits and two lines out of order, and names the position where the files stop being the log",
+    "030 and log-format §2.6 and §4.2: verifying an export refuses a changed byte, a space inserted, a missing last line feed, a known_at going back, a checkpoint naming the wrong position before it, a missing file, an empty log/, a file too many, a file not named in 20 digits and two lines out of order, and names the position where the files stop being the log",
     scratch
 );
 
 check!(
     IMPORT_IS_THE_LAKE = an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from,
-    "030 and log-format §4: an export imported into a fresh lake of the engine holds every event unchanged at its position, of every format version the lake wrote (annotations included), a value type's renames among them, so the lake answers as the one exported (the head, verify, the feed from position 0, every type's records with provenance at the head and at an earlier position, describe) and exports the same files byte for byte; its next writer takes a lease greater than every fence in the log and continues it",
+    "030 and log-format §4: an export imported into a fresh lake of the engine holds every event unchanged at its position (annotations included), a value type's renames among them, so the lake answers as the one exported (the head, verify, the feed from position 0, every type's records with provenance at the head and at an earlier position, describe) and exports the same files byte for byte; its next writer takes a lease greater than every fence in the log and continues it",
     given
 );
 
@@ -73,6 +67,19 @@ check!(
     IMPORT_REFUSED =
         an_import_is_refused_for_a_damaged_export_another_lake_or_a_lake_holding_events,
     "030: an import verifies the whole export before it writes: a changed byte in a segment is refused naming its position, and an export of another lake (naming both lakes) and a lake that holds events (naming its head) are refused as failed preconditions; nothing is written into the lake it refuses",
+    given
+);
+
+check!(
+    ANOTHER_RELEASES =
+        a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_where_it_is_read,
+    "054: a lake whose newest event another release wrote, in the format before the release's or the one after, is refused as `log_format` at an open to read, to write and to rebuild, naming the lake and both formats, and is left as it was: its tip, the position its projection is folded through and its free lease; once a writer of the release's format follows, the lake opens to read, and the event of another format is refused as `format_other` at its position by `verify`, by a writer's open and by a rebuild, with the tip where it was and the lease free",
+    given
+);
+
+check!(
+    ONE_FORMAT = a_lake_is_written_in_one_format_and_another_is_refused_whole,
+    "054 and log-format §6: a lake that declares, writes, migrates, re-keys, proposes, ingests and seals a segment holds only events in the release's one format version, from position 0, with `lake_created.format` the same, and its export says so and verifies; an export with one event in another format, older or newer, at position 0 or at its head, its hash made right, is refused by verify naming that position and both formats, and an import of it is refused in the same words; so is one whose head carries no `v`, which is format 0, and one whose `lake_created` says another format than its line, by a flaw of its own",
     given
 );
 
@@ -277,35 +284,6 @@ async fn an_export_verifies_to_the_through_and_hash_the_lake_answers(
     Ok(())
 }
 
-async fn a_lake_exports_both_format_versions_as_written(store: Store, scratch: PathBuf) -> Held {
-    let scratch = Scratch::new(scratch);
-    rekey::lake(store.as_ref(), rekey::IBANS).await?;
-    let at = rekey::apply(store.as_ref()).await?;
-    let dir = scratch.dir("versions");
-    let manifest = write(store.as_ref(), &dir).await?;
-    let mut lines = Vec::new();
-    for file in files(&dir)? {
-        lines.extend(read(&dir, &file)?);
-    }
-    let mut want = Vec::new();
-    for e in log_events(store.as_ref()).await? {
-        want.extend(canonical::of(&e));
-        want.push(b'\n');
-    }
-    ensure!(
-        lines == want,
-        "the export holds every event's line as the lake holds it, version 1 before its first \
-         record made and version 11 from it, the re-key at {at} among them, and it does not"
-    );
-    ensure!(
-        manifest.versions == [1, 11],
-        "the manifest of a lake that made a record names versions [1, 11], and it names {:?}",
-        manifest.versions
-    );
-    export::verify(&dir).must("verifying an export of both format versions")?;
-    Ok(())
-}
-
 async fn a_later_export_repeats_the_sealed_files_and_extends_the_active_one(
     store: Store,
     scratch: PathBuf,
@@ -424,7 +402,7 @@ fn rehashed(line: &[u8], change: impl FnOnce(&mut Value)) -> Result<Vec<u8>, Fai
 
 async fn a_damaged_export_is_refused_naming_the_position(store: Store, scratch: PathBuf) -> Held {
     let scratch = Scratch::new(scratch);
-    // A re-key, so the last events are format 2; a checkpoint, so two files.
+    // A re-key among the events; a checkpoint, so two files.
     let l = rekey::lake(store.as_ref(), rekey::IBANS).await?;
     rekey::apply(store.as_ref()).await?;
     let sealed_at = store.checkpoint().await.must("checkpointing")?;
@@ -471,29 +449,6 @@ async fn a_damaged_export_is_refused_naming_the_position(store: Store, scratch: 
     fs::write(dir.join(&active), &bytes[..bytes.len() - 1])
         .map_err(|e| Failure::new(format!("damaging {active}: {e}")))?;
     refused_at(&dir, head, "its last line feed missing")?;
-
-    // The first event's format version below the first format, its hash
-    // made right.
-    let dir = fresh("v0").await?;
-    let mut lines = lines_of(&dir, &first)?;
-    lines[0] = rehashed(&lines[0], |e| e["v"] = json!(0))?;
-    rewrite(&dir, &first, &lines)?;
-    refused_at(&dir, Position::GENESIS, "its first event in format 0")?;
-
-    // The last event's format version past the newest, and down from the
-    // one before it; each with its hash made right.
-    let past = lakelands_api::event::LOG_FORMAT_VERSION + 1;
-    for (what, v) in [("past", past), ("v1", 1)] {
-        let dir = fresh(what).await?;
-        let mut lines = lines_of(&dir, &active)?;
-        lines[last] = rehashed(&lines[last], |e| e["v"] = json!(v))?;
-        rewrite(&dir, &active, &lines)?;
-        refused_at(
-            &dir,
-            head,
-            &format!("its last event in format {v} after format 2"),
-        )?;
-    }
 
     // The last event's known_at before the one before it (log-format
     // §1.3), its hash made right.
@@ -571,22 +526,19 @@ fn import_seams() -> lakelands_api::seam::Seams {
     }
 }
 
-/// A lake with two writers, two sealed segments and seven format
-/// versions: invoices, a checkpoint, the lake opened again by a second
-/// writer (a second lease, a greater fence), a re-key (version 2), a
-/// restricted and a retired invoice, an annotated type with a derived
-/// relation (version 6) and a derived `date_bucket` field, a trigger whose
-/// guard calls `retired` (version 7), a view with a parameter and a verb
-/// called on its type (version 8), a view that merges a second source
-/// (version 9), a proposed tightening of a value type (version 10), a
-/// derived field calling `floor` (version 11), a
-/// record ingested with an upstream, a set of declarations and a value
-/// type's renames, applied and proposed (version 12), a date written
-/// (version 13), a field computed over two records sharing its input,
-/// whose second fill names the first's output (version 14), a second
-/// checkpoint and more invoices.
-/// Answers the
-/// second writer's handle and a position before the second checkpoint.
+/// A lake with two writers and two sealed segments: invoices, a
+/// checkpoint, the lake opened again by a second writer (a second lease,
+/// a greater fence), a re-key, a restricted and a retired invoice, an
+/// annotated type with a derived relation and a derived `date_bucket`
+/// field, a trigger whose guard calls `retired`, a view with a parameter
+/// and a verb called on its type, a view that merges a second source, a
+/// proposed tightening of a value type, a derived field calling `floor`,
+/// a record ingested with an upstream, a set of declarations and a value
+/// type's renames, applied and proposed, a date written, a field
+/// computed over two records sharing its input, whose second fill names
+/// the first's output, a second checkpoint and more invoices. Answers
+/// the second writer's handle and a position before the second
+/// checkpoint.
 async fn exported_lake(
     store: Store,
     reopen: &crate::conformance::Reopen,
@@ -607,11 +559,11 @@ async fn exported_lake(
         .await
         .must("restricting `i1`")?;
     l.retire(invoice.as_str(), "i2").await?;
-    // Format version 3: a derived field calling date_bucket, and a record
-    // ingested with the lake and position it was read from. Format version
-    // 5: the type, a field and a relation carry annotations. Format version
-    // 6: a relation derived from matching values. Format version 11: a
-    // field that declares `initial`, filled when `s1` comes to exist.
+    // A derived field calling date_bucket, and a record ingested with
+    // the lake and position it was read from. The type, a field and a
+    // relation carry annotations. A relation derived from matching
+    // values. A field that declares `initial`, filled when `s1` comes to
+    // exist.
     l.declare_json(json!({
         "declare": "type", "name": "stamp",
         "annotations": {"acme.icon": "clock", "acme.package": {"name": "audit", "weight": 1.5}},
@@ -628,12 +580,12 @@ async fn exported_lake(
         ]
     }))
     .await?;
-    // Format version 7: a trigger whose guard calls `retired`.
+    // A trigger whose guard calls `retired`.
     l.declare_json(json!({
         "declare": "trigger", "name": "stamp_retired", "on": "stamp", "when": "retired()"
     }))
     .await?;
-    // Format version 8: a view with a parameter.
+    // A view with a parameter.
     l.declare_json(json!({
         "declare": "type", "name": "stamps_up_to", "key": ["month"],
         "fields": [{"name": "month", "type": {"kind": "date_time"}},
@@ -643,7 +595,7 @@ async fn exported_lake(
                  "measures": [{"name": "stamps", "expr": "count()"}]}
     }))
     .await?;
-    // Format version 9: a view that merges a second source on its key.
+    // A view that merges a second source on its key.
     l.declare_json(json!({
         "declare": "type", "name": "tick", "fields": [{"name": "at", "type": {"kind": "date_time"}}]
     }))
@@ -659,7 +611,7 @@ async fn exported_lake(
                             "measures": [{"name": "ticks", "expr": "count()"}]}]}
     }))
     .await?;
-    // Format version 10: a proposed tightening of a value type.
+    // A proposed tightening of a value type.
     let state = |one_of: Value| json!({"name": "stamp_state", "kind": "text", "one_of": one_of});
     let wide = serde_json::from_value(state(json!(["new", "seen"]))).expect("a value type");
     let declared = lakelands_api::write::Declaration::ValueType(wide);
@@ -672,14 +624,14 @@ async fn exported_lake(
     };
     let proposed = cat.propose(own, narrower, "one state".into()).await;
     proposed.must("proposing a narrower `stamp_state`")?;
-    // Format version 11: a derived field calling `floor`; 12: one that
-    // says when it is computed.
+    // A derived field calling `floor`, and one that says when it is
+    // computed.
     let days = json!({"name": "days", "type": {"kind": "number"}, "authority": "derived",
                       "derived": "floor((now() - at) / 1d)", "computed_at": "write"});
     let days = serde_json::from_value(days).expect("a field");
     let added = cat.add_field(own, &"stamp".into(), days).await;
     added.must("adding `days` to `stamp`")?;
-    // Format version 13: a proposal pinned to its proposer's own record.
+    // A proposal pinned to its proposer's own record.
     l.declare(type_of("chore", &[("by", Text)])).await?;
     l.upsert("chore", "c1", json!({"by": "kim"})).await?;
     let kim = json!({"default": "write", "types": {"chore": {"only": {"by": "kim"}}}});
@@ -689,7 +641,7 @@ async fn exported_lake(
     let done = serde_json::from_value(done).expect("a write");
     let proposed = cat.propose(&kim, done, "done".into()).await;
     proposed.must("kim's proposal to retire her `c1`")?;
-    // Format version 8 too: a verb on its type, called with no key.
+    // A verb on its type, called with no key.
     l.declare_json(json!({
         "declare": "verb", "name": "print_stamp", "on": "stamp", "scope": "type",
         "risk": "low", "effect": "external", "executor": crate::conformance::backing::EXECUTOR
@@ -715,7 +667,7 @@ async fn exported_lake(
     });
     let fut = crate::conformance::fixture::ingest(cat.as_ref(), own, "mirror", vec![read_from]);
     fut.await.must("ingesting `s1` with an upstream")?;
-    // Format version 12: a set that computes records again, a function
+    // A set that computes records again, a function
     // and the type in force whose field it computes, appended as one.
     let set = [
         json!({"declare": "function", "name": "tick_at", "backing": "expr", "expr": "at",
@@ -729,7 +681,7 @@ async fn exported_lake(
     let applied = cat.apply(own, set.into()).await;
     applied.must("applying `tick_at` and `tick`")?;
     crate::conformance::fixture::two_makes(&l).await?;
-    // Format version 12 too: a value type's values renamed in a record,
+    // A value type's values renamed in a record,
     // and a rename proposed.
     l.declare_json(json!({
         "declare": "type", "name": "stamp_mark",
@@ -755,14 +707,14 @@ async fn exported_lake(
     };
     let proposed = cat.propose(own, proposed, "back".into()).await;
     proposed.must("proposing a rename")?;
-    // Format version 13: a field of the kind `date`, and a date written.
+    // A field of the kind `date`, and a date written.
     l.declare(type_of(
         "due",
         &[("on", lakelands_api::ontology::StorageKind::Date)],
     ))
     .await?;
     l.upsert("due", "d1", json!({"on": "2026-07-05"})).await?;
-    // Format version 14: a field computed over two records that share its
+    // A field computed over two records that share its
     // input; the sweep's second fill names the first one's output.
     l.declare_json(json!({
         "declare": "function", "name": "echo", "backing": crate::conformance::backing::KIND,
@@ -833,14 +785,6 @@ async fn an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from(
 ) -> Held {
     let scratch = Scratch::new(given.scratch.clone());
     let (store, earlier) = exported_lake(store, &given.reopen).await?;
-    let newest = log_events(store.as_ref());
-    let newest = newest.await?.iter().map(|e| e.v).max().unwrap_or(0);
-    ensure!(
-        newest == lakelands_api::event::LOG_FORMAT_VERSION,
-        "the exported lake must hold an event of the newest format version, {}; its newest is \
-         {newest}",
-        lakelands_api::event::LOG_FORMAT_VERSION
-    );
     let from = scratch.dir("from");
     write(store.as_ref(), &from).await?;
     let lake = store.lake().clone();
@@ -1060,6 +1004,225 @@ async fn an_import_refuses_a_context_carrying_cause_naming_it(
         ensure!(
             damaged(&why) == Some(&flaw),
             "an export whose line {said} must be refused naming it; it was refused with: {why:?}"
+        );
+    }
+    Ok(())
+}
+
+async fn a_lake_is_written_in_one_format_and_another_is_refused_whole(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let reads = lakelands_api::event::LOG_FORMAT_VERSION;
+    let scratch = Scratch::new(given.scratch.clone());
+    let (store, _) = exported_lake(store, &given.reopen).await?;
+    let events = log_events(store.as_ref()).await?;
+    let other: Vec<_> = (events.iter().filter(|e| e.v != reads))
+        .map(|e| (e.position, e.v))
+        .collect();
+    ensure!(
+        other.is_empty()
+            && matches!(events.first().map(|e| &e.body),
+                Some(EventBody::LakeCreated { format }) if *format == reads),
+        "every event of the lake is in format {reads}, from position 0, and `lake_created` \
+         says that format; these are not: {other:?}, and position 0 holds {:?}",
+        events.first().map(|e| &e.body)
+    );
+    let from = scratch.dir("from");
+    let manifest = write(store.as_ref(), &from).await?;
+    ensure!(
+        manifest.format == reads,
+        "the export's manifest names format {reads}, and it names {}",
+        manifest.format
+    );
+    export::verify(&from).must("verifying the export")?;
+    let lake = store.lake().clone();
+    let names = files(&from)?;
+    let (first, active) = (names[0].clone(), names[names.len() - 1].clone());
+    let head = store.head().await.must("reading the head")?;
+    // What is changed in one line, its hash made right, and the flaw it
+    // is refused by: an event of another format, older or newer, at
+    // position 0 and at the head; a head with no `v`, which is format 0;
+    // and a `lake_created` that says another format than its line.
+    type Change = Box<dyn Fn(&mut serde_json::Value) + Send + Sync>;
+    let other = |v: u32| Flaw::FormatOther {
+        v: v.into(),
+        reads: reads.into(),
+    };
+    let mut cases: Vec<(String, bool, Change, Flaw)> = Vec::new();
+    for v in [reads - 1, reads + 1] {
+        for last in [false, true] {
+            let what = format!("in format {v}");
+            cases.push((what, last, Box::new(move |e| e["v"] = json!(v)), other(v)));
+        }
+        let (format, reads) = (v.into(), reads.into());
+        let created = Flaw::CreatedInAnother { format, reads };
+        let says: Change = Box::new(move |e| e["body"]["format"] = json!(v));
+        cases.push((format!("created in format {v}"), false, says, created));
+    }
+    let bare: Change = Box::new(|e| {
+        e.as_object_mut().map(|m| m.remove("v"));
+    });
+    cases.push(("with no `v`".into(), true, bare, other(0)));
+    for (n, (what, last, change, want)) in cases.into_iter().enumerate() {
+        let (file, at) = match last {
+            true => (&active, head),
+            false => (&first, Position::GENESIS),
+        };
+        let dir = scratch.dir(&format!("other-{n}"));
+        fs::create_dir_all(dir.join("log"))
+            .map_err(|e| Failure::new(format!("making the other export: {e}")))?;
+        for f in &names {
+            fs::copy(from.join(f), dir.join(f))
+                .map_err(|e| Failure::new(format!("copying {f}: {e}")))?;
+        }
+        let mut lines = lines_of(&dir, file)?;
+        let line = if last { lines.len() - 1 } else { 0 };
+        lines[line] = rehashed(&lines[line], |e| change(e))?;
+        rewrite(&dir, file, &lines)?;
+        let verified = export::verify(&dir);
+        let imported = (given.import)(dir, lake.clone(), None, import_seams()).await;
+        let imported = refused(imported, "an export holding an event of another format")?;
+        for (door, e) in [("verify", verified.err()), ("an import", Some(imported))] {
+            ensure!(
+                e.as_ref().and_then(damaged) == Some(&want)
+                    && matches!(e.as_ref().and_then(Error::situation),
+                        Some(Situation::Damaged { position: Some(p), .. }) if *p == at),
+                "{door} of an export whose event at {at} is {what} is refused at that position \
+                 as {want:?}, which names the format and the one this release reads; it \
+                 answered {e:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_where_it_is_read(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    use crate::conformance::Lines;
+    use lakelands_api::engine::{CanonicalEvent, OpenMode};
+    use lakelands_api::event::{Digest, Event, EventId};
+    use lakelands_api::seam::Seams;
+    let reads = lakelands_api::event::LOG_FORMAT_VERSION;
+    let l = Lake::of(store.as_ref());
+    l.declare(type_of("note", &[("body", Text)])).await?;
+    l.upsert("note", "n1", json!({"body": "x"})).await?;
+    let lake = store.lake().clone();
+    let events = log_events(store.as_ref()).await?;
+    let taken = |e: &&Event| matches!(e.body, EventBody::LeaseTaken { .. });
+    let (Some(taken), Some(last)) = (events.iter().find(taken), events.last()) else {
+        return Err(Failure::new(
+            "the lake's log holds its writer's `lease_taken`",
+        ));
+    };
+    // What another release's writer appends first: its `lease_taken`
+    // after the tip, in its format `v`, the hash made right.
+    let (template, known_at) = (taken.clone(), last.known_at);
+    let line = move |v: u32| -> Lines {
+        let template = template.clone();
+        Box::new(move |(tip, prev), fence| {
+            let (position, holder) = (tip.next(), "another release".into());
+            let event = Event {
+                v,
+                position,
+                id: EventId(format!("{:032x}", position.0)),
+                prev: prev.clone(),
+                known_at,
+                fence,
+                body: EventBody::LeaseTaken { fence, holder },
+                ..template
+            };
+            let mut value = json!(event);
+            value.as_object_mut().map(|m| m.remove("hash"));
+            let hash = Digest(canonical::sha256_hex(&value));
+            value["hash"] = json!(hash);
+            vec![CanonicalEvent {
+                position,
+                id: event.id,
+                prev,
+                hash,
+                fence,
+                bytes: canonical::to_vec(&value),
+            }]
+        })
+    };
+    let nothing = || -> Lines { Box::new(|_, _| Vec::new()) };
+    let mut held = Some(store);
+    let mut first_other = None;
+    for other in [reads - 1, reads + 1] {
+        let modes = [OpenMode::Read, OpenMode::Write, OpenMode::Rebuild];
+        for (n, mode) in modes.into_iter().enumerate() {
+            let lines = if n == 0 { line(other) } else { nothing() };
+            let c = (given.continued)(held.take(), lake.clone(), lines, mode, Seams::default());
+            let c = c
+                .await
+                .map_err(|e| Failure::new(format!("continuing the lake below the store: {e}")))?;
+            let e = c.opened.err();
+            ensure!(
+                matches!(e.as_ref().and_then(Error::situation),
+                    Some(Situation::LogFormat { lake: l, found, reads: r })
+                        if l == lake.as_str() && *found == u64::from(other) && *r == u64::from(reads)),
+                "a lake whose newest event is in format {other} is refused at an open for \
+                 {mode:?} as `log_format`, naming the lake, that format and the one this \
+                 release reads, {reads}; it answered {e:?}"
+            );
+            ensure!(
+                c.before.lease_free && c.after.as_ref() == Some(&c.before),
+                "an open for {mode:?} refused for the lake's format leaves its tip, the \
+                 position its projection is folded through and its free lease as they were, \
+                 {:?}; they are {:?}",
+                c.before,
+                c.after
+            );
+            first_other = first_other.or(c.before.tip.map(|(at, _)| at));
+        }
+    }
+    let at = first_other.ok_or_else(|| Failure::new("the lake has a tip"))?;
+    // A writer of the release's format follows: the lake's ends are in
+    // its format, and the events between are read where they are read.
+    let c = (given.continued)(
+        None,
+        lake.clone(),
+        line(reads),
+        OpenMode::Read,
+        Seams::default(),
+    );
+    let c = c
+        .await
+        .map_err(|e| Failure::new(format!("continuing the lake in the release's format: {e}")))?;
+    let reader = c
+        .opened
+        .map_err(|e| Failure::new(format!("opening the lake to read: {e}")))?;
+    let refused = |e: Option<&Error>| {
+        matches!(e.and_then(Error::situation), Some(Situation::Damaged {
+            position: Some(p),
+            flaw: Flaw::FormatOther { v, reads: r },
+            ..
+        }) if *p == at && *v == u64::from(reads - 1) && *r == u64::from(reads))
+    };
+    let verified = reader.verify(None, None).await;
+    ensure!(
+        refused(verified.as_ref().err()),
+        "`verify` of a log that holds an event in format {} at {at} is refused as \
+         `format_other` at that position, naming both formats; it answered {verified:?}",
+        reads - 1
+    );
+    let tip = c.before.tip;
+    held = Some(reader);
+    for mode in [OpenMode::Write, OpenMode::Rebuild] {
+        let c = (given.continued)(held.take(), lake.clone(), nothing(), mode, Seams::default());
+        let c = c
+            .await
+            .map_err(|e| Failure::new(format!("opening the lake again: {e}")))?;
+        let (e, after) = (c.opened.err(), c.after);
+        ensure!(
+            refused(e.as_ref())
+                && after.as_ref().map(|a| (&a.tip, a.lease_free)) == Some((&tip, true)),
+            "an open for {mode:?}, whose fold reads the event in another format at {at}, is \
+             refused as `format_other` at that position, the tip where it was ({tip:?}) and \
+             the lease free; it answered {e:?}, and the lake is {after:?}"
         );
     }
     Ok(())

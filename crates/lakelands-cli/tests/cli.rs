@@ -561,12 +561,15 @@ fn feed_prints_the_log_in_canonical_form_from_a_position() {
         let s = sh.run(&["feed"]);
         assert_eq!((s.code, s.err.as_str()), (0, ""));
         let lines: Vec<String> = s.out.lines().map(clocked).collect();
+        // Every event is in the release's one log format.
+        let v = lakelands_api::event::LOG_FORMAT_VERSION.to_string();
         assert_eq!(
             lines[..2],
             [
-                "{\"body\":{\"format\":1,\"kind\":\"lake_created\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":0,\"hash\":\"{hash}\",\"id\":\"{id}\",\"known_at\":\"{known_at}\",\"lake\":\"finance\",\"origin\":\"system\",\"position\":0,\"prev\":\"{prev}\",\"v\":1,\"writer\":\"system:lakelands\"}",
-                "{\"body\":{\"fence\":1,\"holder\":\"{holder}\",\"kind\":\"lease_taken\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"{hash}\",\"id\":\"{id}\",\"known_at\":\"{known_at}\",\"lake\":\"finance\",\"origin\":\"system\",\"position\":1,\"prev\":\"{prev}\",\"v\":1,\"writer\":\"system:lakelands\"}",
-            ],
+                "{\"body\":{\"format\":{v},\"kind\":\"lake_created\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":0,\"hash\":\"{hash}\",\"id\":\"{id}\",\"known_at\":\"{known_at}\",\"lake\":\"finance\",\"origin\":\"system\",\"position\":0,\"prev\":\"{prev}\",\"v\":{v},\"writer\":\"system:lakelands\"}",
+                "{\"body\":{\"fence\":1,\"holder\":\"{holder}\",\"kind\":\"lease_taken\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"{hash}\",\"id\":\"{id}\",\"known_at\":\"{known_at}\",\"lake\":\"finance\",\"origin\":\"system\",\"position\":1,\"prev\":\"{prev}\",\"v\":{v},\"writer\":\"system:lakelands\"}",
+            ]
+            .map(|line| line.replace("{v}", &v)),
             "{}",
             s.out
         );

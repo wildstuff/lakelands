@@ -383,8 +383,8 @@ proposer sent and is logged with the proposal, for the reviewer.
   read,** of types it may see, as a proposed shape is shown
   (lakelands#475). The totals stay whole: a count names nothing. A
   logged report fits, so it names no misfit to anyone.
-- **The log format is 10** from the append that holds the first such
-  proposal (`docs/log-format.md` §6).
+- **The proposal came with a step of the log format**
+  (`docs/log-format.md` §6).
 
 ## Extended: a declaration is proposed like a write
 

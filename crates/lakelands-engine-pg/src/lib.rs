@@ -47,7 +47,7 @@ mod projection;
 mod vector_index;
 mod view;
 
-use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
+use lakelands_api::engine::{CanonicalEvent, EngineOpener, LakeEngine, OpenMode};
 use lakelands_api::error::{Case, Detail, Doing, Error, Part, Result, Situation};
 use lakelands_api::location::{EngineConfig, Location};
 
@@ -98,6 +98,13 @@ pub struct PgOpener;
 impl EngineOpener for PgOpener {
     fn name(&self) -> &str {
         NAME
+    }
+
+    /// Reads the log's table in the location's schema over a connection
+    /// of its own, and nothing else of it; a schema that is not there is
+    /// not made.
+    fn log_ends(&self, location: &Location) -> Result<Option<(CanonicalEvent, CanonicalEvent)>> {
+        handle::log_ends(&target(location)?)
     }
 
     /// Opens the lake in the location's schema. `Create` makes the schema

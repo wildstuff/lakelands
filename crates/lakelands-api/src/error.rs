@@ -26,8 +26,8 @@ pub use case::{
 };
 pub(crate) use case::{Param, catalog, render};
 pub use outage::{
-    Act, Added, Aimless, Bound, Closed, Detail, Doing, Exchange, Flaw, Left, Part, Remote, Resent,
-    Retry, Seam, Situation, Tls, Unknown, closed,
+    Act, Aimless, Bound, Closed, Detail, Doing, Exchange, Flaw, Left, Part, Remote, Resent, Retry,
+    Seam, Situation, Tls, Unknown, closed,
 };
 
 /// What went wrong.

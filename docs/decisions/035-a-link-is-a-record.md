@@ -8,7 +8,7 @@ record per linked pair, of a type the store derives from the relation,
 holding the relation's own fields. `docs/log-format.md` §2.3 specifies
 it. Links are written and removed by the record events the log already
 has (`record_upserted`, `record_ingested`, `record_retired`); no event
-kind is added, and the log format stays at version 1.
+kind is added, and the log format does not change.
 
 The catalog gains a pair of doors per relation carried by links:
 
@@ -228,5 +228,5 @@ A migration now names the rename, `relation_renames`, old name to new:
 - **Grants follow the link type** as they follow a field
   (`docs/decisions/006-grants-not-roles.md`, extended): a restriction in
   both directions of time, a permission never.
-- **The log's format** takes `relation_renames` as a member of version
-  11; a migration that renames no relation is written as before.
+- **The log's format** takes `relation_renames` as a member of a
+  `migrated` event; a migration that renames no relation leaves it out.

@@ -23,8 +23,8 @@ target, so grants decide what crosses on both sides.
    (`docs/decisions/039-a-source-is-retracted-as-one.md`).
 3. **The source position rides with the data.** Every value a mirror
    delivers carries `upstream`, the source lake and the position of the
-   state it reflects, per field beside `seen_at` (log format version 3,
-   `docs/decisions/010-provenance-per-field.md` and
+   state it reflects, per field beside `seen_at`
+   (`docs/decisions/010-provenance-per-field.md` and
    `docs/decisions/016-two-write-doors-by-origin.md`, extended). A read
    in the target says which state of the source it holds.
 4. **It fails closed, and visibly, by type.** A source declaration the

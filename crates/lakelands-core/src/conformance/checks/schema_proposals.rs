@@ -51,7 +51,7 @@ check!(
 );
 check!(
     TIGHTENING_PROPOSED = a_value_types_tightening_is_proposed_without_schema_and_applied_on_accept,
-    "013 and 027, extended (lakelands#476), and log format §6: a principal without the schema grant may propose a value type that accepts less; the proposal is written in format 10 and holds the preflight's report, whose uses a reader of the listing sees only in fields it may read, the totals whole; accepting it takes schema beside review, and then the value type is in force and a value it no longer accepts is refused"
+    "013 and 027, extended (lakelands#476): a principal without the schema grant may propose a value type that accepts less; the proposal is one event and holds the preflight's report, whose uses a reader of the listing sees only in fields it may read, the totals whole; accepting it takes schema beside review, and then the value type is in force and a value it no longer accepts is refused"
 );
 
 check!(
@@ -417,21 +417,19 @@ async fn a_value_types_tightening_is_proposed_without_schema_and_applied_on_acce
     let before = store.head().await.must("reading the head")?;
     let o = propose_states(&l, &clerk, &["open", "paid"]).await;
     let id = proposed(&o.must("the clerk proposing `ticket_state` without `void`")?)?;
-    let v: Vec<u32> = (events_after(store.as_ref(), before).await?.iter())
-        .map(|e| e.v)
-        .collect();
+    let events = events_after(store.as_ref(), before).await?.len();
     let (whole, shown) = (
         report_of(&l, &l.own, &id).await?,
         report_of(&l, &clerk, &id).await?,
     );
     let both = vec!["ticket.state=2".to_owned(), "ticket.inner=2".to_owned()];
     ensure!(
-        matches!(v[..], [f] if f >= 10)
+        events == 1
             && whole == (both, 2, true)
             && shown == (vec!["ticket.state=2".to_owned()], 2, true),
-        "the proposal must be one event in format 10 or newer whose report fits and names both \
+        "the proposal must be one event whose report fits and names both \
          uses to the owner, and to its proposer, who may not know of `inner`, only `state`, \
-         the totals whole; it was written as {v:?}, the owner reads {whole:?}, the clerk {shown:?}"
+         the totals whole; it was written as {events} events, the owner reads {whole:?}, the clerk {shown:?}"
     );
     let refused = l.cat.accept(&reviewer(store.as_ref(), false), &id).await;
     ensure!(

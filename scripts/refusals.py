@@ -26,6 +26,15 @@ rule of `docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`
   changes its type or whether it is optional; a case may gain optional
   parameters only, which a reader that does not know them ignores. With
   no page at that tag, nothing is compared.
+- **A code leaves by a recorded withdrawal.** A shipped code that is
+  gone needs its row in `scripts/refusals.withdrawn` (set, code, the tag
+  it shipped in, the release it left in, why), and a code with a row is
+  not in the catalog: a withdrawn code is not used again. The page
+  lists the rows, and a row the last release tag's page lists never
+  leaves the list: the tag's page no longer shows the code as shipped,
+  so its row is all that keeps the code from coming back. A tag's page
+  whose "Withdrawn" table has other columns than the gate reads, or a
+  row that names no code, is red: it is not read as withdrawing nothing.
 - **A code is its case's name.** A case carries no serde attribute of
   its own (its code is its name in snake case), and no parameter takes a
   name the wire gives the case itself (`code`, `message`, the set's tag;
@@ -54,6 +63,8 @@ ERRORS = ROOT / "crates/lakelands-api/src"
 PAGE = ROOT / "docs/refusals.md"
 PAGE_PATH = "docs/refusals.md"
 SAMPLES = ROOT / "crates/lakelands-api/src/error/case/samples.json"
+WITHDRAWN = ROOT / "scripts/refusals.withdrawn"
+WITHDRAWN_PATH = "scripts/refusals.withdrawn"
 DECODER = "crates/lakelands-api/src/error/outage.rs"
 # Every closed set whose cases a site builds with parameters.
 SETS = "Case|Place|Situation|Seam|Flaw|Exchange|Remote"
@@ -220,11 +231,28 @@ def page(sets):
         for code, params, template, cdoc in cases:
             sentence = re.sub(r"!t:[^}]*\}", "}", template).replace("|", "\\|")
             out.append(f"| `{code}` | {param_cell(params)} | {sentence} | {cdoc} |\n")
+    rows = withdrawn()[0]
+    if rows:
+        out.append(WITHDRAWN_HEAD)
+        for name, code, since, left, why in rows:
+            out.append(f"| `{name}::{code}` | {since} | {left} | {why} |\n")
     out.append(VALUES_HEAD)
     for kind, (values, doc) in sorted(value_tables(sets).items()):
         out.append(f"\n### `{kind}`\n\n{doc}\n\n" + ", ".join(f"`{v}`" for v in values) + "\n")
     return "".join(out)
 
+
+WITHDRAWN_COLUMNS = "| code | shipped in | left in | why |"
+WITHDRAWN_HEAD = f"""
+## Withdrawn
+
+Codes a release shipped that the product no longer says. No later
+release uses one again; a host may still meet one from an older server,
+whose own page says its sentence.
+
+{WITHDRAWN_COLUMNS}
+|---|---|---|---|
+"""
 
 VALUES_HEAD = """
 ## Parameter types
@@ -456,44 +484,88 @@ def injective(sets):
 
 
 def released(sets):
-    """The page at the last release tag, as {set: {code: params}}."""
+    """The page at the last release tag, as `shipped` reads it."""
     tag = subprocess.run(
         ["git", "describe", "--tags", "--abbrev=0", "--match", "v*", "HEAD"],
         cwd=ROOT, capture_output=True, text=True,
     ).stdout.strip()
     if not tag:
-        return tag, {}
+        return tag, ({}, set(), [])
     old = subprocess.run(["git", "show", f"{tag}:{PAGE_PATH}"], cwd=ROOT, capture_output=True, text=True)
     if old.returncode != 0:
-        return tag, {}
+        return tag, ({}, set(), [])
     return tag, shipped(old.stdout)
 
 
 def shipped(text):
-    """A page's codes and parameters, as {set: {code: params}}."""
-    out, current = {}, None
+    """A page's codes and parameters, as {set: {code: params}}, the
+    codes its "Withdrawn" table names, as {(set, code)}, and what of
+    that table cannot be read: a table under other columns, or a row
+    that names no code, would otherwise be a page that withdrew nothing."""
+    out, current, gone, unread, table = {}, None, set(), [], None
     for line in text.splitlines():
         m = re.match(r"## `(\w+)`", line)
         if m:
             current = out.setdefault(m.group(1), {})
+        elif line.startswith("## "):
+            current, table = None, [] if line == "## Withdrawn" else None
         m = re.match(r"\| `(\w+)` \| ([^|]*) \|", line)
         if m and current is not None:
             cell = re.findall(r"`(\w+)` \(([^),]*)(, optional)?\)", m.group(2))
             current[m.group(1)] = {n: (k, bool(o)) for n, k, o in cell}
-    return out
+        m = re.match(r"\| `(\w+)::(\w+)` \|", line)
+        if m:
+            gone.add(m.groups())
+        if table is not None and line.startswith("|"):
+            table.append(line)
+            if table[0] != WITHDRAWN_COLUMNS:
+                if len(table) == 1:
+                    unread.append(f'"Withdrawn" table is headed `{line}`, not `{WITHDRAWN_COLUMNS}`')
+            elif len(table) > 2 and not m:
+                unread.append(f'"Withdrawn" table has a row that names no `Set::code`: `{line}`')
+    return out, gone, unread
+
+
+def withdrawn():
+    """The rows of the withdrawn list, as (set, code, shipped in, left in, why), and its faults."""
+    rows, faults = [], []
+    if not WITHDRAWN.exists():
+        return rows, faults
+    for n, line in enumerate(WITHDRAWN.read_text().splitlines(), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        cells = tuple(c.strip() for c in line.split("|"))
+        if len(cells) != 5 or not all(cells):
+            faults.append(f"{WITHDRAWN_PATH}:{n} is not `set | code | shipped in | left in | why`")
+        elif cells[:2] in [r[:2] for r in rows]:
+            faults.append(f"{WITHDRAWN_PATH}:{n} names {cells[0]}::{cells[1]} a second time")
+        else:
+            rows.append(cells)
+    return rows, faults
 
 
 def stable(sets, old_page=None):
-    tag, old = released(sets) if old_page is None else ("the given page", old_page)
+    tag, (old, gone, unread) = released(sets) if old_page is None else ("the given page", old_page)
+    rows, faults = withdrawn()
+    left = {r[:2] for r in rows}
+    # A table the gate cannot read is not a page that withdrew nothing.
+    faults += [f"{tag}: its {fault}; a withdrawal it lists would be forgotten" for fault in unread]
+    # A withdrawal a release shipped stays: without its row the code
+    # could come back with another meaning once no page lists it as live.
+    for name, code in sorted(gone - left):
+        faults.append(f"{name}::{code} is withdrawn in {tag} and has no row in {WITHDRAWN_PATH}: a row never leaves")
     now = {
         name: {code: {w: shown(ty) for w, ty in params} for code, params, _, _ in cases}
         for name, _, cases in sets
     }
-    faults = []
+    for name, code in sorted(left):
+        if code in now.get(name, {}):
+            faults.append(f"{name}::{code} is in the catalog and has a row in {WITHDRAWN_PATH}: a code in use has no row, and a withdrawn code is not used again")
     for name, codes in old.items():
         for code, params in codes.items():
             if code not in now.get(name, {}):
-                faults.append(f"{name}::{code} shipped in {tag} and is gone or renamed")
+                if (name, code) not in left:
+                    faults.append(f"{name}::{code} shipped in {tag} and is gone or renamed; a code leaves only by its row in {WITHDRAWN_PATH}")
                 continue
             have = now[name][code]
             for p, was in params.items():

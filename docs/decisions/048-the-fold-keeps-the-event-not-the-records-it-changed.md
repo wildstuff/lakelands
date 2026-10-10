@@ -42,8 +42,8 @@ keeps the event, as a **step**: what the event does to one record.
 - **A set computes its records again once, at its last declaration**
   (extended, lakelands#605). A set of declarations that holds a function,
   or a type the lake held before it, says so in the log: every `declared`
-  of it but the last carries `with_the_set` (`docs/log-format.md` §2.3,
-  format 12), the link types the system declares among them too. Such a
+  of it but the last carries `with_the_set` (`docs/log-format.md` §2.3),
+  the link types the system declares among them too. Such a
   `declared` leaves no step; what it would compute again is carried to
   the set's last `declared`, whose one step computes all of it with the
   ontology and settings as the whole set leaves them. Each record is
@@ -137,7 +137,6 @@ the log never stack: the next walk reads the records as put.
   the records as they were before it, and the declarations as each was
   declared up to that position. A field that reads `changed()` or
   `previous()` reads the whole set's change, and a value type declared
-  later in the set counts for every field: a format-12 log computes
-  these as one act, where a log below 12 computed them at each
-  declaration and left the last declaration's answer. A set of new
-  types, triggers or verbs computes nothing and carries no mark.
+  later in the set counts for every field: the set computes these as
+  one act, not at each declaration. A set of new types, triggers or
+  verbs computes nothing and carries no mark.

@@ -23,8 +23,9 @@ wrote it.
 
 It also keeps the projection cheap to change. A new index, a new engine
 or a corrected fold is a rebuild, not a data migration; the only format
-that must stay stable across versions is the log's, and that format is
-specified and versioned.
+a lake is bound to is the log's, and that format is specified and
+versioned. What a release owes a lake written in an older format is in
+`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`.
 
 ## What it is not
 

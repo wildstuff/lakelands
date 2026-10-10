@@ -2,26 +2,18 @@ use super::*;
 use serde_json::json;
 
 fn created() -> (Event, CanonicalEvent) {
-    let d = Draft::system(Timestamp(0), EventBody::LakeCreated { format: 1 });
+    let d = Draft::system(
+        Timestamp(0),
+        EventBody::LakeCreated {
+            format: LOG_FORMAT_VERSION,
+        },
+    );
     seal(&"finance".into(), Position(0), &Digest::zero(), 1, d)
 }
 
 /// A system draft at time 0 carrying `body`.
 fn draft(body: EventBody) -> Draft {
     Draft::system(Timestamp(0), body)
-}
-
-/// `finance` sealed at format `v`, the event at `position` with the
-/// previous digest zero and the lease's `fence`.
-fn sealed(v: u32, position: u64, fence: u64, d: Draft) -> (Event, CanonicalEvent) {
-    seal_at(
-        v,
-        &"finance".into(),
-        Position(position),
-        &Digest::zero(),
-        fence,
-        d,
-    )
 }
 
 #[test]
@@ -75,118 +67,85 @@ fn a_member_in_another_written_form_is_refused_even_with_a_matching_hash() {
     assert!(open(&forged).is_err());
 }
 
-/// Every read of the log (opening a lake, the feed, `verify`) opens
-/// its events here, so each refuses a version it does not know, naming
-/// it and the newest it knows.
+/// Every read of the log (the feed, `verify`, a rebuild, an import)
+/// opens its events here, so each refuses an event of another format,
+/// older or newer, naming it and the one this release reads; and a lake
+/// whose first or last event is in another format is refused by the
+/// lake, where nothing is damaged.
 #[test]
-fn a_newer_format_is_refused_by_name() {
-    let (_, mut stored) = created();
-    let mut v: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
-    let known = lakelands_api::event::LOG_FORMAT_VERSION;
-    v["v"] = json!(known + 1);
-    stored.bytes = canonical::to_vec(&v);
-    let e = open(&stored).unwrap_err();
-    let (v, highest) = (u64::from(known) + 1, u64::from(known));
-    assert!(
-        matches!(e.situation(), Some(lakelands_api::error::Situation::Damaged {
-            flaw: lakelands_api::error::Flaw::FormatOutside { v: found, highest: h, .. },
-            ..
-        }) if *found == v && *h == highest),
-        "{e}"
-    );
+fn an_event_of_another_format_is_refused_by_both_numbers() {
+    use lakelands_api::error::{Flaw, Situation};
+    let reads = u64::from(LOG_FORMAT_VERSION);
+    let (_, good) = created();
+    for other in [reads - 1, reads + 1, 0] {
+        let mut stored = good.clone();
+        let mut v: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
+        v["v"] = json!(other);
+        stored.bytes = canonical::to_vec(&v);
+        let e = open(&stored).unwrap_err();
+        assert!(
+            matches!(e.situation(), Some(Situation::Damaged {
+                flaw: Flaw::FormatOther { v, reads: r }, ..
+            }) if *v == other && *r == reads),
+            "{e}"
+        );
+        // At the tip and at position 0 alike.
+        for ends in [(good.clone(), stored.clone()), (stored, good.clone())] {
+            let e = one_format(&"finance".into(), Some(&ends)).unwrap_err();
+            assert!(
+                matches!(e.situation(), Some(Situation::LogFormat { lake, found, reads: r })
+                    if lake == "finance" && *found == other && *r == reads),
+                "{e}"
+            );
+            let said = format!(
+                "lake `finance` is written in log format {other}, and this release reads and \
+                 writes format {reads} alone; nothing was read from it and nothing appended"
+            );
+            assert!(e.to_string().contains(&said), "{e}");
+        }
+    }
+    assert!(one_format(&"finance".into(), Some(&(good.clone(), good))).is_ok());
+    assert!(one_format(&"finance".into(), None).is_ok());
 }
 
-/// A version-2 event carrying what version 3 added is refused, naming
-/// it; the same event written at 3 opens.
+/// A lake says the format it was created in at position 0. One that
+/// says another than its release reads was made by another release,
+/// though every line carries the release's `v`: a read of the event
+/// refuses it by its own flaw, and the lake is not opened.
 #[test]
-fn a_version_2_event_that_carries_upstream_or_declares_date_bucket_is_refused() {
-    let mut ingested = draft(EventBody::RecordIngested {
-        ty: "t".into(),
-        key: "k".into(),
-        version: lakelands_api::Version(1),
-        patch: [("f".into(), json!(1))].into(),
-        made: false,
-    });
-    ingested.upstream = Some(lakelands_api::Upstream {
-        lake: "other".into(),
-        position: Position(9),
-    });
-    let declared = draft(EventBody::Declared {
-        declaration: serde_json::from_value(json!({
-            "declare": "type", "name": "t",
-            "fields": [
-                {"name": "at", "type": {"kind": "date_time"}},
-                {"name": "m", "type": {"kind": "date_time"}, "authority": "derived",
-                 "derived": "date_bucket(at, 'month')", "depends_on": ["at"]}
-            ]
-        }))
-        .unwrap(),
-        schema_hash: None,
-        version: 1,
-        with_the_set: false,
-    });
-    for (d, what) in [
-        (ingested, "carries `upstream`"),
-        (declared, "declares a call of `date_bucket`"),
-    ] {
-        let (_, stored) = sealed(2, 1, 1, d.clone());
-        let e = open(&stored).unwrap_err().to_string();
-        assert!(e.contains(what) && e.contains("format 3 added"), "{e}");
-        let (_, stored) = sealed(3, 1, 1, d);
-        assert!(open(&stored).is_ok());
+fn a_lake_created_in_another_format_is_refused_though_its_lines_are_in_this_one() {
+    use lakelands_api::error::{Flaw, Situation};
+    let reads = u64::from(LOG_FORMAT_VERSION);
+    let (_, good) = created();
+    for other in [reads - 1, reads + 1] {
+        let mut v: serde_json::Value = serde_json::from_slice(&good.bytes).unwrap();
+        v["body"]["format"] = json!(other);
+        v.as_object_mut().unwrap().remove("hash");
+        let hash = canonical::sha256_hex(&v);
+        v["hash"] = json!(hash);
+        let stored = CanonicalEvent {
+            hash: Digest(hash),
+            bytes: canonical::to_vec(&v),
+            ..good.clone()
+        };
+        let e = open(&stored).unwrap_err();
+        assert!(
+            matches!(e.situation(), Some(Situation::Damaged {
+                flaw: Flaw::CreatedInAnother { format, reads: r }, ..
+            }) if *format == other && *r == reads),
+            "{e}"
+        );
+        let e = one_format(&"finance".into(), Some(&(stored, good.clone()))).unwrap_err();
+        assert!(
+            matches!(e.situation(), Some(Situation::LogFormat { found, reads: r, .. })
+                if *found == other && *r == reads),
+            "{e}"
+        );
     }
 }
 
-#[test]
-fn a_version_1_event_that_carries_rekeyed_is_refused() {
-    let d = draft(EventBody::Migrated {
-        migration: lakelands_api::write::Migration {
-            to: serde_json::from_value(json!({"name": "t"})).unwrap(),
-            renames: vec![],
-            relation_renames: Vec::new(),
-        },
-        schema_hash: "h".into(),
-        version: 2,
-        report_id: "r".into(),
-        rekeyed: vec![lakelands_api::write::Rekey {
-            ty: "t".into(),
-            from: "a".into(),
-            to: "b".into(),
-        }],
-    });
-    let (_, stored) = sealed(LOG_FORMAT_BASE, 0, 0, d.clone());
-    let e = open(&stored).unwrap_err().to_string();
-    assert!(e.contains("format 2 added"), "{e}");
-    let (_, stored) = sealed(2, 0, 0, d);
-    assert!(open(&stored).is_ok());
-}
-
-/// A version-3 event proposing a declaration is refused, naming what
-/// version 4 added; the same event written at 4 opens.
-#[test]
-fn a_version_3_event_proposing_a_declaration_is_refused() {
-    let d = draft(EventBody::WriteProposed {
-        proposal: "p".into(),
-        write: lakelands_api::write::ProposedWrite::Declare {
-            declarations: vec![
-                serde_json::from_value(json!({"declare": "type", "name": "t"})).unwrap(),
-            ],
-        },
-        why: "w".into(),
-        pinned: false,
-    });
-    let (_, stored) = sealed(3, 1, 1, d.clone());
-    let e = open(&stored).unwrap_err().to_string();
-    assert!(
-        e.contains("proposes a declaration or a migration") && e.contains("format 4 added"),
-        "{e}"
-    );
-    let (_, stored) = sealed(4, 1, 1, d);
-    assert!(open(&stored).is_ok());
-}
-
 /// `upstream` on any kind but `record_ingested` is refused, naming the
-/// kind, whatever the version.
+/// kind.
 #[test]
 fn upstream_on_another_kind_is_refused() {
     let mut retired = draft(EventBody::RecordRetired {
@@ -198,7 +157,7 @@ fn upstream_on_another_kind_is_refused() {
         lake: "other".into(),
         position: Position(9),
     });
-    let (_, stored) = sealed(3, 1, 1, retired);
+    let (_, stored) = seal(&"finance".into(), Position(1), &Digest::zero(), 1, retired);
     let e = open(&stored).unwrap_err().to_string();
     assert!(
         e.contains("`record_retired`") && e.contains("only a `record_ingested`"),

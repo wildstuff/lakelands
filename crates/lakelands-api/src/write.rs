@@ -167,7 +167,7 @@ pub enum ProposedWrite {
         /// The verb.
         verb: VerbName,
         /// The record it is called on; absent for a verb called on its
-        /// type (log format 8).
+        /// type.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<RecordKey>,
         /// Its payload.
@@ -176,14 +176,13 @@ pub enum ProposedWrite {
         #[serde(default)]
         opts: WriteOpts,
     },
-    /// Declarations, applied together as `apply` applies them (log format
-    /// version 4).
+    /// Declarations, applied together as `apply` applies them.
     Declare {
         /// The declarations.
         declarations: Vec<Declaration>,
     },
     /// A type's migration, as `migrate_apply` applies it, with the report
-    /// its preflight answered when it was proposed (log format version 4).
+    /// its preflight answered when it was proposed.
     Migrate {
         /// The migration.
         migration: Box<Migration>,
@@ -193,12 +192,11 @@ pub enum ProposedWrite {
         report: Box<MigrationReport>,
     },
     /// A value type's migration, as `migrate_value_type_apply` applies it,
-    /// with the report its preflight answered when it was proposed (log
-    /// format version 10).
+    /// with the report its preflight answered when it was proposed.
     MigrateValueType {
         /// The new declaration.
         to: Box<ValueTypeDecl>,
-        /// The values it renames (log format version 12).
+        /// The values it renames.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         renames: Vec<(String, String)>,
         /// The preflight's report at the proposal, for the reviewer. The
@@ -657,7 +655,7 @@ pub struct Migration {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub renames: Vec<(FieldName, FieldName)>,
     /// Relations renamed: old name to new name. A renamed relation keeps
-    /// its edges, however it is carried (log format version 11).
+    /// its edges, however it is carried.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relation_renames: Vec<(RelationName, RelationName)>,
 }
@@ -879,7 +877,7 @@ pub struct Restated {
 }
 
 /// A value type's migration: its new declaration, and the values it
-/// renames in every stored record that holds them (log format version 12).
+/// renames in every stored record that holds them.
 /// With no rename it changes no record, and is the tightening it was
 /// before.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

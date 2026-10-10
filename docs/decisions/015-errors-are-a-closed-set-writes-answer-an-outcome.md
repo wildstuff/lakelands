@@ -198,6 +198,19 @@ What part 1 did for an outage, part 2 does for every refusal of
   and a reader ignores a member it does not know. A retired code is not
   used again. The gate compares the catalog with the page of the last
   release tag, which lists each parameter's type.
+- **A code leaves by a recorded withdrawal** (lakelands#801). A code
+  goes only when the product can no longer say its sentence: what it
+  told of is gone, as a refusal about a range of log formats is once a
+  release reads one. A rename is never a withdrawal; a code whose
+  sentence is still true keeps its name. The withdrawal is a row in
+  `scripts/refusals.withdrawn`: the set, the code, the tag it shipped
+  in, the release it leaves in, and why. The gate refuses a shipped code
+  that is gone without its row, and a code that has a row and is in the
+  catalog, so a row cannot be written ahead of the removal and a
+  withdrawn code is not used again. The rows stay for good, and
+  `docs/refusals.md` lists them under "Withdrawn": a host may still meet
+  such a code from an older server, and reads it as it reads any code it
+  does not know. The release's notes name the codes that left.
 - **A code is the case's name.** A case carries no serde attribute of
   its own, and no parameter takes a name the wire gives the case itself
   (`code`, `message`, the set's tag, and for a refusal's case `at` and

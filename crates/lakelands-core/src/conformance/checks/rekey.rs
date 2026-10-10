@@ -64,13 +64,8 @@ check!(
 );
 
 check!(
-    FORMAT_TWO = a_rekey_is_written_at_the_lakes_format_and_the_log_verifies,
-    "log-format §6: the re-keying `migrated` event and every event after it carry the lake's `v`, 11 since the records it moves were made; the log verifies, and a rebuild answers every read as before"
-);
-
-check!(
-    FORMAT_ONE = a_lake_writes_format_version_1_until_its_first_record_is_made,
-    "log-format §6 (lakelands#572): a lake carries `v` 1 on every event before the first that says it made a record and 11 on it and every later one, a migration that keeps the key included"
+    REKEY_VERIFIES = a_log_that_holds_a_rekey_verifies_and_rebuilds_alike,
+    "027 and log-format §2.3: a log that holds a re-keying `migrated` event verifies, and a rebuild answers every read as before"
 );
 
 check!(
@@ -521,24 +516,17 @@ async fn an_old_key_is_ended_and_a_new_write_follows_the_new_rule(store: Store) 
     Ok(())
 }
 
-async fn a_rekey_is_written_at_the_lakes_format_and_the_log_verifies(store: Store) -> Held {
+async fn a_log_that_holds_a_rekey_verifies_and_rebuilds_alike(store: Store) -> Held {
     let l = lake(store.as_ref(), IBANS).await?;
     let read = |ty: &'static str, key: &'static str| found(&l, ty, key, None);
     let at = apply(store.as_ref()).await?;
     l.upsert("account", "DE2", json!({"holder": "after"}))
         .await?;
     let all = log_events(store.as_ref()).await?;
-    let wrong: Vec<(u64, u32)> = all
-        .iter()
-        .filter(|e| e.position >= at && e.v != 11)
-        .map(|e| (e.position.0, e.v))
-        .collect();
     ensure!(
-        wrong.is_empty()
-            && all.iter().any(|e| e.position == at
-                && matches!(&e.body, EventBody::Migrated { rekeyed, .. } if !rekeyed.is_empty())),
-        "the re-key at {at} and every later event carry the lake's `v`, 11; these do not: \
-         {wrong:?}"
+        all.iter().any(|e| e.position == at
+            && matches!(&e.body, EventBody::Migrated { rekeyed, .. } if !rekeyed.is_empty())),
+        "the event at {at} is the re-keying `migrated` event, and it is not"
     );
     let fut = store.verify(None, None);
     fut.await.must("verifying a log that holds a re-key")?;
@@ -548,40 +536,6 @@ async fn a_rekey_is_written_at_the_lakes_format_and_the_log_verifies(store: Stor
     ensure!(
         before == after,
         "a rebuild answers differently: {before:?} became {after:?}"
-    );
-    Ok(())
-}
-
-async fn a_lake_writes_format_version_1_until_its_first_record_is_made(store: Store) -> Held {
-    let l = lake(store.as_ref(), IBANS).await?;
-    // A migration that keeps the key.
-    let mut to: serde_json::Map<String, Value> = account("number", false)
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
-    to["fields"]
-        .as_array_mut()
-        .expect("fields")
-        .push(json!({"name": "note", "type": {"kind": "text"}}));
-    l.migrate(serde_json::from_value(Value::Object(to)).expect("a type"))
-        .await?;
-    let all = log_events(store.as_ref()).await?;
-    let made = |e: &&Event| {
-        use EventBody::{RecordIngested, RecordUpserted};
-        matches!(
-            e.body,
-            RecordUpserted { made: true, .. } | RecordIngested { made: true, .. }
-        )
-    };
-    let first = all.iter().find(made).map(|e| e.position);
-    let wrong: Vec<(u64, u32)> = (all.iter())
-        .filter(|e| e.v != if Some(e.position) < first { 1 } else { 11 })
-        .map(|e| (e.position.0, e.v))
-        .collect();
-    ensure!(
-        first.is_some() && wrong.is_empty(),
-        "a lake that never re-keyed writes format 1 before its first record made, at {first:?}, \
-         and 11 from it on; these events carry another: {wrong:?}"
     );
     Ok(())
 }

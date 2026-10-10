@@ -220,8 +220,7 @@ principal may not read refuses the view (024). That refusal is not
 granted and names neither the field nor its source to a reader who is
 not shown the view's definition (024, extended). A source may
 not be a view with parameters, since only a read that names a view binds
-them, and a view may not read itself through any of its sources. A view
-that merges is written in log format 9.
+them, and a view may not read itself through any of its sources.
 
 ## Extended: a whole-graph measure is a projection
 

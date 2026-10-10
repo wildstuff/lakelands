@@ -1,25 +1,10 @@
 # The log format
 
-**Format version 12.** Reviewed so that a verifier can be written from
-this document alone (lakelands#14). `0.1.0` is tagged, so every change
-to the format bumps the version, and a lake writes the version it had
-until an event needs a newer one (§6). Version 2 adds one member,
-`migrated.rekeyed`; a lake that never re-keys a type writes version 1
-and reads exactly as before. Version 3 adds the envelope member
-`upstream` and a call of `date_bucket` in a declaration. Version 4 adds
-the proposal of a declaration or a migration. Version 5 adds a
-declaration's `annotations`. Version 6 adds a derived relation and a trigger's `max_depth`.
-Version 7 adds a call of `retired` in a declaration. Version 8 adds a
-view's `params` and a call of `param`, and a verb called on its type.
-Version 9 adds a view's `merge`. Version 10 adds the proposal of a value
-type's tightening. Version 11 adds a call of `floor` in a declaration, of `date_bucket` by a
-width, and of `in_set`, a migration's `relation_renames`, a write of
-a `view_kept.` setting, a field's `initial`, and the member `made` of a
-record's write, which every lake carries from its first record made on.
-Version 12 adds a declaration's `with_the_set`, which says that the set
-it was appended in goes on, a field's `computed_at`, and the kind
-`value_type_migrated`, a value type's migration that renames values. §6
-says which event needs which version.
+**Format version 14.** Reviewed so that a verifier can be written from
+this document alone (lakelands#14). A release reads and writes one
+format version, this one: every event of a lake carries it, from
+position 0, and a lake written in another is refused by name and never
+read in part (§6).
 
 A lake's event log is its truth (`docs/decisions/001-the-log-is-the-truth.md`).
 This document specifies the log so that a lake can be read, verified and
@@ -28,8 +13,8 @@ canonical bytes, the hash chain, every kind of event, and how the log is
 cut into segments and checkpointed. The Rust form of these types is
 `lakelands_api::event`; where the two disagree, this document is right.
 
-A change to the format is a change to this document first, with a
-version bump, and to the code second.
+A change to the format is a change to this document first, with the
+release's one step of the version (§6), and to the code second.
 
 `docs/log-format/vectors/` holds a worked example: a small lake's log in
 its stored form, with every hash, both kinds of content-derived id, the
@@ -47,7 +32,7 @@ every kind, and `body`, which holds the kind and its payload.
 
 | Member | Type | Presence | Meaning |
 |---|---|---|---|
-| `v` | integer | always | The format version the event was written under: `1`, `2` from the append that holds a lake's first re-keying `migrated` event on, `3` from the append that holds its first event carrying `upstream` or declaring a call of `date_bucket` on, `4` from its first proposal of a declaration or a migration on, `5` from its first declaration carrying `annotations` on, `6` from its first declaration of a derived relation on, and so on: a version is raised for the whole append that needs it (§6). |
+| `v` | integer | always | The format version the event is written in: the release's one version, the same on every event of a lake from position 0 (§6). |
 | `lake` | string | always | The lake the event belongs to. |
 | `position` | integer | always | The event's coordinate: `0` for the lake's first event, then consecutive, with no gaps. |
 | `id` | string | always | The event's identifier: 32 lower-case hex digits (§3). |
@@ -57,10 +42,10 @@ every kind, and `body`, which holds the kind and its payload.
 | `origin` | string | always | Which authority wrote it: `source`, `authored`, `derived` or `system`. |
 | `source` | string | source events | The source a `source` event came from. |
 | `seen_at` | string | when known | When the source observed the values (§1.3). |
-| `upstream` | object | when read from another lake | `{ "lake", "position" }`: the lake whose log the values were read from (its lake id) and the position of the event there whose state they are (an integer). Only on `record_ingested`, from version 3 on (§6); a reader refuses it on any other kind, naming the kind. The ingesting principal states it, as it states `seen_at`. |
+| `upstream` | object | when read from another lake | `{ "lake", "position" }`: the lake whose log the values were read from (its lake id) and the position of the event there whose state they are (an integer). Only on `record_ingested`; a reader refuses it on any other kind, naming the kind. The ingesting principal states it, as it states `seen_at`. |
 | `procedure` | object | when one did | `{ "name", "version" }`, both strings, of the procedure that produced the values: for a verb, its name and its declaration's `version` in decimal digits; for a function backing, the function's name and its declaration's `version`; for an embedding, the model as the backend names it and the version it reports. |
 | `context` | object | always | The host's context for the write: `{ "origin": "direct" \| "reactive" \| "scheduled", "depth": n }`, `depth` an integer ≥ 0. It never carries `cause`: a reader refuses a `context` that does, naming it. |
-| `cause` | integer | consequences | The position of the event this one follows from: a verb's write names its `verb_called`, an accepted proposal's write names its `write_accepted`, a fired trigger names the write that fired it. An event of a host's write that the store sets no cause for names the position the host gave, at or below the head when it was appended (`docs/decisions/021-the-write-context-belongs-to-the-host.md`); any kind may carry it, in every version. |
+| `cause` | integer | consequences | The position of the event this one follows from: a verb's write names its `verb_called`, an accepted proposal's write names its `write_accepted`, a fired trigger names the write that fired it. An event of a host's write that the store sets no cause for names the position the host gave, at or below the head when it was appended (`docs/decisions/021-the-write-context-belongs-to-the-host.md`); any kind may carry it. |
 | `fence` | integer | always | The fencing token of the writer lease the event was appended under (§4); `0` for the event at position 0, which is written before any lease exists in the lake. |
 | `idempotency_key` | string | when given | The caller's idempotency key of an authored write. |
 | `body` | object | always | The kind and its payload (§2). |
@@ -191,9 +176,7 @@ earlier than the previous event's `known_at` writes the previous value
 again. Only `position` orders events; `known_at` is when the lake learned
 something, and it is what the fold materialises per field. A verifier
 refuses a `known_at` below the one before it, naming the event's
-position, as it refuses a format version that goes down (§6); every log
-a Lakelands store has written keeps the rule, so checking it moves no
-format version. The rule is what lets a reader find the position the
+position. The rule is what lets a reader find the position the
 log had at an instant by a binary search (`LakeStore::position_at`).
 
 `seen_at` is the source's capture time for values from a source, as the
@@ -202,7 +185,7 @@ compares it with nothing, `known_at` included.
 
 ## 2. Kinds
 
-The set of kinds is closed per format version. A reader that meets a
+The set of kinds is closed. A reader that meets a
 kind, or a member, it does not know refuses the event and says so; it
 never skips it. `body.kind` names the kind.
 
@@ -218,7 +201,7 @@ the writer chose.
 
 | Kind | Payload | Fold |
 |---|---|---|
-| `lake_created` | `format` (integer) | Always at position 0, with `origin: system`, `fence: 0`, and `format` equal to the event's `v`. Declares the format version the lake was created with. |
+| `lake_created` | `format` (integer) | Always at position 0, with `origin: system`, `fence: 0`, and `format` equal to the event's `v`: the one format version the lake is written in (§6). |
 | `lease_taken` | `fence` (integer), `holder` (string) | A writer took the lease with a fencing token greater than every earlier one. The event is the first the new writer appends: its envelope `fence` already equals its payload `fence`, and every later event carries that fence until the next `lease_taken`. `holder` is free text for the operator. |
 
 ### 2.2 Ontology
@@ -226,8 +209,8 @@ the writer chose.
 | Kind | Payload | Fold |
 |---|---|---|
 | `declared` | `declaration`, `version` (integer), `schema_hash` (string, types only), `with_the_set` (`true`, or absent) | A declaration enters the ontology, or replaces its earlier version, from this position on. `declaration.declare` is `type`, `value_type`, `verb`, `trigger`, `object_set` or `function`, with the declaration's members beside it. `version` is 1 for the first declaration of that `declare` and `name`, one more for each later one. A new version here never reshapes stored records. `with_the_set: true` says that another `declared` of the same set follows in this append: a set that holds a function, or a type the lake held before it, carries it on every `declared` but its last, the link types the system declares among them. The records the set's declarations compute again are computed once, at the set's last `declared`, with the ontology as the whole set leaves it; at a position inside the set they read as before it. A log never ends inside a set, where its last `declared` carries it (the memberships an object set of the set changed come after their `declared` and carry no mark), and a fold refuses one that does. |
-| `value_type_migrated` | `declaration`, `version`, `renames`, `report_id`, `types` (version 12) | A value type's new declaration enters the ontology at `version`, as a `declared` of it would, and every stored record of the `types` that holds an old value of `renames` (a list of `[old, new]` text pairs) in a field of the value type holds the new one, retired and restricted records included, by the fold: a field computed by a function with a backing keeps what its backing answered. A record it changes stands at this position, with its version, its flags and each field's provenance as they were; one it does not change is as it was. The pairs map each value as it stood before the event, so a chain (`a → b`, `b → c`) and a swap read the same in any order. `types` names, in name order, every type, not a view, with a field of the value type; a fold refuses an event whose `types` differs. After it, the derived fields and the fields computed by a function of those types are computed again, as of this event, as a `declared` that revises them computes them (§2.3), and their calls are owed with this event as their cause. The system's `declared` of each type whose field's `initial` named an old value follows in the same append, one set; then the set memberships the renamed records change, each caused by this event (§2.5). |
-| `migrated` | `migration` (`to`, `renames`; `relation_renames`, version 11, left out when empty), `schema_hash`, `version`, `report_id`, `rekeyed` (version 2; `[]`) | A type's shape changes and every stored record of it is converted by the fold, by the lossless conversions the preflight report `report_id` checked. When `rekeyed` lists keys, the fold also moves those records to their new keys (§2.3). When `relation_renames` lists pairs of an old and a new name, each renamed relation keeps its edges, and the fold moves the link records of one carried by them to the link type of its new name (§2.3, "Link records"). |
+| `value_type_migrated` | `declaration`, `version`, `renames`, `report_id`, `types` | A value type's new declaration enters the ontology at `version`, as a `declared` of it would, and every stored record of the `types` that holds an old value of `renames` (a list of `[old, new]` text pairs) in a field of the value type holds the new one, retired and restricted records included, by the fold: a field computed by a function with a backing keeps what its backing answered. A record it changes stands at this position, with its version, its flags and each field's provenance as they were; one it does not change is as it was. The pairs map each value as it stood before the event, so a chain (`a → b`, `b → c`) and a swap read the same in any order. `types` names, in name order, every type, not a view, with a field of the value type; a fold refuses an event whose `types` differs. After it, the derived fields and the fields computed by a function of those types are computed again, as of this event, as a `declared` that revises them computes them (§2.3), and their calls are owed with this event as their cause. The system's `declared` of each type whose field's `initial` named an old value follows in the same append, one set; then the set memberships the renamed records change, each caused by this event (§2.5). |
+| `migrated` | `migration` (`to`, `renames`; `relation_renames`, left out when empty), `schema_hash`, `version`, `report_id`, `rekeyed` (`[]`) | A type's shape changes and every stored record of it is converted by the fold, by the lossless conversions the preflight report `report_id` checked. When `rekeyed` lists keys, the fold also moves those records to their new keys (§2.3). When `relation_renames` lists pairs of an old and a new name, each renamed relation keeps its edges, and the fold moves the link records of one carried by them to the link type of its new name (§2.3, "Link records"). |
 
 The schema hash covers shape only (`docs/decisions/007-schema-hash-covers-shape.md`).
 It is the SHA-256, as 64 lower-case hex digits, of the canonical bytes of
@@ -297,7 +280,7 @@ this object:
 | `record_restricted` | `type`, `key`, `version`, `reason` | The record is withheld from principals without the `restricted` grant (a retention hold); `reason` is the host's. Written by the host through the store facade, never by a caller's door. |
 | `record_unrestricted` | `type`, `key`, `version` | The hold is lifted. |
 
-**`made`** (version 11) is `true` where the write found no live record
+**`made`** is `true` where the write found no live record
 under the key, and is left out otherwise; `false` is never written. A
 record's `version` counts through a retirement (made 1, changed 2,
 retired 3, made again 4), so the two members together tell what
@@ -315,9 +298,7 @@ one ingest that name one key, the first carries it. An accepted
 proposal's write is judged when it is accepted. A key that a re-key
 moved away is no record (§2.3), so a write at it carries `made` with
 `version` 1. Nothing reads the member back: the fold, a rebuild, an
-import and a mirror carry the event as it is. An event below version 11
-carries none, and there its absence says nothing: a reader tells a
-first creation by `version` 1 and nothing more.
+import and a mirror carry the event as it is.
 
 No record event, and no `object_set_changed`, names a view, whose
 records are computed, or a name that begins `sys:kept.`, under which the
@@ -345,7 +326,7 @@ the key fields, or both; when both are given they must agree, or the
 write is refused. A type with no key fields takes the writer's key as it
 is. No key holds `0x00` (§3).
 
-**Re-keying** (version 2). A `migrated` event whose `rekeyed` lists
+**Re-keying.** A `migrated` event whose `rekeyed` lists
 `{ "type", "from", "to" }` moves each listed record: from that event's
 position on, the record is at `to`, with its fields, its `version` and
 its per-field provenance unchanged, and `from` is **ended**: a read at or
@@ -360,14 +341,13 @@ it is explicit, so a reader applies it without making keys again.
 **Link records.** A relation without `via` is carried by **link
 records**: ordinary records of a **link type** the store derives from
 the relation, written and read by the record kinds above. No event kind
-is added for links, so this is format version 1 unchanged
-(`docs/decisions/035-a-link-is-a-record.md`).
+is added for links (`docs/decisions/035-a-link-is-a-record.md`).
 
 - The link type of relation `r` on type `t` is named `sys.link.t.r`.
   It is declared by the store, as a system declaration in the same
   append as the declaration of `t` that holds the relation, and again
   whenever that declaration changes the relation.
-- **A relation renamed by a migration** (`relation_renames`, version 11)
+- **A relation renamed by a migration** (`relation_renames`)
   moves its link records, with no event for a link: at the `migrated`
   event the fold takes every record of `sys.link.t.<old>`, retired and
   restricted ones too, to `sys.link.t.<new>` under the same key, with its
@@ -425,7 +405,7 @@ In the same event, the fold recomputes derived fields and applies
 the event changed; a field the fold writes carries `origin: derived` and
 the event's other provenance. Nothing about this is written to the log:
 the rules are deterministic, so a replay reproduces them. A field that
-declares `computed_at: read` (version 12) is not computed by the fold
+declares `computed_at: read` is not computed by the fold
 and holds no value: every read computes it from the record as stored,
 with its own clock (`docs/decisions/052-a-field-may-be-computed-at-the-read.md`).
 
@@ -446,8 +426,8 @@ same fields itself
 
 | Kind | Payload | Fold |
 |---|---|---|
-| `verb_called` | `verb`, `key`, `payload` | A verb ran. Its writes follow as `record_upserted` events with `cause` set to this position and `procedure` naming the verb. From version 8 on, a verb declared on its type (`scope: type`) is called with no record, and `key` is left out. |
-| `write_proposed` | `proposal`, `write`, `why`, `pinned` | A write was recorded as a proposal instead of being applied (`docs/decisions/013-verbs-run-by-declared-risk.md`). `write.write` is `upsert`, `retire` or `call`, with that write's arguments; from version 4 on also `declare`, a set of declarations, or `migrate`, a migration with its preflight's report, and from version 10 on `migrate_value_type`, a value type's new declaration with its preflight's report (Appendix A), and from version 12 on with the values it renames. From version 13 on, `pinned: true` where the proposer's grant admits only some records of the type the write reaches: its accept is refused once the record at the key has an event after this position or the type was declared or migrated since (`docs/decisions/051-a-grant-may-admit-only-some-records.md`); absent when false. |
+| `verb_called` | `verb`, `key`, `payload` | A verb ran. Its writes follow as `record_upserted` events with `cause` set to this position and `procedure` naming the verb. A verb declared on its type (`scope: type`) is called with no record, and `key` is left out. |
+| `write_proposed` | `proposal`, `write`, `why`, `pinned` | A write was recorded as a proposal instead of being applied (`docs/decisions/013-verbs-run-by-declared-risk.md`). `write.write` is `upsert`, `retire` or `call`, with that write's arguments; or `declare`, a set of declarations, or `migrate`, a migration with its preflight's report, or `migrate_value_type`, a value type's new declaration with its preflight's report (Appendix A) and the values it renames. `pinned: true` where the proposer's grant admits only some records of the type the write reaches: its accept is refused once the record at the key has an event after this position or the type was declared or migrated since (`docs/decisions/051-a-grant-may-admit-only-some-records.md`); absent when false. |
 | `write_accepted` | `proposal` | The proposal was accepted. Its write follows in the same append, with `cause` set to this position and the proposer as `writer`: for `declare` the `declared` events, for `migrate` the `migrated` event, for `migrate_value_type` the `declared` of the value type, or, when it renames values, the `value_type_migrated` event and what follows it (the link types the store derives, and the types it declares again for their `initial`, keep `system:lakelands` as writer). |
 | `write_rejected` | `proposal`, `reason` | The proposal was rejected; nothing else is written. |
 
@@ -627,10 +607,8 @@ So the separators are unambiguous.
   in a lake, so the id is unique without a source of randomness. A
   reader never recomputes these ids; it only requires them unique.
 
-The aging, answer and acceptance ids are new derivations for event kinds
-version 1 already has; they add no kind, member or encoding, so the
-format version stays 1 (§6). A reader that does not recompute them still
-reads the event. In a lake written before them, a verb's answers and the
+The aging, answer and acceptance ids add no kind, member or encoding. A
+reader that does not recompute them still reads the event. In a lake written before them, a verb's answers and the
 acceptances stand under positional ids: a retry there finds no answer and
 is refused as `unanswered`, and an accept sent again is `decided`;
 nothing runs twice.
@@ -759,45 +737,59 @@ float, and so is a vector of zeros.
 
 ## 6. Versioning
 
-Every event carries `v`. A reader refuses an event whose `v` is greater
-than the newest version it knows, with a message that names both
-versions; it never guesses. Within one version the format is fixed: a new
-kind, a new member or a changed encoding is a new version, specified
-here first. A lake's log may mix versions only upward: an event never
-carries a lower `v` than the event before it.
+**A release reads and writes one format version.** Every event of a
+lake carries it as `v`, from position 0, and `lake_created.format` says
+the same number. Within the version the format is fixed and described
+here whole: nothing in this document holds for one event of a lake and
+not for another.
 
-A version is raised for a whole append. The append that holds a lake's
-first event needing version N writes every one of its events with `v`
-N, and every event after it carries at least N. An event of that append
-that needs nothing newer still carries N. Each row below says which
-event raises it; "that append" is the append that holds it.
+**The version rises by one in a release that changes the format, and
+only there.** A new kind, a new member or a changed encoding is a change
+of the format, specified here first; a release that makes several takes
+one step for all of them, and a release that makes none keeps the number
+and reads the lakes of the release before it. Between two releases the
+format is open: the first change raises the number, and later ones
+change the format under it, so a lake written by a build between two
+releases may not open in the next.
 
-**A lake a version-11 writer makes a record in is at version 11 from
-that record on.** `made` is a member of every write that makes a record,
-so the first one raises the lake to 11, whatever else it holds: a
-version-10 reader refuses that lake. Before its first record a lake
-still steps as the rows say (a declaration that needs 8 is written at 8).
-The rows for versions 2 to 10 are what a reader needs for a log an older
-build wrote, and what an event is refused by when it carries below its
-version what that version added; a lake written today passes through
-them only before its first record.
+**A lake in another format is refused, older or newer, and never read
+in part.** A reader reads an event's `v` before any other member of it;
+a line with no `v` is in format 0. (A verification of an export checks
+first that the line is its canonical bytes, and `v` next.)
 
-| Version | Adds |
-|---|---|
-| 1 | Everything above except what later versions add. |
-| 2 | `migrated.rekeyed` (§2.2, §2.3). A lake writes version 1 until the append that holds its first re-keying `migrated` event; that append carries `v` 2, as does every event after it; a version-1 event that carries `rekeyed` is refused. A version-1 reader refuses the version-2 events rather than misreading a re-key. |
-| 3 | The envelope member `upstream` (§1.1, §2.3) and a call of `date_bucket` in a declaration's expressions (Appendix B). A lake writes the version it had until the append that holds its first event that carries `upstream`, or that declares (in a `declared` or `migrated` event) an expression calling `date_bucket`; that append carries `v` 3, as does every event after it. A version-2 (or 1) event that carries either is refused, naming it. A version-2 reader refuses the version-3 events rather than misreading them. |
-| 4 | A proposal of a declaration or a migration: `write_proposed` whose `write` is `declare` or `migrate` (§2.4, Appendix A). A lake writes the version it had until the append that holds its first such proposal; that append carries `v` 4, as does every event after it; a version-3 (or older) event that carries one is refused, naming it. A version-3 reader refuses the version-4 events rather than failing on a write it does not know. |
-| 5 | A declaration's `annotations` (Appendix A): on a type, a field or a relation, anywhere in the declaration a `declared` event carries, in a `migrated` event's `to`, or in a proposed `declare` or `migrate`. A lake writes the version it had until the append that holds its first event whose declaration holds a non-empty `annotations`; that append carries `v` 5, as does every event after it; a version-4 (or older) event that carries annotations is refused, naming them. A version-4 reader refuses the version-5 events rather than refusing a member it does not know. An annotation is never part of the schema hash (§2.2). |
-| 6 | A derived relation, a relation declaration's `derived`, and a trigger's `max_depth` (Appendix A). A lake writes the version it had until the append that holds its first event whose declaration holds a relation with `derived` or is a trigger with `max_depth` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 6, as does every event after it; a version-5 (or older) event that carries one is refused, naming it. A version-5 reader refuses the version-6 events rather than refusing a member it does not know. `derived` is never part of the schema hash (§2.2). Version 6 took both members while it was untagged; a tagged version is closed. |
-| 7 | A call of `retired` in a declaration's expressions (Appendix B): in a trigger's `when`, the one place it means something. A lake writes the version it had until the append that holds its first event whose declaration calls `retired` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 7, as does every event after it; a version-6 (or older) event that calls it is refused, naming it. A version-6 reader refuses the version-7 events rather than reading a guard it cannot evaluate, which would never fire. |
-| 8 | A view's `params` and a call of `param` in a declaration's expressions (Appendix A, Appendix B): a view may declare parameters, which a read binds and its `where` and measures read with `param('name')`. A lake writes the version it had until the append that holds its first event whose declaration is a view with a non-empty `params`, or calls `param` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 8, as does every event after it; a version-7 (or older) event that carries either is refused, naming it. A version-7 reader refuses the version-8 events rather than computing a view whose parameters it cannot bind. `params` is part of the schema hash only when it is not empty (§2.2). The same version adds a verb called on its type (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended): a verb declaration's `scope: type` (in a `declared` event or a proposed `declare`); a `verb_called` without `key`; and a proposed `call` without `key`. A lake writes the version it had until the append that holds its first such event; that append carries `v` 8, as does every event after it, and a version-7 (or older) event that carries one is refused, naming it. Version 8 took both while it was untagged. |
-| 9 | A view's `merge` (Appendix A): further sources a view merges on its key, each with its own `where`, `group_by` lined up with the view's by position, and aggregate measures the view's measures read by name. A lake writes the version it had until its first event whose declaration is a view with a non-empty `merge` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 9, as does every event after it; a version-8 (or older) event that carries one is refused, naming it. A version-8 reader refuses the version-9 events rather than computing a view from its main source alone. `merge` is part of the schema hash only when it is not empty (§2.2). |
-| 10 | A proposal of a value type's tightening: `write_proposed` whose `write` is `migrate_value_type` (§2.4, Appendix A). A lake writes the version it had until the append that holds its first such proposal; that append carries `v` 10, as does every event after it; a version-9 (or older) event that carries one is refused, naming it. A version-9 reader refuses the version-10 events rather than failing on a write it does not know. A lake that never holds such a proposal stays at the version it had. |
-| 11 | What one release added to what the log keeps, each of which needs the version by itself: a call of `floor` in a declaration's expressions, a call of `date_bucket` by a width, with its third argument, and a call of `in_set` (Appendix B); a migration's `relation_renames`, in a `migrated` event or a proposed `migrate` (§2.2, §2.3); and a write of a `sys.setting` whose key begins `view_kept.`, in a `record_upserted` or `record_ingested` event or a proposed `upsert`: the setting asks for a view's records to be kept as its sources are written, and a store that keeps no view would append beside records it never moves, so it refuses the log and does not read past the setting. A lake writes the version it had until the append that holds its first event that carries one of them (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 11, as does every event after it; a version-10 (or older) event that carries one is refused, naming it. A version-10 reader refuses the version-11 events rather than folding a declaration it cannot evaluate. And the member `made` on a `record_upserted` or `record_ingested` event (§2.3), which the write of a record that is not live carries: so every lake reaches 11 with its first record made, and only a lake that holds no record stays at the version it had. And the member `restated` of a proposed migration's report (Appendix A), which says what the migration's `to` states otherwise than the declaration in force: a reader below 11 would take the proposal for one that restates nothing. And a field's `initial` (§2.2), in a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`: a reader below 11 would make records without the value the fold fills (§2.3). |
-| 12 | A declaration's `with_the_set` (§2.3), on every `declared` of a set but its last, where the set holds a function or a type the lake held before it: the set's records are computed again once, at its last declaration, and not at each. A lake writes the version it had until the append that holds its first such set; that append carries `v` 12, as does every event after it; a version-11 (or older) event that carries it is refused, naming it. A version-11 reader refuses the version-12 events rather than computing the records again at each declaration of the set, which leaves other values where a field reads `changed()` or `previous()`. A lake whose sets hold none of them stays at the version it had. A declaration with a field that says `computed_at`, in the places 5 names, needs 12 as well: a version-11 reader would store a value computed at the read, frozen at its last write. And the kind `value_type_migrated` (§2.2), and a proposed `migrate_value_type` whose `renames` is not empty: a reader below 12 knows no event that renames stored values, and would take the proposal for a plain tightening. |
-| 13 | What one release added, each of which needs the version by itself: a proposal's `pinned` (§2.4), on a `write_proposed` whose proposer holds `only` on the type its write reaches: its accept is refused once the record or the type changed after it; and the kind `date` (§1.3, §5): a field, a view's parameter or a value type of that kind, in a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`. A lake writes the version it had until the append that holds its first such proposal or declaration; that append carries `v` 13, as does every event after it; a version-12 (or older) event that carries one is refused, naming it. A version-12 reader refuses the version-13 events rather than accepting a pinned proposal on a record or a type that moved since, or failing on a kind it does not know. A lake that holds neither stays at the version it had. |
-| 14 | An `output_recorded` that names its output by `output_at` (§2.5). A lake writes the version it had until the append that holds its first such event; that append carries `v` 14, as does every event after it; a version-13 (or older) event that carries one is refused, naming it. A version-13 reader refuses the version-14 events rather than filling a field from an output it does not find. A lake whose fills each carry a new output stays at the version it had. |
+- An open of a lake that was not created in the release's format, or
+  whose newest event is in another, is refused before the lake is
+  opened: the store reads the log's first and last event and judges
+  three numbers, the first event's `v`, the format its `lake_created`
+  says and the last event's `v`. It names the lake, the first of the
+  three that is another, and the one format read (`log_format` in
+  `docs/refusals.md`). Nothing of the lake is judged, made, folded or
+  appended to. The lake is not damaged, and restoring it would not
+  help: it is another release's.
+- Wherever else an event is read (a verification of the lake or of an
+  export, the feed, a rebuild, an import), one in another format is
+  refused at its position, naming both numbers (`format_other`). So an
+  export of another release is not imported, and a lake that mixes
+  formats is refused at the first event of another. An open looks at
+  the two ends alone: an event of another format between them is found
+  where it is read, by `verify`, by a writer's fold and by a rebuild.
+- A `lake_created` that says another format than the release's is
+  refused where it is read by a flaw of its own (`created_in_another`),
+  at whatever position the event stands; a store writes it at position
+  0 alone. A line whose own `v` is another is refused for that first
+  (`format_other`).
+
+This holds until the first release with real installations, which the
+operator names. From that release on a change of the format carries its
+upgrade path: how a lake the release before wrote becomes one this
+release reads, proved on such a lake
+(`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+`v` on every event, `lake_created.format` and a refusal that names both
+numbers are what that path starts from.
+
+Before this rule a lake wrote the lowest version each append needed, so
+one log held versions 1 to 14 in rising order. No release reads such a
+log any more.
 
 ## Appendix A. Encodings
 
@@ -806,18 +798,18 @@ below; no other spelling is read.
 
 | Where | Values |
 |---|---|
-| a field type's `kind` (§5) | `text`, `number`, `decimal`, `boolean`, `date_time`, `bytes`, `json`, `reference`, `vector`, `geo`, `date` (version 13) |
+| a field type's `kind` (§5) | `text`, `number`, `decimal`, `boolean`, `date_time`, `bytes`, `json`, `reference`, `vector`, `geo`, `date` |
 | an event's `origin` | `source`, `authored`, `derived`, `system` |
-| a field's provenance `origin` (§2.3) | an event's, and `initial` (version 11), which an event's own `origin` never is: a log whose event carries it is refused at that event |
+| a field's provenance `origin` (§2.3) | an event's, and `initial`, which an event's own `origin` never is: a log whose event carries it is refused at that event |
 | `context.origin` | `direct`, `reactive`, `scheduled` |
 | the kind in `writer` | `human`, `agent`, `service`, `system` |
 | a field's `authority` | `authored`, `source`, `shared`, `derived` |
 | a field's `on_input_change` | `keep`, `clear` |
-| a field's `computed_at` (version 12) | `write`, `read` |
+| a field's `computed_at` | `write`, `read` |
 | a relation's `cardinality` | `one_to_one`, `one_to_many`, `many_to_one`, `many_to_many` |
 | a verb's `risk` | `low`, `medium`, `high` |
 | a verb's `effect` | `write` (with `set`), `external` (with `executor`) |
-| a verb's `scope` (version 8; default `record`, which is never written) | `record`, `type` |
+| a verb's `scope` (default `record`, which is never written) | `record`, `type` |
 | `declaration.declare` | `type`, `value_type`, `verb`, `trigger`, `object_set`, `function` |
 | a proposal's `write.write` | `upsert`, `retire`, `call` |
 
@@ -827,18 +819,18 @@ with that declaration's members beside it. Every member not marked
 
 | Declaration | Members (default when absent) |
 |---|---|
-| `type` | `name` (required), `key` (`[]`), `fields` (`[]`), `relations` (`[]`), `view` (none), `valid_from`, `valid_to`, `language` (none), `field_meta` (`true`), `description`, `label` (none), `annotations` (`{}`, version 5) |
-| a field (in `fields`, a relation's `fields`, a verb's `payload`, a function's `inputs`) | `name` and `type` (required), `required` (`false`), `authority` (`authored`), `derived` (none), `computed_at` (none, version 12), `depends_on` (`[]`), `on_input_change` (`keep`), `initial` (none, version 11; on a type's own field alone), `sensitive` (`false`), `searchable` (`false`), `description`, `label` (none), `annotations` (`{}`, version 5) |
+| `type` | `name` (required), `key` (`[]`), `fields` (`[]`), `relations` (`[]`), `view` (none), `valid_from`, `valid_to`, `language` (none), `field_meta` (`true`), `description`, `label` (none), `annotations` (`{}`) |
+| a field (in `fields`, a relation's `fields`, a verb's `payload`, a function's `inputs`) | `name` and `type` (required), `required` (`false`), `authority` (`authored`), `derived` (none), `computed_at` (none), `depends_on` (`[]`), `on_input_change` (`keep`), `initial` (none; on a type's own field alone), `sensitive` (`false`), `searchable` (`false`), `description`, `label` (none), `annotations` (`{}`) |
 | a field's `type` | `kind` (required), `value_type`, `target`, `dimensions` (none) |
-| a relation | `name` and `target` (required), `cardinality` (`many_to_one`), `authority` (`authored`; who writes its links, when it has no `via`), `inverse`, `via` (none), `fields` (`[]`), `description` (none), `annotations` (`{}`, version 5), `derived` (none, version 6: `{ "match": [ { "from", "to" } ] }`, a field of the owner and one of the target per pair) |
-| a `view` | `source` and `measures` (required; each measure `{ "name", "expr" }`), `where` (none), `group_by` (`[]`), `params` (`[]`, version 8: each `{ "name", "kind" }`, a kind of `text`, `number`, `decimal`, `boolean`, `date_time` or `date`), `merge` (`[]`, version 9: each `{ "source", "where", "group_by", "measures" }`; `source` and `measures` required, `where` none, `group_by` `[]`) |
+| a relation | `name` and `target` (required), `cardinality` (`many_to_one`), `authority` (`authored`; who writes its links, when it has no `via`), `inverse`, `via` (none), `fields` (`[]`), `description` (none), `annotations` (`{}`), `derived` (none: `{ "match": [ { "from", "to" } ] }`, a field of the owner and one of the target per pair) |
+| a `view` | `source` and `measures` (required; each measure `{ "name", "expr" }`), `where` (none), `group_by` (`[]`), `params` (`[]`: each `{ "name", "kind" }`, a kind of `text`, `number`, `decimal`, `boolean`, `date_time` or `date`), `merge` (`[]`: each `{ "source", "where", "group_by", "measures" }`; `source` and `measures` required, `where` none, `group_by` `[]`) |
 | `value_type` | `name` and `kind` (required), `constraint` (none), `one_of` (`[]`), `format`, `scale`, `description` (none) |
 | `verb` | `name`, `on`, `risk` and `effect` (required), `payload` (`[]`), `requires` (none), `description` (none); `effect: write` carries `set`, a list of `{ "field", "value" }`; `effect: external` carries `executor` |
-| `trigger` | `name` and `on` (required), `when`, `description` (none), `max_depth` (none, version 6: an integer at most the lake's `max_reactive_depth`) |
+| `trigger` | `name` and `on` (required), `when`, `description` (none), `max_depth` (none: an integer at most the lake's `max_reactive_depth`) |
 | `object_set` | `name`, `of` and `where` (required), `description` (none) |
 | `function` | `name` and `backing` (required), `inputs` (`[]`), `expr` (none), `config` (`null`), `description` (none) |
 
-An **annotation map** (`annotations`, version 5) is an object from a key
+An **annotation map** (`annotations`) is an object from a key
 to any JSON value but `null`. A key is two or more ASCII identifiers
 joined by `.`, at most 128 bytes, and does not begin with `sys.` or
 `lakelands.`; every integer in a value lies within ±(2^53 − 1) (§1.2).
@@ -855,30 +847,30 @@ Appendix B.
 `migrated.migration` is `{ "to", "renames" }`: `to` is the type's new
 declaration, the members of a `type` declaration without `declare`;
 `renames` (default `[]`) is a list of `[from, to]` field-name pairs.
-`migrated.rekeyed` (version 2, default `[]`) is a list of
+`migrated.rekeyed` (default `[]`) is a list of
 `{ "type", "from", "to" }` record-key moves (§2.3).
 
 `write_proposed.write` is the proposed write with its arguments:
 `upsert` carries `type`, `key`, `patch`; `retire` carries `type`, `key`;
-`call` carries `verb`, `key`, `payload`, and from version 8 on leaves
+`call` carries `verb`, `key`, `payload`, and leaves
 `key` out for a verb called on its type. Each also carries `opts`
 (default `{}`), with `expected_version` and `idempotency_key` when given.
-From version 4 on, `declare` carries `declarations`, a list of
+`declare` carries `declarations`, a list of
 declarations as `declared` carries one each; `migrate` carries
 `migration`, as `migrated` carries it, and `report`, the preflight's
 report when it was proposed (`type`, `from_schema_hash`,
 `to_schema_hash`, `records_scanned`, `fields`, `dropped`, `rekeyed`,
-`references`, `sample_collisions`, `lossless`, `report_id`, and from
-version 11 on `restated`, left out when empty: a list of
+`references`, `sample_collisions`, `lossless`, `report_id`, and
+`restated`, left out when empty: a list of
 `{ "field", "member", "was", "to" }`, `field` left out for a member of
 the type itself, as the
-`migrate` door answers it). From version 10 on, `migrate_value_type`
+`migrate` door answers it). `migrate_value_type`
 carries `to`, the value type's new declaration as `declared` carries
 one, and `report`, its preflight's report when it was proposed
 (`value_type`, `from_version`, `records_scanned`, `fields`, `misfits`,
 `first`, left out when empty, `fits`, `report_id`, as the
 `migrate_value_type` door answers it). A logged report fits, so its
-`first` is empty. From version 12 on, `migrate_value_type` carries
+`first` is empty. `migrate_value_type` also carries
 `renames`, left out when empty, a list of `[old, new]` text pairs, and
 its report the members `conditions` (a list of strings) and
 `conditions_unshown` (`true`, or absent), and, in each of `fields`,
@@ -946,16 +938,14 @@ A literal is `{ "type": "null" }`, `{ "type": "bool", "value": true }`,
 `setting`, `changed`, `coalesce`, `if`, `lower`, `upper`, `trim`, `len`,
 `concat`, `substr`, `contains`, `replace`, `starts_with`, `matches`,
 `abs`, `round`, `count`, `sum`, `min`, `max`, `avg`, spelled in the text
-form exactly as here; and, from version 3 on, `date_bucket`, whose two
+form exactly as here; and `date_bucket`, whose two
 arguments are the value and its unit as a string literal (`day`, `week`,
 `month`, `quarter` or `year`), answering the instant at which the UTC
 bucket holding the value starts (the week from Monday, as ISO counts
-weeks). A read may call `date_bucket` in any version; a declaration from
-version 3 on (§6). From version 7 on, `retired`, with no arguments: true
-when the write retires the record, in a trigger's guard only (§6). From
-version 8 on, `param`, with one argument, a parameter's name as a string
+weeks). `retired`, with no arguments: true
+when the write retires the record, in a trigger's guard only. `param`, with one argument, a parameter's name as a string
 literal: the value the read binds to that parameter of the view, in a
-view's `where` and measures only (§6). From version 11 on, `floor`, with
+view's `where` and measures only. `floor`, with
 one argument: the greatest whole number not above it; and `date_bucket`
 with three arguments, the value, a width as a duration literal above
 zero, and the origin: the start of the window of that width holding the
@@ -966,8 +956,7 @@ argument, an object set's name as a string literal: true for a record
 where that set's filter holds for it, the filter read in the call's
 place when the condition is read, never stored membership; in an object
 set's `where`, a trigger's `when` and a read's `where` only, a set of
-the record's type, and no set through itself. A read may call each of
-the three in any version; a declaration from version 11 on (§6).
+the record's type, and no set through itself.
 
 **From text to typed form.**
 

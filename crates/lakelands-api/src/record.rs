@@ -53,7 +53,7 @@ pub struct FieldMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub procedure_version: Option<String>,
     /// For a value read from another lake's log (a mirror's): that lake
-    /// and the position of the state it reflects (log format version 3).
+    /// and the position of the state it reflects.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<Upstream>,
     /// For a field a function computes that holds no value because its

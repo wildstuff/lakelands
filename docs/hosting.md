@@ -329,6 +329,26 @@ projection under the lease, makes it anew and folds the whole log; the
 open is the rebuild. `LakeStore::rebuild` on an open lake does the same
 for a lake that opened.
 
+**A lake is read only by a release of its log format.** A release reads
+and writes one log format, and a lake that was created in another or
+whose newest event is in another, older or newer, is refused at its
+open in every mode, naming the lake and both numbers (`log_format` in
+`docs/refusals.md`;
+`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`). The
+store reads the two ends of the log before it opens the lake's engine,
+so such a lake is left as it stands: its projection is not judged, and
+nothing of it is made, folded or changed. An import asks the same
+before it opens its target: onto such a lake it is refused the same
+way, and onto a lake of the release's format as `import_not_empty`,
+with no lease taken and nothing changed. The
+number steps only in a release that changes the format, and the
+release's notes say so. There is no upgrade path yet: a host that moves
+its pin across such a step starts the new release on fresh lakes. An
+export the older release wrote is not imported, and a connection whose
+source lake is in another format does not start. From the first release
+with real installations on, a change of the format carries its upgrade
+path.
+
 **Configuration is not a seam.** Engine configuration, tuning, limits
 and an optional key handle reach a lake through `Location`, and a
 server through its server configuration; Lakelands never reads the
@@ -756,7 +776,7 @@ A host that already has a store of its own moves in four steps.
   (`docs/decisions/048-the-fold-keeps-the-event-not-the-records-it-changed.md`).
   A set that declares several functions of one type again, applied or
   accepted as a proposal, reads the type once and computes and puts each
-  record once, at the set's last declaration (log format 12): at 2 000
+  record once, at the set's last declaration: at 2 000
   records of 52 fields, a set of 50 such functions takes 0.56 ms a
   record on SQLite, where computing it again at each declaration took
   24.6 ms (lakelands#605). A read at a position inside the set finds
@@ -766,7 +786,7 @@ A host that already has a store of its own moves in four steps.
   hand), the writer is held 4.1 to 4.5 s on SQLite and 13.3 to 14 s on
   PostgreSQL, whichever of the two is declared again, and about 20 s
   and 51 to 56 s at 400 000; the peak of the append is 3 MB on SQLite
-  and 9 MB on PostgreSQL at both sizes. Before format 12, a bundle of
+  and 9 MB on PostgreSQL at both sizes. Before that, a bundle of
   two changed functions held the writer 12 s on SQLite and 21 s on
   PostgreSQL at 100 000 records (50 s and 99 s at 400 000), at 4 MB and
   11 MB. The time grows with the type's records; the peak does not. One

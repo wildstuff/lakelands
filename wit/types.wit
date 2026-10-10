@@ -283,7 +283,7 @@ interface types {
     }
 
     /// What a verb is called on: one record of its type, or the type,
-    /// with no key (log format 8).
+    /// with no key.
     enum verb-scope { %record, %type }
 
     record verb-decl {
@@ -439,8 +439,7 @@ interface types {
     enum origin { source, authored, derived, system, initial }
 
     /// Where values read from another lake's log came from: that lake and
-    /// the position of the event there whose state they are (log format
-    /// version 3).
+    /// the position of the event there whose state they are.
     record upstream {
         lake: lake-id,
         position: position,

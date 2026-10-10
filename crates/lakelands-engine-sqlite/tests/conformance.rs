@@ -14,7 +14,8 @@ use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::checks::ALL;
 use lakelands_core::conformance::{
-    FreshLake, Harness, Import, ImportedLake, LARGE_LAKE, Meter, Relimit, Reopen, run_all, run_one,
+    Continue, Continued, FreshLake, Harness, Import, ImportedLake, LARGE_LAKE, Meter, Relimit,
+    Reopen, below, continue_below, run_all, run_one,
 };
 use lakelands_engine_sqlite::SqliteOpener;
 use peak_alloc::PeakAlloc;
@@ -83,6 +84,42 @@ impl Harness for Sqlite {
                 let store: Arc<dyn LakeStore> =
                     lakelands_store::open(location, seams, OpenMode::Write).await?;
                 Ok(store)
+            })
+        })
+    }
+
+    fn continuer(&self) -> Continue {
+        let root = self.root.clone();
+        Arc::new(move |held, lake, lines, mode, host| {
+            let root = root.clone();
+            Box::pin(async move {
+                if let Some(store) = held {
+                    store.close().await?;
+                }
+                let location = Location::sqlite(lake.to_string(), root.join(lake.as_str()));
+                let seams = Seams {
+                    engines: vec![Arc::new(SqliteOpener)],
+                    ..host
+                };
+                // The engine is reached off the runtime's threads, as the
+                // store reaches it.
+                let (o, l) = (SqliteOpener, location.clone());
+                let before = tokio::task::spawn_blocking(move || continue_below(&o, &l, lines));
+                let before = before.await.expect("the engine's work ran")?;
+                let opened = lakelands_store::open(location.clone(), seams, mode).await;
+                let after = match &opened {
+                    Ok(_) => None,
+                    Err(_) => {
+                        let o = SqliteOpener;
+                        let read = tokio::task::spawn_blocking(move || below(&o, &location));
+                        Some(read.await.expect("the engine's work ran")?)
+                    }
+                };
+                Ok(Continued {
+                    opened,
+                    before,
+                    after,
+                })
             })
         })
     }

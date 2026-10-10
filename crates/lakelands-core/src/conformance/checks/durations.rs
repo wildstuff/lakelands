@@ -18,14 +18,14 @@ use serde_json::json;
 
 use crate::conformance::fixture::{
     Lake, Must, agg, computed_by, dec, decimal, derived, field, field_access, find_where,
-    log_events, migration, no_such_field, object_set_on, pattern, refused_alike, refused_like,
-    refused_on, trigger_on, type_decl, value, view_of, write_verb,
+    migration, no_such_field, object_set_on, pattern, refused_alike, refused_like, refused_on,
+    trigger_on, type_decl, value, view_of, write_verb,
 };
 use crate::conformance::{Failure, Held, Store};
 
 check!(
     DAYS = a_duration_divided_by_a_unit_is_a_number,
-    "017, extended: a duration divided by a duration is an exact number, a duration times or divided by a number is a duration, and floor(n) is the whole number below; so (paid_on - due_on) / 1d answers the days between two instants as a group key, in a where and in a derived number field, the same on every engine; log format §6: the declaration that calls floor is written in format version 11, as is every event after it"
+    "017, extended: a duration divided by a duration is an exact number, a duration times or divided by a number is a duration, and floor(n) is the whole number below; so (paid_on - due_on) / 1d answers the days between two instants as a group key, in a where and in a derived number field, the same on every engine"
 );
 
 check!(
@@ -135,16 +135,6 @@ async fn a_duration_divided_by_a_unit_is_a_number(store: Store) -> Held {
          records hold {:?} and {:?}",
         value(&paid, "late"),
         value(&open, "late")
-    );
-    // The declaration that calls `floor` is the lake's first event in
-    // format 11, and every event after it carries 11.
-    let events = log_events(store.as_ref()).await?;
-    let formats: Vec<_> = events.iter().map(|e| (e.v, e.body.kind())).collect();
-    let mut from = formats.iter().skip_while(|(v, _)| *v != 11);
-    ensure!(
-        from.next() == Some(&(11, "declared")) && from.all(|(v, _)| *v == 11) && formats[0].0 < 11,
-        "the lake writes format 11 from the declaration that calls `floor` on, and not before; \
-         its events carry {formats:?}"
     );
     Ok(())
 }

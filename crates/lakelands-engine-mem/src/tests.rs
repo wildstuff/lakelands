@@ -132,6 +132,25 @@ fn a_lake_that_was_never_created_is_unavailable_to_read_and_write() {
     assert!(open(&name, OpenMode::Write).is_ok());
 }
 
+/// The ends of a lake's log are read without opening it: the first and
+/// the last event, none for an empty log, and none for a lake that was
+/// never created, which is not created by the asking.
+#[test]
+fn the_ends_of_a_log_are_read_and_nothing_is_made() {
+    let name = unique("ends");
+    let ends = || OPENER.with(|o| o.log_ends(&Location::memory(name.as_str())).unwrap());
+    assert_eq!(ends(), None);
+    let unmade = open(&name, OpenMode::Read);
+    assert!(unmade.is_err(), "asking for a log's ends made a lake");
+    let engine = open(&name, OpenMode::Create).unwrap();
+    assert_eq!(ends(), None);
+    let lease = engine.take_lease("a writer").unwrap();
+    let events = chain(0, 3, lease.fence, Digest::zero());
+    engine.append(&lease, &events).unwrap();
+    assert_eq!(ends(), Some((events[0].clone(), events[2].clone())));
+    assert_eq!(engine.tip().unwrap().map(|(at, _)| at), Some(Position(2)));
+}
+
 #[test]
 fn a_location_for_another_engine_is_refused() {
     let at = Location::sqlite("elsewhere", "/nowhere");

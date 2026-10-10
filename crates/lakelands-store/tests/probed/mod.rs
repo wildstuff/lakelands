@@ -461,6 +461,9 @@ impl EngineOpener for ProbedOpener {
     fn name(&self) -> &str {
         self.0.name()
     }
+    fn log_ends(&self, location: &Location) -> Result<Option<(CanonicalEvent, CanonicalEvent)>> {
+        self.0.log_ends(location)
+    }
     fn open(&self, location: &Location, mode: OpenMode) -> Result<Box<dyn LakeEngine>> {
         Ok(Box::new(Probed {
             inner: self.0.open(location, mode)?,

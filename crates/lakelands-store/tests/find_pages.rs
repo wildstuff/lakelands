@@ -167,6 +167,9 @@ impl EngineOpener for CountingOpener {
     fn name(&self) -> &str {
         self.inner.name()
     }
+    fn log_ends(&self, location: &Location) -> Result<Option<(CanonicalEvent, CanonicalEvent)>> {
+        self.inner.log_ends(location)
+    }
     fn open(&self, location: &Location, mode: OpenMode) -> Result<Box<dyn LakeEngine>> {
         Ok(Box::new(Counting {
             inner: self.inner.open(location, mode)?,

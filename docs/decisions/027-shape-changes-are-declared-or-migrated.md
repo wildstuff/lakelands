@@ -150,8 +150,7 @@ everything that names the records it moves:
   keys it reads" below);
 - every reference value, in any type, that names a moved key.
 
-The moves are listed in the `migrated` event (`rekeyed`, log format
-version 2), and the fold moves each record with its fields, version and
+The moves are listed in the `migrated` event (`rekeyed`), and the fold moves each record with its fields, version and
 per-field provenance unchanged: who wrote a value, and when, stays true of
 it. That is why the move is a new member, and a new format version, rather
 than a retirement and a new write per record, which would have made every
@@ -688,9 +687,8 @@ feed and an export are the log as the host reads it, and carry the
 report whole.
 
 **The log.** A proposed migration is logged with its report, so with
-`restated`, which is left out when it is empty: a line of format
-version 11 (`docs/log-format.md` §6), whose reader below would take the
-proposal for one that restates nothing.
+`restated`, which is left out when it is empty
+(`docs/log-format.md`, Appendix A).
 
 **An accept restates what the proposal's report said, no more.** An
 accept already refused a migration proposed on another shape, by the

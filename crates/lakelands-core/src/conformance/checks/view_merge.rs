@@ -12,8 +12,8 @@ use lakelands_api::{Access, Error, FieldName, LakeStore, Params, Refusal, Value}
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, bound, field, field_access, invalid_case, invalid_like, log_events, measure, param,
-    type_decl, view_of,
+    Lake, bound, field, field_access, invalid_case, invalid_like, measure, param, type_decl,
+    view_of,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -35,11 +35,6 @@ check!(
 check!(
     MERGE_DECLARED_STRICTLY = a_merge_declared_badly_is_refused_naming_it,
     "028 and 018: `declare` refuses a merged source that is not declared, read twice, grouped by another number of fields or a field of another kind than the one it lines up with, a measure named twice, a merged measure with no declared field or one that calls no aggregate, a view with parameters as any source, and a merge that closes a cycle of views, naming it"
-);
-
-check!(
-    FORMAT_9 = a_view_that_merges_is_written_in_log_format_9,
-    "log format §6 and 018: the event that declares a view merging sources is written in format 9, as is every event after it; a view without a merge leaves the lake's format where it was"
 );
 
 check!(
@@ -344,48 +339,5 @@ async fn a_merged_sources_fields_are_probed_as_a_read_of_it(store: Store) -> Hel
         "a read of the balance by a principal who may not know of `workout_log.kcal` is \
          refused as not granted, naming neither the field nor its source; it answered {r:?}"
     );
-    Ok(())
-}
-
-async fn a_view_that_merges_is_written_in_log_format_9(store: Store) -> Held {
-    // No record yet: the first one made takes the lake to format 11.
-    let l = Lake::of(store.as_ref());
-    l.declare(log("food_log", "day")).await?;
-    l.declare(log("workout_log", "date")).await?;
-    let mut plain = energy_balance("food_only", Vec::new(), None, None);
-    if let Some(v) = plain.view.as_mut() {
-        v.merge.clear();
-        v.measures.truncate(1);
-    }
-    plain.fields.truncate(2);
-    l.declare(plain).await?;
-    let events = log_events(store.as_ref()).await?;
-    let highest = events.iter().map(|e| e.v).max().unwrap_or(0);
-    ensure!(
-        highest < 9,
-        "a view without a merge needs no format 9, yet the lake writes {highest}"
-    );
-    let declared = l.declare(energy_balance("energy_balance", Vec::new(), None, None));
-    let declared = declared.await?.position();
-    l.upsert(
-        "food_log",
-        "f9",
-        json!({"day": "2026-06-04", "kcal": "100.00"}),
-    )
-    .await?;
-    for e in log_events(store.as_ref()).await? {
-        let want = match e.position.cmp(&declared) {
-            std::cmp::Ordering::Less => e.v.min(8),
-            std::cmp::Ordering::Equal => 9,
-            std::cmp::Ordering::Greater => 11,
-        };
-        ensure!(
-            e.v == want,
-            "the event at {} is written in format {}; the one declaring a view that merges \
-             must be 9 and none before it, and the record made after it 11",
-            e.position,
-            e.v
-        );
-    }
     Ok(())
 }

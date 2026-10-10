@@ -44,14 +44,12 @@ from Monday as ISO counts weeks, `month`, `quarter`, `year`). It serves
 `find`'s `where`, an aggregate's named group keys and a pattern's
 `where`. What a declaration may call is the log format's concern: the
 log keeps a declaration's expressions, and the format closes the
-functions they may call (`docs/log-format.md` §6, Appendix B). Format
-version 3 admits `date_bucket` in every expression a declaration keeps (a
-derived field, a view's `where` and measures, a value type's constraint,
-a verb's `requires` and assignments, a trigger's `when`, an object set's
-filter, an expression function); the event that first declares such a
-call is written in version 3, and so is every event after it
-(lakelands#174). A derived bucket field is then found and grouped by as
-any other field.
+functions they may call (`docs/log-format.md` Appendix B). It admits
+`date_bucket` in every expression a declaration keeps (a derived field,
+a view's `where` and measures, a value type's constraint, a verb's
+`requires` and assignments, a trigger's `when`, an object set's filter,
+an expression function; lakelands#174). A derived bucket field is then
+found and grouped by as any other field.
 A new function is still a contract change. Where it may stand is part of
 that contract, and a function that only reads moves no log format.
 
@@ -103,4 +101,4 @@ before it falls in the window that starts before it, and none is lost.
   origin; `date_bucket(x, 'month', origin)` is refused.
 
 It is the one function with two arguments more, and no new unit. A read
-may call it in any log format version; a declaration from version 11 on.
+and a declaration may call it.

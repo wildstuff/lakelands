@@ -7,18 +7,27 @@ the standard library, and the rules of docs/log-format.md read as text.
 Run it from this directory: `python3 verify.py`. It prints one line per
 check and exits non-zero on the first mismatch.
 
+A release reads and writes one format version, `FORMAT` below: every
+line of a lake carries it as `v`, from position 0, and `lake_created`
+says the same number as its `format`. A line in any other format, older
+or newer, is refused
+(docs/decisions/054-a-lake-is-written-in-one-format-a-release.md).
+
 Given a directory, `python3 verify.py <dir>` checks a lake's log as an
 export or a SQLite lake directory holds it instead, reading only
 `<dir>/log/` (log-format §4.2): canonical lines each ending in a line
 feed, positions consecutive from 0 and naming their files in 20 digits,
 the hash chain from 64 zeros, every checkpoint against the position,
-the hash and the files before it, format versions from 1 to 11 that
-never go down, a verb on its type (declared with `scope: type`, called or
-proposed with no `key`) only from version 8 on, a derived relation only from version 6 on, a declaration's `annotations` only from version 5 on, a proposed declaration or migration only from version 4 on, `upstream` only from version 3 on and only on a
-`record_ingested` event, `made` only from version 11 on, and every `known_at` in its one form and never before
-the `known_at` before it (log-format §1.3). It prints one line
-per file and the last position and hash, or the position where the
-files stop being the log, and exits non-zero there.
+the hash and the files before it, every line in the one format, `cause`
+never inside `context`, `upstream` only on a `record_ingested` event,
+and every `known_at` in its one form and never before the `known_at`
+before it (log-format §1.3). It prints one line per file and the last
+position and hash, or the position where the files stop being the log,
+and exits non-zero there.
+
+`python3 verify.py --stamp N` is a release's format step: it rewrites
+the vectors in place as the same lake's log in format N, and `FORMAT`
+below with them, then checks what it wrote. See `stamp`.
 """
 
 import hashlib
@@ -126,13 +135,15 @@ def check(ok, what):
         sys.exit(1)
 
 
-FIRST_FORMAT, NEWEST_FORMAT = 1, 11
+# The one format version; `--stamp N` rewrites this line.
+FORMAT = 14
+ZEROS = "0" * 64
 ONE_FORM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
 
 
 def derives(body):
-    """Whether a declaration the event body carries holds what version 6
-    added: a derived relation, or a trigger's `max_depth`."""
+    """Whether a declaration the event body carries holds a derived
+    relation, or a trigger's `max_depth`."""
     decls = []
     kind = body.get("kind")
     if kind == "declared":
@@ -150,10 +161,9 @@ def derives(body):
 
 
 def on_type(body):
-    """Whether the event body is a verb on its type, which version 8
-    added: declared with `scope: type` (in a `declared` event or a proposed
-    `declare`), or called (`verb_called`) or proposed (a `call`) without a
-    `key`."""
+    """Whether the event body is a verb on its type: declared with
+    `scope: type` (in a `declared` event or a proposed `declare`), or
+    called (`verb_called`) or proposed (a `call`) without a `key`."""
     kind = body.get("kind")
     if kind == "declared":
         decls = [body["declaration"]]
@@ -200,7 +210,7 @@ def verify_dir(root):
     """Check the segment files under `root/log/` alone; see the module doc."""
     files = sorted(p for p in (root / "log").iterdir() if p.suffix == ".jsonl")
     check(bool(files), f"{root}/log holds segment files")
-    position, prev, version, known_at = 0, "0" * 64, 0, ""
+    position, prev, known_at = 0, ZEROS, ""
     sealed = []
 
     def need(ok, why):
@@ -222,21 +232,9 @@ def verify_dir(root):
             need(canonical(event) == line, "the line is canonical")
             need(event.get("position") == position, f"the line is position {event.get('position')}")
             v = event.get("v")
-            need(type(v) is int and FIRST_FORMAT <= v <= NEWEST_FORMAT,
-                 f"format {v} is one of {FIRST_FORMAT} to {NEWEST_FORMAT}")
-            need(v >= version, f"format {v} is not below the {version} before it")
-            version = v
-            need("upstream" not in event or v >= 3, f"a format {v} event carries `upstream`, which format 3 added")
-            need("made" not in event["body"] or v >= 11, f"a format {v} event carries `made`, which format 11 added")
-            proposed = event["body"].get("write", {}).get("write") if event["body"].get("kind") == "write_proposed" else None
-            need(proposed not in ("declare", "migrate") or v >= 4,
-                 f"a format {v} event proposes a declaration or a migration, which format 4 added")
-            need(not on_type(event["body"]) or v >= 8,
-                 f"a format {v} event declares or calls a verb on its type, which format 8 added")
-            need(not derives(event["body"]) or v >= 6,
-                 f"a format {v} event declares a derived relation or a trigger's `max_depth`, which format 6 added")
-            need(not annotated(event["body"]) or v >= 5,
-                 f"a format {v} event carries `annotations` in a declaration, which format 5 added")
+            need(type(v) is int and v == FORMAT, f"format {v} is the one format, {FORMAT}")
+            made = event["body"].get("format") if event["body"].get("kind") == "lake_created" else FORMAT
+            need(made == FORMAT, f"`lake_created` says format {made}, and its lake is written in format {FORMAT}")
             need("cause" not in event.get("context", {}),
                  "`context` carries `cause`, which the envelope carries")
             need("upstream" not in event or event["body"].get("kind") == "record_ingested",
@@ -268,11 +266,110 @@ def verify_dir(root):
     print(f"ok   {root}: verified through position {position - 1}, hash {prev}")
 
 
+def restamp(event, n, prev):
+    """The event in format `n` after the hash `prev`: its `v`, a
+    `lake_created`'s `format`, its `prev`, and its `hash` made right."""
+    event["v"] = n
+    if event["body"]["kind"] == "lake_created":
+        event["body"]["format"] = n
+    event["prev"] = prev
+    event["hash"] = sha(canonical({k: x for k, x in event.items() if k != "hash"}))
+    return event
+
+
+def stamp_log(root, n):
+    """Rewrite the segment files under `root/log/` in format `n`: each
+    line restamped after the one before it, a checkpoint's body made to
+    repeat the hash before it and to list the files before it as they
+    are now. Answers the events and each file's `first`, `last` and
+    `digest`."""
+    prev, events, sealed = ZEROS, [], []
+    for path in sorted((root / "log").glob("*.jsonl")):
+        lines = []
+        for line in path.read_bytes()[:-1].split(b"\n"):
+            event = json.loads(line.decode("utf-8"))
+            if event["body"]["kind"] == "checkpoint":
+                event["body"].update(hash=prev, segments=list(sealed))
+            lines.append(restamp(event, n, prev))
+            prev = event["hash"]
+        raw = b"".join(canonical(e) + b"\n" for e in lines)
+        path.write_bytes(raw)
+        sealed.append({"first": lines[0]["position"], "last": lines[-1]["position"], "digest": sha(raw)})
+        events += lines
+    return events, sealed
+
+
+def stamp(n):
+    """Rewrite the vectors in place as the same lake's log in format `n`.
+
+    The chain is walked once, in the order its positions run: the segment
+    files, then `rekey.json`, then each `vN.json`. Every line gets `v`
+    `n` (and `lake_created` its `format`), the `prev` its new
+    predecessor's hash gives it, and its own hash; the checkpoint gets
+    the sealed file's new last hash and digest; a file's stored `hash`
+    or `hashes` and `expected.json` get what the lines now hash to. A
+    `misplaced` line is restamped after the position before its own, so
+    it stays refused for its one reason alone, and so is
+    `negative/known-at-goes-back`. `negative/another-format` is written
+    from the first segment, its last event in format `n - 1`. No id
+    moves: an id is random or made from members that leave `v` out, and
+    `main` recomputes them after this. Last, `FORMAT` in this file's
+    source becomes `n`."""
+    global FORMAT
+    events, sealed = stamp_log(HERE, n)
+    files = [HERE / "rekey.json", *HERE.glob("v[0-9]*.json")]
+    docs = {p: json.loads(p.read_text("utf-8")) for p in files}
+    held = lambda doc: [doc["line"]] if "line" in doc else doc["lines"]
+    for path in sorted(files, key=lambda p: json.loads(held(docs[p])[0])["position"]):
+        doc = docs[path]
+        # A member this does not know may hold a hash of the chain.
+        other = set(doc) - {"about", "line", "hash", "lines", "hashes", "misplaced"}
+        if other:
+            sys.exit(f"FAIL {path.name}: --stamp does not know the members {sorted(other)}")
+        lines = []
+        for line in held(doc):
+            event = json.loads(line)
+            if event["position"] != len(events):
+                sys.exit(f"FAIL {path.name}: position {event['position']} does not continue the chain at {len(events)}")
+            events.append(restamp(event, n, events[-1]["hash"]))
+            lines.append(canonical(event).decode("utf-8"))
+        if "line" in doc:
+            doc["line"], doc["hash"] = lines[0], events[-1]["hash"]
+        else:
+            doc["lines"], doc["hashes"] = lines, [e["hash"] for e in events[-len(lines):]]
+        if "misplaced" in doc:
+            event = json.loads(doc["misplaced"])
+            before = events[event["position"] - 1]["hash"]
+            doc["misplaced"] = canonical(restamp(event, n, before)).decode("utf-8")
+        path.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", "utf-8")
+
+    expected = json.loads((HERE / "expected.json").read_text("utf-8"))
+    for want in expected["events"]:
+        want["hash"] = events[want["position"]]["hash"]
+    for seg, now in zip(expected["segments"], sealed, strict=True):
+        seg.update(now)
+    (HERE / "expected.json").write_text(json.dumps(expected, indent=2, ensure_ascii=False) + "\n", "utf-8")
+
+    stamp_log(HERE / "negative" / "known-at-goes-back", n)
+    first = events[:sealed[0]["last"] + 1]
+    last = restamp(json.loads(canonical(first[-1])), n - 1, first[-1]["prev"])
+    path = HERE / "negative" / "another-format" / expected["segments"][0]["file"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"".join(canonical(e) + b"\n" for e in first[:-1] + [last]))
+
+    source = Path(__file__).read_text("utf-8")
+    Path(__file__).write_text(re.sub(r"(?m)^FORMAT = [0-9]+$", f"FORMAT = {n}", source, count=1), "utf-8")
+    FORMAT = n
+    print(f"ok   stamped in format {n} through position {len(events) - 1}, hash {events[-1]['hash']}")
+
+
 def main():
-    if len(sys.argv) > 1:
+    if sys.argv[1:2] == ["--stamp"]:
+        stamp(int(sys.argv[2]))
+    elif len(sys.argv) > 1:
         return verify_dir(Path(sys.argv[1]))
     expected = json.loads((HERE / "expected.json").read_text("utf-8"))
-    prev = "0" * 64
+    prev = ZEROS
     events = []
     key_fields = {}
     for seg in expected["segments"]:
@@ -292,6 +389,7 @@ def main():
     for event, want in zip(events, expected["events"], strict=True):
         pos = event["position"]
         body = {k: v for k, v in event.items() if k != "hash"}
+        check(event["v"] == FORMAT, f"position {pos}: format {FORMAT}")
         check(event["prev"] == prev, f"position {pos}: prev names the previous hash")
         check(sha(canonical(body)) == event["hash"] == want["hash"], f"position {pos}: hash {want['hash'][:12]}…")
         if want["id_from"] == "ingest":
@@ -303,7 +401,11 @@ def main():
         elif want["id_from"] == "authored":
             got = content_id(b"lakelands:authored:v1", event["writer"].encode(), event["idempotency_key"].encode())
             check(got == event["id"] == want["id"], f"position {pos}: authored id {got}")
+        else:
+            check(event["id"] == want["id"], f"position {pos}: the fixed id {want['id']}")
         b = event["body"]
+        if b["kind"] == "lake_created":
+            check(b["format"] == FORMAT, f"position {pos}: `lake_created` says format {FORMAT}")
         if b["kind"] == "declared" and b["declaration"]["declare"] == "type":
             key_fields[b["declaration"]["name"]] = b["declaration"].get("key", [])
         if b["kind"] in ("record_upserted", "record_ingested"):
@@ -332,10 +434,10 @@ def main():
 
     v2 = json.loads((HERE / "rekey.json").read_text("utf-8"))
     event = json.loads(v2["line"])
-    check(canonical(event) == v2["line"].encode("utf-8"), "rekey.json: the version-2 line is canonical")
+    check(canonical(event) == v2["line"].encode("utf-8"), "rekey.json: the line is canonical")
     body = {k: v for k, v in event.items() if k != "hash"}
-    check(event["v"] == 2 and event["body"]["kind"] == "migrated" and event["body"]["rekeyed"],
-          "rekey.json: a version-2 `migrated` event with `rekeyed`")
+    check(event["v"] == FORMAT and event["body"]["kind"] == "migrated" and event["body"]["rekeyed"],
+          f"rekey.json: a `migrated` event with `rekeyed`, in format {FORMAT}")
     check(sha(canonical(body)) == event["hash"] == v2["hash"], f"rekey.json: hash {v2['hash'][:12]}…")
     check(event["prev"] == expected["events"][-1]["hash"], "rekey.json: it follows position 7")
 
@@ -344,7 +446,7 @@ def main():
     for line, want in zip(v3["lines"], v3["hashes"]):
         event = json.loads(line)
         check(canonical(event) == line.encode("utf-8"), f"v3.json: position {event['position']} is canonical")
-        check(event["v"] == 3, f"v3.json: position {event['position']} is format 3")
+        check(event["v"] == FORMAT, f"v3.json: position {event['position']} is format {FORMAT}")
         body = {k: v for k, v in event.items() if k != "hash"}
         check(sha(canonical(body)) == event["hash"] == want, f"v3.json: hash {want[:12]}…")
         check(event["prev"] == prev, f"v3.json: position {event['position']} follows the one before it")
@@ -359,16 +461,13 @@ def main():
           "v3.json: the ingested event's id leaves `upstream` out (§3)")
     check("date_bucket(" in json.dumps(declared["body"]["declaration"]),
           "v3.json: the declared event's derived field calls date_bucket")
-    negative = json.loads(v3["negative"])
-    check(negative["v"] == 2 and "upstream" in negative,
-          "v3.json: the negative line is format 2 carrying `upstream`, which a reader refuses")
     v4 = json.loads((HERE / "v4.json").read_text("utf-8"))
     prev = v3["hashes"][-1]
     for line, want in zip(v4["lines"], v4["hashes"]):
         event = json.loads(line)
         check(canonical(event) == line.encode("utf-8"), f"v4.json: position {event['position']} is canonical")
-        check(event["v"] == 4 and event["body"]["kind"] == "write_proposed",
-              f"v4.json: position {event['position']} is a format 4 proposal")
+        check(event["v"] == FORMAT and event["body"]["kind"] == "write_proposed",
+              f"v4.json: position {event['position']} is a proposal, in format {FORMAT}")
         body = {k: v for k, v in event.items() if k != "hash"}
         check(sha(canonical(body)) == event["hash"] == want, f"v4.json: hash {want[:12]}…")
         check(event["prev"] == prev, f"v4.json: position {event['position']} follows the one before it")
@@ -377,104 +476,72 @@ def main():
     check(kinds == ["declare", "migrate"], "v4.json: a proposed declaration, then a proposed migration")
     check(json.loads(v4["lines"][1])["body"]["write"]["report"]["lossless"] is True,
           "v4.json: the proposed migration carries its preflight's report")
-    negative4 = json.loads(v4["negative"])
-    check(negative4["v"] == 3 and negative4["body"]["write"]["write"] == "declare",
-          "v4.json: the negative line proposes a declaration in format 3, which a reader refuses")
     v5 = json.loads((HERE / "v5.json").read_text("utf-8"))
     prev = v4["hashes"][-1]
     for line, want in zip(v5["lines"], v5["hashes"]):
         event = json.loads(line)
         check(canonical(event) == line.encode("utf-8"), f"v5.json: position {event['position']} is canonical")
-        check(event["v"] == 5 and annotated(event["body"]),
-              f"v5.json: position {event['position']} is a format 5 declaration carrying annotations")
+        check(event["v"] == FORMAT and annotated(event["body"]),
+              f"v5.json: position {event['position']} is a declaration carrying annotations, in format {FORMAT}")
         body = {k: v for k, v in event.items() if k != "hash"}
         check(sha(canonical(body)) == event["hash"] == want, f"v5.json: hash {want[:12]}…")
         check(event["prev"] == prev, f"v5.json: position {event['position']} follows the one before it")
         prev = event["hash"]
-    negative5 = json.loads(v5["negative"])
-    body = {k: v for k, v in negative5.items() if k != "hash"}
-    check(sha(canonical(body)) == negative5["hash"], "v5.json: the negative line's hash is its own")
-    check(negative5["v"] == 4 and annotated(negative5["body"]),
-          "v5.json: the negative line carries annotations in format 4, which a reader refuses")
     v6 = json.loads((HERE / "v6.json").read_text("utf-8"))
     prev = v5["hashes"][-1]
     for line, want in zip(v6["lines"], v6["hashes"]):
         event = json.loads(line)
         check(canonical(event) == line.encode("utf-8"), f"v6.json: position {event['position']} is canonical")
-        check(event["v"] == 6 and derives(event["body"]),
-              f"v6.json: position {event['position']} is a format 6 declaration of what version 6 added")
+        check(event["v"] == FORMAT and derives(event["body"]),
+              f"v6.json: position {event['position']} declares a derived relation or a `max_depth`, in format {FORMAT}")
         body = {k: v for k, v in event.items() if k != "hash"}
         check(sha(canonical(body)) == event["hash"] == want, f"v6.json: hash {want[:12]}…")
         check(event["prev"] == prev, f"v6.json: position {event['position']} follows the one before it")
         prev = event["hash"]
-    negative6 = json.loads(v6["negative"])
-    body = {k: v for k, v in negative6.items() if k != "hash"}
-    check(sha(canonical(body)) == negative6["hash"], "v6.json: the negative line's hash is its own")
-    check(negative6["v"] == 5 and derives(negative6["body"]),
-          "v6.json: the negative line declares a derived relation in format 5, which a reader refuses")
     v7 = json.loads((HERE / "v7.json").read_text("utf-8"))
     for line, want in zip(v7["lines"], v7["hashes"]):
         event = json.loads(line)
         check(canonical(event) == line.encode("utf-8"), f"v7.json: position {event['position']} is canonical")
-        check(event["v"] == 7 and "retired()" in event["body"]["declaration"]["when"],
-              f"v7.json: position {event['position']} is a format 7 trigger whose guard calls retired")
+        check(event["v"] == FORMAT and "retired()" in event["body"]["declaration"]["when"],
+              f"v7.json: position {event['position']} is a trigger whose guard calls retired, in format {FORMAT}")
         body = {k: v for k, v in event.items() if k != "hash"}
         check(sha(canonical(body)) == event["hash"] == want, f"v7.json: hash {want[:12]}…")
         check(event["prev"] == prev, f"v7.json: position {event['position']} follows the one before it")
         prev = event["hash"]
-    negative7 = json.loads(v7["negative"])
-    body = {k: v for k, v in negative7.items() if k != "hash"}
-    check(sha(canonical(body)) == negative7["hash"], "v7.json: the negative line's hash is its own")
-    check(negative7["v"] == 6 and "retired()" in negative7["body"]["declaration"]["when"],
-          "v7.json: the negative line calls retired in format 6, which a reader refuses")
     v8 = json.loads((HERE / "v8.json").read_text("utf-8"))
     for line, want in zip(v8["lines"], v8["hashes"]):
         event = json.loads(line)
         check(canonical(event) == line.encode("utf-8"), f"v8.json: position {event['position']} is canonical")
-        check(event["v"] == 8 and (on_type(event["body"])
-                                   or event["body"]["declaration"]["view"]["params"]),
-              f"v8.json: position {event['position']} is a format 8 view with parameters or verb on its type")
+        check(event["v"] == FORMAT and (on_type(event["body"])
+                                        or event["body"]["declaration"]["view"]["params"]),
+              f"v8.json: position {event['position']} is a view with parameters or a verb on its type, in format {FORMAT}")
         body = {k: v for k, v in event.items() if k != "hash"}
         check(sha(canonical(body)) == event["hash"] == want, f"v8.json: hash {want[:12]}…")
         check(event["prev"] == prev, f"v8.json: position {event['position']} follows the one before it")
         prev = event["hash"]
-    negative8 = json.loads(v8["negative"])
-    body = {k: v for k, v in negative8.items() if k != "hash"}
-    check(sha(canonical(body)) == negative8["hash"], "v8.json: the negative line's hash is its own")
-    check(negative8["v"] == 7 and negative8["body"]["declaration"]["view"]["params"],
-          "v8.json: the negative line declares a view's parameters in format 7, which a reader refuses")
     v9 = json.loads((HERE / "v9.json").read_text("utf-8"))
     for line, want in zip(v9["lines"], v9["hashes"]):
         event = json.loads(line)
         check(canonical(event) == line.encode("utf-8"), f"v9.json: position {event['position']} is canonical")
-        check(event["v"] == 9 and event["body"]["declaration"]["view"]["merge"],
-              f"v9.json: position {event['position']} is a format 9 view that merges sources")
+        check(event["v"] == FORMAT and event["body"]["declaration"]["view"]["merge"],
+              f"v9.json: position {event['position']} is a view that merges sources, in format {FORMAT}")
         body = {k: v for k, v in event.items() if k != "hash"}
         check(sha(canonical(body)) == event["hash"] == want, f"v9.json: hash {want[:12]}…")
         check(event["prev"] == prev, f"v9.json: position {event['position']} follows the one before it")
         prev = event["hash"]
-    negative9 = json.loads(v9["negative"])
-    body = {k: v for k, v in negative9.items() if k != "hash"}
-    check(sha(canonical(body)) == negative9["hash"], "v9.json: the negative line's hash is its own")
-    check(negative9["v"] == 8 and negative9["body"]["declaration"]["view"]["merge"],
-          "v9.json: the negative line declares a merge in format 8, which a reader refuses")
     v10 = json.loads((HERE / "v10.json").read_text("utf-8"))
     narrows = lambda e: e["body"].get("write", {}).get("write") == "migrate_value_type"
     for line, want in zip(v10["lines"], v10["hashes"]):
         event = json.loads(line)
         check(canonical(event) == line.encode("utf-8"), f"v10.json: position {event['position']} is canonical")
-        check(event["v"] == (10 if narrows(event) else 9),
-              f"v10.json: position {event['position']} is format 10 only where it proposes a tightening")
+        check(event["v"] == FORMAT, f"v10.json: position {event['position']} is format {FORMAT}")
         body = {k: v for k, v in event.items() if k != "hash"}
         check(sha(canonical(body)) == event["hash"] == want, f"v10.json: hash {want[:12]}…")
         check(event["prev"] == prev, f"v10.json: position {event['position']} follows the one before it")
         prev = event["hash"]
-    negative10 = json.loads(v10["negative"])
-    body = {k: v for k, v in negative10.items() if k != "hash"}
-    check(sha(canonical(body)) == negative10["hash"], "v10.json: the negative line's hash is its own")
-    check(negative10["v"] == 9 and narrows(negative10),
-          "v10.json: the negative line proposes a tightening in format 9, which a reader refuses")
-    # Format 11 is one release's step: each thing it added is a test here.
+    check([narrows(json.loads(l)) for l in v10["lines"]] == [False, True],
+          "v10.json: a declared value type, then a proposed tightening of it")
+    # One line for each thing v11.json shows.
     v11 = json.loads((HERE / "v11.json").read_text("utf-8"))
     derived = lambda e: [f.get("derived", "") for f in e["body"].get("declaration", {}).get("fields", [])]
     by_a_width = re.compile(r"date_bucket\([^,]+, [0-9.]+[dhms],")
@@ -489,18 +556,12 @@ def main():
     for line, want in zip(v11["lines"], v11["hashes"]):
         event = json.loads(line)
         check(canonical(event) == line.encode("utf-8"), f"v11.json: position {event['position']} is canonical")
-        check(event["v"] == 11 and any(added(event) for added in eleventh),
-              f"v11.json: position {event['position']} is format 11 and carries what it added")
+        check(event["v"] == FORMAT and any(shown(event) for shown in eleventh),
+              f"v11.json: position {event['position']} carries what it shows, in format {FORMAT}")
         body = {k: v for k, v in event.items() if k != "hash"}
         check(sha(canonical(body)) == event["hash"] == want, f"v11.json: hash {want[:12]}…")
         check(event["prev"] == prev, f"v11.json: position {event['position']} follows the one before it")
         prev = event["hash"]
-    for line in v11["negatives"]:
-        negative = json.loads(line)
-        body = {k: v for k, v in negative.items() if k != "hash"}
-        check(sha(canonical(body)) == negative["hash"], "v11.json: a negative line's hash is its own")
-        check(negative["v"] == 10 and any(added(negative) for added in eleventh),
-              "v11.json: a negative line carries in format 10 what format 11 added, which a reader refuses")
     v12 = json.loads((HERE / "v12.json").read_text("utf-8"))
     goes_on = lambda e: e["body"].get("kind") == "declared" and e["body"].get("with_the_set") is True
     renames = lambda e: e["body"].get("kind") == "value_type_migrated" or (
@@ -511,18 +572,12 @@ def main():
     for line, want in zip(v12["lines"], v12["hashes"]):
         event = json.loads(line)
         check(canonical(event) == line.encode("utf-8"), f"v12.json: position {event['position']} is canonical")
-        check(event["v"] == 12 and twelfth(event),
-              f"v12.json: position {event['position']} is format 12 and carries what it added")
+        check(event["v"] == FORMAT and twelfth(event),
+              f"v12.json: position {event['position']} carries what it shows, in format {FORMAT}")
         body = {k: v for k, v in event.items() if k != "hash"}
         check(sha(canonical(body)) == event["hash"] == want, f"v12.json: hash {want[:12]}…")
         check(event["prev"] == prev, f"v12.json: position {event['position']} follows the one before it")
         prev = event["hash"]
-    for line in v12["negatives"]:
-        negative = json.loads(line)
-        body = {k: v for k, v in negative.items() if k != "hash"}
-        check(sha(canonical(body)) == negative["hash"], "v12.json: a negative line's hash is its own")
-        check(negative["v"] == 11 and twelfth(negative),
-              "v12.json: a negative line carries in format 11 what format 12 added, which a reader refuses")
     v13 = json.loads((HERE / "v13.json").read_text("utf-8"))
     pinned = lambda e: e["body"].get("kind") == "write_proposed" and e["body"].get("pinned") is True
     declaration = lambda e: e["body"].get("declaration", {}) if e["body"].get("kind") == "declared" else {}
@@ -532,60 +587,44 @@ def main():
     for line, want in zip(v13["lines"], v13["hashes"]):
         event = json.loads(line)
         check(canonical(event) == line.encode("utf-8"), f"v13.json: position {event['position']} is canonical")
-        # A record holding a date is written in the lake's version; a pinned
-        # proposal and a declaration that names the kind need it.
-        check(event["v"] == 13 and (thirteenth(event) or event["body"]["kind"] == "record_upserted"),
-              f"v13.json: position {event['position']} is format 13 and carries what it added")
+        # A pinned proposal, a declaration that names the kind `date`, or
+        # a record holding one.
+        check(event["v"] == FORMAT and (thirteenth(event) or event["body"]["kind"] == "record_upserted"),
+              f"v13.json: position {event['position']} carries what it shows, in format {FORMAT}")
         body = {k: v for k, v in event.items() if k != "hash"}
         check(sha(canonical(body)) == event["hash"] == want, f"v13.json: hash {want[:12]}…")
         check(event["prev"] == prev, f"v13.json: position {event['position']} follows the one before it")
         prev = event["hash"]
-    for line in v13["negatives"]:
-        negative = json.loads(line)
-        body = {k: v for k, v in negative.items() if k != "hash"}
-        check(sha(canonical(body)) == negative["hash"], "v13.json: a negative line's hash is its own")
-        check(negative["v"] == 12 and thirteenth(negative),
-              "v13.json: a negative line carries in format 12 what format 13 added, which a reader refuses")
     v14 = json.loads((HERE / "v14.json").read_text("utf-8"))
     named = lambda e: e["body"].get("kind") == "output_recorded" and "output_at" in e["body"]
     for line, want in zip(v14["lines"], v14["hashes"]):
         event = json.loads(line)
         check(canonical(event) == line.encode("utf-8"), f"v14.json: position {event['position']} is canonical")
-        # A fill that names its output needs 14; one that carries it is
-        # written in the lake's version.
-        check(event["v"] == (14 if named(event) else 13) and ("output" in event["body"]) != named(event),
-              f"v14.json: position {event['position']} carries its output or names it, in the version it needs")
+        check(event["v"] == FORMAT and ("output" in event["body"]) != named(event),
+              f"v14.json: position {event['position']} carries its output or names it, in format {FORMAT}")
         body = {k: v for k, v in event.items() if k != "hash"}
         check(sha(canonical(body)) == event["hash"] == want, f"v14.json: hash {want[:12]}…")
         check(event["prev"] == prev, f"v14.json: position {event['position']} follows the one before it")
         prev = event["hash"]
-    for line in v14["negatives"]:
-        negative = json.loads(line)
-        body = {k: v for k, v in negative.items() if k != "hash"}
-        check(sha(canonical(body)) == negative["hash"], "v14.json: a negative line's hash is its own")
-        check(negative["v"] == 13 and named(negative),
-              "v14.json: a negative line names an output in format 13, which format 14 added, and a reader refuses")
+    check([named(json.loads(l)) for l in v14["lines"]] == [False, True],
+          "v14.json: a fill that carries its output, then one that names it")
+    # A misplaced line is in the one format and its hash is right, so a
+    # reader refuses it for where a member sits and for nothing else.
     misplaced14 = json.loads(v14["misplaced"])
     body = {k: v for k, v in misplaced14.items() if k != "hash"}
     check(sha(canonical(body)) == misplaced14["hash"], "v14.json: the misplaced line's hash is its own")
-    check(named(misplaced14) and "output" in misplaced14["body"],
+    check(misplaced14["v"] == FORMAT and named(misplaced14) and "output" in misplaced14["body"],
           "v14.json: the misplaced line carries both `output` and `output_at`, which a reader refuses")
-    for name in ("negative_verb", "negative_call"):
-        negative = json.loads(v8[name])
-        body = {k: v for k, v in negative.items() if k != "hash"}
-        check(sha(canonical(body)) == negative["hash"], f"v8.json: the {name} line's hash is its own")
-        check(negative["v"] == 7 and on_type(negative["body"]),
-              f"v8.json: the {name} line is a verb on its type in format 7, which a reader refuses")
     misplaced5 = json.loads(v5["misplaced"])
     body = {k: v for k, v in misplaced5.items() if k != "hash"}
     check(sha(canonical(body)) == misplaced5["hash"], "v5.json: the misplaced line's hash is its own")
-    check("cause" in misplaced5["context"],
+    check(misplaced5["v"] == FORMAT and "cause" in misplaced5["context"],
           "v5.json: the misplaced line carries `cause` inside `context`, which a reader refuses")
     misplaced = json.loads(v3["misplaced"])
     body = {k: v for k, v in misplaced.items() if k != "hash"}
     check(sha(canonical(body)) == misplaced["hash"], "v3.json: the misplaced line's hash is its own")
-    check(misplaced["v"] == 3 and "upstream" in misplaced and misplaced["body"]["kind"] != "record_ingested",
-          "v3.json: the misplaced line is a format 3 `record_retired` carrying `upstream`, which a reader refuses")
+    check(misplaced["v"] == FORMAT and "upstream" in misplaced and misplaced["body"]["kind"] != "record_ingested",
+          "v3.json: the misplaced line is a `record_retired` carrying `upstream`, which a reader refuses")
 
     for n, want in [(1e21, "1e+21"), (1e-7, "1e-7"), (0.000001, "0.000001"), (333333333.3333333, "333333333.3333333"),
                     (-0.0, "0"), (9007199254740992.0, "9007199254740992"), (5e-324, "5e-324")]:

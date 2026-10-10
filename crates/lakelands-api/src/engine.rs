@@ -481,6 +481,21 @@ pub trait EngineOpener: Send + Sync {
     /// The name the engine answers to in [`crate::location::EngineConfig`].
     fn name(&self) -> &str;
 
+    /// The first and the last event of the lake's log at `location`, read
+    /// without opening the lake: nothing is made or changed, in the log's
+    /// files or tables or in the projection, nothing of a lake is judged,
+    /// and a place with no lake stays with nothing. `None` where there is
+    /// no lake or its log is empty. An engine may refuse a place that
+    /// holds something other than a lake, as its [`open`] does. The store
+    /// asks this before every [`open`] and before an import, and opens
+    /// only a lake written in the format it reads
+    /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+    /// A tip that moves between the two calls is harmless: its writer
+    /// passed the same judgement, so it wrote the same format.
+    ///
+    /// [`open`]: EngineOpener::open
+    fn log_ends(&self, location: &Location) -> Result<Option<(CanonicalEvent, CanonicalEvent)>>;
+
     /// Open the lake at `location`. Opening never takes the lease: a
     /// writer takes it afterwards with `take_lease`, and a reader opened
     /// [`OpenMode::Read`] never can.
