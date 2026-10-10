@@ -1,7 +1,7 @@
 //! Transcripts of the CLI: every byte of what a command prints is pinned,
 //! with the root's path shown as `<root>`. Each test runs unchanged on
-//! the mock and on the real store over both engines: that is how the mock
-//! is proven honest.
+//! the real store, over the engine each location names and with every
+//! lake kept in memory.
 //!
 //! A refusal's sentence is not part of the contract; its kind and field
 //! are. So a refusal is checked by the CLI's framing lines and the names
@@ -18,7 +18,6 @@ use lakelands_api::engine::OpenMode;
 use lakelands_api::location::{EngineConfig, Location};
 use lakelands_api::seam::Seams;
 use lakelands_cli::Opening;
-use lakelands_mock::MockLake;
 
 fn block_on<F: Future>(f: F) -> F::Output {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -35,15 +34,13 @@ fn block_on<F: Future>(f: F) -> F::Output {
 /// Where the shell's lakes are kept.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Backend {
-    /// The mock, whatever engine a location names.
-    Mock,
     /// The real store, over the engine each location names.
     Store,
     /// The real store, with every lake kept in memory.
     StoreInMemory,
 }
 
-const BACKENDS: [Backend; 3] = [Backend::Mock, Backend::Store, Backend::StoreInMemory];
+const BACKENDS: [Backend; 2] = [Backend::Store, Backend::StoreInMemory];
 
 /// A root in a fresh directory, with lakes that live as long as the test,
 /// kept on one backend.
@@ -81,28 +78,23 @@ impl Shell {
             if let Some(store) = lakes.lock().unwrap().get(&name) {
                 return Ok(store.clone());
             }
-            let store: Arc<dyn LakeStore> = match backend {
-                Backend::Mock => Arc::new(MockLake::open(&l)),
-                Backend::Store | Backend::StoreInMemory => {
-                    let mut l = l;
-                    if backend == Backend::StoreInMemory {
-                        l.engine = EngineConfig::Memory;
-                    }
-                    let seams = Seams {
-                        engines: vec![
-                            Arc::new(lakelands_engine_mem::MemoryOpener::new()),
-                            Arc::new(lakelands_engine_sqlite::SqliteOpener),
-                        ],
-                        ..host
-                    };
-                    let mode = if mode == OpenMode::Read {
-                        OpenMode::Read
-                    } else {
-                        OpenMode::Create
-                    };
-                    lakelands_store::open(l, seams, mode).await?
-                }
+            let mut l = l;
+            if backend == Backend::StoreInMemory {
+                l.engine = EngineConfig::Memory;
+            }
+            let seams = Seams {
+                engines: vec![
+                    Arc::new(lakelands_engine_mem::MemoryOpener::new()),
+                    Arc::new(lakelands_engine_sqlite::SqliteOpener),
+                ],
+                ..host
             };
+            let mode = if mode == OpenMode::Read {
+                OpenMode::Read
+            } else {
+                OpenMode::Create
+            };
+            let store: Arc<dyn LakeStore> = lakelands_store::open(l, seams, mode).await?;
             lakes.lock().unwrap().insert(name, store.clone());
             Ok(store)
         })
@@ -159,7 +151,7 @@ impl Shell {
         dir.display().to_string()
     }
 
-    /// The mock's fixture ontology, as a bundle.
+    /// The door checks' fixture ontology, as a bundle.
     fn fixture(&self) -> String {
         self.bundle("fixture", &FIXTURE)
     }
@@ -565,7 +557,7 @@ fn feed_prints_the_log_in_canonical_form_from_a_position() {
         // A lake begins with its creation, the creator's lease, the settings
         // type and the aging rule type. Every line is an event's canonical bytes; what the lake's clock
         // and the hash chain make (`known_at`, `id`, `hash`, `prev`) is shown
-        // as a placeholder, since the mock keeps a clock of its own.
+        // as a placeholder.
         let s = sh.run(&["feed"]);
         assert_eq!((s.code, s.err.as_str()), (0, ""));
         let lines: Vec<String> = s.out.lines().map(clocked).collect();
@@ -900,12 +892,9 @@ fn export_prints_its_files_and_the_head_it_read_and_refuses_a_directory_in_use()
             "log/00000000000000000000.jsonl: positions 0..7\n\
              exported finance through position 7 to <root>/out\n",
         );
-        // The mock hashes no event's canonical bytes, so only the store's
-        // export is a chain a verifier can follow.
-        if !matches!(backend, Backend::Mock) {
-            let files = lakelands_core::export::verify(&sh.root.join("out")).unwrap();
-            assert_eq!(files.through, lakelands_api::Position(7));
-        }
+        // The export is a chain a verifier can follow.
+        let files = lakelands_core::export::verify(&sh.root.join("out")).unwrap();
+        assert_eq!(files.through, lakelands_api::Position(7));
         fails(
             &sh.run(&["export", "--to", &to]),
             "error: refused: the export's directory is not empty; an export writes only into an \
@@ -1114,8 +1103,7 @@ fn the_root_configuration_carries_the_ticker_and_refuses_an_offset_that_is_none(
 
 /// A root that allows an `exec` command computes a field with it: the
 /// lake declares a function naming the command, a record is ingested,
-/// and the store calls the command and records its answer. The mock
-/// computes no function fields, so this runs on the real store only.
+/// and the store calls the command and records its answer.
 #[cfg(unix)]
 #[test]
 fn a_command_the_root_allows_computes_a_field_through_the_exec_backing() {
@@ -1384,9 +1372,8 @@ fn last_event(feed: &str) -> (u64, String) {
     )
 }
 
-/// `import` goes through the store over the binary's own engines, so it
-/// is checked on the real store only: the mock keeps no files to import
-/// into.
+/// `import` goes through the store over the binary's own engines, which
+/// keep the files it imports into.
 #[test]
 fn import_makes_the_exported_lake_in_an_empty_lake_of_its_name() {
     let from = Shell::on("import-from", Backend::Store);

@@ -271,10 +271,10 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn the_date_is_the_clocks_at_the_offset() {
+    #[tokio::test]
+    async fn the_date_is_the_clocks_at_the_offset() {
         let clock = Arc::new(Manual(Mutex::new(at("2026-12-01T23:30:00Z"))));
-        let lake: Arc<dyn LakeStore> = Arc::new(lakelands_mock::MockLake::new("t"));
+        let lake = memory_lake("t").await;
         let utc = Ticker::new(lake.clone(), aging("Z"), clock.clone());
         assert_eq!(utc.today(), day("2026-12-01"));
         let east = Ticker::new(lake.clone(), aging("+01:00"), clock.clone());

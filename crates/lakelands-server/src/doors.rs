@@ -661,7 +661,7 @@ mod tests {
         }
     }
 
-    /// The mock, and the store over the memory and SQLite engines.
+    /// The store over the memory and SQLite engines.
     async fn lakes() -> Vec<(&'static str, Arc<dyn LakeStore>)> {
         let dir =
             std::env::temp_dir().join(format!("lakelands-migrate-door-{}", std::process::id()));
@@ -674,10 +674,6 @@ mod tests {
             ..Seams::default()
         };
         vec![
-            (
-                "mock",
-                Arc::new(lakelands_mock::MockLake::new("doors")) as Arc<dyn LakeStore>,
-            ),
             (
                 "memory",
                 lakelands_store::open(Location::memory("doors"), seams(), OpenMode::Create)
@@ -696,7 +692,7 @@ mod tests {
     /// The `migrate` tool names a type (`to`) or a value type
     /// (`value_type`), one of the two, and a value type renames values,
     /// never relations: anything else is refused as invalid, naming the
-    /// argument, on the mock and on the store alike.
+    /// argument, on both engines alike.
     #[tokio::test(flavor = "multi_thread")]
     async fn migrate_takes_a_type_or_a_value_type_never_both_and_never_neither() {
         let vt = json!({"name": "status_code", "kind": "text", "one_of": ["open", "late"]});

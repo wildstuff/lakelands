@@ -1,5 +1,5 @@
-//! A trigger's `max_depth` at the JSON doors, on the mock and on the store
-//! over both engines: declared through REST, it comes back from `describe`
+//! A trigger's `max_depth` at the JSON doors, on the store over both
+//! engines: declared through REST, it comes back from `describe`
 //! over REST and MCP; above the lake's `max_reactive_depth` it is refused
 //! as invalid, naming the trigger and both numbers, with the lake
 //! unmoved, while 0 and the ceiling itself are taken.

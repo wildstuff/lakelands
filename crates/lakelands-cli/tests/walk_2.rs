@@ -9,9 +9,7 @@
 //!
 //! The embedding endpoint runs inside the test, from the fake's own
 //! source. The `exec` program is the built `walk_2_fake` example, which
-//! `cargo test` builds beside the tests. The mock is not walked: it
-//! refuses a function of the `exec` backing and an embedded field as
-//! unbound when they are declared.
+//! `cargo test` builds beside the tests.
 
 use std::fs;
 use std::io::Write;

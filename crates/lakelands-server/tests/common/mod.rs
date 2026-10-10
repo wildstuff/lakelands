@@ -1,9 +1,9 @@
-//! The lake and the principals every server test uses, on the mock and on
-//! the real store over both engines.
+//! The lake and the principals every server test uses, on the real store
+//! over both engines.
 //!
 //! A refusal's sentence is not part of the contract; its kind and field
-//! are. The transcripts pin what the mock and the store answer alike, and
-//! a test that checks a refusal checks its kind and field, never its
+//! are. The transcripts pin what the store answers on each engine alike,
+//! and a test that checks a refusal checks its kind and field, never its
 //! sentence.
 
 #![allow(dead_code)]
@@ -18,17 +18,13 @@ use lakelands_api::location::Limits;
 use lakelands_api::principal::{Access, Grants, PrincipalKind, TypeGrants};
 use lakelands_api::write::WriteOpts;
 use lakelands_api::{LakeStore, Principal, WriteContext};
-use lakelands_mock::MockLake;
 use lakelands_server::resolver::{Entry, StaticResolver};
 use serde_json::json;
 
-/// Where a test's lake is kept: the mock, or the real store on one of
-/// its engines. Every server test runs on each, unchanged: that is how the
-/// mock is proven honest.
+/// Where a test's lake is kept: the real store on one of its engines.
+/// Every server test runs on each, unchanged.
 #[derive(Clone, Copy, Debug)]
 pub enum Backend {
-    /// `lakelands-mock`.
-    Mock,
     /// `lakelands-store` over the in-memory engine.
     Memory,
     /// `lakelands-store` over the SQLite engine.
@@ -36,7 +32,7 @@ pub enum Backend {
 }
 
 /// Every backend, in the order the tests run them.
-pub const BACKENDS: [Backend; 3] = [Backend::Mock, Backend::Memory, Backend::Sqlite];
+pub const BACKENDS: [Backend; 2] = [Backend::Memory, Backend::Sqlite];
 
 /// An empty lake `finance` on a backend. A memory lake belongs to the
 /// opener that made it, so every lake here is a fresh one.
@@ -55,10 +51,6 @@ pub async fn empty_with(backend: Backend, limits: Limits) -> Arc<dyn LakeStore> 
     };
     let create = lakelands_api::engine::OpenMode::Create;
     match backend {
-        Backend::Mock => Arc::new(MockLake::open(&lakelands_api::Location {
-            limits,
-            ..lakelands_api::Location::memory("finance")
-        })),
         Backend::Memory => lakelands_store::open(
             lakelands_api::Location {
                 limits,
@@ -173,10 +165,9 @@ pub fn path(name: &str) -> PathBuf {
 }
 
 /// A `known_at` or a `proposed_at` is the lake's wall clock when it
-/// wrote: the mock keeps a clock of its own and the store reads the real
-/// one, so the transcripts show `{known_at}` where an instant was
-/// answered, as they show `{session}` for the session id. Everything else
-/// is compared as it is.
+/// wrote, and the store reads the real clock, so the transcripts show
+/// `{known_at}` where an instant was answered, as they show `{session}`
+/// for the session id. Everything else is compared as it is.
 pub fn mask_known_at(text: &str) -> String {
     mask_instant(&mask_instant(text, "known_at"), "proposed_at")
 }
