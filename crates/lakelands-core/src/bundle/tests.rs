@@ -1170,6 +1170,22 @@ fn a_verb_needs_exactly_one_effect() {
 }
 
 #[test]
+fn a_verb_on_a_link_type_sets_none_of_its_ends() {
+    let verb = |field: &str| {
+        format!("name: v\non: sys.link.partner.knows\nrisk: low\nset:\n  {field}: \"'x'\"\n")
+    };
+    for end in ["from", "to"] {
+        let e = one(
+            &[PARTNER, ("verbs/v.yaml", &verb(end))],
+            Problem::Contradiction,
+        );
+        assert!(e.message.contains("one of its ends"), "{e}");
+    }
+    let loaded = load(&[PARTNER, ("verbs/v.yaml", &verb("since"))]);
+    assert!(loaded.is_ok(), "{:#?}", loaded.err());
+}
+
+#[test]
 fn a_verb_doc_carries_its_scope() {
     let verb = |body: &str| {
         let b = load(&[PARTNER, ("verbs/v.yaml", body)]).unwrap();

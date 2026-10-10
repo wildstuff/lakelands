@@ -191,6 +191,8 @@ macro_rules! door_checks {
             a_step_naming_an_inverse_walks_the_relation_the_other_way,
             every_path_a_pattern_names_is_one_its_rows_hold,
             a_row_binds_each_record_under_a_name_of_its_own,
+            #[own_principals]
+            a_verb_names_no_system_type_but_a_link_type,
             a_dependent_field_declared_clear_is_cleared_with_its_input,
             two_writers_keep_each_others_fields,
             per_field_meta_names_the_writer_and_the_position,
@@ -6923,6 +6925,113 @@ pub async fn every_path_a_pattern_names_is_one_its_rows_hold(store: Arc<dyn Lake
         rows.len() == 1 && rows[0].is_empty(),
         "a masked field projected: {rows:?}"
     );
+}
+
+/// Of the system types, a verb names a relation's link type alone
+/// (lakelands#759): a verb on `sys.link.claim.on_trip` is declared and sets
+/// a link's field, and a holder of `only` on `claim` has its call pinned,
+/// refused at accept once the link's end record moved; a verb on
+/// `sys.setting` or `sys.aging_rule` is reserved, while an object set may
+/// still hold settings.
+pub async fn a_verb_names_no_system_type_but_a_link_type(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    let declare = |v: Value| {
+        let c = c.clone();
+        async move { c.declare(own, serde_json::from_value(v).unwrap()).await }
+    };
+    declare(json!({"declare": "type", "name": "trip",
+        "fields": [{"name": "n", "type": {"kind": "text"}}]}))
+    .await
+    .unwrap();
+    declare(json!({"declare": "type", "name": "claim",
+        "fields": [{"name": "holder", "type": {"kind": "text"}}],
+        "relations": [{"name": "on_trip", "target": "trip",
+            "fields": [{"name": "label", "type": {"kind": "text"}}]}]}))
+    .await
+    .unwrap();
+    let opts = WriteOpts::default;
+    let p = |pairs: &[(&str, Value)]| patch(pairs);
+    c.upsert(
+        own,
+        &ty("trip"),
+        &key("t1"),
+        p(&[("n", json!("t"))]),
+        opts(),
+    )
+    .await
+    .unwrap();
+    let alice = p(&[("holder", json!("alice"))]);
+    c.upsert(own, &ty("claim"), &key("c1"), alice, opts())
+        .await
+        .unwrap();
+    let (claim, on_trip, link) = (ty("claim"), "on_trip".into(), key("c1:t1"));
+    c.link(
+        own,
+        &claim,
+        &key("c1"),
+        &on_trip,
+        &key("t1"),
+        Patch::new(),
+        opts(),
+    )
+    .await
+    .unwrap();
+    let verb = |name: &str, on: &str, risk: &str, field: &str, value: &str| {
+        json!({"declare": "verb", "name": name, "on": on, "risk": risk, "effect": "write",
+            "set": [{"field": field, "value": value}]})
+    };
+    let lt = "sys.link.claim.on_trip";
+    declare(verb("tag", lt, "low", "label", "'x'"))
+        .await
+        .unwrap();
+    declare(verb("relabel", lt, "high", "label", "'y'"))
+        .await
+        .unwrap();
+    let tagged = c
+        .call(own, &"tag".into(), Some(&link), Patch::new(), opts())
+        .await;
+    assert!(
+        matches!(tagged, Ok(Outcome::Applied { .. })),
+        "the owner tags `c1:t1`: {tagged:?}"
+    );
+    let grants = json!({"default": "write", "types": {"claim": {"only": {"holder": "alice"}}}});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let alice = &principal(store.lake(), PrincipalKind::Agent, "alice", grants);
+    let called = c
+        .call(alice, &"relabel".into(), Some(&link), Patch::new(), opts())
+        .await;
+    let Ok(Outcome::Proposed { proposal, .. }) = called else {
+        panic!("her `relabel` of `c1:t1` is proposed: {called:?}")
+    };
+    let bob = p(&[("holder", json!("bob"))]);
+    c.upsert(own, &claim, &key("c1"), bob, opts())
+        .await
+        .unwrap();
+    let e = c.accept(own, &proposal).await.unwrap_err();
+    let (ty, key) = (TypeName::from(lt), Some(link));
+    let moved = Case::WriteChangedSinceProposed { ty, key };
+    assert_eq!(
+        e,
+        invalid(None, moved),
+        "accepted after `c1` was handed to bob"
+    );
+    for (name, on, field) in [
+        ("poke", "sys.setting", "value"),
+        ("age", "sys.aging_rule", "on"),
+    ] {
+        let e = declare(verb(name, on, "low", field, "'x'"))
+            .await
+            .unwrap_err();
+        let reserved = Error::Refused {
+            field: None,
+            reason: Refusal::Reserved,
+        };
+        assert_eq!(e, reserved, "a verb on `{on}`");
+    }
+    let set = json!({"declare": "object_set", "name": "all_settings", "of": "sys.setting",
+        "where": "true"});
+    declare(set).await.expect("an object set holds settings");
 }
 
 /// A row binds each record a pattern reaches under its name, the one `as`

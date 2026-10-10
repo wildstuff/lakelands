@@ -258,7 +258,8 @@ pub enum Refusal {
     /// (a source field through `upsert`, a derived field by anyone).
     WrongDoor,
     /// The name is in a reserved namespace: `sys.` for a type,
-    /// `sys.` and `lakelands.` for an annotation key.
+    /// `sys.` and `lakelands.` for an annotation key; or a verb is
+    /// declared on a system type that is not a relation's link type.
     Reserved,
     /// The request does not fit the lake's map: an unknown field, a
     /// relation the type does not declare, an expression that does not

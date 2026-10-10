@@ -49,6 +49,11 @@ check!(
 );
 
 check!(
+    VERB_KEEPS_ENDS = a_verb_on_a_link_type_keeps_what_the_link_door_keeps,
+    "035 and 003, extended (lakelands#759): a verb on a relation's link type writes a live link's own fields and never its ends: one whose `set` names `from` or `to` is refused as invalid where it is declared, by `declare`, `propose` and `apply` alike; its call on a link an end of which is retired is refused as `link` with a field is, word for word, on that end, and nothing is appended; a caller without `restricted` whose link has a held end, and a holder of `only` on an end's type not admitted to that end, are each answered as for a key no link has; and a verb on the link type a relation's rename left behind is refused as on a type that is not declared"
+);
+
+check!(
     LIVE_ENDS = a_link_to_a_key_that_is_no_live_record_is_refused,
     "032 and 035: a link's ends are references, so a link to a key that is not a live record of the target is refused on `to`"
 );
@@ -352,6 +357,127 @@ async fn a_link_that_would_break_the_relations_cardinality_is_refused(store: Sto
         );
     }
     head_unmoved(store.as_ref(), before, "a link against a withheld link").await?;
+    Ok(())
+}
+
+async fn a_verb_on_a_link_type_keeps_what_the_link_door_keeps(store: Store) -> Held {
+    use crate::conformance::fixture::alike_renamed;
+    use lakelands_api::write::{Declaration, ProposedWrite};
+    let l = lake(store.as_ref()).await?;
+    let Lake { cat, own } = &l;
+    let verb = |name: &str, field: &str| -> Declaration {
+        let set = json!([{"field": field, "value": format!("'{SEPT}'")}]);
+        let v = json!({"declare": "verb", "name": name, "on": LT, "risk": "low",
+            "effect": "write", "set": set});
+        serde_json::from_value(v).expect("a verb reads")
+    };
+    // A `set` that names an end is refused where the verb is declared.
+    for end in ["from", "to"] {
+        let moved = verb("move", end);
+        let declared = cat.declare(own, moved.clone()).await;
+        let declarations = vec![moved.clone()];
+        let proposed = cat.propose(own, ProposedWrite::Declare { declarations }, "why".into());
+        let (proposed, applied) = (proposed.await, cat.apply(own, vec![moved]).await);
+        ensure!(
+            matches!(invalid_case(&declared), Some(Case::LinkEndAsField { end: e }) if e == end)
+                && declared == proposed
+                && declared == applied,
+            "a verb that sets a link's `{end}` is refused as `link_end_as_field` by `declare`, \
+             `propose` and `apply` alike; they answered {declared:?}, {proposed:?}, {applied:?}"
+        );
+    }
+    let date = cat.declare(own, verb("date", "since")).await;
+    date.must("declaring `date` on the link type")?;
+    for (p, i) in [("p3", "i3"), ("p4", "i4")] {
+        l.upsert("partner", p, json!({"name": p})).await?;
+        l.upsert("invoice", i, json!({"amount": "10"})).await?;
+    }
+    for n in ["1", "2", "3", "4"] {
+        link_ok(&l, &format!("i{n}"), &format!("p{n}"), json!({})).await?;
+    }
+    let call = |who: &Principal, from: &str, to: &str| {
+        let (who, key) = (who.clone(), link_key(&from.into(), &to.into()));
+        let (verb, opts) = ("date".into(), WriteOpts::default());
+        async move {
+            cat.call(&who, &verb, Some(&key), Default::default(), opts)
+                .await
+        }
+    };
+    let applied = call(own, "i1", "p1").await;
+    let links = all(cat.as_ref(), own, LT).await?;
+    let since = |r: &lakelands_api::record::Record| r.fields.get("since") == Some(&json!(SEPT));
+    ensure!(
+        matches!(applied, Ok(Outcome::Applied { .. }))
+            && links.iter().filter(|r| since(r)).count() == 1,
+        "`date` on a link with both ends live is applied and sets its `since`; it answered \
+         {applied:?}, and the links read {links:?}"
+    );
+    // An end retired: the verb is refused as `link` with a field is.
+    l.retire("partner", "p1").await?;
+    l.retire("invoice", "i2").await?;
+    let before = store.head().await.must("reading the head")?;
+    for (from, to, end) in [("i1", "p1", "to"), ("i2", "p2", "from")] {
+        let by_link = link(cat.as_ref(), own, from, to, json!({"since": SEPT})).await;
+        let by_verb = call(own, from, to).await;
+        ensure!(
+            matches!(refused_on(&by_link), Some((f, _)) if f == end) && by_verb == by_link,
+            "with its `{end}` retired, `link` with a field is refused on `{end}`, and a verb on \
+             the link word for word as it; they answered {by_link:?} and {by_verb:?}"
+        );
+    }
+    head_unmoved(
+        store.as_ref(),
+        before,
+        "a verb on a link with a retired end",
+    )
+    .await?;
+    // An end held, or one its caller's `only` does not admit: no such link.
+    restrict(store.as_ref(), "partner", "p3", "a hold").await?;
+    let grants = |types: Value| {
+        let grants = json!({"default": "write", "types": types});
+        serde_json::from_value(grants).expect("grants read")
+    };
+    let writer = principal(store.as_ref(), PrincipalKind::Agent, "w", grants(json!({})));
+    let holder = grants(json!({"partner": {"only": {"name": "another's"}}}));
+    let holder = principal(store.as_ref(), PrincipalKind::Agent, "h", holder);
+    for (who, from, to, what) in [
+        (&writer, "i3", "p3", "a held end"),
+        (&holder, "i4", "p4", "an end its `only` does not admit"),
+    ] {
+        let hidden = call(who, from, to).await.must_fail(what)?;
+        let absent = call(who, "i9", "p9").await.must_fail("a key no link has")?;
+        let keys = ("i9:p9", link_key(&from.into(), &to.into()));
+        alike_renamed(what, &hidden, &absent, (keys.0, keys.1.as_str()))?;
+        ensure!(
+            matches!(hidden, Error::NotFound { .. }),
+            "{what}: the link is not found; it answered {hidden:?}"
+        );
+    }
+    // The writer may call the verb: on a link it is answered, it applies.
+    let own_link = call(&writer, "i4", "p4").await;
+    ensure!(
+        matches!(own_link, Ok(Outcome::Applied { .. })),
+        "a writer answered both ends of `i4:p4` has its `date` applied: {own_link:?}"
+    );
+    // Once the relation is renamed, its old link type is a name no type has.
+    let signed_by = RelationDecl {
+        name: "signed_by".into(),
+        ..dated()
+    };
+    let rename = lakelands_api::write::Migration {
+        relation_renames: vec![("approved_by".into(), "signed_by".into())],
+        ..migration(invoice(vec![signed_by]))
+    };
+    let report = cat.migrate(own, rename.clone()).await;
+    let report = report.must("the preflight of the rename")?.data.report_id;
+    let renamed = cat.migrate_apply(own, rename, &report).await;
+    renamed.must("renaming `approved_by`")?;
+    let stale = cat.declare(own, verb("late", "since")).await;
+    ensure!(
+        matches!(invalid_case(&stale), Some(Case::Undeclared { ty }) if ty == LT),
+        "a verb on the link type a renamed relation left behind is refused as on a type that \
+         is not declared; it answered {stale:?}"
+    );
     Ok(())
 }
 

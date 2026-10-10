@@ -50,8 +50,13 @@ a check over live links rather than a convention.
 
 Naming the link type under `sys.` keeps the writes where the rules are:
 the `sys.` guard stops a caller from declaring or reshaping it, and the
-ordinary doors refuse its records, so a link is only ever written
-through the doors that check the relation's authority and cardinality.
+ordinary doors refuse its records, so a link is made only through the
+doors that check the relation's authority and cardinality. A verb
+declared on the link type (003, extended) writes a live link's own
+fields and nothing else: under the same authority, with both ends
+checked as `link` checks them, live and answered to its caller, and
+never an end. A `set` that names `from` or `to` is refused when the
+verb is declared, as `link` refuses an end among its fields.
 
 ## What it is not
 
@@ -211,7 +216,10 @@ A migration now names the rename, `relation_renames`, old name to new:
   another is told that a declaration refers to it.
 - **A link type no relation carries takes no link.** The old link type
   stays declared, for the reads as of before, and so does a removed
-  relation's. An ingest into one is refused, naming it. Where a renamed
+  relation's. An ingest into one is refused, naming it, and a verb
+  declared on one is refused as on a type that is not declared
+  (lakelands#759); a verb in force moves to the new link type with a
+  rename. Where a renamed
   relation takes a name whose link type stands, empty, in another shape,
   that link type is declared again in the shape of the links it takes;
   a declaration that reads a field of it which the renamed relation

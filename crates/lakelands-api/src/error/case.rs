@@ -1233,7 +1233,7 @@ catalog! {
         /// A key that is empty or holds a NUL.
         KeyEmpty => "a record key is not empty and holds no NUL character",
         /// A link's end given among its fields.
-        LinkEndAsField { end: FieldName } => "a link's `{end}` is given as `key` and `to`, not among its fields",
+        LinkEndAsField { end: FieldName } => "a link's `{end}` is one of its ends, which `link` takes as `key` and `to`; no write sets it among the link's fields",
         /// A link from a record that links already where one is allowed, to a record named when the caller is shown it.
         LinkedAlreadyFrom { from: RecordKey, relation: RelationName, #[serde(default, skip_serializing_if = "Option::is_none")] to: Option<RecordKey>, cardinality: Cardinality } => "`{from}` already links over `{relation}`[ to `{to}`], and it allows one ({cardinality}); unlink it first",
         /// A link to a record that is linked already where one is allowed, from a record named when the caller is shown it.

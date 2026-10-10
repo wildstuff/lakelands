@@ -121,7 +121,9 @@ impl From<Error> for Failure {
                     "source fields arrive through `lakelands ingest`; authored fields through writes and verbs"
                         .to_owned()
                 }
-                Refusal::Reserved => "choose a name that does not begin with `sys.`".to_owned(),
+                Refusal::Reserved => "choose a name that does not begin with `sys.`; a verb names no \
+                                      `sys.` type but a relation's link type"
+                    .to_owned(),
                 Refusal::Invalid(_) | Refusal::Constraint(_) => CORRECT.to_owned(),
                 Refusal::Precondition(_) => {
                     "change the record so the verb applies, then call it again".to_owned()

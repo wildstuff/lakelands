@@ -996,8 +996,10 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                 }
                 // As the store: a trigger may watch any declared type, and an
                 // object set may hold its records, the link types of
-                // relations carried by link records among them.
-                let on_any = matches!(other, Declaration::Trigger(_) | Declaration::ObjectSet(_));
+                // relations carried by link records among them; a verb
+                // names a link type and no other system type.
+                let on_any = matches!(other, Declaration::Trigger(_) | Declaration::ObjectSet(_))
+                    || matches!(other, Declaration::Verb(_)) && links::is_link_type(ty);
                 if reserved(ty.as_str(), who) && !on_any {
                     return Err(refused(Refusal::Reserved));
                 }
