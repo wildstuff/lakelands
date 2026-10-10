@@ -203,6 +203,7 @@ belongs in the suite, not beside one engine:
 - `a_derived_field_added_to_a_live_type_is_computed_on_later_writes` — the ontology: a derived field added with add_field is kept by the fold for every write after it, like one declared with the type
 - `a_derived_field_accepts_no_value_from_a_source_or_a_verb_either` — 015 and 016: a derived field is the fold's alone; a source record or a verb that would set it is refused whole, not only an upsert
 - `a_derived_field_reading_a_function_is_recomputed_when_the_function_changes` — 022: a derived field that names a function is computed by that function's declaration in force; a new version of the function recomputes it and names that version as its procedure
+- `a_function_declared_again_with_the_same_inputs_computes_by_its_new_body` — 022: a function declared again with the same inputs and another body computes by the new body, and so do the derived fields that read what it computes: a record it recomputes, at the head and as of the declaration, and one written after it; as of before, the old body's values stand
 
 **backings**
 

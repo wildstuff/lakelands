@@ -23,6 +23,16 @@ fn decimal(name: &str, derived: Option<&str>) -> Value {
     f
 }
 
+/// The fold's rules over `t`, its derived fields in its own order.
+fn apply(
+    t: &TypeDecl,
+    value_types: &[ValueTypeDecl],
+    f: &mut BTreeMap<FieldName, Value>,
+    w: &Write<'_>,
+) -> Result<BTreeSet<FieldName>, Said> {
+    Ok(super::apply(t, &order(t)?, value_types, f, w))
+}
+
 /// A first write of `written`, with no settings, at time zero.
 fn write(written: &BTreeSet<FieldName>) -> Write<'_> {
     Write {

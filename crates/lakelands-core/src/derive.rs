@@ -136,14 +136,17 @@ pub struct Write<'a> {
 }
 
 /// Apply the fold's own rules to a record after a write's patch was
-/// merged into `fields`. Answers the fields the fold changed (cleared or
-/// recomputed), which take the event's provenance with `origin: derived`.
+/// merged into `fields`, its derived fields computed in `order`, as
+/// [`order`] answers it for `ty`. Answers the fields the fold changed
+/// (cleared or recomputed), which take the event's provenance with
+/// `origin: derived`.
 pub fn apply(
     ty: &TypeDecl,
+    order: &[(FieldName, Expr)],
     value_types: &[ValueTypeDecl],
     fields: &mut BTreeMap<FieldName, Value>,
     write: &Write<'_>,
-) -> Result<BTreeSet<FieldName>, Said> {
+) -> BTreeSet<FieldName> {
     let mut changed: BTreeSet<FieldName> = write.written.clone();
     let mut touched = BTreeSet::new();
 
@@ -168,11 +171,11 @@ pub fn apply(
 
     // 2. Recompute derived fields in dependency order; one computed at the
     //    read holds no value.
-    for (name, expr) in order(ty)? {
+    for (name, expr) in order {
         let decl = ty
             .fields
             .iter()
-            .find(|f| f.name == name)
+            .find(|f| &f.name == name)
             .expect("ordered from the type");
         let scope = WriteScope {
             after: fields,
@@ -184,14 +187,14 @@ pub fn apply(
         };
         let value = match decl.at_read() {
             true => Value::Null,
-            false => computed(decl, &expr, value_types, &scope),
+            false => computed(decl, expr, value_types, &scope),
         };
-        if fields.get(&name).unwrap_or(&Value::Null) != &value {
+        if fields.get(name).unwrap_or(&Value::Null) != &value {
             fields.insert(name.clone(), value);
-            touched.insert(name);
+            touched.insert(name.clone());
         }
     }
-    Ok(touched)
+    touched
 }
 
 /// A record as one read answers it: each field computed at the read

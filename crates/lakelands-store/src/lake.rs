@@ -85,6 +85,9 @@ pub struct Writer {
     /// The executors' answers whose append failed `unavailable`, oldest
     /// first: the next write appends them before it is decided (013).
     pub answers: Vec<Draft>,
+    /// The plans the fold, a step's walk and the write path compute
+    /// records by.
+    pub plans: record::Plans,
 }
 
 /// What the lake declares at one position, as a read needs it and before
@@ -402,6 +405,7 @@ impl Lake {
                 failed: None,
                 format: LOG_FORMAT_BASE,
                 answers: Vec::new(),
+                plans: record::Plans::default(),
             }),
             head: AtomicU64::new(0),
             walked: OnceLock::new(),
@@ -1422,6 +1426,7 @@ impl Lake {
                         event: e.clone(),
                         entries: w.ontology.computing(&rederive),
                         settings,
+                        plans: record::Plans::default(),
                     });
                 }
             }
@@ -1500,6 +1505,7 @@ impl Lake {
                         event: e.clone(),
                         entries: w.ontology.computing(&rederive),
                         settings,
+                        plans: record::Plans::default(),
                     });
                 }
             }
@@ -1516,6 +1522,7 @@ impl Lake {
                     before: None,
                     due: owes.then_some(&mut due),
                     waiting: false,
+                    plans: &w.plans,
                 };
                 let after =
                     record::apply(&w.ontology, before.as_ref(), e, &w.settings, &mut outputs)?;
@@ -1599,6 +1606,7 @@ impl Lake {
                         before: None,
                         due: owes.then_some(&mut due),
                         waiting: false,
+                        plans: &w.plans,
                     };
                     let next = record::fill(
                         &w.ontology,
@@ -2323,6 +2331,9 @@ pub(crate) struct Recomputed {
     entries: Ontology,
     /// The settings at the event.
     settings: Arc<BTreeMap<String, Value>>,
+    /// The plans its records are computed by: its own, since a read
+    /// computes through it without the writer.
+    plans: record::Plans,
 }
 
 impl Recomputed {
@@ -2346,6 +2357,7 @@ impl Recomputed {
             before: Some(self.event.position),
             due,
             waiting: false,
+            plans: &self.plans,
         };
         record::rederive(&self.entries, r, &self.event, &self.settings, &mut outputs)
     }

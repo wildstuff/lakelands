@@ -130,6 +130,8 @@ pub struct Outputs<'a> {
     /// Whether a field that a recorded output changes is handed out too:
     /// the drain reads a record so, and records that output for it.
     pub waiting: bool,
+    /// The plans the records are computed by.
+    pub plans: &'a crate::record::Plans,
 }
 
 /// The outputs one transaction recorded, by seam and input: every
@@ -458,12 +460,17 @@ pub fn settle_fields(
     if backed.is_empty() {
         return Ok(changed);
     }
-    let order = computed_order(ontology, decl).map_err(|why| {
-        let (ty, cause) = (decl.name.clone(), Box::new(lakelands_core::invalid(why)));
+    let plan = outputs.plans.get(ontology, decl);
+    let order = plan.settled.as_ref().map_err(|why| {
+        let (ty, cause) = (
+            decl.name.clone(),
+            Box::new(lakelands_core::invalid(why.clone())),
+        );
         lakelands_core::damaged(Part::Projection, None, Flaw::CannotOrder { ty, cause })
     })?;
     let mut waiting: BTreeSet<FieldName> = BTreeSet::new();
     for (name, reads) in order {
+        let name = name.clone();
         let reads_waiting = reads.iter().any(|r| waiting.contains(r));
         let Some((field, computer)) = backed.get(&name).copied() else {
             if reads_waiting {
@@ -706,6 +713,7 @@ pub fn page(lake: &Lake, o: &Owed) -> Result<(Vec<(RecordKey, Vec<(Due, Option<V
                 before: None,
                 due: Some(&mut due),
                 waiting: true,
+                plans: &w.plans,
             };
             let sweep = matches!(o.of, Of::Sweep { .. });
             settle_fields(
@@ -1127,6 +1135,7 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
                 before: None,
                 due: None,
                 waiting: false,
+                plans: &w.plans,
             },
         )?;
         if let Some(after) = after {
