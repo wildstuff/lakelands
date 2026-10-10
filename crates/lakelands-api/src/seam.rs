@@ -345,8 +345,8 @@ pub fn view_kept(value: Option<&Value>) -> bool {
 ///   ([`crate::expr::keepable`]), and the refusal says why it is not to a
 ///   writer shown the view as declared, and to no other.
 ///
-/// It lives in the contract, not in the core, so that the mock, which
-/// depends on this crate alone, refuses the same settings as the store.
+/// It lives in the contract, not in the core; the store is its one
+/// caller.
 pub fn check_setting<'a>(
     key: &str,
     value: Option<&Value>,

@@ -340,10 +340,9 @@ key written, which the listing shows. A conflict names versions only,
 and is told whole. A retirement's refusal names only the record it
 retires, and what a write sets off is judged by declarations the lake
 already took, so neither is judged. A refusal is judged by what its
-case's members are, as typed (`Named` in the contract), so the store
-and the mock judge alike. A link's cardinality is judged only where a
-link is written, and no proposal writes one. A reject answers nothing
-of the write.
+case's members are, as typed (`Named` in the contract). A link's
+cardinality is judged only where a link is written, and no proposal
+writes one. A reject answers nothing of the write.
 
 **Why.** The listing shows a reviewer the proposal trimmed to what it
 may know, and says `more` where that is less than the whole. A refusal

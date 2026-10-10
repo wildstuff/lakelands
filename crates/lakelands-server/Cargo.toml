@@ -23,9 +23,9 @@ serde_path_to_error.workspace = true
 tokio = { workspace = true, features = ["io-std", "io-util", "macros", "net", "rt", "sync", "time"] }
 
 [dev-dependencies]
+lakelands-door-checks.workspace = true
 lakelands-engine-mem.workspace = true
 lakelands-engine-sqlite.workspace = true
-lakelands-mock.workspace = true
 lakelands-store.workspace = true
 # The official SDK, as a client only: proves it talks to this server.
 rmcp = { version = "3.4", default-features = false, features = ["client", "transport-async-rw", "transport-streamable-http-client-reqwest"] }

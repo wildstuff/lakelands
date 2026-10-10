@@ -1,9 +1,8 @@
-//! The door checks, run unchanged on the real store over both engines.
+//! The door checks, run on the store over memory and SQLite.
 //!
-//! The same checks the mock passes (`tests/checks.rs`) run here against
-//! `lakelands_store::open`: that is how the mock is proven honest. A check
-//! that passes on one and fails on the other is a divergence, fixed in the
-//! mock or in the store, never in the check.
+//! Every check runs against `lakelands_store::open` on both engines. A
+//! check that passes on one and fails on the other is a divergence between
+//! the engines, fixed in the store or the engine, never in the check.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -63,10 +62,10 @@ fn sqlite() -> Arc<dyn LakeStore> {
 
 mod on_memory {
     use super::*;
-    lakelands_mock::door_checks!(memory, block_on);
+    lakelands_door_checks::door_checks!(memory, block_on);
 }
 
 mod on_sqlite {
     use super::*;
-    lakelands_mock::door_checks!(sqlite, block_on);
+    lakelands_door_checks::door_checks!(sqlite, block_on);
 }

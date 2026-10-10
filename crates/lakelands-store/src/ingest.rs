@@ -116,7 +116,7 @@ pub fn window(
         let mut plan = d.write(decl, &r.key, t, patch, None)?;
         // A link holds its relation's cardinality, over the lake's live
         // links and those earlier in this window: judged once the plan
-        // admitted the record its writer leaves, as the mock judges it,
+        // admitted the record its writer leaves,
         // so that it names nothing of another's record and passes over no
         // link a holder's `only` admits (051).
         if let Some(Some((t, relation))) = relation {

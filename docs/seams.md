@@ -1217,10 +1217,9 @@ and the recorded output, never the record the executor was given. A host
 that wants an executor to see only what the caller may see applies the
 caller's grants in the executor. Its answer is recorded as an
 `output_recorded` event caused by that event, with `input` the digest of
-`{ "verb", "record", "payload", "position" }`. The mock binds no
-executor and refuses such a verb as `unbound`, so the record an executor
-is handed is pinned by the store's own test, on the memory engine, and
-not by the door checks the mock runs too.
+`{ "verb", "record", "payload", "position" }`. No lake in the door
+checks binds an executor, so the record an executor is handed is pinned
+by the store's own test, on the memory engine.
 
 An executor that fails does not undo the verb: the event that made it
 due is in the log, and its position is real. The failure is the recorded
@@ -1778,9 +1777,8 @@ with a kind other than vector, or a weight a search could not give
 such object or names nothing (`value`). A field a migration removed
 stays named and weighs nothing; declared again, it takes its weight
 again. The judge of all four settings is the contract's
-(`lakelands_api::seam::check_setting`), so the mock refuses what the
-store refuses. It changes no answer's members, only the order a fused
-search ranks them in.
+(`lakelands_api::seam::check_setting`). It changes no answer's members,
+only the order a fused search ranks them in.
 
 **A setting the store reads is judged by what its writer is shown,**
 after the writer's grant on `sys.setting`
@@ -1806,7 +1804,7 @@ groups whose kept record is not exact for the reader (a measure that
 fails over one, which mends when its cause leaves, or an extreme given
 up, which only what makes the view again mends); or `not_kept_here`,
 which is also
-what a lake that keeps no view (the mock) answers for a view that is
+what a lake that keeps no view answers for a view that is
 asked for and can be kept. Like `sorted` and `indexed`, `kept` describes
 the projection and not the log; a rebuild leaves the state the live
 appends left, since the fold decides everything of a kept view in the
@@ -1857,9 +1855,8 @@ and read on every field `when` reads
 the rule is refused as not granted, naming that field; `age` then moves
 the records as the system. `setting()` in `when` reads the lake's
 settings as a filter does; no grant on `sys.setting` is asked, and if
-settings ever come under a grant, `find` and `age` change together. The
-mock (`lakelands-mock`) refuses `setting()` in a rule's `when`; the
-store takes it. A bundle declares rules in its `aging_rules/` lane,
+settings ever come under a grant, `find` and `age` change together.
+A bundle declares rules in its `aging_rules/` lane,
 one per file, with the same keys; `lakelands apply` writes each after
 the bundle's declarations, skipping a rule whose stored fields already
 equal the file's and clearing a field the file no longer carries. A

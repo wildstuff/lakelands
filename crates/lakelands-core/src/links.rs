@@ -3,7 +3,7 @@
 //!
 //! A relation `r` of type `t` declared without `via` is carried by records
 //! of its **link type**, `sys.link.t.r`, which this module derives from the
-//! relation, the same way for the store, every engine and the mock:
+//! relation, the same way for the store and every engine:
 //!
 //! - its key fields are `from` (a `reference` to `t`) and `to` (a
 //!   `reference` to the relation's target), both required, so a link's key

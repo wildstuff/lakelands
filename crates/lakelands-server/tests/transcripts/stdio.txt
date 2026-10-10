@@ -1,4 +1,4 @@
-# MCP over stdio, as the lake's owner. The lake holds the mock's fixture
+# MCP over stdio, as the lake's owner. The lake holds the door checks' fixture
 # and one invoice, INV-1, written at position 7.
 
 # The handshake, then a ping.

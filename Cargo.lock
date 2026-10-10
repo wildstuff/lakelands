@@ -981,8 +981,8 @@ dependencies = [
  "hyper-util",
  "lakelands-api",
  "lakelands-core",
+ "lakelands-door-checks",
  "lakelands-engine-mem",
- "lakelands-mock",
  "lakelands-server",
  "lakelands-store",
  "rustls",
@@ -1009,6 +1009,20 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "unicode-normalization",
+]
+
+[[package]]
+name = "lakelands-door-checks"
+version = "0.12.0"
+dependencies = [
+ "futures-core",
+ "lakelands-api",
+ "lakelands-engine-mem",
+ "lakelands-engine-sqlite",
+ "lakelands-store",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
 ]
 
 [[package]]
@@ -1059,21 +1073,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lakelands-mock"
-version = "0.12.0"
-dependencies = [
- "async-trait",
- "futures-core",
- "lakelands-api",
- "lakelands-engine-mem",
- "lakelands-engine-sqlite",
- "lakelands-store",
- "serde_json",
- "sha2 0.10.9",
- "tokio",
-]
-
-[[package]]
 name = "lakelands-server"
 version = "0.12.0"
 dependencies = [
@@ -1085,9 +1084,9 @@ dependencies = [
  "hyper",
  "hyper-util",
  "lakelands-api",
+ "lakelands-door-checks",
  "lakelands-engine-mem",
  "lakelands-engine-sqlite",
- "lakelands-mock",
  "lakelands-store",
  "rmcp",
  "serde",

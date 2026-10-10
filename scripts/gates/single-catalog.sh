@@ -2,7 +2,7 @@
 # Gate 4 — single-catalog.
 #
 # Every LLM-facing tool name is produced by the one generator in
-# `lakelands-api` (GENERATOR below), so the mock, the store's catalog and
+# `lakelands-api` (GENERATOR below), so the store's catalog and
 # the transports can never disagree on a name. Red when a string literal
 # in any `src/` outside the generator makes a tool name:
 #   - a per-type door, `<type>_find`, `<type>_get`, `<type>_upsert` or

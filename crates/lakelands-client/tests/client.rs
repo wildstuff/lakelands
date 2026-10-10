@@ -19,7 +19,7 @@ use lakelands_api::seam::{FEED_EXAMINED, FeedFilter};
 use lakelands_api::write::{MigrationReport, WriteOpts};
 use lakelands_api::{LakeId, LakeStore, Principal, Timestamp, WriteContext};
 use lakelands_client::{ApiKey, RemoteConfig, RemoteLake};
-use lakelands_mock::checks::{Cast, patch, setup};
+use lakelands_door_checks::checks::{Cast, patch, setup};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -261,12 +261,12 @@ async fn ingest_answers_each_window_and_ends_on_a_refused_record() {
     let collect = |records: Vec<SourceRecord>| {
         let (c, who) = (f.catalog.clone(), f.cast.importer.clone());
         async move {
-            let stream = lakelands_mock::stream::of(records);
+            let stream = lakelands_door_checks::stream::of(records);
             let mut commits = c
                 .ingest(&who, &SourceId::from("bank"), stream)
                 .await
                 .expect("the ingest starts");
-            lakelands_mock::stream::collect(&mut commits).await
+            lakelands_door_checks::stream::collect(&mut commits).await
         }
     };
     let out = collect(vec![
@@ -401,14 +401,14 @@ async fn a_poll_over_the_wire_that_matches_nothing_reaches_the_head() {
         fields: patch(&[("amount", json!(format!("{i}.00")))]),
         seen_at: None,
     });
-    let records = lakelands_mock::stream::of(records.collect());
+    let records = lakelands_door_checks::stream::of(records.collect());
     let bank = SourceId::from("bank");
     let mut acks = f
         .catalog
         .ingest(&f.cast.importer, &bank, records)
         .await
         .unwrap();
-    let acks = lakelands_mock::stream::collect(&mut acks).await;
+    let acks = lakelands_door_checks::stream::collect(&mut acks).await;
     assert!(acks.iter().all(Result::is_ok), "{acks:?}");
     let head = store.head().await.unwrap();
     assert!(head.0 > u64::from(FEED_EXAMINED));
@@ -779,11 +779,11 @@ async fn no_ingest_line_grows_past_its_cap() {
         .ingest(
             &importer,
             &SourceId::from("bank"),
-            lakelands_mock::stream::of(Vec::new()),
+            lakelands_door_checks::stream::of(Vec::new()),
         )
         .await
         .expect("the ingest starts");
-    let out = lakelands_mock::stream::collect(&mut commits).await;
+    let out = lakelands_door_checks::stream::collect(&mut commits).await;
     assert_eq!(out.len(), 1, "{out:?}");
     too_long(
         out.into_iter().next().unwrap().unwrap_err(),

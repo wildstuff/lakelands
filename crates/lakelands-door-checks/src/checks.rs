@@ -4,14 +4,14 @@
 //! Each check is one async function over a fresh, empty
 //! `Arc<dyn LakeStore>`: it declares the fixture ontology through the
 //! catalog, acts as the fixture's principals and asserts what a door can
-//! observe. The mock runs them in its own tests; a door crate runs them
-//! again over whatever lake it is built on, and the real store runs them
-//! unchanged, which is how the mock is shown to be honest.
+//! observe. This crate runs them on the store over memory and SQLite
+//! (`tests/checks_on_the_store.rs`), and a door crate runs them again over
+//! whatever lake it is built on.
 //!
 //! [`door_checks!`](crate::door_checks) expands to one `#[test]` per
 //! check, given a function that makes a fresh lake and one that blocks
-//! on a future. No check assumes an absolute position: a lake may log
-//! more than the mock before its first write.
+//! on a future. No check assumes an absolute position: a lake logs its
+//! own events before its first write.
 //!
 //! A refusal's sentence is its case's, from the one catalog
 //! (`lakelands_api::error::Case`): a check asserts a refusal's kind, its
@@ -57,10 +57,7 @@ use crate::stream;
 /// `Arc<dyn LakeStore>`; `$block_on` runs a future to completion.
 ///
 /// ```ignore
-/// lakelands_mock::door_checks!(
-///     || Arc::new(MockLake::new("finance")) as Arc<dyn LakeStore>,
-///     my_runtime::block_on
-/// );
+/// lakelands_door_checks::door_checks!(my_fresh_lake, my_runtime::block_on);
 /// ```
 ///
 /// A check marked `#[host_ops]` calls a host operation of the
@@ -79,11 +76,6 @@ use crate::stream;
 /// which holds for a lake's own feed. Over a network door the server's
 /// stream reads on to a match or to the head, a bounded poll at a time
 /// (`docs/seams.md` §`ChangeFeed`), so it is ignored there, saying why.
-///
-/// A check marked `#[views]` reads a view's computed records, which the
-/// mock does not compute. Given `mock` after `$block_on`, as the mock's
-/// own tests give it, each marked check is ignored, saying why; every
-/// lake that computes views runs it.
 #[macro_export]
 macro_rules! door_checks {
     ($new:expr, $block_on:path) => {
@@ -91,9 +83,6 @@ macro_rules! door_checks {
     };
     ($new:expr, $block_on:path, remote) => {
         $crate::door_checks!(@all remote, $new, $block_on);
-    };
-    ($new:expr, $block_on:path, mock) => {
-        $crate::door_checks!(@all mock, $new, $block_on);
     };
     (@all $at:ident, $new:expr, $block_on:path) => {
         $crate::door_checks!(@each $at, $new, $block_on;
@@ -234,7 +223,7 @@ macro_rules! door_checks {
             a_proposal_shows_its_reader_the_values_it_may_read,
             a_proposal_names_what_its_reader_may_know_and_says_there_is_more,
             an_order_by_latest_takes_no_field_and_no_view,
-            #[views] a_view_reads_the_parameters_each_read_binds,
+            a_view_reads_the_parameters_each_read_binds,
             a_parameter_its_type_does_not_declare_is_refused,
             a_trigger_watches_a_link_type_and_not_a_reference_relations,
             degree_and_components_answer_the_graph_in_one_order,
@@ -289,13 +278,6 @@ macro_rules! door_checks {
     (@one remote, $new:expr, $block_on:path, [in_process_feed] $name:ident) => {
         #[test]
         #[ignore = "reads where one poll stops; the server's stream reads on to a match or the head"]
-        fn $name() {
-            $block_on($crate::checks::$name(($new)()));
-        }
-    };
-    (@one mock, $new:expr, $block_on:path, [views] $name:ident) => {
-        #[test]
-        #[ignore = "reads a view's records, which the mock does not compute"]
         fn $name() {
             $block_on($crate::checks::$name(($new)()));
         }
@@ -2042,7 +2024,7 @@ fn partner_totals_view() -> TypeDecl {
 
 /// A view is never written: a trigger on one would never fire, and an
 /// object set holds stored records, so `declare` refuses both, naming
-/// the declaration and the view, on the mock as on the store.
+/// the declaration and the view.
 pub async fn nothing_that_never_acts_is_declared_on_a_view(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let owner = &f.cast.owner;
@@ -2089,8 +2071,7 @@ pub async fn nothing_that_never_acts_is_declared_on_a_view(store: Arc<dyn LakeSt
 
 /// An object set may hold the records of a relation's link type, as a
 /// trigger may watch them: `declare` takes a set over
-/// `sys.link.<type>.<relation>` and `describe` shows it, on the mock as on
-/// the store.
+/// `sys.link.<type>.<relation>` and `describe` shows it.
 pub async fn a_set_may_hold_a_link_types_records(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let owner = &f.cast.owner;
@@ -2123,8 +2104,7 @@ pub async fn a_set_may_hold_a_link_types_records(store: Arc<dyn LakeStore>) {
 /// relation of `memo` as a relation that is not there. One who reads a
 /// field of `memo` is shown all three, links and walks. One kept from
 /// `partner` is not shown `seen_by` nor its link type: it is not
-/// described, offered to `link`, linked or walked (lakelands#662). On the
-/// mock as on the store.
+/// described, offered to `link`, linked or walked (lakelands#662).
 pub async fn a_type_made_of_another_is_shown_only_with_it(store: Arc<dyn LakeStore>) {
     const LINKS: &str = "sys.link.memo.cites";
     let f = setup(store).await;
@@ -2364,8 +2344,8 @@ pub async fn a_type_made_of_another_is_shown_only_with_it(store: Arc<dyn LakeSto
 /// as not granted, on no field and without that field's name, by `find`
 /// and by `get`, and `describe` withholds the definition where the view
 /// itself reads that field of its own or a merged source; a holder of the
-/// `schema` grant is refused on that field; the owner is answered. On the
-/// mock as on the store (024, extended).
+/// `schema` grant is refused on that field; the owner is answered (024,
+/// extended).
 pub async fn a_view_over_a_hidden_field_names_nothing(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let (owner, c) = (&f.cast.owner, &f.catalog);
@@ -2447,8 +2427,7 @@ pub async fn a_view_over_a_hidden_field_names_nothing(store: Arc<dyn LakeStore>)
 
 /// A view's records are computed, so a relation on a view carried by link
 /// records or by a `via` field could never hold an edge: `declare`
-/// refuses it, naming the view and the relation, on the mock as on the
-/// store.
+/// refuses it, naming the view and the relation.
 pub async fn a_relation_on_a_view_is_derived(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let head = f.head().await;
@@ -2483,7 +2462,7 @@ pub async fn a_relation_on_a_view_is_derived(store: Arc<dyn LakeStore>) {
 
 /// A migration reshapes stored records, and a view stores none: turning
 /// a stored type into a view, or a view into a stored type, is refused at
-/// the preflight, naming the type, on the mock as on the store.
+/// the preflight, naming the type.
 pub async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let owner = &f.cast.owner;
@@ -2558,8 +2537,7 @@ pub async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) {
 /// migration that drops or renames a field the view groups by or
 /// aggregates is refused at the preflight, naming the view and the field;
 /// an author who is not shown the view's definition is told that a
-/// declaration reads the field, without the view. On the mock as on the
-/// store.
+/// declaration reads the field, without the view.
 pub async fn a_migration_keeps_what_a_view_reads(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let owner = &f.cast.owner;
@@ -2674,8 +2652,7 @@ pub async fn a_migration_keeps_what_a_view_reads(store: Arc<dyn LakeStore>) {
 }
 
 /// A view whose `where` names, or whose measure aggregates, a field its
-/// source does not have is refused, naming the view and the field, on the
-/// mock as on the store.
+/// source does not have is refused, naming the view and the field.
 pub async fn a_view_reads_only_what_its_source_has(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let head = f.head().await;
@@ -2724,7 +2701,7 @@ pub async fn a_view_reads_only_what_its_source_has(store: Arc<dyn LakeStore>) {
 /// declared field for each value it computes and none that nothing
 /// fills; each parameter declared once and read. Each fault is refused
 /// as invalid in the store's words, on the field where it names one, and
-/// nothing is appended; on the mock as on the store (018, 028).
+/// nothing is appended (018, 028).
 pub async fn a_view_is_declared_only_as_the_store_declares_it(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let (c, owner) = (&f.catalog, &f.cast.owner);
@@ -3051,7 +3028,7 @@ pub async fn a_view_is_declared_only_as_the_store_declares_it(store: Arc<dyn Lak
 /// `in_set()` only in a set's `where`, a trigger's `when` and a read's
 /// `where`. `add_field` declares the type with the field added. Each
 /// fault is refused as invalid in the store's words, and nothing is
-/// appended; on the mock as on the store (028).
+/// appended (028).
 pub async fn names_and_expressions_are_declared_only_as_the_store_declares_them(
     store: Arc<dyn LakeStore>,
 ) {
@@ -3396,7 +3373,7 @@ pub async fn names_and_expressions_are_declared_only_as_the_store_declares_them(
 /// the `migrated` to one who follows either link type, and that of a
 /// relation carried by `via` to no follower of a link type; a rename of a
 /// relation whose link type another type refers to is refused, naming
-/// that type, on the mock as on the store.
+/// that type.
 pub async fn a_renamed_relation_keeps_its_edges(store: Arc<dyn LakeStore>) {
     use lakelands_api::write::{Carrier, Migration};
     let f = setup(store).await;
@@ -3515,7 +3492,7 @@ pub async fn a_renamed_relation_keeps_its_edges(store: Arc<dyn LakeStore>) {
 /// the owner renames both otherwise, and `aside`, which the proposal retypes.
 /// Listed to a reviewer kept from a field, or from the relation's link
 /// field, by a grant on the name in force, its shape holds none of them
-/// (lakelands#594, lakelands#644), on the mock as on the store.
+/// (lakelands#594, lakelands#644).
 pub async fn a_proposal_that_waited_hides_by_the_names_in_force(store: Arc<dyn LakeStore>) {
     use lakelands_api::write::Migration;
     let f = setup(store).await;
@@ -3629,7 +3606,7 @@ pub async fn recompute_appends_the_function_in_force_again(store: Arc<dyn LakeSt
 /// trigger, verb or object set, and not taken to the read where one reads
 /// it; a verb's payload says no `computed_at`. Each is refused as invalid
 /// in the store's words and nothing is appended; an order by it is
-/// refused; `describe` shows the member; on the mock as on the store (052).
+/// refused; `describe` shows the member (052).
 pub async fn when_a_field_is_computed_is_declared_as_the_store_declares_it(
     store: Arc<dyn LakeStore>,
 ) {
@@ -3825,7 +3802,7 @@ pub async fn when_a_field_is_computed_is_declared_as_the_store_declares_it(
 
 /// A grant's `only` on a field computed at the read cannot be applied: no
 /// engine holds the field to filter by. A read is refused naming the type
-/// alone; on the mock as on the store (052).
+/// alone (052).
 pub async fn a_grants_only_on_a_field_computed_at_the_read_is_not_applied(
     store: Arc<dyn LakeStore>,
 ) {
@@ -3855,7 +3832,7 @@ pub async fn a_grants_only_on_a_field_computed_at_the_read_is_not_applied(
 /// verb's `requires` or the value it sets a field from read only fields
 /// the type has: one that reads another is refused by `declare` and by
 /// `apply`, naming the declaration and the field, and nothing is
-/// appended, on the mock as on the store. `payload.<name>` and `setting`
+/// appended. `payload.<name>` and `setting`
 /// read no field.
 pub async fn a_declaration_reads_only_what_its_type_has(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
@@ -3931,8 +3908,8 @@ pub async fn a_declaration_reads_only_what_its_type_has(store: Arc<dyn LakeStore
 /// required derived field over a null input is refused, naming the field,
 /// and one that comes to a value is written. A verb's `requires` reads the
 /// same way: `not` of null holds, a function of null holds nothing, and a
-/// text function reads a number as its text. The mock computes no derived
-/// field, so its verdict on the write is what can be compared.
+/// text function reads a number as its text. The check reads the write's
+/// verdict; what a derived field then holds is the suite's to say.
 pub async fn a_function_over_null_is_null_on_every_lake(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let (c, owner) = (&f.catalog, &f.cast.owner);
@@ -4054,8 +4031,7 @@ pub async fn a_function_over_null_is_null_on_every_lake(store: Arc<dyn LakeStore
 /// may be `floor` of it. A derived number field that is the duration
 /// itself would never be filled, and is refused on the field; a `where`
 /// adding a number to a duration can never be evaluated, and is refused
-/// as invalid. On the mock as on the store; what the field then holds is
-/// the suite's to say, the mock computes no derived field.
+/// as invalid. What the field then holds is the suite's to say.
 pub async fn a_duration_by_a_unit_is_a_number_and_what_never_lands_is_refused(
     store: Arc<dyn LakeStore>,
 ) {
@@ -4119,8 +4095,7 @@ pub async fn a_duration_by_a_unit_is_a_number_and_what_never_lands_is_refused(
 /// that steps through a reference are refused at the declaration, and a
 /// set declared again for another type on `of`; nothing is appended. To a
 /// reader kept from a field, a set whose filter reads it, itself or
-/// through a set it names, is a set that is not declared. On the mock as
-/// on the store.
+/// through a set it names, is a set that is not declared.
 pub async fn a_set_names_a_set_and_tells_no_more_than_its_filter(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let (c, owner, clerk) = (&f.catalog, &f.cast.owner, &f.cast.clerk);
@@ -4239,7 +4214,7 @@ pub async fn a_set_names_a_set_and_tells_no_more_than_its_filter(store: Arc<dyn 
 /// reads, naming the link type; and one to a type whose own derived field
 /// reads a field it does not have. A field no declaration reads migrates
 /// away. An author who is not shown the reader is told that a declaration
-/// reads the field, not its name. On the mock as on the store.
+/// reads the field, not its name.
 pub async fn a_migration_keeps_what_a_declaration_reads(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let owner = &f.cast.owner;
@@ -4399,8 +4374,8 @@ pub async fn a_migration_keeps_what_a_declaration_reads(store: Arc<dyn LakeStore
 
 /// A view with parameters is bound only by a read that names it: a
 /// pattern whose step arrives at one other than its start is refused
-/// before anything is read, naming the view and the relation, on the mock
-/// as on the store; started on the view with its parameters, it walks.
+/// before anything is read, naming the view and the relation; started on
+/// the view with its parameters, it walks.
 pub async fn a_step_to_an_unbound_view_is_refused(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let owner = &f.cast.owner;
@@ -5588,8 +5563,7 @@ pub async fn an_ingested_upstream_is_answered_per_field(store: Arc<dyn LakeStore
     );
 }
 
-/// A value type's renames are judged by the contract's one rule, so the
-/// mock refuses what the store refuses, in the same words: a value renamed
+/// A value type's renames are judged by the contract's one rule: a value renamed
 /// to itself or twice, one the declaration in force does not accept, one
 /// the new declaration does not, any rename of a value type that is not
 /// text, a value a key field holds; a caller not shown every field the
@@ -7008,12 +6982,11 @@ async fn a_rename_reported(store: Arc<dyn LakeStore>) -> [ValueTypeReport; 3] {
 }
 
 /// A value type's report says what may name an old value in a condition,
-/// as its reader is shown it, on the mock as on the store (lakelands#766):
+/// as its reader is shown it (lakelands#766):
 /// the owner's preflight and listing name both object sets and the aging
 /// rule, under one id; a reader not shown `cold` or `credit.hush` is
 /// listed the use and the conditions it is shown, the rest as unshown,
-/// under an id made again for it. The reports are the mock's, but for
-/// their ids, which name a position.
+/// under an id made again for it.
 pub async fn a_value_types_report_names_its_conditions_as_the_store_does(
     store: Arc<dyn LakeStore>,
 ) {
@@ -7048,14 +7021,6 @@ pub async fn a_value_types_report_names_its_conditions_as_the_store_does(
         reader.report_id, pre.report_id,
         "its id is made again for it"
     );
-    let mock = a_rename_reported(Arc::new(crate::MockLake::new("finance"))).await;
-    let unnamed = |r: &ValueTypeReport| ValueTypeReport {
-        report_id: String::new(),
-        ..r.clone()
-    };
-    for (here, there) in [pre, own, reader].iter().zip(&mock) {
-        assert_eq!(unnamed(here), unnamed(there), "as the mock reports it");
-    }
 }
 
 /// Ingest judges a record in 016's order around its duplicate test
@@ -8354,7 +8319,7 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
     assert_eq!(json["rows"].as_array().map(Vec::len), Some(0), "{json}");
     // A link that breaks both its reference and the cardinality is
     // refused for the reference: an ingested link's cardinality is judged
-    // last, on the mock as on the store.
+    // last.
     let witness = |to: &str| SourceRecord {
         upstream: None,
         ty: ty("sys.link.doc.witnessed_by"),

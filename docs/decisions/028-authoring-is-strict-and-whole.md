@@ -246,7 +246,7 @@ nothing said, and a migration could turn the valid time into `text`.
 Each now names a field of kind `date_time`, stored or derived, on a type
 or a view. A field of any other kind is refused as `invalid` on it,
 naming the member and the kind, by `declare`, `apply`, a proposal and a
-migration's `to`, and by the mock in the same words. A write holds a
+migration's `to`. A write holds a
 `date_time` value to a UTC instant, so a valid time is an instant or
 absent, and the read anchors only those. A declaration in force is not
 checked again until it is declared again, and then it is checked as any

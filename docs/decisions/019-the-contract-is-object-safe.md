@@ -4,7 +4,7 @@
 
 `Catalog` and the store facade `LakeStore` are `dyn`-compatible: a door
 holds `Arc<dyn Catalog>`, a host holds `Arc<dyn LakeStore>`, and the
-in-memory mock, the real store and a remote client are interchangeable
+real store and a remote client are interchangeable
 behind them. They are asynchronous. `ingest` therefore takes a boxed
 stream, `Pin<Box<dyn Stream<Item = SourceRecord> + Send>>`, and answers
 a boxed stream of commit acknowledgements. Every other seam is
@@ -20,12 +20,14 @@ boxed futures.
 
 ## Why
 
-The doors are built and tested before the store exists, against a mock,
-and must keep passing the same tests against the store afterwards. That
-only works if the mock and the store are two implementations of one
-object-safe trait. A remote client is a third implementation of the same
-trait, so a program can move a lake out of process without changing a
-line that calls it.
+The doors were built and tested before the store existed, against an
+in-memory mock, and had to keep passing the same tests against the store
+afterwards. That only worked because the mock and the store were two
+implementations of one object-safe trait. The mock is retired
+(lakelands#800): the doors test against the store on the memory engine.
+A remote client is the second implementation of the same trait, so a
+program can move a lake out of process without changing a line that
+calls it.
 
 Engines do blocking storage work, and SQLite, the reference engine, is
 synchronous. Making the engine seam asynchronous would force every

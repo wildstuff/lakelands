@@ -413,7 +413,7 @@ async fn the_feed_streams_the_log_and_resumes_on(backend: Backend) {
         &common::owner(),
         &"invoice".into(),
         &"INV-1".into(),
-        lakelands_mock::checks::patch(&[("status", json!("held"))]),
+        lakelands_door_checks::checks::patch(&[("status", json!("held"))]),
         WriteOpts::default(),
     )
     .await

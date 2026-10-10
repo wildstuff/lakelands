@@ -2,8 +2,8 @@
 //! store facade a host holds for one open lake.
 //!
 //! Both are `dyn`-compatible: the CLI and the MCP server hold
-//! `Arc<dyn Catalog>`, a host holds `Arc<dyn LakeStore>`, and the mock,
-//! the store and a remote client are interchangeable behind them.
+//! `Arc<dyn Catalog>`, a host holds `Arc<dyn LakeStore>`, and the store
+//! and a remote client are interchangeable behind them.
 
 use std::pin::Pin;
 use std::sync::Arc;

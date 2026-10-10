@@ -391,7 +391,7 @@ impl TypeDecl {
     /// drops. Both are compared completed, as a lake keeps a type (each
     /// computed field's `depends_on` filled), so a relation or a field
     /// restated as it stands names nothing the type in force does not. The
-    /// store and the mock judge a proposal's types by it.
+    /// store judges a proposal's types by it.
     pub fn names_against(&self, held: Option<&TypeDecl>) -> Vec<TypeName> {
         let (rels, fields) = held.map_or((&[][..], &[][..]), |h| (&h.relations[..], &h.fields[..]));
         let moved = |a: &[RelationDecl], b: &[RelationDecl]| {
