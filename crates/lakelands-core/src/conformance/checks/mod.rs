@@ -239,6 +239,8 @@ pub const ALL: &[Check] = &[
     walks::TOO_DEEP,
     walks::WALK_ORDER,
     walks::INVERSE_STEP,
+    walks::ROW_NAMES,
+    walks::STEP_BINDS_ONE_TYPE,
     search::MATCH_SET,
     search::SEARCH_ORDER,
     search::SEARCH_PROBE_REFUSED,

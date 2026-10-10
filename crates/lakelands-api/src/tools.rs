@@ -885,6 +885,9 @@ fn verb_tool(verb: &VerbDescription, lake: &LakeDescription) -> ToolSpec {
     }
 }
 
+/// What a pattern's `as` says to the model that writes one.
+const BINDING: &str = "The name a row binds this record under, `<name>.<field>`; its type's name when left out. Two records of one type in a row need a name each.";
+
 fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
     let names = |pick: fn(&TypeDescription) -> bool| -> Value {
         one_of(
@@ -998,7 +1001,8 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                     "type": names(|t| t.may.find), "key": {"type": "string"},
                     "where": {"type": "string"}, "search": {"type": "object"},
                     "params": {"type": "object",
-                               "description": "The parameters of a view the pattern starts on, by name."}},
+                               "description": "The parameters of a view the pattern starts on, by name."},
+                    "as": {"type": "string", "description": BINDING}},
                     "required": ["type"]}),
             ),
             (
@@ -1008,7 +1012,8 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                     "type": {"type": "string"}, "where": {"type": "string"},
                     "depth": {"type": "object", "properties": {
                         "min": {"type": "integer", "minimum": 0},
-                        "max": {"type": "integer", "minimum": 0}}}},
+                        "max": {"type": "integer", "minimum": 0}}},
+                    "as": {"type": "string", "description": BINDING}},
                     "required": ["relation"]}}),
             ),
             (
@@ -1021,7 +1026,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 "project",
                 json!({"type": "object", "properties": {
                 "as": {"enum": ["rows", "graph", "aggregate", "degree", "components"],
-                       "description": "`degree` answers rows of `type`, `key` and `degree` (links over the steps' relations), highest first; `components` answers rows of `component`, `size`, `type` and `key`, largest component first. Both take steps without `depth` or `where`; `components` walks each step `both`."},
+                       "description": "`degree` answers rows of `type`, `key` and `degree` (links over the steps' relations), highest first; `components` answers rows of `component`, `size`, `type` and `key`, largest component first. Both take steps without `depth`, `where` or `type`; `components` walks each step `both`."},
                 "fields": {"type": "array", "items": {"type": "string"}}}}),
             ),
             ("order_by", order_by_schema(json!({"type": "string"}))),

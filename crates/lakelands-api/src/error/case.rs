@@ -522,6 +522,8 @@ named! {
         AgingRule = "aging_rule" => "aging rule",
         /// An aggregate's group key.
         Group = "group" => "group",
+        /// A name a pattern binds a record under.
+        Binding = "binding" => "binding",
     }
 }
 
@@ -1128,6 +1130,8 @@ catalog! {
         MeasureNoSteps { measure: String } => "`{measure}` walks the relations its steps name; name at least one",
         /// A measure with a `to`.
         MeasureNoTo { measure: String } => "`{measure}` is a measure over the steps' relations and takes no `to`",
+        /// A measure's step with a `type`.
+        MeasureNoType { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `type`: it reads every link of a relation, whatever it reaches",
         /// A measure's step with a `where`.
         MeasureNoWhere { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `where`",
         /// A step over a relation that its type does not walk that way.
@@ -1157,8 +1161,12 @@ catalog! {
         ParamValue { name: ParamName, #[serde(rename = "type")] ty: TypeName, kind: StorageKind, value: Box<Value> } => "parameter `{name}` of view `{ty}` is {kind}, and {value} is not one",
         /// A path with several starts.
         PathStarts { count: usize } => "a path has one start, and this pattern's start names {count} records",
+        /// A pattern naming a binding where no row binds by name.
+        PatternAsNotRows => "`as` names what a row binds, and only rows and an aggregate bind by name",
+        /// A pattern that binds two records under one name.
+        PatternBindsTwice { name: String } => "the pattern binds `{name}` already; give this step another name with `as`",
         /// A path a pattern orders, projects or aggregates by that no row holds.
-        PatternNoPath { path: String } => "`{path}` is no path the pattern's rows hold; a row holds `<type>.<field>` for each type the pattern binds",
+        PatternNoPath { path: String } => "`{path}` is no path the pattern's rows hold; a row holds `<name>.<field>` for each name the pattern binds, its type's or the one `as` gives",
         /// A pattern with `to` whose steps are a chain.
         PatternToChain => "a pattern with `to` walks its steps as one walk from its start; every step's depth starts at 0",
         /// A pattern with `to` not projected as a graph.
@@ -1178,9 +1186,9 @@ catalog! {
         /// A vector ranking over a field that holds no vectors.
         SearchNotVector { field: FieldName, kind: StorageKind } => "`{field}` is a {kind} field; a vector ranking reads a vector field",
         /// A step that reaches another type than it names.
-        StepReaches { reached: TypeName, #[serde(rename = "type")] ty: TypeName } => "it reaches `{reached}`, not `{ty}`",
-        /// A step reaching several types that reads a `where`.
-        StepSeveralTypes => "it reaches several types and reads a `where`; name the step's `type`",
+        StepReaches { reached: TypeName, #[serde(rename = "type")] ty: TypeName, also: Option<Names> } => "it reaches `{reached}`[, {also}], not `{ty}`",
+        /// A step reaching several types where a `where`, a row or the next step reads one.
+        StepSeveralTypes => "it reaches several types, and a `where`, a row or the step after it reads one; name the step's `type`",
         /// A step deeper than the lake walks.
         StepTooDeep { max: u32, asked: u32 } => "a step may walk at most {max} hops; this one asks for {asked}",
         /// A `text_weight` out of range.

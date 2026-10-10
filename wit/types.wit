@@ -1,4 +1,4 @@
-package lakelands:data@0.12.0;
+package lakelands:data@0.13.0;
 
 /// The types every interface of the package shares: the contract of
 /// `lakelands-api`, type for type.
@@ -766,6 +766,9 @@ interface types {
         where: option<condition>,
         search: option<search-mode>,
         params: list<tuple<param-name, json>>,
+        /// The name a row binds the start's record under; its type's name
+        /// when none.
+        %as: option<string>,
     }
 
     record step {
@@ -774,6 +777,9 @@ interface types {
         %type: option<type-name>,
         where: option<condition>,
         depth: depth,
+        /// The name a row binds the reached record under; its type's name
+        /// when none.
+        %as: option<string>,
     }
 
     variant projection {

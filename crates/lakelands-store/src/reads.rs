@@ -51,7 +51,7 @@ use std::sync::Arc;
 
 use lakelands_api::describe::{Kept, LakeDescription, NotKept, TypeDescription};
 use lakelands_api::engine::{After, ProjectionView, Scan};
-use lakelands_api::error::{Case, Names, Place, Said};
+use lakelands_api::error::{Case, Names, Naming, Place, Said};
 use lakelands_api::expr::{CmpOp, Expr, Func, Literal};
 use lakelands_api::ontology::{
     FieldDecl, FieldType, MatchPair, RelationDecl, StorageKind, TypeDecl, VerbEffect,
@@ -2758,13 +2758,36 @@ impl<'a> Reader<'a> {
         let params = self.bind_params(&start_decl, &p.start.params)?;
         let limit = self.limit(p.limit, measures::is_measure(&p.project))?;
         let max_depth = self.lake.limits.max_depth;
+        // Rows and an aggregate bind each record under a name, the one
+        // `as` gives or its type's, once (018, extended); nothing else
+        // binds by name.
+        let binds = matches!(
+            p.project,
+            Projection::Rows { .. } | Projection::Aggregate(_)
+        );
+        let given = std::iter::once(&p.start.named).chain(p.steps.iter().map(|s| &s.named));
+        for name in given.flatten() {
+            if !binds {
+                return Err(invalid(Case::PatternAsNotRows));
+            }
+            if let Some(fault) = lakelands_core::names::fault(Naming::Binding, name) {
+                return Err(invalid(fault));
+            }
+        }
         if measures::is_measure(&p.project) {
             measures::check(p)?;
         }
-        // The type each step reaches, checked against the declarations,
-        // and each type a step that reaches several binds as well.
+        // What a pattern says and an arm cannot honour is refused, not
+        // passed over: a path is a graph of one walk from one start. Rows
+        // are told so before their steps are judged, which a path's, each
+        // from depth 0, would not pass.
+        if binds && p.to.is_some() {
+            return Err(invalid(Case::PatternToNotGraph));
+        }
+        let start_name = p.start.named.clone();
+        let mut names = vec![start_name.unwrap_or_else(|| start_decl.name.to_string())];
+        // The type each step reaches, checked against the declarations.
         let mut types = vec![start_decl.name.clone()];
-        let mut several = Vec::new();
         let mut filters = Vec::new();
         let measure = measures::is_measure(&p.project);
         // A graph whose steps all start at depth 0 is one walk over any of
@@ -2775,6 +2798,7 @@ impl<'a> Reader<'a> {
             Projection::Graph => !chain,
             _ => p.project == Projection::Components,
         };
+        let last = p.steps.len().saturating_sub(1);
         for (i, step) in p.steps.iter_mut().enumerate() {
             // A measure's steps are the relations around its records, each
             // read from the start, not a chain.
@@ -2783,38 +2807,35 @@ impl<'a> Reader<'a> {
             } else {
                 types.last().expect("the start is in").clone()
             };
-            self.as_declared(&here, step);
-            let reached = if measure || chain {
-                let one = self.step_target(&here, &step.relation, step.walk, lenient)?;
-                // A chain's step reaches every type that declares its
-                // relation to `here`, not only the first, and its `type`
-                // may name any of them.
-                if measure {
-                    one
-                } else {
-                    let all = self.neighbours(step, Some(&here));
-                    let typed = self.neighbour_target(i, step, &all)?;
-                    several.extend(all.iter().filter(|_| typed.is_none()).cloned());
-                    typed.filter(|t| all.contains(t)).or(one)
-                }
-            } else {
-                let all = self.neighbours(step, None);
-                let one = self.neighbour_target(i, step, &all)?;
-                several.extend(all.into_iter().filter(|_| one.is_none()));
-                one
-            };
-            self.probe_derived(&here, Some(&step.relation), step.walk)?;
+            // A place names the step's relation as its caller wrote it.
             let at = Place::Step {
                 step: i + 1,
                 relation: step.relation.clone(),
             };
-            if let (Some(t), Some(r)) = (&step.ty, &reached)
-                && t != r
-            {
-                let (reached, ty) = (r.clone(), t.clone());
-                let said = Said::from(Case::StepReaches { reached, ty });
-                return Err(invalid(said.within(at)));
-            }
+            self.as_declared(&here, step);
+            // Rows are walked as a chain whatever their depths, so a step
+            // that binds is judged from where it stands, as a chain's and a
+            // measure's are.
+            let walked = measure || chain || binds;
+            let reached = match walked {
+                true => self.step_target(&here, &step.relation, step.walk, lenient)?,
+                false => None,
+            };
+            self.probe_derived(&here, Some(&step.relation), step.walk)?;
+            // Such a step reaches every type of its whole range from `here`,
+            // not only the first that declares its relation, and its `type`
+            // may name any of them (a measure's has none); a neighbourhood's
+            // reaches every type its relation does. It is judged once the relation is probed around
+            // `here`, so one held from the field that carries it there is
+            // answered that first.
+            let all = match walked {
+                true => self.ranged(step, &here),
+                false => self.neighbours(step, None),
+            };
+            // A row binds the step's records under one name, and the step
+            // after it in a chain is judged from one type.
+            let one = binds || (chain && !measure && i < last);
+            let reached = self.neighbour_target(&at, step, &all, one)?.or(reached);
             let reached = reached.or_else(|| step.ty.clone()).unwrap_or(here);
             let decl = self.visible_type(&reached)?.clone();
             // A view with parameters is bound only by a read that names it
@@ -2828,17 +2849,18 @@ impl<'a> Reader<'a> {
                     Said::from(unbound(&reached, param, true)).within(at),
                 ));
             }
+            let name = step.named.clone().unwrap_or_else(|| reached.to_string());
+            if binds && names.contains(&name) {
+                let said = Said::from(Case::PatternBindsTwice { name });
+                return Err(invalid(said.within(at)));
+            }
+            names.push(name);
             let at = [at, Place::Where];
             filters.push(self.record_filter(&decl, step.filter.as_ref(), &at)?);
             types.push(reached);
         }
         if measure {
             return self.measure(p, limit);
-        }
-        // What a pattern says and an arm cannot honour is refused, not
-        // passed over: a path is a graph of one walk from one start.
-        if p.to.is_some() && p.project != Projection::Graph {
-            return Err(invalid(Case::PatternToNotGraph));
         }
         if p.to.is_some() && chain {
             return Err(invalid(Case::PatternToChain));
@@ -2917,23 +2939,25 @@ impl<'a> Reader<'a> {
             return self.graph_result(nodes, g.edges, next);
         }
         // Rows are ordered, projected and measured by their paths,
-        // `type.field`, each read as the rows hold it, and a name they do
+        // `name.field`, each read as the rows hold it, and a name they do
         // not hold is refused (018, extended). An order or a measure probes
         // its field as `find`'s do (024), so an answer is never computed
         // over values the principal may not read; a named key's fields are
         // probed as a field key's are.
-        let mut held = types.clone();
-        held.extend(several.into_iter().filter(|t| !types.contains(t)));
-        let bound = |t: &str| held.iter().any(|b| b.as_str() == t);
-        let path = |name: &str| aggregate::row_path(name, &bound).map_err(invalid);
-        let mut paths: Vec<(String, FieldName)> = (p.order_by.iter())
+        let bound = |n: &str| names.iter().any(|b| b == n);
+        let type_of = |n: &str| &types[names.iter().position(|b| b == n).expect("a bound name")];
+        let path = |name: &str| {
+            let (n, f) = aggregate::row_path(name, &bound).map_err(invalid)?;
+            Ok((type_of(&n).clone(), f))
+        };
+        let mut paths: Vec<(TypeName, FieldName)> = (p.order_by.iter())
             .map(|o| path(o.field.as_str()))
             .collect::<Result<_>>()?;
-        let row = self.row_shape(&held);
+        let row = self.row_shape(&names, &types);
         let mut over_rows = None;
         if let Projection::Aggregate(a) = &p.project {
             let (a, read) = aggregate::over_rows(a, &bound).map_err(invalid)?;
-            paths.extend(read);
+            paths.extend(read.into_iter().map(|(n, f)| (type_of(&n).clone(), f)));
             over_rows = Some(a);
         }
         self.probe_rows(&paths, p.order_by.len())?;
@@ -2942,7 +2966,7 @@ impl<'a> Reader<'a> {
         // out of the row, as an absent value is.
         if let Projection::Rows { fields } = &p.project {
             for (t, f) in fields.iter().map(|f| path(f)).collect::<Result<Vec<_>>>()? {
-                let decl = self.shape.ontology.ty(&TypeName::from(t))?;
+                let decl = self.shape.ontology.ty(&t)?;
                 if !self.keyed(decl, &f) {
                     rights::check_known(self.who, decl, [&f])?;
                 }
@@ -2964,9 +2988,9 @@ impl<'a> Reader<'a> {
             let t = graph::traverse(&hidden, from, &p.steps, max_depth, usize::MAX, keep)?;
             for binding in t.bindings {
                 let mut row = BTreeMap::new();
-                self.bind(&mut row, from)?;
-                for r in &binding {
-                    self.bind(&mut row, &r.node)?;
+                self.bind(&mut row, &names[0], from)?;
+                for (r, name) in binding.iter().zip(&names[1..]) {
+                    self.bind(&mut row, name, &r.node)?;
                 }
                 rows.push(row);
             }
@@ -3048,15 +3072,16 @@ impl<'a> Reader<'a> {
             .collect())
     }
 
-    /// Refuse an order or a measure over a path of a pattern's rows, a
-    /// bound type and one of its fields, whose field the principal may not
-    /// read, or that the type does not declare, as `find` refuses one (024,
-    /// 006). A row's `<type>.key` is the record's key and probes nothing.
+    /// Refuse an order or a measure over a path of a pattern's rows, the
+    /// type of a bound name and one of its fields, whose field the principal
+    /// may not read, or that the type does not declare, as `find` refuses
+    /// one (024, 006). A row's `<name>.key` is the record's key and probes
+    /// nothing.
     /// The first `ordered` paths are orders, and an order by a field
     /// computed at the read is refused once the field is probed.
-    fn probe_rows(&self, paths: &[(String, FieldName)], ordered: usize) -> Result<()> {
+    fn probe_rows(&self, paths: &[(TypeName, FieldName)], ordered: usize) -> Result<()> {
         for (i, (ty, field)) in paths.iter().enumerate() {
-            let decl = self.shape.ontology.ty(&TypeName::from(ty.as_str()))?;
+            let decl = self.shape.ontology.ty(ty)?;
             if self.keyed(decl, field) {
                 continue;
             }
@@ -3068,7 +3093,7 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// Whether a row's `<type>.<field>` is its record's key: the field is
+    /// Whether a row's `<name>.<field>` is its record's key: the field is
     /// `key`, and the type has no field of that name its reader may know
     /// of (024).
     fn keyed(&self, decl: &TypeDecl, field: &FieldName) -> bool {
@@ -3144,27 +3169,63 @@ impl<'a> Reader<'a> {
         reached
     }
 
-    /// The type a neighbourhood's step reaches, one of `reached`, or none
-    /// where it reaches several and names no `type`. A step that
-    /// reaches several types and reads a `where` names its `type`, since
-    /// the `where` is read against one.
-    fn neighbour_target(
-        &self,
-        i: usize,
-        step: &Step,
-        reached: &BTreeSet<TypeName>,
-    ) -> Result<Option<TypeName>> {
-        if step.ty.is_some() || reached.len() < 2 {
-            return Ok(step.ty.clone().or_else(|| reached.first().cloned()));
-        }
-        match &step.filter {
-            None => Ok(None),
-            Some(_) => {
-                let (step, relation) = (i + 1, step.relation.clone());
-                let said = Said::from(Case::StepSeveralTypes);
-                Err(invalid(said.within(Place::Step { step, relation })))
+    /// The types a step's records may be of from `here`, over its whole
+    /// range: `here` itself where it starts at depth 0, and each type a hop
+    /// of it reaches. A row would bind a record of each under the step's
+    /// one name, and a `where` be read against each. A range that reaches
+    /// none is judged by its first hop.
+    fn ranged(&self, step: &Step, here: &TypeName) -> BTreeSet<TypeName> {
+        let mut reached = BTreeSet::new();
+        let mut at = BTreeSet::from([here.clone()]);
+        for hop in 0..=step.depth.max.min(self.lake.limits.max_depth) {
+            if hop > 0 {
+                at = (at.iter())
+                    .flat_map(|t| self.neighbours(step, Some(t)))
+                    .collect();
+            }
+            // A hop of the range that adds no type is the last that can.
+            let known = reached.len();
+            if hop >= step.depth.min {
+                reached.extend(at.iter().cloned());
+                if reached.len() == known {
+                    break;
+                }
             }
         }
+        match reached.is_empty() {
+            true => self.neighbours(step, Some(here)),
+            false => reached,
+        }
+    }
+
+    /// The type a step reaches, one of `reached`: the one it names as its
+    /// `type`, or the only one. None where it reaches several and names
+    /// none, or reaches none. A step that reaches several types and reads
+    /// a `where`, or that must reach `one` (a row binds its records, or a
+    /// chain's next step is judged from it), names its `type`; a `type` it
+    /// does not reach is refused, naming every type it does.
+    fn neighbour_target(
+        &self,
+        at: &Place,
+        step: &Step,
+        reached: &BTreeSet<TypeName>,
+        one: bool,
+    ) -> Result<Option<TypeName>> {
+        let Some(first) = reached.first() else {
+            return Ok(None);
+        };
+        let said = match &step.ty {
+            Some(t) if reached.contains(t) => return Ok(Some(t.clone())),
+            Some(t) => {
+                let also = (reached.len() > 1).then(|| reached.iter().skip(1).collect());
+                let (reached, ty) = (first.clone(), t.clone());
+                Case::StepReaches { reached, ty, also }
+            }
+            None if reached.len() < 2 => return Ok(Some(first.clone())),
+            None if step.filter.is_none() && !one => return Ok(None),
+            None => Case::StepSeveralTypes,
+        };
+        Err(invalid(Said::from(said).within(at.clone())))
     }
 
     /// The type a step over `relation` reaches from `here`, walking `walk`.
@@ -3204,13 +3265,17 @@ impl<'a> Reader<'a> {
         Ok((self.get_one(ty, key)?).and_then(|r| rights::visible(self.who, decl, &r, false)))
     }
 
-    /// A pattern's row as one type: each field of each type `bound` its
-    /// reader may know of under its path, `<type>.<field>`, and each one's
-    /// `<type>.key`, the record's key where no such field is named `key`.
-    fn row_shape(&self, bound: &[TypeName]) -> TypeDecl {
+    /// A pattern's row as one type: for each name bound to a type in
+    /// `types`, each field of the type its reader may know of under its
+    /// path, `<name>.<field>`, and `<name>.key`, the record's key where no
+    /// such field is named `key`.
+    fn row_shape(&self, names: &[String], types: &[TypeName]) -> TypeDecl {
         let mut row = TypeDecl::default();
-        for t in bound.iter().filter_map(|t| self.shape.ontology.ty(t).ok()) {
-            let at = |f: &str| FieldName::from(format!("{}.{f}", t.name));
+        for (name, ty) in names.iter().zip(types) {
+            let Ok(t) = self.shape.ontology.ty(ty) else {
+                continue;
+            };
+            let at = |f: &str| FieldName::from(format!("{name}.{f}"));
             let known = t.fields.iter().filter(|f| self.knows(t, &f.name));
             let fields: Vec<_> = known
                 .map(|f| lakelands_api::ontology::FieldDecl {
@@ -3229,20 +3294,25 @@ impl<'a> Reader<'a> {
         row
     }
 
-    /// A record's values into a pattern's row under their paths. A row's
-    /// `<type>.key` is the record's key, unless the type declares a field
-    /// `key` its reader may know of: then that field's value, null where
-    /// the record holds none.
-    fn bind(&self, row: &mut BTreeMap<String, Value>, node: &graph::Node) -> Result<()> {
+    /// A record's values into a pattern's row under their paths,
+    /// `<name>.<field>`. A row's `<name>.key` is the record's key, unless
+    /// its type declares a field `key` its reader may know of: then that
+    /// field's value, null where the record holds none.
+    fn bind(
+        &self,
+        row: &mut BTreeMap<String, Value>,
+        name: &str,
+        node: &graph::Node,
+    ) -> Result<()> {
         if let Some(rec) = self.shown(node)? {
             let decl = self.shape.ontology.ty(&node.0)?;
             let key = match self.keyed(decl, &FieldName::from("key")) {
                 true => Value::String(node.1.to_string()),
                 false => Value::Null,
             };
-            row.insert(format!("{}.key", node.0), key);
+            row.insert(format!("{name}.key"), key);
             for (f, v) in rec.fields {
-                row.insert(format!("{}.{f}", node.0), v);
+                row.insert(format!("{name}.{f}"), v);
             }
         }
         Ok(())

@@ -70,6 +70,10 @@ pub struct Start {
     /// The values bound to the parameters of a view the pattern starts on.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: Params,
+    /// The name a row binds the start's record under; its type's name
+    /// when left out.
+    #[serde(default, rename = "as", skip_serializing_if = "Option::is_none")]
+    pub named: Option<String>,
 }
 
 /// One step of a pattern.
@@ -91,6 +95,10 @@ pub struct Step {
     /// How many hops.
     #[serde(default)]
     pub depth: Depth,
+    /// The name a row binds the reached record under; its type's name
+    /// when left out.
+    #[serde(default, rename = "as", skip_serializing_if = "Option::is_none")]
+    pub named: Option<String>,
 }
 
 /// What a pattern returns.
@@ -199,6 +207,7 @@ impl Pattern {
                 filter: None,
                 search: None,
                 params: Default::default(),
+                named: None,
             },
             steps,
             to: None,
@@ -210,7 +219,10 @@ impl Pattern {
         }
     }
 
-    /// The records one hop away over one relation.
+    /// The records one hop away over one relation. A row binds one record
+    /// of one type under a name: over a relation to the start's own type
+    /// its caller names the step with `as`, and over one that reaches
+    /// several types the step's `type`.
     pub fn neighbors(ty: TypeName, key: RecordKey, relation: RelationName, walk: Walk) -> Pattern {
         let step = Step {
             relation,
@@ -218,6 +230,7 @@ impl Pattern {
             ty: None,
             filter: None,
             depth: Depth::default(),
+            named: None,
         };
         Pattern::from(ty, key, vec![step], Projection::default())
     }
@@ -248,6 +261,7 @@ impl Pattern {
                 ty: None,
                 filter: None,
                 depth: Depth { min: 0, max: depth },
+                named: None,
             })
             .collect();
         Pattern::from(ty, key, steps, Projection::Graph)

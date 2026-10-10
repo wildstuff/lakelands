@@ -135,7 +135,7 @@ use lakelands_api::event::{Digest, Event, EventBody};
 use lakelands_api::ontology::{
     Authority, Cardinality, FieldDecl, RelationDecl, StorageKind, TypeDecl,
 };
-use lakelands_api::query::{Pattern, Projection, QueryResult, Search, SearchMode, Walk};
+use lakelands_api::query::{Pattern, Projection, QueryResult, Search, SearchMode, Step, Walk};
 use lakelands_api::read::{AggFunc, Direction, OrderBy};
 use lakelands_api::seam::{FEED_EXAMINED, FeedFilter, SETTING_TYPE, Seams, VIEW_KEPT_SETTING};
 use lakelands_api::{
@@ -182,6 +182,17 @@ const FOLLOWS: &str = "follows";
 /// The derived relation from a record to the records holding its note:
 /// itself alone, since every note is its own (044).
 const SAME_NOTE: &str = "same_note";
+
+/// [`HOPS`] steps over `relation`, each binding its record in a row under
+/// a name of its own, `hop0` on (018, extended).
+fn hops(relation: &str, walk: Walk) -> Vec<Step> {
+    (0..HOPS)
+        .map(|i| Step {
+            named: Some(format!("hop{i}")),
+            ..step(relation, walk)
+        })
+        .collect()
+}
 const LINKS: &str = "chains";
 /// The view of every `reading` by its site, and what it and `find`'s
 /// aggregate measure of each site: every aggregate there is.
@@ -1444,11 +1455,8 @@ impl Size<'_> {
         let head = store.head().await.must("reading the head")?;
         let first = u64::from(self.given.large_lake.max(20));
         let want = walk_rows(records, first);
-        let mut pattern = Pattern::traverse(
-            TypeName::from(TY),
-            key(WALK_FROM),
-            vec![step(FOLLOWS, Walk::In); HOPS],
-        );
+        let mut pattern =
+            Pattern::traverse(TypeName::from(TY), key(WALK_FROM), hops(FOLLOWS, Walk::In));
         pattern.limit = Some(limits().max_limit);
         let cat = doors(store);
         let (mut rows, mut pages) = (0u64, 0u64);
@@ -1501,7 +1509,7 @@ impl Size<'_> {
         let pattern = Pattern::traverse(
             TypeName::from(TY),
             key(WALK_FROM),
-            vec![step(SAME_NOTE, Walk::Out); HOPS],
+            hops(SAME_NOTE, Walk::Out),
         );
         let m = Measure::start(&self.given.meter, false);
         let reply = doors(store)

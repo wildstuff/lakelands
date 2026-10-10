@@ -90,7 +90,8 @@ pub(crate) fn err<T>(case: Case) -> Result<T> {
 /// evaluation.
 pub trait Scope {
     /// The value at a path: a field of the record in scope, or
-    /// `<type>.<field>` of an earlier pattern step. `None` when absent.
+    /// `<name>.<field>` of a record a pattern's row binds. `None` when
+    /// absent.
     fn value(&self, path: &[FieldName]) -> Option<Value>;
 
     /// In a guard: the field's value before the write. `None` outside a

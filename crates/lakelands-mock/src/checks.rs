@@ -190,6 +190,7 @@ macro_rules! door_checks {
             a_step_over_an_undeclared_relation_is_refused,
             a_step_naming_an_inverse_walks_the_relation_the_other_way,
             every_path_a_pattern_names_is_one_its_rows_hold,
+            a_row_binds_each_record_under_a_name_of_its_own,
             a_dependent_field_declared_clear_is_cleared_with_its_input,
             two_writers_keep_each_others_fields,
             per_field_meta_names_the_writer_and_the_position,
@@ -2229,6 +2230,7 @@ pub async fn a_type_made_of_another_is_shown_only_with_it(store: Arc<dyn LakeSto
             ty: None,
             filter: None,
             depth: Default::default(),
+            named: None,
         };
         let (c, who) = (c.clone(), who.clone());
         async move {
@@ -2296,6 +2298,7 @@ pub async fn a_type_made_of_another_is_shown_only_with_it(store: Arc<dyn LakeSto
             ty: None,
             filter: None,
             depth: Default::default(),
+            named: None,
         };
         Pattern::traverse(memo.clone(), key("a"), vec![step])
     };
@@ -6810,6 +6813,7 @@ pub async fn a_step_over_an_undeclared_relation_is_refused(store: Arc<dyn LakeSt
         ty: None,
         filter: None,
         depth: Default::default(),
+        named: None,
     };
     let walked = f
         .catalog
@@ -6921,6 +6925,88 @@ pub async fn every_path_a_pattern_names_is_one_its_rows_hold(store: Arc<dyn Lake
     );
 }
 
+/// A row binds each record a pattern reaches under its name, the one `as`
+/// gives or its type's (lakelands#680): two records of one type are both
+/// in the row under names of their own, a pattern that binds one name
+/// twice is refused before a record is read, rather than one record
+/// overwriting the other, and `as` where no row binds is refused.
+pub async fn a_row_binds_each_record_under_a_name_of_its_own(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    for d in [
+        json!({"declare": "type", "name": "person", "fields": [
+            {"name": "name", "type": {"kind": "text"}},
+            {"name": "boss", "type": {"kind": "reference", "target": "person"}}],
+            "relations": [{"name": "reports_to", "target": "person", "via": "boss"}]}),
+        json!({"declare": "type", "name": "spoke", "fields": [
+            {"name": "owner", "type": {"kind": "reference", "target": "person"}}],
+            "relations": [{"name": "owned_by", "target": "person", "via": "owner"}]}),
+    ] {
+        let d = serde_json::from_value::<Declaration>(d).unwrap();
+        c.declare(own, d).await.unwrap();
+    }
+    for (t, k, fields) in [
+        ("person", "p2", json!({"name": "Bob"})),
+        ("person", "p1", json!({"name": "Ann", "boss": "p2"})),
+        ("spoke", "s1", json!({"owner": "p1"})),
+    ] {
+        let p = serde_json::from_value(fields).unwrap();
+        let (t, k, opts) = (ty(t), key(k), WriteOpts::default());
+        c.upsert(own, &t, &k, p, opts).await.unwrap();
+    }
+    let ask = |p: Value| {
+        let c = c.clone();
+        async move {
+            let p: Pattern = serde_json::from_value(p).expect("a pattern");
+            c.query(own, p)
+                .await
+                .map(|r| serde_json::to_value(r.data).unwrap())
+        }
+    };
+    let from_s1 = |first: Value, project: Value| {
+        json!({"start": {"type": "spoke", "key": "s1"}, "project": project,
+            "steps": [first, {"relation": "reports_to"}], "order_by": [{"field": "owner.name"}]})
+    };
+    let named = json!({"relation": "owned_by", "as": "owner"});
+    let rows = ask(from_s1(named, json!({"as": "rows"}))).await.unwrap();
+    let row = &rows["rows"][0];
+    assert_eq!(
+        (&row["spoke.key"], &row["owner.name"], &row["person.name"]),
+        (&json!("s1"), &json!("Ann"), &json!("Bob")),
+        "s1's owner Ann and Ann's boss Bob, each under its name: {rows}"
+    );
+    let e = ask(from_s1(
+        json!({"relation": "owned_by"}),
+        json!({"as": "rows"}),
+    ))
+    .await
+    .unwrap_err();
+    let (step, relation) = (2, "reports_to".into());
+    let said = Said::from(Case::PatternBindsTwice {
+        name: "person".into(),
+    });
+    assert_eq!(
+        e,
+        invalid(None, said.within(Place::Step { step, relation }))
+    );
+    let rows = ask(
+        json!({"start": {"type": "person", "key": "p2"}, "project": {"as": "rows"},
+        "steps": [{"relation": "reports_to", "walk": "in", "as": "report"}]}),
+    )
+    .await
+    .unwrap();
+    let row = &rows["rows"][0];
+    assert_eq!(
+        (&row["person.key"], &row["report.key"]),
+        (&json!("p2"), &json!("p1")),
+        "the start p2 and p1, who reports to it: {rows}"
+    );
+    let degree = json!({"start": {"type": "spoke", "as": "s"}, "project": {"as": "degree"},
+        "steps": [{"relation": "owned_by"}]});
+    let e = ask(degree).await.unwrap_err();
+    assert_eq!(e, invalid(None, Case::PatternAsNotRows));
+}
+
 /// A step naming a relation's `inverse` walks that relation the other way,
 /// its `walk` counting from the name it gives, over a reference field, link
 /// records and matching values alike. A relation declared under the name
@@ -6999,6 +7085,7 @@ pub async fn a_step_naming_an_inverse_walks_the_relation_the_other_way(store: Ar
             ty: None,
             filter: None,
             depth: Default::default(),
+            named: None,
         };
         let p = Pattern::traverse(ty(from), key(k), vec![step]);
         async move {
@@ -7766,6 +7853,7 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
                     ty: None,
                     filter: None,
                     depth: Default::default(),
+                    named: None,
                 }],
             ),
         )
@@ -7931,6 +8019,7 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
                     ty: None,
                     filter: None,
                     depth: Default::default(),
+                    named: None,
                 }],
             ),
         )
@@ -11291,6 +11380,7 @@ pub async fn degree_and_components_answer_the_graph_in_one_order(store: Arc<dyn 
         ty: None,
         filter: None,
         depth: Default::default(),
+        named: None,
     };
     let rows = |p: Pattern| {
         let (c, own) = (c.clone(), own.clone());
@@ -12483,6 +12573,7 @@ pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
         ty: None,
         filter: None,
         depth: Default::default(),
+        named: None,
     };
     let walk = Pattern::traverse(ty("trip"), t1.clone(), vec![step]);
     let degree = Pattern {
@@ -13819,6 +13910,7 @@ pub async fn a_relation_carried_by_a_hidden_field_answers_nothing_of_it(store: A
         ty: None,
         filter: None,
         depth: Default::default(),
+        named: None,
     };
     let mut wrong = Vec::new();
     for access in ["none", "masked"] {

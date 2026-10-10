@@ -223,9 +223,13 @@ start picks the records measured; each step names a relation and a
 direction. The answer is rows with fixed columns (`type`, `key`,
 `degree`; or `component`, `size`, `type`, `key`), paged like any rows,
 so a caller learns no new result shape. A measure refuses a step
-`depth` or `where`, `to` and `order_by`, and `components` refuses a
-step that does not walk `both`: each would be ignored otherwise, and an
-answer that ignored what it was asked would look like more than it is.
+`depth`, `where` or `type`, `to` and `order_by`, and `components`
+refuses a step that does not walk `both`: each would be ignored
+otherwise, and an answer that ignored what it was asked would look like
+more than it is. Until lakelands#680 a step's `type` was checked
+against one type the step reaches at most, and never applied: a measure
+reads every link of a relation, whatever type it reaches. Its refusal is judged before the step's type is looked up, so
+it says nothing of whether that type exists.
 Components hold every record they reach, so the lake bounds them by its
 `max_graph_nodes`; past it they are refused `too_large`, naming the
 ceiling, for the reason a step too deep is refused: a partition of part
@@ -302,19 +306,84 @@ field its reader may not know of is refused as one the type does not
 have. A masked one is left out of the row, as an absent value is: a row
 holds values, and a masked field has none to give.
 
-A type the pattern binds is every type a step may reach. A step walked
-both ways, or over a relation several types declare, binds each type it
-reaches where it names no `type`, and its rows hold each one's paths.
-That holds at any depth: a chain's step used to bind only the first type
-that declares its relation, so which paths its rows could be read by
-depended on the order of the declarations. Such a step that reads a
-`where` names its `type` in a chain as in a neighbourhood, where it used
-to read the `where` against that first type and drop the other's
-records without a word. Its `type` may be any type its relation reaches
-from where it stands. Rows are sorted before `fields` is applied, so an
-order may read a path the projection leaves out.
+A type the pattern binds is the one type each step reaches. A step that
+may reach several names its `type` where rows or an aggregate bind its
+records, and is refused where it does not (lakelands#680, below): under
+each name a row's paths are read against one type. With its `type` the
+step binds that type's records alone, and the step after it is read from
+that type. A chain's step used to bind only the first type that declares
+its relation, so which paths its rows could be read by depended on the
+order of the declarations, and its `where` was read against that first
+type and dropped the other's records without a word. The `type` of a
+step of rows, an aggregate or a graph may be any type it reaches from
+where it stands, over its whole range in a chain. A measure takes none. One it does not reach is refused, and the refusal names
+every type it does reach. Rows are sorted
+before `fields` is applied, so an order may read a path the projection
+leaves out.
 
 Two faults in one pattern are answered in one order on every lake: each
 order's path is read, then each order is probed, then each projected
 path is read, then each projected field is judged. The first fault in
 that order is the answer.
+
+## Extended: a row binds each record under a name of its own (lakelands#680)
+
+A row is one match. A match that reaches one type twice holds two
+records: a spoke's owner and that owner's boss, or a person and someone
+who reports to them. A row bound each record under its type's name, so
+the second record overwrote the first, and the row answered as if the
+first had never been reached. Ordering, projecting or grouping by the
+first record was not possible.
+
+Each record a pattern binds now has a name. The start and each step may
+give one with `as`. A record without one is bound under its type's name,
+so a pattern whose steps each reach one type, and none of them a type
+twice, answers as it did. A row
+holds `<name>.<field>` and `<name>.key`, and every path a pattern names
+reads those names by the rule above. A field is still judged on its
+record's type: a field its reader may not know of answers under any name
+as it does on the type, and a refusal names the type, not the name.
+
+A pattern that would bind two records under one name is refused before
+any record is read, where one record used to overwrite the other without
+a word. A name is never numbered for the caller: an order or a group
+key names a path before the answer exists, so the caller must be able to
+know every name. A name given by `as` is an identifier. `as` means
+nothing to a graph, a path, a degree or components, which answer nodes
+or fixed columns, so it is refused there, as `to` is outside a graph.
+
+Under one name a record has one type, so a step whose records rows or an
+aggregate bind reaches one type or names its `type`, as it does when it
+reads a `where`. This replaces the binding of each type such a step
+reaches. What a step reaches is counted over its whole range: every type
+a hop of it arrives at, and the type it stands on where it starts at
+depth 0. A relation two types declare reaches both; so does a step whose
+second hop leaves the type its first arrived at, and one from depth 0
+over a relation to another type. Rows are walked as a chain whatever
+their depths, each step from the records the step before it kept, so the
+rule is the same at every step and from depth 0 as in a chain: the step
+is judged from where it stands, and a relation that type does not
+declare is refused there as well. A chain's graph is judged over the
+same range, since it walks what its rows walk: its `type` may name a
+type a later hop reaches, and its `where` names one where the range
+reaches several. A graph binds no name, but the step after a step is
+judged from one type, as its `where`, its `type` and its own relation
+are read. So a chain's graph step that another step follows reaches one
+type or names its `type` as well, where the next step used to be read
+from the first of the types and drop the others' records without a
+word. Its last step may reach several: nothing is read from them, and
+the graph holds the records of each. A range that reaches no type at all, its walk ending
+before its first hop that counts, is judged by its first hop.
+
+A step's relation is probed around the type the step stands on before
+the step is judged, in rows, an aggregate and a graph alike, so a reader
+held from the field that carries it there is answered that first. A
+later hop, and a relation a neighbourhood meets around another type, is
+probed when it is walked. A pattern with `to` that asks for rows or an
+aggregate is told so before its steps are judged: a path's steps start
+at depth 0, and rows would refuse them for that.
+
+A `type` a step does not reach is refused wherever the step reaches some
+type, a graph from depth 0 included, where it used to answer as if the
+step had reached nothing. A refusal at a step names the relation as the
+caller wrote it, so a step over an inverse is named by the inverse.
