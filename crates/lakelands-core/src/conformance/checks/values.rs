@@ -309,6 +309,11 @@ check!(
 );
 
 check!(
+    COMPUTED_IN_ITS_WRITTEN_FORM = a_computed_value_its_field_would_not_take_written_holds_no_value,
+    "the log format §1.2 and §1.3: what an expression computes is judged as what is written is; a derived number that would be written as an integer beyond ±(2^53 − 1) (`n + 1` at the largest integer, `n * 2`, `n * 1.5`) and a derived date-time or date carried out of the years 0000 to 9999 hold no value, through get and find, where the largest integer and the last days hold theirs; a verb that sets such a value is refused on the field it sets, appending nothing"
+);
+
+check!(
     GEO_JSON_ORDER = a_page_ordered_by_a_geo_or_json_field_takes_the_rulebooks_fallback_order,
     "029: a geo or json value has no order of its own, so a find ordered by one ranks it as `cmp_values` does, a JSON value by its canonical bytes, a missing value last either way, ties by key; paging walks the same order"
 );
@@ -658,4 +663,142 @@ async fn a_value_its_written_form_would_not_pass_is_refused_at_every_door(store:
         red.join("; ")
     );
     head_unmoved(store.as_ref(), before, "the refused values").await
+}
+
+async fn a_computed_value_its_field_would_not_take_written_holds_no_value(store: Store) -> Held {
+    use StorageKind::{Date, DateTime, Number};
+    let l = Lake::of(store.as_ref());
+    let mut fields = vec![
+        field("at", DateTime),
+        field("n", Number),
+        field("set_at", DateTime),
+        field("set_n", Number),
+    ];
+    for (name, kind, expr, dep) in [
+        ("after", DateTime, "at + 1d", "at"),
+        ("before", DateTime, "at - 1d", "at"),
+        ("day", Date, "at + 12h", "at"),
+        ("next", Number, "n + 1", "n"),
+        ("twice", Number, "n * 2", "n"),
+        ("half_more", Number, "n * 1.5", "n"),
+    ] {
+        fields.push(derived(name, kind, expr, &[dep]));
+    }
+    l.declare(type_decl("thing", fields)).await?;
+    for (verb, f, expr) in [
+        ("later", "set_at", "at + 1d"),
+        ("earlier", "set_at", "at - 1d"),
+        ("count", "set_n", "n + 1"),
+        ("grow", "set_n", "n * 1.5"),
+    ] {
+        l.declare_json(
+            json!({"declare": "verb", "name": verb, "on": "thing", "risk": "low",
+            "effect": "write", "set": [{"field": f, "value": expr}]}),
+        )
+        .await?;
+    }
+    let max = 9_007_199_254_740_991_i64;
+    // Each record with what its derived fields hold; one not named holds no value.
+    let records = [
+        (
+            "last",
+            json!({"at": "9999-12-31T12:00:00Z", "n": max}),
+            json!({"before": "9999-12-30T12:00:00.000000Z"}),
+        ),
+        (
+            "first",
+            json!({"at": "0000-01-01T12:00:00Z", "n": -max}),
+            json!({"after": "0000-01-02T12:00:00.000000Z", "day": "0000-01-02", "next": 1 - max}),
+        ),
+        (
+            "within",
+            json!({"at": "9999-12-30T12:00:00Z", "n": max - 1}),
+            json!({"after": "9999-12-31T12:00:00.000000Z", "day": "9999-12-31",
+                "before": "9999-12-29T12:00:00.000000Z", "next": max}),
+        ),
+    ];
+    for (key, written, _) in &records {
+        l.upsert("thing", key, written.clone()).await?;
+    }
+    let found = l.all_found("thing", Find::default()).await?;
+    let mut red = Vec::new();
+    for (key, _, derived) in &records {
+        let got = l.read("thing", key).await?;
+        let listed = found.iter().find(|r| r.key.as_str() == *key);
+        for f in ["after", "before", "day", "next", "twice", "half_more"] {
+            let (want, read) = (derived.get(f), value(&got, f));
+            let at_find = listed.and_then(|r| value(r, f));
+            if read != want || at_find != want {
+                red.push(format!(
+                    "`{f}` of `{key}` reads {read:?} at get and {at_find:?} at find, not {want:?}"
+                ));
+            }
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "a derived number written as an integer beyond ±(2^53 − 1), and a derived date-time \
+         or date out of the years 0000 to 9999, holds no value, and one within them holds \
+         its own: {}",
+        red.join("; ")
+    );
+    let before = store.head().await.must("reading the head")?;
+    for (verb, key, on) in [
+        ("later", "last", "set_at"),
+        ("earlier", "first", "set_at"),
+        ("count", "last", "set_n"),
+        ("grow", "last", "set_n"),
+        ("grow", "first", "set_n"),
+    ] {
+        let (name, k) = (verb.into(), key.into());
+        let called = (l.cat).call(
+            &l.own,
+            &name,
+            Some(&k),
+            patch(json!({})),
+            WriteOpts::default(),
+        );
+        let called = called.await.map(drop);
+        let fits = match refused_on(&called) {
+            Some((named, Refusal::Constraint(said))) if named == on => match &said.case {
+                Case::IntegerTooLarge { .. } => on == "set_n",
+                Case::NotDateTime { .. } => on == "set_at",
+                _ => false,
+            },
+            _ => false,
+        };
+        if !fits {
+            red.push(format!("`{verb}` on `{key}` answered {called:?}"));
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "a verb that sets a number written as an integer beyond ±(2^53 − 1), or a date-time \
+         out of the years 0000 to 9999, is refused on the field it sets: {}",
+        red.join("; ")
+    );
+    head_unmoved(store.as_ref(), before, "the refused calls").await?;
+    for (verb, f, set) in [
+        ("later", "set_at", json!("9999-12-31T12:00:00.000000Z")),
+        ("count", "set_n", json!(max)),
+    ] {
+        let (name, k) = (verb.into(), "within".into());
+        let called = (l.cat).call(
+            &l.own,
+            &name,
+            Some(&k),
+            patch(json!({})),
+            WriteOpts::default(),
+        );
+        called
+            .await
+            .must("a call that sets a value within the range")?;
+        let r = l.read("thing", "within").await?;
+        ensure!(
+            value(&r, f) == Some(&set),
+            "`{verb}` on `within` must set `{f}` to {set}; it reads {:?}",
+            value(&r, f)
+        );
+    }
+    Ok(())
 }

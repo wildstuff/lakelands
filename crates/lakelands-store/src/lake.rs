@@ -1721,8 +1721,10 @@ impl Lake {
     }
 
     /// Check the hash chain between two positions, every checkpoint in
-    /// that range against the segments the engine keeps, and that each
-    /// segment after the first begins with one.
+    /// that range against the segments the engine keeps, that each
+    /// segment after the first begins with one, and that no event holds a
+    /// number written as an integer beyond ±(2^53 − 1), which the seal
+    /// lets none write and another reader would hash differently.
     pub fn verify(
         &self,
         from: Option<Position>,
@@ -1746,6 +1748,14 @@ impl Lake {
                     break 'pages;
                 }
                 log::check_link(before.as_ref().map(|(p, h)| (p, h)), &e)?;
+                // No number written as an integer beyond ±(2^53 − 1)
+                // (`docs/log-format.md` §1.2). The seal lets none in; a
+                // log that holds one was not written through it.
+                let written = serde_json::to_value(&e).expect("an event serialises to JSON");
+                if let Some(n) = lakelands_core::canonical::integer_too_large(&written) {
+                    let flaw = Flaw::IntegerTooLarge { n: n.clone() };
+                    return Err(damaged(Part::Log, Some(e.position), flaw));
+                }
                 // `known_at` never goes back (`docs/log-format.md` §1.3).
                 if let Some(k) = known
                     && e.known_at < k

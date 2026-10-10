@@ -38,9 +38,9 @@ check!(
 );
 
 check!(
-    FUNCTION_CONFIG_EXACT =
-        a_function_whose_config_holds_an_integer_no_reader_reads_exactly_is_refused_at_its_config,
-    "the log format §1.2: a function's `config` is written as it was declared, so an integer anywhere in it beyond ±(2^53 − 1) (`1e16`, `9007199254740993` in a list) is refused at the function and its `config`, declared or proposed, appending nothing; the largest integer and `1e21` are declared"
+    DECLARATION_EXACT =
+        a_declaration_that_holds_an_integer_no_reader_reads_exactly_is_refused_at_its_member,
+    "the log format §1.2: a declaration is written as it was declared, so a number anywhere in it written as an integer beyond ±(2^53 − 1) is refused at the declaration and the member that holds it, by its path, declared or proposed, appending nothing: a function's `config` (`1e16`, `9007199254740993` in a list), the duration literal of an expression in an object set's `where` and in a field's `derived`, in typed form at the literal and in text form (`104250d`, which parses to one) at the member that holds the text, and a field's `initial`; the largest integer, `1e21` and `104249d` are declared"
 );
 
 check!(
@@ -159,40 +159,101 @@ async fn an_ingest_whose_upstream_position_no_reader_reads_exactly_is_refused_na
     head_unmoved(store.as_ref(), before, "the ingest beyond the range").await
 }
 
-async fn a_function_whose_config_holds_an_integer_no_reader_reads_exactly_is_refused_at_its_config(
+async fn a_declaration_that_holds_an_integer_no_reader_reads_exactly_is_refused_at_its_member(
     store: Store,
 ) -> Held {
     let l = Lake::of(store.as_ref());
-    let function = |name: &str, config: Value| -> Declaration {
-        let f = json!({"declare": "function", "name": name, "backing": KIND, "config": config,
-                       "inputs": [{"name": "code", "type": {"kind": "text"}}]});
-        serde_json::from_value(f).expect("a function declaration")
+    let read = |d: Value| -> Declaration { serde_json::from_value(d).expect("a declaration") };
+    let function = |name: &str, config: Value| {
+        read(
+            json!({"declare": "function", "name": name, "backing": KIND, "config": config,
+                   "inputs": [{"name": "code", "type": {"kind": "text"}}]}),
+        )
     };
-    let fits = function("fits", json!({"most": MAX, "more": 1e21}));
-    l.declare_as(fits, "a config of 2^53 − 1 and 1e21").await?;
+    // An expression in typed form whose duration literal is `micros`.
+    let typed = |text: &str, micros: u64| {
+        let e = crate::expr::parse(text).expect("the check's expression");
+        let mut e = serde_json::to_value(e).expect("an expression serialises");
+        e["rhs"]["value"]["value"] = json!(micros);
+        e
+    };
+    let set = |name: &str, filter: Value| {
+        read(json!({"declare": "object_set", "name": name, "of": "parcel", "where": filter}))
+    };
+    let old = |micros: u64| typed("now() - known_at(code) > 1d", micros);
+    let late = |derived: Value, initial: f64| {
+        read(json!({"declare": "type", "name": "parcel", "fields": [
+            {"name": "code", "type": {"kind": "text"}},
+            {"name": "sent", "type": {"kind": "date_time"}},
+            {"name": "late", "type": {"kind": "date_time"}, "authority": "derived",
+             "derived": derived, "depends_on": ["sent"]},
+            {"name": "weight", "type": {"kind": "number"}, "initial": initial}]}))
+    };
+    // 104249d is the largest whole number of days a duration holds.
+    for fits in [
+        function("fits", json!({"most": MAX, "more": 1e21})),
+        late(typed("sent + 1d", MAX), MAX as f64),
+        set("old", old(MAX)),
+        set("older", json!("now() - known_at(code) > 104249d")),
+    ] {
+        l.declare_as(fits, "a declaration within the range").await?;
+    }
     let before = store.head().await.must("reading the head")?;
-    for config in [json!({"big": 1e16}), json!({"nested": [MAX + 2]})] {
-        let f = function("vast", config.clone());
-        let declared = l.cat.declare(&l.own, f.clone()).await;
+    let (vast, ancient, parcel) = (
+        Place::Function {
+            name: "vast".into(),
+        },
+        Place::ObjectSet {
+            name: "ancient".into(),
+        },
+        Place::Type {
+            name: "parcel".into(),
+        },
+    );
+    for (d, place, path) in [
+        (function("vast", json!({"big": 1e16})), &vast, "config.big"),
+        (
+            function("vast", json!({"nested": [MAX + 2]})),
+            &vast,
+            "config.nested[0]",
+        ),
+        (
+            set("ancient", old(MAX + 2)),
+            &ancient,
+            "where.rhs.value.value",
+        ),
+        (
+            set("ancient", json!("now() - known_at(code) > 104250d")),
+            &ancient,
+            "where",
+        ),
+        (
+            late(typed("sent + 1d", MAX + 2), 1.0),
+            &parcel,
+            "fields[2].derived.rhs.value.value",
+        ),
+        (
+            late(json!("sent + 104250d"), 1.0),
+            &parcel,
+            "fields[2].derived",
+        ),
+        (late(json!("sent + 1d"), 1e16), &parcel, "fields[3].initial"),
+    ] {
+        let declared = l.cat.declare(&l.own, d.clone()).await;
         let write = ProposedWrite::Declare {
-            declarations: vec![f],
+            declarations: vec![d],
         };
         let proposed = l.cat.propose(&l.own, write, "later".into()).await;
-        let at = [
-            Place::Function {
-                name: "vast".into(),
-            },
-            member("config"),
-        ];
+        let at = [place.clone(), member(path)];
         for (door, got) in [("declared", declared), ("proposed", proposed)] {
             ensure!(
                 matches!(said_at(&got, &at), Some(Case::IntegerTooLarge { .. })),
-                "a function {door} with the config {config} must be refused as an integer \
-                 beyond ±(2^53 − 1) at the function and its `config`; it answered {got:?}"
+                "{place} {door} with an integer beyond ±(2^53 − 1) at `{path}` must be refused \
+                 there, naming the declaration and that member; it answered {got:?}"
             );
         }
     }
-    head_unmoved(store.as_ref(), before, "the functions' configs").await
+    head_unmoved(store.as_ref(), before, "the declarations").await
 }
 
 /// Fail unless `key` of `ty` holds no `f` and says in its metadata that

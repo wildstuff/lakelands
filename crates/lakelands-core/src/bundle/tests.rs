@@ -1227,20 +1227,43 @@ fn a_function_has_exactly_one_definition() {
     );
 }
 
-/// A function's `config` is written into the log as it is declared, so
-/// an integer in it that no reader reads exactly is reported, at the
-/// function and its `config`, as the store refuses it.
+/// A declaration is written into the log as it is declared, so an
+/// integer in it that no reader reads exactly is reported, at the
+/// declaration and its member, as the store refuses it.
 #[test]
-fn a_function_whose_config_the_log_would_not_write_is_refused() {
+fn a_declaration_the_log_would_not_write_is_refused() {
     let f =
         "name: f\nbacking: http\nconfig:\n  url: https://x.example\n  limits: [9007199254740993]\n";
     let e = one(&[("functions/f.yaml", f)], Problem::Malformed);
     assert!(
-        e.message.contains("function `f`") && e.message.contains("`config`"),
+        e.message.contains("function `f`") && e.message.contains("`config.limits[0]`"),
         "{e}"
     );
     let fits = f.replace("9007199254740993", "9007199254740991");
     load(&[("functions/f.yaml", &fits)]).expect("the largest integer");
+    // A declaration of every kind is read by it, an expression's literal
+    // in text form too.
+    for (file, doc, member) in [
+        (
+            "object_sets/s.yaml",
+            "name: s\nof: partner\nwhere: \"now() > 104250d\"\n",
+            "`where`",
+        ),
+        (
+            "triggers/t.yaml",
+            "name: t\non: partner\nwhen: \"now() > 104250d\"\n",
+            "`when`",
+        ),
+        (
+            "value_types/v.yaml",
+            "name: v\nkind: date_time\nconstraint: \"now() - value < 104250d\"\n",
+            "`constraint`",
+        ),
+    ] {
+        let e = one(&[PARTNER, (file, doc)], Problem::Malformed);
+        assert!(e.message.contains(member), "{e}");
+        load(&[PARTNER, (file, &doc.replace("104250d", "104249d"))]).expect("the largest span");
+    }
 }
 
 #[test]

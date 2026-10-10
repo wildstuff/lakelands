@@ -246,6 +246,31 @@ fn samples() -> Vec<Value> {
     ]
 }
 
+/// A number written as an integer beyond ±(2^53 − 1) fits no field,
+/// computed or converted, as no door takes it written.
+#[test]
+fn a_number_written_as_too_large_an_integer_fits_no_field() {
+    use StorageKind::{Json, Number, Text};
+    let max = 9_007_199_254_740_991_i64;
+    for v in [json!(max), json!(-max), json!(1e21), json!(0.5)] {
+        assert!(fits(&kind(Number), &v), "{v}");
+    }
+    for v in [json!(max + 1), json!(-max - 1), json!(1e16), json!(1e20)] {
+        assert!(!fits(&kind(Number), &v), "{v}");
+    }
+    assert!(!fits(&kind(Json), &json!({"a": [1e17]})));
+    let to_number = |digits: &str| convert(&json!(digits), &kind(Text), &kind(Number));
+    assert_eq!(to_number("9007199254740991"), Conversion::Exact(json!(max)));
+    assert_eq!(to_number("9007199254740992"), Conversion::Lossy);
+    // The conversions' own bound is the same integer: beyond it a numeral
+    // is no integer, and a float has no integral digits.
+    let beyond = numeral_to_number("9007199254740992");
+    assert!(beyond.is_some_and(|v| v.is_f64()));
+    let digits = |f: f64| serde_json::Number::from_f64(f).and_then(|n| integral_digits(&n));
+    assert_eq!(digits(max as f64), Some(max.to_string()));
+    assert_eq!(digits(max as f64 + 1.0), None);
+}
+
 #[test]
 fn every_exact_result_fits_its_target_and_converts_to_itself_again() {
     for from in StorageKind::ALL {

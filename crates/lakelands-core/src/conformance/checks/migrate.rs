@@ -111,6 +111,50 @@ async fn migrate_apply_requires_the_report_it_was_shown(store: Store) -> Held {
     Ok(())
 }
 
+check!(
+    DIGITS_BEYOND_EXACT_NOT_CONVERTIBLE =
+        text_digits_no_reader_reads_exactly_are_reported_as_not_convertible_to_a_number,
+    "027 and the log format §1.2: a migration converts a value only into one its new field would take written, so text digits beyond ±(2^53 − 1) (`9007199254740992`, its negative, `1e16`) are reported as not convertible to a number, naming their record, and the report is not lossless; over ±(2^53 − 1) alone it is lossless, applies, and the numbers read back exactly"
+);
+
+async fn text_digits_no_reader_reads_exactly_are_reported_as_not_convertible_to_a_number(
+    store: Store,
+) -> Held {
+    let ty = memo(store.as_ref()).await?;
+    let l = Lake::of(store.as_ref());
+    let max = 9_007_199_254_740_991_i64;
+    l.upsert("memo", "exact", json!({"ref": max.to_string()}))
+        .await?;
+    let m = migration(retype(&ty, "ref", StorageKind::Number));
+    for digits in ["9007199254740992", "-9007199254740992", "1e16"] {
+        l.upsert("memo", "beyond", json!({"ref": digits})).await?;
+        let report = preflight(store.as_ref(), &m).await?;
+        let conv = report.fields.iter().find(|f| f.field.as_str() == "ref");
+        ensure!(
+            !report.lossless
+                && conv.is_some_and(|c| c.convertible == 1
+                    && c.not_convertible == 1
+                    && c.sample_keys.iter().map(|k| k.as_str()).collect::<Vec<_>>() == ["beyond"]),
+            "retyping `ref` to number over '{max}' and '{digits}' must report one convertible \
+             value, one that is not, name `beyond`, and not be lossless: a number field takes \
+             no integer beyond ±(2^53 − 1); it reported {report:?}"
+        );
+    }
+    l.upsert("memo", "beyond", json!({"ref": (-max).to_string()}))
+        .await?;
+    let moved = migrated(&l, m).await;
+    moved.must("migrating over ±(2^53 − 1) alone")?;
+    for (key, n) in [("exact", max), ("beyond", -max)] {
+        let read = l.read("memo", key).await?;
+        ensure!(
+            value(&read, "ref") == Some(&json!(n)),
+            "'{n}' migrated to a number must read {n}; it reads {:?}",
+            value(&read, "ref")
+        );
+    }
+    Ok(())
+}
+
 async fn a_migration_that_would_lose_information_is_refused_with_its_report(store: Store) -> Held {
     let ty = memo(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());

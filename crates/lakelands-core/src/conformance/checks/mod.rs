@@ -341,6 +341,8 @@ pub const ALL: &[Check] = &[
     values::GEO_JSON_ORDER,
     values::WRITTEN_FORM_AT_EVERY_DOOR,
     filters::COMPARED_AS_ITS_INSTANT,
+    values::COMPUTED_IN_ITS_WRITTEN_FORM,
+    migrate::DIGITS_BEYOND_EXACT_NOT_CONVERTIBLE,
     derived_fields::NO_DOOR_AT_ALL,
     derived_fields::FUNCTION_VERSION_RECOMPUTES,
     derived_fields::SAME_INPUTS_NEW_BODY,
@@ -595,7 +597,8 @@ pub const ALL: &[Check] = &[
     made_of::REFERENCE_TO_UNSHOWN,
     sealed::SEEN_AT_IN_THE_YEARS,
     sealed::UPSTREAM_POSITION_EXACT,
-    sealed::FUNCTION_CONFIG_EXACT,
+    sealed::DECLARATION_EXACT,
     sealed::OUTPUT_EXACT,
     sealed::ANSWER_EXACT,
+    export::INTEGER_DAMAGE,
 ];

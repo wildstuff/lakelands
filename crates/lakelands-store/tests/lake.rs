@@ -735,6 +735,61 @@ async fn verified_after_a_seal_by_another_writer(
     reader.verify(None, None).await
 }
 
+/// A log holds no number written as an integer beyond ±(2^53 − 1),
+/// whatever wrote it (`docs/log-format.md` §1.2). The seal lets none in;
+/// `verify` refuses a log that holds one, written past the seal by
+/// another writer, as damaged at that event's position, naming the
+/// number. The fold does not judge: the lake opens and takes its lease.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_integer_no_reader_reads_exactly_is_reported_by_verify() {
+    let lake = name();
+    let store = open(&lake, OpenMode::Create).await.unwrap();
+    store.close().await.unwrap();
+    drop(store);
+    let engine = opener()
+        .open(&Location::memory(lake.as_str()), OpenMode::Write)
+        .unwrap();
+    let lease = engine.take_lease("another writer").unwrap();
+    let append = |paid: serde_json::Value| {
+        let (tip, hash) = engine.tip().unwrap().unwrap();
+        let body = EventBody::OutputRecorded {
+            seam: "verb:bank:pay".into(),
+            input: Digest::zero(),
+            output: Some(json!({ "paid": paid })),
+            output_at: None,
+            field: None,
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        let now = lakelands_api::Timestamp(now.as_micros() as i64);
+        let draft = lakelands_store::log::Draft::system(now, body);
+        let (id, at) = (lake.as_str().into(), tip.next());
+        let (_, canon) = lakelands_store::log::seal(&id, at, &hash, lease.fence, draft);
+        engine.append(&lease, &[canon]).unwrap();
+        at
+    };
+    let exact = append(json!(9_007_199_254_740_991_i64));
+    let beyond = append(json!(1e16));
+    engine.release_lease(&lease).unwrap();
+    drop(engine);
+    let store = open(&lake, OpenMode::Write).await.unwrap();
+    // The fold does not judge: the lake opens, and its lease follows.
+    assert_eq!(store.head().await.unwrap(), beyond.next());
+    let through = store.verify(None, Some(exact)).await;
+    assert_eq!(
+        through.map(|v| v.through),
+        Ok(exact),
+        "2^53 − 1 is read exactly"
+    );
+    let whole = store.verify(None, None).await;
+    let fits = matches!(&whole, Err(Error::Unavailable { situation })
+        if matches!(situation.as_ref(), lakelands_api::error::Situation::Damaged {
+            position: Some(p), flaw: lakelands_api::error::Flaw::IntegerTooLarge { .. }, ..
+        } if *p == beyond));
+    assert!(fits, "{whole:?}");
+}
+
 /// A checkpoint that does not follow the segment it seals is reported.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_tampered_checkpoint_is_reported_by_verify() {

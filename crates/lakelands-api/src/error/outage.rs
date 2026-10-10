@@ -681,6 +681,8 @@ catalog! {
         PrevHash => "it does not name the hash of the event before it",
         /// Its `known_at` is before that of the event before it.
         KnownAtBack { known_at: Timestamp, before: Timestamp } => "its known_at {known_at} is before the {before} of the event before it",
+        /// It holds a number written as an integer beyond ±(2^53 − 1).
+        IntegerTooLarge { n: serde_json::Number } => "the integer {n} in it is beyond ±(2^53 − 1), which not every reader reads exactly",
         /// A segment begins there, and its first event is no checkpoint.
         NoCheckpoint => "a segment begins there, and its first event is no checkpoint",
         /// It ends before a position it should hold.

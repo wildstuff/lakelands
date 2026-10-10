@@ -270,6 +270,11 @@ impl Chain {
         if canonical::of(&event) != line {
             return damaged(at, Flaw::NotOneForm);
         }
+        // No number written as an integer beyond ±(2^53 − 1) (log-format
+        // §1.2): a reader with doubles would hash another event.
+        if let Some(n) = canonical::integer_too_large(&value) {
+            return damaged(at, Flaw::IntegerTooLarge { n: n.clone() });
+        }
         if event.position != at {
             let (expected, found) = (at, Some(event.position));
             return damaged(at, Flaw::Position { expected, found });
