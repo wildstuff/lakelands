@@ -485,6 +485,16 @@ pub(super) fn verb(l: &mut Lower<'_>, doc: VerbDoc) -> VerbDecl {
                 .into_iter()
                 .map(|(field, value)| {
                     l.name(Naming::Field, &field);
+                    // A link is keyed by its ends; a verb sets its own fields.
+                    if crate::links::is_link_type(&on)
+                        && [crate::links::FROM, crate::links::TO].contains(&field.as_str())
+                    {
+                        let message = format!(
+                            "`set` of `{field}`: a link's `{field}` is one of its ends, which \
+                             key it; a verb on a link type sets the link's own fields"
+                        );
+                        l.fail(Problem::Contradiction, message);
+                    }
                     let value = l.cond(&format!("`set` of `{field}`"), value);
                     Assignment {
                         field: FieldName::new(field),

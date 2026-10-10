@@ -401,7 +401,8 @@ is added for links, so this is format version 1 unchanged
   links would have to move between a field and link records.
 - The `sys.` guard refuses a caller's declaration of a link type, and
   the ordinary doors (`upsert`, `retire`) refuse its records as the
-  wrong door; links are written through the relation's link doors, and
+  wrong door; links are written through the relation's link doors, by
+  a verb declared on the link type, which sets a link's own fields, and
   by ingest for a source relation.
 
 For every field a `record_upserted` or `record_ingested` event sets or

@@ -224,6 +224,7 @@ pub const ALL: &[Check] = &[
     links::ONE_PER_PAIR,
     links::UNLINK_KEEPS_HISTORY,
     links::CARDINALITY,
+    links::VERB_KEEPS_ENDS,
     links::LIVE_ENDS,
     links::OWN_DOORS,
     links::CARRIER_KEPT,

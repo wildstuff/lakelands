@@ -1357,15 +1357,21 @@ impl Decide<'_> {
             fill_key_fields(w, decl, key, &mut patch, self.door, who)?;
         }
         check_key_agrees(decl, key, live, &patch)?;
-        check_references(
-            view,
-            &self.pending,
-            &w.ontology,
-            &decl.name,
-            key,
-            &patch,
-            who,
-        )?;
+        // An authored write of a link has both ends live and answered
+        // (035). `link` sends them; a verb's patch holds only what it sets,
+        // so the ends the record holds are judged beside it. A source's
+        // window is judged by what it sends (016).
+        let end = |f: &FieldName| [links::FROM, links::TO].contains(&f.as_str());
+        let authored = matches!(self.door, Door::Authored) && links::is_link_type(&decl.name);
+        let held = live.filter(|_| authored);
+        let held = held.into_iter().flat_map(|b| &b.fields);
+        let ends: Patch = (held.filter(|(f, _)| end(f) && !patch.contains_key(*f)))
+            .map(|(f, v)| (f.clone(), v.clone()))
+            .collect();
+        for judged in [&patch, &ends] {
+            let (pending, o) = (&self.pending, &w.ontology);
+            check_references(view, pending, o, &decl.name, key, judged, who)?;
+        }
         cas(expected, t.own())?;
         let version = Version(t.before.as_ref().map_or(0, |b| b.version.0) + 1);
         // Said once, here, of what this writer holds, its own drafts too.

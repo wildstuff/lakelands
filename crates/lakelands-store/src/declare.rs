@@ -1078,6 +1078,20 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 }
             }
             let t = declared(o, &v.on, &on)?;
+            // A link type is one a relation carries. The name a rename or
+            // a removal left behind stays declared for the links' history
+            // and takes no link (035); to a verb declared now it is a name
+            // no type has.
+            let types = o.types.values().map(|e| &e.decl);
+            if links::is_link_type(&v.on) && links::relation_of(types, &v.on).is_none() {
+                return Err(invalid(at(&on, Case::Undeclared { ty })));
+            }
+            // Of the system types, a verb names only a relation's link
+            // type: every other is reserved (003) and written through its
+            // own door.
+            if is_system(&v.on) && !links::is_link_type(&v.on) && !who_is_system {
+                return Err(crate::writes::refused(Refusal::Reserved));
+            }
             // A verb on a record of a view could never act: there is no
             // stored record to write or to hand an executor.
             if t.view.is_some() && v.scope == VerbScope::Record {
@@ -1102,6 +1116,15 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                             return Err(invalid(at(&on, Case::UnknownField { ty, field })));
                         }
                         let on = [on[0].clone(), of_field(&a.field)];
+                        // A link is keyed by its ends: a verb on a link type
+                        // sets the link's own fields, as `link` takes no end
+                        // among its fields (035).
+                        if links::is_link_type(&v.on)
+                            && [links::FROM, links::TO].contains(&a.field.as_str())
+                        {
+                            let end = a.field.clone();
+                            return Err(invalid(at(&on, Case::LinkEndAsField { end })));
+                        }
                         let value = condition(&a.value, Eval::Record, &on)?;
                         // A member the verb's payload does not have is never
                         // given: the value would read null at every call.
