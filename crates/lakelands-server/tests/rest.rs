@@ -1,12 +1,11 @@
-//! REST over the same catalog, as recorded transcripts on the mock and
-//! on the store over both engines, and the change feed as server-sent
-//! events.
+//! REST over the same catalog, as recorded transcripts on the store
+//! over both engines, and the change feed as server-sent events.
 //!
 //! `tests/transcripts/rest.txt` holds requests (`>`: the request line,
 //! then headers, then body lines) and the answers expected (`<`: the
 //! status, the pinned headers, then the body, one line per NDJSON line).
-//! Proposal ids and schema hashes are the log format's own values on the
-//! mock and the store alike, and are compared as they are. A migration
+//! Proposal ids and schema hashes are the log format's own values, and
+//! are compared as they are. A migration
 //! report's id and a page cursor are opaque and minted differently, so
 //! the last ones answered are shown as `{report_id}` and `{cursor}`, and
 //! a request may name them so; the last proposal answered may be named
@@ -450,8 +449,8 @@ async fn the_feed_streams_the_log_and_resumes_on(backend: Backend) {
     task.abort();
 }
 
-/// `aggregate` reaches find as the JSON its tool takes. The mock does not
-/// aggregate (it says so as `invalid`); the store does, on both engines.
+/// `aggregate` reaches find as the JSON its tool takes, and the store
+/// aggregates, on both engines.
 #[tokio::test]
 async fn find_aggregates_on_the_store() {
     for backend in BACKENDS {
@@ -465,17 +464,9 @@ async fn find_aggregates_on_the_store() {
         )
         .await;
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-        match backend {
-            Backend::Mock => {
-                assert_eq!(status, "422", "{body}");
-                assert_eq!(v["reason"]["refusal"], "invalid", "{body}");
-            }
-            Backend::Memory | Backend::Sqlite => {
-                assert_eq!(status, "200", "{backend:?}: {body}");
-                assert_eq!(v["data"]["shape"], "groups", "{body}");
-                assert_eq!(v["data"]["rows"][0]["values"]["n"], json!("1"), "{body}");
-            }
-        }
+        assert_eq!(status, "200", "{backend:?}: {body}");
+        assert_eq!(v["data"]["shape"], "groups", "{body}");
+        assert_eq!(v["data"]["rows"][0]["values"]["n"], json!("1"), "{body}");
         task.abort();
     }
 }
@@ -484,7 +475,7 @@ async fn find_aggregates_on_the_store() {
 /// (413) before any of it reaches a door, and the lake is unchanged.
 #[tokio::test]
 async fn a_body_over_four_mebibytes_is_413() {
-    let store = rest_lake(Backend::Mock).await;
+    let store = rest_lake(Backend::Memory).await;
     let head = store.head().await.unwrap();
     let (addr, task) = serve(store.clone()).await;
     let note = "x".repeat(4 << 20);
@@ -594,7 +585,7 @@ async fn ingest_one_line(addr: SocketAddr, len: usize, chunk: usize) -> Vec<serd
 async fn an_ingest_line_over_four_mebibytes_is_refused_to_the_byte() {
     const CAP: usize = 4 << 20;
     const CHUNK: usize = 64 << 10;
-    let store = rest_lake(Backend::Mock).await;
+    let store = rest_lake(Backend::Memory).await;
     let (addr, task) = serve(store.clone()).await;
 
     let taken = ingest_one_line(addr, CAP, CHUNK).await;
@@ -623,7 +614,7 @@ async fn an_ingest_line_over_four_mebibytes_is_refused_to_the_byte() {
 #[tokio::test]
 async fn a_refused_ingest_is_answered_while_the_body_keeps_arriving() {
     const REST: usize = 32 << 20;
-    let store = rest_lake(Backend::Mock).await;
+    let store = rest_lake(Backend::Memory).await;
     let (addr, task) = serve(store.clone()).await;
     let head = store.head().await.unwrap();
 
@@ -682,7 +673,7 @@ async fn a_window_slower_than_the_keep_alive_is_answered_with_an_empty_line() {
     // Past one keep-alive of fifteen seconds, short of two.
     faults.first_window_millis.store(17_000, Ordering::SeqCst);
     let store: Arc<dyn LakeStore> = Arc::new(common::flaky::Store {
-        inner: rest_lake(Backend::Mock).await,
+        inner: rest_lake(Backend::Memory).await,
         faults,
     });
     let (addr, task) = serve(store.clone()).await;
@@ -766,7 +757,7 @@ async fn a_lake_that_cannot_be_opened_is_503() {
 /// one keep-alive.
 #[tokio::test]
 async fn a_quiet_feed_sends_a_keep_alive_every_fifteen_seconds() {
-    let store = common::lake_on(Backend::Mock).await;
+    let store = common::lake_on(Backend::Memory).await;
     let next = store.head().await.unwrap().0 + 1;
     let (addr, task) = serve(store).await;
     let from = format!("GET /lakes/finance/feed?from={next}");

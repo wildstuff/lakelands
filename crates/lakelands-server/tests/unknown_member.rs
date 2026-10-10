@@ -1,6 +1,6 @@
 //! A declaration member Lakelands does not know, at any depth, is refused
-//! at the JSON doors, over REST and over MCP, on the mock and on the store
-//! over both engines: the refusal names the member, where it sits inside
+//! at the JSON doors, over REST and over MCP, on the store over both
+//! engines: the refusal names the member, where it sits inside
 //! the declaration, and where the declaration sits among the arguments,
 //! and the lake does not move.
 //!

@@ -961,7 +961,6 @@ dependencies = [
  "lakelands-engine-mem",
  "lakelands-engine-pg",
  "lakelands-engine-sqlite",
- "lakelands-mock",
  "lakelands-server",
  "lakelands-store",
  "postgres",

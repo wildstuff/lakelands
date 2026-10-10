@@ -1,5 +1,5 @@
 //! Notifications over the change feed, on stdio and on streamable HTTP,
-//! on the mock and on the store over both engines: what a subscribed
+//! on the store over both engines: what a subscribed
 //! session is told, what it is never told, and that a slow client makes
 //! a session lag without losing anything.
 
@@ -313,7 +313,7 @@ async fn an_explicit_list_of_types_is_fixed_when_subscribing() {
 
 #[tokio::test]
 async fn subscribe_refuses_a_kind_it_does_not_tell_of_and_a_position_past_the_head() {
-    let store = common::lake_on(Backend::Mock).await;
+    let store = common::lake_on(Backend::Memory).await;
     let mut s = Stdio::open(store.clone(), common::owner()).await;
     let r = s
         .request(
@@ -660,7 +660,7 @@ async fn a_client_that_does_not_read_makes_its_session_lag_and_loses_nothing() {
 
 #[tokio::test]
 async fn a_stream_opens_only_for_the_sessions_own_key() {
-    let store = common::lake_on(Backend::Mock).await;
+    let store = common::lake_on(Backend::Memory).await;
     let (addr, task) = serve(store).await;
     let sid = http_session(addr, false).await;
     // The owner's session named under the clerk's key.
@@ -742,8 +742,7 @@ async fn declare(store: &dyn LakeStore, d: Value) {
 
 /// A trigger or an object set says a condition held, and a condition may
 /// read any field of its type: a principal who does not read every field
-/// in full is never told of one (024). The owner, who does, is. The mock
-/// fires neither triggers nor set changes, so this runs on the store.
+/// in full is never told of one (024). The owner, who does, is.
 #[tokio::test]
 async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_whole_type() {
     for backend in [Backend::Memory, Backend::Sqlite] {
@@ -941,8 +940,7 @@ async fn a_create_is_told_as_a_change_of_each_field_it_filled() {
 }
 
 /// An output a function backing records fills its field: a change of that
-/// field, told with its name. The mock binds no backing, so this runs on
-/// the store.
+/// field, told with its name.
 #[tokio::test]
 async fn an_output_that_fills_a_field_is_told_as_a_change_of_it() {
     use lakelands_api::seam::{FunctionBacking, FunctionCall, Seams};
@@ -1036,7 +1034,7 @@ async fn a_resume_while_the_queue_is_full_tells_each_change_after_it_once() {
 /// Ending the session ends its open stream.
 #[tokio::test]
 async fn deleting_the_session_ends_its_stream() {
-    let store = common::lake_on(Backend::Mock).await;
+    let store = common::lake_on(Backend::Memory).await;
     let (addr, task) = serve(store).await;
     let sid = http_session(addr, true).await;
     let (_, stream) = Stream::open(addr, &sid, None).await;
@@ -1060,7 +1058,7 @@ async fn deleting_the_session_ends_its_stream() {
 /// A `Last-Event-ID` with no position after it is refused, not wrapped.
 #[tokio::test]
 async fn a_last_event_id_at_the_end_of_the_positions_is_refused() {
-    let store = common::lake_on(Backend::Mock).await;
+    let store = common::lake_on(Backend::Memory).await;
     let (addr, task) = serve(store).await;
     let sid = http_session(addr, true).await;
     let (status, _) = Stream::open(addr, &sid, Some(u64::MAX)).await;

@@ -1,5 +1,5 @@
 //! A host's annotations at the JSON doors, over REST and over MCP, on the
-//! mock and on the store over both engines: a declaration carrying them
+//! store over both engines: a declaration carrying them
 //! comes back from `describe` with them, exactly, on the type, its field,
 //! its relation and the relation's link field; a field the principal may
 //! not read, a link field included, is described without them; and a key
