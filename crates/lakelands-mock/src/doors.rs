@@ -4564,11 +4564,43 @@ impl Catalog for MockCatalog {
         for name in searched.iter().copied().chain(probed) {
             readable(&st, who, t, name)?;
         }
+        // As the store (025): the rankings are judged by the head's
+        // declaration, each field under the name it bears there, where the
+        // reader, its grants followed there, is shown it. One lock at a
+        // time: `followed` reads the log too.
+        let head = match pinned {
+            Some(_) => Some(self.state_at(&self.log(), None)?.1),
+            None => None,
+        };
+        let now = pinned.map(|_| self.followed(given, None));
+        let (head, now) = (head.as_ref().unwrap_or(&st), now.as_ref().unwrap_or(who));
+        let renames = self.renames();
+        let follow = |field: &FieldName| {
+            let (mut ty, mut field) = (t.decl.name.clone(), field.clone());
+            for r in renames.iter().filter(|r| r.at > position) {
+                if r.ty != ty {
+                    continue;
+                }
+                if let Some((_, to)) = r.renames.iter().find(|(from, _)| *from == field) {
+                    field = to.clone();
+                }
+                if let Some(to) = &r.to {
+                    ty = to.clone();
+                }
+            }
+            (ty, field)
+        };
+        let at_head = |name: &FieldName| {
+            let (ty, name) = follow(name);
+            let h = head.types.get(&ty)?;
+            let f = field(&h.decl, &name)?;
+            access(now, &h.decl, f).reads().then_some(f)
+        };
         // As the store: a vector ranking reads a vector field, and a hybrid
         // search without a vector reads one a model fills.
         for (name, ..) in &vectors {
-            if let Some(f) = field(&t.decl, name)
-                .filter(|f| f.ty.kind != lakelands_api::ontology::StorageKind::Vector)
+            if let Some(f) =
+                at_head(name).filter(|f| f.ty.kind != lakelands_api::ontology::StorageKind::Vector)
             {
                 let (field, kind) = ((*name).clone(), f.ty.kind);
                 return Err(invalid_field(name, Case::SearchNotVector { field, kind }));
@@ -4579,7 +4611,7 @@ impl Catalog for MockCatalog {
             vector: None,
             ..
         } = &search.mode
-            && field(&t.decl, name).is_some_and(|f| f.embed.is_none())
+            && at_head(name).is_none_or(|f| f.embed.is_none())
         {
             let case = Case::SearchNeedsVector {
                 field: name.clone(),
@@ -4590,7 +4622,7 @@ impl Catalog for MockCatalog {
         // length, never by a stored vector.
         let embedded = matches!(&search.mode, SearchMode::Hybrid { vector: None, .. });
         for (f, v, _) in vectors.iter().filter(|_| !embedded) {
-            let d = field(&t.decl, f).and_then(|f| f.ty.dimensions);
+            let d = at_head(f).and_then(|f| f.ty.dimensions);
             if let Some(d) = d.filter(|d| v.len() != *d as usize) {
                 let case = Case::QueryDimensions {
                     query: v.len(),
@@ -4609,18 +4641,10 @@ impl Catalog for MockCatalog {
         // there, so that a ranking by the head's text and vectors finds no
         // other's record.
         if pinned.is_some() && only_holder(who, &t.decl) {
-            // One lock at a time: `followed` reads the log too.
-            let head = self.state_at(&self.log(), None)?.1;
-            let now = self.followed(given, None);
-            let mut name = t.decl.name.clone();
-            for r in self.renames() {
-                if let Some(to) = r.to.filter(|_| r.at > position && r.ty == name) {
-                    name = to;
-                }
-            }
+            let (name, _) = follow(&FieldName::from(""));
             rows.retain(|r| {
                 let at_head = head.records.get(&(name.clone(), r.key.clone()));
-                at_head.is_some_and(|h| !h.retired && head.admitted(&now, h))
+                at_head.is_some_and(|h| !h.retired && head.admitted(now, h))
             });
         }
         // A field the lake asks an index for at the head answers the
@@ -4629,22 +4653,25 @@ impl Catalog for MockCatalog {
             &search.mode,
             SearchMode::Lexical { .. } | SearchMode::Hybrid { vector: None, .. }
         );
-        let indexed = !by_text && {
-            let later;
-            let head = match pinned {
-                Some(_) => {
-                    later = self.state_at(&self.log(), None)?.1;
-                    &later
-                }
-                None => &st,
-            };
-            head.types.get(&search.ty).is_some_and(|h| {
-                let asked = index_fields(head, &h.decl, VECTOR_INDEX_SETTING, indexable);
-                vectors.iter().any(|(f, ..)| asked.contains(*f))
-            })
-        };
+        let indexed = !by_text
+            && vectors.iter().any(|(f, ..)| {
+                let (ty, name) = follow(f);
+                let h = head.types.get(&ty).filter(|_| at_head(f).is_some());
+                h.is_some_and(|h| {
+                    index_fields(head, &h.decl, VECTOR_INDEX_SETTING, indexable).contains(&name)
+                })
+            });
+        // As the store: text is matched in the fields the head declares
+        // searchable, and a vector ranking over a field the head does not
+        // show its reader has no candidate.
+        let searched: Vec<&FieldName> = (searched.into_iter())
+            .filter(|n| at_head(n).is_some_and(|f| f.searchable))
+            .collect();
         // A stored vector is read back as the `f32`s it was written as.
         let nearest = |f: &FieldName, vector: &[f32]| -> Vec<(f64, &StoredRecord)> {
+            if at_head(f).is_none() {
+                return Vec::new();
+            }
             let cos = |v: &Value| {
                 let v: Vec<f32> = v
                     .as_array()?

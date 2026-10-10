@@ -349,11 +349,26 @@ impl Lake {
     /// Migrates a type to `to` as the owner: the preflight, then the apply
     /// of the report it answered.
     pub async fn migrate(&self, to: TypeDecl) -> Result<Outcome, Failure> {
+        self.migrate_renaming(to, &[]).await
+    }
+
+    /// [`Self::migrate`], each field of `renames` renamed to its new name.
+    pub async fn migrate_renaming(
+        &self,
+        to: TypeDecl,
+        renames: &[(&str, &str)],
+    ) -> Result<Outcome, Failure> {
         let what = format!("migrating `{}`", to.name);
-        let report = self.cat.migrate(&self.own, migration(to.clone()));
+        let m = lakelands_api::write::Migration {
+            renames: renames
+                .iter()
+                .map(|(o, n)| ((*o).into(), (*n).into()))
+                .collect(),
+            ..migration(to)
+        };
+        let report = self.cat.migrate(&self.own, m.clone());
         let id = report.await.must(&what)?.data.report_id;
-        let applied = self.cat.migrate_apply(&self.own, migration(to), &id);
-        applied.await.must(&what)
+        self.cat.migrate_apply(&self.own, m, &id).await.must(&what)
     }
 
     /// Retires one record as the owner.

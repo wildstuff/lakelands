@@ -82,6 +82,22 @@ impl Doors {
         T: Send + 'static,
         F: FnOnce(&Reader<'_>) -> Result<T> + Send + 'static,
     {
+        self.read_to(who, at, false, f).await
+    }
+
+    /// [`Self::read`], given the head for a read as of a position when
+    /// `ranks`: a search's rankings are judged there, by one view of it.
+    async fn read_to<T, F>(
+        &self,
+        who: &Principal,
+        at: ReadAt,
+        ranks: bool,
+        f: F,
+    ) -> Result<Reply<T>>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Reader<'_>) -> Result<T> + Send + 'static,
+    {
         same_lake(&self.lake, who)?;
         let (lake, who) = (self.lake.clone(), who.clone());
         exec::run(move || {
@@ -89,28 +105,27 @@ impl Doors {
             // is in its shape and in its grants, or in neither.
             let view = lake.engine.view(at.as_of)?;
             let shape = lake.shape(view.as_ref())?;
+            let then = view.position().unwrap_or(lakelands_api::Position::GENESIS);
+            // A search as of a position judges its rankings at the head, and
+            // a holder's its candidates too, its grants followed through the
+            // head's shape.
+            let to_head = at.as_of.is_some() && ranks;
+            let at_head = to_head.then(|| crate::reads::Head::new(&lake, &who, then));
+            let at_head = at_head.transpose()?;
             // A record held now is not there at any position to a reader
             // without the grant, and one released since is (006, extended).
             let held_now = at.as_of.is_some() && !who.grants.restricted;
             let view = match held_now {
-                true => Box::new(crate::reads::HeldNow::new(&lake, view)?),
+                true => Box::new(crate::reads::HeldNow::new(&lake, view, at_head.as_ref())?),
                 false => view,
             };
             let head = at.as_of.is_none().then_some(&shape.renames[..]);
-            // A holder's search as of a position judges at the head too,
-            // its grants followed through the head's shape.
-            let to_head = at.as_of.is_some() && rights::holds_only(&who);
-            let head_who = to_head.then(|| {
-                let head = lake.shape(lake.engine.view(None)?.as_ref())?;
-                let (who, _) = lake.followed(who.clone(), None, Some(&head.renames))?;
-                Ok::<_, Error>(Lake::hidden(who, &head.ontology).0)
-            });
             // A reference to a type it is not shown is a field it may not
             // know of, by the types the read reads (024, extended).
             let (who, _) = lake.followed(who, at.as_of, head)?;
             let who = Lake::hidden(who, &shape.ontology).0;
             let mut r = Reader::open(&lake, &who, at, view, shape)?;
-            (r.head_who, r.held_now) = (head_who.transpose()?, held_now);
+            (r.head, r.held_now) = (at_head, held_now);
             let data = f(&r)?;
             Ok(Reply {
                 position: r.position,
@@ -405,7 +420,10 @@ impl Catalog for Doors {
 
     async fn query(&self, who: &Principal, pattern: Pattern) -> Result<Reply<QueryResult>> {
         let at = cursor_at(pattern.at, pattern.cursor.as_ref())?;
-        self.read(who, at, move |r| r.query(&pattern)).await
+        // A start by search ranks as `search` does (025).
+        let ranks = pattern.start.search.is_some();
+        self.read_to(who, at, ranks, move |r| r.query(&pattern))
+            .await
     }
 
     async fn search(&self, who: &Principal, mut search: Search) -> Result<Reply<Hits>> {
@@ -420,16 +438,14 @@ impl Catalog for Doors {
         if embed.is_some() {
             let s = search.clone();
             // The engines index the head's vectors only, so a search at any
-            // position embeds by the head's declaration (`Reader::indexed`).
+            // position embeds by the head's declaration, as `searched`
+            // judged it there (025).
             let head = move |r: &Reader<'_>| {
-                r.searched(&s)?;
-                let shape = match r.at_head {
-                    true => r.shape.clone(),
-                    false => r.lake.shape(r.lake.engine.view(None)?.as_ref())?,
-                };
-                Ok(shape.ontology.ty(&s.ty).ok().cloned())
+                let (.., mut ranks) = r.searched(&s)?;
+                let field = s.mode.vectors().first().map(|v| v.0.clone());
+                Ok(field.and_then(|f| ranks.fields.remove(&f)))
             };
-            judged = Some(self.read(who, at, head).await?.data);
+            judged = Some(self.read_to(who, at, true, head).await?.data);
         }
         if let (
             SearchMode::Hybrid {
@@ -439,17 +455,13 @@ impl Catalog for Doors {
                 ..
             },
             Some(embed),
-            Some(decl),
+            Some(declared),
         ) = (&mut search.mode, embed, judged)
         {
             // A field declared as the embedding of a model is searched with
             // that model's vectors only: another bound model, or one making
             // vectors of other dimensions, is a configuration to fix, not
             // weather.
-            let declared = decl
-                .iter()
-                .flat_map(|t| &t.fields)
-                .find(|f| &f.name == field);
             let declared = declared.and_then(|f| {
                 let e = f.embed.as_ref()?;
                 Some((e.model.clone(), f.ty.dimensions.unwrap_or(0)))
@@ -497,7 +509,8 @@ impl Catalog for Doors {
             }
             *vector = vectors.pop();
         }
-        self.read(who, at, move |r| r.search(&search)).await
+        self.read_to(who, at, true, move |r| r.search(&search))
+            .await
     }
 
     async fn propose(&self, who: &Principal, write: ProposedWrite, why: String) -> Result<Outcome> {

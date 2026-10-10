@@ -401,6 +401,7 @@ pub const ALL: &[Check] = &[
     vector_index::VECTOR_INDEX_RECALL,
     search::HYBRID_WITHOUT_BACKEND,
     search::SEARCH_READS_A_VECTOR_FIELD,
+    search::SEARCH_RANKS_BY_THE_HEAD,
     search::HYBRID_THROUGH_BACKEND,
     embeddings::EMBED_WRITE,
     embeddings::VECTOR_COVERAGE,

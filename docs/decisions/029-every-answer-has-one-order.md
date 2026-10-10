@@ -27,6 +27,12 @@ the answer and the same on every engine:
 - **Ranked search** breaks equal scores by key. Hybrid search fuses its
   lexical and vector rankings by reciprocal rank (each ranking adds
   `1 / (60 + rank)` per record, rank from 0), then breaks ties by key.
+  The key is the one the record bears at the head, where the indexes
+  rank: a search as of a position before a re-key answers each record
+  under its key there, and one ranking's equal scores in the order of
+  the keys at the head. That is the order a cursor follows, so every
+  page is whole; sorting a page again by the keys answered would answer
+  some of a large tie twice and some never (lakelands#797).
 - **Groups** come in the order of their key's canonical bytes.
 - **Aggregates are the store's.** Every group and measure — of `find`,
   of a pattern's rows, of a view — is computed by the store over the
