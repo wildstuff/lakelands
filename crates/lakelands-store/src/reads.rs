@@ -54,7 +54,7 @@ use lakelands_api::engine::{After, ProjectionView, Scan};
 use lakelands_api::error::{Case, Names, Place, Said};
 use lakelands_api::expr::{CmpOp, Expr, Func, Literal};
 use lakelands_api::ontology::{
-    FieldType, MatchPair, RelationDecl, StorageKind, TypeDecl, VerbEffect,
+    FieldDecl, FieldType, MatchPair, RelationDecl, StorageKind, TypeDecl, VerbEffect,
 };
 use lakelands_api::query::{
     Axis, Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Step, Walk,
@@ -106,10 +106,9 @@ pub struct Reader<'a> {
     bound: RefCell<BTreeMap<TypeName, Bound>>,
     /// The views being computed, outermost first.
     computing: RefCell<Vec<TypeName>>,
-    /// For a read as of a position by a holder of `only`, the reader with
-    /// its grants followed to the head, where a search judges each
-    /// candidate too (051).
-    pub head_who: Option<Principal>,
+    /// For a search as of a position, the head, whose indexes its rankings
+    /// read (025, 051).
+    pub head: Option<Head<'a>>,
     /// For a read as of a position by a reader without `restricted`, which
     /// reads each record held as it is at the head ([`HeldNow`]): a kept
     /// view's face folded then is not read.
@@ -120,6 +119,46 @@ mod held;
 mod measures;
 
 pub(crate) use held::HeldNow;
+
+/// The head as a search as of a position reads it, from one view: its
+/// shape, the reader with its grants followed there, and where each record
+/// of the read's position stands there. The read's holds are read from
+/// this view too ([`HeldNow`]): a re-key landing between two views of the
+/// head would be in one and not in the other's moves, and a held record
+/// would be judged by another's hold.
+///
+/// The vector index is not a view: `nearest` reads it as it stands when it
+/// is asked. A re-key that lands after this head was read moves vectors
+/// that `since` does not know of, so that one search may miss a record it
+/// moved or rank it under its old key; the read still judges each hit at
+/// its position.
+pub struct Head<'a> {
+    /// The projection at the head.
+    view: Rc<dyn ProjectionView + 'a>,
+    /// What the lake declares there.
+    shape: Arc<Shape>,
+    /// The reader, its grants followed through the head's shape.
+    who: Principal,
+    /// Each type and key of the read's position, as named there.
+    since: Rc<held::Since>,
+}
+
+impl<'a> Head<'a> {
+    /// The head of `lake` for `who`, as unfollowed, reading as of `at`.
+    pub fn new(lake: &'a Lake, who: &Principal, at: Position) -> Result<Head<'a>> {
+        let view: Rc<dyn ProjectionView + 'a> = Rc::from(lake.engine.view(None)?);
+        let shape = lake.shape(view.as_ref())?;
+        let (who, _) = lake.followed(who.clone(), None, Some(&shape.renames))?;
+        let who = Lake::hidden(who, &shape.ontology).0;
+        let since = Rc::new(held::Since::new(lake, view.as_ref(), at)?);
+        Ok(Head {
+            view,
+            shape,
+            who,
+            since,
+        })
+    }
+}
 
 /// A view's parameters as one read binds them: as given, in canonical
 /// form, and as the literals `param()` is replaced by.
@@ -140,8 +179,22 @@ type SortKey = (Vec<Value>, RecordKey);
 type Ranking<'a> = Box<dyn Fn(u32) -> Result<Vec<(RecordKey, f64)>> + 'a>;
 
 /// A search as judged: its type, the fields its text is matched in if it
-/// names them, and its `where`.
-type Searched<'s> = (TypeDecl, Option<&'s [FieldName]>, Option<Expr>);
+/// names them, its `where`, and its rankings as the head declares them.
+type Searched<'s> = (TypeDecl, Option<&'s [FieldName]>, Option<Expr>, Ranks);
+
+/// A search's rankings as the head declares them, whose indexes they read
+/// (025): the type there, and each field a ranking names, by the name the
+/// read knows it by, as declared there under the name it bears there. A
+/// field the head does not declare, or does not show the reader, is not
+/// in `fields`: it holds no vectors and no text there.
+pub struct Ranks {
+    /// The type's name at the head.
+    pub ty: TypeName,
+    /// The type's declaration at the head.
+    pub decl: Option<TypeDecl>,
+    /// By its name at the read's position, each field at the head.
+    pub fields: BTreeMap<FieldName, FieldDecl>,
+}
 
 /// The state a cursor carries.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -355,7 +408,7 @@ impl<'a> Reader<'a> {
             computed: RefCell::default(),
             bound: RefCell::default(),
             computing: RefCell::default(),
-            head_who: None,
+            head: None,
             held_now: false,
         })
     }
@@ -2195,15 +2248,28 @@ impl<'a> Reader<'a> {
             SearchMode::Vector { .. } => None,
         };
         rights::check_search(self.who, &decl, text_fields, &vector_fields)?;
+        // The names, the rights and the `where` are read at the read's
+        // position; the rankings are judged by the head's declaration, whose
+        // indexes they read, each field under the name it bears there (025).
+        let texts = match text_fields {
+            Some(named) => Box::new(named.iter()) as Box<dyn Iterator<Item = &FieldName>>,
+            None => Box::new(rights::searched_fields(self.who, &decl)),
+        };
+        let ranks = self.ranks(&decl, vector_fields.iter().copied().chain(texts))?;
         // A vector ranking reads a vector field, and a hybrid search without
         // a vector reads one a model fills: one that cannot use its ranking
         // is refused here, before any embedding is asked for (lakelands#743).
-        let declared = |n: &FieldName| decl.fields.iter().find(|f| &f.name == n);
+        // A field the head does not show its reader holds no vectors there,
+        // and no model fills it.
+        let declared = |n: &FieldName| ranks.fields.get(n);
         for field in &vector_fields {
             if let Some(f) = declared(field).filter(|f| f.ty.kind != StorageKind::Vector) {
-                let (field, kind) = ((*field).clone(), f.ty.kind);
-                let case = Case::SearchNotVector { field, kind };
-                return Err(crate::declare::invalid_field(&f.name, case));
+                let kind = f.ty.kind;
+                let case = Case::SearchNotVector {
+                    field: (*field).clone(),
+                    kind,
+                };
+                return Err(crate::declare::invalid_field(field, case));
             }
         }
         if let SearchMode::Hybrid {
@@ -2211,7 +2277,7 @@ impl<'a> Reader<'a> {
             vector: None,
             ..
         } = &s.mode
-            && declared(field).is_some_and(|f| f.embed.is_none())
+            && declared(field).is_none_or(|f| f.embed.is_none())
         {
             let case = Case::SearchNeedsVector {
                 field: field.clone(),
@@ -2222,8 +2288,7 @@ impl<'a> Reader<'a> {
         // a stored vector, which another may own (024).
         let embedded = matches!(&s.mode, SearchMode::Hybrid { vector: None, .. });
         for (field, v, _) in vectors.iter().filter(|_| !embedded) {
-            let f = decl.fields.iter().find(|f| &f.name == *field);
-            if let Some(d) = f.and_then(|f| f.ty.dimensions)
+            if let Some(d) = declared(field).and_then(|f| f.ty.dimensions)
                 && v.len() != d as usize
             {
                 let (query, declared) = (v.len(), d as usize);
@@ -2232,26 +2297,78 @@ impl<'a> Reader<'a> {
             }
         }
         let filter = self.record_filter(&decl, s.filter.as_ref(), &[Place::Where])?;
-        Ok((decl, text_fields, filter))
+        Ok((decl, text_fields, filter, ranks))
+    }
+
+    /// The rankings over `named` fields of `decl` as the head declares
+    /// them: the type and each field followed through the lake's renames
+    /// since the read's position, and a field kept only where the reader,
+    /// its grants followed to the head, is shown it there. Following a name
+    /// never reaches a field the reader is not shown at the head (051). A
+    /// read before the head that was not given the head ranks by nothing.
+    fn ranks<'n>(
+        &self,
+        decl: &TypeDecl,
+        named: impl Iterator<Item = &'n FieldName>,
+    ) -> Result<Ranks> {
+        let (shape, who) = match (self.at_head, &self.head) {
+            (true, _) => (&self.shape, self.who),
+            (false, Some(h)) => (&h.shape, &h.who),
+            (false, None) => {
+                let (ty, decl, fields) = (decl.name.clone(), None, BTreeMap::new());
+                return Ok(Ranks { ty, decl, fields });
+            }
+        };
+        let mut ty = decl.name.clone();
+        let mut names: Vec<(FieldName, FieldName)> =
+            named.map(|n| (n.clone(), n.clone())).collect();
+        for r in shape.renames.iter().filter(|r| r.at > self.position) {
+            if r.ty != ty {
+                continue;
+            }
+            for (_, now) in &mut names {
+                if let Some((_, to)) = r.renames.iter().find(|(from, _)| from == now) {
+                    *now = to.clone();
+                }
+            }
+            if let Some(to) = &r.to {
+                ty = to.clone();
+            }
+        }
+        let decl = shape.ontology.ty(&ty).ok().cloned();
+        let shown = |now: &FieldName| {
+            let d = decl.as_ref()?;
+            let f = d.fields.iter().find(|f| &f.name == now)?;
+            rights::field_access(who, d, f).reads().then(|| f.clone())
+        };
+        let fields = (names.iter())
+            .filter_map(|(asked, now)| Some((asked.clone(), shown(now)?)))
+            .collect();
+        Ok(Ranks { ty, decl, fields })
     }
 
     /// `search`.
     pub fn search(&self, s: &Search) -> Result<Hits> {
-        let (decl, text_fields, filter) = self.searched(s)?;
+        let (decl, text_fields, filter, ranks) = self.searched(s)?;
         let vectors = s.mode.vectors();
         let vector_fields: Vec<&FieldName> = vectors.iter().map(|v| v.0).collect();
         // A search that names no fields reads only the searchable fields
         // the principal reads (024); none hidden or masked, it reads them all.
-        let known: Vec<FieldName>;
+        // Before the head, each is read under its name there, where the
+        // head declares it searchable.
         let hidden = (decl.fields.iter())
             .any(|f| f.searchable && !rights::field_access(self.who, &decl, f).reads());
-        let text_fields = match text_fields {
-            None if hidden => {
-                known = rights::searched_fields(self.who, &decl).cloned().collect();
-                Some(known.as_slice())
-            }
-            named => named,
-        };
+        let known: Option<Vec<FieldName>> = (hidden || text_fields.is_some() || !self.at_head)
+            .then(|| {
+                let named = text_fields.map(|n| n.iter().collect::<Vec<_>>());
+                let named =
+                    named.unwrap_or_else(|| rights::searched_fields(self.who, &decl).collect());
+                let now = named.into_iter().filter_map(|n| ranks.fields.get(n));
+                now.filter(|f| f.searchable)
+                    .map(|f| f.name.clone())
+                    .collect()
+            });
+        let text_fields = known.as_deref();
         let search_read = read_of((&s.mode, &s.filter, s.at.valid_at));
         let offset = match &s.cursor {
             Some(c) => {
@@ -2264,10 +2381,20 @@ impl<'a> Reader<'a> {
         let k = s.k.max(1) as usize;
         // One more than the page, to know whether a next page exists.
         let want = offset + k + 1;
-        let lexical = |text: &str, pull: u32| self.view.lexical(&s.ty, text, text_fields, pull);
+        // The engines are asked under the head's names, and before the head
+        // the text is ranked as the head holds it, as the vectors are; a
+        // ranking over no field the head shows the reader has no candidate.
+        let lexical = |text: &str, pull: u32| match (text_fields, &self.head) {
+            (Some([]), _) => Ok(Vec::new()),
+            (fields, Some(h)) => h.view.lexical(&ranks.ty, text, fields, pull),
+            (fields, None) => self.view.lexical(&ranks.ty, text, fields, pull),
+        };
         let vector = |field: &FieldName, v: &[f32], pull: u32| -> Result<Vec<(RecordKey, f64)>> {
+            let Some(field) = ranks.fields.get(field) else {
+                return Ok(Vec::new());
+            };
             match self.lake.engine.vectors() {
-                Some(index) => index.nearest(&s.ty, field.as_str(), v, pull),
+                Some(index) => index.nearest(&ranks.ty, field.name.as_str(), v, pull),
                 None => Err(Error::unbound(lakelands_api::error::Seam::VectorIndex)),
             }
         };
@@ -2277,7 +2404,12 @@ impl<'a> Reader<'a> {
         let (mut by_text, mut indexed) = (true, false);
         if !matches!(&s.mode, SearchMode::Hybrid { vector: None, .. }) {
             for field in &vector_fields {
-                (by_text, indexed) = (false, indexed || self.indexed(&decl, field)?);
+                let asked = |(d, f): (&TypeDecl, &FieldDecl)| self.indexed(d, &f.name);
+                let at_head = ranks.decl.as_ref().zip(ranks.fields.get(*field));
+                (by_text, indexed) = (
+                    false,
+                    indexed || at_head.map(asked).transpose()? == Some(true),
+                );
             }
         }
         let ranked_by = match (&s.mode, indexed) {
@@ -2332,7 +2464,7 @@ impl<'a> Reader<'a> {
         let hits = match &s.mode {
             _ if lists.len() > 1 => {
                 let (hits, counts) =
-                    self.fused(&decl, filter.as_ref(), &lists, want, s.with_meta)?;
+                    self.fused(&decl, &ranks.ty, filter.as_ref(), &lists, want, s.with_meta)?;
                 for ((a, n), (w, _)) in axes.iter_mut().zip(counts).zip(&lists) {
                     (a.candidates, a.weight) = (Some(n), Some(*w));
                 }
@@ -2353,6 +2485,7 @@ impl<'a> Reader<'a> {
                         }
                     };
                     let exhausted = ranked.len() < pull as usize;
+                    let ranked = self.keyed_then(&ranks.ty, ranked);
                     let hits = self.visible_hits(&decl, filter.as_ref(), ranked, s.with_meta)?;
                     if hits.len() >= want || exhausted || pull == u32::MAX {
                         break hits;
@@ -2399,6 +2532,7 @@ impl<'a> Reader<'a> {
     fn fused(
         &self,
         decl: &TypeDecl,
+        named: &TypeName,
         filter: Option<&Expr>,
         lists: &[(f64, Ranking<'_>)],
         want: usize,
@@ -2432,6 +2566,7 @@ impl<'a> Reader<'a> {
                 let mut seen: Vec<(RecordKey, f64)> = if open {
                     candidates
                 } else {
+                    let candidates = self.keyed_then(named, candidates);
                     (self.visible_hits(decl, filter, candidates, false)?)
                         .into_iter()
                         .map(|h| (h.record.key, h.score))
@@ -2481,24 +2616,30 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// An engine's candidates, ranked at the head where the type is
+    /// `named`, under the keys they bear at the read's position: before the
+    /// head, a re-key since may have moved them (lakelands#797). One whose
+    /// key names another record now than then is not a candidate. Equal
+    /// scores stay in the order of the keys at the head, the order the
+    /// engines rank and a cursor pages in: sorting one batch again by the
+    /// keys answered would answer some of a tie twice and some never (029).
+    fn keyed_then(&self, named: &TypeName, ranked: Vec<(RecordKey, f64)>) -> Vec<(RecordKey, f64)> {
+        let Some(h) = &self.head else {
+            return ranked;
+        };
+        (ranked.into_iter())
+            .filter_map(|(k, score)| Some((h.since.key_then(named, &k)?, score)))
+            .collect()
+    }
+
     /// Whether the lake asks an index for `field` of `decl`'s type at the
     /// head, where the engines keep their vector indexes: a search over it
     /// answers the index's set, at any position.
     fn indexed(&self, decl: &TypeDecl, field: &FieldName) -> Result<bool> {
         let key = core_engines::vector_index_key(&decl.name);
-        let setting = if self.at_head {
-            self.shape.settings.get(&key).cloned()
-        } else {
-            self.lake
-                .engine
-                .view(None)?
-                .get(
-                    &TypeName::from(lakelands_api::seam::SETTING_TYPE),
-                    &RecordKey::from(key),
-                )?
-                .and_then(|r| core_engines::setting_value(&r).cloned())
-        };
-        Ok(core_engines::indexed_fields(decl, setting.as_ref()).contains(field))
+        let shape = self.head.as_ref().map_or(&self.shape, |h| &h.shape);
+        let setting = shape.settings.get(&key);
+        Ok(core_engines::indexed_fields(decl, setting).contains(field))
     }
 
     /// The ranked candidates this read may see, as hits, in rank order.
@@ -2547,15 +2688,13 @@ impl<'a> Reader<'a> {
         decl: &TypeDecl,
         keys: &[RecordKey],
     ) -> Result<Option<BTreeSet<RecordKey>>> {
-        let Some(who) = self.head_who.as_ref().filter(|_| !self.whole(decl)) else {
+        let Some(h) = self.head.as_ref().filter(|_| !self.whole(decl)) else {
             return Ok(None);
         };
-        let head = self.lake.engine.view(None)?;
+        let (head, who, since, shape) = (&h.view, &h.who, &h.since, &h.shape);
         // Each candidate under the name and the key it bears at the head.
-        let since = held::Since::new(self.lake, head.as_ref(), self.position)?;
         let name = since.name(&decl.name);
         let moved: Vec<RecordKey> = keys.iter().map(|k| since.key(&name, k)).collect();
-        let shape = self.lake.shape(head.as_ref())?;
         let applied = |t: &TypeName| {
             let d = shape.ontology.ty(t).ok();
             d.filter(|d| rights::check_only(who, d).is_ok())

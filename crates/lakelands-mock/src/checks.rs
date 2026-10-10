@@ -11530,6 +11530,78 @@ pub async fn a_vector_ranking_reads_a_vector_field(store: Arc<dyn LakeStore>) {
             "a caller's vector over `plain` finds `a`"
         );
     }
+    // As the store, as of a position the rankings are judged by the head's
+    // declaration (lakelands#756): at the head `v` holds text, `w` vectors
+    // of 3, and `gone` is removed.
+    let late = |v: &str, w: u32, gone: bool| {
+        let mut fields = vec![
+            json!({"name": "body", "type": {"kind": "text"}, "searchable": true}),
+            json!({"name": "v", "type": if v == "text" { json!({"kind": "text"}) } else { json!({"kind": "vector", "dimensions": 2}) }}),
+            json!({"name": "w", "type": {"kind": "vector", "dimensions": w}}),
+        ];
+        if gone {
+            fields.push(json!({"name": "gone", "type": {"kind": "vector", "dimensions": 2}}));
+        }
+        let d = json!({"name": "late", "fields": fields});
+        serde_json::from_value::<TypeDecl>(d).expect("a type")
+    };
+    let declared = c.declare(own, Declaration::Type(late("vector", 2, true)));
+    declared.await.expect("the owner declares `late`");
+    let (a, late_ty) = (
+        json!({"body": "harbour", "gone": [1.0, 0.0]}),
+        "late".into(),
+    );
+    let a = serde_json::from_value(a).expect("fields read");
+    let wrote = c.upsert(own, &late_ty, &key, a, WriteOpts::default());
+    wrote.await.expect("the owner writes `a`");
+    let p = store.head().await.expect("the lake has a head");
+    let m = Migration {
+        to: late("text", 3, false),
+        renames: Vec::new(),
+        relation_renames: Vec::new(),
+    };
+    let report = c.migrate(own, m.clone()).await.expect("the preflight");
+    let applied = c.migrate_apply(own, m, &report.data.report_id).await;
+    applied.expect("the migration applies");
+    let then = |mode| Search {
+        ty: "late".into(),
+        at: ReadAt {
+            as_of: Some(p),
+            ..ReadAt::default()
+        },
+        ..search(mode)
+    };
+    let e = c.search(own, then(along("v", &[]))).await.map(drop);
+    let wire = serde_json::to_value(e.expect_err("`v` holds text at the head")).expect("prints");
+    assert_eq!(
+        wire["reason"]["kind"], "text",
+        "`v` is text at the head: {wire}"
+    );
+    let w = |n: usize| SearchMode::vector("w", vec![1.0; n]);
+    let e = c.search(own, then(w(2))).await.map(drop);
+    assert!(
+        matches!(&e, Err(e) if matches!(refusal(e).1, Refusal::Invalid(said)
+            if said.case == Case::QueryDimensions { query: 2, held: 3 })),
+        "two numbers over `w`, of 3 at the head, are refused: {e:?}"
+    );
+    let three = c
+        .search(own, then(w(3)))
+        .await
+        .expect("three numbers over `w`");
+    let gone = c.search(own, then(along("gone", &[]))).await;
+    let gone = gone.expect("a search over the removed `gone`");
+    assert!(
+        three.data.hits.is_empty() && gone.data.hits.is_empty(),
+        "no record holds `w` and none `gone` at the head: {:?}, {:?}",
+        three.data.hits,
+        gone.data.hits
+    );
+    let e = c.search(own, then(hybrid("gone", None))).await.map(drop);
+    assert!(
+        matches!(&e, Err(e) if matches!(refusal(e).1, Refusal::Invalid(said)
+            if matches!(said.case, Case::SearchNeedsVector { .. }))),
+        "a hybrid search without a vector over the removed `gone` needs one: {e:?}"
+    );
 }
 
 /// A search probes what it searches: the searchable fields it names, or

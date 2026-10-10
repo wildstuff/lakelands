@@ -25,7 +25,8 @@ engine.
   searches. `ranked_by` follows the setting at the head, on every engine,
   since the engines keep their vector indexes at the head: a search at an
   earlier position over an asked-for field is ranked by the head's index
-  and says `index` too. `describe_type` names the fields the setting asks
+  and says `index` too, judged on the head's declaration of the field, under
+  the name it bears there (025). `describe_type` names the fields the setting asks
   for at the position read, as it names `sorted` under 041.
 - **Every other field answers the reference.** A field nobody asked an
   index for answers the exact ranking, byte for byte, on every engine

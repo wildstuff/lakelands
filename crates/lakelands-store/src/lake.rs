@@ -32,7 +32,7 @@ use lakelands_api::engine::{CanonicalEvent, LakeEngine, Lease, OpenMode, Project
 use lakelands_api::error::{Detail, Flaw, Part, Seam, Situation};
 use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_BASE, SegmentDigest};
 use lakelands_api::location::{EngineConfig, Limits, Location};
-use lakelands_api::ontology::{StorageKind, TypeDecl};
+use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
 use lakelands_api::principal::Renamed;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{EmbedBackend, Seams};
@@ -1022,6 +1022,18 @@ impl Lake {
             if post.ty == *migrated || post != pre {
                 projection.put_record(post)?;
             }
+            // A record of the migrated type, and every record whose key the
+            // step moves, a link of a re-keyed end among them, takes its
+            // vectors along; any other type's declaration is as it was.
+            let moved = post.key != pre.key;
+            let before = match pre.ty == *migrated {
+                true => Some(&step.before),
+                false => w.ontology.ty(&pre.ty).ok().filter(|_| moved),
+            };
+            if let Some(before) = before.filter(|_| post.ty == pre.ty) {
+                let left = moved && !step.arrives(&pre.ty, &pre.key);
+                self.reindex(&w.ontology, before, pre, post, left)?;
+            }
             if post.ty != pre.ty {
                 // A link type's records moved to another: its keys end.
                 let ended = StoredRecord::ended(pre.ty.clone(), pre.key.clone(), step.at);
@@ -1642,6 +1654,48 @@ impl Lake {
         self.index_vectors_as(ontology, &r.ty, r)
     }
 
+    /// Keep the vector index in step with a record a migration's step
+    /// reaches, of the migrated type or of one whose keys a re-key moves,
+    /// its declaration `before` the migration: at its old key, the vectors of
+    /// each field the declaration now in force does not hold are taken out,
+    /// and every one where the key is `left` with no record moving to it;
+    /// then its vectors are indexed by that declaration, but for a field it
+    /// held as it holds it, under the same key, which is indexed already. A
+    /// field renamed is ranked under its new name, and one removed by no
+    /// name (lakelands#768).
+    fn reindex(
+        &self,
+        ontology: &Ontology,
+        before: &TypeDecl,
+        pre: &StoredRecord,
+        post: &StoredRecord,
+        left: bool,
+    ) -> Result<()> {
+        let Some(index) = self.engine.vectors() else {
+            return Ok(());
+        };
+        let now = ontology.ty(&post.ty).ok();
+        let vector = |f: &&FieldDecl| f.ty.kind == StorageKind::Vector;
+        for f in before.fields.iter().filter(vector) {
+            let kept =
+                now.is_some_and(|d| d.fields.iter().filter(vector).any(|g| g.name == f.name));
+            if !kept || left {
+                index.remove(&pre.ty, &pre.key, f.name.as_str())?;
+            }
+        }
+        let had = |f: &FieldDecl| {
+            before
+                .fields
+                .iter()
+                .filter(vector)
+                .any(|g| g.name == f.name)
+        };
+        let same = |f: &FieldDecl| {
+            pre.key == post.key && had(f) && pre.fields.get(&f.name) == post.fields.get(&f.name)
+        };
+        self.index_vectors_where(ontology, &post.ty, post, |f| !same(f))
+    }
+
     /// [`Self::index_vectors`] for a record whose vector fields are those
     /// `declared` declares: a link moved to a link type that is declared
     /// only by the next event has the fields of the one it came from.
@@ -1651,14 +1705,21 @@ impl Lake {
         declared: &TypeName,
         r: &StoredRecord,
     ) -> Result<()> {
+        self.index_vectors_where(ontology, declared, r, |_| true)
+    }
+
+    /// [`Self::index_vectors_as`] for the vector fields `due` takes.
+    fn index_vectors_where(
+        &self,
+        ontology: &Ontology,
+        declared: &TypeName,
+        r: &StoredRecord,
+        due: impl Fn(&FieldDecl) -> bool,
+    ) -> Result<()> {
         let (Some(index), Ok(decl)) = (self.engine.vectors(), ontology.ty(declared)) else {
             return Ok(());
         };
-        for f in decl
-            .fields
-            .iter()
-            .filter(|f| f.ty.kind == StorageKind::Vector)
-        {
+        for f in (decl.fields.iter()).filter(|f| f.ty.kind == StorageKind::Vector && due(f)) {
             let vector: Option<Vec<f32>> = r
                 .fields
                 .get(&f.name)

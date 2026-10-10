@@ -54,6 +54,34 @@ earlier state would make each engine carry a second history of its
 largest structures, for a ranking no caller has asked for; if one ever
 does, it is a later, additive change.
 
+So a search reads its names, its caller's rights and its `where` at the
+position it reads, and its rankings by the head's declaration, whose
+indexes they read (lakelands#756). A field's kind, its dimensions, and
+whether a model fills it and which are the head's: a query embedded by
+the model of the earlier position, or a query vector of its length, would
+be ranked against vectors of another space or length. Each field a
+ranking names is followed to the name it bears at the head, as 051
+follows a type's. A field the head does not declare holds no vectors
+there and no model fills it, so a vector ranking over it has no
+candidate and a hybrid search without a vector over it is refused as
+needing one. Following a name never lets a ranking reach a field its
+caller is not shown at the head: one shown at the earlier position and
+hidden at the head answers as one the head does not declare, and one
+hidden at the earlier position is refused as it is there. A field the
+head declares and the earlier position does not is unknown, as every
+name is read there. For the head's indexes to hold the head's names, a
+migration re-indexes each record of its type by the declaration it puts
+in force, and takes out the vectors of the fields it renames or removes;
+a re-key takes the vectors of every record whose key it moves to the new
+key, the links of a re-keyed end among them (lakelands#768). The indexes
+hold the head's keys too: a search at an earlier position takes each
+candidate back to the key its record bore there, so a record re-keyed
+since is ranked by its own text and vectors, and is judged as that
+position and the head's holds see it (lakelands#797). Equal scores stay
+in the order of the keys at the head, which is the order its pages
+follow (029). Its text is ranked as the head holds it, as its vectors
+are, so a record retired since is no candidate, by either.
+
 ## Extended: a restricted record is a candidate
 
 An engine's full-text and vector candidates include restricted records

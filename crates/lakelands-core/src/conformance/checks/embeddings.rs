@@ -615,7 +615,7 @@ pub(super) fn reopen_failed(what: &str, e: Error) -> Failure {
 check!(
     EMBED_SEARCH_OTHER_BACKEND =
         a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_unbound,
-    "seams, EmbedBackend: a hybrid search over an embed field whose model or dimensions are not the bound backend's is refused as unbound when it is made, not ranked with vectors of another space; a search as of an earlier position is held to the head's declaration, whose vectors the engines index",
+    "seams, EmbedBackend: a hybrid search over an embed field whose model or dimensions are not the bound backend's is refused as unbound when it is made, not ranked with vectors of another space; a search as of an earlier position is held to the head's declaration and its fields' names, whose vectors the engines index",
     reopens
 );
 

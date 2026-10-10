@@ -18,7 +18,7 @@ use crate::conformance::{Failure, Given, Held, ImportedLake, Store};
 
 check!(
     GRANT_FOLLOWS = a_grant_holds_a_field_under_every_name_it_has_borne,
-    "006 and 024, extended (lakelands#527): a field renamed by a migration is one field: its access is the lowest of what a principal's grants say under the name it bears at the position read and under every other name it has borne or will bear that they name, reading and writing judged apart; so a field held at none or masked stays so under its new name, through a chain of renames, and under its old name in a read as of before for a host that renamed its grant, at every door (`get`, a `where`, an `order_by`, an aggregate, a view's measure, a pattern, a search, `describe_type`, a write, a verb that sets it); a permission stays with its name, and a host widens by naming the new name and dropping the old; two fields that have borne one name are restricted together by it; a proposed migration that renames is listed to a reader kept from the old name with neither the pair nor the new name, and its accept answers it no rename; a migration's answer names its renames; the list is kept through a reopen, made again by a rebuild and an import, and is no event of the log",
+    "006 and 024, extended (lakelands#527): a field renamed by a migration is one field: its access is the lowest of what a principal's grants say under the name it bears at the position read and under every other name it has borne or will bear that they name, reading and writing judged apart; so a field held at none or masked stays so under its new name, through a chain of renames, and under its old name in a read as of before for a host that renamed its grant, at every door (`get`, a `where`, an `order_by`, an aggregate, a view's measure, a pattern, a search, `describe_type`, a write, a verb that sets it), but a search as of before finds it only where the head shows it too, since it ranks by the head's text; a permission stays with its name, and a host widens by naming the new name and dropping the old; two fields that have borne one name are restricted together by it; a proposed migration that renames is listed to a reader kept from the old name with neither the pair nor the new name, and its accept answers it no rename; a migration's answer names its renames; the list is kept through a reopen, made again by a rebuild and an import, and is no event of the log",
     given
 );
 
@@ -205,8 +205,14 @@ async fn a_grant_holds_a_field_under_every_name_it_has_borne(store: Store, given
         let head = shown(s, &who, "owner", None).await;
         let past = shown(s, &who, "holder", Some(before)).await;
         // Every door answers, or none: eight at the head, and seven as of
-        // before, when no view read the field.
-        if head.len() != if now { 8 } else { 0 } || past.len() != if then { 7 } else { 0 } {
+        // before, when no view read the field. A search as of before ranks
+        // by the head's text, so it finds the field only where the head
+        // shows it too (025, lakelands#756).
+        let past_doors = if then { 6 + usize::from(now) } else { 0 };
+        if head.len() != if now { 8 } else { 0 }
+            || past.len() != past_doors
+            || then && past.contains(&"search") != now
+        {
             red.push(format!("{what} ({grants:?}): `owner` through {head:?}, `holder` as of before through {past:?}"));
         }
     }
