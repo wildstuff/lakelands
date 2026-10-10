@@ -229,17 +229,25 @@ async fn an_answer_that_is_not_the_contracts_is_unavailable_naming_where() {
 /// Ingest over the wire: one answer per window as it commits, and a
 /// record the lake refuses ends the stream with the contract's error,
 /// what came before it committed.
+///
+/// The server commits in windows of one record. The wire shows one
+/// `Committed` line per window whatever the window holds, and how a window
+/// fills is the store's, held in process by the suite. A window of one
+/// closes at its record, so no answer here depends on how fast the next
+/// record arrives: a larger window closes after 2 ms too, and a window is
+/// all or nothing, so on a loaded machine a record could share the refused
+/// record's window and not be committed (lakelands#807).
 #[tokio::test(flavor = "multi_thread")]
 async fn ingest_answers_each_window_and_ends_on_a_refused_record() {
     let limits = Limits {
-        commit_window_events: 2,
+        commit_window_events: 1,
         ..Limits::default()
     };
     let store = common::memory_lake("finance", limits).await;
     let (addr, keys) = common::serve(store.clone()).await;
     let remote: Arc<dyn LakeStore> = Arc::new(common::remote(addr, store.lake(), keys));
     // The client's limits are the ones it was configured with, not the
-    // server's: here the server commits in windows of two.
+    // server's: here the server commits in windows of one.
     assert_eq!(remote.limits(), Limits::default());
     assert_ne!(remote.limits(), store.limits());
     let f = setup(remote.clone()).await;
@@ -274,7 +282,7 @@ async fn ingest_answers_each_window_and_ends_on_a_refused_record() {
             (c.records, c.duplicates)
         })
         .collect();
-    assert_eq!(windows, [(2, 0), (1, 0)]);
+    assert_eq!(windows, [(1, 0), (1, 0), (1, 0)]);
 
     let out = collect(vec![
         record("invoice", "INV-4", "40"),
@@ -282,10 +290,12 @@ async fn ingest_answers_each_window_and_ends_on_a_refused_record() {
         record("nowhere", "N-1", "60"),
     ])
     .await;
-    assert_eq!(out.len(), 2, "{out:?}");
-    assert_eq!(out[0].as_ref().map(|c| c.records), Ok(2));
+    assert_eq!(out.len(), 3, "{out:?}");
+    for window in &out[..2] {
+        assert_eq!(window.as_ref().map(|c| c.records), Ok(1));
+    }
     assert_eq!(
-        out[1],
+        out[2],
         Err(Error::NotFound {
             missing: Missing::Type {
                 name: "nowhere".into()
