@@ -2,6 +2,8 @@
 
 ## What is decided
 
+### Every field carries its own provenance, and the fold writes it
+
 Every field of every record carries its own provenance:
 
 - `origin`: which authority wrote the value (a source feed, an author,
@@ -19,7 +21,45 @@ Every field of every record carries its own provenance:
 The values come from the event, so they are part of the log format. The
 fold writes them beside the value every time it changes a field, and a
 replay reproduces them byte-identically. A reader gets them with the
-record in one call (`with: meta`), without a second query.
+record in one call, without a second query: on every door the switch
+that returns each field's provenance with its value is spelled
+`with_meta` (a boolean on `find`, `get` and `search`).
+
+A field computed at the read carries none: no event holds its value,
+and no write wrote it
+(`docs/decisions/052-a-field-may-be-computed-at-the-read.md`).
+
+### A field whose backing failed says why in its provenance
+
+A field computed by a function whose backing failed holds no value.
+Its provenance still says why: the metadata of the event that cleared
+it, with `error` set to the reason. A read with `with_meta` returns
+that metadata for the field even though the field has no value, so a
+caller can tell "not computed yet" (no metadata) from "computed and
+failed" (`error`). A field that holds a value never carries `error`.
+
+### A value read from another lake carries `upstream`
+
+A value a source read from another lake's log carries `upstream`
+(`docs/log-format.md` §1.1): that lake and the position of the event
+there whose state it is, beside `seen_at`. A mirror states it for every
+field it delivers, so a reader can follow a value back to the log it
+came from. It is provenance the writer states, and it has the same
+standing as `seen_at`: nothing checks it against the other lake. A
+later write of the field without it leaves the field without it
+(`docs/log-format.md` §2.3).
+
+### A value no writer chose has the origin `initial`
+
+A field that declares `initial` is filled by the fold when its record
+is made without a value for it
+(`docs/decisions/050-a-field-declares-its-initial-value.md`). Its
+`origin` is `initial`, a fifth member of the closed set: not `system`,
+which an aging move writes on the same lifecycle fields, so a reader
+tells the value a record started with from one the lake moved since.
+It takes the creating event's `known_at`, `position` and `writer`, and
+nothing of a source: no `source`, `seen_at`, `upstream` or
+`procedure_version`, since the value came from the declaration.
 
 ## Why
 
@@ -46,40 +86,17 @@ the fold is pure, so the metadata is as reproducible as the value.
   changes, not the width of the record, and a high-volume type may opt
   out explicitly; the default is on.
 
-## Extended: the wire name
+## How it came to be
 
-On every door the switch that returns each field's provenance with its
-value is spelled `with_meta` (a boolean on `find`, `get` and `search`).
-"`with: meta`" above names the same switch.
-
-## Extended: why a computed field holds no value
-
-A field computed by a function whose backing failed holds no value.
-Its provenance still says why: the metadata of the event that cleared
-it, with `error` set to the reason. A read with `with_meta` returns
-that metadata for the field even though the field has no value, so a
-caller can tell "not computed yet" (no metadata) from "computed and
-failed" (`error`). A field that holds a value never carries `error`.
-
-## Extended: a value read from another lake
-
-A value a source read from another lake's log carries `upstream`: that
-lake and the position of the event there whose state it is, beside
-`seen_at`. A mirror states it for every field it delivers, so a reader
-can follow a value back to the log it came from. It is provenance the
-writer states, and it has the same standing as `seen_at`: nothing checks
-it against the other lake. A later write of the field without it leaves
-the field without it. The member came with a step of the log format
-(`docs/log-format.md` §1.1, §6; lakelands#174).
-
-## Extended: a value no writer chose
-
-A field that declares `initial` is filled by the fold when its record
-is made without a value for it
-(`docs/decisions/050-a-field-declares-its-initial-value.md`). Its
-`origin` is `initial`, a fifth member of the closed set: not `system`,
-which an aging move writes on the same lifecycle fields, so a reader
-tells the value a record started with from one the lake moved since.
-It takes the creating event's `known_at`, `position` and `writer`, and
-nothing of a source: no `source`, `seen_at`, `upstream` or
-`procedure_version`, since the value came from the declaration.
+- The first version: seven members of provenance on every field,
+  written by the fold and read with the record through a switch it
+  called `with: meta`.
+- The switch is spelled `with_meta` on every door.
+- The provenance of a computed field whose backing failed carries
+  `error`.
+- A value read from another lake carries `upstream`; the member came
+  with a step of the log format (lakelands#174).
+- A value no writer chose has the origin `initial` (lakelands#551).
+- Corrected at the rewrite (lakelands#817): a field computed at the
+  read carries no provenance, which 052 added and "every field of every
+  record" left out; the suite holds it.

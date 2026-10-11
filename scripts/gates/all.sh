@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 status=0
 for gate in no-external-platform-deps cfg-budget vocabulary single-catalog \
             seam-width core-size conformance-required dco no-external-decisions \
-            doc-heads-its-item detail-sources refusals; do
+            doc-heads-its-item detail-sources refusals records-resolve; do
     ./"$gate".sh || status=1
 done
 exit "$status"

@@ -2,13 +2,17 @@
 
 ## What is decided
 
-A relation declared without `via` is carried by **link records**: one
-record per linked pair, of a type the store derives from the relation,
-`sys.link.<type>.<relation>`, keyed by the pair (`from`, `to`) and
-holding the relation's own fields. `docs/log-format.md` §2.3 specifies
-it. Links are written and removed by the record events the log already
-has (`record_upserted`, `record_ingested`, `record_retired`); no event
-kind is added, and the log format does not change.
+### A relation declared with neither `via` nor `derived` is carried by link records
+
+A relation declared with neither `via` nor `derived` is carried by
+**link records**: one record per linked pair, of a type the store
+derives from the relation, `sys.link.<type>.<relation>`, keyed by the
+pair (`from`, `to`) and holding the relation's own fields.
+`docs/log-format.md` §2.3 specifies it. Links are written and removed
+by the record events the log already has (`record_upserted`,
+`record_ingested`, `record_retired`); no event kind is added.
+
+### A relation carried by links has a pair of doors, `link` and `unlink`
 
 The catalog gains a pair of doors per relation carried by links:
 
@@ -17,101 +21,14 @@ The catalog gains a pair of doors per relation carried by links:
   as a sparse patch; writing it again changes its fields.
 - `unlink(who, type, key, relation, to, opts)` removes it.
 
-Both answer an `Outcome` and check the relation's `authority` (who
-writes its links: `authored` by default, `source` for links that
-arrive by ingest) and the principal's grants on the link type's fields,
-as `upsert` does. The tool generator makes one tool per door and
-relation, named after the type and the relation, so that two types'
-relations of one name cannot collide. The WIT package and its drift
-check follow the new doors.
+Both answer an `Outcome` and check the principal's grants on the link
+type's fields, as `upsert` does; `link` also checks the relation's
+`authority` (who writes its links: `authored` by default, `source` for
+links that arrive by ingest). The tool generator makes one tool per
+door and relation, named after the type and the relation, so that two
+types' relations of one name cannot collide. The WIT package and its
+drift check follow the new doors.
 
-The pattern query walks a link relation as it walks a `via` one; an
-engine answers its `edges` from the live link records at the view's
-position, with the link's fields in `Edge.fields`. A relation's fields
-are shape (`docs/decisions/007-schema-hash-covers-shape.md`), so a change
-to them is declared or migrated by
-`docs/decisions/027-shape-changes-are-declared-or-migrated.md`, on the link
-type as on any type.
-
-## Why
-
-A link with fields is a fact with a history: when it was made, by whom,
-from which source, what its fields said then. Records already carry all
-of that: versions, per-field provenance, `as_of`, retirement that keeps
-history, rebuild, verification, the change feed. Two new event kinds
-would have to grow every one of those again, and every reader of the
-log would need a format version 2 to read them. Carrying links as
-records gives them everything records have, and changes nothing a
-version 1 reader knows.
-
-Keying a link by its pair makes a relation a set: a second write of the
-same link changes its fields, never adds a duplicate, and cardinality is
-a check over live links rather than a convention.
-
-Naming the link type under `sys.` keeps the writes where the rules are:
-the `sys.` guard stops a caller from declaring or reshaping it, and the
-ordinary doors refuse its records, so a link is made only through the
-doors that check the relation's authority and cardinality. A verb
-declared on the link type (003, extended) writes a live link's own
-fields and nothing else: under the same authority, with both ends
-checked as `link` checks them, live and answered to its caller, and
-never an end. A `set` that names `from` or `to` is refused when the
-verb is declared, as `link` refuses an end among its fields.
-Each door keeps the order of its family: a verb's call on a link
-answers a stale expected version before it judges the ends, as any verb
-compares the version where it reads its record (024), and `link` judges
-the ends first, as any record write judges its references before the
-version (016).
-
-## What it is not
-
-- It is not a second way to link. A relation is carried either by its
-  `via` field or by link records, never both, and a declaration that
-  would move a relation from one to the other is refused.
-- It is not a graph store beside the lake. Link records live in the same
-  log and projection as every record, and the store's walks read them
-  through the same engine seam.
-- It does not widen what Lakelands reserves by roster
-  (`docs/decisions/003-reservation-by-namespace.md`): link types are
-  recognised by their name, `sys.link.` and the relation, as every
-  system type is.
-
-## Extended: what the code settles
-
-- **Reading links.** Every engine answers a link relation's edges by one
-  rule, `lakelands_core::links::link_edges`, over the live link records
-  at the view's position. At the head, SQLite and PostgreSQL find the
-  candidates through the exact-text index they already keep on `from`
-  and `to`. At an earlier position they read the link type's records
-  there. The engine seam and the projections' schemas are unchanged.
-- **A relation's fields follow 027.**
-  - An added optional link field is a declared change: the owner type
-    is declared again, and its link type with it, in the same append.
-  - A change that reshapes link records (a retyped field, a relation
-    retargeted, or removed and declared again with another target) is
-    refused at `declare` and goes through `migrate` on the owner type.
-    Its preflight reports the link records beside the type's, each field
-    named with its relation, and `migrate_apply` migrates each changed
-    link type in the same append.
-  - A link field is never renamed: a rename is a drop plus an add.
-  - The link type is classified at every declaration, against the one in
-    force. A relation dropped by `migrate` and declared again with
-    another target, or with a field retyped, would reshape the links it
-    kept, so it is refused, naming the link type, and goes through
-    `migrate`.
-  - Narrowing a relation's cardinality is a migration. Its preflight
-    counts the live links that would break the narrower rule, and
-    refuses while any would.
-  - Removing a relation is a migration. Its preflight lists the relation
-    under `dropped` with the number of its live links, as it lists a
-    removed field with its values
-    (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
-    extended); the links stay as history.
-  - The link type is checked as any type is, when its owner is declared:
-    its fields' kinds, functions and embeddings. A field that cannot work
-    fails at `declare`, not at the first write.
-  - A relation removed from its type keeps its link type and its records
-    as history, and its link doors refuse it.
 - **A relation's authority** may change by an ordinary declaration: it
   swaps the door the links arrive by and keeps the links already
   written. A `source` relation's own fields are `source` (or derived):
@@ -124,45 +41,16 @@ version (016).
   shown the type that declares the relation is shown nothing of its link
   type, at these doors and at every other
   (`docs/decisions/006-grants-not-roles.md`, extended).
-- **Retiring an end** keeps its links, as retiring a referenced record
-  keeps the references (032). The walk does not reach the retired record.
-- **A restricted link** is walked only by a principal holding the
-  `restricted` grant. An edge's fields are those of the link type the
-  principal may read: a link's edge comes from its own record, not from
-  the records it joins.
 - **Tools and rights.** `describe` names, per type, the relations whose
   links the principal may write: those whose links are `authored` and
   whose link type's `from` and `to` the principal may write. The tool
   generator makes `<type>_<relation>_link` and `_unlink` for them, and
   checks their names for collisions with every other tool. A link type's
   own description offers `find` and `get`, never `upsert` or `retire`.
-- **A trigger on a relation** watches its link type: `on` names
-  `sys.link.<type>.<relation>`. It fires on every write of a link, as a
-  trigger on a type fires on every write of a record: `link`, a link
-  written again, `unlink`, and each link a source ingests, per window.
-  Its guard reads the link's fields (`from`, `to` and the relation's
-  own), and `changed(f)` holds on a write that changes `f`. On `unlink`
-  the guard reads the link's fields as they were, and none reads as
-  changed. A host tells a link from an unlink by the write the
-  `trigger_fired` event's `cause` names: `record_upserted` or
-  `record_ingested` against `record_retired`. A relation carried by a
-  reference field has no link type, since its links change with the
-  field: a trigger naming one is refused on `on`, pointing at
-  `changed(<field>)` on the type. The trigger declaration gains no
-  member, so the log format does not change.
 - **The WIT package** gains the two doors, `relation-decl.authority` and
-  `type-rights.link`, and stays at `lakelands:data@0.2.0`, which is not
-  released yet.
+  `type-rights.link`.
 
-## Extended: a relation may instead be derived
-
-A relation may have no carrier at all: a derived relation connects
-records by matching values when the store reads, and stores no link
-(`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`).
-The carrier rule holds across all three kinds: a relation carried by
-`via`, by link records or by matching values keeps that carrier.
-
-## Extended: the order of refusals (lakelands#338)
+### The link doors refuse in a stated order
 
 The link doors refuse in this order, in the frame every write door
 shares (016, extended): the lake, the context, the door's own checks,
@@ -196,14 +84,98 @@ type is no view, so the steps from the type to the relation answer
 `not_found`, then `invalid` naming the type, and are stated, not
 checked, between themselves.
 
+### The pattern query walks a link relation as it walks a `via` one
 
-## Extended: a renamed relation keeps its edges (lakelands#429)
+The pattern query walks a link relation as it walks a `via` one; an
+engine answers its `edges` from the live link records at the view's
+position, with the link's fields in `Edge.fields`.
 
-A relation's name is part of a type's shape, and names change. A relation
-that disappeared under one name and appeared under another was a removed
-relation and a new one: its links stayed behind under the old link type.
+- **Reading links.** Every engine answers a link relation's edges by one
+  rule, `lakelands_core::links::link_edges`, over the live link records
+  at the view's position. At the head, SQLite and PostgreSQL find the
+  candidates through the exact-text index they already keep on `from`
+  and `to`. At an earlier position they read the link type's records
+  there. The engine seam and the projections' schemas are unchanged.
+- **Retiring an end** keeps its links, as retiring a referenced record
+  keeps the references (032). The walk does not reach the retired record.
+- **A restricted link** is walked only by a principal holding the
+  `restricted` grant. An edge's fields are those of the link type the
+  principal may read: a link's edge comes from its own record, not from
+  the records it joins.
 
-A migration now names the rename, `relation_renames`, old name to new:
+### A change to a relation's fields, target or cardinality is declared or migrated, on the link type as on any type
+
+A relation's fields are shape
+(`docs/decisions/007-schema-hash-covers-shape.md`), so a change to them
+is declared or migrated by
+`docs/decisions/027-shape-changes-are-declared-or-migrated.md`, on the
+link type as on any type.
+
+- An added optional link field is a declared change: the owner type
+  is declared again, and its link type with it, in the same append.
+- A change that reshapes link records (a retyped field, a relation
+  retargeted, or removed and declared again with another target) is
+  refused at `declare` and goes through `migrate` on the owner type.
+  Its preflight reports the link records beside the type's, each field
+  named with its relation, and `migrate_apply` migrates each changed
+  link type in the same append.
+- A link field is never renamed: a rename is a drop plus an add.
+- The link type is classified at every declaration, against the one in
+  force. A relation dropped by `migrate` and declared again with
+  another target, or with a field retyped, would reshape the links it
+  kept, so it is refused, naming the link type, and goes through
+  `migrate`.
+- Narrowing a relation's cardinality is a migration. Its preflight
+  counts the live links that would break the narrower rule, and
+  refuses while any would.
+- Removing a relation is a migration. Its preflight lists the relation
+  under `dropped` with the number of its live links, as it lists a
+  removed field with its values
+  (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+  extended); the links stay as history.
+- The link type is checked as any type is, when its owner is declared:
+  its fields' kinds, functions and embeddings. A field that cannot work
+  fails at `declare`, not at the first write.
+- A relation removed from its type keeps its link type and its records
+  as history, and its link doors refuse it.
+
+### A trigger on a relation watches its link type
+
+A trigger on a relation watches its link type: `on` names
+`sys.link.<type>.<relation>`. It fires on every write of a link, as a
+trigger on a type fires on every write of a record: `link`, a link
+written again, `unlink`, and each link a source ingests, per window.
+Its guard reads the link's fields (`from`, `to` and the relation's
+own), and `changed(f)` holds on a write that changes `f`. On `unlink`
+the guard reads the link's fields as they were, and none reads as
+changed. A host tells a link from an unlink by the write the
+`trigger_fired` event's `cause` names: `record_upserted` or
+`record_ingested` against `record_retired`. A relation carried by a
+reference field has no link type, since its links change with the
+field: a trigger naming one is refused on `on`, pointing at
+`changed(<field>)` on the type. The trigger declaration gains no
+member, so the log format does not change.
+
+### A verb on a link type writes a link's own fields and never an end
+
+A verb declared on the link type (003, extended) writes a live link's
+own fields and nothing else: under the relation's authority, with both
+ends checked as `link` checks them, live and answered to its caller,
+and never an end. A `set` that names `from` or `to` is refused when the
+verb is declared, as `link` refuses an end among its fields. Each door
+keeps the order of its family: a verb's call on a link answers a stale
+expected version before it judges the ends, as any verb compares the
+version where it reads its record (024), and `link` judges the ends
+first, as any record write judges its references before the version
+(016).
+
+### A renamed relation keeps its edges
+
+A relation's name is part of a type's shape, and names change. In a
+migration that names no rename, a relation that disappears under one
+name and appears under another is a removed relation and a new one: its
+links stay behind under the old link type. A migration names the
+rename, `relation_renames`, old name to new:
 
 - **The edges are the same edges.** A relation carried by a `via` field
   or derived from matching values has no record of its own, and is named
@@ -251,3 +223,93 @@ A migration now names the rename, `relation_renames`, old name to new:
   both directions of time, a permission never.
 - **The log's format** takes `relation_renames` as a member of a
   `migrated` event; a migration that renames no relation leaves it out.
+
+## Why
+
+A link with fields is a fact with a history: when it was made, by whom,
+from which source, what its fields said then. Records already carry all
+of that: versions, per-field provenance, `as_of`, retirement that keeps
+history, rebuild, verification, the change feed. Two new event kinds
+would have to grow every one of those again, and every reader of the
+log would need a step of the format to read them. Carrying links as
+records gives them everything records have, and changes nothing a
+reader of the log knows.
+
+Keying a link by its pair makes a relation a set: a second write of the
+same link changes its fields, never adds a duplicate, and cardinality is
+a check over live links rather than a convention.
+
+Naming the link type under `sys.` keeps the writes where the rules are:
+the `sys.` guard stops a caller from declaring or reshaping it, and the
+ordinary doors refuse its records, so a link is made only through the
+doors that check the relation's authority and cardinality.
+
+## What it is not
+
+- It is not a second way to link. A relation is carried by its `via`
+  field or by link records, never both, or has no carrier at all: a
+  derived relation connects records by matching values when the store
+  reads, and stores no link
+  (`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`).
+  A relation carried by `via`, by link records or by matching values
+  keeps that carrier, and a declaration that would move a relation from
+  one to another is refused.
+- It is not a graph store beside the lake. Link records live in the same
+  log and projection as every record, and the store's walks read them
+  through the same engine seam.
+- It does not widen what Lakelands reserves by roster
+  (`docs/decisions/003-reservation-by-namespace.md`): link types are
+  recognised by their name, `sys.link.` and the relation, as every
+  system type is.
+
+## How it came to be
+
+- The first version: a relation without `via` is carried by link
+  records, written through `link` and `unlink` and walked as a `via`
+  relation is; both doors were said to check the relation's authority,
+  and the log format was said not to change.
+- With the code: how links are read, how a relation's fields, its
+  cardinality and its authority change, the tools and the rights, and
+  `unlink` removes a link whatever the relation's authority.
+- A trigger on a relation watches its link type (lakelands#194).
+- A relation may be derived instead, with no carrier, and the carrier
+  rule covers all three kinds (lakelands#252).
+- The order in which the link doors refuse is stated (lakelands#338).
+- A migration's preflight lists a removed relation with its live links
+  (lakelands#437).
+- A migration names a relation's rename and its links move with it;
+  before, a renamed relation was a removed one and a new one. The log's
+  format took a member for it, `relation_renames`, so the first
+  version's sentence that the log format does not change held no longer
+  (lakelands#429).
+- A principal not shown the type that declares a relation is shown
+  nothing of its link type (lakelands#595).
+- A verb may be declared on a relation's link type, and none on a link
+  type no relation carries (lakelands#759).
+- The first rule's sentence on the log format and the rename's item on
+  the log's format name no format version by its number
+  (lakelands#801).
+- The order of the link doors says what gives way to a retry, and that
+  a retry which itself fails has the retry's place; the doors answered
+  so before, and the order had not said it (lakelands#799).
+- A relation's removal is refused while a verb is declared on its
+  link type; before, the verb stayed in force and went on writing links
+  no relation carried. The record says that a trigger, a view and an
+  object set stay there over the links it keeps, as they did before
+  (lakelands#843).
+- The order is narrowed on what gives way to a retry: the relation
+  shown where it is declared, and not one a migration removed since.
+  The order had said the relation declared and shown, and the doors
+  answered so before (lakelands#843).
+- The record says the order each door keeps: a verb's call on a link
+  answers a stale expected version before the ends, `link` the ends
+  first; the doors answered so before (lakelands#844).
+- Corrected at the rewrite (lakelands#817): the WIT package was said to
+  stay at `lakelands:data@0.2.0`, not yet released; the package takes
+  the number of the release that first ships it (034), and `wit/` says
+  so.
+- At the rewrite (lakelands#817): the sentences in "Why" on what two
+  new event kinds would cost every reader of the log name no format
+  version by its number; `docs/log-format.md` has it. The first rule's
+  sentence that the log format does not change, untrue since
+  lakelands#429, left.

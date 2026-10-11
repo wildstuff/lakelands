@@ -2,12 +2,33 @@
 
 ## What is decided
 
+### An aging rule is a record of `sys.aging_rule`
+
 An **aging rule** moves a field of every record of a type from one
 value to another when a condition holds on a date: an open invoice
 becomes overdue thirty days after it fell due. A rule is a record of the
-system type `sys.aging_rule` (`on`, `field`, `from`, `to`, `when`),
-written through the ordinary doors under grants and checked when it is
-written; `docs/seams.md` gives the shape.
+system type `sys.aging_rule`, written through the ordinary doors under
+grants and checked when it is written. The type the store declares has
+seven fields: `name`, its key, and `description`, for people, beside
+the five working fields `on`, `field`, `from`, `to` and `when`
+(`docs/seams.md` §`SystemVocabulary` gives the table).
+
+### A rule carries its author's authority
+
+A rule carries its author's authority. `age` moves records as the
+system, for every principal and none, so the rights are checked when
+the rule is written: its author must be able to write the field the
+rule moves and to read every field its condition reads, or the rule is
+refused as not granted. Otherwise a rule would let its author write
+what it may not write, and use the condition to learn, record by
+record, what it may not read (024).
+
+### A rule never moves a key field
+
+A rule never moves a key field. The key names the record; moving a key
+field would make the record disagree with its own key.
+
+### `age` runs every rule for one date, and a date aged twice is written once
 
 `LakeStore::age(today)` runs every rule for one date. Inside a rule's
 condition, `today()` and `now()` are that date at midnight, never the
@@ -19,6 +40,37 @@ and the date (`docs/log-format.md` §3), and the store appends nothing
 for an id already in the lake: aging a date twice writes it once. A
 condition that cannot be evaluated for a record leaves the record as it
 is.
+
+### A date is a midnight
+
+A date is a midnight. `age` takes a `Timestamp` at UTC midnight, the
+form the aging id already writes the date in; any other time is refused
+as invalid, naming `today`. Aging gains no date type of its own: the
+contract holds a storage kind `date` for a field's values (011), and
+`age` takes its date, as `today()` gives one, as a `Timestamp`.
+
+### Every record of the type is read, restricted ones included
+
+Every record of the type is read, restricted ones included. Aging is
+the host's maintenance of its own lake, not a principal's read, and a
+rule that skipped withheld records would leave them in a state no other
+record of the type can be in.
+
+### A rule that no longer fits is skipped, never run half
+
+A rule that no longer fits is skipped, never run half. The lake's shape
+can change after a rule is written: its type or field gone, the field
+no longer written by `upsert`, `from` no longer a value of it. Such a
+rule moves nothing, the report names it with the reason, and the other
+rules run, so one stale rule neither stops the day nor goes unnoticed.
+A move the store would refuse for one record is counted with the failed
+guards and leaves that record, for the reason a failed guard does.
+
+### The run holds the writer
+
+The run holds the writer. Rules run one after another under the
+writer's lock, each one append, so a rule sees what the rules before it
+moved, and a write waits for the run instead of racing it.
 
 ## Why
 
@@ -53,40 +105,18 @@ shape, and every change is a version with its writer.
   should happen because an invoice is overdue is a trigger's and a
   host's.
 
-## Extended: what the code settles
+## How it came to be
 
-- **A date is a midnight.** `age` takes a `Timestamp` at UTC midnight,
-  the form the aging id already writes the date in; any other time is
-  refused as invalid, naming `today`. The contract gains no second date
-  type.
-- **Every record of the type** is read, restricted ones included. Aging
-  is the host's maintenance of its own lake, not a principal's read, and
-  a rule that skipped withheld records would leave them in a state no
-  other record of the type can be in.
-- **A rule that no longer fits is skipped, never run half.** The lake's
-  shape can change after a rule is written: its type or field gone, the
-  field no longer written by `upsert`, `from` no longer a value of it.
-  Such a rule moves nothing, the report names it with the reason, and
-  the other rules run, so one stale rule neither stops the day nor goes
-  unnoticed. A move the store would refuse for one record is counted
-  with the failed guards and leaves that record, for the reason a
-  failed guard does.
-- **A rule never moves a key field.** The key names the record; moving
-  a key field would make the record disagree with its own key.
-- **The run holds the writer.** Rules run one after another under the
-  writer's lock, each one append, so a rule sees what the rules before
-  it moved, and a write waits for the run instead of racing it.
-- **A rule carries its author's authority.** `age` moves records as the
-  system, for every principal and none, so the rights are checked when
-  the rule is written: its author must be able to write the field the
-  rule moves and to read every field its condition reads, or the rule
-  is refused as not granted. Otherwise a rule would let its author write
-  what it may not write, and use the condition to learn, record by
-  record, what it may not read (024).
-
-## Corrected (2026-09-25): the rule's seven fields
-
-`sys.aging_rule` is listed above by its five working fields. The type
-the store declares has seven: `name`, its key, and `description`, for
-people, beside `on`, `field`, `from`, `to` and `when` (`docs/seams.md`
-§`SystemVocabulary` gives the table).
+- The first version: a rule is a record of `sys.aging_rule`, listed by
+  its five working fields, and `age` runs every rule for one date,
+  once.
+- What the code settled was added: a date is a midnight, every record
+  of the type is read, a rule that no longer fits is skipped, no key
+  field moves, the run holds the writer, and a rule carries its
+  author's authority.
+- Corrected on 2026-09-25: the type the store declares has seven
+  fields, `name` and `description` beside the five.
+- Corrected at the rewrite (lakelands#817): the contract was said to
+  gain "no second date type". Since lakelands#702 it holds a `date`
+  storage kind for a field's values; `age` still takes a `Timestamp`,
+  and `today()` still gives one.

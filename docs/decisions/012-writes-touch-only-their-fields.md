@@ -2,6 +2,8 @@
 
 ## What is decided
 
+### An `upsert` is a sparse patch, merged per field
+
 An `upsert` is a sparse patch, merged per field. A field absent from the
 patch is unchanged; a field set to `null` is cleared. A writer that
 sends only its own fields cannot erase anyone else's.
@@ -11,11 +13,28 @@ record safe by construction: each principal writes only the fields it is
 granted, and a patch that carries a field its principal may not write is
 refused whole.
 
+### A field that declares `clear` is cleared in the event that changes its input, transitively
+
 A field may declare that it depends on other fields (`depends_on`) and
 what happens when one of those inputs changes (`on_input_change: keep |
 clear`). With `clear`, the fold clears the dependent field in the same
 event that changes the input. With `keep`, the value stays, and its
 `known_at` shows it is older than its inputs.
+
+When the fold clears a field because an input changed, the clearing is
+itself a change: a field that depends on the cleared field, with
+`on_input_change: clear`, is cleared in the same event, and so on until
+nothing more changes. A field the write sets itself is never cleared by
+this rule.
+
+### A derived field computed at the write is recomputed in the same event, or cleared
+
+A derived field computed at the write is recomputed in the same event,
+in dependency order. If its expression cannot be evaluated for the
+record — an input is absent, a division by zero, a value that does not
+fit the field — the field is cleared rather than left holding a value
+computed from inputs that no longer hold (023). A derived field computed
+at the read is never stored (052).
 
 ## Why
 
@@ -43,16 +62,13 @@ write, deterministically, and a replay reproduces it.
 - `keep` does not hide staleness; it leaves the decision to the reader,
   with the evidence in the field's metadata.
 
-## Extended: clearing is transitive, and a derived value that cannot be computed is cleared
+## How it came to be
 
-When the fold clears a field because an input changed, the clearing is
-itself a change: a field that depends on the cleared field, with
-`on_input_change: clear`, is cleared in the same event, and so on until
-nothing more changes. A field the write sets itself is never cleared by
-this rule.
-
-A derived field is recomputed in the same event, in dependency order. If
-its expression cannot be evaluated for the record — an input is absent,
-a division by zero, a value that does not fit the field — the field is
-cleared rather than left holding a value computed from inputs that no
-longer hold (023).
+- The first version: the sparse patch, and `depends_on` with
+  `on_input_change`.
+- Clearing is transitive, and a derived value that cannot be computed
+  is cleared.
+- Corrected at the rewrite (lakelands#817): "A derived field is
+  recomputed in the same event" was said of every derived field; 052
+  added fields computed at every read, which the fold computes in no
+  event and no record stores.
