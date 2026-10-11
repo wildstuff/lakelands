@@ -1998,14 +1998,15 @@ impl<'a> Reader<'a> {
     /// type it names: the type it writes or a called verb is on; of a
     /// migration's `to` and of each type a bundle declares, what
     /// [`TypeDecl::names_against`] names against the type in force; and
-    /// the type each verb, trigger and object set of a bundle is on. A
-    /// link type is shown only with both its ends, and a type a bundle
-    /// brings only as `describe` would show it once in force. Nor is a
-    /// call there whose verb, as either lake declares it, reads a field
-    /// its reader may not read: `describe` does not name the verb, and the
-    /// entry would tell that its `requires` held (024, extended). A
-    /// migration's report counts every owner's records, so a holder of
-    /// `only` is listed none (051).
+    /// the type each verb, trigger and object set of a bundle is on, with
+    /// the type the one in force under its name stands on, which would be
+    /// gone with it (lakelands#893). A link type is shown only with both
+    /// its ends, and a type a bundle brings only as `describe` would show
+    /// it once in force. Nor is a call there whose verb, as either lake
+    /// declares it, reads a field its reader may not read: `describe`
+    /// does not name the verb, and the entry would tell that its
+    /// `requires` held (024, extended). A migration's report counts every
+    /// owner's records, so a holder of `only` is listed none (051).
     pub(crate) fn entry(
         &self,
         asked: &Principal,
@@ -2048,9 +2049,19 @@ impl<'a> Reader<'a> {
                             put.complete(t);
                             named.extend(names(t))
                         }
-                        Declaration::Verb(v) => named.push(v.on.clone()),
-                        Declaration::Trigger(t) => named.push(t.on.clone()),
-                        Declaration::ObjectSet(s) => named.push(s.of.clone()),
+                        Declaration::Verb(v) => {
+                            named.extend(o.verb(&v.name).ok().map(|x| x.on.clone()));
+                            named.push(v.on.clone())
+                        }
+                        Declaration::Trigger(t) => {
+                            let was = o.triggers.get(t.name.as_str());
+                            named.extend(was.map(|x| x.decl.on.clone()));
+                            named.push(t.on.clone())
+                        }
+                        Declaration::ObjectSet(s) => {
+                            named.extend(o.set(&s.name).map(|x| x.of.clone()));
+                            named.push(s.of.clone())
+                        }
                         Declaration::ValueType(_) | Declaration::Function(_) => {}
                     }
                 }

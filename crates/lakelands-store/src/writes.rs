@@ -2341,6 +2341,8 @@ impl Call<'_> {
             // pending. The proposer writes what it declares; the link types
             // the store derives stay the system's.
             ProposedWrite::Declare { declarations } => {
+                let seen = self.types_shown(&w.ontology);
+                self.tools_as_shown(&w.ontology, &seen, declarations)?;
                 self.check_bundle(&w.ontology, declarations)?;
                 let mut changed = declarations.clone();
                 changed.retain(|d| !w.ontology.in_force(d));
@@ -2351,6 +2353,8 @@ impl Call<'_> {
                 // The shape is the type's whole: on a type changed since the
                 // proposal it would remove what was added, shown to no one
                 // (013, extended).
+                let (seen, to) = (self.types_shown(&w.ontology), migration.to.clone());
+                self.tools_as_shown(&w.ontology, &seen, &[Declaration::Type(to)])?;
                 let ty = &migration.to.name;
                 let head = shape::schema_hash(w.ontology.ty(ty)?).ok();
                 let changed = || invalid(Case::ChangedSinceProposed { ty: ty.clone() });
@@ -2684,20 +2688,16 @@ impl Call<'_> {
     /// author is shown it, so a field the author may not know of answers as
     /// one the type does not have, whatever reads it. Then a field it knows
     /// of and may not read is refused as not granted, where what its author
-    /// adds or changes reads its value.
+    /// adds or changes reads its value. Before either, a declaration under
+    /// a name, or with a tool's name, that what its author is not shown
+    /// holds is not granted.
     fn reads_as_author(&self, o: &Ontology, sent: &[Declaration], reshapes: bool) -> Result<()> {
         // A type its author is not shown is a type that is not declared,
         // for whatever names it; to declare it is not granted, and names
         // nothing of it.
-        let sees = Sight::held(self.who, o);
-        let shown = |ty: &TypeName| sees.ty(ty).is_ok();
-        let hidden = |d: &Declaration| matches!(d, Declaration::Type(t) if o.types.contains_key(&t.name) && !shown(&t.name));
+        let mut seen = self.types_shown(o);
+        let hidden = |d: &Declaration| matches!(d, Declaration::Type(t) if o.types.contains_key(&t.name) && seen.ty(&t.name).is_err());
         granted(!sent.iter().any(hidden))?;
-        let mut seen = o.clone();
-        (seen.types).retain(|name, _| shown(name));
-        for e in seen.types.values_mut().map(Arc::make_mut) {
-            rights::known_fields(self.who, &mut e.decl, &|n| o.ty(n).ok());
-        }
         // A set its author is not shown is one that is not declared, as a
         // read of it answers (024): a proposal that names it learns nothing
         // of what its filter reads, and to declare it is not granted, as
@@ -2707,8 +2707,20 @@ impl Call<'_> {
         let sees = Sight::held(self.who, &declared);
         let shown = |d| sees.lists(&Declaration::ObjectSet(d));
         (seen.object_sets).retain(|_, e| shown(e.decl.clone()));
-        let taken = |d: &Declaration| matches!(d, Declaration::ObjectSet(s) if o.set(&s.name).is_some() && seen.set(&s.name).is_none());
+        // So for a trigger, a verb and a function that computes a field,
+        // known by their name alone: the one in force would be gone with
+        // the one declared (lakelands#893).
+        let computed = |x: &FieldDecl, f: &str| x.function.as_deref() == Some(f);
+        let idle =
+            |f: &str| !(o.types.values()).any(|e| e.decl.fields.iter().any(|x| computed(x, f)));
+        let taken = |d: &Declaration| {
+            let mut held = declared.iter().map(|x| &x.declaration);
+            !matches!(d, Declaration::Type(_))
+                && !matches!(d, Declaration::Function(f) if idle(f.name.as_str()))
+                && held.any(|x| x.what() == d.what() && !sees.lists(x))
+        };
         granted(!sent.iter().any(taken))?;
+        self.tools_as_shown(o, &seen, sent)?;
         // A valid time left out where the one in force names a field outside
         // its author's view stands as declared: left out of both sides, it is
         // checked whole at apply. A valid time its author sends, the one in
@@ -2787,6 +2799,58 @@ impl Call<'_> {
         report.fields.retain(|u| sees.reads(&u.ty, &u.field));
         report.first.retain(|m| sees.reads(&m.ty, &m.field));
         report
+    }
+
+    /// `o` with the types `self.who` is shown, each as it knows it.
+    fn types_shown(&self, o: &Ontology) -> Ontology {
+        let (sees, mut seen) = (Sight::held(self.who, o), o.clone());
+        (seen.types).retain(|name, _| sees.ty(name).is_ok());
+        for e in seen.types.values_mut().map(Arc::make_mut) {
+            rights::known_fields(self.who, &mut e.decl, &|n| o.ty(n).ok());
+        }
+        seen
+    }
+
+    /// A tool's name is taken as a trigger's is (lakelands#896): where the
+    /// lake with `set` in it has a problem with its tools' names that the
+    /// lake as `self.who` is shown it has not, a side of it is a type, a
+    /// relation or a verb it is not shown, which the refusal would name.
+    /// A type of `set` keeps the relations in force `self.who` is not
+    /// shown: an author's view is completed with them ([`as_author`]),
+    /// and a proposal holds them. `seen` is [`Self::types_shown`] of `o`.
+    /// A side its author is not shown is first looked for among the names
+    /// of what `seen` does not hold ([`declare::unshown_tool_problems`]):
+    /// a declaration that meets none there, as nearly every one, costs no
+    /// copy of the lake and no pass over its names.
+    fn tools_as_shown(&self, o: &Ontology, seen: &Ontology, set: &[Declaration]) -> Result<()> {
+        if declare::unshown_tool_problems(o, seen, set).is_empty() {
+            return Ok(());
+        }
+        let (declared, mut whole) = (o.declared(), set.to_vec());
+        let sees = Sight::held(self.who, &declared);
+        for d in &mut whole {
+            if let Declaration::Type(t) = d
+                && let Ok(was) = o.ty(&t.name)
+            {
+                let named = |r: &RelationDecl| t.relations.iter().any(|x| x.name == r.name);
+                let kept = |r: &&RelationDecl| !sees.relation(was, r) && !named(r);
+                let kept: Vec<_> = was.relations.iter().filter(kept).cloned().collect();
+                t.relations.extend(kept);
+            }
+        }
+        // With the link types the set brings, as its check reads them.
+        let problems = |mut o: Ontology, set: &[Declaration]| {
+            set.iter().for_each(|d| put_as_appended(&mut o, d, Some));
+            Vec::from_iter(set.iter().map(|d| declare::tool_problems(&o, d)))
+        };
+        // What it is shown is part of the lake: no problem there, none here.
+        let all = problems(o.clone(), &whole);
+        if all.iter().all(Vec::is_empty) {
+            return Ok(());
+        }
+        let mut seen = seen.clone();
+        (seen.verbs).retain(|_, v| sees.lists(&Declaration::Verb(v.decl.clone())));
+        granted(all == problems(seen, set))
     }
 
     /// Reads a migration as its author's view of its type ([`as_author`]),
@@ -3138,8 +3202,13 @@ impl Call<'_> {
         }
         let mut probe = w.ontology.clone();
         probe.put(Declaration::Type(before.clone()), 0, None);
-        declare::check_declaration(&probe, &Declaration::Type(m.to.clone()), false)
-            .or_else(declare::unless_a_migration)?;
+        let to = Declaration::Type(m.to.clone());
+        if let Err(e) = declare::check_declaration(&probe, &to, false) {
+            // A reshape is answered before the tools' names are read, and a
+            // migration leaves no problem among them either (027, extended).
+            declare::unless_a_migration(e)?;
+            declare::tool_names(&probe, &to)?;
+        }
         // A view over the type, as its source or a merged one, reads the
         // shape the migration leaves: `declare` must still take each such
         // view against it, or the view would refuse every read after.

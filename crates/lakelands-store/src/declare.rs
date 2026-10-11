@@ -41,7 +41,7 @@ use lakelands_api::ontology::{
     Authority, Derived, FieldDecl, OnInputChange, RelationDecl, StorageKind, TriggerDecl, TypeDecl,
     ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, lands_in_the_fold,
 };
-use lakelands_api::tools::name_problems;
+use lakelands_api::tools::{NameProblem, name_problems};
 use lakelands_api::write::{Carrier, Declaration, ObjectSetDecl};
 use lakelands_api::{Error, FieldName, Refusal, RelationName, Result, TypeName, VerbName};
 use lakelands_core::expr::{Place as Eval, check, parse};
@@ -1304,10 +1304,31 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
         }
     }
     reads_its_type(o, d)?;
+    tool_names(o, d)
+}
+
+/// Refuses `d` where the lake `o` with it declared has a problem among its
+/// tools' names.
+pub(crate) fn tool_names(o: &Ontology, d: &Declaration) -> Result<()> {
+    let problems = tool_problems(o, d);
+    match problems.is_empty() {
+        true => Ok(()),
+        false => Err(invalid(Case::ToolNames { problems })),
+    }
+}
+
+/// What is wrong with the tool names of the lake `o` with `d` declared,
+/// a type with the link types it brings, alone as in a set: no door
+/// leaves a lake with a problem among them (027, extended).
+pub(crate) fn tool_problems(o: &Ontology, d: &Declaration) -> Vec<NameProblem> {
     let mut types: Vec<TypeName> = o.types.keys().cloned().collect();
     let mut verbs: Vec<VerbName> = o.verbs.keys().cloned().collect();
     match d {
-        Declaration::Type(t) if !types.contains(&t.name) => types.push(t.name.clone()),
+        Declaration::Type(t) => {
+            let brought = links::link_types_of(t).into_iter().map(|l| l.name);
+            let new = brought.chain([t.name.clone()]);
+            types.extend(new.filter(|n| !o.types.contains_key(n)));
+        }
         Declaration::Verb(v) if !verbs.contains(&v.name) => verbs.push(v.name.clone()),
         _ => {}
     }
@@ -1320,11 +1341,43 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
     if let Declaration::Type(t) = d {
         relations.extend(link_relations(t));
     }
-    let problems = name_problems(&types, &verbs, &relations);
-    if !problems.is_empty() {
-        return Err(invalid(Case::ToolNames { problems }));
+    name_problems(&types, &verbs, &relations)
+}
+
+/// What is wrong with the tool names of `set` beside those of `o` that
+/// its author may not be shown, `seen` being the types of `o` it is
+/// shown, each with the relations it is: each verb's, and each type's
+/// and each relation's that `seen` does not hold. The lake in force has
+/// no such problem, so where this finds none, every problem of the lake
+/// with `set` in it lies between what its author is shown, and none of
+/// the lake's other names is made to say so.
+pub(crate) fn unshown_tool_problems(
+    o: &Ontology,
+    seen: &Ontology,
+    set: &[Declaration],
+) -> Vec<NameProblem> {
+    let (mut types, mut relations) = (Vec::new(), Vec::new());
+    for (name, e) in &o.types {
+        let view = seen.types.get(name).map(|s| &s.decl.relations);
+        types.extend(view.is_none().then(|| name.clone()));
+        let shown = |r: &RelationDecl| view.is_some_and(|v| v.iter().any(|s| s.name == r.name));
+        let unshown = |r: &&RelationDecl| r.carried_by_links() && !shown(r);
+        let named = e.decl.relations.iter().filter(unshown);
+        relations.extend(named.map(|r| (name.clone(), r.name.clone())));
     }
-    Ok(())
+    let mut verbs: Vec<VerbName> = o.verbs.keys().cloned().collect();
+    for d in set {
+        match d {
+            Declaration::Type(t) => {
+                types.extend(links::link_types_of(t).into_iter().map(|l| l.name));
+                types.push(t.name.clone());
+                relations.extend(link_relations(t));
+            }
+            Declaration::Verb(v) if !verbs.contains(&v.name) => verbs.push(v.name.clone()),
+            _ => {}
+        }
+    }
+    name_problems(&types, &verbs, &relations)
 }
 
 /// How a value type's new declaration relates to the one in force
