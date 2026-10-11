@@ -2791,7 +2791,7 @@ impl Call<'_> {
     /// A value type's report as the caller may know it (024): a use and a
     /// misfit are shown where it is shown the type and reads the field. The
     /// totals and `fits` stay whole, so that a reader never sees no misfit
-    /// beside a report that does not fit, and the id names the whole report.
+    /// beside a report that does not fit, and the id is made over this.
     /// A report that renames values is never trimmed: one not shown every
     /// field it writes is not granted it ([`Call::renames_shown`]).
     pub fn shown_value_type(&self, o: &Ontology, mut report: ValueTypeReport) -> ValueTypeReport {
@@ -3738,10 +3738,12 @@ impl Call<'_> {
     }
 }
 
-/// A value type's report named by what it says and where the lake stood
-/// (`head`), its own id left empty: an apply after the lake moved is
-/// refused. Its `conditions` are its reader's, so two readers shown
-/// otherwise are given two ids for one lake.
+/// A value type's report named by what it says to its reader and where
+/// the lake stood (`head`), its own id left empty: an apply after the lake
+/// moved is refused. Its uses, its misfits named and its `conditions` are
+/// its reader's, so two readers shown otherwise are given two ids for one
+/// lake, and what a reader is not shown moves no id; one that renames is
+/// shown whole or not at all, and named whole.
 pub(crate) fn value_report_id(
     report: &ValueTypeReport,
     to: &ValueTypeDecl,
@@ -4002,9 +4004,11 @@ impl Call<'_> {
                     if misfit {
                         used.misfits += 1;
                         // Named as a sample key is: of a record its reader
-                        // is answered, one held as it stands asked no read.
+                        // is answered, one held as it stands asked no read,
+                        // and in a field it reads, or it takes no place.
                         let shown = || crate::reads::answered(view, &sees, &name, &r.key);
-                        if first.len() < room && !sees.withheld(&r) && shown() {
+                        let read = sees.reads(&name, &f.name) && !sees.withheld(&r);
+                        if first.len() < room && read && shown() {
                             first.push(Misfit {
                                 ty: name.clone(),
                                 key: r.key.clone(),
@@ -4041,7 +4045,10 @@ impl Call<'_> {
             conditions(&w.ontology, view, self.who, &mut report, &renames)?;
         }
         let head = view.position().map_or(0, |p| p.0);
-        report.report_id = value_report_id(&report, to, &m.renames, head);
+        // Named as its reader is shown it; one that renames is never trimmed.
+        let shown = self.shown_value_type(&w.ontology, report.clone());
+        let said = if renames.is_empty() { &shown } else { &report };
+        report.report_id = value_report_id(said, to, &m.renames, head);
         plan.report = report;
         Ok(plan)
     }

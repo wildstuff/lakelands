@@ -19,9 +19,9 @@ use lakelands_api::location::Limits;
 use lakelands_api::seam::{FeedFilter, Seams};
 use lakelands_api::write::Migration;
 use lakelands_api::{
-    Error, LakeStore, Location, Position, Refusal, RelationName, TypeName, WriteOpts,
+    Access, Error, LakeStore, Location, Position, Refusal, RelationName, TypeName, WriteOpts,
 };
-use lakelands_core::conformance::fixture::{Lake, object_set_on, patch};
+use lakelands_core::conformance::fixture::{Lake, field_access, object_set_on, patch};
 use lakelands_engine_mem::MemoryOpener;
 use probed::{Probe, ProbedOpener};
 use serde_json::json;
@@ -476,5 +476,58 @@ async fn a_value_types_preflight_lists_its_misfits_by_field_across_pages() {
         probe.most.load(Ordering::SeqCst) <= 1_024,
         "the preflight read {} rows in one scan; it reads a page at a time",
         probe.most.load(Ordering::SeqCst)
+    );
+}
+
+/// A value type's report and its id tell nothing of a field its reader
+/// does not read, or of a record held from it (lakelands#875): three lakes
+/// that differ only in which of three records holds the one misfit there,
+/// one read by the reader in no field, one restricted, one of another type.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_value_types_report_is_one_whichever_unread_record_holds_a_misfit() {
+    let tier = |one_of: &[&str]| json!({"name": "tier", "kind": "text", "one_of": one_of});
+    let mut said = Vec::new();
+    for (lake_name, tiers) in [
+        ("first-x", ["basic", "gold", "gold"]),
+        ("first-y", ["gold", "basic", "gold"]),
+        ("first-z", ["gold", "gold", "basic"]),
+    ] {
+        let (store, _) = lake(lake_name, 20_000).await;
+        let l = Lake::of(store.as_ref());
+        let mut declared = tier(&["gold", "basic", "silver"]);
+        declared["declare"] = json!("value_type");
+        l.declare_json(declared).await.unwrap();
+        for ty in ["aaa", "acct", "bbb"] {
+            let field = json!({"name": "tier", "type": {"kind": "text", "value_type": "tier"}});
+            l.declare_json(json!({"declare": "type", "name": ty, "fields": [field]}))
+                .await
+                .unwrap();
+        }
+        let three = [("aaa", "v1"), ("aaa", "h1"), ("bbb", "b1")];
+        for ((ty, key), tier) in three.into_iter().zip(tiers) {
+            l.upsert(ty, key, json!({"tier": tier})).await.unwrap();
+        }
+        let (aaa, h1) = ("aaa".into(), "h1".into());
+        store.restrict(&aaa, &h1, "a hold".into()).await.unwrap();
+        for n in 0..12 {
+            let basic = json!({"tier": "basic"});
+            l.upsert("acct", &format!("a{n:02}"), basic).await.unwrap();
+        }
+        // The reader holds `schema`, no `restricted`, and reads `tier` of
+        // neither `aaa` nor `bbb`.
+        let mut reader = field_access(store.as_ref(), "reader", "aaa", &[("tier", Access::None)]);
+        let kept = reader.grants.types["aaa"].clone();
+        reader.grants.types.insert("bbb".into(), kept);
+        reader.grants.schema = true;
+        let to: lakelands_api::ontology::ValueTypeDecl =
+            serde_json::from_value(tier(&["gold", "silver"])).unwrap();
+        let report = l.cat.migrate_value_type(&reader, to.into()).await;
+        said.push(json!(report.unwrap().data));
+    }
+    assert!(
+        said[0] == said[1]
+            && said[1] == said[2]
+            && said[0]["first"].as_array().map(Vec::len) == Some(10),
+        "the three lakes answer one report, ten misfits of `acct` named, and one id: {said:?}"
     );
 }
