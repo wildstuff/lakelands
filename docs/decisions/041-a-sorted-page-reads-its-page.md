@@ -12,7 +12,7 @@ is full. A field not asked for is ordered by sorting the type.
 
 - **The key.** Every value in the index is its `sort_key`
   (`lakelands_core::engines`): bytes whose order is the one order across
-  kinds (029), and whose equality is that order's equality, so `1` and
+  kinds (025), and whose equality is that order's equality, so `1` and
   `"1.00"`, or one instant written in two offsets, share a key. The order
   is still defined by `cmp_values`. A property test holds the key to it,
   and the key never decides an order the rulebook does not.
@@ -596,3 +596,5 @@ once, more slowly, until a writer rebuilds.
 - Corrected at the rewrite (lakelands#817): the scalar kinds the store
   takes name `date`, which the setting's check takes and this record's
   list left out.
+- The order it cites stands in 025, where the rules of 029 moved
+  (lakelands#817).

@@ -306,12 +306,14 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   the group and go on with farther vectors. A vector of zeros is never
   answered for a field read through its index, whether the index or the
   scan after it answers the search; a field without the setting scores
-  it 0, and so does every field on a server without pgvector. Some
-  searches read every vector of the
+  it 0, and so does every field on a server without pgvector, and a
+  field whose index is behind the head, which a writer's open builds.
+  Some searches read every vector of the
   field after the index. One is a search the index hands fewer
   candidates than it asked for: on a field smaller than what the search
-  pulls (any field under 65 vectors, and a page deep into a larger
-  one); past 20 000 candidates or pgvector's memory limit for such a
+  pulls (a field under 65 vectors for a search of one ranking, a field
+  no larger than `max_limit` for one that fuses rankings, and a page
+  deep into a larger one); past 20 000 candidates or pgvector's memory limit for such a
   scan (`hnsw.scan_mem_multiplier` times `work_mem`, which stays the
   server's), which a search under a filter that keeps few records
   reaches on a large field; and over a group of several hundred
