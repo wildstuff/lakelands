@@ -2,11 +2,16 @@
 
 ## What is decided
 
+### There are two halves, and the operator names the release at which the first gives way to the second
+
 There are two halves, and the operator names the release at which the
 first gives way to the second.
 
-**Until the first release with real installations: one log format a
-release, and no older lake is read.**
+This replaces the versioning rule of `docs/log-format.md` §6 as it stood
+through format 14's first writing, and the sentences of other records
+that restated it.
+
+### Until the first release with real installations, there is one log format a release, and no older lake is read
 
 - **A release reads and writes one format version,**
   `LOG_FORMAT_VERSION`. Every event of a lake carries it as `v`, from
@@ -68,11 +73,12 @@ release, and no older lake is read.**
     member is where an upgrade starts, so both verifiers of an export
     hold it.
 
-**From that release on: every change of the format carries its upgrade
-path.** How a lake the release before wrote becomes one the new release
-reads is then part of the change, and the suite proves it on a lake the
-release before wrote. Upgrading is then a commitment of the first rank,
-not an option a release may leave out.
+### From the first release with real installations on, every change of the format carries its upgrade path
+
+How a lake the release before wrote becomes one the new release reads is
+then part of the change, and the suite proves it on a lake the release
+before wrote. Upgrading is then a commitment of the first rank, not an
+option a release may leave out.
 
 **What is kept now so that the path is cheap then:**
 
@@ -86,7 +92,7 @@ not an option a release may leave out.
   command (`docs/log-format/vectors/verify.py --stamp N`), so a format
   step is that command and the store's agreement with it.
 
-## What else stops at a format step
+### An import, a mirror and a moved pin stop at a format step
 
 Each of these is refused in the words above and never done in part:
 
@@ -102,6 +108,15 @@ Each of these is refused in the words above and never done in part:
   starts the new release on fresh lakes; what it needs from the old ones
   it writes again through the doors.
 
+### The refusals that have nothing left to say are withdrawn from the catalog
+
+The refusals that told of a range of formats, of a format going down
+along a log and of a member carried below its version have nothing left
+to say. They are withdrawn by the rule of
+`docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`
+("A code leaves by a recorded withdrawal"), and `docs/refusals.md` lists
+them.
+
 ## Why
 
 - **Nothing reads an older lake today.** No installation holds data of
@@ -115,6 +130,9 @@ Each of these is refused in the words above and never done in part:
   Two lakes of one release differed, and a reader's refusal depended on
   where in the log it stood. One number a release is a rule a host can
   hold in its head.
+
+## What it is not
+
 - **The second half is not built early.** An upgrade path written
   before a format it must upgrade from is real would be written against
   a guess. It is written with the first change that needs it.
@@ -122,16 +140,3 @@ Each of these is refused in the words above and never done in part:
   part would answer from a log it does not fully understand. Refusing
   the lake whole, by name and with both numbers, is the one answer that
   cannot be wrong.
-
-## What follows for the catalog
-
-The refusals that told of a range of formats, of a format going down
-along a log and of a member carried below its version have nothing left
-to say. They are withdrawn by the rule of
-`docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`
-("A code leaves by a recorded withdrawal"), and `docs/refusals.md` lists
-them.
-
-This replaces the versioning rule of `docs/log-format.md` §6 as it stood
-through format 14's first writing, and the sentences of other records
-that restated it.

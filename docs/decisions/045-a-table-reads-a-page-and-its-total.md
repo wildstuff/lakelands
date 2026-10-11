@@ -54,8 +54,7 @@ while a refresh, which reads the head, shows the head's.
 - **Not an estimate.** The total is exact at its position. An engine's
   statistics would answer faster and wrongly.
 - **Not offered for an aggregate**, whose groups are no page.
-
-**Rejected: no offset.** A host could reach page k by walking k cursors,
-or by keeping every cursor it has handed out. That pushes the cost of a
-jump onto every host and leaves it unbounded. A bounded `offset` states
-the cost once, here, and keeps it inside the store.
+- **Rejected: no offset.** A host could reach page k by walking k
+  cursors, or by keeping every cursor it has handed out. That pushes the
+  cost of a jump onto every host and leaves it unbounded. A bounded
+  `offset` states the cost once, here, and keeps it inside the store.

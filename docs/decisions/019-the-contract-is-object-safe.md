@@ -2,6 +2,8 @@
 
 ## What is decided
 
+### `Catalog` and `LakeStore` are `dyn`-compatible and asynchronous
+
 `Catalog` and the store facade `LakeStore` are `dyn`-compatible: a door
 holds `Arc<dyn Catalog>`, a host holds `Arc<dyn LakeStore>`, and the
 real store and a remote client are interchangeable
@@ -10,9 +12,18 @@ stream, `Pin<Box<dyn Stream<Item = SourceRecord> + Send>>`, and answers
 a boxed stream of commit acknowledgements. Every other seam is
 `dyn`-compatible too.
 
+### The engine traits are synchronous, and the store hands off to them in one place
+
 The engine traits (`LakeEngine`, `ProjectionStore`, `ProjectionView`,
 `VectorIndex`) are synchronous. The store runs them off its async
 callers.
+
+The store dispatches every call into an engine through one place, a
+single hand-off to the runtime's blocking pool. Nothing in the store
+starts a runtime of its own or parks a caller's executor, so a slow disk
+delays the call that needs it and nothing else.
+
+### The contract crate performs no I/O and names no async runtime
 
 `lakelands-api` performs no I/O, depends on no engine and names no async
 runtime; its only asynchronous vocabulary is the `Stream` trait and
@@ -45,9 +56,8 @@ exists.
 - It does not let an engine block the caller's executor; that is the
   store's job to prevent.
 
-## Extended: one hand-off
+## How it came to be
 
-The store dispatches every call into an engine through one place, a
-single hand-off to the runtime's blocking pool. Nothing in the store
-starts a runtime of its own or parks a caller's executor, so a slow disk
-delays the call that needs it and nothing else.
+- The first version: the object-safe, asynchronous contract, the
+  synchronous engine traits, and a contract crate without a runtime.
+- The store's calls into an engine go through one hand-off.

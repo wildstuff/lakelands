@@ -22,13 +22,14 @@ and its rules are part of the contract:
 
 Every typed expression is checked before it is evaluated — the count of
 a call's arguments, a field where a function names one, aggregates only
-over a group, `changed` and `previous` only in a guard — and one that
-fails the check is refused as invalid. `matches` takes only I-Regexp
-(RFC 9485), refusing any other pattern syntax.
+over a group, `changed` and `previous` only in a guard or a derived
+field — and one that fails the check is refused as invalid. `matches`
+takes only I-Regexp (RFC 9485), refusing any other pattern syntax.
 
 What an evaluation error means belongs to the caller and is fixed per
-caller: a filter refuses the read, a trigger guard does not fire, and a
-derived field is cleared.
+caller: a filter does not match the record, a trigger guard does not
+fire, a derived field is cleared, and a view's measure that fails over
+a group refuses the read of the view as invalid.
 
 An engine that evaluates a filter in its own query language must admit
 exactly the records this evaluator admits; the conformance suite
@@ -54,3 +55,15 @@ what the writer of the filter meant.
 - It does not make every engine evaluate expressions itself. An engine
   may push a filter down or leave it to the store; either way the answer
   is the evaluator's.
+
+## How it came to be
+
+- The first version said that `changed` and `previous` stand only in a
+  guard, and that a filter's evaluation error refuses the read.
+- Corrected at the rewrite (lakelands#817): the check admits `changed`
+  and `previous` in a derived field as in a guard; a filter that fails
+  on a record does not match it, as 028 has it, and the read is not
+  refused.
+- Corrected at the rewrite (lakelands#817): the callers named left out
+  a view's measure. The read that computes the view turns its error
+  into a refusal of the whole read, as invalid, placed at the view.

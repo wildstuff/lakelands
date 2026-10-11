@@ -2,6 +2,8 @@
 
 ## What is decided
 
+### A purge retires every live record a source brought in, in one append
+
 `LakeStore::purge_source(source)` retires every live record one source
 brought in, across every type it reached, in one append, and answers what
 it retired per type. Each retirement is an ordinary `record_retired`,
@@ -9,6 +11,8 @@ written by the store (`system:lakelands`, origin `system`), and reacts as
 a `retire` would: triggers fire and object sets are left in the same
 append. There is no new event kind. Restricted records go too, and so do
 the link records the source brought in for a `source` relation.
+
+### Provenance says what a purge takes, and one co-owned record refuses it whole
 
 Who brought a record in is read from its per-field provenance
 (`docs/decisions/010-provenance-per-field.md`), over the fields that hold
@@ -22,41 +26,24 @@ a person wrote and later cleared holds no value, so it co-owns nothing.
 One co-owned record refuses the whole purge as invalid, naming the count
 and the first ten, and nothing is appended.
 
+A field that declares `initial` co-owns nothing, whoever wrote it last
+(`docs/decisions/050-a-field-declares-its-initial-value.md`). It is
+there because its record is, and the record is there because the source
+brought it: an author who moved the state did not bring the record, and
+when the source is taken back the state goes with it. A whole purge and
+a typed one ask the same rule. The report says what went: `moved`
+holds, per type and field, how many records the purge takes whose such
+field an author had written, and the first ten by key; it is left out
+when empty, and the preflight says the same. Every other authored field
+co-owns, so a record where a person wrote anything else still refuses
+the purge whole.
+
 A type declared without per-field provenance cannot say who brought its
-records in. A purge does not search it and names it in its report:
-opting out of provenance is opting out of purge.
+records in. The purge of a source whole does not search it and names
+it in its report, and a purge of that type alone is refused: opting out
+of provenance is opting out of purge.
 
-## Why
-
-A wrong export, a test feed, or a source the lake stops trusting is one
-thing to take back, and the unit is the source, not the row or the type.
-Retiring record by record makes a hundred decisions of one intent, can
-stop halfway without saying so, and is written again by every host.
-Retracting per type would leave the source's records in other types
-behind, still referring to what went.
-
-Refusing a co-owned record whole is what keeps the act honest: removing
-it would take a person's or another source's values with it, and
-skipping it would leave a count that says less than it did. The host
-decides such records by the ordinary doors and purges again.
-
-Retiring rather than erasing keeps the log the truth: a read as of
-before the purge still sees the feed, and the purge is in the log with
-its writer. The same content ingested again after a purge is a new
-ingest, because the ingest id carries the version it was written over
-(`docs/log-format.md` §3).
-
-## What it is not
-
-- It is not a door. An agent that wants data retracted proposes
-  retirements. The purge is the host's act, beside `rebuild`,
-  `checkpoint` and `age`, with no tool.
-- It is not erasure. Nothing leaves the log.
-- It is not paged. The whole purge is one append, held in memory before
-  it lands, under the writer's lock. A host that cannot afford that for a
-  very large source retires through the doors, type by type.
-
-## Extended: a purge may be read before it is made
+### A purge may be read before it is made
 
 A purge leaves behind every record of another hand that named a record
 it took: a bill whose `partner_id` holds a purged partner's key, another
@@ -82,18 +69,23 @@ every retraction (lakelands#473).
   select through one function. Its report carries an id.
 - **`purge_source` may repeat the id.** It is then refused as invalid if
   the lake has moved since, by any append, as a migration's apply is.
-  The id names the source and the head: the report is a function of the
-  two, so the same head means the same report. Without an id the purge
-  is what it was, and its own report names what it left behind.
+  The id is of the source, the type and the head: the report is a
+  function of the three, so the same head means the same report. An id
+  of the source and the head alone would let the report of the source
+  whole authorise a purge from one type at the same head, and the
+  reverse. An id that does not fit is refused as invalid in one sentence
+  for both causes: the store cannot tell a moved lake from another
+  purge's id. Without an id the purge is what it was, and its own report
+  names what it left behind.
 
 The reference pass reads each type that can refer into the purge once,
 in key order, a page at a time: a type that declares a `via` relation
 to a type the purge takes from, and the link type of a relation one of
 whose ends it takes from. What it holds is the purged keys, a page and
 ten references per relation. The selection itself still reads each
-provenance type whole, as above.
+provenance type whole.
 
-## Extended: a purge may name one type
+### A purge may name one type
 
 A host that wanted one type of a source back had no way to say so. The
 purge read a source and a type written together as a source nobody fed,
@@ -118,38 +110,64 @@ type of the source held back the records of every other
 - **A type that cannot be purged from is refused.** A name that is no
   declared type is not found. A view, and a type declared without
   per-field provenance, are refused as invalid, saying why. The purge
-  of a source whole passes over such a type and names it; a host that
-  asked for exactly that type would read "nothing retired" as "nothing
-  there". A typed report names no type as not searched.
+  of a source whole passes over both, and names the type without
+  provenance as not searched (a view holds no records, and is not
+  named); a host that asked for exactly that type would read "nothing
+  retired" as "nothing there". A typed report names no type as not
+  searched.
 - **The report names its type, and what it left behind.** The
-  references now include the source's own records in its other types
-  that still refer into what went.
-- **The id is of the source, the type and the head.** An id of the
-  source and the head alone would let the report of the source whole
-  authorise a purge from one type at the same head, and the reverse. An
-  id that does not fit is refused as invalid in one sentence for both
-  causes: the store cannot tell a moved lake from another purge's id.
+  references include the source's own records in its other types that
+  still refer into what went.
 - **No event of its own.** A typed purge appends fewer of the same
   `record_retired`; nothing is replayed differently.
 
-"Why" above says the unit is the source, not the type, because a purge
-by type would leave the source's records in other types behind, still
-referring to what went. That holds for the purge without a type, which
-stays the way to take a source back. What changed is that the report
-now says what a purge strands, so a host that takes one type back is
-told which of the source's other records still point there, and
-decides. A purge is still not a door.
+## Why
 
-## Extended: a field that declares an initial value makes no owner
+A wrong export, a test feed, or a source the lake stops trusting is one
+thing to take back, and the unit is the source, not the row or the type.
+Retiring record by record makes a hundred decisions of one intent, can
+stop halfway without saying so, and is written again by every host.
+Retracting per type would leave the source's records in other types
+behind, still referring to what went.
 
-A field that declares `initial` co-owns nothing, whoever wrote it last
-(`docs/decisions/050-a-field-declares-its-initial-value.md`). It is
-there because its record is, and the record is there because the source
-brought it: an author who moved the state did not bring the record, and
-when the source is taken back the state goes with it. A whole purge and
-a typed one ask the same rule. The report says what went: `moved`
-holds, per type and field, how many records the purge takes whose such
-field an author had written, and the first ten by key; it is left out
-when empty, and the preflight says the same. Every other authored field
-co-owns as before, so a record where a person wrote anything else still
-refuses the purge whole.
+That holds for the purge without a type, which stays the way to take a
+source back. The report says what a purge strands, so a host that takes
+one type back is told which of the source's other records still point
+there, and decides.
+
+Refusing a co-owned record whole is what keeps the act honest: removing
+it would take a person's or another source's values with it, and
+skipping it would leave a count that says less than it did. The host
+decides such records by the ordinary doors and purges again.
+
+Retiring rather than erasing keeps the log the truth: a read as of
+before the purge still sees the feed, and the purge is in the log with
+its writer. The same content ingested again after a purge is a new
+ingest, because the ingest id carries the version it was written over
+(`docs/log-format.md` §3).
+
+## What it is not
+
+- It is not a door. An agent that wants data retracted proposes
+  retirements. The purge is the host's act, beside `rebuild`,
+  `checkpoint` and `age`, with no tool. A purge that names a type is
+  still not a door.
+- It is not erasure. Nothing leaves the log.
+- It is not paged. The whole purge is one append, held in memory before
+  it lands, under the writer's lock. A host that cannot afford that for a
+  very large source retires through the doors, type by type.
+
+## How it came to be
+
+- The first version: `purge_source` retires what one source brought in,
+  in one append, and one co-owned record refuses it whole.
+- The report names what a purge strands, and `purge_preflight` answers
+  it before the purge, under an id the purge may repeat (lakelands#473).
+- A purge may name one type: co-ownership is judged in the selection
+  alone, the report names the source's own records left behind, and the
+  id takes in the type (lakelands#562).
+- A field that declares `initial` makes no owner, and the report says
+  in `moved` what an author had written there (lakelands#551).
+- Corrected at the rewrite (lakelands#817): every purge was said to
+  name a type it does not search, where only the purge of a source
+  whole does; and a view was said to be named, where it is passed over.

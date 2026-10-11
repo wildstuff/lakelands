@@ -2,6 +2,8 @@
 
 ## What is decided
 
+### The fold keeps a view's records, and a read of the view answers them
+
 A view asked for by the setting `view_kept.<type>` has its records kept
 in the projection by the fold, one for each group, and a read of the
 view answers them. **A kept record is exactly what the read would
@@ -13,9 +15,11 @@ would have to reproduce one.
 - **Asked for by a setting.** The `sys.setting` record
   `view_kept.<type>` with the value `true` asks for the view to be kept.
   A write of it for a view that cannot be kept is refused, naming the
-  measure and why. Retiring it, or any other value, asks for nothing.
+  measure and why. Retiring it, the value `false` or no value asks for
+  nothing; any other value is refused as invalid, naming `value`.
 - **What can be kept is read off the declaration.** A view with no
-  parameter and no clock, each of whose aggregate calls is a function of
+  parameter and no clock, that reads no field computed at the read
+  (052), each of whose aggregate calls is a function of
   its values as a multiset: any `count`; a `sum` or an `avg` of what is
   certainly a number; a `min` or a `max` of what is certainly a number
   or an instant, and that only under group fields that are all text or
@@ -25,7 +29,7 @@ would have to reproduce one.
 - **Under a name no type can bear.** A view's kept records are put under
   `sys:kept.<view>`, which holds a character no type name may. No write,
   link, walk, preflight or fold reaches them by a type's name: a
-  reference to a view is refused kept or not, as before. Only the view's
+  reference to a view is refused, kept or not. Only the view's
   own read asks for that name. Its state is recorded under the seam
   `sys:kept`, and every seam beginning `sys:` is the store's own. A log
   that names either, or writes a record of a view, comes from no door
@@ -135,6 +139,38 @@ would have to reproduce one.
   of them at a setting's write or a declaration; a lake with no
   `view_kept.` setting reads none, in an append or in a read.
 
+### The whole face is paged by the engine too
+
+A kept record's own fields are its open face. Where the whole face
+reads otherwise, the record holds that face inside its folds and bears
+the mark `sys:differs`; the state counts those groups. So the reader with
+the `restricted` grant reads the whole face as two streams. The engine
+pages the kept records without the mark, restricted ones included,
+under the reader's filter and order: their whole face is their own
+fields. The few with the mark are found by it, each taken whole (a group
+on the open face alone is dropped), filtered and placed by the store,
+and merged into the page by the engines' one ordering. A cursor and an
+`offset` walk the merge. A count is the engine's count of the kept
+records less those with the mark whose own fields pass the filter, plus
+their whole faces that pass. A single record takes its face from its
+own folds.
+
+A page in key order holds its rows and the differing groups; a count is
+the engine's and those groups. The groups that differ are those with a
+restricted member whose faces then read otherwise, which is the rare
+case the counter is kept for; where most groups differ, the merge holds
+most of the view, which is no more than the read held before.
+
+**Why.** Before, once one group's faces differed, the reader with the
+grant was answered from every kept record at each call: at 100 000
+groups a page of 10 took 408 ms and 321 MB on SQLite, and `get` of one
+group 324 ms and 321 MB, against under a millisecond for every other
+reader. That reader is most often the lake's owner. A second stored type
+holding the differing groups' whole faces, paged by the engine as well,
+was weighed and left out: it adds a kept name whose records the fold,
+a rebuild, an import and a purge must put and remove whenever a group
+starts or stops differing, for a set the counter says is small.
+
 ## Why
 
 A view's read walks its source: at a hundred thousand records a view
@@ -187,7 +223,7 @@ that already walks the type.
   record of a kept view are the engine's, as a stored type's are; the
   filter, the order and the masking are the read's own. Once groups'
   faces differ, the reader with the grant is answered the engine's page
-  of the others merged with those groups (below).
+  of the others merged with those groups (above).
 - **Not sub-linear in every read.** A page in another order than the
   key's reads the whole view for every reader, unless `sort_index.<view>`
   asks for an order index on its field (lakelands#668, 041). An
@@ -209,34 +245,27 @@ that already walks the type.
 - **Not for every view.** An extreme over a text, a sum over what may
   be a text, a view with a parameter or the clock compute, as before.
 
-## Extended: the whole face is paged by the engine too
+## How it came to be
 
-A kept record's own fields are its open face. Where the whole face
-reads otherwise, the record holds that face inside its folds and bears
-the mark `sys:differs`; the state counts those groups. So the reader with
-the `restricted` grant reads the whole face as two streams. The engine
-pages the kept records without the mark, restricted ones included,
-under the reader's filter and order: their whole face is their own
-fields. The few with the mark are found by it, each taken whole (a group
-on the open face alone is dropped), filtered and placed by the store,
-and merged into the page by the engines' one ordering. A cursor and an
-`offset` walk the merge. A count is the engine's count of the kept
-records less those with the mark whose own fields pass the filter, plus
-their whole faces that pass. A single record takes its face from its
-own folds.
-
-A page in key order holds its rows and the differing groups; a count is
-the engine's and those groups. The groups that differ are those with a
-restricted member whose faces then read otherwise, which is the rare
-case the counter is kept for; where most groups differ, the merge holds
-most of the view, which is no more than the read held before.
-
-**Why.** Before, once one group's faces differed, the reader with the
-grant was answered from every kept record at each call: at 100 000
-groups a page of 10 took 408 ms and 321 MB on SQLite, and `get` of one
-group 324 ms and 321 MB, against under a millisecond for every other
-reader. That reader is most often the lake's owner. A second stored type
-holding the differing groups' whole faces, paged by the engine as well,
-was weighed and left out: it adds a kept name whose records the fold,
-a rebuild, an import and a purge must put and remove whenever a group
-starts or stops differing, for a set the counter says is small.
+- The first version: a view asked for by a setting is kept by the fold
+  and its read answers the kept records; an extreme whose holder left
+  was read again over a bound of 8 192 records, and its group given up
+  past it; a reference to a view, refused before a view could be kept,
+  stayed refused (lakelands#575).
+- A log that names the seam `sys:kept` or a kept name, or writes a
+  record of a view, is not folded past that event (lakelands#621).
+- The whole face is paged by the engine too: before, once one group's
+  faces differed, the reader with the `restricted` grant was answered
+  from every kept record at each call (lakelands#628).
+- An extreme reads its next holder from an order the fold keeps, which
+  replaced the bound and the group given up past it (lakelands#629).
+- An aggregate other than a count and a pattern's start read the kept
+  records a page at a time, where they read the whole view, and a page
+  in another order names the order index that serves it (lakelands#668,
+  lakelands#731).
+- Corrected at the rewrite (lakelands#817): what can be kept names the
+  field computed at the read, which 052 added and this record's list
+  left out.
+- Corrected at the rewrite (lakelands#817): any value of the setting
+  but `true` was said to ask for nothing. The door refuses a value that
+  is neither `true`, `false` nor absent as invalid, naming `value`.

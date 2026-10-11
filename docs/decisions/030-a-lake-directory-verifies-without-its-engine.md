@@ -2,6 +2,8 @@
 
 ## What is decided
 
+### The SQLite engine keeps a lake as a directory whose log anyone can read
+
 The SQLite engine keeps a lake as a directory whose log anyone can read:
 
 - `log/<first position>.jsonl` holds the segments exactly as the log
@@ -24,7 +26,7 @@ The SQLite engine keeps a lake as a directory whose log anyone can read:
 - **The index is part of the log, and a segment without it is damage**
   (lakelands#865). The order of the writes tells a crash from a loss. A
   crash leaves an index shorter than its segment, or a lake's first
-  segment with no bytes and no index yet; both are read as before. No
+  segment with no bytes and no index yet; both are read. No
   crash leaves a segment with lines and no index file, a later segment
   with none (a seal writes the next index before the segment comes to
   exist), or a `projection.db` with no segment file (the projection is
@@ -32,11 +34,9 @@ The SQLite engine keeps a lake as a directory whose log anyone can read:
   its log: the engine answers `damaged`, naming the segment
   (`index_missing`) or that there is none (`no_segment_file`), at the
   question for the log's ends and at every open, before anything is
-  read, cut or made. Such a directory was read as holding no log: an
-  import replaced its segment, and an open to create cut it. A lost
-  index is an operator's restore; nothing rebuilds it. One case nothing
-  in the files tells apart: an index file that is there and was
-  shortened by hand reads as a crash's tail.
+  read, cut or made. A lost index is an operator's restore; nothing
+  rebuilds it. One case nothing in the files tells apart: an index file
+  that is there and was shortened by hand reads as a crash's tail.
   - Each pair of files is looked for in the reverse of the order a
     making writes it in: the projection before the segments, a
     segment's lines before its index a second time. So beside a lake
@@ -79,6 +79,8 @@ The SQLite engine keeps a lake as a directory whose log anyone can read:
 - `projection.db` holds the projection with its kept history. It is
   derived from the log and can always be folded again.
 
+### Every lake, whatever its engine, exports these files through its store
+
 Every lake, whatever its engine, exports these files through its store:
 `lakelands_core::export::write(store, dir)` (`lakelands export --to
 <dir>`) reads the log through the change feed and writes
@@ -105,14 +107,34 @@ the lake holds it; nothing is rewritten.
   memory.
 - Beside `log/` it writes `export.json`, a manifest of the lake, the
   position and hash it read through, its one format version, and each
-  file with its range and digest. It is a convenience
-  for a reader and is never trusted: a verifier recomputes everything
-  from `log/`.
+  file with its range and digest. It is a convenience for a reader and
+  is never trusted: a verifier recomputes everything from `log/`.
 - An export verifies without Lakelands' engines:
   `lakelands_core::export::verify(dir)` and `verify.py <dir>`, which
   shares no code with Lakelands, both read only `log/` and answer the
   last position and hash, or the position where the files stop being
   the log. The same holds for a SQLite lake directory.
+
+### An export opens as the lake it came from
+
+`lakelands_store::import` opens a new lake from an export, on any engine
+(lakelands#215). It verifies the whole export first, then checks what
+only an import needs: every event belongs to the lake it makes, and
+every fence is the one its writer held. Nothing is written before both
+pass. It then appends every event unchanged, position for position,
+through the engine's `import`, which keeps each event's own fence. It
+seals a segment with the first events of each file after the first, in
+the engine's one step, and compares the digest the engine takes with
+the file's inside that step: one that differs stops the import before
+anything is sealed. Last it folds the projection as a rebuild does, and
+appends nothing. The lake's head is the export's, and an export of it
+writes the same files. The host then opens it as any other lake, and
+that writer's lease is greater than every fence in the log. An import
+goes only into a lake that holds nothing, so it is a lake's birth and
+never a merge. One that fails after it began writing names the position
+it reached and leaves a true prefix of the export, which is not the
+source and refuses another import. The host removes it and imports
+again.
 
 ## Why
 
@@ -150,22 +172,34 @@ file's contents; the operating system's lock does not.
   the log; and not a replication scheme: it is a prefix read once, and
   nothing follows the lake afterwards (the change feed does that).
 
-## Extended: an export opens as the lake it came from
+## How it came to be
 
-`lakelands_store::import` opens a new lake from an export, on any engine
-(lakelands#215). It verifies the whole export first, then checks what
-only an import needs: every event belongs to the lake it makes, and
-every fence is the one its writer held. Nothing is written before both
-pass. It then appends every event unchanged, position for position,
-through the engine's `import`, which keeps each event's own fence. It
-seals a segment with the first events of each file after the first, in
-the engine's one step, and compares the digest the engine takes with
-the file's inside that step: one that differs stops the import before
-anything is sealed. Last it folds the projection as a rebuild does, and appends
-nothing. The lake's head is the export's, and an export of it writes the
-same files. The host then opens it as any other lake, and that writer's
-lease is greater than every fence in the log. An import goes only into
-a lake that holds nothing, so it is a lake's birth and never a merge.
-One that fails after it began writing names the position it reached and
-leaves a true prefix of the export, which is not the source and refuses
-another import. The host removes it and imports again.
+- The first version: the SQLite lake directory, with its segment files,
+  its index and commit lines, its lease and its projection.
+- Every lake exports its log as these files through its store, with a
+  manifest beside them, and an export verifies without Lakelands'
+  engines.
+- An export opens as the lake it came from, on any engine
+  (lakelands#215).
+- A writer that goes on after a failed append cuts off what it left;
+  the cut takes the index first and never a whole commit line
+  (lakelands#618).
+- A segment after the first comes to exist with its checkpoint in it;
+  before, closing a segment and writing the next one's checkpoint were
+  two steps, and an import sealed before each checkpoint
+  (lakelands#623).
+- An export's events are in the release's one format version and the
+  manifest names that one; before, each event kept the version it was
+  written in and the manifest gave the lowest and the highest
+  (lakelands#801).
+- Part of a lake without its events is damage: a segment without its
+  index file, a projection with no segment file and segments that do
+  not follow each other are refused before anything is read, cut or
+  made. Before, a directory that had lost its index or its segment
+  files was read as holding no log, and where the index was lost an
+  import replaced its segment and an open to create cut it; segments
+  that did not follow each other were opened as a log, and no open
+  asked. A directory whose making stopped before its first segment is
+  no lake to any open but one to create; before, an open to read
+  answered `no_projection` there and an open to write made a
+  projection in it (lakelands#865).

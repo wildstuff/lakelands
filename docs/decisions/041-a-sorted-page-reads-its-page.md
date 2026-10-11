@@ -2,12 +2,13 @@
 
 ## What is decided
 
+### A page ordered by a field the lake asks an index for reads its page
+
 A `find` page ordered by a field the lake asks an index for reads about
 `limit` rows at the head, as a page ordered by key does, on every
 engine. Each engine keeps an **order index** of the head for the fields
 asked for, and the page is read in the index's order and stops when it
-is full. A field not asked for is ordered by sorting the type, as
-before.
+is full. A field not asked for is ordered by sorting the type.
 
 - **The key.** Every value in the index is its `sort_key`
   (`lakelands_core::engines`): bytes whose order is the one order across
@@ -18,10 +19,10 @@ before.
 - **Asked for per field.** The `sys.setting` record `sort_index.<type>`
   holds a JSON array of field names and asks for the index on them.
   The store takes only fields the type declares with a scalar kind
-  (text, number, decimal, boolean, date-time or reference) and refuses
-  a write of the setting naming any other, or a type it does not
-  declare, as invalid, naming the field. Retiring the setting, or an
-  empty array, asks for no index.
+  (text, number, decimal, boolean, date-time, date or reference) and
+  refuses a write of the setting naming any other, or a type it does
+  not declare, as invalid, naming the field. Retiring the setting, or
+  an empty array, asks for no index.
 - **The rows.** One row per field asked for that the record's latest
   state holds with a value, retired and restricted states included. A
   reader decides from the setting and the declaration at the head which
@@ -54,74 +55,25 @@ before.
 - **Only while it describes the head.** The fold marks each type's
   index as kept through the position it commits (`sorted.<type>` beside
   `folded`). A view uses a type's index only when the two are equal.
-  Otherwise it sorts the type as before, and the answer is the same. A
+  Otherwise it sorts the type, and the answer is the same. A
   writer's open rebuilds, once, every index that does not describe the
   head: one whose mark a writer without the index left behind, and one
   whose setting such a writer wrote.
 - **The ceiling.** An order by `known_at` or `seen_at`, an order by a
-  field the lake did not ask an index for, and a view type are sorted
-  whole by `sort_key` as before, and so is a view at an earlier position
-  whose type changed too much since (below). So is a
-  multi-field page whose first field has few values: its runs are long.
+  field the lake did not ask an index for, and a view type that
+  computes are sorted whole by `sort_key`, and so is a view
+  at an earlier position whose type changed too much since (below). So
+  is a multi-field page whose first field has few values: its runs are
+  long.
   `describe_type` names a type's indexed fields in its lifecycle
   (`sorted`), so an agent can see which orders are cheap. The seams page
   gives the numbers, and what an index costs a write.
 
-## Why
+### An earlier position reads the head index and the keys changed since
 
-A walk ordered by a field is how an agent reads a type in the order it
-cares about. Reading and sorting the whole type for every page made each
-page cost the type: at 100 000 records, 0.2 to 0.6 seconds after the
-sort was made cheap, and seconds before. The order is the rulebook's
-mixed-kind order, which no SQL `ORDER BY` reproduces. A byte string that
-compares as the rulebook does can be ordered by any storage, bytewise,
-so every engine can keep it in an ordinary index.
-
-The index is asked for, not kept for every field, because it is not
-free: kept on every declared scalar field, it cost PostgreSQL about half
-its durable ingest rate, SQLite about two fifths and memory a sixth,
-while the fields an agent pages through in order are few. So the lake
-chooses them.
-
-It is asked for in a setting, not in the declaration, because it changes
-no answer, only its price (040). What changes no answer is not the type's
-shape: it does not belong in a logged declaration or in the schema hash
-(007), and changing it needs no new log format. A setting is where a
-lake keeps its own choices: it is in the log, per lake, with a history
-an auditor can read, and the fold already reads settings. The store
-checks the setting's fields when it is written, so a name that could
-never be indexed is refused at the door rather than ignored.
-
-The index keeps only the kinds an agent sorts by, and only the start of
-long values: two texts that differ only after 32 bytes are rare enough
-that reading their run whole costs less than writing every long text
-into two ordered indexes.
-
-The mark makes a stale index unused rather than wrong. A lake written in
-between by a binary that does not keep the index answers correctly at
-once, more slowly, until a writer rebuilds.
-
-## What it is not
-
-- **Not a second order.** `cmp_values` defines the order; `sort_key` is
-  checked against it, never the other way round.
-- **Not history.** The index describes the head. An earlier position
-  reads it with the kept states of the keys changed since (below).
-- **Not a declaration.** Nothing in a type says which fields are sorted;
-  the setting does, and the log format does not change.
-- **Not a seam method.** `Scan` already carries the order, `after` and
-  `limit`, and the engine decides how to read them.
-
-## Extended: an earlier position reads the head index and the keys changed since
-
-A cursor keeps a walk at its first page's position, so its pages stay
-one answer while the lake is written. Each page after a write was a view
-at an earlier position, and sorted the type: the write the cursor keeps
-out of the walk made every later page cost the type.
-
-**What is decided.** A page at a position `p` before the head, ordered
-first by a field the head's index answers (the index kept through the
-head, the field named by the head's setting), reads that index too:
+A page at a position `p` before the head, ordered first by a field the
+head's index answers (the index kept through the head, the field named
+by the head's setting), reads that index too:
 
 - **The keys changed since.** `C` is every key of the type with a state
   put after `p`, or with a state that held at `p` and ended after it.
@@ -146,7 +98,7 @@ head, the field named by the head's setting), reads that index too:
   key's next state is put (lakelands#537). The memory
   engine keeps, per type, the position and key of every state put.
 - **The ceiling.** More than `min(10 × limit, 4 096)` states put since
-  `p`, or keys in `C`, and the page sorts the type as before. Every
+  `p`, or keys in `C`, and the page sorts the type. Every
   state of `C` is held for the page, so the ceiling keeps what a page
   holds near a page. It sits far below where the merge stops paying.
   At 100 000 records, one text field indexed, a page of 50 or 1 000:
@@ -166,26 +118,26 @@ head, the field named by the head's setting), reads that index too:
   +2 %), its medians within the runs' spread. The memory engine keeps a
   position and a key per state put.
 
-**Why.** The head index still describes every key that has not changed
+**Why.** A cursor keeps a walk at its first page's position, so its
+pages stay one answer while the lake is written. Each page after a
+write was a view at an earlier position, and sorted the type: the write
+the cursor keeps out of the walk made every later page cost the type.
+
+The head index still describes every key that has not changed
 since `p`, which in a walk is nearly all of them. Reading it and only the
 few that changed keeps a pinned page at about its page, as the head's
 is. The streaming check holds a walk with writes between its pages to
 its page, the one row more the store asks for, three more and two per
 changed key; before, each page after a write read the type.
 
-## Extended: a page under an exact text reads its page
+### A page under an exact text reads its page
 
-A page at the head ordered first by an indexed field, whose scan must
-hold a text exactly (a string in `equal`, or the filter's exact-text
-term), read every record holding the text and sorted them, for each
-page, whether the lake indexed the field or not. A walk of such pages
-cost the holders once per page: a square for a host that pages through
-a sorted, filtered type.
-
-**What is decided.** At the head, SQLite and PostgreSQL read such a page
-through the order index as a page with no text is read, and hand the
-rulebook only the records holding the text. There are two ways to find
-them, and each is cheap where the other is not:
+SQLite and PostgreSQL read a page at the head ordered first by an
+indexed field, whose scan must hold a text exactly (a string in `equal`,
+or the filter's exact-text term), through the order index as a page
+with no text is read, and hand the rulebook only the records holding
+the text. There are two ways to find them, and each is cheap where the
+other is not:
 
 - **Many holders: the order index first.** The order index is read in
   its order from `after`, and a row is kept where the exact-text index
@@ -237,9 +189,9 @@ them, and each is cheap where the other is not:
   Such a page still cost a few times the sort of every holder: the
   text first read its holders once a batch, and the order first every
   row before the first it admits. A page read text first that asks for
-  more than three batches now reads the holders left once (below,
+  more than three batches reads the holders left once (below,
   lakelands#695).
-- **The records without the field** come last, as before. They are read
+- **The records without the field** come last. They are read
   from the text's rows in key order, with those that have an order row
   passed over: at most the holders.
 - **The rulebook admits each.** `lakelands_core::engines::Holders` names
@@ -253,8 +205,9 @@ them, and each is cheap where the other is not:
   common text ran for twenty minutes at 100 000 records.
 
 An earlier position, an order by a field the lake does not index, and
-the memory engine read as before. The memory engine keeps no exact-text
-index, and reads the order index's rows in its order and admits each.
+the memory engine take neither way. The memory engine keeps no
+exact-text index, and reads the order index's rows in its order and
+admits each.
 
 **The cost.** 100 000 records, a page of 50 in an indexed field's order
 under a text, then a walk of every holder by cursor, 1 000 a page. The
@@ -302,28 +255,27 @@ No text near the ceiling pages slower than before. A text held by 3 in
 figure was measured with a ceiling of `min(10 × limit, 4 096)`, which
 reads a text with that many holders the same way.
 
-**Why.** The order index already answers a sorted page in its page. A
+**Why.** Before, such a page read every record holding the text and
+sorted them, for each page, whether the lake indexed the field or not.
+A walk of such pages cost the holders once per page: a square for a
+host that pages through a sorted, filtered type.
+
+The order index already answers a sorted page in its page. A
 text the page must hold either thins its rows, which the order index
 walks past cheaply, or picks out a few, which the text index names
 directly. Counting the few, up to a ceiling, is a short range read, and
 it tells the two apart without reading the type.
 
-## Extended: a page under a text few hold reads them once (lakelands#695)
+### A page under a text few hold reads them once
 
-A page read text first read every holder again for each batch it asked
-for: a statement over the text's rows, each one's order row sought,
-sorted, and cut at the batch. Under a filter that rejects rows a page of
-one asks for 14 batches, so it read and sorted its holders 14 times
-where a page without the index sorts them once.
-
-**What is decided.** At the head, SQLite and PostgreSQL read a page's
-first three batches as before, each by itself, and what is left of its
+At the head, SQLite and PostgreSQL read the first three batches of a
+page read text first as above, each by itself, and what is left of its
 few holders (`Holders::Few`) once, when the page asks for a fourth
 batch. `scan_in_field_order`, its doubling, its runs and its
 continuation are unchanged, and no answer changes: the rulebook admits
-each record as before.
+each record.
 
-- **Three batches as before** (`engines::BATCHES_BEFORE_HELD`). The
+- **Three batches each by itself** (`engines::BATCHES_BEFORE_HELD`). The
   store asks its engine for one row more than a page, so a page with one
   retired or restricted record among its rows is a page of two batches,
   and one with two or three such records a page of three. Those are
@@ -331,8 +283,8 @@ each record as before.
   first batch. Each of them runs the statements it ran before, so it
   costs what it cost. A page that asks for a fourth batch has been
   handed three and is still not full: its filter rejects rows, its
-  batches double from here, and those are the batches that each read
-  every holder again.
+  batches double from here, and those are the batches that would each
+  read every holder again.
 - **The fourth batch reads the rest once,** after the last row the
   three batches read, in the same read transaction and so of the same
   snapshot. Every later batch takes from that one read.
@@ -359,13 +311,19 @@ each record as before.
   read, in the index's order for the direction: index rows only, at most
   `FEW_HOLDERS`. Each later batch takes the next ones and seeks their
   head records.
-- **The batches read as before keep their statement** and, on
+- **The batches read each by itself keep their statement** and, on
   PostgreSQL, a plan that hangs on the statistics as it did. It is not
   pinned here and not made worse.
 - **Counted.** `engines::holder_reads` counts the times a thread read a
   text's holders whole to keep them, beside `batches_read`, so the
   engines' checks pin that a page of up to three batches reads none and
   a longer page one, however many batches it asks for.
+
+**Why.** Before, a page read text first read every holder again for
+each batch it asked for: a statement over the text's rows, each one's
+order row sought, sorted, and cut at the batch. Under a filter that
+rejects rows a page of one asks for 14 batches, so it read and sorted
+its holders 14 times where a page without the index sorts them once.
 
 **The cost.** Three lakes of 41 000, 200 000 and 1 000 000 records,
 every record with an order row in `w`, and in each a text held by 5, by
@@ -448,7 +406,7 @@ spread widely, and the fastest round is the least disturbed one.
   inside the rounds' spread. A page that admits none of 100 holders
   takes about three quarters of the time on PostgreSQL; one of 5
   holders asks for four batches and costs what it cost.
-- **What a batch as before costs on PostgreSQL is the planner's
+- **What a batch read by itself costs on PostgreSQL is the planner's
   choice,** and the table shows it on both sides: a first batch of one
   takes 6 to 9 ms at every size, a batch of eleven at 200 000 records
   about 90 ms (the type's order rows read and hashed), and a second
@@ -475,11 +433,11 @@ spread widely, and the fastest round is the least disturbed one.
   holder's row: at the ceiling its fastest rounds were 4.0 ms against
   2.9 at 41 000 records, 5.6 against 4.2 at 200 000 and 30 against 26
   at 1 000 000. The commonest page is the one that fills in its first
-  batch, so it reads as before.
+  batch, so that batch is read by itself.
 - **These three were measured on the prototype** (on `7c94a43c`, whose
   cursor fetched each batch's own count and measured 84 to 89 ms
   admitting none and 15 ms on an admitting page of one), and their
-  figures are the prototype's. Reading the first batch as before and
+  figures are the prototype's. Reading the first batch by itself and
   the rest of the holders once at the second: an admitting page asks
   for two batches anyway (restricted rows), so it paid both, and was
   slower than either. On PostgreSQL, the holders' sort keys and keys
@@ -489,15 +447,11 @@ spread widely, and the fastest round is the least disturbed one.
   keys alone, the records sought per batch: no better than the cursor
   with the records.
 
-## Extended: a kept view's order index
+### A host asks for an order index of a kept view as it does for a stored type's
 
 A kept view's records are records of its kept name, `sys:kept.<view>`
-(049). A kept name has no declaration, and no setting could name it, so
-a page of a kept view in another order than its key read every kept
-record and sorted them. At 100 000 groups that took about 400 ms on
-SQLite and 500 ms on PostgreSQL, and held some 465 MB, more than
-computing the view holds. A host asks for an order index of a kept view
-as it does for a stored type's (lakelands#668).
+(049). A host asks for an order index of a kept view as it does for a
+stored type's.
 
 - **The setting names the view.** `sort_index.<view>` is taken for a
   declared view, on fields the view declares, under the same refusals as
@@ -522,13 +476,19 @@ as it does for a stored type's (lakelands#668).
 - **The store does not change.** A kept page is the engine's page,
   merged with the groups whose whole face reads otherwise (lakelands#628);
   the store holds every row it is handed to the reader's grants
-  (`restricted`, `only`) as before, and at an earlier position the engine
+  (`restricted`, `only`), and at an earlier position the engine
   reads the head's index and the keys changed since, as above.
   `describe_type` names a view's indexed fields in its lifecycle where
   the view is kept, or asked to be and can be, as its `kept` tells that
   reader (lakelands#748). A view that computes for want of `view_kept`,
   or cannot be kept, has no records to index, and to a holder of `only`
   an index would say whether the view is kept, which 051 keeps from it.
+
+**Why.** A kept name has no declaration, and no setting could name it,
+so a page of a kept view in another order than its key read every kept
+record and sorted them. At 100 000 groups that took about 400 ms on
+SQLite and 500 ms on PostgreSQL, and held some 465 MB, more than
+computing the view holds.
 
 **The cost.** 200 000 records in 100 000 groups of two, a kept view of
 `count()` and `sum(v)`, a page of 10, medians of five:
@@ -550,10 +510,89 @@ by the sum where half the groups hold more than the middle value took
 **Found at the build.** At an earlier position the memory engine handed
 the merge each index row's state at that position, not at the head, so
 a key first put after it dropped out of a batch. A batch shorter than it
-asked for reads as the index's end, and a page ended early. It now
-hands the head's states, as the disk engines do, for stored types and
-kept names alike.
+asked for reads as the index's end, and a page ended early. It hands
+the head's states, as the disk engines do, for stored types and kept
+names alike.
 
 **Not in it.** An aggregate other than a count and a pattern started over
 a kept view read every group, a page of kept records at a time
 (lakelands#731), and a view that computes is computed whole.
+
+## Why
+
+A walk ordered by a field is how an agent reads a type in the order it
+cares about. Reading and sorting the whole type for every page made each
+page cost the type: at 100 000 records, 0.2 to 0.6 seconds after the
+sort was made cheap, and seconds before. The order is the rulebook's
+mixed-kind order, which no SQL `ORDER BY` reproduces. A byte string that
+compares as the rulebook does can be ordered by any storage, bytewise,
+so every engine can keep it in an ordinary index.
+
+The index is asked for, not kept for every field, because it is not
+free: kept on every declared scalar field, it cost PostgreSQL about half
+its durable ingest rate, SQLite about two fifths and memory a sixth,
+while the fields an agent pages through in order are few. So the lake
+chooses them.
+
+It is asked for in a setting, not in the declaration, because it changes
+no answer, only its price (040). What changes no answer is not the type's
+shape: it does not belong in a logged declaration or in the schema hash
+(007), and changing it needs no new log format. A setting is where a
+lake keeps its own choices: it is in the log, per lake, with a history
+an auditor can read, and the fold already reads settings. The store
+checks the setting's fields when it is written, so a name that could
+never be indexed is refused at the door rather than ignored.
+
+The index keeps only the kinds an agent sorts by, and only the start of
+long values: two texts that differ only after 32 bytes are rare enough
+that reading their run whole costs less than writing every long text
+into two ordered indexes.
+
+The mark makes a stale index unused rather than wrong. A lake written in
+between by a binary that does not keep the index answers correctly at
+once, more slowly, until a writer rebuilds.
+
+## What it is not
+
+- **Not a second order.** `cmp_values` defines the order; `sort_key` is
+  checked against it, never the other way round.
+- **Not history.** The index describes the head. An earlier position
+  reads it with the kept states of the keys changed since (above).
+- **Not a declaration.** Nothing in a type says which fields are sorted;
+  the setting does, and the log format does not change.
+- **Not a seam method.** `Scan` already carries the order, `after` and
+  `limit`, and the engine decides how to read them.
+
+## How it came to be
+
+- The first version: each engine keeps an order index of the head for
+  every field a type declares, and reads it only while its mark says it
+  describes the head, where a page in a field's order sorted the type
+  (lakelands#137).
+- The index keeps the scalar kinds only, and the first 32 bytes of a
+  key (lakelands#137).
+- The index is asked for per field, by the `sort_index.<type>` setting,
+  where it was kept for every declared scalar field (lakelands#137).
+- An earlier position reads the head index and the keys changed since,
+  where each page after a write sorted the type (lakelands#382).
+- A page under an exact text reads its page through the order index,
+  where it read every holder and sorted them for each page; a page's
+  further batches double, and on PostgreSQL the setting's write tells
+  the planner of the index it rebuilt (lakelands#587).
+- A kept view's order index is asked for by `sort_index.<view>`, where
+  a view type was sorted whole; found at that build, the memory engine
+  hands the merge the head's states at an earlier position
+  (lakelands#668).
+- What reads every group of a kept view reads it a page of kept records
+  at a time (lakelands#731).
+- `describe_type` names a view's indexed fields only where the view is
+  kept, or asked to be and can be (lakelands#748).
+- PostgreSQL reads the keys changed since by `records_since` alone,
+  where it read two ranges as SQLite does (lakelands#537).
+- A page read text first reads its first three batches each by itself
+  and the holders left once at the fourth, where every batch read every
+  holder again; what reading the text first costs was measured again,
+  with the type's size in it (lakelands#695).
+- Corrected at the rewrite (lakelands#817): the scalar kinds the store
+  takes name `date`, which the setting's check takes and this record's
+  list left out.

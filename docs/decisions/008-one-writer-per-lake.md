@@ -8,9 +8,12 @@ that increases each time a new writer takes it over. Every append is
 checked against the current token; an append made under an older token
 is refused.
 
-A second process that tries to open the lake for writing fails at once,
-with an error that says the lake is held by another writer. Any number
-of processes may open the lake read-only.
+The store takes the lease as it opens a lake for writing, so a second
+process that opens the lake for writing fails at once, with an error
+that says the lake is held by another writer. At the engine seam,
+opening never takes the lease: `open` succeeds, and it is `take_lease`
+that fails at once, naming the holder (`docs/seams.md` §Engine, `open`
+and `take_lease`). Any number of processes may open the lake read-only.
 
 ## Why
 
@@ -33,10 +36,10 @@ writer already" tells the operator what to do.
 - It is not replication. Standby writers and failover are outside this
   decision; the lease is what makes them safe to add later.
 
-## Corrected (2026-09-25): the refusal is at the lease, not at open
+## How it came to be
 
-"A second process that tries to open the lake for writing fails at
-once" holds for a lake opened through the store, which takes the lease
-as it opens a lake for writing. At the engine seam, opening never takes
-the lease: `open` succeeds, and it is `take_lease` that fails at once,
-naming the holder (`docs/seams.md` §Engine, `open` and `take_lease`).
+- The first version said that a second writer fails when it opens the
+  lake.
+- Corrected on 2026-09-25: the refusal is at the lease. Through the
+  store that is the open; at the engine seam `open` succeeds and
+  `take_lease` refuses.

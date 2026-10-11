@@ -38,3 +38,11 @@ versioned. What a release owes a lake written in an older format is in
   second copy of the state that could disagree with the log: retiring a
   record is an event like any other write, and the projection shows
   what the fold makes of it.
+
+## How it came to be
+
+- The first version said that the log's format is the only one that
+  must stay stable across versions.
+- The reason names the log's format as the only one a lake is bound to,
+  and what a release owes a lake written in an older format went to
+  054 (lakelands#801).
