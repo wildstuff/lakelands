@@ -411,6 +411,7 @@ pub const ALL: &[Check] = &[
     search::VECTOR_LEAVES_THE_NEIGHBOURS,
     search::VECTOR_TOP_K,
     vector_index::VECTOR_INDEX_RECALL,
+    vector_index::INDEXED_TIE,
     search::HYBRID_WITHOUT_BACKEND,
     search::SEARCH_READS_A_VECTOR_FIELD,
     search::SEARCH_RANKS_BY_THE_HEAD,

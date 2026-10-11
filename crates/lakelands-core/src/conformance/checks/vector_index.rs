@@ -26,12 +26,17 @@ use serde_json::json;
 
 use super::search::doc_search;
 use crate::conformance::fixture::{self, Lake, Must, doors, field, read_at, type_decl, vector};
-use crate::conformance::{Given, Held, Store};
+use crate::conformance::{Failure, Given, Held, Store};
 
 check!(
     VECTOR_INDEX_RECALL = an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_floor,
-    "043, 025 and 029: a search over a vector field the `vector_index.<type>` setting names says `ranked_by: index`, ranks the index's candidates by the one cosine with ties by key, answers the same bytes when asked again, and finds on average at least the engine's floor of the brute-force reference's hits for k = 1, 10 and 100, with and without a filter, at the head and at an earlier position, after records were retired, vectors cleared and rewritten and records added; an engine without such an index answers the reference, a recall of 1; a vector search fused over several fields says `index` when any of them is named",
+    "043, 025 and 029: a search over a vector field the `vector_index.<type>` setting names says `ranked_by: index`, ranks the index's candidates by the one cosine with ties by key, answers the same bytes when asked again, and finds on average at least the engine's floor of the brute-force reference's hits for k = 1, 10 and 100, with and without a filter, at the head and at an earlier position, after records were retired, vectors cleared and rewritten and records added; an engine without such an index answers the reference, a recall of 1; a vector search fused over several fields says `index` when any of them is named; it prints, and does not judge, how many hits of the queries' first twelve pages of ten are a record answered before, and how many records of one page of 120 they leave out, since under an index a page is the index's answer at the depth that page asks for",
     given
+);
+
+check!(
+    INDEXED_TIE = under_an_index_a_tie_it_hands_out_is_paged_once_and_by_key,
+    "043 and 029 (lakelands#827): under an index the members of a tie that the index hands out at a page's depth are pulled before the keys cut it, and come once and in key order; and an index that hands out fewer candidates than it was asked for has not shown the field's end: over two hundred records whose vectors are alike and a hundred others, with the index asked for, following the cursor at k = 10 says `ranked_by: index` on every page and answers every record once, the two hundred first and in key order; and over seven hundred alike, of which PostgreSQL's index hands out a part, following it at k = 100 does so too"
 );
 
 const TY: &str = "point";
@@ -44,7 +49,7 @@ const QUERIES: u64 = 50;
 
 /// The recall an engine's index holds at `k`, averaged over the queries.
 /// PostgreSQL's HNSW index (pgvector, `m = 16`, `ef_construction = 64`,
-/// `ef_search = max(k, 200)`) measured 0.98 at k = 1, 0.97 to 0.98 at
+/// `ef_search` at the candidates pulled, at least 200) measured 0.98 at k = 1, 0.97 to 0.98 at
 /// k = 10 and 1.00 at k = 100 on this corpus over several builds, and at
 /// least 0.996 with the filter; the floors keep a margin below that. An engine without an approximate index
 /// answers the reference.
@@ -126,6 +131,30 @@ fn corpus_point(i: u64) -> Point {
 fn bits(h: &lakelands_api::query::Hits) -> Vec<(String, u64)> {
     let hit = |h: &lakelands_api::query::Hit| (h.record.key.0.clone(), h.score.to_bits());
     h.hits.iter().map(hit).collect()
+}
+
+/// A vector search of `point.v` for `q`, followed by its cursor at `k`
+/// for at most `pages` pages: the keys answered, in the pages' order, and
+/// whether every page said it ranked by the index.
+async fn paged(l: &Lake, q: &[f32], k: u32, pages: u32) -> Result<(Vec<String>, bool), Failure> {
+    let (mut seen, mut cursor, mut indexed) = (Vec::new(), None, true);
+    for _ in 0..pages {
+        let asked = Search {
+            ty: TypeName::from(TY),
+            k,
+            cursor,
+            ..doc_search(SearchMode::vector("v", q.to_vec()))
+        };
+        let page = l.cat.search(&l.own, asked).await;
+        let page = page.must("a page under the index")?.data;
+        indexed &= page.ranked_by == "index";
+        seen.extend(page.hits.iter().map(|h| h.record.key.0.clone()));
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    Ok((seen, indexed))
 }
 
 async fn deliver(store: &dyn LakeStore, own: &Principal, records: Vec<SourceRecord>) -> Held {
@@ -347,12 +376,73 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
         got.ranked_by,
         got.hits.len()
     );
+    // Pages of one query are not promised to be parts of one sequence
+    // (043): a measure, printed and not judged.
+    let (mut twice, mut never) = (0, 0);
+    for qi in 0..QUERIES {
+        let (seen, _) = paged(&l, &query(qi), 10, 12).await?;
+        let (whole, _) = paged(&l, &query(qi), 120, 1).await?;
+        let once: std::collections::HashSet<&String> = seen.iter().collect();
+        twice += seen.len() - once.len();
+        never += whole.iter().filter(|key| !once.contains(key)).count();
+    }
+    eprintln!(
+        "vector index on `{}`: twelve pages of ten of each of {QUERIES} queries answered \
+         {twice} hits a second time and left out {never} records of one page of 120",
+        given.harness
+    );
     ensure!(
         short.is_empty(),
         "an indexed field on `{}` must find on average at least its floor of the reference's \
          hits; it found {}",
         given.harness,
         short.join("; ")
+    );
+    Ok(())
+}
+
+async fn under_an_index_a_tie_it_hands_out_is_paged_once_and_by_key(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let source = |f: FieldDecl| FieldDecl {
+        authority: Authority::Source,
+        ..f
+    };
+    let group = source(field("group", StorageKind::Number));
+    l.declare(type_decl(TY, vec![source(vector("v", 2)), group]))
+        .await?;
+    // `alike` vectors at the query, the `s` keys, and a hundred apart,
+    // the `t` keys: the answer is every `s` in key order, then every `t`.
+    let alike = |n: std::ops::Range<u32>| n.map(|i| (format!("s{i:03}"), [1.0, 0.0]));
+    let apart = (0..100).map(|i| (format!("t{i:02}"), [1.0, i as f32 + 1.0]));
+    let want = |n| alike(0..n).chain(apart.clone()).map(|(key, _)| key);
+    let records = |of: Vec<(String, [f32; 2])>| {
+        let record = |(key, v): &(String, [f32; 2])| source_record(key, Some(v), 0);
+        of.iter().map(record).collect()
+    };
+    // Two hundred alike: the first page's pull holds 64 of them, and
+    // four times as many candidates hold them all and sixty others.
+    let first = records(alike(0..200).chain(apart.clone()).collect());
+    deliver(store.as_ref(), &l.own, first).await?;
+    l.set("vector_index.point", json!(["v"])).await?;
+    let (seen, indexed) = paged(&l, &[1.0, 0.0], 10, 30).await?;
+    ensure!(
+        indexed && seen.iter().cloned().eq(want(200)),
+        "pages of ten over two hundred vectors alike and a hundred apart say they ranked by \
+         the index ({indexed}) and answer every record once, the two hundred first and in key \
+         order; they answered {seen:?}"
+    );
+    // Seven hundred alike, of which PostgreSQL's index, built over them,
+    // hands out a part: its short answer is not the field's end.
+    deliver(store.as_ref(), &l.own, records(alike(200..700).collect())).await?;
+    l.set("vector_index.point", json!([])).await?;
+    l.set("vector_index.point", json!(["v"])).await?;
+    let (seen, indexed) = paged(&l, &[1.0, 0.0], 100, 8).await?;
+    ensure!(
+        indexed && seen.iter().cloned().eq(want(700)),
+        "pages of a hundred over seven hundred vectors alike and a hundred apart say they \
+         ranked by the index ({indexed}) and answer every record once, the seven hundred \
+         first and in key order; they answered {} hits: {seen:?}",
+        seen.len()
     );
     Ok(())
 }

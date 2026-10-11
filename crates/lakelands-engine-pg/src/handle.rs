@@ -674,13 +674,15 @@ fn size(db: &mut Db, schema: &str, tables: &[&str]) -> Result<u64> {
 
 impl PgLake {
     /// The `k` vectors of one field nearest to `query`, read through `db`
-    /// in its open transaction, by brute force with the one cosine every
-    /// engine uses (`lakelands_api::query::cosine`), so its answers are
-    /// those of every other engine to the last bit. It streams every
+    /// in its open transaction and ranked by the one cosine every engine
+    /// uses (`lakelands_api::query::cosine`). The exact scan streams every
     /// vector of the field from the server a row at a time and keeps only
     /// the best `k` (`lakelands_core::engines::TopK`), so its cost grows
     /// linearly with them and what it holds does not: the ceiling
-    /// `docs/seams.md` states.
+    /// `docs/seams.md` states, and its answers are those of every other
+    /// engine to the last bit, but for the vectors of zeros it leaves out
+    /// where it answers for an index. A field read through its index holds
+    /// the candidates of one pull, `k` and one more or a tie's deeper pull.
     fn nearest(
         &self,
         db: &mut Db,
@@ -689,40 +691,74 @@ impl PgLake {
         query: &[f32],
         k: u32,
     ) -> Result<Vec<(RecordKey, f64)>> {
-        let mut top = lakelands_core::engines::TopK::new(k);
-        // The exact scan checks every vector's dimensions; the index holds
-        // only vectors of the query's.
-        let mut rank = |row: &postgres::Row, exact: bool| {
-            let key: String = row.get(0);
-            let v = vector_of(&row.get::<_, Vec<u8>>(1));
-            if exact && v.len() != query.len() {
-                return Err(engines::dimensions(query.len(), v.len(), ty, field));
-            }
-            top.push(&RecordKey::from(key), cosine(query, &v));
-            Ok(())
-        };
+        let mut indexed = false;
         // A field the lake asks an index for, whose index describes the
-        // head, answers the index's `k` candidates, ranked by the one
-        // cosine (`crate::vector_index`); every other search scans. The
-        // index's settings end with its statement: the transaction reads
-        // other lists.
+        // head, answers the index's candidates, ranked by the one cosine
+        // (`crate::vector_index`); every other search scans. The index
+        // orders equal distances its own way, so a tie the `k`th
+        // candidate stands in is pulled before it is cut by key: one
+        // candidate more shows whether the boundary cuts one, and a cut
+        // one is pulled deeper, to the scan past the ceiling. An index
+        // that hands out fewer than it was asked for has not thereby
+        // shown the field's end, so the scan answers then too. The
+        // index's settings end with its statement: the transaction
+        // reads other lists.
         if let (Some(v), Some(unit)) = (&self.pgvector, vector_index::unit_text(query))
             && let Some(n) = vector_index::usable(db, &self.names, ty, field)?
             && n as usize == query.len()
         {
+            indexed = true;
             let sql = vector_index::candidates_sql(&self.names, v, ty, field, n);
-            db.batch(&vector_index::search_settings(k))?;
-            db.query_each(&sql, &[&unit, &i64::from(k)], |row| rank(row, false))?;
-            db.batch("SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on")?;
-            return Ok(top.into_ranked());
+            let first = k.saturating_add(1);
+            let mut pull = Some(first);
+            while let Some(depth) = pull {
+                let mut came = Vec::new();
+                db.batch(&vector_index::search_settings(depth))?;
+                db.query_each(&sql, &[&unit, &i64::from(depth)], |row| {
+                    let v = vector_of(&row.get::<_, Vec<u8>>(1));
+                    came.push((RecordKey::from(row.get::<_, String>(0)), cosine(query, &v)));
+                    Ok(())
+                })?;
+                db.batch("SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on")?;
+                if came.len() < depth as usize {
+                    break;
+                }
+                if !vector_index::cuts_a_tie(&came, k) {
+                    // Where no tie was cut the candidate more only showed
+                    // it, and the answer is the index's `k`.
+                    if depth == first {
+                        came.truncate(k as usize);
+                    }
+                    engines::rank(&mut came, k);
+                    return Ok(came);
+                }
+                pull = vector_index::deeper(depth);
+            }
         }
+        // The exact scan checks every vector's dimensions; the index holds
+        // only vectors of the query's.
+        let mut top = lakelands_core::engines::TopK::new(k);
         db.query_each(
             &format!(
                 "SELECT key, data FROM {} WHERE ty = $1 AND field = $2 ORDER BY key COLLATE \"C\"",
                 self.names.t("vectors")
             ),
             &[&ty.as_str(), &field],
-            |row| rank(row, true),
+            |row| {
+                let key: String = row.get(0);
+                let v = vector_of(&row.get::<_, Vec<u8>>(1));
+                if v.len() != query.len() {
+                    return Err(engines::dimensions(query.len(), v.len(), ty, field));
+                }
+                // The index never hands out a vector of zeros, so the scan
+                // that answers for it leaves one out too: a hit must not
+                // show which of the two answered, and so how far the field
+                // goes (043).
+                if !indexed || vector_index::length(&v).is_some() {
+                    top.push(&RecordKey::from(key), cosine(query, &v));
+                }
+                Ok(())
+            },
         )?;
         Ok(top.into_ranked())
     }

@@ -485,3 +485,150 @@ fn a_setting_written_a_page_before_its_commit_builds_the_index_at_the_commit() {
     drop(engine);
     common::drop_schema(&url, &schema);
 }
+
+/// A pull the index hands back short is answered by the scan (043). Past
+/// `hnsw.max_scan_tuples`, which a search sets to 20 000, an iterative
+/// scan ends although the field holds more. That takes a field larger
+/// than any row of the suite holds on every engine, so it is held here,
+/// on vectors alone.
+#[test]
+fn a_pull_past_what_the_index_hands_out_is_answered_by_the_scan() {
+    const FIELD: u32 = 25_000;
+    let Some(url) = common::url_or_skip("the pg vector-index test") else {
+        return;
+    };
+    if !pgvector(&url) {
+        return;
+    }
+    let schema = common::fresh_schema();
+    let engine = PgOpener
+        .open(&common::location(&url, "vindex", &schema), OpenMode::Create)
+        .unwrap();
+    let (p, index, t) = (
+        engine.projection(),
+        engine.vectors().unwrap(),
+        TypeName::from("t"),
+    );
+    // Every vector its own direction, turning away from the first.
+    let key = |i: u32| RecordKey::from(format!("k{i:05}"));
+    let at = |i: u32| {
+        let turn = f64::from(i) * 1.5 / f64::from(FIELD);
+        let mut v = vec![0.0; DIMENSIONS];
+        (v[0], v[1]) = (turn.cos() as f32, turn.sin() as f32);
+        v
+    };
+    p.begin().unwrap();
+    p.put_declaration(&declaration(), 1, None, Position(0))
+        .unwrap();
+    for i in 0..FIELD {
+        index.put(&t, &key(i), "e", &at(i)).unwrap();
+    }
+    p.put_record(&setting(json!(["e"]), 1)).unwrap();
+    p.commit(Position(1)).unwrap();
+    assert_eq!(marks(&url, &schema), (Some(1), 1), "`e` is indexed");
+    let (query, k) = (at(0), FIELD - 1_000);
+    let got = nearest(engine.as_ref(), &t, "e", &query, k).unwrap();
+    let mut want: Vec<(RecordKey, f64)> = (0..FIELD)
+        .map(|i| (key(i), lakelands_api::query::cosine(&query, &at(i))))
+        .collect();
+    engines::rank(&mut want, k);
+    assert!(
+        got == want,
+        "the nearest {k} of {FIELD} vectors are the exact ranking's where the index hands out \
+         fewer; {} came",
+        got.len()
+    );
+    drop(engine);
+    common::drop_schema(&url, &schema);
+}
+
+/// The scan that answers for an indexed field leaves out a vector of
+/// zeros, as the index does (043): else a hit would show that the field
+/// is smaller than the pull, to a reader shown only part of it. Twin
+/// fields hold the same forty vectors and one of zeros; the second holds
+/// three hundred more, farther away, so its index fills the pull and the
+/// first's does not. Neither answers the vector of zeros, and the first
+/// answers the exact ranking of the forty. A field without the setting
+/// scores it 0, as every engine does.
+///
+/// It is this engine's own test and no row of the suite: what leaks is
+/// which of this engine's two ways answered, and an engine without an
+/// index scans both twins and answers the vector of zeros in both. The
+/// `k` of 64 is the store's first pull for a page of ten, and the store
+/// cuts what a reader is shown after the pull, so the three hundred
+/// stand for records the reader is not shown.
+#[test]
+fn the_scan_that_answers_for_an_index_holds_no_vector_of_zeros() {
+    let Some(url) = common::url_or_skip("the pg vector-index test") else {
+        return;
+    };
+    if !pgvector(&url) {
+        return;
+    }
+    let key = |i: u32| RecordKey::from(format!("k{i:05}"));
+    // Twenty near the query, one of zeros, twenty beyond a right angle,
+    // and in the second field three hundred farther still.
+    let at = |i: u32| {
+        let turn = match i {
+            0..=20 => f64::from(i) * 0.01,
+            21..41 => 1.7 + f64::from(i) * 0.01,
+            _ => 2.2 + f64::from(i) * 0.002,
+        };
+        let mut v = vec![0.0; DIMENSIONS];
+        if i != 20 {
+            (v[0], v[1]) = (turn.cos() as f32, turn.sin() as f32);
+        }
+        v
+    };
+    let t = TypeName::from("t");
+    let (query, k) = (at(0), 64);
+    let mut answers = Vec::new();
+    for held in [41, 341] {
+        let schema = common::fresh_schema();
+        let engine = PgOpener
+            .open(&common::location(&url, "vindex", &schema), OpenMode::Create)
+            .unwrap();
+        let (p, index) = (engine.projection(), engine.vectors().unwrap());
+        p.begin().unwrap();
+        p.put_declaration(&declaration(), 1, None, Position(0))
+            .unwrap();
+        for i in 0..held {
+            index.put(&t, &key(i), "e", &at(i)).unwrap();
+            index.put(&t, &key(i), "f", &at(i)).unwrap();
+        }
+        p.put_record(&setting(json!(["e"]), 1)).unwrap();
+        p.commit(Position(1)).unwrap();
+        assert_eq!(marks(&url, &schema), (Some(1), 1), "`e` is indexed");
+        let shared = |field: &str| -> Vec<(RecordKey, f64)> {
+            let got = nearest(engine.as_ref(), &t, field, &query, k).unwrap();
+            got.into_iter()
+                .filter(|(key, _)| key.as_str() < "k00041")
+                .collect()
+        };
+        let scanned = shared("f");
+        assert!(
+            scanned
+                .iter()
+                .any(|(got, score)| *got == key(20) && *score == 0.0),
+            "a field without the setting scores a vector of zeros 0"
+        );
+        answers.push(shared("e"));
+        drop(engine);
+        common::drop_schema(&url, &schema);
+    }
+    let mut want: Vec<(RecordKey, f64)> = (0..41)
+        .filter(|i| *i != 20)
+        .map(|i| (key(i), lakelands_api::query::cosine(&query, &at(i))))
+        .collect();
+    engines::rank(&mut want, k);
+    assert!(
+        answers[0] == want,
+        "a field smaller than the pull answers every vector but the one of zeros, exactly: {:?}",
+        answers[0]
+    );
+    assert!(
+        answers[1] == want,
+        "the twin that holds more answers the same of what both hold: {:?}",
+        answers[1]
+    );
+}
