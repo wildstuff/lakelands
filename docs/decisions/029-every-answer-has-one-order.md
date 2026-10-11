@@ -34,7 +34,12 @@ the answer and the same on every engine:
   search as of a position before a re-key answers each record under its
   key there, and still in that order, so every page is whole; sorting a
   page again by the keys answered would answer some of a large tie twice
-  and some never (lakelands#797). **A fused tie** is broken by the key
+  and some never (lakelands#797). A vector field the lake asks an index
+  for is the exception: there a page is the index's answer at the depth
+  that page asks for, and the pages of one query are not promised to be
+  parts of one sequence
+  (`docs/decisions/043-an-index-asked-for-answers-its-set.md`).
+  **A fused tie** is broken by the key
   answered, the one the record bears at the read's position. A fused
   list is computed whole for every page, to the lake's `max_limit`, so
   no cut of an engine's list falls inside it; and the key answered

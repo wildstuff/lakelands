@@ -739,8 +739,8 @@ a name that is not searchable or not readable
 
 **A vector's list** holds at most `k` records, scored by the **cosine**
 of the angle between the query and the stored vector (higher is closer;
-a vector of zeros scores 0 against everything), best first, equal scores
-by key ascending. A field holding no vectors answers nothing; a query
+a vector of zeros scores 0 against everything, and a field read through
+an index leaves it out, 043), best first, equal scores by key ascending. A field holding no vectors answers nothing; a query
 whose length differs from a stored vector's is `Invalid`.
 
 ### `VectorIndex`
@@ -793,8 +793,8 @@ The `sys.setting` `vector_index.<type>` names vector fields of a type. A
 search over one of them answers the index's set, ranked by the one
 cosine, ties by key, and says `ranked_by: index` (or `hybrid (index)`);
 `describe_type` names them as `indexed`. On PostgreSQL the index is
-pgvector's HNSW (`m = 16`, `ef_construction = 64`, `ef_search = max(k,
-200)` up to 1 000, iterative scans past it) over each vector's unit
+pgvector's HNSW (`m = 16`, `ef_construction = 64`, `ef_search` at the
+candidates pulled, from 200 up to 1 000, iterative scans past it) over each vector's unit
 vector, used while its mark equals `folded`; SQLite and memory keep none
 and answer the exact ranking. Every other field answers the exact
 ranking on every engine. The suite holds the index's recall against the

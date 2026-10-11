@@ -295,7 +295,36 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   is behind and appends nothing, and every writer's open folds that event
   again and fails the same way. Reads answer as before; writes do not,
   until the host raises `/dev/shm` or `maintenance_work_mem`, or sets
-  `max_parallel_maintenance_workers = 0`, and opens the writer again. SQLite and in-memory lakes keep no such
+  `max_parallel_maintenance_workers = 0`, and opens the writer again.
+  Under the index a page of a search is the index's answer at the depth
+  that page asks for, so the pages of one query may answer a record
+  twice or leave one out (043): a host that needs a ranked result whole
+  and in order reads it in one page, up to `max_limit`, or leaves the
+  field without the setting. A group of equally near vectors is no
+  exception: the members the index hands out at a page's depth come
+  once and in key order there, and the index may hand out a part of
+  the group and go on with farther vectors. A vector of zeros is never
+  answered for a field read through its index, whether the index or the
+  scan after it answers the search; a field without the setting scores
+  it 0, and so does every field on a server without pgvector. Some
+  searches read every vector of the
+  field after the index. One is a search the index hands fewer
+  candidates than it asked for: on a field smaller than what the search
+  pulls (any field under 65 vectors, and a page deep into a larger
+  one); past 20 000 candidates or pgvector's memory limit for such a
+  scan (`hnsw.scan_mem_multiplier` times `work_mem`, which stays the
+  server's), which a search under a filter that keeps few records
+  reaches on a large field; and over a group of several hundred
+  identical vectors, of which the index reaches a part. The other is a
+  search whose pull of 4 096 candidates or more ends inside a group of
+  equally near vectors. **The engine sets `hnsw.max_scan_tuples`
+  itself,** to pgvector's default of 20 000, for each search and
+  whatever the server's value: where the index ends decides which
+  searches the scan answers, and an answer must not move with a
+  server's setting. It is set with `SET LOCAL`, for the search's own
+  transaction only; nothing of the role's or the server's is changed,
+  and a value a host set there has no effect on a lake's searches.
+  SQLite and in-memory lakes keep no such
   index and answer every search exactly; a SQLite lake that needs one
   moves to PostgreSQL by export and import (lakelands#215).
 
