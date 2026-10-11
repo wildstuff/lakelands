@@ -1052,3 +1052,61 @@ async fn a_purge_from_a_type_it_cannot_take_from_is_refused(store: Store) -> Hel
     let what = "a purge from a type it cannot take from";
     head_unmoved(store.as_ref(), before, what).await
 }
+
+check!(
+    CARRIED_LINKS_NAMED = a_purge_from_a_type_names_the_link_types_its_relations_carry,
+    "039 and 044: a purge of a source from one type reads that type and the link types of the relations of it that link records carry; a relation a migration removed and another declared again as derived has no link type, so the link records that stand under its name from before are taken by the preflight and by the purge of the type no more than before it was declared again"
+);
+
+async fn a_purge_from_a_type_names_the_link_types_its_relations_carry(store: Store) -> Held {
+    lake(store.as_ref()).await?;
+    let l = Lake::of(store.as_ref());
+    // `route` r1 and r2, each linked to a partner over `calls_at`; the
+    // links alone come from `bridge`.
+    let route = |relations| {
+        let mut route = type_decl("route", vec![sourced("name", StorageKind::Text)]);
+        route.relations = relations;
+        route
+    };
+    let mut carried = RelationDecl::to("calls_at", "partner");
+    carried.authority = Authority::Source;
+    l.declare(route(vec![carried])).await?;
+    let lt = link_type_name(&"route".into(), &"calls_at".into());
+    for (from, to) in [("r1", "p1"), ("r2", "p2")] {
+        feed_one(&l, "tt", "route", from, json!({"name": "Harbor"})).await?;
+        let key = link_key(&from.into(), &to.into());
+        let ends = json!({"from": from, "to": to});
+        feed_one(&l, "bridge", lt.as_str(), key.as_str(), ends).await?;
+    }
+    let (bridge, ty) = (SourceId::from("bridge"), TypeName::from("route"));
+    let mut taken = Vec::new();
+    // The relation carried by links, removed, and declared again as one
+    // derived from matching names.
+    let by_name = lakelands_api::ontology::Derived {
+        pairs: vec![lakelands_api::ontology::MatchPair {
+            from: "name".into(),
+            to: "name".into(),
+        }],
+    };
+    let derived = RelationDecl {
+        derived: Some(by_name),
+        ..RelationDecl::to("calls_at", "partner")
+    };
+    for relations in [None, Some(vec![]), Some(vec![derived])] {
+        if let Some(relations) = relations {
+            l.migrate(route(relations)).await?;
+        }
+        let seen = store.purge_preflight(&bridge, Some(&ty)).await;
+        taken.push(seen.must("the preflight of `bridge` from `route`")?.retired);
+    }
+    let done = purge_from(store.as_ref(), "bridge", "route").await;
+    taken.push(done.must("the purge of `bridge` from `route`")?.retired);
+    let stand = live(&l, lt.as_str(), "r1:p1").await? && live(&l, lt.as_str(), "r2:p2").await?;
+    ensure!(
+        taken == [2, 0, 0, 0] && stand,
+        "a purge of `bridge` from `route` must take its two links while `calls_at` is carried \
+         by links, and none once the relation is removed, declared again as derived, and at \
+         the purge; it took {taken:?}, and the links are live: {stand}"
+    );
+    Ok(())
+}

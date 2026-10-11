@@ -1154,8 +1154,10 @@ async fn a_target_type_the_source_does_not_own_whole_is_refused_at_start() {
 
 /// A derived relation of a mirrored type stores nothing, so its source
 /// writes nothing for it (lakelands#902): the mirror starts whether the
-/// source declares the relation or not, and a walk over it in the target
-/// answers what the same walk answers in the source.
+/// source derives the relation, carries one of that name by links or
+/// declares none, and a walk over it in the target answers by the
+/// target's own match: what the same walk answers in the source where
+/// the source derives it too, and not what the source's links answer.
 #[tokio::test]
 async fn a_derived_relation_of_a_mirrored_type_is_the_targets_own_reading() {
     use lakelands_api::query as q;

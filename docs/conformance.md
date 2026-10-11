@@ -784,6 +784,7 @@ belongs in the suite, not beside one engine:
 - `a_typed_purge_takes_the_links_of_the_named_types_relations_and_no_other` — 039, extended, and 035: a typed purge takes the source's link records of the relations the named type declares with its records; the source's link records of another type's relation that end at a purged record stay and are named in the report
 - `a_preflight_of_a_type_and_one_of_the_source_whole_answer_ids_of_their_own` — 039, extended: at one head the preflight of a source whole and the preflight of the source from one type answer different ids; each is refused as invalid by the other's purge, appending nothing, and taken by its own
 - `a_purge_from_a_type_it_cannot_take_from_is_refused` — 039, extended, and 010: a purge and a preflight that name a type that is not declared are not found; ones that name a view, or a type that keeps no per-field provenance, are refused as invalid saying why; nothing is appended
+- `a_purge_from_a_type_names_the_link_types_its_relations_carry` — 039 and 044: a purge of a source from one type reads that type and the link types of the relations of it that link records carry; a relation a migration removed and another declared again as derived has no link type, so the link records that stand under its name from before are taken by the preflight and by the purge of the type no more than before it was declared again
 
 **value types**
 
