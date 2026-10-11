@@ -183,12 +183,16 @@ its source records' provenance and is not refused; a stored type cannot
 become a view (`migration_to_view`), so what a view's source is is
 settled where the view is declared.
 
-A read asks the same of its own `where`: a `find`, a pattern's start or
-step and a search's filter over a view's records are refused alike when
-they call one of the two, where a read over a stored type is answered.
-A read that answers nothing and says nothing of why is the defect on
-the other side. A refusal is lifted, with its row, when one of these is
-given a provenance to read.
+A read asks the same of itself: over a view's records the `where` of a
+`find` and of a pattern's start or step, a `find`'s group key and its
+order by `seen_at` or `known_at` are refused alike when they call for
+one of the two, where a read over a stored type is answered. A
+pattern's rows are no records whatever its types are: an order of them
+by `seen_at` or `known_at` is refused over a stored type too. A search
+over a view is refused whatever its filter reads (`view_not_searched`):
+a view is not searched. A read that answers nothing and says nothing of
+why is the defect on the other side. A refusal is lifted, with its row,
+when one of these is given a provenance to read.
 
 ### What a view computes lands as a derived field does
 
@@ -330,3 +334,12 @@ rather than one error at a time.
   in a value type's constraint, a function's expression or a view over
   a view, and read in a `where` over a view's records, each of which
   read nothing before and said nothing of it (lakelands#852).
+- A `find`'s group key and its order read no provenance over a view's
+  records either: the key answered one group `false` and the order
+  answered as if none were asked. The sentence on a search's filter
+  said "refused alike"; a search over a view is refused before its
+  filter is read (lakelands#889).
+- A pattern's rows ordered by `seen_at` or `known_at` were answered in
+  the order of the value, over a view's records and a stored type's
+  alike. They are refused, as an order of them by `latest` is
+  (lakelands#901).

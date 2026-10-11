@@ -26,7 +26,7 @@ check!(
 
 check!(
     PATTERN_AGGREGATE_READS_PATHS = a_pattern_aggregate_reads_its_rows_by_their_paths,
-    "018, extended (lakelands#720): a pattern's aggregate names each value as its rows hold it, `<type>.<field>` or `<type>.key` of a type the pattern binds: a field key and a measure by the path, a named key's paths through a field into members, over a step too; a name no bound type starts is refused alike for a type absent and one not shown, over a step binding it too, a named key reading a field its reader may not know of is refused as a field key on it is, one reading a masked or a write-only field as not granted, as `find` refuses it, and one with no meaning as `find` refuses it; a holder of `only` is grouped, counted and keyed over its admitted records alone, at the start and over a step; a null and a missing value fall into one null group; `<type>.key` is a field `key` its reader may know of, judged by its kind as `find` judges it, null where a record holds none, grouping, summing and ordering as `find` does, and the record's key to one kept from it, as over a type with none, by whose `<type>.key` rows are ordered (lakelands#752); a step walked both ways at depth 0, or over a relation two types declare at the default depth, names its `type` where rows or an aggregate bind it or it reads a `where` (lakelands#680), and then binds that type, for an order, `fields` and a group key alike, and rows are sorted before `fields` leaves out a path an order reads"
+    "018, extended (lakelands#720): a pattern's aggregate names each value as its rows hold it, `<name>.<field>` or `<name>.key` of a name the pattern binds: a field key and a measure by the path, a named key's paths through a field into members, over a step too; a path no bound name starts is refused alike for a type absent and one not shown, over a step binding it too, a named key reading a field its reader may not know of is refused as a field key on it is, one reading a masked or a write-only field as not granted, as `find` refuses it, and one with no meaning as `find` refuses it; a holder of `only` is grouped, counted and keyed over its admitted records alone, at the start and over a step; a null and a missing value fall into one null group; `<name>.key` is a field `key` its reader may know of, judged by its kind as `find` judges it, null where a record holds none, grouping, summing and ordering as `find` does, and the record's key to one kept from it, as over a type with none, by whose `<name>.key` rows are ordered (lakelands#752); a step walked both ways at depth 0, or over a relation two types declare at the default depth, names its `type` where rows or an aggregate bind it or it reads a `where` (lakelands#680), and then binds that type, for an order, `fields` and a group key alike, and rows are sorted before `fields` leaves out a path an order reads"
 );
 
 check!(
@@ -325,7 +325,7 @@ async fn a_pattern_aggregate_reads_its_rows_by_their_paths(store: Store) -> Held
             wrong.push(format!("{a}: {got:?}, not {want}"));
         }
     }
-    // Refused: a name no bound type starts, one the type does not have, one
+    // Refused: a path no bound name starts, one its type does not have, one
     // with no meaning.
     let no_path = |path: &str| Case::PatternNoPath { path: path.into() };
     let unknown = Case::UnknownField {
@@ -445,7 +445,7 @@ async fn a_pattern_aggregate_reads_its_rows_by_their_paths(store: Store) -> Held
             wrong.push(format!("`only` {only}, {a}: {got:?}, not {want}"));
         }
     }
-    // A row's `<type>.key` is a field `key` its reader may know of, judged
+    // A row's `<name>.key` is a field `key` its reader may know of, judged
     // by its kind as `find` judges it; one kept from it reads the record's
     // key, as over a type with no such field.
     let keyed = [("acct", StorageKind::Text), ("flag", StorageKind::Boolean)];

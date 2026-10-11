@@ -965,7 +965,7 @@ catalog! {
         /// A difference of what are not two instants.
         MinusNoMeaning { #[serde(with = "closed")] left: Box<Operand>, #[serde(with = "closed")] right: Box<Operand> } => "{left} minus {right} has no meaning",
         /// A provenance function where no record stands.
-        NoRecordsProvenance => "known_at() and seen_at() read a record's provenance, and no record stands here: a view's records, a value type's constraint and a function's expression carry none",
+        NoRecordsProvenance => "known_at() and seen_at() read a record's provenance, and no record stands here: a view's records, a query's rows, a value type's constraint and a function's expression carry none",
         /// A number that is not a number.
         NotANumber { #[serde(with = "closed")] value: Box<Operand> } => "{value} is not a number",
         /// A function's call that is no aggregate where one is folded.
@@ -1154,7 +1154,7 @@ catalog! {
         /// A path a pattern orders, projects or aggregates by that no row holds.
         PatternNoPath { path: String } => "`{path}` is no path the pattern's rows hold; a row holds `<name>.<field>` for each name the pattern binds, its type's or the one `as` gives",
         /// A pattern with an `order_by` that answers no rows.
-        PatternOrderNotRows => "`order_by` orders rows; a graph and a path come by depth, type and key",
+        PatternOrderNotRows => "`order_by` orders rows; a graph and a path come by depth, type and key, and an aggregate's groups by their key",
         /// A pattern with `to` whose steps are a chain.
         PatternToChain => "a pattern with `to` walks its steps as one walk from its start; every step's depth starts at 0",
         /// A pattern with `to` not projected as a graph.

@@ -101,12 +101,18 @@ A pattern with `to` that asks for rows or an aggregate is told so before
 its steps are judged: a path's steps start at depth 0, and rows would
 refuse them for that.
 
-### An `order_by` on a graph or a path is refused
+### An `order_by` orders rows and nothing else
 
-An `order_by` on a graph or a path is refused. A graph comes by depth,
-type and key (029) and a path by its hops, so an order names nothing
-they honour. It is refused as invalid where `as` is, before a step is
-judged. A measure refuses it in its own words.
+An `order_by` on a graph, a path or an aggregate is refused. A graph
+comes by depth, type and key (029), a path by its hops and an
+aggregate's groups by their key, so an order names nothing they honour.
+It is refused as invalid where `as` is, before a step is judged. A
+measure refuses it in its own words.
+
+Rows are ordered by the values at their paths alone. A row is a
+projection of a walk, not a record: a key that asks for `latest`,
+`seen_at` or `known_at` is refused, and an ill-formed key as `find`
+refuses it, all before a record is read.
 
 ### A row binds each record under a name of its own
 
@@ -229,9 +235,9 @@ had read something. An order by `<type>.key` over a type with no field
 `key` would be refused, though every row holds that path.
 
 Two faults in one pattern are answered in one order on every lake: each
-order's path is read, then each order is probed, then each projected
-path is read, then each projected field is judged. The first fault in
-that order is the answer.
+order's form and its `by` are judged, then each order's path is read,
+then each order is probed, then each projected path is read, then each
+projected field is judged. The first fault in that order is the answer.
 
 ### A whole-graph measure is a projection
 
@@ -521,3 +527,11 @@ used.
   of each at a `valid_at`; until then "nothing is read from them" stood
   for the valid time as well, and the walk filtered by fields nobody had
   probed (lakelands#831).
+- An order asked for and not given: a pattern's rows ordered by
+  `seen_at` or `known_at` came in the order of the value, and an
+  `order_by` with an aggregate was passed over. Both are refused, and
+  an order of rows is judged before the walk and before its path is
+  read: a well-formed `latest` answers `latest_no_change` and a key
+  without a field `order_names_no_field` where both answered
+  `pattern_no_path`, and `latest` with a field `latest_takes_no_field`
+  where it answered `latest_no_change` (lakelands#901).

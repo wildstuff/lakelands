@@ -19,7 +19,7 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     RECORD_CHECKS_IN_ORDER = a_write_breaking_two_record_checks_is_refused_by_the_earlier,
-    "016, extended (lakelands#338): a record write that breaks two adjacent record checks is refused by the earlier: the type before an empty patch, the key before the fields, field by field in name order with the door before the grant, the grant before the value, the value before the key fill, the key's agreement before a reference, a reference before the version, the version before a required field; a retry answers its first outcome before any of them"
+    "016, extended (lakelands#338): a record write that breaks two adjacent record checks is refused by the earlier: the type before an empty patch, the key before the fields, field by field in name order with the door before the grant, the grant before the value, the value before the key fill, the key's agreement before a reference, a reference before the version, the version before a required field, a required field before the shape of a setting the store reads; a retry answers its first outcome before any of them"
 );
 
 check!(
@@ -401,6 +401,15 @@ async fn a_write_breaking_two_record_checks_is_refused_by_the_earlier(store: Sto
             "constraint part",
         ),
         ("o", "k3", r#"{"need": null}"#, 9, false, "conflict"),
+        // A `view_kept` setting of no view, and without its value.
+        (
+            "sys.setting",
+            "view_kept.nowhere",
+            r#"{"key": "view_kept.nowhere"}"#,
+            0,
+            false,
+            "constraint value",
+        ),
     ];
     let head = store.head().await.must("reading the head")?;
     let mut red = Vec::new();

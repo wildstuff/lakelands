@@ -122,7 +122,7 @@ engine_check!(
 
 engine_check!(
     LINK_EDGES = edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_position,
-    "035 and seams §edges: an engine answers a relation without via from its live link records at the view's position, out and in, each edge carrying the link's own fields"
+    "035 and seams §edges: an engine answers a relation with neither `via` nor `derived` from its live link records at the view's position, out and in, each edge carrying the link's own fields"
 );
 
 engine_check!(

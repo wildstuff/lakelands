@@ -1029,7 +1029,14 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                        "description": "`degree` answers rows of `type`, `key` and `degree` (links over the steps' relations), highest first; `components` answers rows of `component`, `size`, `type` and `key`, largest component first. Both take steps without `depth`, `where` or `type`; `components` walks each step `both`."},
                 "fields": {"type": "array", "items": {"type": "string"}}}}),
             ),
-            ("order_by", order_by_schema(json!({"type": "string"}))),
+            (
+                "order_by",
+                json!({"type": "array", "items": {"type": "object",
+                    "description": "One sort key of the rows: a path they hold, by its value.",
+                    "properties": {"field": {"type": "string"}, "dir": {"enum": ["asc", "desc"]}},
+                    "required": ["field"],
+                    "additionalProperties": false}}),
+            ),
             ("limit", json!({"type": "integer", "minimum": 1})),
             ("cursor", json!({"type": "string"})),
         ]);

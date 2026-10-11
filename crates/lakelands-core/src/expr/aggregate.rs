@@ -437,7 +437,7 @@ pub fn over_rows(
             .join(".")
     };
     let unbound = |path: String| Said::from(Case::PatternNoPath { path });
-    // Where a path's field stands: after the longest type `bound`.
+    // Where a path's field stands: after the longest name `bound`.
     let at = |path: &[FieldName]| {
         let k = (1..path.len()).rev().find(|&k| bound(&joined(&path[..k])));
         let k = k.ok_or_else(|| unbound(joined(path)))?;

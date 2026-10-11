@@ -41,6 +41,11 @@ check!(
     "018, extended (lakelands#680): a row binds each record a pattern reaches under the name `as` gives, or its type's: a chain that reaches one type three times answers each record under its own name, a step that would bind a name again is refused at its step and `as` on a graph, a path, degree and components as naming nothing, an aggregate groups by a named path, a field its reader may not know of answers under a name as on its type, and a name that is no identifier is refused"
 );
 
+check!(
+    ROWS_HOLD_MATCHED_STARTS = a_rows_projection_holds_a_start_only_where_a_match_begins,
+    "026: a rows projection holds a start only where its steps reach a match from it, and every row binds its start beside what its steps reach: of the people, one with no boss, whom nobody reports to, is in no row of a step that needs a boss and is a node of the same pattern's graph, and a step from depth 0 binds every start, that one too"
+);
+
 /// People who report to people, through `boss`.
 async fn org(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
@@ -298,6 +303,54 @@ async fn a_row_binds_each_record_under_its_name(store: Store) -> Held {
     ensure!(
         said == Some(Case::NameNotIdentifier { what, name }),
         "a pattern binding a name `a.b` is refused as no identifier; it answered {said:?}"
+    );
+    Ok(())
+}
+
+async fn a_rows_projection_holds_a_start_only_where_a_match_begins(store: Store) -> Held {
+    use lakelands_api::query::Projection;
+    let l = org(store.as_ref()).await?;
+    let Lake { cat, own } = &l;
+    l.upsert("person", "sol", json!({"name": "sol"})).await?;
+    // Every person as a start; each row as `start>boss`, in one order.
+    let people = |step: Step, project: Projection| {
+        let mut p = from("zed", vec![step]);
+        (p.start.key, p.project) = (None, project);
+        cat.query(own, p)
+    };
+    let mut said = Vec::new();
+    for min in [1, 0] {
+        let rows = Projection::Rows { fields: Vec::new() };
+        let mut pairs = match people(up(min, 1), rows).await.map(|r| r.data) {
+            Ok(QueryResult::Rows { rows, .. }) => (rows.iter())
+                .map(|r| {
+                    let cell = |n| r.get(n).and_then(Value::as_str).unwrap_or("-");
+                    [cell("person.key"), cell("boss.key")].join(">")
+                })
+                .collect::<Vec<_>>(),
+            other => vec![format!("{other:?}")],
+        };
+        pairs.sort();
+        said.push(pairs.join(" "));
+    }
+    let drawn = people(step("reports_to", Walk::Out, 1, 1), Projection::Graph);
+    let mut nodes = match drawn.await.map(|r| r.data) {
+        Ok(QueryResult::Graph { nodes, .. }) => (nodes.iter())
+            .map(|n| n.key.as_str().to_owned())
+            .collect::<Vec<_>>(),
+        other => vec![format!("{other:?}")],
+    };
+    nodes.sort();
+    said.push(nodes.join(" "));
+    ensure!(
+        said == [
+            "amy>vp vp>ceo zed>vp",
+            "amy>amy amy>vp ceo>ceo sol>sol vp>ceo vp>vp zed>vp zed>zed",
+            "amy ceo sol vp zed"
+        ],
+        "rows hold a start only where a match begins at it, `sol` and `ceo` in none of a step \
+         that needs a boss, every start in those of a step from depth 0, and the graph every \
+         start: {said:#?}"
     );
     Ok(())
 }
@@ -789,7 +842,7 @@ async fn a_step_whose_records_a_row_binds_reaches_one_type(store: Store) -> Held
 
 check!(
     PATTERN_SAYS = a_pattern_is_refused_for_what_it_says_and_a_step_reads_what_it_keeps,
-    "018, 024 and 044, extended (lakelands#829): an `order_by` on a graph or a path is refused before a step is judged; a depth no walk takes is refused for rows and a path whose start no record has; a neighbourhood over a relation no shown type declares is refused as a chain's step is, with a `type` too, an inverse that is not around the type it is read from alike, and a relation whose carrying fields its reader may not know of as an absent one; an inverse is one relation onto its target: a second is refused by `declare`, `propose` and `apply` at the type, naming no relation, to a proposer without `schema` who is not shown the other's type word for word as to the owner, whose proposal under another inverse is taken, and to an author with `schema` who is not shown it at `declare` and by a migration that adds the relation, and taken onto another target, where the next is refused alone in a set with the first as it stands, a step by it reaches its owner's records alone in rows, a graph and a degree, in a component and over two hops both ways, on to a second bill, and a `type` it names that is another is one it does not reach; a step with a `type` probes and reads only the relations its walk keeps a record over: a reader masked from `quote.cust` is answered the bills in rows, a graph and a path, to the byte what it is answered once the quotes are gone, one masked from `bill.cust` is refused, and told what the step reaches where its `type` is one it does not reach, naming only the types it is shown, both are without the `type`, a relation a chain's step walks through to its `type` is probed, and each step reads by its own `type` where another walks the same relation the same way"
+    "018, 024 and 044, extended (lakelands#829): an `order_by` on a graph or a path is refused before a step is judged, and one on an aggregate, which is answered without it (lakelands#901); a depth no walk takes is refused for rows and a path whose start no record has; a neighbourhood over a relation no shown type declares is refused as a chain's step is, with a `type` too, an inverse that is not around the type it is read from alike, and a relation whose carrying fields its reader may not know of as an absent one; an inverse is one relation onto its target: a second is refused by `declare`, `propose` and `apply` at the type, naming no relation, to a proposer without `schema` who is not shown the other's type word for word as to the owner, whose proposal under another inverse is taken, and to an author with `schema` who is not shown it at `declare` and by a migration that adds the relation, and taken onto another target, where the next is refused alone in a set with the first as it stands, a step by it reaches its owner's records alone in rows, a graph and a degree, in a component and over two hops both ways, on to a second bill, and a `type` it names that is another is one it does not reach; a step with a `type` probes and reads only the relations its walk keeps a record over: a reader masked from `quote.cust` is answered the bills in rows, a graph and a path, to the byte what it is answered once the quotes are gone, one masked from `bill.cust` is refused, and told what the step reaches where its `type` is one it does not reach, naming only the types it is shown, both are without the `type`, a relation a chain's step walks through to its `type` is probed, and each step reads by its own `type` where another walks the same relation the same way"
 );
 
 async fn a_pattern_is_refused_for_what_it_says_and_a_step_reads_what_it_keeps(
@@ -827,10 +880,21 @@ async fn a_pattern_is_refused_for_what_it_says_and_a_step_reads_what_it_keeps(
         pattern("customer", Some("c1"), vec![of(Walk::In, 0, 1)], Graph),
         "b1",
     );
+    // And an aggregate's groups, which come by their key (lakelands#901).
+    let counted = json!({"start": {"type": "customer"}, "project": {"as": "aggregate",
+                         "measures": [{"name": "c", "func": "count"}]}});
+    let counted: Pattern = serde_json::from_value(counted).expect("a pattern reads");
+    if cat.query(own, counted.clone()).await.is_err() {
+        wrong.push("an aggregate without an `order_by` is not answered".to_owned());
+    }
+    let mut ghostly = counted.clone();
+    ghostly.steps = vec![ghost()];
     for mut p in [
         pattern("customer", None, vec![of(Walk::In, 1, 1)], Graph),
         pattern("customer", None, vec![ghost()], Graph),
         path.clone(),
+        counted,
+        ghostly,
     ] {
         p.order_by = vec![order("customer.tier", OrderBy::Value, Direction::Asc)];
         let got = said(own, p.clone()).await;

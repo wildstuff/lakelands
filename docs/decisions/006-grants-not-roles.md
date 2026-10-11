@@ -268,7 +268,7 @@ does not exist is told the same of what is made of it.
   field (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
 - **A pattern's probes ask it too (lakelands#653, lakelands#654).** An
   order, a measure, a grouping or a projected field over a path on a
-  type the principal is not shown is refused as a path no bound type
+  type the principal is not shown is refused as a path no bound name
   starts, word for word as one on a type that is not declared (018,
   extended by lakelands#752). A step over a derived relation probes
   the matched fields of the relations it walks and of no other: its
