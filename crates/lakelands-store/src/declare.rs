@@ -39,7 +39,7 @@ use lakelands_api::expr::kind::{self, Kind};
 use lakelands_api::expr::{Condition, Expr, Func};
 use lakelands_api::ontology::{
     Authority, Derived, FieldDecl, OnInputChange, RelationDecl, StorageKind, TriggerDecl, TypeDecl,
-    ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl,
+    ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, lands_in_the_fold,
 };
 use lakelands_api::tools::name_problems;
 use lakelands_api::write::{Carrier, Declaration, ObjectSetDecl};
@@ -1244,12 +1244,14 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             // in a type whose field it computes.
             let mut probe = o.clone();
             probe.put(d.clone(), 0, None);
-            for t in o.types.values().filter(|t| {
-                t.decl
-                    .fields
-                    .iter()
-                    .any(|x| x.function.as_deref() == Some(f.name.as_str()))
-            }) {
+            let callers = || {
+                o.types.values().filter(|t| {
+                    let links = t.decl.relations.iter().flat_map(|r| &r.fields);
+                    (t.decl.fields.iter().chain(links))
+                        .any(|x| x.function.as_deref() == Some(f.name.as_str()))
+                })
+            };
+            for t in callers() {
                 let within = [on[0].clone(), of_type(&t.decl.name)];
                 crate::backed::computed_order(&probe, &t.decl)
                     .map_err(|e| invalid(at(&within, e)))?;
@@ -1276,6 +1278,28 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     return Err(invalid(at(&on, Case::ExpressionNotExpr { backing })));
                 }
                 _ => {}
+            }
+            // Declared again, it must not compute what an expression
+            // alone may: with a backing a field at the read that calls it
+            // (052); with a backing or an input computed outside the lake
+            // a reference that calls it or reads a field that does (032).
+            // Each field of a type that calls it is asked, whatever else
+            // the type says. Said of the function: the type may not be
+            // its author's to know.
+            let called = |n: &str| probe.functions.get(n).map(|e| &e.decl);
+            for t in callers() {
+                let links = t.decl.relations.iter().map(|r| &r.fields);
+                for fields in std::iter::once(&t.decl.fields).chain(links) {
+                    for x in fields {
+                        let calls = x.function.as_deref() == Some(f.name.as_str());
+                        let lands = || lands_in_the_fold(fields, x, &called, &mut Vec::new());
+                        if x.at_read() && calls && crate::backed::is_backed(f) {
+                            return Err(invalid(at(&on, Case::AtReadBacked)));
+                        } else if x.ty.target.is_some() && lands() {
+                            return Err(invalid(at(&on, Case::ReferenceUnjudged)));
+                        }
+                    }
+                }
             }
         }
     }

@@ -721,6 +721,8 @@ catalog! {
         AnnotationsTooLarge { bytes: usize, max: usize } => "it holds {bytes} bytes of annotations, over the {max} a declaration may hold",
         /// A field computed at the read that a door would write.
         AtReadAuthority => "computed at the read, it has the authority `derived`: no door writes it",
+        /// A reference computed at the read, by a function's backing or an embedding, or from a field so computed.
+        ReferenceUnjudged => "a reference is computed at the write by an expression, where its writer is judged for the record it names; computed at the read, by a function's backing or an embedding, or from a field so computed, nothing judges it",
         /// A field computed at the read by a function a backing computes.
         AtReadBacked => "computed at the read, an expression computes it; a function's backing is called at a write",
         /// A field computed at the read that a change of its inputs clears.

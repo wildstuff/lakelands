@@ -458,7 +458,9 @@ impl TypeDecl {
     /// not required, sensitive by itself, cleared or searched; it is no
     /// key, validity bound, `via` or derived relation's match, no field of
     /// a view or of a link; and no field computed at the write reads it.
-    /// `None` when every field keeps them. Every door checks this.
+    /// A reference is computed at the write by an expression alone, where
+    /// its writer is judged for the record it names (032). `None` when
+    /// every field keeps them. Every door checks this.
     pub fn computed_at_problem<'f>(
         &self,
         function: impl Fn(&str) -> Option<&'f crate::write::FunctionDecl>,
@@ -549,6 +551,9 @@ fn computed_at_problem<'f>(
             return Some(Case::ClockUnsaid);
         }
         Some(ComputedAt::Read) => {}
+        _ if f.ty.target.is_some() && lands_in_the_fold(fields, f, function, &mut Vec::new()) => {
+            return Some(Case::ReferenceUnjudged);
+        }
         _ => {
             let field = reads.into_iter().find(at_read)?.clone();
             return Some(Case::AtWriteReadsAtRead { field });
@@ -569,8 +574,41 @@ fn computed_at_problem<'f>(
         Case::AtReadCleared
     } else if f.searchable {
         Case::AtReadSearchable
+    } else if f.ty.target.is_some() {
+        Case::ReferenceUnjudged
     } else {
         return None;
+    })
+}
+
+/// Whether `f` is computed outside the lake, by a function's backing or
+/// an embedding, or reads a field that is, directly or through other
+/// computed fields: its value then lands in the fold, when the output
+/// does, and not at a write. `fields` are those `f` stands among, a
+/// type's or one relation's; a function `function` does not know counts
+/// as none. `seen` holds the fields asked already, none at first.
+pub fn lands_in_the_fold<'f>(
+    fields: &[FieldDecl],
+    f: &FieldDecl,
+    function: &dyn Fn(&str) -> Option<&'f crate::write::FunctionDecl>,
+    seen: &mut Vec<FieldName>,
+) -> bool {
+    let called = f.function.as_deref().and_then(function);
+    if f.embed.is_some() || called.is_some_and(|func| func.backing != "expr") {
+        return true;
+    }
+    let expr = (f.derived.as_ref()).or(called.and_then(|func| func.expr.as_ref()));
+    let Some(expr) = expr.and_then(|c| c.typed().ok()) else {
+        return false;
+    };
+    let reads = expr.fields_read();
+    let mut read = fields.iter().filter(|d| reads.contains(&d.name));
+    read.any(|d| {
+        let new = !seen.contains(&d.name);
+        new && {
+            seen.push(d.name.clone());
+            lands_in_the_fold(fields, d, function, seen)
+        }
     })
 }
 

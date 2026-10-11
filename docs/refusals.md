@@ -246,6 +246,7 @@ What a refusal is about.
 | `annotation_reserved` | `namespace` (String) | the namespace `{namespace}.` is reserved | An annotation key in a reserved namespace. |
 | `annotations_too_large` | `bytes` (usize), `max` (usize) | it holds {bytes} bytes of annotations, over the {max} a declaration may hold | A declaration's annotations over the bytes it may hold. |
 | `at_read_authority` | — | computed at the read, it has the authority `derived`: no door writes it | A field computed at the read that a door would write. |
+| `reference_unjudged` | — | a reference is computed at the write by an expression, where its writer is judged for the record it names; computed at the read, by a function's backing or an embedding, or from a field so computed, nothing judges it | A reference computed at the read, by a function's backing or an embedding, or from a field so computed. |
 | `at_read_backed` | — | computed at the read, an expression computes it; a function's backing is called at a write | A field computed at the read by a function a backing computes. |
 | `at_read_cleared` | — | computed at the read, no value of it is kept to clear | A field computed at the read that a change of its inputs clears. |
 | `link_field_at_read` | — | a link's field is computed at the write; a walk reads links as stored | A link's field computed at the read. |

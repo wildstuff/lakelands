@@ -812,6 +812,50 @@ fn check_references(
     Ok(())
 }
 
+/// The references a record as planned is judged for: each field with a
+/// target that holds another value than the live record its writer
+/// reaches held, and each computed one that reads a field the write
+/// `sent`, whatever its value: a key sent again is judged again, and a
+/// writer who may not read the reference would else learn it by sending
+/// guesses (032). One the write neither moves nor sends a field of is
+/// not judged again, as a written one outside the patch is not.
+fn computed_references(
+    decl: &TypeDecl,
+    before: Option<&BTreeMap<FieldName, Value>>,
+    after: &BTreeMap<FieldName, Value>,
+    sent: &[FieldName],
+) -> Patch {
+    let references = decl.fields.iter().filter(|f| f.ty.target.is_some());
+    (references.filter_map(|f| Some((f, after.get(&f.name)?.clone()))))
+        .filter(|(f, v)| {
+            before.and_then(|b| b.get(&f.name)) != Some(v)
+                || computed_from(decl, f, sent, &mut Vec::new())
+        })
+        .map(|(f, v)| (f.name.clone(), v))
+        .collect()
+}
+
+/// Whether `f` is computed, by an expression or a function, from a field
+/// among `sent`, directly or through other fields so computed: a type in
+/// force lists what each is computed from. What a written field lists
+/// clears or keeps it and computes nothing. `seen` holds the fields asked
+/// already, none at first.
+fn computed_from<'d>(
+    decl: &'d TypeDecl,
+    f: &'d FieldDecl,
+    sent: &[FieldName],
+    seen: &mut Vec<&'d FieldName>,
+) -> bool {
+    let computed = f.derived.is_some() || f.function.is_some();
+    computed
+        && f.depends_on.iter().any(|d| {
+            let new = !seen.contains(&d);
+            seen.push(d);
+            let field = decl.fields.iter().find(|x| &x.name == d);
+            sent.contains(d) || new && field.is_some_and(|x| computed_from(decl, x, sent, seen))
+        })
+}
+
 /// Refuse a write whose key disagrees with its key fields.
 fn check_key_agrees(
     decl: &TypeDecl,
@@ -935,7 +979,12 @@ fn held_then(
     let then = lake.engine.view(Some(p.position))?;
     let ontology = Ontology::at(then.as_ref())?;
     let settings = crate::lake::settings_in(then.as_ref(), &ontology)?;
-    for (ty, key) in reached(&ontology, (then.as_ref(), &settings, p.proposed_at), write)? {
+    for (ty, key) in reached(
+        lake,
+        &ontology,
+        (then.as_ref(), &settings, p.proposed_at),
+        write,
+    )? {
         if then.get(&ty, &key)?.is_some_and(|r| r.restricted) {
             return Ok(true);
         }
@@ -945,14 +994,16 @@ fn held_then(
 
 /// The records a proposed write reaches: the record it writes, those its
 /// references name, an upsert's or what a call's assignments compute for
-/// the record in `view` with these settings at `now`, and the two end
-/// records of each link among them.
+/// the record in `view` with these settings at `now`, those the record
+/// as planned computes anew or from a field the write sends, and the two
+/// end records of each link among them.
 fn reached(
+    lake: &Lake,
     o: &Ontology,
     (view, settings, now): (&dyn ProjectionView, &BTreeMap<String, Value>, Timestamp),
     write: &ProposedWrite,
 ) -> Result<Vec<(TypeName, RecordKey)>> {
-    let (ty, key, refs) = match write {
+    let (ty, key, mut refs) = match write {
         ProposedWrite::Upsert { ty, key, patch, .. } => (ty, Some(key), patch.clone()),
         ProposedWrite::Retire { ty, key, .. } => (ty, Some(key), Patch::new()),
         ProposedWrite::Call {
@@ -974,6 +1025,31 @@ fn reached(
         _ => return Ok(Vec::new()),
     };
     let decl = o.ty(ty)?;
+    let computes =
+        |f: &FieldDecl| f.ty.target.is_some() && (f.derived.is_some() || f.function.is_some());
+    if let (false, Some(key), true) = (refs.is_empty(), key, decl.fields.iter().any(computes)) {
+        // The record as planned is the fold's: what it would make of this
+        // write, an initial value and a field waiting for its backing too.
+        let before = view.get(ty, key)?;
+        let live = before.as_ref().filter(|b| !b.retired);
+        let (ty, key, patch, made) = (ty.clone(), key.clone(), refs.clone(), live.is_none());
+        let version = Version(before.as_ref().map_or(0, |b| b.version.0) + 1);
+        let body = EventBody::RecordUpserted {
+            ty,
+            key,
+            version,
+            patch,
+            made,
+        };
+        let event = provisional(lake, Position::GENESIS, &Draft::system(now, body));
+        let plans = record::Plans::default();
+        let outputs = &mut Outputs::planning(view, &plans);
+        if let Some(after) = record::apply(o, before.as_ref(), &event, settings, outputs)? {
+            let sent: Vec<FieldName> = refs.keys().cloned().collect();
+            let was = live.map(|b| &b.fields);
+            refs.extend(computed_references(decl, was, &after.fields, &sent));
+        }
+    }
     let mut out: Vec<_> = key.map(|k| (ty.clone(), k.clone())).into_iter().collect();
     out.extend(refs.iter().filter_map(|(n, v)| {
         let f = decl.fields.iter().find(|f| &f.name == n)?;
@@ -1441,6 +1517,7 @@ impl Decide<'_> {
             check_references(view, pending, o, &decl.name, key, judged, who)?;
         }
         cas(expected, t.own())?;
+        let sent: Vec<FieldName> = patch.keys().cloned().collect();
         let version = Version(t.before.as_ref().map_or(0, |b| b.version.0) + 1);
         // Said once, here, of what this writer holds, its own drafts too.
         let made = live.is_none();
@@ -1461,7 +1538,8 @@ impl Decide<'_> {
                 made,
             },
         });
-        let after = self.apply(t.before.as_ref().filter(|_| !other), &draft)?;
+        let before = t.before.as_ref().filter(|_| !other);
+        let after = self.apply(before, &draft)?;
         record::check_required(decl, &after.fields)?;
         if after.ty.as_str() == AGING_RULE_TYPE {
             let rule = crate::aging::check(&w.ontology, &after.fields)
@@ -1473,6 +1551,22 @@ impl Decide<'_> {
             let shown = |t: &TypeName| sees.describe_type(t);
             let value = after.fields.get("value");
             lakelands_api::seam::check_setting(after.key.as_str(), value, &declared, &shown)?;
+        }
+        // A reference the record computes is judged as a written one, from
+        // the record as planned (032). Its key is computed from fields its
+        // writer may not all read, so one who may not read the reference
+        // is told only that the write is not granted. An accept judges
+        // as one who reads every field; what its reviewer is told is
+        // `told`'s.
+        let computed = computed_references(decl, live.map(|b| &b.fields), &after.fields, &sent);
+        let reads = |f: &FieldName| {
+            let mut fields = decl.fields.iter().filter(|d| &d.name == f);
+            fields.any(|d| rights::field_access(who, decl, d).reads())
+        };
+        let (pending, o) = (&self.pending, &w.ontology);
+        match check_references(view, pending, o, &decl.name, &after.key, &computed, who) {
+            Err(Error::Refused { field: Some(f), .. }) if !reads(&f) => granted(false)?,
+            judged => judged?,
         }
         granted(!other && owns(view, &self.pending, &sees, decl, &after.fields)?)?;
         Ok(RecordPlan {
@@ -1486,14 +1580,7 @@ impl Decide<'_> {
     /// the fold's own function, which hands out no call here.
     fn apply(&self, before: Option<&StoredRecord>, d: &Draft) -> Result<StoredRecord> {
         let (w, event) = (self.w, provisional(self.call.lake, self.next, d));
-        let outputs = &mut Outputs {
-            view: self.view,
-            staged: None,
-            before: None,
-            due: None,
-            waiting: false,
-            plans: &w.plans,
-        };
+        let outputs = &mut Outputs::planning(self.view, &w.plans);
         let after = record::apply(&w.ontology, before, &event, &w.settings, outputs)?;
         Ok(after.expect("a record event makes a record"))
     }
@@ -2044,7 +2131,7 @@ impl Call<'_> {
         if let Some(write) = p.write.as_ref().filter(|_| !self.who.grants.restricted) {
             let view = self.lake.engine.view(None)?;
             let now = crate::lake::wall_clock().max(w.last_known_at);
-            for (ty, key) in reached(o, (view.as_ref(), &w.settings, now), write)? {
+            for (ty, key) in reached(self.lake, o, (view.as_ref(), &w.settings, now), write)? {
                 granted(!view.get(&ty, &key)?.is_some_and(|r| sees.withheld(&r)))?;
             }
         }
@@ -3846,14 +3933,7 @@ impl Call<'_> {
                 let Some(now) = now.filter(|_| !sets.is_empty()) else {
                     return Ok(());
                 };
-                let mut outputs = Outputs {
-                    view,
-                    staged: None,
-                    before: None,
-                    due: None,
-                    waiting: false,
-                    plans: &w.plans,
-                };
+                let mut outputs = Outputs::planning(view, &w.plans);
                 let is = record::rederive(&computing, &is, &event, &w.settings, &mut outputs)?
                     .unwrap_or(is);
                 for (s, held) in &sets {
