@@ -559,6 +559,7 @@ pub const ALL: &[Check] = &[
     search_axes::WEIGHTS_SET,
     vocabulary::HOST_TYPES_AT_OPEN,
     vocabulary::RESERVED_NAME_REFUSES_OPEN,
+    vocabulary::TOOL_NAME_REFUSES_OPEN,
     vocabulary::HOST_VIEW_KEY,
     backings::FAILURE_RETRIED,
     embeddings::EMBED_SEARCH_OTHER_BACKEND,

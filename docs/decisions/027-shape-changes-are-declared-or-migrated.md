@@ -661,6 +661,16 @@ To its author such a type is one that is not declared:
   was too long a name, was applied, and so was a migration that renamed
   a relation into one; the lake then refused every declaration, naming
   the two, to anyone shown both.
+  A writer's open is such a door (lakelands#893): the system types it
+  declares, a host vocabulary's among them, are judged beside the lake
+  and beside each other before anything is appended, and an open that
+  would leave a problem is refused as `tool_names`, naming both sides
+  to the host, whose vocabulary it is (`docs/seams.md`,
+  `SystemVocabulary`). A type the lake holds already is not judged
+  again. An import carries a log that no door of this lake judged: there
+  the rule holds by the doors of the lake that wrote it, and a log
+  written with such a problem is taken whole and refuses its next
+  declaration as its source does.
 
 The test comes before the author's view is completed and before
 anything is appended. An accepter is answered as its listing shows it:

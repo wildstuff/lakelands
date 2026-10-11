@@ -15,7 +15,8 @@ use lakelands_api::{Access, LakeStore, ReadAt, TypeName};
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, describe_type, doors, field, field_access, get_at, invalid_case, owner, type_decl,
+    Lake, Must, declare, describe_type, doors, field, field_access, get_at, invalid_case,
+    invalid_like, owner, type_decl, write_verb,
 };
 use crate::conformance::{Failure, Held, Reopen, Store, backing};
 
@@ -34,6 +35,13 @@ check!(
 check!(
     HOST_VIEW_KEY = a_host_view_with_a_key_its_records_do_not_carry_is_judged_by_what_they_do,
     "006 and 018, extended (lakelands#788): a host's vocabulary type passes no `declare`, so its view may hold a `key` that is not its `group_by`, and it is keyed by what its records carry all the same: an ungrouped `sys.` view with `key: [n]` is shown to a reader held from `n` as the same view without `key` is, `get` answers its one record, and each is described with no key; a `sys.` view grouped by `name` with `key: [n]` is shown to that reader too and described keyed by `name`, and is hidden from a reader held from `name`",
+    reopens
+);
+
+check!(
+    TOOL_NAME_REFUSES_OPEN =
+        a_vocabulary_whose_tools_would_bear_anothers_names_refuses_the_writers_open,
+    "027, extended (lakelands#893), and seams, SystemVocabulary: no door leaves a lake with a problem among its tools' names, a writer's open among them: a host vocabulary with a type whose tools would bear the names of a declared type's, with one whose tool a verb is named as, and with two of its own that would share their tools' names, is refused at the writer's open as `tool_names`, naming both sides; nothing is appended and the lake holds no type of that vocabulary; it then takes a plain type from its owner and from one kept from the declared type, its tools are generated, and it opens with the same vocabulary once the type is withheld from it",
     reopens
 );
 
@@ -222,5 +230,94 @@ async fn a_host_view_with_a_key_its_records_do_not_carry_is_judged_by_what_they_
              described {told:?}, and `get` answered {one:?}"
         );
     }
+    Ok(())
+}
+
+async fn a_vocabulary_whose_tools_would_bear_anothers_names_refuses_the_writers_open(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    use lakelands_api::tools::{tool_base, tools};
+    let with = |vocabulary| Seams {
+        backings: backing::backings(),
+        vocabulary,
+        ..Seams::default()
+    };
+    let plain = |name: &str| type_decl(name, vec![field("x", StorageKind::Text)]);
+    let l = Lake::of(store.as_ref());
+    // `sys_audit` names its tools as `sys.audit` would, and a verb on
+    // `vault` is named as a tool of `sys.memo` would be.
+    for name in ["vault", &tool_base("sys.audit")] {
+        l.declare(plain(name)).await?;
+    }
+    let made = tools(&l.describe().await?).unwrap_or_default();
+    let mut doors = made.iter().map(|t| t.name.as_str());
+    let door = doors.find(|n| n.starts_with("vault_")).unwrap_or_default();
+    let verb = door.replacen("vault", &tool_base("sys.memo"), 1);
+    l.declare_as(write_verb(&verb, "vault", "x", "'x'"), "a verb")
+        .await?;
+    let mut store = store;
+    for (types, sides) in [
+        (["sys.host_note", "sys.audit"], ["sys.audit", "sys_audit"]),
+        (["sys.host_note", "sys.memo"], ["sys.memo", verb.as_str()]),
+        (["sys.a.b", "sys.a_b"], ["sys.a.b", "sys.a_b"]),
+    ] {
+        let before = store.head().await.must("reading the head")?;
+        let vocabulary = backing::vocabulary(types.map(plain).to_vec(), &[]);
+        let answer = reopen(store.clone(), with(Some(vocabulary))).await.err();
+        let told = format!("{answer:?}");
+        let named = sides
+            .iter()
+            .all(|side| told.contains(&format!("\"{side}\"")));
+        ensure!(
+            answer
+                .as_ref()
+                .is_some_and(|e| invalid_like(e, &json!({"code": "tool_names"})))
+                && named,
+            "a vocabulary of {types:?} is refused at the writer's open as `tool_names`, naming \
+             {sides:?}; it answered {told}"
+        );
+        store = reopen(store.clone(), with(None))
+            .await
+            .map_err(|e| reopened("left out", e))?;
+        let after = store.head().await.must("reading the head")?;
+        let mut held = Vec::new();
+        for ty in types {
+            held.push(holds(store.as_ref(), ty).await);
+        }
+        ensure!(
+            after == before.next() && held == [false, false],
+            "a refused open appends nothing and declares no type of its vocabulary: the head \
+             was {before} and is {after} after the next open, which takes the lease, and of \
+             {types:?} the lake holds {held:?}"
+        );
+    }
+    // The lake has no problem among its names: it takes a declaration,
+    // naming nothing, and opens once the host withholds the type.
+    let (l, twin) = (Lake::of(store.as_ref()), tool_base("sys.audit"));
+    let grants = json!({"default": "read", "schema": true, "types": {twin: {"default": "none"}}});
+    let kept = super::only::holder(store.as_ref(), "author", grants);
+    let free = [
+        declare(l.cat.as_ref(), &l.own, plain("crate")).await.err(),
+        declare(l.cat.as_ref(), &kept, plain("box")).await.err(),
+    ];
+    let made = tools(&l.describe().await?);
+    ensure!(
+        free == [None, None] && made.is_ok(),
+        "after the refused opens a plain type is declared by the owner and by one kept from \
+         `sys_audit` ({free:?}), and the lake's tools are generated ({:?})",
+        made.as_ref().err()
+    );
+    let withheld = backing::vocabulary(
+        ["sys.host_note", "sys.audit"].map(plain).to_vec(),
+        &["sys.audit"],
+    );
+    let store = reopen(store, with(Some(withheld)))
+        .await
+        .map_err(|e| reopened("that withholds `sys.audit`", e))?;
+    ensure!(
+        holds(store.as_ref(), "sys.host_note").await && !holds(store.as_ref(), "sys.audit").await,
+        "opened with `sys.audit` withheld, the lake holds `sys.host_note` and not `sys.audit`"
+    );
     Ok(())
 }
