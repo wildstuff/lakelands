@@ -2,72 +2,75 @@
 
 ## What is decided
 
+### A verb's declared risk, and nothing else, decides whether its call runs or is proposed
+
 Every verb declared in the ontology declares a risk. When a verb is
 called, the store looks at that declaration and nothing else:
 
 - a verb declared `low` whose effect is writing authored fields runs at
   once, as a governed write under the caller's grants;
+- a verb declared `low` whose effect reaches outside the lake runs at
+  once, like any `low` verb, through the `VerbExecutor` the host bound
+  for it; the executor's answer is recorded in the log;
 - a verb with any other risk does not run. The call is recorded as a
   `WriteProposed` event, and it takes effect only when someone with the
   right to do so accepts it (`WriteAccepted`) or is discarded when they
   reject it (`WriteRejected`).
 
+Declared risk is the only thing that decides between running and
+proposing, whatever the effect.
+
+### A verb that reaches outside the lake runs only through an executor the host has bound
+
 A verb whose effect reaches outside the lake runs only through a
 `VerbExecutor` the host has bound; without one, the store says so
-rather than pretending to run it.
+rather than pretending to run it. A verb that reaches outside the lake,
+of any risk, is refused as `unbound` when no executor is bound for it,
+whether it is called or a call of it is proposed through `propose`
+(lakelands#345): never faked, and never recorded as a proposal, because
+a proposal that could not run when accepted would be a promise the store
+cannot keep.
 
-## Why
+### A call is proposed only if it could run now, and an accept checks the write again at the head
 
-A verb's declaration is where its author says how dangerous it is. A
-default that ran anything the store could technically execute would
-ignore the one piece of information meant to stop it. Making the
-proposal a state in the log, rather than a queue in some other system,
-means a pending action survives restarts, can be listed and audited like
-any other write, and is accepted or rejected by the same principals and
-grants as everything else.
+A call is proposed only if it could run when it is proposed. A call that
+becomes a proposal, through `call` at its declared risk or through
+`propose`, is checked as if it ran now: its record's version against the
+expected one, then its `requires` on that record. A stale version is a
+conflict and a `requires` that does not hold is a precondition, and
+neither is recorded as a proposal (lakelands#338).
 
-## What it is not
+Accepting a proposal applies its write as it was logged, whole, in the
+proposer's name and not under its grant
+(`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
+At acceptance the store checks the write again at the head, as the
+order of refusals lists it, and records the write with the proposer as
+its writer, caused by the acceptance. A verb's write, run at once or on
+acceptance, fires triggers and changes object sets exactly as any other
+write does (`docs/decisions/004-the-change-feed-is-the-log.md`).
 
-- It is not an approval workflow. Who reviews a proposal, and how they
-  are notified, is the host's business; the store records the proposal,
-  the acceptance and the rejection.
-- A caller cannot lower a verb's risk at call time. The declaration
-  decides.
-- `propose`, `accept` and `reject` are also plain doors: any write can
-  be proposed rather than applied, not only a verb.
+### A proposal makes or retires no link, and the accept of a call on a link judges the link and both ends again
 
-## Extended: a `low` verb that reaches outside the lake
+A proposal makes or retires no link: an upsert or a retirement of a
+link type is refused at `propose` as the wrong door
+(`link_records_are_made_through_the_link_doors_and_ingest_only`,
+lakelands#847). The store judges a proposed call on a link again at the
+accept, whatever the verb's effect: the link live and answered to the
+proposer, and the reviewer by the records the call reaches, the link
+and its two end records among them
+(`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
+A proposed call of a verb that sets fields of a link type sets a live
+link's own fields, and its accept judges both ends again too, live and
+answered to the proposer: an accept of such a call proposed before an
+end was retired is refused as `not_live` on that end
+(`a_verb_on_a_link_type_keeps_what_the_link_door_keeps`, lakelands#847).
+A proposed call on a link of a verb that reaches outside the lake
+writes no record: for the proposer its accept judges of the ends only
+that none is held from it, an end retired or not. Cardinality is judged
+only where a link is made, by `link` and by ingest, since no verb moves
+an end.
 
-A verb declared `low` whose effect reaches outside the lake runs at
-once, like any `low` verb, through the `VerbExecutor` the host bound for
-it; the executor's answer is recorded in the log. Declared risk is the
-only thing that decides between running and proposing, whatever the
-effect.
-
-A verb that reaches outside the lake, of any risk, is refused as
-`unbound` when no executor is bound for it, whether it is called or a
-call of it is proposed through `propose` (lakelands#345): never faked,
-and never recorded as a proposal, because a proposal that could not run
-when accepted would be a promise the store cannot keep.
-
-## Extended: what acceptance checks
-
-Accepting a proposal applies it under the proposer's grants as they were
-when it was proposed: the write was checked whole then, and the reviewer
-applies exactly what was checked. A call is proposed only if it could
-run when it is proposed. A call that becomes a proposal, through `call`
-at its declared risk or through `propose`, is checked as if it ran now:
-its record's version against the expected one, then its `requires` on
-that record. A stale version is a conflict and a `requires` that does
-not hold is a precondition, and neither is recorded as a proposal
-(lakelands#338). At acceptance the store checks again
-only what can have moved since — the type's shape and the record's
-version — and records the write with the proposer as its writer, caused
-by the acceptance. A verb's write, run at once or on acceptance, fires
-triggers and changes object sets exactly as any other write does
-(`docs/decisions/004-the-change-feed-is-the-log.md`).
-
-## Extended: when an executor fails
+### An executor's failure is recorded as its output, and a call no executor was handed is answered so
 
 An external verb is due at the position of the event that made it due,
 and it stays due: an executor's failure does not take that event back.
@@ -77,18 +80,9 @@ the caller's outcome is applied at that position with the recorded
 output in it, the error form included: an error reply would say nothing
 was written when the position is real, and a caller should not have to
 read the log back for the answer. The verb is not run again for that
-position; a retry is a new call and a new position. So the log holds, for
-every external verb, either what the outside world answered or that it
-did not.
-
-A retry with the call's idempotency key is not a new call. It answers
-the first outcome: the verb's position and its recorded output, or the
-write the verb made. What a call wrote itself is told by what the store
-appended with it, the write right after its `verb_called` carrying the
-verb as its procedure. It is never told by a later write that names the
-call as its cause, as a host's write of the effect's result does
-(`docs/decisions/021-the-write-context-belongs-to-the-host.md`,
-lakelands#305).
+position; a call sent again without its idempotency key is a new call
+and a new position. So the log holds, for every external verb, either
+what the outside world answered or that it did not.
 
 A call whose own fold failed is in the log, and no executor was handed
 it. The store does not answer that call as if it were: its sentence
@@ -101,7 +95,17 @@ succeeded and the drain of due calls before the hand-out failed: an
 executor is handed a call only when its answer can be recorded, and
 after such a drain the writer may be behind.
 
-## Extended: a retry never hands a position out again (lakelands#616)
+### A retry never hands a position out again
+
+A retry with the call's idempotency key is not a new call. It answers
+the first outcome: the write the verb made, or an external verb's
+position and its recorded output where one is recorded. What a call
+wrote itself is told by what the store appended with it, the write
+right after its `verb_called` carrying the verb as its procedure. It is
+never told by a later write that names the call as its cause, as a
+host's write of the effect's result does
+(`docs/decisions/021-the-write-context-belongs-to-the-host.md`,
+lakelands#305).
 
 A position reaches its executor at most once, and a retry runs nothing:
 a call sent again under its key, or an acceptance sent again, answers
@@ -114,15 +118,15 @@ runs nothing; that a call still running, or whose answer is held, will
 have its answer recorded and a retry then answers it, unless the handle
 that ran it is dropped or loses its lease first; and that a call whose
 first answer said its executor was not handed it is called again under
-another key or with none, or proposed again. A retry may not tell the two apart, and the
-caller may: it was given the first answer.
+another key or with none, or proposed again. A retry may not tell the
+two apart, and the caller may: it was given the first answer.
 
 The answer is found by a seek, not by a read of the log after the call.
 It is recorded under an id derived from the lake and the position that
 made the verb due, and an acceptance under one derived from the lake
 and its proposal (`docs/log-format.md` §3), so what a retry reads under
-the writer's lock does not grow with the log. Before this, a retry read
-up to 4,096 events after the call: 74 to 90 ms on a lake of 5,000 events
+the writer's lock does not grow with the log. A retry that read up to
+4,096 events after the call took 74 to 90 ms on a lake of 5,000 events
 against 0.1 to 1 ms for the seek, on the three engines.
 
 An accept sent again answers by the verb as it stood at the acceptance,
@@ -131,19 +135,18 @@ call, caused by it), whatever was declared since: an external call is
 answered as a retry of a call is, and any other acceptance is
 `decided`.
 
-## Extended: the executor is handed the record its call was judged on (lakelands#660)
+### An executor is handed the record its call was judged on
 
 An executor is handed the record as it stood at the position that made
 its verb due, the `verb_called` or the `write_accepted`, where the call
 was judged; not as the head holds it when the hand-out comes. A write
 between the two, another caller's or a retirement, does not reach the
 executor, so it never acts on a record its call was not judged on: a
-record retired after the call is handed as it stood, where it was
-refused before. A purge appends and removes nothing, and compaction
-keeps the projection's history, so that state is always there to read;
-there is no fallback to the head.
+record retired after the call is handed as it stood. A purge appends
+and removes nothing, and compaction keeps the projection's history, so
+that state is always there to read; there is no fallback to the head.
 
-## Extended: an executor's answer is held until it is recorded (lakelands#646)
+### An executor's answer is held until it is recorded
 
 An executor's answer whose append the engine refuses `unavailable`, or
 that a writer which cannot catch up with its log cannot append, is not
@@ -174,315 +177,7 @@ hand-out still runs it would happen are each a rule a host would have to
 read. A host that needs it carries its effect under a key of its own and
 calls the verb again.
 
-## Extended: who sees which proposals
-
-A principal with the review grant lists every proposal and may accept
-or reject it. Any other principal lists only the proposals it made
-itself, so a proposer can follow what became of its write, and decides
-none.
-
-## Extended: a proposal is read as its reader's view (lakelands#499)
-
-`proposals` shows a proposed write to its reader as that reader may read
-the record the write is for
-(`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
-extended). A reviewer need not know all of what it accepts: the accept
-asks for `review`, and for `schema` where the ontology changes, and
-applies the write as it was logged and checked under the proposer's
-grants, the part its reviewer was not shown too. Trimming what is
-applied to what the reviewer read would make the reviewer's grants
-decide what the proposer wrote, and a write checked whole would be
-applied in part.
-
-**Told that there is more.** A listed proposal says `more` when it holds
-more than its reader is shown, and says nothing else of it: no name and
-no count, since a count would say how many names are hidden. Where the
-reader may see nothing of the write, the entry has no write at all: a
-write to a record it is not answered (one restricted, without the
-grant), a call of a verb on such a record, a bundle none of whose
-declarations it would be shown. The entry keeps its id, its proposer,
-its times, its state and the proposer's `why`, so a reviewer without a
-read grant on the record still finds what it is asked to decide, and
-accepts it by its id. A proposal that names a type its reader is not
-shown is not listed at all (below, lakelands#762).
-
-The absent write is a form of the answer and of nothing else. A stored
-proposal and a logged `write_proposed` hold the write whole, and
-`propose` takes a write, never a proposal; so `Proposal.write` is
-optional and `ProposedWrite` gained no variant that could be proposed or
-logged.
-
-**The filters follow the entry.** `type` and `kind` are answered on the
-entry as its reader is shown it. A type the reader may not see answers
-what a type that is not declared answers, an empty listing; an entry
-without a write is of no kind. The unfiltered listing and `state` hold
-every entry the reader is listed. Ordering and paging were already over the entry as shown.
-
-**A proposed bundle** shows each declaration `describe` would show its
-reader once the bundle is in force: a type it could see, with the fields
-it may know of; a view with its definition or not at all; a trigger and
-an object set whose condition it may read; a function by `describe`'s
-rule; a value type always. A verb is judged by the fields it names, the
-ones it sets known and the ones it reads readable, not by who may call
-it: a reviewer need not be one who may. One who holds `schema`, as an
-accepter of a bundle must, is shown every definition, so for it `more`
-can only mean a field or a type hidden from it.
-
-**The refusal at the accept** follows the same rule. An accept refused
-because a declaration made since reads a field the migration takes away
-names the declaration and the field to an accepter who may know of the
-field, and to another says only that a declaration reads a field the
-migration takes away: the proposer took the field away knowingly, the
-accepter may not know that it exists.
-
-An accept refused because the migration is no longer lossless carries
-the fresh report as the accepter may know it, by the rule of the
-listing, and says `more` where that is less than the whole
-(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
-extended, lakelands#531).
-
-## Extended: a proposal on a type its reader is not shown is not there (lakelands#762)
-
-A proposal that names a type its reader is not shown is not there to
-that reader. `proposals` does not list it, and `accept` and `reject`
-answer as for a proposal id that does not exist, word for word. The
-types a proposal names are:
-
-- the type an upsert or a retirement writes, and the type of a called
-  verb;
-- of a migration's `to` and of each type a bundle declares: the type
-  itself and, of a view, its sources; and the target of each relation
-  and reference field it adds, changes or drops against the type in
-  force, both compared completed, as the lake keeps a type (each
-  computed field's `depends_on` filled, a link field's among them);
-- the type each verb, trigger and object set of a bundle is on.
-
-A call of a verb that reads a field its reader may not read is not there
-either. Such a verb is not described to that reader, and the proposal
-would tell that its `requires` held
-(`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
-extended, lakelands#779).
-
-A link type is shown only with both its ends
-(`docs/decisions/006-grants-not-roles.md`, extended), so a write to a
-link with a hidden end is among them, and so is a bundle that adds a
-relation or a reference to a hidden type. A relation or a reference
-restated as it stands names nothing the type in force does not. "As it
-stands" is equal as declared, in order (link fields and `depends_on`
-included), as the lake judges a declaration in force: a restatement that
-reorders them counts as a change, and errs toward hiding. An
-author's declaration carries back the relations it is not shown, so a
-reader not shown a relation's target still proposes, lists and decides
-its own redeclaration and migration of the type, which it may author
-directly. A type a bundle brings counts as one the lake declares: a
-bundle that declares a type its reader would not be shown once in force
-is not there to that reader (below, lakelands#798).
-
-A migration is judged by its reader under three sights (below,
-lakelands#798): as the lake stands, as the migration would leave its
-type, and, where the type was declared again since, as it stood where
-the migration was proposed; its report is trimmed, as above, by the
-reader's grants there, against the type as it stood. An accept or a
-reject judges this as soon as the proposal is found,
-before anything else of it is told: whether it is decided, whether a
-pinned record moved since it was proposed, whether its write or its
-bundle would apply. Nothing is appended. A proposal hidden only by a
-record, one restricted or outside a holder's `only`, stays listed
-without its write, as above. A reviewer shown every type it names
-decides it as before, what its grants hide of a record or a field
-included.
-
-So no answer that reports on a type's migration is given to one not
-shown the type, and its report needs no form with the type taken out:
-`propose`, the preview `migrate` and `migrate_apply` answer that the
-type is not declared (027, extended), and the accept and the listing
-answer as here.
-
-**Why.** An accept is a write to what the proposal names, and its answer
-tells what it judged. If it applied, it wrote to a type its reviewer may
-not read, or reshaped one. If it was refused, it named the type, a key
-of it, a field and its kind, or that a hidden record moved. A listed
-entry whose id the accept then calls absent would tell a proposal hidden
-by its type from one hidden by a record. To a principal not shown a
-type, the type is one that is not declared
-(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
-extended), and a proposal on a type that is not there is not there
-either: not in the listing, and not at the accept.
-
-## Extended: an entry is decided as it is listed (lakelands#798)
-
-The listing, the accept and the reject each asked whether an entry is
-there for its reader, and each by its own lines: the listing trimmed and
-left out, the accept asked a second list of the types an entry names,
-and a holder of `only` was judged by a third. They agreed where a row
-held them together, and nowhere else by construction. One function
-answers now. For a reader and an entry it says that the entry is not
-there, or what of its write the reader is shown and whether it holds
-more. The listing shows that answer. The accept and the reject ask it at
-the head as soon as the proposal is found: an entry that is not there
-is an id that does not exist, word for word, to both; one listed without
-its write, or to a holder of `only` not whole
-(`docs/decisions/051-a-grant-may-admit-only-some-records.md`), is not
-granted to decide; and an accept's refusal is told by the same answer
-(below).
-
-**Three sights.** The reader is the principal its call named, judged
-under up to three sights, its grants followed to each: the lake in force
-where the entry is read; the lake as the entry would leave it, a
-bundle's whole and of a migration its `to`; and, where the type a
-migration reshapes or the verb a call calls was declared again since the
-proposal, the lake as it was proposed against. An entry is not there
-when any of them hides a type it names, or when its verb, as the lake
-declares it or as it was declared where the call was proposed, reads a
-field the reader may not read under that sight
-(`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
-extended). A call's payload is shown only to a reader who reads each
-field the verb sets, under both. A trigger, a verb and an object set of
-a bundle name the type they are on and the type the one in force under
-their name stands on: accepted, the bundle would take that one's place,
-or be refused in words that name the type, so it is not there to a
-reader kept from the type it stands on (lakelands#893).
-
-The lake as it was proposed against is read only for an entry whose
-subject moved, and only for a reader whose grants keep it from a field:
-one who reads every field of every type is judged the same there as in
-force, so an owner's listing reads no past, however many decided
-migrations the lake holds.
-
-**What turned.**
-
-- A bundle that brings a type its reader would not be shown once in
-  force was listed without that declaration, and its accept applied the
-  whole bundle. It is not there, and so where a declaration of the
-  bundle stands on the link type a relation of it calls for: what the
-  bundle declares on it is exactly what that reader is kept from. A
-  bundle that declares the owner and nothing on its link type is
-  listed to that reader as `describe` would show it the owner once in
-  force: the relation without the link fields that reader may not know
-  of, with `more` where that leaves one out. A principal that proposes
-  a type it will not be shown is not listed its own bundle: it is told
-  so on purpose, since the entry would otherwise be the one place that
-  names the type to it, and the grant is the host's to mend.
-- A call whose verb read a field its reader may not read where the call
-  was proposed, declared again since without it, was listed whole, key
-  and `why`, and its accept told that the verb was declared again. It
-  is not there (lakelands#791).
-- A migration that keys its type by a field its reader may not know of
-  was listed trimmed. Once in force the type would not be shown to that
-  reader, so the migration is not there.
-- A migration of a type declared again since, which its reader was not
-  shown where it was proposed and is shown now, was listed, its report
-  trimmed by the reader's grants then. It is not there: the entry would
-  say that the type was there and that someone proposed to reshape it,
-  which a read as of that position does not answer that reader.
-- A migration was not listed to a holder of `only`, and its accept and
-  reject were refused as not granted, which told that the id is a
-  proposal's. They answer as an id that does not exist.
-- A migration of a type declared again since was judged, for a reader
-  masked on a field and kept from none, on the type in force. It is
-  judged on the type as it was proposed against, as for a reader kept
-  from a field.
-
-What an accept applies is unchanged: a reviewer shown every type an
-entry names still applies the write whole, the part its listing trims
-included (above, lakelands#499).
-
-**Why.** Two answers to one question differ sooner or later, and here
-each difference told something: an accept that applies what the listing
-left out writes a type its reviewer may not see, and one that refuses
-what the listing never showed says that it is there. The past is asked
-because a declaration made again can take away the very thing that hid
-an entry, and the entry is of the lake it was proposed against.
-
-**The rows.** A grid of sixteen entries, an id that was never proposed
-among them, by six reviewers pins, for each
-pair, how the entry is listed and what its accept answers, and that the
-reject of one not listed or not granted answers as its accept, the head
-unmoved.
-
-## Extended: an accept's refusal names what its reviewer's listing shows (lakelands#780)
-
-An accept applies the proposer's write, planned again as the proposer,
-so a refusal of that plan is the proposer's: it may name a field, a
-type, a key or a value the reviewer is not shown. What an accept
-answers a reviewer is judged by the reviewer's view, as its listing is.
-A refusal of the write it applies (an upsert's plan, a verb's run) is
-told whole where the reviewer is shown each thing it names:
-
-- each type, one the reviewer is shown;
-- each field, one it reads of the type written; a verb named counts the
-  fields its `requires` reads;
-- each verb, the one called;
-- what a field's declaration says (the values it allows, its value
-  type), only beside a field named;
-- each key, the one written or, as each value, one the listing shows
-  under a field named, or in a call's payload, which is listed only
-  whole.
-
-A call of a verb whose `requires` or set values read a field the
-reviewer is kept from does not come to this. It is not there to that
-reviewer (above; `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
-extended, lakelands#779).
-
-A name of another kind, a relation's, a trigger's or a function's, is
-not judged. Any refusal is told whole to a reviewer that reads
-everything. The proposer is judged as any reviewer, by its grants at
-the accept (lakelands#791): it named those things when it proposed, but
-a grant narrowed since keeps them from it now, and its own write would
-tell it no more today.
-Otherwise the accept answers as a proposal stale since it was proposed:
-the write changed since it was proposed, naming only the type and the
-key written, which the listing shows. A conflict names versions only,
-and is told whole. A retirement's refusal names only the record it
-retires, and what a write sets off is judged by declarations the lake
-already took, so neither is judged. A refusal is judged by what its
-case's members are, as typed (`Named` in the contract). A link's
-cardinality is judged only where a link is written, and no proposal
-writes one. A reject answers nothing of the write.
-
-**Why.** The listing shows a reviewer the proposal trimmed to what it
-may know, and says `more` where that is less than the whole. A refusal
-that names a hidden field, its target type and the key it held would
-tell the reviewer what the listing withheld, through the door the
-reviewer is meant to use on it. A write that no longer applies needs no
-more than that answer to be proposed again, by one who may see what
-changed.
-
-## Extended: a value type's tightening is proposed like a migration (lakelands#476)
-
-A value type that is to accept less could be changed only by a principal
-holding `schema`, through its preflight and apply (027, extended). A
-principal without the grant could propose that a set gains a value and
-not that it loses one, and the refusal of the narrowed declaration
-pointed at a door it may not use.
-
-A tightening is the third change of the ontology that can be proposed,
-beside a set of declarations and a type's migration. The proposal
-carries the value type's new declaration. It is preflighted when it is
-made, without the `schema` grant, and the report replaces whatever the
-proposer sent and is logged with the proposal, for the reviewer.
-
-- **A report that does not fit refuses the proposal,** as invalid, and
-  nothing is appended. The refusal says how many stored values would not
-  fit and names none: a misfit names a record and a field, and the
-  proposer may know of neither. A reviewer runs the preflight to see
-  them.
-- **Accepting it takes `schema` beside `review`,** as for the other two.
-  It is preflighted again on the head and refused the same way when a
-  value no longer fits. It is also refused when the value type was
-  declared again since the proposal: `to` is the value type's whole
-  declaration, and a value the set gained in between would leave it
-  again, shown to no one. Either refusal leaves the proposal pending.
-  Accepted, it writes what the apply door writes: one `declared` at the
-  next version, as the proposer, caused by the acceptance.
-- **A listing shows the report's uses only in fields its reader may
-  read,** of types it may see, as a proposed shape is shown
-  (lakelands#475). The totals stay whole: a count names nothing. A
-  logged report fits, so it names no misfit to anyone.
-- **The proposal came with a step of the log format**
-  (`docs/log-format.md` §6).
-
-## Extended: a declaration is proposed like a write
+### A declaration is proposed like a write
 
 A set of declarations, or a type's migration, can be proposed as a
 write is (lakelands#199). The proposal is checked when it is made as its
@@ -494,25 +189,18 @@ drop. Nothing about the ontology changes until the proposal is accepted,
 and a proposer needs no `schema` grant: proposing is how a principal
 without it asks.
 
-Accepting one needs `schema` as well as `review`. For a record write,
-the proposer's own grants were the check, and a reviewer only decides
-whether it happens. A change of the ontology is one the proposer usually
-could not make, so the lake's grant for it decides: otherwise any
-proposer and any reviewer together could change the ontology though
-neither holds that grant. The accept checks the set again against the
-head and runs the migration's preflight again, since the lake may have
-moved. A change the head no longer admits refuses the accept, naming
-why, and the proposal stays pending. What the accept declares is logged
-in its append as the proposer's write, caused by the acceptance, and
-takes the next versions and schema hashes there, not at the proposal.
+Accepting one needs `schema` as well as `review`
+(`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
+The accept checks the set again against the head and runs the
+migration's preflight again, since the lake may have moved. A change the
+head no longer admits refuses the accept, naming why, and the proposal
+stays pending. What the accept declares is logged in its append as the
+proposer's write, caused by the acceptance, and takes the next versions
+and schema hashes there, not at the proposal.
 
 A proposed shape, a migration's or a redeclared type's, is logged as
 the store completed it from its proposer's view
-(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
-extended, lakelands#475). `proposals` shows it to each reader without
-the fields that reader may not know of, a relation's link fields too:
-the proposer reads its own view again, and a reviewer who may see a
-carried field reads it in the shape and not under `dropped`.
+(`006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there`).
 
 A proposed migration is accepted only on the shape it was proposed on
 (lakelands#489). Its `to` is the type's whole shape, so on a type
@@ -521,10 +209,41 @@ report the reviewer read says nothing of that. The accept compares the
 type's schema hash at the head with the report's `from_schema_hash` and
 refuses a difference as invalid, saying the type changed and the
 migration is proposed again; nothing is appended and the proposal stays
-pending. Records written since are the second preflight's to judge, as
-before.
+pending. Records written since are the second preflight's to judge.
 
-## Extended: a verb called on its type (lakelands#277)
+### A value type's tightening is proposed like a migration
+
+A tightening is the third change of the ontology that can be proposed,
+beside a set of declarations and a type's migration. The proposal
+carries the value type's new declaration. It is preflighted when it is
+made, without the `schema` grant, and the report replaces whatever the
+proposer sent and is logged with the proposal, for the reviewer.
+
+- **A report that does not fit refuses the proposal,** as invalid, and
+  nothing is appended. The refusal says how many stored values would not
+  fit and names none
+  (`006 § A report is answered as its reader may know it`).
+- **Accepting it takes `schema` beside `review`,** as for the other two.
+  It is preflighted again on the head and refused the same way when a
+  value no longer fits. It is also refused when the value type was
+  declared again since the proposal: `to` is the value type's whole
+  declaration, and a value the set gained in between would leave it
+  again, shown to no one. Either refusal leaves the proposal pending.
+  Accepted, it writes what the apply door writes: one `declared` at the
+  next version, as the proposer, caused by the acceptance.
+- **A listing shows the report's uses only in fields its reader may
+  read,** of types it may see
+  (`006 § A report is answered as its reader may know it`).
+- **The proposal came with a step of the log format**
+  (`docs/log-format.md` §6).
+
+Without the proposal, a value type that is to accept less could be
+changed only by a principal holding `schema`, through its preflight and
+apply (027). A principal without the grant could propose that a set
+gains a value and not that it loses one, and the refusal of the narrowed
+declaration pointed at a door it may not use.
+
+### A verb may be declared on its type, and is called with no key
 
 An effect that creates something outside the lake has no record to be
 called on yet: a payment made in another system, a ticket opened, a
@@ -536,14 +255,16 @@ output. So a verb may be declared on its type, `scope: type`, and it is
 called with no key.
 
 - **Grants.** They are its type's, as for any external verb: write
-  access to `on`.
+  access to `on`
+  (`006 § A verb is callable and described only to one who may write what it sets and read what it reads`).
 - **Risk.** It decides as it does for every verb. `low` runs at once;
   anything else becomes a proposal whose call carries no key, and
   accepting it runs the verb as the proposer.
 - **The log.** `verb_called` carries no key. The executor is handed no
   record, and its answer is recorded as for any external verb, caused by
   the event that made it due. A retry with the same idempotency key
-  answers the first outcome and runs nothing again.
+  runs nothing again and answers by what is recorded for its position,
+  as for any external verb.
 - **Only an external effect.** A verb on its type reaches outside the
   lake. A `write` effect sets fields of a record, and `requires` reads
   one, so a declaration with either is refused as invalid, naming the
@@ -571,17 +292,18 @@ called with no key.
 The default scope, `record`, is never written, so every declaration made
 before keeps its bytes.
 
-## Extended: the order of refusals (lakelands#338)
+### The verb and proposal doors refuse in one order
 
 The verb and proposal doors refuse in this order, in the frame every
-write door shares (016, extended): the lake, the context, the door's own
-checks, the append. Where a step runs "the record checks", they are
-016's, on the record the write makes.
+write door shares (016): the lake, the context, the door's own checks,
+the append. Where a step runs "the record checks", they are 016's, on
+the record the write makes.
 
 **`call`**: the retry; the verb is declared (`not_found`); the key fits
 its scope (`invalid`, naming the verb); the principal may call it
 (`not_granted`), which for a call that is proposed includes that a
-holder of `only` proposes what can be pinned to its record (051); an
+holder of `only` proposes what can be pinned to its record
+(`006 § A grant may admit only the records that hold its pairs`); an
 external verb's executor is bound (`unbound`); the
 payload: a member the verb does not declare (`invalid`, naming the verb
 and the member, as one missing from the payload and never from the type,
@@ -589,53 +311,90 @@ even where the type has a field of that name), then field by field in
 name order a value that does not fit (`constraint`, naming the field),
 then its required fields (`constraint`); on a record: the record
 is live (`not_found`), the expected version (`conflict`), `requires`
-(`precondition`). A `low` verb then computes its assignments (`invalid`,
-naming the verb) and makes its write through the record checks. At any
-other risk the call is proposed after `requires`: what could not run now
-is not proposed.
+(`precondition`). A verb with a write effect then computes its
+assignments (`invalid`, naming the verb) and takes its write through
+the record checks. A `low` verb's call is appended after that, and at
+any other risk the call is proposed after it: what could not run now is
+not proposed.
 
-**`propose`**: the retry; a link type at an ordinary door
-(`wrong_door`); then the write as its own door checks it: an upsert
-through the record checks; a retirement as `retire` from the type on; a
-call as `call` from the verb on, its executor included, and for a write
-effect through its assignments and the record checks; a declaration as
-`apply` checks a set; a migration by its preflight, then `migration` if
-it is not lossless; a value type's tightening by its preflight, then
+**`propose`**: the retry; a holder of `only` proposes no change of the
+ontology (`not_granted`,
+`006 § A grant may admit only the records that hold its pairs`); an
+upsert or a retirement of a link type (`wrong_door`); for any other
+upsert or retirement, the type is shown to its proposer (`not_found`),
+then a holder of `only` proposes what can be pinned to its record
+(`not_granted`, as for a call); then the write as its own door checks
+it: an upsert through the record checks; a retirement as `retire` from
+the type on; a call as `call` from the verb on, its executor included,
+and for a write effect through its assignments and the record checks; a
+declaration as `apply` checks a set; a migration by its preflight, then
+`migration` if it is not lossless; a value type's tightening by its
+preflight, then, with renames, that its proposer is shown every field
+they write (`not_granted`,
+`006 § A declaration or a migration is its author's view`), then
 `invalid` with the count if a stored value would not fit. No `schema`
 grant is needed to propose a change of the ontology.
 
 **`accept`**: the `review` grant (`not_granted`); the proposal exists
-(`not_found`); it is pending (`decided`); a change of the ontology also
-needs `schema` (`not_granted`); then the write, checked again at the
-head: an upsert through the record checks; a retirement for its record
-and version; a call for its verb, its scope, the verb declared
-differently since (`invalid`), its executor, then as `call` from the
-record on; a declaration as `apply` checks a set; a migration for the
+(`not_found`); it is there to its reviewer, where one that is not
+answers as an id that does not exist (`not_found`,
+`006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there`);
+it is its reviewer's to decide, where a reviewer without `restricted`
+decides no write that reaches a held record, and a holder of `only` no
+change of the ontology and no write to a type it holds `only` on that
+it is not listed whole (`not_granted`,
+`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`);
+it is pending (`decided`; an accept sent again of an external verb's
+call is answered as a retry of a call is); a change of the ontology
+also needs `schema` (`not_granted`); a pinned proposal's record, its
+type and, for a link, either end record stand as they were proposed
+(`invalid`,
+`006 § A grant may admit only the records that hold its pairs`);
+then the write, checked again at the head: an upsert through the record
+checks; a retirement for its record and version; a call for its verb,
+its scope, the verb declared differently since (`invalid`), its
+executor, then as `call` from the record on; a declaration as `apply`
+checks a set, then its set changes (`too_large`); a migration for the
 shape it was proposed on (`invalid`, lakelands#489), then by its
-preflight, then `migration`, then its embedding model (`unbound`); a
-value type's tightening for the declaration it was proposed on
-(`invalid`), then by its preflight, then `invalid` with the count. Any
-refusal leaves the proposal pending.
+preflight, then for what it restates against what its report restates
+(`invalid`, 027), then `migration`, then its set changes (`too_large`),
+then its embedding model (`unbound`); a value type's tightening for the
+declaration it was proposed on (`invalid`), then by its preflight,
+then, with renames, for the fields its report named (`invalid`, 027),
+then `invalid` with the count, then, with renames, its set changes
+(`too_large`). Any refusal leaves the proposal pending.
 
-**`reject`**: the `review` grant, the proposal exists, it is pending.
+A refusal of an upsert's, a retirement's or a call's write at the
+accept is told as its reviewer's listing shows the write, and what an
+upsert or a verb's write leaves lies within the pairs of a reviewer
+holding `only` (`not_granted`), judged once the write is planned
+(`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
+A declaration and a migration are judged first for a tool's name taken
+since by what the accepter is not shown (`not_granted`,
+`006 § A declaration or a migration is its author's view`).
+
+**`reject`**: the `review` grant, the proposal exists, it is there to
+its reviewer and its reviewer's to decide, as at `accept`, it is
+pending.
 
 Two steps that answer the same kind for the same verb or field, such as
 the scope and a verb declared differently since, are stated here and not
 checked between themselves.
 
-
-## Extended: `describe` says whether the executor is bound (lakelands#432)
+### `describe` says whether a verb's executor is bound
 
 A verb that reaches outside the lake is described with its executor's
 name and whether the host binds an executor of that name, and its tool
 says which. Without this, a caller learns that a verb cannot run in a
 lake only by calling it and being refused, and a host's interface cannot
 show the verb as unavailable beforehand. The name is no news to the
-principal: the verb is described only to one who may call it, and the
-`unbound` refusal names the executor to that principal anyway. A verb
-that sets fields of its record has no executor and is described without
-one. The tool of an unbound verb stays in the catalog, so a host that
-binds the executor later changes the tool's text, not the set of tools.
+principal: the verb is described only to one who may call it
+(`006 § A verb is callable and described only to one who may write what it sets and read what it reads`),
+and the `unbound` refusal names the executor to that principal anyway.
+A verb that sets fields of its record has no executor and is described
+without one. The tool of an unbound verb stays in the catalog, so a host
+that binds the executor later changes the tool's text, not the set of
+tools.
 
 `bound` is the binding when the answer is made, at whatever position
 `describe` is read. The binding is the host's configuration, not a fact
@@ -651,3 +410,143 @@ way. Both are checked when they are declared, so a lake does not hold one
 its host never bound. No caller calls a function: a missing backing
 leaves the fields it computes due, and the host that unbound it is the one
 who can see that. A search already says how it ranked.
+
+## Why
+
+A verb's declaration is where its author says how dangerous it is. A
+default that ran anything the store could technically execute would
+ignore the one piece of information meant to stop it. Making the
+proposal a state in the log, rather than a queue in some other system,
+means a pending action survives restarts, can be listed and audited like
+any other write, and is accepted or rejected by the same principals and
+grants as everything else.
+
+## What it is not
+
+- It is not an approval workflow. Who reviews a proposal, and how they
+  are notified, is the host's business; the store records the proposal,
+  the acceptance and the rejection.
+- A caller cannot lower a verb's risk at call time. The declaration
+  decides.
+- `propose`, `accept` and `reject` are also plain doors: any write can
+  be proposed rather than applied, not only a verb.
+
+## What moved
+
+What a principal is shown and told of a proposal, and which right its
+listing and its accept need, moved to
+`docs/decisions/006-grants-not-roles.md` at lakelands#817.
+
+| what this record held | where it is now |
+|---|---|
+| what acceptance checks, its first sentence: whose grants an accept applies the write under | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
+| who sees which proposals: a principal with `review` lists the proposals, any other its own | `006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
+| who sees which proposals: who may accept or reject, and that any other principal decides none | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
+| a proposal is read as its reader's view (lakelands#499): the write as its reader may read the record, `more`, the entry without its write, the absent write as a form of the answer, the filters, a proposed bundle | `006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
+| a proposal is read as its reader's view (lakelands#499): a reviewer need not know all of what it accepts, and the accept applies the write whole | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
+| a proposal is read as its reader's view (lakelands#499): the refusal at the accept for a declaration that reads a field the migration takes away | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
+| a proposal is read as its reader's view (lakelands#531): an accept refused as no longer lossless carries the fresh report as the accepter may know it | `006 § A report is answered as its reader may know it` |
+| a proposal on a type its reader is not shown is not there (lakelands#762): not listed, its accept and reject as an id that does not exist, the types a proposal names, the three sights of a migration, why | `006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
+| a proposal on a type its reader is not shown is not there (lakelands#762): no answer that reports on a type's migration is given to one not shown the type, and its report needs no form with the type taken out | `006 § A report is answered as its reader may know it` |
+| a call of a verb that reads a field its reader may not read is not there (lakelands#779) | `006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
+| an entry is decided as it is listed (lakelands#798, lakelands#791, lakelands#893): one answer for the listing, the accept and the reject; three sights; what turned; the rows | `006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
+| an entry is decided as it is listed (lakelands#798): one listed without its write, or to a holder of `only` not whole, is not decided; what an accept applies | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
+| an entry is decided as it is listed (lakelands#798): a migration is not listed to a holder of `only`, and its accept and its reject answer as an id that does not exist | `006 § A grant may admit only the records that hold its pairs` |
+| an accept's refusal names what its reviewer's listing shows (lakelands#780, lakelands#791) | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
+| a value type's tightening (lakelands#476): the refusal of a report that does not fit names no misfit, and why | `006 § A report is answered as its reader may know it` |
+| a value type's tightening (lakelands#476): what a listing shows of the report, its totals whole | `006 § A report is answered as its reader may know it` |
+| a declaration is proposed like a write (lakelands#199): why accepting one needs `schema` as well as `review` | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
+| a declaration is proposed like a write (lakelands#475): `proposals` shows a proposed shape to each reader without the fields that reader may not know of | `006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
+| a verb called on its type (lakelands#277): its grants are its type's | `006 § A verb is callable and described only to one who may write what it sets and read what it reads` |
+
+## How it came to be
+
+- The first version: a verb's declared risk decides whether its call
+  runs or is proposed; a `low` verb that reaches outside the lake runs
+  through its bound executor; an accept writes as the proposer; an
+  executor's failure is recorded as its output.
+- A set of declarations and a type's migration can be proposed
+  (lakelands#199).
+- A verb can be declared on its type and called with no key
+  (lakelands#277).
+- A retry with the call's key answers the call's own outcome, where a
+  later write that named the call as its cause was taken for it
+  (lakelands#305).
+- A call of a verb whose executor is not bound is refused at `propose`
+  too, where only a call was (lakelands#345).
+- A call that could not run now is not proposed, and the order of
+  refusals was stated (lakelands#338).
+- An accept refuses a call whose verb was declared differently since
+  (lakelands#371).
+- `describe` says whether a verb's executor is bound (lakelands#432).
+- A proposed shape is logged as completed from its proposer's view
+  (lakelands#475).
+- A proposed migration is accepted only on the shape it was proposed on
+  (lakelands#489).
+- A value type's tightening can be proposed, where only a principal
+  holding `schema` could make a value type accept less (lakelands#476).
+- A call whose own fold failed, or whose hand-out a failed drain
+  stopped, is answered that no executor was handed it (lakelands#603).
+- A retry never hands a position out again and is refused as
+  `unanswered` where no answer is recorded, found by a seek, where a
+  retry read up to 4,096 events after the call and answered the
+  position with no output (lakelands#616).
+- An executor's answer is held until it is recorded (lakelands#646).
+- A payload member the verb does not declare is refused naming the verb
+  and the member (lakelands#656).
+- An executor is handed the record its call was judged on, where a
+  record retired after the call was refused (lakelands#660).
+- The order of `call` and of `accept` lost the step for a verb called
+  on a record of a view (lakelands#823).
+- The order of `call` names that a holder of `only` proposes what can
+  be pinned (lakelands#799).
+- The tightening's bullet on the log format names a step, where it
+  named the format's number (lakelands#801).
+- Moved at the rewrite (lakelands#817): the sections and sentences on
+  what a principal is shown and told of a proposal moved to 006, as
+  "What moved" lists them; the rules that stay were put under headings
+  of their own.
+- Corrected at the rewrite (lakelands#817): "Accepting a proposal
+  applies it under the proposer's grants as they were when it was
+  proposed". The proposer's grant is not in the log; the accept writes
+  in the proposer's name, not under its grant.
+- Corrected at the rewrite (lakelands#817): "At acceptance the store
+  checks again only what can have moved since — the type's shape and
+  the record's version". The accept checks the write again at the head,
+  its record judged again, as the order of refusals said.
+- Corrected at the rewrite (lakelands#817): "a retry is a new call and
+  a new position" holds for a call sent again without its key; and a
+  retry "answers the first outcome", here and of a verb on its type,
+  only where an answer is recorded, and is else refused as `unanswered`
+  (lakelands#616).
+- Corrected at the rewrite (lakelands#817): "A link's cardinality is
+  judged only where a link is written, and no proposal writes one". An
+  accepted call of a verb that sets fields of a link type writes the
+  link's own fields (lakelands#759), and its accept judges the link and
+  both ends again, the ends live where the verb writes the link and only
+  as not held from the proposer where it reaches outside the lake: the
+  ends are judged live in the record's write, which only a verb with a
+  write effect makes. Cardinality is judged where a link is made. The
+  order's "a link type at an ordinary door" at `propose` is an upsert
+  or a retirement of one.
+- Corrected at the rewrite (lakelands#817): "At any other risk the call
+  is proposed after `requires`". A call above low risk is judged as its
+  caller's write before it is proposed, its assignments and the record
+  checks included (lakelands#781).
+- Corrected at the rewrite (lakelands#817): the order of `accept` and
+  of `reject` left out the steps later changes added: whether the entry
+  is there to its reviewer (lakelands#762) and its reviewer's to decide
+  (lakelands#660, lakelands#772, lakelands#781), an accept sent again
+  (lakelands#616), the pin (lakelands#660), a reviewer's pairs, the
+  refusal told as the listing shows (lakelands#780), a tool's name taken
+  since (lakelands#896), what a migration restates (lakelands#554), the
+  set changes of a declaration (lakelands#453), of a migration
+  (lakelands#457) and of a value type's renames, and a value type's
+  renamed fields (lakelands#553).
+- Corrected at the rewrite (lakelands#817): the order of `propose` left
+  out the steps later changes added: that a holder of `only` proposes
+  no change of the ontology (lakelands#634), that the type of an upsert
+  or a retirement is shown to its proposer, the step that stands before
+  the pin, and that a holder of `only` proposes one only where it can be
+  pinned (lakelands#660), and that a value type's renames are proposed
+  only by one shown every field they write (lakelands#553).
