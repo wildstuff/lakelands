@@ -1,21 +1,24 @@
 //! A set's declaration decides the membership of the records already
 //! there (`docs/decisions/004-the-change-feed-is-the-log.md`, extended).
 
+use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::seam::Seams;
+use lakelands_api::tools::{Door, tools};
+use lakelands_api::write::{Declaration, ProposedWrite};
 use lakelands_api::{Outcome, Refusal};
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, events_from, head_unmoved, limits, object_set_on, refused_on, type_of,
+    Lake, Must, events_from, head_unmoved, invalid_case, limits, object_set_on, refused_on, type_of,
 };
 use crate::conformance::{Failure, Given, Held, Store};
 
 check!(
     SET_DECLARED_OVER_RECORDS = a_sets_declaration_decides_the_membership_of_the_records_there,
-    "004, extended: a set declared over records already written appends, in its declaration's append and caused by its `declared`, an `object_set_changed` joining each live record its filter holds for and no other; declared again with another filter, it joins and leaves exactly the records the change moves; declared again unchanged, it appends none; and a later write decides against the membership so kept; past the lake's `max_set_changes` a declaration is refused `too_large`, naming the set and the ceiling, and appends nothing",
+    "004, extended: a set declared over records already written appends, in its declaration's append and caused by its `declared`, an `object_set_changed` joining each live record its filter holds for and no other; declared again with another filter, it joins and leaves exactly the records the change moves; declared again unchanged, it appends none; and a later write decides against the membership so kept; past the lake's `max_set_changes` a declaration is refused `too_large`, naming the set and the ceiling, and appends nothing, at `declare` and at the accept of its proposal, where a name that became a tool's since is refused first (013, lakelands#935)",
     given
 );
 
@@ -37,6 +40,7 @@ async fn a_sets_declaration_decides_the_membership_of_the_records_there(
             .await?;
     }
     l.retire("invoice", "i4").await?;
+    let set = || object_set_on("still_open", "invoice", "status = 'open'");
     // The membership changes of the append from `from`, as (key, joined),
     // those caused by its `declared`.
     let changes = |from| {
@@ -90,6 +94,37 @@ async fn a_sets_declaration_decides_the_membership_of_the_records_there(
         left,
         "`i3`, a member by the declaration, leaves `open` when it no longer holds"
     );
+    // Proposed now and accepted past the ceiling: the set alone, and with
+    // a verb named as the find tool of `memo`, declared since.
+    // The name from the one generator, for the lake as if `memo` were declared.
+    let mut lake = l.describe().await?;
+    let mut memo = lake.types[0].clone();
+    memo.name = "memo".into();
+    lake.types.push(memo);
+    let find = Door::Find { ty: "memo".into() };
+    let name = tools(&lake)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|t| t.door == find);
+    let name = name
+        .ok_or_else(|| Failure::new("no find tool for `memo`"))?
+        .name;
+    let verb = json!({"declare": "verb", "name": name, "on": "invoice", "risk": "low",
+                      "effect": "write", "set": [{"field": "status", "value": "'x'"}]});
+    let verb: Declaration = serde_json::from_value(verb).expect("a verb reads");
+    let mut ids = Vec::new();
+    for declarations in [vec![set(), verb], vec![set()]] {
+        let proposed = l.cat.propose(
+            &l.own,
+            ProposedWrite::Declare { declarations },
+            "why".into(),
+        );
+        let Outcome::Proposed { proposal, .. } = proposed.await.must("a proposal")? else {
+            return Err(Failure::new("a declaration is proposed"));
+        };
+        ids.push(proposal);
+    }
+    l.declare(type_of("memo", &[("n", Text)])).await?;
     // `i1` and `i2` would join `still_open`: two changes, past a ceiling of one.
     let lower = Limits {
         max_set_changes: 1,
@@ -102,8 +137,25 @@ async fn a_sets_declaration_decides_the_membership_of_the_records_there(
         Lake::of(store.as_ref()),
         store.head().await.must("the head")?,
     );
-    let set = object_set_on("still_open", "invoice", "status = 'open'");
-    let r = l.cat.declare(&l.own, set).await;
+    let named = l.cat.accept(&l.own, &ids[0]).await;
+    let large = l.cat.accept(&l.own, &ids[1]).await;
+    // Each declaration of the set is refused for the name, the set's too.
+    let named_only = match invalid_case(&named) {
+        Some(Case::SetRefused { problems, .. }) => {
+            (problems.iter()).all(|p| matches!(invalid_case(p), Some(Case::ToolNames { .. })))
+        }
+        _ => false,
+    };
+    ensure!(
+        named_only
+            && matches!(
+                refused_on(&large),
+                Some(("still_open", Refusal::TooLarge { max: 1 }))
+            ),
+        "the accept of `still_open` past the ceiling is refused too_large, and with a verb \
+         named as a tool first for the name; they answered {named:?} and {large:?}"
+    );
+    let r = l.cat.declare(&l.own, set()).await;
     ensure!(
         matches!(
             refused_on(&r),

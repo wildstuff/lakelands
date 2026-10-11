@@ -18,7 +18,7 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     ONLY_PROPOSES = a_holder_of_only_proposes_its_own_records,
-    "051: a holder of `only` proposes an upsert, a retirement and a high-risk call on its own records, each logged `pinned`, another's proposals not; on another's record a proposal that would pass is not granted and one that reads the record is not found; a proposal is refused where a field its `only` names is derived or backed, or where the verb assigns one, called or proposed, in a call's one order: after its scope, before an external verb's executor is asked and before its payload is read (lakelands#851); neither `describe` nor `describe_type` lists it such a verb; the accept of a pinned proposal applies while its record and type stand as proposed, and is refused once a rederive, a backed output, a record made again at the key, a redeclaration of the type that leaves its records as they are, a migration or a re-key moved them, or, for a link, once either end record moved"
+    "051 and 013 (lakelands#935): a holder of `only` proposes no change of the ontology, refused before its declaration is read, and no write to a type it is not shown, not found before the record checks; it proposes an upsert, a retirement and a high-risk call on its own records, each logged `pinned`, another's proposals not; on another's record a proposal that would pass is not granted and one that reads the record is not found; a proposal is refused where a field its `only` names is derived or backed, before the record checks, or where the verb assigns one, called or proposed, in a call's one order: after its scope, before an external verb's executor is asked and before its payload is read (lakelands#851); neither `describe` nor `describe_type` lists it such a verb; the accept of a pinned proposal applies while its record and type stand as proposed, and is refused once a rederive, a backed output, a record made again at the key, a redeclaration of the type that leaves its records as they are, a migration or a re-key moved them, or, for a link, once either end record moved"
 );
 
 check!(
@@ -104,6 +104,8 @@ async fn a_holder_of_only_proposes_its_own_records(store: Store) -> Held {
         {"name": "n", "type": {"kind": "text"}},
         {"name": "owner", "type": {"kind": "text"}, "authority": "derived", "derived": "n"}]}))
         .await?;
+    l.declare(type_decl("vault", vec![field("n", Text)]))
+        .await?;
     // A verb on `ticket` that reaches outside the lake, its executor not bound.
     l.declare_json(
         json!({"declare": "verb", "name": "mail", "on": "ticket", "risk": "high",
@@ -119,7 +121,8 @@ async fn a_holder_of_only_proposes_its_own_records(store: Store) -> Held {
     }
     plug(token);
     let hers = json!({"only": {"owner": "alice"}});
-    let types = json!({"claim": hers, "bill": hers, "ticket": hers});
+    let none = json!({"default": "none"});
+    let types = json!({"claim": hers, "bill": hers, "ticket": hers, "vault": none});
     let alice = alice(store.as_ref(), json!({"default": "write", "types": types}));
     let bob = holder(store.as_ref(), "bob", json!({"default": "write"}));
     let (ng, gone) = (not_granted(), "not found");
@@ -245,6 +248,25 @@ async fn a_holder_of_only_proposes_its_own_records(store: Store) -> Held {
         p.unwrap_err_or(),
         &ng,
     );
+    // 013's order: no shape before the declaration is read, the type
+    // shown and the pin before the record checks.
+    let bad = json!({"write": "declare", "declarations": [{"declare": "type", "name": "no such"}]});
+    let unpinned = upsert("ticket", "t1", "zz", json!("x"));
+    for (what, write, want) in [
+        ("a declaration of no identifier, proposed", bad, &ng),
+        ("an unpinnable proposal of no field", unpinned, &ng),
+        (
+            "a proposal of no field of a type not shown",
+            upsert("vault", "v1", "zz", json!(1)),
+            &gone.to_owned(),
+        ),
+    ] {
+        row(
+            what,
+            proposes(&l, &alice, write).await.unwrap_err_or(),
+            want,
+        );
+    }
     head_unmoved(store.as_ref(), head, "every refused proposal by alice").await?;
     let told = cat
         .describe_type(&alice, &"claim".into(), Default::default())
