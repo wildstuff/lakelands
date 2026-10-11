@@ -52,8 +52,9 @@ records as stored, and would read it as absent. So it has the authority
 backing is called at a write), it reads no `previous` or `changed`, and
 it is not `required`, `sensitive` by itself, cleared by
 `on_input_change` or searchable; it is no key, validity bound, `via` or
-derived relation's match on either side, no field of a view (a view is
-computed at the read already) or of a link; no field computed at the
+derived relation's match on either side, no `reference` (nothing would
+judge the record it names for a writer, 032), no field of a view (a view
+is computed at the read already) or of a link; no field computed at the
 write reads it; a trigger, a verb and an object set that read it are
 refused; a view that reads it is not kept; an order or a vector index
 does not name it; and a grant's `only` on it cannot be applied, as on
@@ -61,8 +62,10 @@ any field an engine cannot filter by. A type declared again so that a
 field a trigger, a verb, an object set or another type's derived
 relation in force reads is computed at the read is refused, naming the
 field alone. Each is refused as invalid where it is declared, naming the
-field; a verb's payload field and a function's input, which no record
-holds, say no `computed_at` at all.
+field; a function declared again with a backing while such a field
+calls it is refused naming the function alone; a verb's payload field
+and a function's input, which no record holds, say no `computed_at` at
+all.
 
 ### `order_by` a field computed at the read is refused
 
@@ -104,3 +107,12 @@ argument are field names: one computation serves them all.
 Where something reads the record as stored, the field is not there; the
 refusals keep every such reader from meeting a field that is always
 absent for it.
+
+## How it came to be
+
+- The first version: a field may be computed at the read, with the
+  refusals that keep a reader of stored records from it (lakelands#550).
+- A `reference` is no field computed at the read: nothing would judge
+  the record it names. A function declared again with a backing is
+  refused while a field computed at the read calls it, where only the
+  field's own declaration was asked (lakelands#795).

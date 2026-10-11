@@ -17,6 +17,7 @@ mod bundles;
 mod compact;
 mod computed_at;
 mod computed_inputs;
+mod computed_reference;
 mod concurrency;
 mod cursors;
 mod date_bucket;
@@ -348,6 +349,7 @@ pub const ALL: &[Check] = &[
     versions::CAS_ACROSS_RETIREMENT,
     references::REFERENCE_MUST_RESOLVE,
     references::REFERENCE_WITHIN_A_WINDOW,
+    computed_reference::COMPUTED_REFERENCE,
     values::DECIMAL_NOT_A_NUMBER,
     values::GEO_VALUES,
     values::JSON_VALUES,

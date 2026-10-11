@@ -77,8 +77,11 @@ From `0.2.0` a field may be computed by a function of any backing kind.
 Declaring a function whose backing is not `expr` is accepted when the
 host bound a backing of that kind in `Seams::backings`, and refused as
 `Unbound` naming the kind otherwise. A field naming such a function is
-accepted like one naming an `expr` function. Replay and rebuild never
-ask: a declaration already in the log folds whatever the host binds.
+accepted like one naming an `expr` function, but a `reference`: its
+output lands in the fold, where nothing judges the record it names for
+a writer, so it is refused as `reference_unjudged` (032, lakelands#795).
+Replay and rebuild never ask: a declaration already in the log folds
+whatever the host binds.
 
 **The call.** A field's call is `{ "function", "inputs", "config" }`:
 the function's name; every declared input by name, with the record's

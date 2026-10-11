@@ -142,6 +142,22 @@ pub struct Outputs<'a> {
 pub type Recorded = BTreeMap<(String, Digest), Vec<(Position, Value)>>;
 
 impl Outputs<'_> {
+    /// The outputs a plan reads: what `view` holds, and no call made due.
+    pub(crate) fn planning<'a>(
+        view: &'a dyn ProjectionView,
+        plans: &'a crate::record::Plans,
+    ) -> Outputs<'a> {
+        let (staged, before, due, waiting) = (None, None, None, false);
+        Outputs {
+            view,
+            staged,
+            before,
+            due,
+            waiting,
+            plans,
+        }
+    }
+
     /// What the lake recorded for a call, if anything: the transaction's
     /// last recording the reader may read, else the view's.
     fn recorded(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
