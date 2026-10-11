@@ -1,6 +1,6 @@
 # The log format
 
-**Format version 14.** Reviewed so that a verifier can be written from
+**Format version 15.** Reviewed so that a verifier can be written from
 this document alone (lakelands#14). A release reads and writes one
 format version, this one: every event of a lake carries it, from
 position 0, and a lake written in another is refused by name and never
@@ -962,6 +962,15 @@ is written twice (`'it''s'`); there are no other escapes. A number
 directly followed by a letter or `_` is an error, unless that letter is
 a duration unit and ends the token (`30d` is a duration, `30days` an
 error).
+
+A path's first identifier names a field of the record the expression is
+evaluated on, or `payload` in a verb's values. Each later one reads the
+member of that name of the value the path has come to; in a verb's
+`requires` and set values, where that value is a reference, it reads the
+field of that name on the record the reference names
+(`docs/decisions/055-a-path-steps-through-a-reference.md`). The second
+reading came with format 15: a log of an earlier format holds no
+declaration that reads across a reference.
 
 **The typed form.** Every node is an object with `op`:
 

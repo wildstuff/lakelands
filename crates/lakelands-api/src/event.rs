@@ -24,7 +24,7 @@ use crate::write::{Declaration, Migration, ProposedWrite};
 /// name, with both numbers, and nothing of it is read
 /// (`docs/log-format.md` §6,
 /// `docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
-pub const LOG_FORMAT_VERSION: u32 = 14;
+pub const LOG_FORMAT_VERSION: u32 = 15;
 
 /// A SHA-256 digest, as 64 lower-case hexadecimal digits.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

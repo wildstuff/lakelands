@@ -45,7 +45,12 @@ proposer's name and not under its grant
 (`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
 At acceptance the store checks the write again at the head, as the
 order of refusals lists it, and records the write with the proposer as
-its writer, caused by the acceptance. A verb's write, run at once or on
+its writer, caused by the acceptance. A call that reads across a
+reference reads the far record as it stands at the accept
+(`docs/decisions/055-a-path-steps-through-a-reference.md`): a
+`requires` it no longer meets refuses the accept as a precondition, and
+a far record no longer reached refuses it `not_live`; either leaves the
+proposal pending. A verb's write, run at once or on
 acceptance, fires triggers and changes object sets exactly as any other
 write does (`docs/decisions/004-the-change-feed-is-the-log.md`).
 
@@ -550,3 +555,5 @@ listing and its accept need, moved to
   the pin, and that a holder of `only` proposes one only where it can be
   pinned (lakelands#660), and that a value type's renames are proposed
   only by one shown every field they write (lakelands#553).
+- An accept reads a record its call reads across a reference as it
+  stands at the accept (lakelands#567).

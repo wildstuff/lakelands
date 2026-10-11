@@ -39,13 +39,6 @@ pub fn reads(e: &Expr) -> BTreeSet<FieldName> {
     e.fields_read().into_iter().cloned().collect()
 }
 
-fn paths<'e>(e: &'e Expr, out: &mut Vec<&'e [FieldName]>) {
-    if let Expr::Path { path } = e {
-        out.push(path);
-    }
-    crate::expr::children(e).for_each(|c| paths(c, out));
-}
-
 /// The member of the call's payload a path in a verb's value reads:
 /// `payload.<name>`, and no other path. A bare `payload` and a longer path
 /// are the record's field of that name (028, extended).
@@ -60,7 +53,7 @@ pub fn payload_member(path: &[FieldName]) -> Option<&FieldName> {
 /// them, and the members of the call's payload.
 pub fn verb_reads(e: &Expr) -> (BTreeSet<FieldName>, BTreeSet<FieldName>) {
     let mut all = Vec::new();
-    paths(e, &mut all);
+    lakelands_api::expr::paths(e, &mut all);
     let record = all.iter().filter(|p| payload_member(p).is_none());
     (
         record.filter_map(|p| p.first().cloned()).collect(),

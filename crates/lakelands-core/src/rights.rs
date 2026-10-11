@@ -455,14 +455,22 @@ pub fn pinnable(who: &Principal, decl: &TypeDecl, verb: Option<&VerbDecl>) -> bo
 
 /// Whether `who` may read every field `verb` reads, each judged as a
 /// filter on it is: a verb that reads one would answer its value, by
-/// running or not, or copy it whole (024, extended).
-pub fn reads_what_verb_reads(who: &Principal, decl: &TypeDecl, verb: &VerbDecl) -> bool {
+/// running or not, or copy it whole (024, extended). So is each field it
+/// reads of another record, across a reference, on the type `ty` answers.
+pub fn reads_what_verb_reads<'d>(
+    who: &Principal,
+    decl: &'d TypeDecl,
+    verb: &VerbDecl,
+    ty: &dyn Fn(&TypeName) -> Option<&'d TypeDecl>,
+) -> bool {
     let reads = |n: &FieldName| {
         let field = decl.fields.iter().find(|f| &f.name == n);
         field.is_none_or(|f| field_access(who, decl, f).reads())
     };
+    let far = verb.reads_across(decl, ty);
     verb.fields_read()
         .is_some_and(|read| read.iter().all(reads))
+        && far.is_some_and(|far| far.iter().all(|(t, f)| field_access(who, t, f).reads()))
 }
 
 /// Whether `who` can make a record of `decl` that its grant admits: it

@@ -64,13 +64,15 @@ impl fmt::Display for Kind {
     }
 }
 
+/// What a path reads: the declared kind of the last field it reaches and
+/// how many of its segments reach it, one, or more where the path steps
+/// through references.
+pub type Reads<'a> = &'a dyn Fn(&[FieldName]) -> Option<(StorageKind, usize)>;
+
 /// The kind `e` certainly computes, `None` where that depends on the
-/// record; or why it can never be evaluated. `field` answers a field's
-/// declared kind.
-pub fn of(
-    e: &Expr,
-    field: &dyn Fn(&FieldName) -> Option<StorageKind>,
-) -> Result<Option<Kind>, Case> {
+/// record; or why it can never be evaluated. `field` answers what each
+/// path reads.
+pub fn of(e: &Expr, field: Reads<'_>) -> Result<Option<Kind>, Case> {
     use Kind::{Boolean, Duration, Instant, Number, Text};
     let expr = || super::print(e);
     Ok(match e {
@@ -81,19 +83,22 @@ pub fn of(
             Literal::Text(_) => Some(Text),
             Literal::Duration(_) => Some(Duration),
         },
-        Expr::Path { path } => match (path.as_slice(), path.first().and_then(field)) {
-            ([_], Some(StorageKind::Number | StorageKind::Decimal)) => Some(Number),
-            ([_], Some(StorageKind::Boolean)) => Some(Boolean),
-            ([_], Some(StorageKind::DateTime | StorageKind::Date)) => Some(Instant),
-            ([_], Some(StorageKind::Text | StorageKind::Reference)) => Some(Text),
+        Expr::Path { path } => match field(path) {
+            Some((k, n)) if n == path.len() => match k {
+                StorageKind::Number | StorageKind::Decimal => Some(Number),
+                StorageKind::Boolean => Some(Boolean),
+                StorageKind::DateTime | StorageKind::Date => Some(Instant),
+                StorageKind::Text | StorageKind::Reference => Some(Text),
+                _ => None,
+            },
             // A longer path walks into a `json` or `geo` value's members;
             // into anything else it reads nothing, whatever the record
             // holds. `payload.<name>` is a call's payload.
-            ([first, _, ..], Some(k))
+            Some((k, n))
                 if !matches!(k, StorageKind::Json | StorageKind::Geo)
-                    && first.as_str() != "payload" =>
+                    && path[0].as_str() != "payload" =>
             {
-                let (expr, field) = (expr(), first.clone());
+                let (expr, field) = (expr(), path[n - 1].clone());
                 return Err(match k {
                     StorageKind::Reference => Case::StepsIntoReference { expr, field },
                     _ => Case::StepsIntoScalar { expr, field },

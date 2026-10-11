@@ -7,7 +7,9 @@ field's target type: one at the head, one written earlier in the same
 append or ingest window, or the record being written itself. A write that
 names any other record is refused whole, on that field, and appends
 nothing. The rule holds for every write door: `upsert`, a verb's write,
-an accepted proposal and `ingest`.
+an accepted proposal and `ingest`. A verb that reads a field across a
+reference reaches the far record by the same rule, at the call
+(`docs/decisions/055-a-path-steps-through-a-reference.md`).
 
 **A reference a record computes is held to the same rule.** A
 `reference` field may be computed at the write, by an expression or an
@@ -97,3 +99,5 @@ for the partner to be committed.
   where only the patch was read and a computed reference could name a
   record that was absent, retired or held; one computed at the read or
   by a function's backing is refused at declare (lakelands#795).
+- A verb that reads across a reference reaches the far record by this
+  rule (lakelands#567).

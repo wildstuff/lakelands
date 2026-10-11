@@ -341,6 +341,27 @@ pub struct EmbedDecl {
 }
 
 impl TypeDecl {
+    /// The fields a path reads, each with the type it is a field of: its
+    /// first segment here, and while the field so read is a reference and
+    /// the path goes on, the next segment on the reference's target as `ty`
+    /// answers it. A path steps through a reference to the one record it
+    /// names; what is left of it digs into the last field's value.
+    pub fn stepped<'d>(
+        &'d self,
+        path: &[FieldName],
+        ty: &dyn Fn(&TypeName) -> Option<&'d TypeDecl>,
+    ) -> Vec<(&'d TypeDecl, &'d FieldDecl)> {
+        let (mut on, mut read) = (Some(self), Vec::new());
+        for (i, name) in path.iter().enumerate() {
+            let field = on.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == name)?)));
+            let Some((t, f)) = field else { break };
+            read.push((t, f));
+            let further = f.ty.target.as_ref().filter(|_| i + 1 < path.len());
+            on = further.and_then(ty);
+        }
+        read
+    }
+
     /// The fields a record of the type is keyed by: its `key`, or, of a
     /// view, its `group_by`, none where it groups by nothing. A view's
     /// `key` names the same or is left out; one that came in past
@@ -986,29 +1007,42 @@ pub struct VerbDecl {
 }
 
 impl VerbDecl {
-    /// The record's fields the verb reads: those its `requires` reads, and
-    /// those its set values read but for `payload.<name>`, a member of the
+    /// The paths the verb reads of a record: those of its `requires`, and
+    /// those of its set values but for `payload.<name>`, a member of the
     /// call's payload. `None` where one of them does not parse.
-    pub fn fields_read(&self) -> Option<std::collections::BTreeSet<FieldName>> {
+    pub fn record_paths(&self) -> Option<Vec<Vec<FieldName>>> {
         let set = match &self.effect {
             VerbEffect::Write { set } => set.as_slice(),
             VerbEffect::External { .. } => &[],
         };
-        let mut read = std::collections::BTreeSet::new();
-        if let Some(r) = &self.requires {
-            read.extend(r.typed().ok()?.fields_read().into_iter().cloned());
-        }
-        for a in set {
-            read.extend(
-                a.value
-                    .typed()
-                    .ok()?
-                    .record_fields_read()
-                    .into_iter()
-                    .cloned(),
-            );
+        let values = set.iter().map(|a| (&a.value, true));
+        let mut read = Vec::new();
+        for (c, value) in self.requires.iter().map(|r| (r, false)).chain(values) {
+            let (e, mut paths) = (c.typed().ok()?, Vec::new());
+            crate::expr::paths(&e, &mut paths);
+            let payload = |p: &[FieldName]| value && p.len() == 2 && p[0].as_str() == "payload";
+            read.extend(paths.iter().filter(|p| !payload(p)).map(|p| p.to_vec()));
         }
         Some(read)
+    }
+
+    /// The record's fields the verb reads: the first of each of its paths
+    /// ([`Self::record_paths`]).
+    pub fn fields_read(&self) -> Option<std::collections::BTreeSet<FieldName>> {
+        let paths = self.record_paths()?.into_iter();
+        Some(paths.filter_map(|p| p.into_iter().next()).collect())
+    }
+
+    /// The fields of other records the verb reads: each field one of its
+    /// paths reads past its first, across a reference
+    /// ([`TypeDecl::stepped`]), with the type it is a field of.
+    pub fn reads_across<'d>(
+        &self,
+        on: &'d TypeDecl,
+        ty: &dyn Fn(&TypeName) -> Option<&'d TypeDecl>,
+    ) -> Option<Vec<(&'d TypeDecl, &'d FieldDecl)>> {
+        let far = |p: Vec<FieldName>| on.stepped(&p, ty).into_iter().skip(1);
+        Some(self.record_paths()?.into_iter().flat_map(far).collect())
     }
 }
 
@@ -1098,3 +1132,6 @@ pub struct TriggerDecl {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_depth: Option<u32>,
 }
+
+#[cfg(test)]
+mod tests;

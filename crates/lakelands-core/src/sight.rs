@@ -237,7 +237,7 @@ impl<'o> Sight<'o> {
     /// as a whole; and it reads every field the verb reads (024, extended).
     pub fn callable(&self, on: &TypeDecl, verb: &VerbDecl) -> bool {
         let writes = |f: &FieldName| self.who.grants.access(&on.name, f).writes();
-        rights::reads_what_verb_reads(&self.who, on, verb)
+        rights::reads_what_verb_reads(&self.who, on, verb, &|n| self.force.ty(n))
             && match &verb.effect {
                 VerbEffect::Write { set } => {
                     !set.is_empty() && set.iter().all(|a| writes(&a.field))

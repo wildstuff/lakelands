@@ -221,7 +221,7 @@ impl Scope for WriteScope<'_> {
 
 /// A one-segment path reads a field; a longer path reads into a JSON
 /// object stored in that field.
-fn lookup(fields: &BTreeMap<FieldName, Value>, path: &[FieldName]) -> Option<Value> {
+pub fn lookup(fields: &BTreeMap<FieldName, Value>, path: &[FieldName]) -> Option<Value> {
     let (first, rest) = path.split_first()?;
     let mut v = fields.get(first)?;
     for seg in rest {
