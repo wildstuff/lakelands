@@ -390,6 +390,15 @@ impl Lake {
                 types.extend(held);
             }
             types.retain(|t| !w.ontology.types.contains_key(&t.name));
+            // No door leaves a lake with a problem among its tools' names,
+            // and this is one (027, extended): each type is judged beside
+            // the lake and the types before it, before anything is
+            // appended. A type the lake holds came through a door.
+            let mut with = w.ontology.clone();
+            for d in types.iter().cloned().map(Declaration::Type) {
+                crate::declare::tool_names(&with, &d)?;
+                crate::writes::put_as_appended(&mut with, &d, Some);
+            }
             for t in types {
                 let hash = shape::schema_hash(&t).map_err(|e| {
                     let _ = e;

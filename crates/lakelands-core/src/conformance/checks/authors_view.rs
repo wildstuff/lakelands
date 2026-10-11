@@ -1139,7 +1139,7 @@ async fn a_tool_name_taken_by_what_its_author_is_not_shown_is_not_granted(store:
 
 check!(
     NO_TOOL_PROBLEM_LEFT = no_door_leaves_a_lake_with_a_tool_name_problem,
-    "027, extended (lakelands#896), and 014: a declaration is checked with the names of the link types it brings, alone as in a set, so no door leaves a lake with a problem among its tools' names: a type declared again with a relation whose link type's door would bear the name of another type's tool, and with one whose link type's door would be too long a name, is refused as `tool_names` by `declare`, by `apply` and by `propose`, as a migration that adds the relation and as one that renames a relation into it, previewed, applied and proposed, and at the accept of a proposal made while the name was free; after each a plain type is declared by the owner and by one kept from the relation's target, naming nothing, and the lake's tools are generated (lakelands#918); the same declaration alone, where the other side is a verb its author is not shown, is not granted, naming nothing, as a set's is, where the owner is told `tool_names`, and under a free name it is applied"
+    "027, extended (lakelands#896), and 014: a declaration is checked with the names of the link types it brings, alone as in a set, so no door leaves a lake with a problem among its tools' names: a type declared again with a relation whose link type's door would bear the name of another type's tool, and with one whose link type's door would be too long a name, is refused as `tool_names` by `declare`, by `apply` and by `propose`, as a migration that adds the relation and as one that renames a relation into it, each previewed, applied under an id a preview answered before and proposed, and at the accept of a proposal made while the name was free; in a set of two, beside a plain type, it is refused by `apply`, by `propose` and at such an accept as `set_refused` with two problems, the plain type's too (lakelands#893); after each a plain type is declared by the owner and by one kept from the relation's target, naming nothing, and the lake's tools are generated (lakelands#918); the same declaration alone, where the other side is a verb its author is not shown, is not granted, naming nothing, as a set's is, where the owner is told `tool_names`, and under a free name it is applied"
 );
 
 async fn no_door_leaves_a_lake_with_a_tool_name_problem(store: Store) -> Held {
@@ -1165,10 +1165,27 @@ async fn no_door_leaves_a_lake_with_a_tool_name_problem(store: Store) -> Held {
     let both = vec![ty("vault", &[]), ty("desk", &[("near", "vault")])];
     l.cat.apply(&l.own, both).await.must("two types")?;
     let with = |relation| [("near", "vault"), (relation, "vault")];
-    let offer = propose(set(vec![ty("desk", &with("far"))])).await;
-    let Outcome::Proposed { proposal, .. } = offer.must("the owner proposes")? else {
-        return Err(Failure::new("a proposal answers `proposed`"));
+    let adds = |relation| migration(shape("desk", &with(relation)));
+    let renames = |relation: &str| {
+        let mut renames = migration(shape("desk", &[(relation, "vault")]));
+        renames.relation_renames = vec![("near".into(), relation.into())];
+        renames
     };
+    let two = |relation| vec![ty("desk", &with(relation)), ty("spare", &[])];
+    // Proposed, alone and in a set of two, and previewed while the names
+    // are free.
+    let (mut offers, mut ids) = (Vec::new(), Vec::new());
+    for declarations in [vec![ty("desk", &with("far"))], two("far")] {
+        let offer = propose(set(declarations)).await;
+        let Outcome::Proposed { proposal, .. } = offer.must("the owner proposes")? else {
+            return Err(Failure::new("a proposal answers `proposed`"));
+        };
+        offers.push(proposal);
+    }
+    for m in [adds("far"), renames("far")] {
+        let report = l.cat.migrate(&l.own, m).await.must("a preview")?;
+        ids.push(report.data.report_id);
+    }
     let base =
         |relation: &str| tool_base(link_type_name(&"desk".into(), &relation.into()).as_str());
     l.declare(shape(&base("far"), &[])).await?;
@@ -1176,28 +1193,35 @@ async fn no_door_leaves_a_lake_with_a_tool_name_problem(store: Store) -> Held {
     let grants =
         json!({"default": "read", "schema": true, "types": {"vault": {"default": "none"}}});
     let kept = super::only::holder(s, "author", grants);
-    let (mut told, mut free) = (Vec::new(), Vec::new());
+    let (mut told, mut whole, mut free) = (Vec::new(), Vec::new(), Vec::new());
     for relation in ["far", &long] {
-        for door in 0..8 {
+        for door in 0..13 {
             let single = ty("desk", &with(relation));
-            let adds = migration(shape("desk", &with(relation)));
-            let mut renames = migration(shape("desk", &[(relation, "vault")]));
-            renames.relation_renames = vec![("near".into(), relation.into())];
-            let (migration, report) = (Box::new(renames.clone()), Default::default());
-            told.push(match door {
+            // The adding migration at the doors 5 to 7, the renaming one after.
+            let moved = match door < 8 {
+                true => adds(relation),
+                false => renames(relation),
+            };
+            let (migration, report) = (Box::new(moved.clone()), Default::default());
+            let answer = match door {
                 0 => l.cat.declare(&l.own, single).await.err(),
                 1 => l.cat.apply(&l.own, vec![single]).await.err(),
                 2 => propose(set(vec![single])).await.err(),
-                3 => l.cat.migrate(&l.own, adds).await.err(),
-                4 => l.cat.migrate(&l.own, renames).await.err(),
-                5 => l.cat.migrate_apply(&l.own, renames, "").await.err(),
-                6 => (propose(ProposedWrite::Migrate { migration, report }).await).err(),
-                _ if relation == "far" => l.cat.accept(&l.own, &proposal).await.err(),
+                3 => l.cat.apply(&l.own, two(relation)).await.err(),
+                4 => propose(set(two(relation))).await.err(),
+                5 | 8 => l.cat.migrate(&l.own, moved).await.err(),
+                6 | 9 => (l.cat.migrate_apply(&l.own, moved, &ids[door / 8]).await).err(),
+                7 | 10 => (propose(ProposedWrite::Migrate { migration, report }).await).err(),
+                _ if relation == "far" => l.cat.accept(&l.own, &offers[door - 11]).await.err(),
                 _ => continue,
-            });
+            };
+            match door {
+                3 | 4 | 12 => whole.push(answer),
+                _ => told.push(answer),
+            }
             // The lake takes a declaration still, and names nothing.
             for (who, name) in [(&l.own, "crate"), (&kept, "box")] {
-                let plain = ty(&format!("{name}{}", told.len()), &[]);
+                let plain = ty(&format!("{name}{}", free.len()), &[]);
                 free.push(l.cat.declare(who, plain).await.err());
             }
         }
@@ -1206,16 +1230,24 @@ async fn no_door_leaves_a_lake_with_a_tool_name_problem(store: Store) -> Held {
         let told = json!({"code": "tool_names"});
         e.as_ref().is_some_and(|e| invalid_like(e, &told))
     };
+    let both = |e: &Option<Error>| {
+        let problem = json!({"reason": {"code": "tool_names"}});
+        let told = json!({"code": "set_refused", "count": 2, "problems": [problem, problem]});
+        e.as_ref().is_some_and(|e| invalid_like(e, &told))
+    };
     let made = tools(&l.describe().await?);
-    let each = told.iter().all(names) && told.len() == 15;
+    let each = told.iter().all(names) && told.len() == 19;
+    let sets = whole.iter().all(both) && whole.len() == 5;
     ensure!(
-        each && free.iter().all(Option::is_none) && made.is_ok(),
+        each && sets && free.iter().all(Option::is_none) && made.is_ok(),
         "`desk` with a relation `far`, whose link type's doors a type `{}` names, and with one \
          of 48 characters, whose link type's doors are too long, by `declare`, `apply`, \
-         `propose`, a migration that adds it and one that renames `near` into it, previewed, \
-         applied and proposed, and the accept of `far` proposed before, are each refused as \
-         `tool_names` ({told:?}), after each a plain type is declared by the owner and by one \
-         kept from `vault` ({free:?}), and the lake's tools are generated ({:?})",
+         `propose`, a migration that adds it and one that renames `near` into it, each \
+         previewed, applied under an id a preview answered before and proposed, and the \
+         accept of `far` proposed before, are each refused as `tool_names` ({told:?}), in a \
+         set of two beside a plain `spare` as `set_refused` with two problems ({whole:?}), \
+         after each a plain type is declared by the owner and by one kept from `vault` \
+         ({free:?}), and the lake's tools are generated ({:?})",
         base("far"),
         made.as_ref().err()
     );

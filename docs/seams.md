@@ -1722,6 +1722,19 @@ names** belong to the store's own readers, including `sys.source` and
 declared shape, and the shape comes with the reader, not with a host
 type that took the name first.
 
+**A host type whose tools would bear another's names** is refused at
+the writer's open too: the types an open is about to declare are judged
+beside the lake and beside each other as a declaration is, and where the
+lake with them would have a problem among its tools' names (a host's
+`sys.audit` beside a declared type `sys_audit`, or beside a verb named
+as one of its tools would be) the open is refused as `invalid`,
+`tool_names`, naming both sides, and appends nothing
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`). The
+same lake opens for writing with a vocabulary that leaves the type out,
+or whose `may_hold` withholds it from that lake, until the lake's own
+type is out of the way. A type the lake already holds is not judged
+again.
+
 A `sys.setting` record is one named setting of a lake. Its record key is
 the setting's key, and it has two fields: `key` (text, the same key) and
 `value` (json, the setting's value). `setting('vat_rate')` in any
