@@ -1959,7 +1959,8 @@ impl<'a> Reader<'a> {
             .ok_or_else(missing)
     }
 
-    /// `proposals`: every proposal for a reviewer, one's own otherwise.
+    /// `proposals`: for a reviewer every proposal there to it, each as
+    /// its view; one's own otherwise.
     /// `asked` is the principal as the call named it, before its grants
     /// were followed to the read's position.
     pub fn proposals(&self, filter: &ProposalFilter, asked: &Principal) -> Result<Vec<Proposal>> {
@@ -2212,9 +2213,11 @@ impl<'a> Reader<'a> {
                 }
             }
             // The report names what the migration does to the type it was
-            // proposed against, so a name is judged there, by the sight of
-            // that lake where the type was declared again since; the totals
-            // stay whole. A logged report is lossless, so it names no
+            // proposed against. A reader kept from a field, where the type
+            // was declared again since, is judged by the sight of that
+            // lake; one who reads every field is judged on the type in
+            // force and is listed the report whole. The totals stay whole.
+            // A logged report is lossless, so it names no
             // record that would not convert or would collide. Its id is
             // made again at the head before the proposal.
             ProposedWrite::Migrate { migration, report } => {
