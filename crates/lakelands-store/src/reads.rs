@@ -2195,7 +2195,7 @@ impl<'a> Reader<'a> {
                 let sees = |ty: &TypeName| self.sight.ty(ty).ok();
                 let all = || self.sight.describe(&self.who.lake);
                 let described = || lake.get_or_init(all);
-                rights::shown_report(then, made, migration, report, described, sees, answered);
+                rights::shown_report(then, made, migration, report, described, sees);
                 // One listing: its `to` hash is that of the `to` it lists.
                 let find = |n: &TypeName| listing.ty(n).ok();
                 rights::shown_hashes(then, made, migration, report, &find);
@@ -3663,20 +3663,54 @@ fn derived_edges(
 /// it is shown the type and answered the record at the key in `view`,
 /// retired or not, as `restricted` is judged, and a link with its ends,
 /// as a read of it answers (lakelands#871). A key no record holds keeps
-/// nothing from it; a record that cannot be read is not answered.
+/// nothing from it; a record that cannot be read is not answered. One who
+/// holds `restricted` and no `only` is answered every record of a type it
+/// is shown, and is asked no read.
 pub(crate) fn answered(
     view: &dyn ProjectionView,
     sees: &Sight,
     ty: &TypeName,
     key: &RecordKey,
 ) -> bool {
-    let (Ok(decl), Ok(stored)) = (sees.ty(ty), view.get(ty, key)) else {
+    answered_of(view, sees, ty, &[key], 1)
+}
+
+/// Whether [`answered`] holds of `need` or more of `keys`. The records are
+/// read a batch at a time, and a link's ends once for the batch, until
+/// enough are answered.
+pub(crate) fn answered_of(
+    view: &dyn ProjectionView,
+    sees: &Sight,
+    ty: &TypeName,
+    keys: &[&RecordKey],
+    need: usize,
+) -> bool {
+    let (Ok(decl), who) = (sees.ty(ty), sees.who()) else {
         return false;
     };
-    stored.is_none_or(|r| {
-        let ends = sees.ends(decl, &[&r.fields], |end, keys| view.get_many(end, keys));
-        sees.answers(ty, &r) && ends.is_ok_and(|e| e[0])
-    })
+    if who.grants.restricted && !rights::holds_only(who) {
+        return keys.len() >= need;
+    }
+    let mut found = 0;
+    for page in keys.chunks(COUNT_PAGE) {
+        let keys: Vec<RecordKey> = page.iter().map(|k| (*k).clone()).collect();
+        let Ok(rows) = view.get_many(ty, &keys) else {
+            return false;
+        };
+        let fields: Vec<_> = rows.iter().map(|r| &r.fields).collect();
+        let Ok(ends) = sees.ends(decl, &fields, |end, keys| view.get_many(end, keys)) else {
+            return false;
+        };
+        let held = rows
+            .iter()
+            .zip(ends)
+            .filter(|(r, ends)| !(*ends && sees.answers(ty, r)));
+        found += page.len() - held.count();
+        if found >= need {
+            return true;
+        }
+    }
+    false
 }
 
 /// The walks' view of the lake for one principal: a record is visible when

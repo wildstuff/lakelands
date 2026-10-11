@@ -46,7 +46,7 @@ pub struct Plan {
     pub rekeyed: Vec<Rekeyed>,
     /// Per reference field: values rewritten.
     pub references: Vec<ReferenceRewrite>,
-    /// The first colliding new keys.
+    /// The first colliding new keys its reader may be named.
     pub collisions: Vec<RecordRef>,
     /// Whether every moved record takes a key of its own.
     pub lossless: bool,
@@ -110,12 +110,21 @@ fn key_targets(decl: &TypeDecl) -> impl Iterator<Item = &TypeName> {
 }
 
 /// Tally one type's new keys into `plan`: the moves, the collisions, the
-/// missing.
-fn tally(ty: &TypeName, keyed: Vec<(RecordKey, Option<RecordKey>)>, plan: &mut Plan) {
-    let mut taken: BTreeMap<RecordKey, u64> = BTreeMap::new();
-    for (_, new) in &keyed {
+/// missing. A colliding key is named where `seen` holds of the records
+/// that would take it, and the first [`NAMED`] are among those, in the
+/// order of the new key: where a record `seen` does not hold of sorts
+/// moves no key.
+fn tally(
+    ty: &TypeName,
+    keyed: Vec<(RecordKey, Option<RecordKey>)>,
+    plan: &mut Plan,
+    seen: &dyn Fn(&TypeName, &[&RecordKey]) -> bool,
+) {
+    // The records that would take each new key, by the keys they have.
+    let mut taken: BTreeMap<&RecordKey, Vec<&RecordKey>> = BTreeMap::new();
+    for (old, new) in &keyed {
         if let Some(k) = new {
-            *taken.entry(k.clone()).or_default() += 1;
+            taken.entry(k).or_default().push(old);
         }
     }
     let mut moves = BTreeMap::new();
@@ -125,26 +134,23 @@ fn tally(ty: &TypeName, keyed: Vec<(RecordKey, Option<RecordKey>)>, plan: &mut P
         collisions: 0,
         missing: 0,
     };
-    for (old, new) in keyed {
+    for (old, new) in &keyed {
         match new {
             None => row.missing += 1,
             Some(new) => {
-                if taken.get(&new).copied().unwrap_or(0) > 1 {
-                    row.collisions += 1;
-                    if plan.collisions.len() < NAMED
-                        && !plan.collisions.iter().any(|c| c.ty == *ty && c.key == new)
-                    {
-                        plan.collisions.push(RecordRef {
-                            ty: ty.clone(),
-                            key: new.clone(),
-                        });
-                    }
-                }
+                row.collisions += u64::from(taken[new].len() > 1);
                 if new != old {
                     row.records += 1;
-                    moves.insert(old, new);
+                    moves.insert(old.clone(), new.clone());
                 }
             }
+        }
+    }
+    let collide = taken.iter().filter(|(_, takers)| takers.len() > 1);
+    for (new, takers) in collide {
+        if plan.collisions.len() < NAMED && seen(ty, takers) {
+            let (ty, key) = (ty.clone(), (*new).clone());
+            plan.collisions.push(RecordRef { ty, key });
         }
     }
     if row.records > 0 || row.collisions > 0 || row.missing > 0 {
@@ -167,9 +173,10 @@ pub fn plan(
     migrated: &TypeName,
     keyed: Vec<(RecordKey, Option<RecordKey>)>,
     renames: &[(FieldName, FieldName)],
+    seen: &dyn Fn(&TypeName, &[&RecordKey]) -> bool,
 ) -> Result<Plan> {
     let mut plan = Plan::default();
-    tally(migrated, keyed, &mut plan);
+    tally(migrated, keyed, &mut plan, seen);
     // The closure: types keyed by a reference to a re-keyed type. Each one
     // it can reach waits until every other type its key references has its
     // moves, and is scanned only if one of them has any.
@@ -204,7 +211,7 @@ pub fn plan(
             keyed.push((r.key, lakelands_core::log::record_key(&decl, &fields)));
             Ok(())
         })?;
-        tally(&name, keyed, &mut plan);
+        tally(&name, keyed, &mut plan, seen);
     }
     // No order makes keys that are made of each other: those of a moved
     // type whose key reads its own keys (the migrated type's: any that moved

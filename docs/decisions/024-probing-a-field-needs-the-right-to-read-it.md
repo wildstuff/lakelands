@@ -431,8 +431,24 @@ that would not fit, to a caller that was shown neither the type nor the
 field. A proposal's listing was held already: a use says something of a
 field's values. Now the preview and the refused apply are held the same
 way. A use and a misfit are shown where their caller is shown the type
-and reads the field; the totals and the report's id, which names the
+and reads the field, and a misfit names a record: the first misfits
+named are of records their reader is answered, as a migration's sample
+keys are, so one of a record held from it is counted and not named
+(lakelands#875; before, a restricted record's key was named to a reader
+without the grant). The totals and the report's id, which names the
 whole report, stay.
+
+A value type's report names a declaration by what its reader is
+described of it (lakelands#861). The report reads the description
+`describe` gives the reader and looks for the old value there, so it
+cannot name what the description withholds: a type whose old value
+stands only in a relation the reader is not shown, in a relation's
+field or a derived field it may not read, or in a view's definition
+held from it, is not named, and `conditions_unshown` says that a
+declaration it is not shown may name one. The rest of the report is
+what the reader was given before that member was declared
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+extended).
 
 ## Extended: a named set is read by its filter's right (lakelands#552)
 

@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 
 use crate::conformance::fixture::{
     Lake, Must, events_after, field, head_unmoved, invalid_like, log_events, object_set_on,
-    principal, reason, refused_on, trigger_on, try_upsert, type_decl,
+    principal, reason, refused_on, reviewer, trigger_on, try_upsert, type_decl,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -35,7 +35,7 @@ check!(
 
 check!(
     PREFLIGHT_COUNTS = the_preflight_counts_what_would_not_fit_over_every_use_and_history,
-    "027: the preflight of a value type checks every value stored under it, over every field of every type that uses it, retired and restricted records included, counts the records and the misfits per use, names the first, and appends nothing"
+    "027: the preflight of a value type checks every value stored under it, over every field of every type that uses it, retired and restricted records included, counts the records and the misfits per use, names the first of them of records its reader is answered, in a preview and in the refused apply, so that one held from the reader is counted and not named (lakelands#875), and appends nothing"
 );
 
 check!(
@@ -327,6 +327,26 @@ async fn the_preflight_counts_what_would_not_fit_over_every_use_and_history(stor
     ensure!(
         named.contains(&"i3") && named.contains(&"i4") && named.contains(&"t1:i1"),
         "the report names {named:?} among the first misfits"
+    );
+    // One without `restricted` is answered no read of `i4`: it is counted,
+    // and the misfits named are of the records that reader is answered.
+    let (architect, to) = (
+        reviewer(store.as_ref(), true),
+        status(&["open", "paid", "void"]),
+    );
+    let seen = l
+        .cat
+        .migrate_value_type(&architect, to.clone().into())
+        .await;
+    let seen = seen.must("the preview by one without `restricted`")?.data;
+    let applied = (l.cat).migrate_value_type_apply(&architect, to.into(), &seen.report_id);
+    let refused = format!("{:?}", applied.await);
+    let named: Vec<&str> = seen.first.iter().map(|m| m.key.as_str()).collect();
+    ensure!(
+        seen.misfits == 5 && named == ["i1", "i3", "t1:i1", "t1"] && !refused.contains("i4"),
+        "a misfit is named only of a record its reader is answered, the count whole: one \
+         without `restricted` is named {named:?} of {}, and its apply is refused as {refused}",
+        seen.misfits
     );
     // A constraint the stored values are checked against, as a write is.
     let s = preflight(&l, score(Some("value >= 0"))).await?;

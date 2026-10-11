@@ -30,7 +30,7 @@ use lakelands_api::principal::TypeGrants;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Migration, MigrationReport};
 use lakelands_api::{
-    Access, Error, FieldName, Position, Principal, Record, RecordKey, Refusal, TypeName, Value,
+    Access, Error, FieldName, Position, Principal, Record, Refusal, TypeName, Value,
 };
 
 /// The prefix every system type's name carries
@@ -826,12 +826,18 @@ pub fn holds(t: &TypeDecl, name: &FieldName) -> bool {
     }
 }
 
+/// Whether `who` reads the field `f` of the type `m` leaves, there and as
+/// `was` declares it, under the name it had.
+pub fn reads_both(who: &Principal, was: &TypeDecl, m: &Migration, f: &FieldName) -> bool {
+    let had = m.renames.iter().find(|(_, new)| new == f);
+    !unread(who, &m.to, f) && !unread(who, was, had.map_or(f, |(old, _)| old))
+}
+
 /// A migration's report as `who` may know it (013, 024 and 027, extended):
 /// every place that answers one calls this. `was` is the type the report
 /// was made against: as it stands, or, for a listed proposal, as it stood
 /// when proposed, read with `who`'s grants then. `sees` is a type the
-/// reader may see, `answered` whether it is
-/// answered a record. An entry is shown where the reader may see the type
+/// reader may see. An entry is shown where the reader may see the type
 /// and know of the field: a conversion in the shape the migration leaves,
 /// and by the name it took its values from where it was renamed, as is a
 /// rewritten reference of the migrated type itself, and a member restated,
@@ -841,11 +847,13 @@ pub fn holds(t: &TypeDecl, name: &FieldName) -> bool {
 /// it had, since a field's access is built from what it is computed from
 /// and a migration may change that with no rename (a link field bears
 /// the name it had: a relation renamed keeps its link fields); a dropped
-/// field in the shape as it stands, and a renamed relation likewise; a sample key
-/// where the record is answered; a declaration the migration carries
+/// field in the shape as it stands, and a renamed relation likewise; a
+/// declaration the migration carries
 /// where `described`, the lake as `describe` shows it to the reader,
 /// names it, asked only for a report that carries one. The totals stay;
-/// `more` says that something was left out. The hashes are
+/// `more` says that something was left out here, or that a count is
+/// larger than the keys named beside it, which the preflight takes among
+/// those its reader is answered: so it tells nothing the report does not. The hashes are
 /// [`shown_hashes`]'s, and the id is made again over what is shown. The
 /// reader is shown the migrated type: one that is not is answered no
 /// migration at all, by every door that would answer a report
@@ -857,7 +865,6 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
     report: &mut MigrationReport,
     described: impl FnOnce() -> D,
     sees: impl Fn(&TypeName) -> Option<&'a TypeDecl>,
-    answered: impl Fn(&TypeName, &RecordKey) -> bool,
 ) {
     let whole = report.clone();
     let (stands, mut was, mut to) = (was, was.clone(), m.to.clone());
@@ -874,20 +881,9 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
     report
         .fields
         .retain(|c| holds(&to, &c.field) && sourced(&c.field));
-    for c in &mut report.fields {
-        // A link field's sample keys are of its link type's records.
-        let of = match c.field.as_str().split_once('.') {
-            Some((r, _)) => crate::links::link_type_name(&m.to.name, &r.into()),
-            None => m.to.name.clone(),
-        };
-        c.sample_keys.retain(|key| answered(&of, key));
-    }
     // A member restated is the type's, or shown as its field's conversion
     // is, and one beyond the shape where the field is read in both shapes.
-    let read = |f: &FieldName| {
-        let had = m.renames.iter().find(|(_, new)| new == f);
-        !unread(who, &m.to, f) && !unread(who, stands, had.map_or(f, |(old, _)| old))
-    };
+    let read = |f: &FieldName| reads_both(who, stands, m, f);
     // A valid time over a field the reader may not know of is not named
     // (024, extended).
     let named =
@@ -921,8 +917,12 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
         true => holds(&to, &r.field) && sourced(&r.field),
         false => known(&r.ty, &r.field),
     });
-    report.sample_collisions.retain(|c| sees(&c.ty).is_some());
-    report.more = *report != whole;
+    let unnamed =
+        |c: &lakelands_api::write::FieldConversion| c.not_convertible > c.sample_keys.len() as u64;
+    let collide: u64 = report.rekeyed.iter().map(|r| r.collisions).sum();
+    report.more = *report != whole
+        || report.fields.iter().any(unnamed)
+        || collide > report.sample_collisions.len() as u64;
 }
 
 #[cfg(test)]

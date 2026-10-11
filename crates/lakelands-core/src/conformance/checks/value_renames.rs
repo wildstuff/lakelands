@@ -102,6 +102,11 @@ check!(
 );
 
 check!(
+    RENAMES_NAME_THE_DESCRIBED = a_rename_report_names_a_type_by_what_its_reader_is_described_of_it,
+    "024 and 027, extended (lakelands#861): a value type's report names a type's declaration only where the description its reader is given of the type holds the old value; held in a relation it is not shown, in a relation's field or a derived field it may not read, or in a view's definition held from it, the old value only sets `conditions_unshown`, and the report is else the one the reader was given before the member was declared; the listing of the proposed rename answers each reader that report, and an apply takes the id of its caller's own"
+);
+
+check!(
     RENAMES_KEPT_VIEW = a_kept_view_over_a_renamed_value_counts_by_the_new_one,
     "027 and the `view_kept.` setting, extended (lakelands#553): a kept view grouped by a renamed field is ended and made again at the `value_type_migrated`, and counts by the new value, as its twin computes, live and after a rebuild"
 );
@@ -875,6 +880,143 @@ async fn a_rename_report_lists_the_declarations_and_rules_that_may_name_an_old_v
          that names it in a relation's field's `derived`; it lists {:?}",
         report.conditions
     );
+    Ok(())
+}
+
+async fn a_rename_report_names_a_type_by_what_its_reader_is_described_of_it(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    l.declare_as(
+        Declaration::ValueType(status(&["open", "done"])),
+        "declaring `status`",
+    )
+    .await?;
+    let texts = |names: &[&str]| names.iter().map(|f| field(f, StorageKind::Text)).collect();
+    l.declare(type_decl("task", texts(&["n"]))).await?;
+    let card = [vec![of_status("state")], texts(&["note", "kind"])].concat();
+    l.declare(type_decl("card", card)).await?;
+    // The three members that name `open`, each declared in its turn: a
+    // relation's field's `derived`, a derived field, a view's `where`.
+    let text = json!({"kind": "text"});
+    let is_open = json!({"name": "is_open", "type": {"kind": "boolean"}, "authority": "derived",
+                         "derived": "label = 'open'", "depends_on": ["label"]});
+    let shelf = json!({"declare": "type", "name": "shelf", "fields": [{"name": "n", "type": text}],
+        "relations": [{"name": "holds", "target": "task", "cardinality": "many_to_many",
+                       "fields": [{"name": "label", "type": text}, is_open]}]});
+    let flag = derived("flag", StorageKind::Boolean, "note = 'open'", &["note"]);
+    let pile = json!({"declare": "type", "name": "pile", "key": ["note"],
+        "fields": [{"name": "note", "type": text}, {"name": "cards", "type": {"kind": "number"}}],
+        "view": {"source": "card", "group_by": ["note"], "where": "kind = 'open'",
+                 "measures": [{"name": "cards", "expr": "count()"}]}});
+    // Each reader is kept from one member: `far` is not shown the
+    // relation's target, `loose` nothing of its link type; `masked` reads
+    // `flag` masked; `blind` may not know of `kind`, which the view reads,
+    // and holds no `schema`, which shows every definition.
+    let reader = |name, ty: &str, fields: &[(&str, Access)], unseen: bool| {
+        let mut p = field_access(s, name, ty, fields);
+        (p.grants.schema, p.grants.review) = (true, true);
+        p.grants.types.entry(ty.into()).or_default().default = unseen.then_some(Access::None);
+        p
+    };
+    let far = reader("far", "task", &[], true);
+    let loose = reader("loose", "sys.link.shelf.holds", &[], true);
+    let masked = reader("masked", "card", &[("flag", Access::Masked)], false);
+    let mut blind = reader("blind", "card", &[("kind", Access::None)], false);
+    blind.grants.schema = false;
+    let m = renamed(&["active", "done"], &[("open", "active")]);
+    // The report of the proposal `id` as `who` is listed it.
+    let listed = |who: &lakelands_api::Principal, id: lakelands_api::ProposalId| {
+        let (cat, who) = (l.cat.clone(), who.clone());
+        async move {
+            let all = cat.proposals(&who, Default::default()).await;
+            let mut all = all.must("listing the proposals")?.data;
+            all.retain(|p| p.id == id);
+            match all.pop().and_then(|p| p.write) {
+                Some(ProposedWrite::MigrateValueType { report, .. }) => Ok(*report),
+                other => Err(Failure::new(format!("a rename is listed: {other:?}"))),
+            }
+        }
+    };
+    // The report as `who` is told it: by its preflight or, without
+    // `schema`, by the listing of the rename proposed now.
+    let told = |who: &lakelands_api::Principal| {
+        let (l, m, who) = (&l, &m, who.clone());
+        async move {
+            if !who.grants.schema {
+                return listed(&who, propose(l, m).await?).await;
+            }
+            let report = l.cat.migrate_value_type(&who, m.clone()).await;
+            Ok::<_, Failure>(report.must("a reader's preflight")?.data)
+        }
+    };
+    let mut red = Vec::new();
+    for (kept, name) in [
+        (vec![&far, &loose], "shelf"),
+        (vec![&masked], "card"),
+        (vec![&blind], "pile"),
+    ] {
+        let mut before = Vec::new();
+        for who in &kept {
+            before.push(told(who).await?);
+        }
+        match name {
+            "card" => {
+                let added = l.cat.add_field(&l.own, &"card".into(), flag.clone()).await;
+                added.must("adding `flag`")?
+            }
+            "shelf" => l.declare_json(shelf.clone()).await?,
+            _ => l.declare_json(pile.clone()).await?,
+        };
+        let whole = preflight(&l, m.clone()).await?;
+        let named = |r: &ValueTypeReport| r.conditions.iter().any(|c| c.contains(name));
+        if !named(&whole) || whole.conditions_unshown {
+            red.push(format!(
+                "the owner is named `{name}`: {:?}",
+                whole.conditions
+            ));
+        }
+        // The same report but the flag, and the id made over it and the head.
+        for (who, mut was) in kept.into_iter().zip(before) {
+            let is = told(who).await?;
+            (was.conditions_unshown, was.report_id) = (true, is.report_id.clone());
+            if is != was {
+                let (id, is) = (&who.id, &is.conditions);
+                red.push(format!("`{id}`, kept from the member of `{name}`: {is:?}"));
+            }
+        }
+    }
+    let red = red.join("; ");
+    ensure!(
+        red.is_empty(),
+        "a type is named to one whose description of it holds the old value, and another is \
+         told only that a declaration it is not shown may name one: {red}"
+    );
+    // The listing of the proposed rename answers each the report its
+    // preflight gave it before the proposal, the id too.
+    let mut before = Vec::new();
+    for who in [&far, &loose, &masked] {
+        before.push((who, told(who).await?));
+    }
+    let id = propose(&l, &m).await?;
+    for (who, told) in before {
+        let listed = listed(who, id.clone()).await?;
+        ensure!(
+            listed == told && told.conditions_unshown,
+            "the proposal is listed to `{}` with the report its preflight gave it, {told:?}; \
+             it is listed {listed:?}",
+            who.id
+        );
+    }
+    // An apply takes the id of its caller's report, which names no more.
+    let (owners, own) = (preflight(&l, m.clone()).await?, told(&far).await?);
+    let said = (l.cat).migrate_value_type_apply(&far, m.clone(), &owners.report_id);
+    refused_as!(
+        "an apply by the owner's id",
+        said.await,
+        Case::MigrationStale
+    )?;
+    let applied = (l.cat).migrate_value_type_apply(&far, m.clone(), &own.report_id);
+    let applied = applied.await;
+    applied.must("applying by the id of the report `far` was given")?;
     Ok(())
 }
 
