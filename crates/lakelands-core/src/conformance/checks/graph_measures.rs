@@ -17,8 +17,8 @@ use lakelands_api::{Catalog, Cursor, LakeStore, Position, Principal, Refusal, Va
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, order, owner, patch, pattern, reads_all, reason, reference, restrict,
-    searchable, step, type_decl,
+    Lake, Must, doors, field, invalid_case, order, owner, patch, pattern, reads_all, reason,
+    reference, restrict, searchable, step, type_decl,
 };
 use crate::conformance::{Failure, Given, Held, Store};
 
@@ -51,7 +51,7 @@ check!(
 
 check!(
     MEASURE_REFUSALS = a_measure_refuses_depth_where_to_order_by_and_one_way_components,
-    "018: a measure refuses a step `depth`, `where` or `type`, `to`, `order_by`, and a `components` step that does not walk `both`, each as invalid, rather than answer less than it seems to"
+    "018: a measure refuses a step `depth`, `where` or `type`, `to`, `order_by`, and a `components` step that does not walk `both`, each as invalid, rather than answer less than it seems to; `order_by` in its own words, naming the measure, `degree` and `components` alike (lakelands#924)"
 );
 
 /// Partners p1..p3; invoices i0..i5 (i0 linked to nothing); `billed_to` by the reference field
@@ -451,7 +451,10 @@ async fn a_measure_refuses_depth_where_to_order_by_and_one_way_components(store:
     cases.push(("`to`", p));
     let mut p = degree();
     p.order_by = vec![order("degree", Default::default(), Default::default())];
-    cases.push(("`order_by`", p));
+    cases.push(("`order_by`", p.clone()));
+    p.project = Projection::Components;
+    p.steps = both();
+    cases.push(("components with `order_by`", p));
     let one_way = one("invoice", "billed_to", Walk::Out, Projection::Components);
     cases.push(("components walking one way", one_way));
     cases.push((
@@ -459,11 +462,20 @@ async fn a_measure_refuses_depth_where_to_order_by_and_one_way_components(store:
         measure("invoice", Vec::new(), Projection::Degree),
     ));
     for (what, p) in cases {
+        let ordered = (!p.order_by.is_empty()).then_some(match p.project {
+            Projection::Degree => "degree",
+            _ => "components",
+        });
         let err = cat.query(own, p);
         let err = err.await.must_fail(&format!("a measure with {what}"))?;
         ensure!(
             matches!(reason(&err), Some(Refusal::Invalid(..))),
             "a measure with {what} must be refused as invalid; it failed with {err:?}"
+        );
+        let words = ordered.map(|m| Case::MeasureNoOrder { measure: m.into() });
+        ensure!(
+            words.is_none() || invalid_case(&err) == words.as_ref(),
+            "a measure with {what} must be refused as `{words:?}`; it failed with {err:?}"
         );
     }
     Ok(())

@@ -14,9 +14,9 @@ use lakelands_api::{Error, Grants, LakeStore, PrincipalKind, ReadAt, Refusal, Ty
 use serde_json::{Value, json};
 
 use crate::conformance::fixture::{
-    Lake, Must, computed_by, dec, decimal, events_after, field, head_unmoved, invalid_case,
-    is_invalid, migration, object_set_on, principal, reason, refused_unmoved, reviewer, trigger_on,
-    type_decl, value, value_type, view_of, write_verb,
+    Lake, Must, computed_by, count_view, dec, decimal, events_after, field, head_unmoved,
+    invalid_case, is_invalid, migration, object_set_on, principal, reason, refused_unmoved,
+    reviewer, trigger_on, type_decl, value, value_type, view_of, write_verb,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -311,6 +311,82 @@ async fn a_derived_relation_takes_no_tool_name(store: Store) -> Held {
             offered.iter().map(|t| &t.name).collect::<Vec<_>>()
         );
     }
+    Ok(())
+}
+
+check!(
+    OFFERED_ORDERS_ANSWER = every_order_a_tool_offers_its_door_answers,
+    "014, extended (lakelands#924): a tool offers no sort key its door refuses: for each tool of the catalog whose schema takes an `order_by`, each `by` it offers (the value where it offers none) on each field it offers, called through the tool's door, is answered: a stored type's `find`, a view's, `query` and `proposals`; a tool that offers an order through a door the row does not call fails it, so a tool added later is asked too"
+);
+
+/// `args` as a door reads them off the wire, or why they do not read.
+fn wire<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, String> {
+    serde_json::from_value(args).map_err(|e| format!("its arguments do not read: {e}"))
+}
+
+async fn every_order_a_tool_offers_its_door_answers(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let fields = vec![
+        field("status", StorageKind::Text),
+        field("n", StorageKind::Number),
+    ];
+    l.declare(type_decl("job", fields)).await?;
+    l.declare(count_view("tally", "job", "status")).await?;
+    l.upsert("job", "j1", json!({"status": "open", "n": 1}))
+        .await?;
+    let offered = tools(&l.describe().await?)
+        .map_err(|p| Failure::new(format!("the lake's names cannot become tools: {p:?}")))?;
+    let (mut asked, mut wrong) = (Vec::new(), Vec::new());
+    for t in &offered {
+        let Some(key) = t.input_schema.pointer("/properties/order_by/items") else {
+            continue;
+        };
+        let offers = |at: &str| key.pointer(at).and_then(Value::as_array).cloned();
+        // A field the schema leaves free is a path of `query`'s rows.
+        let fields = offers("/properties/field/enum").unwrap_or_else(|| vec![json!("job.n")]);
+        let bys = offers("/properties/by/enum").unwrap_or_else(|| vec![json!("value")]);
+        asked.push(t.door.clone());
+        let keys: Vec<(Value, Value)> = (fields.iter())
+            .flat_map(|f| bys.iter().map(|b| (f.clone(), b.clone())))
+            .collect();
+        for (field, by) in keys {
+            let order = match by.as_str() {
+                Some("latest") => json!({"by": by}),
+                _ => json!({"field": field, "by": by}),
+            };
+            let mut args = json!({"order_by": [order]});
+            let said: Result<(), String> = async {
+                let e = |e: Error| format!("{e:?}");
+                match &t.door {
+                    Door::Find { ty } => l.cat.find(&l.own, ty, wire(args)?).await.map(drop),
+                    Door::Query => {
+                        args["start"] = json!({"type": "job"});
+                        l.cat.query(&l.own, wire(args)?).await.map(drop)
+                    }
+                    Door::Proposals => l.cat.proposals(&l.own, wire(args)?).await.map(drop),
+                    door => return Err(format!("the row does not call {door:?}: ask it here")),
+                }
+                .map_err(e)
+            }
+            .await;
+            if let Err(why) = said {
+                wrong.push(format!("`{}` ordered by {order}: {why}", t.name));
+            }
+        }
+    }
+    // The row is blind if it asked none of the four.
+    let four = [
+        Door::Find { ty: "job".into() },
+        Door::Find { ty: "tally".into() },
+        Door::Query,
+        Door::Proposals,
+    ];
+    let missed: Vec<_> = four.iter().filter(|d| !asked.contains(d)).collect();
+    ensure!(
+        wrong.is_empty() && missed.is_empty(),
+        "every sort key a tool offers is answered by its door; refused:\n{}\nnot offered an order: {missed:?}",
+        wrong.join("\n")
+    );
     Ok(())
 }
 
