@@ -195,6 +195,7 @@ pub const ALL: &[Check] = &[
     masking::NONE_HIDES,
     masking::VALID_AT_PROBES,
     masking::VALID_AT_MEETS,
+    masking::VALID_AT_VIEW,
     masking::WRITE_ONLY,
     masking::VIA_HIDDEN,
     authors_view::HIDDEN_FIELD_KEPT,
