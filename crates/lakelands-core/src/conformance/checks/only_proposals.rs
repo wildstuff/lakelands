@@ -23,7 +23,7 @@ check!(
 
 check!(
     ONLY_DECIDES = a_holder_of_only_decides_what_it_is_shown_whole,
-    "051: a reviewer holding `only` accepts and rejects a proposal its listing shows it whole; one on another's record it is refused, appending nothing, before it is told the proposal is decided, so a guessed id tells it nothing; and its accept is refused where the write, its derived values computed, would leave the record outside its pairs"
+    "051: a reviewer holding `only` accepts and rejects a proposal its listing shows it whole; one on another's record it is refused, a retirement by one who holds `restricted` too, appending nothing, before it is told the proposal is decided, so a guessed id tells it nothing; and its accept is refused where the write, its derived values computed, would leave the record outside its pairs"
 );
 
 /// `who`'s proposal of the write `json`, its id or what refused it.
@@ -422,6 +422,10 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
         (&bob, upsert("claim", "c2", "note", json!("q4"))),
         (&bob, upsert("claim", "c2", "note", json!("q5"))),
         (&carol, upsert("ticket", "t1", "n", json!("bob"))),
+        (
+            &bob,
+            json!({"write": "retire", "type": "claim", "key": "c2"}),
+        ),
     ] {
         ids.push(proposes(&l, who, write).await.map_err(Failure::new)?);
     }
@@ -430,7 +434,9 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
         .must("the owner's accept of bob's second proposal")?;
     let hers = json!({"only": {"owner": "alice"}});
     let types = json!({"claim": hers, "ticket": hers});
-    let more = json!({"default": "write", "review": true, "types": types});
+    // With `restricted` she is judged by her `only` all the same: a
+    // retirement names a record alone, and is judged by a read of it.
+    let more = json!({"default": "write", "review": true, "restricted": true, "types": types});
     let alice = alice(store.as_ref(), more);
     let ng = not_granted();
     let mut rows: Vec<(String, String, String)> = Vec::new();
@@ -462,6 +468,12 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
     row(
         "the accept of a write that derives bob her `t1`",
         said(derived),
+        &ng,
+    );
+    let retired = cat.accept(&alice, &ids[6]).await.map(|_| ());
+    row(
+        "the accept of a retirement of bob's `c2`",
+        said(retired),
         &ng,
     );
     head_unmoved(store.as_ref(), head, "every refused decision by alice").await?;

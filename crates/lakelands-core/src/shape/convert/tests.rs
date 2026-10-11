@@ -348,7 +348,7 @@ fn a_preflight_counts_what_converts_and_samples_what_does_not() {
         records.push(record(&format!("x{i}"), json!(0.5)));
     }
     let before = invoice(StorageKind::Number);
-    let report = preflight(&before, &retype(), records).unwrap();
+    let report = preflight(&before, &retype(), records, &|_| true).unwrap();
     assert_eq!(report.ty.as_str(), "invoice");
     assert_eq!(report.records_scanned, 9);
     assert_eq!(report.from_schema_hash, schema_hash(&before).unwrap());
@@ -372,15 +372,15 @@ fn a_report_does_not_depend_on_scan_order() {
     let records: Vec<_> = (0..9)
         .map(|i| record(&format!("k{i}"), json!(i as f64 + 0.5)))
         .collect();
-    let forward = preflight(&before, &retype(), records.clone()).unwrap();
-    let backward = preflight(&before, &retype(), records.into_iter().rev()).unwrap();
+    let forward = preflight(&before, &retype(), records.clone(), &|_| true).unwrap();
+    let backward = preflight(&before, &retype(), records.into_iter().rev(), &|_| true).unwrap();
     assert_eq!(forward, backward);
 }
 
 #[test]
 fn the_report_id_covers_the_whole_report() {
     let before = invoice(StorageKind::Number);
-    let one = preflight(&before, &retype(), vec![record("a", json!(1))]).unwrap();
+    let one = preflight(&before, &retype(), vec![record("a", json!(1))], &|_| true).unwrap();
     let mut blank = one.clone();
     blank.report_id = String::new();
     assert_eq!(
@@ -392,6 +392,7 @@ fn the_report_id_covers_the_whole_report() {
         &before,
         &retype(),
         vec![record("a", json!(1)), record("b", Value::Null)],
+        &|_| true,
     )
     .unwrap();
     assert!(one.lossless && two.lossless);
@@ -402,7 +403,7 @@ fn the_report_id_covers_the_whole_report() {
 fn a_lossless_preflight_and_its_migration_agree() {
     let before = invoice(StorageKind::Number);
     let records = vec![record("a", json!(12)), record("b", Value::Null)];
-    let report = preflight(&before, &retype(), records.clone()).unwrap();
+    let report = preflight(&before, &retype(), records.clone(), &|_| true).unwrap();
     assert!(report.lossless);
     let (_, fields) = &records[0];
     let out = migrate_record(&before, &retype(), fields).unwrap().unwrap();
@@ -426,7 +427,7 @@ fn renames_move_values_to_the_new_name() {
         relation_renames: Vec::new(),
     };
     let records = vec![record("a", json!("42")), record("b", json!("x"))];
-    let report = preflight(&before, &migration, records.clone()).unwrap();
+    let report = preflight(&before, &migration, records.clone(), &|_| true).unwrap();
     let [total] = &report.fields[..] else {
         panic!("{:?}", report.fields);
     };
@@ -451,7 +452,10 @@ fn a_rename_without_a_retype_is_not_reported_but_still_moves() {
         renames: vec![("note".into(), "remark".into())],
         relation_renames: Vec::new(),
     };
-    let report = preflight(&before, &migration, vec![record("a", json!("1"))]).unwrap();
+    let report = preflight(&before, &migration, vec![record("a", json!("1"))], &|_| {
+        true
+    })
+    .unwrap();
     assert!(report.fields.is_empty());
     assert!(report.lossless);
     let out = migrate_record(&before, &migration, &record("a", json!("1")).1)
@@ -489,7 +493,7 @@ fn a_field_that_becomes_required_counts_records_without_it() {
         relation_renames: Vec::new(),
     };
     let records = vec![record("a", json!(1)), record("b", Value::Null)];
-    let report = preflight(&before, &migration, records).unwrap();
+    let report = preflight(&before, &migration, records, &|_| true).unwrap();
     let [amount] = &report.fields[..] else {
         panic!("{:?}", report.fields);
     };
@@ -526,7 +530,7 @@ fn a_malformed_migration_is_refused() {
             relation_renames: Vec::new(),
         }
     };
-    let err = |m: Migration| preflight(&before, &m, vec![]).unwrap_err().case;
+    let err = |m: Migration| preflight(&before, &m, vec![], &|_| true).unwrap_err().case;
     assert!(matches!(
         err(renamed("ghost", "total", "total")),
         Case::RenameFromUnknown { .. }

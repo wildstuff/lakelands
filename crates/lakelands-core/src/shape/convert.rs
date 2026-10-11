@@ -143,6 +143,7 @@ pub fn preflight(
     before: &TypeDecl,
     migration: &Migration,
     records: impl IntoIterator<Item = (RecordKey, BTreeMap<FieldName, Value>)>,
+    answered: &dyn Fn(&RecordKey) -> bool,
 ) -> Result<MigrationReport, Said> {
     let plan = Plan::new(before, migration)?;
     let mut tallies: Vec<Tally> = plan.checked().map(|_| Tally::default()).collect();
@@ -173,7 +174,7 @@ pub fn preflight(
                 Some(None) => {}
                 None => {
                     tally.not_convertible += 1;
-                    tally.sample(&key);
+                    tally.sample(&key, answered);
                 }
             }
         }
@@ -333,11 +334,12 @@ struct Tally {
 impl Tally {
     const SAMPLES: usize = 5;
 
-    fn sample(&mut self, key: &RecordKey) {
-        if self.samples.len() < Self::SAMPLES {
-            self.samples.insert(key.clone());
-        } else if self.samples.last().is_some_and(|last| key < last) {
-            self.samples.insert(key.clone());
+    /// Keeps the smallest keys among those `answered` admits, asking only
+    /// of a key that would be a sample.
+    fn sample(&mut self, key: &RecordKey, answered: &dyn Fn(&RecordKey) -> bool) {
+        let full = self.samples.len() == Self::SAMPLES;
+        let takes = !full || self.samples.last().is_some_and(|last| key < last);
+        if takes && answered(key) && self.samples.insert(key.clone()) && full {
             self.samples.pop_last();
         }
     }

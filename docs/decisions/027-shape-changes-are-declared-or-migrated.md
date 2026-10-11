@@ -117,6 +117,13 @@ the records, so it is made where shape changes are made.
   their kind and name, to a reader shown them; another is told that there
   may be one. A declaration is shown as `describe` shows it, and an aging
   rule as a read of its record answers it, with its `on`, `from` and `to`.
+  A type is named by what its reader is described of it: where the old
+  value stands only in a member the description leaves out or gives by
+  its shape alone (a relation the reader is not shown, a relation's
+  field or a derived field it may not read, a view's definition held
+  from it), the type is not named and the reader is told that there may
+  be one (lakelands#861); before, a type the reader is shown was named
+  for an expression in a member it is not.
   A proposal's report is listed to each reader as that reader is shown the
   lake as it stood before the proposal, its grants followed there through
   the renames since, not as its proposer was. The list
@@ -447,16 +454,45 @@ lossless holds, and such a report is never logged:
 
 - **`sample_keys`**: the keys of records the reader is answered. A
   restricted record's key leaves them for a reader without the grant;
-  the counts stay whole.
-- **`sample_collisions`**: the keys of types the reader may see. A key
-  is shown to whoever may see its type.
+  the counts stay whole. They are the first five among the records it
+  is answered: the preflight asks before it takes a key, so a key held
+  from the reader does not leave four where five that it is answered
+  do not convert (lakelands#875).
+- **`sample_collisions`**: a colliding key is a value of every record
+  that would take it, made of the fields of the new key. It is named
+  to a reader who is answered two or more of those records, a link
+  with its ends: a collision it can see for itself. It also reads every
+  field of the new key, in the shape the migration leaves and as the
+  type stands; one who reads such a field masked does not read it. A
+  record held from the reader that would take a key it is named moves
+  the count alone, so the keys named do not tell which one a held
+  record takes; a key that one record it is answered and held ones
+  would take is counted and not named. The keys named stand in the
+  order of the new key, and the sample is the first ten of those that
+  may be named: which key a record held from the reader would take,
+  and where that record sorts, moves no key in the list
+  (lakelands#875). Before, a key was shown
+  to whoever may see its type, and so told a reader the value of a
+  record it is answered by no read, or of a field it reads masked.
 
-**`more`.** A report says `more` when it holds more than its reader is
-shown, and nothing else of it. A reader told that a migration is not
-lossless, and shown no misfit, reads `more`: the reason lies where it
-may not look, and one who may see it reads why. The refusal keeps its
-kind. A logged and a stored report never say it, so a `write_proposed`
-event and a projection row stay what they are.
+**`more`.** A report says `more` where an entry was left out of it, or
+where a count is larger than the keys named beside it: a field's
+`not_convertible` against its `sample_keys`, the `collisions` of the
+re-keyed types against `sample_collisions`. Nothing else sets it:
+`more` says the counts name more than the samples do; it tells nothing
+they do not. Where a key held from the reader sorts changes no answer,
+and one who may see everything reads `more` beside seven records that
+do not convert and five keys (lakelands#875). `collisions` counts
+records, two or more a key, so every report that counts a collision
+says `more`, the owner's too; how many keys collide is not in the
+report, and `more` does not say it. A reader told that a
+migration is not lossless, and shown no misfit, reads `more`: the
+reason lies where it may not look, and one who may see it reads why.
+The refusal keeps its kind. A logged and a stored report never say it:
+they are lossless and count nothing that is not named, so a
+`write_proposed` event and a projection row stay what they are. Before,
+`more` said only that the report holds more than its reader is shown,
+and to one who may see everything it was never set.
 
 **The id names the whole report.** A preview read trimmed is applied by
 the id it carried, and the apply is refused or applied as for the whole

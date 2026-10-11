@@ -490,20 +490,27 @@ fn member_of(
 /// The preflight of `m` over the stored records of `decl`'s type, retired
 /// and restricted ones included, read a page at a time. `each` sees every
 /// record before the report counts it. An error of a page read or of
-/// `each` ends the walk and is answered before the report is.
+/// `each` ends the walk and is answered before the report is. A sample
+/// key is one of a record the principal of `sees` is answered.
 fn shaped(
     view: &dyn ProjectionView,
+    sees: &Sight,
     decl: &TypeDecl,
     m: &Migration,
     mut each: impl FnMut(&StoredRecord) -> Result<()>,
 ) -> Result<MigrationReport> {
     let mut walk = crate::lake::Walk::new(view, &decl.name, true);
     let mut seen = Ok(());
+    let held = std::cell::Cell::new(false);
     let rows = walk.by_ref().map_while(|r| {
         seen = each(&r);
+        held.set(sees.withheld(&r));
         seen.is_ok().then_some((r.key, r.fields))
     });
-    let report = shape::preflight(decl, m, rows);
+    // The record in hand is asked no read where it is held as it stands.
+    let answered =
+        |key: &RecordKey| !held.get() && crate::reads::answered(view, sees, &decl.name, key);
+    let report = shape::preflight(decl, m, rows, &answered);
     walk.failed()?;
     seen?;
     report.map_err(invalid)
@@ -3068,12 +3075,10 @@ impl Call<'_> {
         let view = self.lake.engine.view(None)?;
         let sight = Sight::held(self.who, &w.ontology);
         let sees = |ty: &TypeName| sight.ty(ty).ok();
-        let answered =
-            |ty: &TypeName, key: &RecordKey| crate::reads::answered(view.as_ref(), &sight, ty, key);
         let (was, mut m) = (w.ontology.ty(&m.to.name)?, m.clone());
         w.ontology.complete(&mut m.to);
         let described = || sight.describe(&self.who.lake);
-        rights::shown_report(self.who, was, &m, &mut report, described, sees, answered);
+        rights::shown_report(self.who, was, &m, &mut report, described, sees);
         rights::shown_hashes(self.who, was, &m, &mut report, &|n| w.ontology.ty(n).ok());
         report.report_id = report_id(&report, view.position());
         Ok(report)
@@ -3327,7 +3332,7 @@ impl Call<'_> {
         if let Some(a) = author {
             a.sent.renamed_fields(&a.known).map_err(invalid)?;
         }
-        let mut report = shaped(view, &before, m, |r| {
+        let mut report = shaped(view, &sees, &before, m, |r| {
             if m.to.key.is_empty() && sets.is_empty() {
                 return Ok(());
             }
@@ -3341,7 +3346,14 @@ impl Call<'_> {
                 None => Ok(()),
             }
         })?;
-        let plan = crate::rekey::plan(&after, view, &m.to.name, keyed, &m.renames)?;
+        // A colliding key is the new key's fields' values: named to one
+        // who reads each of them and is answered two of the records that
+        // would take it, a collision it can see for itself.
+        let reads = (m.to.key_fields().iter()).all(|f| rights::reads_both(self.who, &before, m, f));
+        let seen = |ty: &TypeName, keys: &[&RecordKey]| {
+            reads && crate::reads::answered_of(view, &sees, ty, keys, 2)
+        };
+        let plan = crate::rekey::plan(&after, view, &m.to.name, keyed, &m.renames, &seen)?;
         // With moves the memberships are decided again, under the keys and
         // the references the moves leave: a second walk.
         if let Some(now) = now.filter(|_| !sets.is_empty() && !plan.moves.is_empty()) {
@@ -3400,7 +3412,7 @@ impl Call<'_> {
                 relation_renames: Vec::new(),
             };
             let sets = held(&old.name)?;
-            let lr = shaped(view, &old, &lm, |r| {
+            let lr = shaped(view, &sees, &old, &lm, |r| {
                 match now.filter(|_| !sets.is_empty()) {
                     Some(now) => {
                         let fields = convert(&old, &lm, r)?;
@@ -3699,7 +3711,7 @@ pub(crate) fn conditions(
         .iter()
         .filter(|d| lakelands_core::expr::declares(&d.declaration, &old))
     {
-        match sees.shows(&d.declaration) {
+        match sees.shows_where(&d.declaration, &old) {
             true => shown.push(d.declaration.what()),
             false => unshown = true,
         }
@@ -3889,6 +3901,7 @@ impl Call<'_> {
                 _ => Vec::new(),
             };
             let computing = probe.computing(std::slice::from_ref(&name));
+            let sees = Sight::held(self.who, &w.ontology);
             crate::lake::walk(view, &name, true, |r| {
                 report.records_scanned += 1;
                 let mut is = r.clone();
@@ -3917,7 +3930,10 @@ impl Call<'_> {
                     };
                     if misfit {
                         used.misfits += 1;
-                        if first.len() < room {
+                        // Named as a sample key is: of a record its reader
+                        // is answered, one held as it stands asked no read.
+                        let shown = || crate::reads::answered(view, &sees, &name, &r.key);
+                        if first.len() < room && !sees.withheld(&r) && shown() {
                             first.push(Misfit {
                                 ty: name.clone(),
                                 key: r.key.clone(),

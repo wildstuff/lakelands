@@ -1062,7 +1062,9 @@ pub struct MigrationReport {
     /// Per reference field, in any type, the values the re-key rewrites.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<ReferenceRewrite>,
-    /// The first new keys more than one record would take, at most ten.
+    /// The first new keys more than one record would take, in the order
+    /// of the new key and at most ten, among those of which the reader is
+    /// answered two takers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sample_collisions: Vec<RecordRef>,
     /// What `to` states otherwise than the declaration in force, beside
@@ -1082,8 +1084,10 @@ pub struct MigrationReport {
     /// at: the SHA-256 of `{"report": …, "head": …}` in canonical form,
     /// the report with this member empty.
     pub report_id: String,
-    /// Whether the report holds more than this reader is shown: an answer
-    /// says so, without a name. A logged and a stored report hold `false`.
+    /// Whether the report holds more than this reader is shown, or counts
+    /// more than it names: an entry left out, a `not_convertible` larger
+    /// than its `sample_keys`, `collisions` beyond `sample_collisions`. A
+    /// logged and a stored report hold `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub more: bool,
 }
@@ -1262,7 +1266,8 @@ pub struct ValueTypeReport {
     /// Values the new declaration would refuse, as the renames leave them,
     /// over every field, shown to the reader or not.
     pub misfits: u64,
-    /// The first misfits, at most ten. Never values.
+    /// The first misfits of records the reader is answered, at most ten.
+    /// Never values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub first: Vec<Misfit>,
     /// True when every stored value fits the new declaration, in every

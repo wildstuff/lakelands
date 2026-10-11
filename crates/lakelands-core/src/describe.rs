@@ -174,6 +174,25 @@ impl Sight<'_> {
         }
     }
 
+    /// Whether what its principal is described of `d` holds, in an
+    /// expression, a node `test` accepts: a type member by member, as
+    /// [`Self::describe`] gives it (024), any other declaration whole.
+    pub fn shows_where(&self, d: &Declaration, test: &dyn Fn(&Expr) -> bool) -> bool {
+        let Declaration::Type(t) = d else {
+            return self.shows(d) && crate::expr::declares(d, test);
+        };
+        let Some(shown) = self.describe_type(&t.name) else {
+            return false;
+        };
+        let mut t = t.clone();
+        t.fields.retain_mut(|f| {
+            let said = shown.fields.iter().find(|s| s.name == f.name);
+            said.map(|s| f.derived.clone_from(&s.derived)).is_some()
+        });
+        (t.relations, t.view) = (shown.relations, shown.view.map(Box::new));
+        crate::expr::declares(&Declaration::Type(t), test)
+    }
+
     /// Whether a proposed declaration is listed to its principal, over the
     /// declarations as the proposal would leave them (013, extended): as
     /// [`Self::describe`] would describe it once in force, but a verb by

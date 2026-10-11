@@ -208,10 +208,10 @@ async fn the_report_and_its_id_are_what_a_whole_read_made() {
          name a moved key"
     );
     assert_eq!(
-        report.report_id, "f965663fbe9d3f2d1c82b14243017432b6326c3a4d93f4ad1bb78022ad0639bc",
+        report.report_id, "6aa87d12811bb2564762646d5d64bb910de4b7c3b108e714d00bca55f4ed1d27",
         "the report's id, as the preflight that read the type whole made it, of the report \
-         with what the migration restates (lakelands#554), and of it and the head alone \
-         (lakelands#644)"
+         with what the migration restates (lakelands#554), of it and the head alone \
+         (lakelands#644), and with `more` beside a count larger than its keys (lakelands#875)"
     );
 }
 
