@@ -64,14 +64,20 @@ fn held(dir: &Path) -> Held {
     out
 }
 
-/// What `dir` holds of the lake's log: everything but the projection's
-/// own files, which an open that reaches the projection may write.
+/// What `dir` holds but the projection's shared memory, which a reader's
+/// open of a healthy lake writes too: the log, the lease, the name, and
+/// the projection with its write-ahead log.
 fn log_held(dir: &Path) -> Held {
     let mut all = held(dir);
-    all.retain(|path, _| {
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
-        !name.starts_with("projection.db")
-    });
+    all.retain(|path, _| !path.ends_with("projection.db-shm"));
+    all
+}
+
+/// What `dir` holds but the projection's write-ahead log and shared
+/// memory, which a reader's connect makes where its maker wrote none yet.
+fn beside_wal(dir: &Path) -> Held {
+    let mut all = log_held(dir);
+    all.retain(|path, _| !path.ends_with("projection.db-wal"));
     all
 }
 
@@ -450,4 +456,32 @@ async fn an_empty_first_segment_with_no_index_yet_is_a_lake_being_made() {
     let (first, _) = SqliteOpener.log_ends(&location).unwrap().expect("a lake");
     assert_eq!(first.position, Position(0));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A `projection.db` that holds no table is a projection being made: its
+/// maker has connected and not made the tables yet. A reader is told
+/// that there is no projection yet, as the moment before, not that
+/// another build laid it out and a rebuild is wanted; and a writer makes
+/// it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_projection_with_no_table_yet_is_a_projection_being_made() {
+    let dir = fresh("no-table");
+    let (location, export, _, _) = made(&dir, 0).await;
+    for name in ["projection.db", "projection.db-wal", "projection.db-shm"] {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
+    let maker = rusqlite::Connection::open(dir.join("projection.db")).unwrap();
+    maker.pragma_update(None, "journal_mode", "WAL").unwrap();
+    let no_projection = says(|s| matches!(s, Situation::NoProjection { .. }));
+    // A reader, the engine's and the store's, while the maker is there.
+    refused_and_left(&dir, &location, &export, [1, 5], beside_wal, no_projection).await;
+    drop(maker);
+    let writer = lakelands_store::open(location.clone(), seams(), OpenMode::Write);
+    writer.await.unwrap().close().await.unwrap();
+    // The projection the writer made is folded through the log's tip.
+    let reader = lakelands_store::open(location.clone(), seams(), OpenMode::Read);
+    let head = reader.await.unwrap().head().await.unwrap();
+    let (_, last) = SqliteOpener.log_ends(&location).unwrap().expect("a lake");
+    assert_eq!(head, last.position);
+    clear(&dir, &export);
 }

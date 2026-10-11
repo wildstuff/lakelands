@@ -328,6 +328,12 @@ pub(crate) fn layout(conn: &Connection) -> Result<Option<u64>> {
     one(conn, "SELECT v FROM meta WHERE k = 'layout'", []).map(|v: Option<i64>| v.map(|v| v as u64))
 }
 
+/// Whether `conn`'s database holds a table. One that holds none is a
+/// projection its maker has connected to and not made yet.
+pub(crate) fn made(conn: &Connection) -> Result<bool> {
+    one(conn, "SELECT 1 FROM sqlite_master LIMIT 1", []).map(|t: Option<i64>| t.is_some())
+}
+
 /// The statement that marks a projection with this build's layout, as
 /// it is made or cleared.
 pub(crate) fn mark() -> String {

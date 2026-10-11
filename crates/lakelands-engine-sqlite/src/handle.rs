@@ -125,22 +125,20 @@ impl SqliteLake {
             return Err(Error::unavailable(Situation::NoLake { lake, schema }));
         };
         let path = dir.join("projection.db");
+        let no_projection = || {
+            let lake = lake.to_string();
+            Error::unavailable(Situation::NoProjection { lake })
+        };
         // A handle opened read-only creates and changes nothing in the
         // directory: it needs the projection a writer made.
         let writer = match mode {
-            OpenMode::Read => {
-                if !path.is_file() {
-                    let lake = lake.to_string();
-                    return Err(Error::unavailable(Situation::NoProjection { lake }));
-                }
-                None
-            }
+            OpenMode::Read if !path.is_file() => return Err(no_projection()),
+            OpenMode::Read => None,
             OpenMode::Write | OpenMode::Create => {
-                let made = path.is_file();
                 let conn = connect(&path, &tuning, true)?;
                 // A projection is read only by the layout it was made
-                // with; a new one is made with this build's.
-                if made {
+                // with; one that holds no table yet is made with this build's.
+                if projection::made(&conn)? {
                     engines::layout(&lake, projection::layout(&conn)?, projection::LAYOUT)?;
                 }
                 let (schema, mark) = (projection::SCHEMA, projection::mark());
@@ -157,6 +155,11 @@ impl SqliteLake {
             OpenMode::Rebuild => Some(connect(&path, &tuning, true)?),
         };
         let reader = connect(&path, &tuning, false)?;
+        // Between a maker's connect and its tables a reader finds no
+        // table: no projection yet, as the moment before.
+        if mode == OpenMode::Read && !projection::made(&reader)? {
+            return Err(no_projection());
+        }
         if mode != OpenMode::Rebuild {
             engines::layout(&lake, projection::layout(&reader)?, projection::LAYOUT)?;
         }
