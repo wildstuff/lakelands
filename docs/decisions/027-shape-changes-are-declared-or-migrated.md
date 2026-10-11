@@ -96,7 +96,10 @@ the records, so it is made where shape changes are made.
   the new value at the event's position, with its version, its flags and
   each field's provenance as they were. What reads a renamed value, a
   derived field, a field computed by a function, an embedding, is computed
-  again as of the event, and what it owes a backing is owed to it. A field's
+  again as of the event, and what it owes a backing is owed to it: the
+  call that carries a renamed value, and no call that is as it was, so a
+  recorded failure stays its field's answer until `recompute` names it
+  (022, extended; lakelands#857). A field's
   `initial` that names an old value is declared again by the lake with the
   new one, after the event, as one set: a type's own field cannot name a
   value before the value type in force accepts it. Such a declaration of a

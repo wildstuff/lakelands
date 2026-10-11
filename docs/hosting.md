@@ -578,7 +578,10 @@ A host that already has a store of its own moves in four steps.
   value refuses it; re-key the type through its migration first. A field
   computed by a function with a backing keeps what its backing answered:
   widen the value type, change the function so that it answers the new
-  value, and rename then. Renaming one value of 50 000 of 100 000 records holds the writer
+  value, and rename then. A rename calls a backing or the embedding
+  backend once for each call that carries a renamed value, and for no
+  other: a recorded failure is not called again by it, and `recompute`
+  is the door for that (lakelands#857). Renaming one value of 50 000 of 100 000 records holds the writer
   2.1 s on SQLite and 8.2 s on PostgreSQL, at a peak of 3 MB and 6 MB
   (`tests/value_renamed.rs` in both engines, by hand); widening, writing
   the 50 000 records again and tightening took 17.1 s and 49.1 s, at

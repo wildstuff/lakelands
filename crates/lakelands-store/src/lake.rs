@@ -1227,11 +1227,13 @@ impl Lake {
             }
         }
         for (i, ty) in owing {
+            let event = &pending[i].event;
+            let renames = matches!(event.body, EventBody::ValueTypeMigrated { .. });
             let sweep = Of::Sweep {
                 after: None,
-                retried: BTreeSet::new(),
+                retried: (!renames).then(BTreeSet::new),
             };
-            w.owed.push(Owed::new(&pending[i].event, ty, sweep));
+            w.owed.push(Owed::new(event, ty, sweep));
         }
         let kept = put.contains(&true);
         let steps = pending.into_iter().zip(put);

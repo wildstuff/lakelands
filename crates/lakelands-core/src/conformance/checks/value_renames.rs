@@ -15,7 +15,7 @@
 use lakelands_api::error::Case;
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::ontology::{StorageKind, ValueTypeDecl};
-use lakelands_api::seam::FeedFilter;
+use lakelands_api::seam::{FeedFilter, Seams};
 use lakelands_api::write::{
     Declaration, Migration, Outcome, ProposedWrite, ValueTypeMigration, ValueTypeReport,
 };
@@ -24,8 +24,8 @@ use serde_json::{Value, json};
 
 use crate::conformance::fixture::{
     Lake, Must, all_found, computed_by, derived, events_after, field, field_access, find_at,
-    followed, get_at, head_unmoved, migration, object_set_on, reason, refused_like, restrict,
-    reviewer, trigger_on, try_upsert, type_decl,
+    followed, get_at, head_unmoved, migration, object_set_on, outputs_from, reason, refused_like,
+    restrict, reviewer, trigger_on, try_upsert, type_decl,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -993,4 +993,182 @@ async fn a_backed_answer_that_holds_an_old_value_is_a_misfit_of_the_rename(store
          says {report:?}, the apply {applied:?}"
     );
     head_unmoved(store.as_ref(), before, "a rename over a backed answer").await
+}
+
+check!(
+    RENAMES_NO_RETRY = a_value_rename_calls_what_reads_the_new_value_and_no_recorded_failure_again,
+    "022 and 027, extended (lakelands#857): a value type's rename calls once where a call reads a renamed value, and calls no recorded failure again: not of a type that uses the value type, whether its call reads that field or another and whether or not its record was renamed, for a function as for an embedding, not of another record of the type whose call moved, and not of a type that uses another value type or none; each kept failure still reads with its `error`, and the rename is the cause of the one output; `recompute` retries as before; and a rename folded with no backing bound leaves, in the lake opened again, the failures failures and the one moved call waiting, made when its record is next written",
+    reopens
+);
+
+/// The types of [`RENAMES_NO_RETRY`]: the value type each uses, what its
+/// call reads, and its record's value of that type. Each has a backing
+/// token of its own, so its calls are counted alone; the last embeds.
+const RETRIED: [(&str, &str, &str, &str); 7] = [
+    ("read_kept", "status", "state", "done"),
+    ("read_moved", "status", "state", "open"),
+    ("beside_moved", "status", "code", "open"),
+    ("beside_kept", "status", "code", "done"),
+    ("other", "colour", "code", "red"),
+    ("plain", "", "code", ""),
+    ("embeds", "status", "title", "done"),
+];
+
+async fn a_value_rename_calls_what_reads_the_new_value_and_no_recorded_failure_again(
+    store: Store,
+    reopen: crate::conformance::Reopen,
+) -> Held {
+    use super::embeddings::{reopen_failed, with_embedder};
+    use crate::conformance::backing::{
+        EMBED_MODEL, KIND, embedded, embedder, made, plug, plug_text, unplug, unplug_text,
+    };
+    let bound = || with_embedder(Some(embedder()));
+    let again = |e| reopen_failed("with the suite's backings", e);
+    let mut store = reopen(store, bound()).await.map_err(again)?;
+    let l = Lake::of(store.as_ref());
+    let colour = |one_of: &[&str]| vt(json!({"name": "colour", "kind": "text", "one_of": one_of}));
+    for decl in [status(&["open", "done"]), colour(&["red", "blue"])] {
+        l.declare_as(Declaration::ValueType(decl), "declaring a value type")
+            .await?;
+    }
+    let (text, token) = ("renames-857 fails once", |ty: &str| {
+        format!("renames_857_{ty}")
+    });
+    for (ty, uses, reads, value) in RETRIED {
+        let mut state = field("state", StorageKind::Text);
+        state.ty.value_type = (!uses.is_empty()).then(|| uses.into());
+        let mut fields = vec![state];
+        fields.extend(["code", "title", "note"].map(|f| field(f, StorageKind::Text)));
+        if ty == "embeds" {
+            let vec = crate::conformance::fixture::embedding("out", 2, &[reads], EMBED_MODEL);
+            fields.push(vec);
+        } else {
+            l.declare_json(json!({
+                "declare": "function", "name": format!("f_{ty}"), "backing": KIND,
+                "inputs": [{"name": reads, "type": {"kind": "text"}}],
+                "config": {"token": token(ty), "echo": reads}
+            }))
+            .await?;
+            let f = format!("f_{ty}");
+            fields.push(computed_by("out", StorageKind::Text, &f, &[reads]));
+        }
+        l.declare(type_decl(ty, fields)).await?;
+        let state = (!value.is_empty()).then_some(value);
+        let record = json!({"state": state, "code": "XX", "title": text});
+        // Every call fails once but that of `read_moved`'s `r1`, which
+        // will move; its `r2` fails and will not: the sweep the rename
+        // leaves owed of the type passes it.
+        let (key, record) = match ty {
+            "read_moved" => {
+                l.upsert(ty, "r1", record).await?;
+                ("r2", json!({"state": "done"}))
+            }
+            _ => ("r1", record),
+        };
+        unplug(&token(ty));
+        unplug_text(text);
+        l.upsert(ty, key, record).await?;
+        plug(&token(ty));
+    }
+    plug_text(text);
+    // The calls each type's backing received, and the records that read a
+    // failure, no value and an `error` in the field's metadata, each with
+    // the position its provenance names: each type's `r1`, then
+    // `read_moved`'s `r2`.
+    let calls =
+        || RETRIED.map(|(ty, ..)| made(&token(ty)) + embedded(text) * usize::from(ty == "embeds"));
+    let failed = async |store: &dyn LakeStore| {
+        let mut out = Vec::new();
+        let records = RETRIED.iter().map(|(ty, ..)| (*ty, "r1"));
+        for (ty, key) in records.chain([("read_moved", "r2")]) {
+            let r = Lake::of(store).read(ty, key).await?;
+            let error = r.meta.get("out").filter(|m| m.error.is_some());
+            out.push(
+                error
+                    .filter(|_| !r.fields.contains_key("out"))
+                    .map(|m| m.position),
+            );
+        }
+        Ok::<_, Failure>(out)
+    };
+    let more = |before: [usize; 7]| -> Vec<usize> {
+        let now = calls();
+        now.iter().zip(before).map(|(now, b)| now - b).collect()
+    };
+    let only = |i: usize| (0..7).map(|at| usize::from(at == i)).collect::<Vec<_>>();
+    let first = failed(store.as_ref()).await?;
+    ensure!(
+        calls() == [1, 2, 1, 1, 1, 1, 1] && (0..8).all(|at| first[at].is_some() == (at != 1)),
+        "every call was made once and all but that of `read_moved`'s `r1` failed; the calls \
+         are {:?} and the records that read a failure {first:?}",
+        calls()
+    );
+
+    let before = calls();
+    let m = renamed(&["active", "done"], &[("open", "active")]);
+    let (_, events) = apply(store.as_ref(), &l, m).await?;
+    let (called, kept) = (more(before), failed(store.as_ref()).await?);
+    let at = events.first().map(|e| e.position);
+    let recorded = outputs_from(store.as_ref(), Position::GENESIS).await?;
+    let caused = recorded.iter().filter(|e| e.cause == at).count();
+    ensure!(
+        called == only(1) && kept == first && caused == 1,
+        "a rename of `status` calls once for `read_moved`, whose `r1` reads the renamed \
+         value, and for no recorded failure, which still reads with its `error` and the \
+         provenance of its own output; and it is the cause of that one output, since it \
+         settles no other field. It called {called:?} (in the order of the table), the \
+         failures read {kept:?}, not {first:?}, and {caused} outputs name it as their cause"
+    );
+    let before = calls();
+    let m = ValueTypeMigration {
+        to: colour(&["crimson", "blue"]),
+        renames: vec![("red".to_owned(), "crimson".to_owned())],
+    };
+    apply(store.as_ref(), &l, m).await?;
+    let (called, kept) = (more(before), failed(store.as_ref()).await?);
+    ensure!(
+        called == [0; 7] && kept == first,
+        "a rename of `colour` calls nothing, since no call reads it; it called {called:?} \
+         and the failures read {kept:?}"
+    );
+    let before = calls();
+    let what = lakelands_api::write::Recompute::Type("plain".into());
+    l.cat.recompute(&l.own, what).await.must("the door")?;
+    let (called, kept) = (more(before), failed(store.as_ref()).await?);
+    let mut healed = first;
+    healed[5] = None;
+    ensure!(
+        called == only(5) && kept == healed,
+        "`recompute` of `plain` retries its recorded failure, once, and no other; it called \
+         {called:?} and the failures read {kept:?}"
+    );
+
+    // A rename folded with no backing bound: its calls are not made, and
+    // the lake opened again hands none out.
+    let unbound = |e| reopen_failed("with no backing", e);
+    store = reopen(store, Seams::default()).await.map_err(unbound)?;
+    let l = Lake::of(store.as_ref());
+    let before = calls();
+    let m = renamed(&["live", "done"], &[("active", "live")]);
+    apply(store.as_ref(), &l, m).await?;
+    store = reopen(store, bound()).await.map_err(again)?;
+    let (called, kept) = (more(before), failed(store.as_ref()).await?);
+    ensure!(
+        called == [0; 7] && kept == healed,
+        "a rename folded with no backing bound, and the lake opened again, call nothing, and \
+         the failures are failures still, not fields that wait; they called {called:?} and \
+         the failures read {kept:?}"
+    );
+    let l = Lake::of(store.as_ref());
+    let records = RETRIED.iter().map(|(ty, ..)| (*ty, "r1"));
+    for (ty, key) in records.chain([("read_moved", "r2")]) {
+        l.upsert(ty, key, json!({"note": "written again"})).await?;
+    }
+    let (called, kept) = (more(before), failed(store.as_ref()).await?);
+    ensure!(
+        called == only(1) && kept == healed,
+        "the next write of each record makes the one call the rename moved, and calls no \
+         recorded failure again; they called {called:?} and the failures read {kept:?}"
+    );
+    Ok(())
 }
