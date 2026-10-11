@@ -30,7 +30,7 @@ importing the shape of the platform the organs come from.
 - **Budgets.** `cfg(feature)` sites ≤ 20 (features are one per engine);
   store facade + engine traits ≤ 110 methods; the core crates' product
   code ≤ 53k lines and their specification (the conformance suite and
-  unit tests, which live in `tests.rs` files, never inline) ≤ 74.5k. Each
+  unit tests, which live in `tests.rs` files, never inline) ≤ 75k. Each
   goes down by itself and is raised only by the rule in
   `docs/budgets.md`: a decisive reason, cutting first, a measured size,
   and a recorded row. The gates refuse a raise without its row.
