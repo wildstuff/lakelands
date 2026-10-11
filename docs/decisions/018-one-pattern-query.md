@@ -104,7 +104,7 @@ refuse them for that.
 ### An `order_by` orders rows and nothing else
 
 An `order_by` on a graph, a path or an aggregate is refused. A graph
-comes by depth, type and key (029), a path by its hops and an
+comes by depth, type and key (025), a path by its hops and an
 aggregate's groups by their key, so an order names nothing they honour.
 It is refused as invalid where `as` is, before a step is judged. A
 measure refuses it in its own words.

@@ -507,6 +507,8 @@ fn one_of(values: impl Iterator<Item = String>) -> Value {
     }
 }
 
+/// The sort keys of records that each have an event and a provenance:
+/// a stored type's.
 fn order_by_schema(fields: Value) -> Value {
     json!({"type": "array", "items": {
         "type": "object",
@@ -514,6 +516,17 @@ fn order_by_schema(fields: Value) -> Value {
         "properties": {"field": fields,
                        "by": {"enum": ["value", "known_at", "seen_at", "latest"]},
                        "dir": {"enum": ["asc", "desc"]}},
+        "additionalProperties": false}})
+}
+
+/// The sort keys of what has no event or provenance of its own to order
+/// by, a view's records, a query's rows, a proposal: each by its value,
+/// so no `by` is offered that its door refuses.
+fn value_order_schema(fields: Value, what: &str) -> Value {
+    json!({"type": "array", "items": {"type": "object",
+        "description": format!("One sort key of {what}, by its value."),
+        "properties": {"field": fields, "dir": {"enum": ["asc", "desc"]}},
+        "required": ["field"],
         "additionalProperties": false}})
 }
 
@@ -610,7 +623,15 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
                 json!({"type": "string",
                        "description": "A condition in the expression grammar, e.g. status = 'open' and amount > 100."}),
             ),
-            ("order_by", order_by_schema(one_of(filterable()))),
+            (
+                "order_by",
+                match ty.lineage.view_of {
+                    Some(_) => {
+                        value_order_schema(one_of(filterable()), "the view's records: a field")
+                    }
+                    None => order_by_schema(one_of(filterable())),
+                },
+            ),
             ("limit", json!({"type": "integer", "minimum": 1})),
             ("cursor", json!({"type": "string"})),
             (
@@ -1031,11 +1052,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             ),
             (
                 "order_by",
-                json!({"type": "array", "items": {"type": "object",
-                    "description": "One sort key of the rows: a path they hold, by its value.",
-                    "properties": {"field": {"type": "string"}, "dir": {"enum": ["asc", "desc"]}},
-                    "required": ["field"],
-                    "additionalProperties": false}}),
+                value_order_schema(json!({"type": "string"}), "the rows: a path they hold"),
             ),
             ("limit", json!({"type": "integer", "minimum": 1})),
             ("cursor", json!({"type": "string"})),
@@ -1161,9 +1178,10 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             ),
             (
                 "order_by",
-                order_by_schema(one_of(
-                    ["proposed_at", "position"].iter().map(|f| f.to_string()),
-                )),
+                value_order_schema(
+                    one_of(["proposed_at", "position"].iter().map(|f| f.to_string())),
+                    "the proposals: a member",
+                ),
             ),
             ("limit", json!({"type": "integer", "minimum": 1})),
             ("cursor", json!({"type": "string"})),

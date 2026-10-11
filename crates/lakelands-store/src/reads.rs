@@ -2877,7 +2877,7 @@ impl<'a> Reader<'a> {
             measures::check(p)?;
         } else if !matches!(p.project, Projection::Rows { .. }) && !p.order_by.is_empty() {
             // A graph and a path come by depth, type and key, an
-            // aggregate's groups by their key (029): an order they would
+            // aggregate's groups by their key (025): an order they would
             // pass over is refused, as `as` is.
             return Err(invalid(Case::PatternOrderNotRows));
         }
