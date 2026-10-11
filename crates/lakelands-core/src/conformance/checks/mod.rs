@@ -507,6 +507,7 @@ pub const ALL: &[Check] = &[
     export::IMPORT_REFUSED,
     export::ONE_FORMAT,
     export::ANOTHER_RELEASES,
+    export::PROJECTION_AHEAD,
     export::IMPORT_UNKNOWN_MEMBER,
     export::IMPORTED_VIEW_CYCLE,
     export::IMPORT_CONTEXT_CAUSE,

@@ -294,11 +294,14 @@ pub type Continue = Arc<
 
 /// The lines a [`Continue`] appends, made from the log's tip and the
 /// fence of the lease they are appended under; none, to append nothing.
+/// With them, how many positions past the tip they leave the projection
+/// is then committed through, as no fold leaves it: 0 leaves the
+/// projection where it is.
 pub type Lines = Box<
     dyn FnOnce(
             (lakelands_api::Position, lakelands_api::event::Digest),
             u64,
-        ) -> Vec<lakelands_api::engine::CanonicalEvent>
+        ) -> (Vec<lakelands_api::engine::CanonicalEvent>, u64)
         + Send,
 >;
 
@@ -348,7 +351,8 @@ pub fn below(
 }
 
 /// Appends `lines` to a lake's log through its engine's seam, under a
-/// lease taken for it and given back, and reads the lake [`below`]: for a
+/// lease taken for it and given back, commits the projection ahead of
+/// the log where they ask it, and reads the lake [`below`]: for a
 /// harness's [`Continue`].
 pub fn continue_below(
     opener: &dyn lakelands_api::engine::EngineOpener,
@@ -358,7 +362,17 @@ pub fn continue_below(
     let engine = opener.open(location, lakelands_api::engine::OpenMode::Write)?;
     let lease = engine.take_lease("another release")?;
     let appended = match engine.tip()? {
-        Some(tip) => engine.append(&lease, &lines(tip, lease.fence)),
+        Some(tip) => {
+            let (lines, ahead) = lines(tip, lease.fence);
+            engine.append(&lease, &lines).and_then(|()| {
+                let Some((tip, _)) = engine.tip()?.filter(|_| ahead > 0) else {
+                    return Ok(());
+                };
+                let projection = engine.projection();
+                projection.begin()?;
+                projection.commit(lakelands_api::Position(tip.0 + ahead))
+            })
+        }
         None => Ok(()),
     };
     engine.release_lease(&lease)?;

@@ -785,12 +785,20 @@ impl VectorIndex for PgLake {
 }
 
 /// Write a lake's log as the segment files `docs/log-format.md` §4.2
-/// describes, `<dir>/log/<first>.jsonl`, through a handle that only reads.
+/// describes, `<dir>/log/<first>.jsonl`, over a connection of its own
+/// that only reads. A raw copy of the log's lines, for a lake whose
+/// store cannot be opened: no event is judged, not its format either,
+/// and what is written is judged by whoever verifies or imports it.
+/// The schema must hold a lake of the location's name; nothing of its
+/// projection is read, so one of another layout, or none, is no bar.
 pub fn export(location: &lakelands_api::Location, dir: &std::path::Path) -> Result<()> {
-    let lake = PgLake::open(
-        location.lake.clone(),
-        crate::target(location)?,
-        OpenMode::Read,
-    )?;
-    log::export(&mut lock(&lake.reader), &lake.names, dir)
+    let target = crate::target(location)?;
+    let names = Names::new(target.quoted_schema()?);
+    let mut db = connect::connect(&target)?;
+    if !matches!(shape(&mut db, &target.schema)?, Shape::Lake) {
+        let (lake, schema) = (location.lake.to_string(), Some(target.schema.clone()));
+        return Err(Error::unavailable(Situation::NoLake { lake, schema }));
+    }
+    check_name(&mut db, &names, &target.schema, &location.lake)?;
+    log::export(&mut db, &names, dir)
 }

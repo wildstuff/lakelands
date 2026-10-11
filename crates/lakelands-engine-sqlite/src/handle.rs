@@ -109,15 +109,21 @@ impl SqliteLake {
         mode: OpenMode,
     ) -> Result<SqliteLake> {
         let create = mode == OpenMode::Create;
-        if !dir.join("log").is_dir() {
-            if !create {
-                let (lake, schema) = (lake.to_string(), None);
-                return Err(Error::unavailable(Situation::NoLake { lake, schema }));
-            }
+        // A log that is there is judged before anything is made beside
+        // it, and a directory with no segment file holds no lake: only an
+        // open to create makes anything in it.
+        let log = if crate::log::kept(&dir)? {
+            let log = Log::open(&dir, false)?;
+            check_name(&dir, &lake, create)?;
+            log
+        } else if create {
             std::fs::create_dir_all(&dir).map_err(|e| io_error(Doing::Create, Part::File, e))?;
-        }
-        check_name(&dir, &lake, create)?;
-        let log = Log::open(&dir, create)?;
+            check_name(&dir, &lake, create)?;
+            Log::open(&dir, true)?
+        } else {
+            let (lake, schema) = (lake.to_string(), None);
+            return Err(Error::unavailable(Situation::NoLake { lake, schema }));
+        };
         let path = dir.join("projection.db");
         // A handle opened read-only creates and changes nothing in the
         // directory: it needs the projection a writer made.

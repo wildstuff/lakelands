@@ -54,23 +54,42 @@
 //! handle, this one too, and may not outlast a crash; its append answers
 //! the error and says so.
 //!
+//! **A segment without its index is damage.** The order above tells a
+//! crash from a loss. A crash leaves an index shorter than its segment,
+//! or a lake's first segment with no bytes and no index yet. No crash
+//! leaves a segment with lines and no index file, or a later segment
+//! with none: every handle refuses such a log, naming the segment,
+//! before anything is read or cut, where it was once read as empty and
+//! the next writer cut it
+//! (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`).
+//! One case nothing in the files tells apart: an index file that is
+//! there and was shortened by hand reads as a crash's tail.
+//!
+//! **The segments follow each other.** The first begins at position 0,
+//! each later one at the position after the last of the one before it,
+//! and its first event names that one's hash: a seal leaves them so. A
+//! log that is otherwise lost a sealed segment or holds another log's,
+//! and every handle refuses it as it reads the segments.
+//!
 //! Every handle reads the files, so a reader opened beside the writer
 //! sees each append once it is committed.
 //!
 //! **What a handle holds.** Not the index: per segment, its first position
 //! and how many events it has committed (positions within a segment follow
 //! each other), where its committed bytes end, how far its index is read,
-//! its last event's hash, and where its last read ended. The end of an
-//! index file says the first four: the event line before the last commit
-//! line names the last committed position, where its bytes lie and its
-//! hash. So an open reads the last `BLOCK` bytes of each segment's index,
-//! and a block further back only while it has met no commit line, which a
-//! group a crash left uncommitted alone makes it do: what a lake holds
-//! does not lengthen its open, and a handle's memory does not grow with
-//! the lake. Afterwards a handle reads on from where its index is read,
-//! in the last segment alone: one it has read to its end while a later
-//! one existed is sealed, and its index is not opened again to look for
-//! new lines.
+//! its last event's hash, the hash its first event names as the one
+//! before it, and where its last read ended. The end of an index file
+//! says the first four: the event line before the last commit line names
+//! the last committed position, where its bytes lie and its hash. So an
+//! open reads the last `BLOCK` bytes of each segment's index and the
+//! first line of each after the first, and a block further back only
+//! while it has met no commit line, which a group a crash left
+//! uncommitted alone makes it do: what a lake holds does not lengthen
+//! its open, and a handle's memory does not grow with the lake.
+//! Afterwards a handle reads on from where its index is read, in the
+//! last segment alone: one it has read to its end while a later one
+//! existed is sealed, and its index is not opened again to look for new
+//! lines.
 //!
 //! **A read** finds the line of the position it starts at by halving the
 //! committed index by byte: every event line names its position, so the
@@ -83,7 +102,7 @@
 //! between. An index line that is short, unreadable or not the position
 //! expected is a damaged index, never another event. It is found by the
 //! read that meets it, and so by a read of the whole log; an open, which
-//! reads the index's end alone, does not find it.
+//! reads an index's end and its first line alone, does not find it.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
@@ -138,6 +157,9 @@ struct Segment {
     end: u64,
     /// The last committed event's hash.
     last_hash: Option<String>,
+    /// The hash its first event line names as the one before it, for a
+    /// segment after the first.
+    prev: Option<String>,
     /// Bytes of the index file read through its last commit line.
     index_read: u64,
     /// Where the last read ended: the position that follows, and a byte of
@@ -276,6 +298,21 @@ fn read_end(path: &Path, mut file: &File, segment: &mut Segment) -> Result<()> {
     Ok(())
 }
 
+/// The hash the first event line of a segment's index names as the one
+/// before it: the last of the segment before, which [`Log::follows`]
+/// holds it to. An index with no whole first line names none.
+fn first_prev(path: &Path, mut file: &File, first: u64) -> Result<Option<String>> {
+    let reading = |e| io_error(Doing::Read, Part::Log, e);
+    file.seek(SeekFrom::Start(0)).map_err(reading)?;
+    let mut line = Vec::new();
+    let mut lines = std::io::BufReader::new(file);
+    lines.read_until(b'\n', &mut line).map_err(reading)?;
+    if line.last() != Some(&b'\n') {
+        return Ok(None);
+    }
+    Ok(parse_at(path, &line, first)?.map(|e| e.prev))
+}
+
 /// An event line before that of position `start` in a segment's committed
 /// index, or the segment's first, as the position it names and the byte
 /// it begins at, the line before the one wanted no more than `NEAR` bytes
@@ -353,11 +390,28 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Whether `dir` holds a segment file. A directory that holds a
+/// projection and none is refused: the projection is made after the
+/// first segment, so no crash leaves the two so, and what is there is a
+/// lake that lost its log. The projection is looked for first and the
+/// segments second, the reverse of the order a making writes them in:
+/// beside a lake being made, whoever finds the projection finds its
+/// segment. Asked before anything is read or made in the directory.
+pub(crate) fn kept(dir: &Path) -> Result<bool> {
+    let projection = dir.join("projection.db").is_file();
+    let log = dir.join("log");
+    let segments = log.is_dir() && names(&log)?.iter().any(|n| n.ends_with(".jsonl"));
+    if projection && !segments {
+        return Err(damaged_at(Part::Log, None, Flaw::NoSegmentFile));
+    }
+    Ok(segments)
+}
+
 /// The first and the last committed event of the log in `dir`, read
 /// from its files alone: no file is made or changed, and a directory
 /// with no log answers none.
 pub(crate) fn ends(dir: &Path) -> Result<Option<(CanonicalEvent, CanonicalEvent)>> {
-    if !dir.join("log").is_dir() {
+    if !kept(dir)? {
         return Ok(None);
     }
     let mut log = Log::open(dir, false)?;
@@ -395,21 +449,21 @@ fn lines_of(events: &[CanonicalEvent], mut offset: u64) -> (Vec<u8>, Vec<u8>) {
 }
 
 impl Log {
-    /// The log in `dir`. `create` makes the first, empty segment.
-    pub(crate) fn open(dir: &Path, create: bool) -> Result<Log> {
+    /// The log in `dir`. `make` makes its two directories and the first,
+    /// empty segment: it is asked only where `dir` holds no segment file
+    /// ([`kept`]), so nothing is made beside a log that is there.
+    pub(crate) fn open(dir: &Path, make: bool) -> Result<Log> {
         let mut log = Log {
             dir: dir.to_owned(),
             segments: Vec::new(),
             sealed: 0,
         };
-        if create {
+        if make {
             for sub in ["log", "index"] {
                 let d = dir.join(sub);
                 fs::create_dir_all(&d).map_err(|e| io_error(Doing::Create, Part::Log, e))?;
             }
-            if log.files()?.is_empty() {
-                log.start_segment(0)?;
-            }
+            log.start_segment(0)?;
         }
         log.refresh()?;
         Ok(log)
@@ -459,9 +513,35 @@ impl Log {
             let path = index_path(&self.dir, segment.first);
             let mut file = match File::open(&path) {
                 Ok(f) => f,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Only a lake's first segment, still empty, has none
+                    // (module doc): any other lost its index. A making
+                    // writes the index before the segment's first line,
+                    // so the segment's length is read first and the index
+                    // looked for again after it: beside a lake being
+                    // made, whoever finds lines finds their index.
+                    let lines = segment_path(&self.dir, segment.first);
+                    let held = fs::metadata(&lines)
+                        .map_err(|e| io_error(Doing::Read, Part::Log, e))?
+                        .len();
+                    if segment.first == 0 && held == 0 {
+                        continue;
+                    }
+                    match File::open(&path) {
+                        Ok(f) => f,
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            let name = lines.file_name().unwrap_or_default();
+                            let name = name.to_string_lossy().into_owned();
+                            return Err(damaged(&path, Flaw::IndexMissing { name }));
+                        }
+                        Err(e) => return Err(io_error(Doing::Read, Part::Log, e)),
+                    }
+                }
                 Err(e) => return Err(io_error(Doing::Read, Part::Log, e)),
             };
+            if segment.first > 0 && segment.prev.is_none() {
+                segment.prev = first_prev(&path, &file, segment.first)?;
+            }
             if segment.index_read == 0 {
                 read_end(&path, &file, segment)?;
             }
@@ -505,7 +585,36 @@ impl Log {
                 }
             }
         }
+        self.follows()?;
         self.sealed = self.segments.len().saturating_sub(1);
+        Ok(())
+    }
+
+    /// Refuses a log whose segments do not follow each other: the first
+    /// begins at position 0, each later one at the position after the
+    /// last of the one before it, and its first event names that one's
+    /// hash. A seal leaves them so, so a log that is otherwise lost a
+    /// sealed segment or holds another log's. Asked of the segments a
+    /// refresh read, from what a handle holds of each.
+    fn follows(&self) -> Result<()> {
+        let gap = |expected: u64, found: u64| {
+            let (expected, found) = (Position(expected), Some(Position(found)));
+            damaged_at(Part::Log, None, Flaw::Position { expected, found })
+        };
+        match self.segments.first() {
+            Some(s) if s.first != 0 => return Err(gap(0, s.first)),
+            _ => {}
+        }
+        for pair in self.segments[self.sealed..].windows(2) {
+            let (before, next) = (&pair[0], &pair[1]);
+            if before.first + before.count != next.first {
+                return Err(gap(before.first + before.count, next.first));
+            }
+            if next.prev.is_some() && next.prev != before.last_hash {
+                let at = Some(Position(next.first));
+                return Err(damaged_at(Part::Log, at, Flaw::PrevHash));
+            }
+        }
         Ok(())
     }
 

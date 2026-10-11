@@ -25,7 +25,10 @@
 //! that holds anything refuses the import, naming its head. Neither opens
 //! the engine, so an import onto a lake in use takes no lease and changes
 //! nothing of it: an import is a lake's birth, not a merge. Where there is
-//! no lake the engine is opened `Create` and the lease taken.
+//! no lake the engine is opened `Create` and the lease taken; a
+//! projection found there with no log under it is another lake's, or
+//! what is left of one, and refuses the import as damaged before an
+//! event is carried.
 //!
 //! **Then the files, as they are.** The first file's events go to
 //! `LakeEngine::import` [`BATCH`] at a time. Each later file starts with
@@ -196,10 +199,14 @@ pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported>
     }
     let engine: Arc<dyn lakelands_api::engine::LakeEngine> =
         Arc::from(opener.open(location, OpenMode::Create)?);
+    // A projection with no log under it is not a place with no lake. It
+    // is asked before the lease is taken, as an open asks it: taking the
+    // lease may cut the log.
+    crate::lake::ends(engine.as_ref())?;
     let lease = engine.take_lease(&format!("lakelands import {}", std::process::id()))?;
     let written = (|| {
         // A lake another writer made since the ends were asked for.
-        if let Some((head, _)) = engine.tip()? {
+        if let (_, Some((head, _))) = crate::lake::ends(engine.as_ref())? {
             let lake = Box::new(location.lake.clone());
             return Err(precondition(Case::ImportNotEmpty { lake, head }));
         }

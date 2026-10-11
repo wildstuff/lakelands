@@ -41,6 +41,18 @@ release, and no older lake is read.**
     format as `import_not_empty`, naming the tip. The engine is opened
     for neither, so an import takes no lease on a lake that is there
     and changes nothing of it.
+  - A place holds no lake when it holds no committed event and nothing
+    that was made from one. Part of a lake without its events is not
+    "no log": an engine refuses it as `damaged` where it can tell (a
+    SQLite segment without its index, a projection with no segment
+    file,
+    `docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`),
+    and the store refuses, on every engine, a projection folded past
+    the log's tip, at a reader's open, a writer's and an import. A
+    writer is asked before it takes the lease, since an engine may cut
+    its log as it hands the lease out, so a lake that is refused is
+    left as it was found. A rebuild is not asked: it makes the
+    projection from the log as it stands (lakelands#865).
   - Every other read of the log (the feed, `verify`, a rebuild, an
     import, the verification of an export) opens its events through one
     check, which refuses an event in another format at its position as

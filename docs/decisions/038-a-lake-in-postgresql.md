@@ -37,7 +37,10 @@ configured. With `disable` the connection is plaintext.
     by one line feed: the digest of the file the format describes
     (`docs/log-format.md` §4.2).
   - `lakelands_engine_pg::export` writes a lake's segments as those files,
-    and they verify with nothing but the format.
+    and they verify with nothing but the format. It is a raw copy of the
+    log's lines, for a lake whose store cannot be opened, and judges
+    none of them: what it writes is judged by whoever verifies or
+    imports it (lakelands#865).
   - An append is one transaction: it commits every event or none. It
     checks the fence against the lease row in the same transaction.
 - **The lease is a row and a lock.**

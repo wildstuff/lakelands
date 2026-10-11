@@ -96,7 +96,9 @@ impl EngineOpener for SqliteOpener {
     }
 
     /// Reads the log's files in the location's directory and nothing
-    /// else of it; a directory that is not there is not made.
+    /// else of it; a directory that is not there is not made. A segment
+    /// without its index file, or a projection with no segment file, is
+    /// damage and not a directory with no lake.
     fn log_ends(&self, location: &Location) -> Result<Option<(CanonicalEvent, CanonicalEvent)>> {
         log::ends(kept_in(location)?.0)
     }

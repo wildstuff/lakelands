@@ -78,6 +78,12 @@ check!(
 );
 
 check!(
+    PROJECTION_AHEAD = a_projection_folded_past_its_log_opens_only_for_a_rebuild,
+    "054 and lakelands#865: a projection folded past its log's tip stands for events the log does not hold. Committed two positions ahead through the engine's seam, the lake is refused as `damaged`, the part the log and the flaw `ends_before` naming the position the projection is folded through, at an open to read, to write and to create, and is left as it was: its tip, that position and its free lease, so the writers appended nothing. An open to rebuild makes the projection from the log as it stands, and the lake answers the record it held",
+    given
+);
+
+check!(
     ONE_FORMAT = a_lake_is_written_in_one_format_and_another_is_refused_whole,
     "054 and log-format §6: a lake that declares, writes, migrates, re-keys, proposes, ingests and seals a segment holds only events in the release's one format version, from position 0, with `lake_created.format` the same, and its export says so and verifies; an export with one event in another format, older or newer, at position 0 or at its head, its hash made right, is refused by verify naming that position and both formats, and an import of it is refused in the same words; so is one whose head carries no `v`, which is format 0, and one whose `lake_created` says another format than its line, by a flaw of its own",
     given
@@ -1138,17 +1144,18 @@ async fn a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_whe
             value.as_object_mut().map(|m| m.remove("hash"));
             let hash = Digest(canonical::sha256_hex(&value));
             value["hash"] = json!(hash);
-            vec![CanonicalEvent {
+            let line = CanonicalEvent {
                 position,
                 id: event.id,
                 prev,
                 hash,
                 fence,
                 bytes: canonical::to_vec(&value),
-            }]
+            };
+            (vec![line], 0)
         })
     };
-    let nothing = || -> Lines { Box::new(|_, _| Vec::new()) };
+    let nothing = || -> Lines { Box::new(|_, _| (Vec::new(), 0)) };
     let mut held = Some(store);
     let mut first_other = None;
     for other in [reads - 1, reads + 1] {
@@ -1271,6 +1278,72 @@ async fn an_export_holding_an_integer_no_reader_reads_exactly_is_damaged_at_its_
             if held { "be" } else { "not be" }
         );
     }
+    Ok(())
+}
+
+async fn a_projection_folded_past_its_log_opens_only_for_a_rebuild(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    use crate::conformance::Lines;
+    use lakelands_api::engine::OpenMode;
+    use lakelands_api::error::Part;
+    use lakelands_api::seam::Seams;
+    let l = Lake::of(store.as_ref());
+    l.declare(type_of("note", &[("body", Text)])).await?;
+    l.upsert("note", "n1", json!({"body": "x"})).await?;
+    let lake = store.lake().clone();
+    let mut held = Some(store);
+    for (n, mode) in [OpenMode::Read, OpenMode::Write, OpenMode::Create]
+        .into_iter()
+        .enumerate()
+    {
+        let ahead = if n == 0 { 2 } else { 0 };
+        let lines: Lines = Box::new(move |_, _| (Vec::new(), ahead));
+        let c = (given.continued)(held.take(), lake.clone(), lines, mode, Seams::default());
+        let c = c
+            .await
+            .map_err(|e| Failure::new(format!("committing the projection ahead: {e}")))?;
+        let (tip, folded) = (c.before.tip.as_ref().map(|t| t.0), c.before.folded_through);
+        ensure!(
+            tip.is_some() && folded == tip.map(|t| Position(t.0 + 2)),
+            "the projection is committed two positions past the log's tip, {tip:?}; it is \
+             folded through {folded:?}"
+        );
+        let e = c.opened.err();
+        ensure!(
+            matches!(e.as_ref().and_then(Error::situation),
+                Some(Situation::Damaged { part: Part::Log, position: None, flaw: Flaw::EndsBefore { position } })
+                    if Some(*position) == folded),
+            "a lake whose projection is folded through {folded:?}, past its log's tip \
+             {tip:?}, is refused at an open for {mode:?} as `damaged`, the log ending before \
+             that position; it answered {e:?}"
+        );
+        ensure!(
+            c.before.lease_free && c.after.as_ref() == Some(&c.before),
+            "an open for {mode:?} refused for a projection ahead of its log leaves the \
+             log's tip, the position the projection is folded through and the free lease as \
+             they were, {:?}; they are {:?}",
+            c.before,
+            c.after
+        );
+    }
+    let nothing: Lines = Box::new(|_, _| (Vec::new(), 0));
+    let c = (given.continued)(None, lake, nothing, OpenMode::Rebuild, Seams::default());
+    let c = c
+        .await
+        .map_err(|e| Failure::new(format!("reading the lake below the store: {e}")))?;
+    let rebuilt = c.opened.map_err(|e| {
+        Failure::new(format!(
+            "an open to rebuild makes the projection from the log; it answered {e}"
+        ))
+    })?;
+    let l = Lake::of(rebuilt.as_ref());
+    let body = l.read("note", "n1").await?.fields.get("body").cloned();
+    ensure!(
+        body == Some(json!("x")),
+        "after the rebuild the lake answers the record its log holds; `n1` holds {body:?}"
+    );
     Ok(())
 }
 
