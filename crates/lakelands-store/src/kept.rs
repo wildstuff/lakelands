@@ -512,7 +512,7 @@ impl Work {
             first
                 .keeping
                 .measures(&folds[0], &g.by, &first.measures, given, Some(settings))?;
-        Ok(crate::reads::landed(&kept.decl, g.by.clone(), values))
+        crate::reads::landed(&kept.decl, g.by.clone(), values).map_err(|(_, why)| why)
     }
 
     /// The record a group has after the event at `at`, and the counters

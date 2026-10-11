@@ -1050,6 +1050,8 @@ catalog! {
         SumNotNumber { #[serde(with = "closed")] value: Box<Operand> } => "sum() met {value}, which is not a number",
 
         // ---- views
+        /// A measure's value for a group that its field would not take written.
+        MeasureUnfit { group: RecordKey, #[serde(with = "closed")] why: Box<Case>, decimal: bool } => "its value for the group `{group}` does not fit its field: {why}[{?decimal}; a field of kind `decimal` takes it]",
         /// A sum or an average of a kind that is no number.
         KeptAddsKind { call: String, kind: Kind } => "`{call}` adds {kind}; it is kept where its argument is certainly a number",
         /// A sum or an average of what is of no certain kind.

@@ -64,7 +64,8 @@ would have to reproduce one.
   valid time; it computes otherwise. So a refusal, its sentence and its
   order are always the computation's own.
 - **What is not exact is counted, never returned.** A measure that
-  fails over a group (a division by zero), a member whose argument does
+  fails over a group (a division by zero, a value its field would not
+  take written, 023), a member whose argument does
   not fold, a sum outside what exact arithmetic holds, an extreme over
   a number and an instant: the group is flagged and counted, its other
   folds go on, and it is exact again when the cause leaves. Noting a
@@ -273,3 +274,6 @@ that already walks the type.
 - "No value" was said to ask for nothing: a setting's `value` is
   required, so none can be written without one. What asks for nothing
   is a setting never written or retired (lakelands#889).
+- A group whose measure does not land in its field is flagged as one
+  whose measure fails; before, the fold kept what the read answered
+  (lakelands#839).

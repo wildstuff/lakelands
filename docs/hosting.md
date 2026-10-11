@@ -936,6 +936,19 @@ A host that already has a store of its own moves in four steps.
     instant under text or reference group fields. The setting's write is
     refused otherwise and says which measure. `describe_type` says for a
     view whether it is kept, and why not.
+- **A view's measure lands in its field's kind, or the view is not
+  read.** A measure whose value its field would not take written, a sum
+  past ±(2^53 − 1) into `number` or an instant out of the years 0000 to
+  9999, refuses every read of its view, a read of another group too,
+  naming the view, the measure and the group. So the day a sum outgrows
+  `number`, its view answers nothing until the measure is declared
+  `decimal`, which answers its digits: declare a sum that can grow so
+  as `decimal` from the start. A kept view with such a group says
+  `not_whole` and is computed, and so refused. The refused range ends
+  at 10^21: from there a number is written with an exponent and read
+  as a double by everyone, so a value of that size lands as its nearest
+  double, in a view's measure, a derived field and a verb's set alike,
+  and is no longer exact to the unit.
 - **A kept view is made to be read at the head.** The records of a
   view kept as its sources are written (the setting `view_kept.<view>`)
   are put again at every write to their group, and SQLite and

@@ -108,7 +108,9 @@ fn resolve<'a>(
     }
 }
 
-fn check_kind(value: &Value, ty: &FieldType) -> Result<Value, Case> {
+/// A value in its canonical form if a field of `ty`'s storage kind takes
+/// it written: [`check`] without the value type.
+pub fn check_kind(value: &Value, ty: &FieldType) -> Result<Value, Case> {
     let wrong = |shape| Case::ValueShape {
         kind: ty.kind,
         shape,

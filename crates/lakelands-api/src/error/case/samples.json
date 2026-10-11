@@ -750,6 +750,16 @@
    }
   },
   {
+   "code": "measure_unfit",
+   "decimal": true,
+   "group": "k",
+   "why": {
+    "code": "unknown_field",
+    "field": "f",
+    "type": "t"
+   }
+  },
+  {
    "call": "s",
    "code": "kept_adds_kind",
    "kind": "boolean"

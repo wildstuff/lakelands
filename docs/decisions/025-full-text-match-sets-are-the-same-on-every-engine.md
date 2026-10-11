@@ -680,6 +680,11 @@ by an engine. An aggregate an engine computed would be a second
 implementation of the same answer, free to round or order differently;
 with one, every engine answers identically by construction.
 
+A view's measure lands in the field the view declares for it, and fails
+where that field would not take its value written (023). `find`'s
+aggregate and a pattern's rows land in no field: they answer a number
+as its digits, in a string, whatever its size.
+
 A count alone is the exception
 (`docs/decisions/045-a-table-reads-a-page-and-its-total.md`): `find`'s
 `total`, and an aggregate without groups whose measures are all
@@ -825,3 +830,5 @@ Of an index asked for:
   rows ordered by `seen_at` or `known_at` came in the order of the
   value, and an `order_by` with a pattern's aggregate was passed over
   (lakelands#901).
+- Added: where a measure lands, a view's in its field and an
+  aggregate's in none (lakelands#839).
