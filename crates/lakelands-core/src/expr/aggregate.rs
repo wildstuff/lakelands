@@ -264,9 +264,10 @@ impl Folds {
         out
     }
 
-    fn add(&mut self, row: &Row, settings: Option<&BTreeMap<String, Value>>, now: Timestamp) {
+    fn add(&mut self, (row, meta): Member<'_>, settings: Settings<'_>, now: Timestamp) {
         let scope = RecordScope {
             fields: row,
+            meta,
             settings,
             now,
         };
@@ -310,13 +311,14 @@ impl Grouping {
     /// Fold in one record, into its group: a key is a field's value, or
     /// an expression's. A value the expression cannot compute for the
     /// record is null, the missing group.
-    pub fn add(&mut self, row: &Row, settings: Option<&BTreeMap<String, Value>>) {
+    pub fn add(&mut self, (row, meta): Member<'_>, settings: Settings<'_>) {
         let value = |(name, expr): &(FieldName, Option<Expr>)| {
             let v = match expr {
                 None => row.get(name).cloned().unwrap_or(Value::Null),
                 Some(e) => {
                     let scope = RecordScope {
                         fields: row,
+                        meta,
                         settings,
                         now: self.now,
                     };
@@ -328,7 +330,7 @@ impl Grouping {
         let key: Row = self.keys.iter().map(value).collect();
         let group = (self.groups.entry(crate::canonical::of(&key)))
             .or_insert_with(|| (key, self.folds.clone()));
-        group.1.add(row, settings, self.now);
+        group.1.add((row, meta), settings, self.now);
     }
 
     /// The groups, in canonical key order.
@@ -355,6 +357,16 @@ pub fn to_value(v: &Val) -> Value {
 
 /// One record's fields.
 pub type Row = BTreeMap<FieldName, Value>;
+
+/// What an aggregate folds in: a record's fields and, where a record
+/// stands, its provenance; a row of a pattern or of a view has none.
+pub type Member<'a> = (
+    &'a Row,
+    Option<&'a BTreeMap<FieldName, lakelands_api::FieldMeta>>,
+);
+
+/// The lake's settings by key, which an argument may read.
+pub type Settings<'a> = Option<&'a BTreeMap<String, Value>>;
 
 /// An aggregate's answer, or the case of why it has none, said where it
 /// is.
@@ -477,7 +489,8 @@ pub fn aggregate(
     now: Timestamp,
 ) -> Answer<Vec<Group>> {
     let mut grouping = grouping(agg, now)?;
-    rows.iter().for_each(|r| grouping.add(r, Some(settings)));
+    rows.iter()
+        .for_each(|r| grouping.add((r, None), Some(settings)));
     answer(grouping, agg)
 }
 

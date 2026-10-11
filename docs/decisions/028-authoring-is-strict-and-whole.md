@@ -168,6 +168,28 @@ Two rules hold by it:
 A failure that depends on a record's value stays that record's. A
 declaration in force is not checked again until it is declared again.
 
+### Provenance is read only where a record stands
+
+`seen_at(f)` and `known_at(f)` read the provenance of a record's field
+(`docs/decisions/010-provenance-per-field.md`). Three places evaluate
+an expression where no record stands: a value type's `constraint`, over
+a value alone; a function's `expr`, over the inputs it is handed; and a
+view's `where` and measures over a source that is itself a view, whose
+records are computed and carry none. There the two functions would read
+nothing and say nothing of it, so a declaration that calls them there
+is refused as `invalid` (`no_records_provenance`), at its member, by
+`declare`, `apply` and `propose` alike. A view over a stored type reads
+its source records' provenance and is not refused; a stored type cannot
+become a view (`migration_to_view`), so what a view's source is is
+settled where the view is declared.
+
+A read asks the same of its own `where`: a `find`, a pattern's start or
+step and a search's filter over a view's records are refused alike when
+they call one of the two, where a read over a stored type is answered.
+A read that answers nothing and says nothing of why is the defect on
+the other side. A refusal is lifted, with its row, when one of these is
+given a provenance to read.
+
 ### What a view computes lands as a derived field does
 
 A view's measure `max(due_on)` declared into a `number` field would be
@@ -304,3 +326,7 @@ rather than one error at a time.
   set that declared a relation and a verb or a trigger on its link
   type was refused as not declared on a lake that did not hold the
   relation yet (lakelands#844).
+- `seen_at` and `known_at` are refused where no record stands: declared
+  in a value type's constraint, a function's expression or a view over
+  a view, and read in a `where` over a view's records, each of which
+  read nothing before and said nothing of it (lakelands#852).

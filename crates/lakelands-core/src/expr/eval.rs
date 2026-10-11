@@ -137,12 +137,14 @@ pub trait Scope {
     }
 }
 
-/// The plainest scope: one record's fields, the lake's settings as of the
-/// position read, and a clock.
+/// The plainest scope: one record's fields and their provenance, the
+/// lake's settings as of the position read, and a clock.
 #[derive(Clone, Copy, Debug)]
 pub struct RecordScope<'a> {
     /// The record's fields.
     pub fields: &'a BTreeMap<FieldName, Value>,
+    /// Per-field provenance; none where no record stands.
+    pub meta: Option<&'a BTreeMap<FieldName, FieldMeta>>,
     /// The lake's settings by key, as of the position read.
     pub settings: Option<&'a BTreeMap<String, Value>>,
     /// The clock.
@@ -152,6 +154,10 @@ pub struct RecordScope<'a> {
 impl Scope for RecordScope<'_> {
     fn value(&self, path: &[FieldName]) -> Option<Value> {
         lookup(self.fields, path)
+    }
+
+    fn meta(&self, field: &FieldName) -> Option<FieldMeta> {
+        self.meta.and_then(|m| m.get(field)).cloned()
     }
 
     fn setting(&self, key: &str) -> Option<Value> {

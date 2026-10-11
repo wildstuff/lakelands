@@ -525,6 +525,7 @@ fn scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors(
                     &expr,
                     &crate::expr::RecordScope {
                         fields: &r.fields,
+                        meta: None,
                         settings: None,
                         now: Timestamp(0),
                     },

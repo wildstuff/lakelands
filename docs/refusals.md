@@ -366,6 +366,7 @@ What a refusal is about.
 | `kind_sides` | `expr` (String), `left` (Kind), `right` (Kind) | `{expr}` has no meaning: its sides are {left} and {right} | Arithmetic over kinds that do not combine. |
 | `kind_takes_number` | `expr` (String), `kind` (Kind) | `{expr}` has no meaning: it takes a number, not {kind} | A number's function over what is no number. |
 | `minus_no_meaning` | `left` (Operand), `right` (Operand) | {left} minus {right} has no meaning | A difference of what are not two instants. |
+| `no_records_provenance` | — | known_at() and seen_at() read a record's provenance, and no record stands here: a view's records, a value type's constraint and a function's expression carry none | A provenance function where no record stands. |
 | `not_a_number` | `value` (Operand) | {value} is not a number | A number that is not a number. |
 | `not_aggregate` | `name` (String) | {name}() is not an aggregate | A function's call that is no aggregate where one is folded. |
 | `not_exact` | `number` (String) | `{number}` is not a number this evaluator can hold exactly | A number written that the evaluator cannot hold exactly. |

@@ -199,7 +199,8 @@ fn merged_sources(
             }
         }
         if let Some(w) = &m.r#where {
-            let e = condition(w, Eval::View, &[&on[..], &[Place::Where]].concat())?;
+            let on = [&on[..], &[Place::Where]].concat();
+            let e = record_stands(source.view.is_none(), condition(w, Eval::View, &on)?, &on)?;
             lakelands_core::expr::params_read(&e, read);
         }
         for x in &m.measures {
@@ -207,6 +208,7 @@ fn merged_sources(
             let name = x.name.clone();
             let on = [&on[..], &[Place::Measure { name }]].concat();
             let e = condition(&x.expr, Eval::Group, &on)?;
+            let e = record_stands(source.view.is_none(), e, &on)?;
             // A merged measure measures its source's group; one with no
             // aggregate would read nothing of it.
             if !lakelands_core::expr::calls(&e, &Func::is_aggregate) {
@@ -322,6 +324,17 @@ pub fn condition(c: &Condition, place: Eval, on: &[Place]) -> Result<Expr> {
         return Err(invalid(at(on, Case::InSetHere)));
     }
     Ok(e)
+}
+
+/// `e`, checked at `on`, refused where it reads a record's provenance and
+/// none `stands`: over a value, a function's inputs or a view's records,
+/// declared or read (028, extended).
+pub(crate) fn record_stands(stands: bool, e: Expr, on: &[Place]) -> Result<Expr> {
+    let reads = |f| matches!(f, Func::KnownAt | Func::SeenAt);
+    match stands || !lakelands_core::expr::calls(&e, &reads) {
+        true => Ok(e),
+        false => Err(invalid(at(on, Case::NoRecordsProvenance))),
+    }
 }
 
 /// Whether the filter of `s` names the set `target`, itself or through
@@ -691,8 +704,10 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
         let source = declared(o, &v.source, &owner)?;
         unbound_source(&owner, source)?;
         let mut read = BTreeSet::new();
+        let stored = source.view.is_none();
         if let Some(w) = &v.r#where {
-            let e = condition(w, Eval::View, &[of_type(&t.name), Place::Where])?;
+            let on = [of_type(&t.name), Place::Where];
+            let e = record_stands(stored, condition(w, Eval::View, &on)?, &on)?;
             lakelands_core::expr::params_read(&e, &mut read);
         }
         for g in &v.group_by {
@@ -702,7 +717,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             name(Naming::Measure, m.name.as_str())?;
             let name = m.name.clone();
             let on = [of_type(&t.name), Place::Measure { name }];
-            let e = condition(&m.expr, Eval::Group, &on)?;
+            let e = record_stands(stored, condition(&m.expr, Eval::Group, &on)?, &on)?;
             lakelands_core::expr::params_read(&e, &mut read);
         }
         merged_sources(o, &owner, v, source, &mut read)?;
@@ -1065,7 +1080,8 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 return Err(invalid(at(&on, Case::OneOfNotText)));
             }
             if let Some(c) = &v.constraint {
-                condition(c, Eval::Record, &[on[0].clone(), Place::Constraint])?;
+                let on = [on[0].clone(), Place::Constraint];
+                record_stands(false, condition(c, Eval::Record, &on)?, &on)?;
             }
             if let Some(current) = o.value_types.get(v.name.as_str()) {
                 let value_type = v.name.clone();
@@ -1245,7 +1261,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             }
             match (f.backing.as_str(), &f.expr) {
                 ("expr", Some(e)) => {
-                    let e = condition(e, Eval::Record, &on)?;
+                    let e = record_stands(false, condition(e, Eval::Record, &on)?, &on)?;
                     // The expression reads only the inputs it declares, so
                     // the inputs a field is checked against are all it reads.
                     for field in derive::reads(&e) {

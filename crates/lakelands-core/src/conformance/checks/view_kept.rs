@@ -52,7 +52,7 @@ check!(
 
 check!(
     KEPT_VALUES = a_kept_measure_answers_as_its_twin_whatever_values_it_folds,
-    "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: an extreme whose holder leaves, equal values at two keys and an equal value written over the holder, which reads as written; a maximum whose holder `1.5` leaves for `1`, whose sort key begins its own; a group's values under a number and a decimal group field, written and fed, where `1.0` and `1.00` are two groups of a decimal and one of a number; the holder of an outer view's extreme leaving a group whose other member is in it on the whole face alone; a sum whose large member leaves, and sums of `5` and `0.00` in both key orders; a setting written over a group whose measure divides by zero, after which the next write is accepted and the view is refused as its twin is until the member changes; and `max(known_at(n))`, null in both",
+    "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: an extreme whose holder leaves, equal values at two keys and an equal value written over the holder, which reads as written; a maximum whose holder `1.5` leaves for `1`, whose sort key begins its own; a group's values under a number and a decimal group field, written and fed, where `1.0` and `1.00` are two groups of a decimal and one of a number; the holder of an outer view's extreme leaving a group whose other member is in it on the whole face alone; a sum whose large member leaves, and sums of `5` and `0.00` in both key orders; a setting written over a group whose measure divides by zero, after which the next write is accepted and the view is refused as its twin is until the member changes; and `max(known_at(n))`, the instant of its newest member, kept as computed",
     given
 );
 
@@ -211,9 +211,10 @@ const VALUES: &str = r#"
     put part f1 {"z": "4"}
     says rate kept
     is rate f 1,4,0.25; h 6,4,1.50
-    row an argument is read without its provenance
+    row an argument is read with its record's provenance
     set view_kept.seen true
-    is seen f -; h -
+    read seen
+    says seen kept
     row a number group field holds one value whatever its writer wrote, written and fed; a decimal's scales are two groups
     put gauge b {"g": "m", "n": "1", "m": 1}
     set view_kept.heat true

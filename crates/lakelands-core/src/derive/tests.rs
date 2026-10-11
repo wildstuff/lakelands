@@ -30,7 +30,29 @@ fn apply(
     f: &mut BTreeMap<FieldName, Value>,
     w: &Write<'_>,
 ) -> Result<BTreeSet<FieldName>, Said> {
-    Ok(super::apply(t, &order(t)?, value_types, f, w))
+    Ok(super::apply(
+        t,
+        &order(t)?,
+        value_types,
+        f,
+        &mut BTreeMap::new(),
+        w,
+    ))
+}
+
+/// The provenance a changed field takes in these tests.
+fn stamp(_: &FieldName) -> lakelands_api::FieldMeta {
+    lakelands_api::FieldMeta {
+        upstream: None,
+        origin: lakelands_api::Origin::Derived,
+        known_at: Timestamp(0),
+        seen_at: None,
+        position: lakelands_api::Position(1),
+        writer: "service:fold".into(),
+        source: None,
+        procedure_version: None,
+        error: None,
+    }
 }
 
 /// A first write of `written`, with no settings, at time zero.
@@ -38,6 +60,7 @@ fn write(written: &BTreeSet<FieldName>) -> Write<'_> {
     Write {
         before: None,
         written,
+        stamp: &stamp,
         settings: None,
         now: Timestamp(0),
     }

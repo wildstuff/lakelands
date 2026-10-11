@@ -434,17 +434,16 @@ fn compute(
             order,
             &plan.value_types,
             fields,
+            meta,
             &derive::Write {
                 before: before.as_ref(),
                 written: &written,
+                stamp: &|name| derived_meta(event, &plan, name),
                 settings: Some(settings),
                 now: event.known_at,
             },
         );
-        for name in touched {
-            meta.insert(name.clone(), derived_meta(event, &plan, &name));
-            changed.insert(name);
-        }
+        changed.extend(touched);
         let snapshot = fields.clone();
         let settled = backed::settle_fields(
             ontology,
