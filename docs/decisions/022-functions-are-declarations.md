@@ -201,9 +201,10 @@ carries the reason as `error`, with the event's provenance. A read with
 `with_meta` shows that metadata though the field holds no value. A
 failure is an output like any other. The same call is not made again;
 the field is computed again when an input changes, or when the function
-is declared with a different configuration. `recompute` is the one
-deliberate exception (see "`recompute` computes again, and retries a
-recorded failure" below).
+is declared with a different configuration. A value type's rename
+changes the input of a call that reads a renamed value, and of no other
+call. `recompute` is the one deliberate exception (see "`recompute`
+computes again, and retries a recorded failure" below).
 
 **Why.** A field whose inputs moved on no longer holds the value those
 inputs compute. Clearing it until the output arrives is the only state
@@ -226,6 +227,17 @@ retry" above. A settle forced by a `declared` event calls again for an
 input whose recorded output is a failure, and a recorded value is still
 never asked for twice: the forced settle reads it back, as any settle
 does.
+
+A `value_type_migrated` event forces a settle too, of every type that
+uses the value type, since what reads a renamed value is computed again
+(027, extended). That settle retries nothing (lakelands#857). It makes
+the call a renamed value moved, once, or fills the field from the output
+the lake holds for that call; a recorded failure whose call is as it was
+is read back as a recorded value is, in the record the rename wrote and
+in the type's other records, and keeps the provenance of its own output.
+Before, the rename called again for every recorded failure of those
+types, whatever the call read: calls its author had not asked for, by an
+act that says nothing of them.
 
 Until lakelands#565 an operator forced that settle by declaring the
 function or the type again, unchanged. A declaration in force now appends

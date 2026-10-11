@@ -481,6 +481,7 @@ pub const ALL: &[Check] = &[
     value_renames::RENAMES_KEPT_VIEW,
     value_renames::RENAMES_EMBED,
     value_renames::RENAMES_BACKED_MISFIT,
+    value_renames::RENAMES_NO_RETRY,
     rekey::PREFLIGHT_COUNTS,
     rekey::COLLISION,
     rekey::MISSING,

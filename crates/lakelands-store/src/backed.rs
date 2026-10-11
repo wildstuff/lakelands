@@ -35,7 +35,8 @@
 //! field and puts the reason in its metadata's `error`. A cleared field
 //! without `error` and without metadata is one whose output is not
 //! recorded yet. A settle forced by a declaration calls again for an input
-//! whose recorded output is a failure; the later output holds.
+//! whose recorded output is a failure; the later output holds. One forced
+//! by a value type's rename does not: it makes the calls the rename moved.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -434,7 +435,8 @@ pub fn computed_order(
 /// `force` (what computes it was declared again), or when it holds
 /// neither a value nor an error (it was waiting). Settling fills it from a
 /// recorded output, or clears it and makes the call due. With `force`, a
-/// recorded failure does not fill it: the call is made due again.
+/// recorded failure does not fill it: the call is made due again, unless
+/// `event` is a value type's rename, which retries nothing.
 ///
 /// A backed field that reads, directly or through derived fields, one
 /// that is waiting for its output waits too: it is cleared and not
@@ -513,7 +515,10 @@ pub fn settle_fields(
         let seam = computer.seam();
         let input = digest(&call);
         let recorded = outputs.recorded(&seam, &input)?;
-        let retry = force && recorded.as_ref().is_some_and(is_failure);
+        // A value type's rename is forced so that a call it moved is
+        // seen, and calls no recorded failure again: that call is as it was.
+        let renames = matches!(event.body, EventBody::ValueTypeMigrated { .. });
+        let retry = force && !renames && recorded.as_ref().is_some_and(is_failure);
         if let (Some(output), false) = (recorded, retry) {
             let filled = put(
                 ontology, decl, field, computer, &output, event, fields, metas,
@@ -622,14 +627,15 @@ pub struct Owed {
 pub enum Of {
     /// The record at this key.
     Record(RecordKey),
-    /// Every record of the type, a page at a time in key order, settled as
-    /// a declaration settles it: a recorded failure is called again, once
-    /// in the sweep.
+    /// Every record of the type, a page at a time in key order. After a
+    /// declaration it is settled as the declaration settles it: a recorded
+    /// failure is called again, once in the sweep.
     Sweep {
         /// The last key whose calls are recorded; `None` before the first.
         after: Option<RecordKey>,
-        /// The calls whose failure it called again.
-        retried: BTreeSet<(String, Digest)>,
+        /// The calls whose failure it called again; `None` after a value
+        /// type's rename, whose sweep makes the waiting calls and no other.
+        retried: Option<BTreeSet<(String, Digest)>>,
     },
 }
 
@@ -717,7 +723,13 @@ pub fn page(lake: &Lake, o: &Owed) -> Result<(Vec<(RecordKey, Vec<(Due, Option<V
                 waiting: true,
                 plans: &w.plans,
             };
-            let sweep = matches!(o.of, Of::Sweep { .. });
+            let sweep = matches!(
+                o.of,
+                Of::Sweep {
+                    retried: Some(_),
+                    ..
+                }
+            );
             settle_fields(
                 &w.ontology,
                 &lake.id,
@@ -938,7 +950,7 @@ async fn make(lake: &Arc<Lake>, batch: Batch) -> Result<()> {
             continue;
         }
         let retried = match &mut took[*t].left.of {
-            Of::Sweep { retried, .. } => Some(retried),
+            Of::Sweep { retried, .. } => retried.as_mut(),
             Of::Record(_) => None,
         };
         let again = retried.as_ref().is_some_and(|r| !r.contains(&k));
