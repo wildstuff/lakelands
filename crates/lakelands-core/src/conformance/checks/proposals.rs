@@ -679,6 +679,16 @@ async fn a_proposal_on_a_type_its_reviewer_is_not_shown_is_not_there(store: Stor
         json!({"default": "read", "review": true, "schema": true,
                "types": {"trip": {"default": "none"}}}),
     );
+    let propose = async |write: Value| {
+        let proposed = l.cat.propose(&l.own, de(write), "the owner's".into()).await;
+        proposal(&proposed.must("the owner's proposal")?).map(|(_, id)| id)
+    };
+    // `claim` without its relation to `trip`: a relation dropped. Proposed
+    // before a verb stands on the relation's link type, which would refuse
+    // it (035, extended).
+    let mut unlinked = claim_with("owner");
+    unlinked.relations.clear();
+    let dropping = propose(json!({"write": "migrate", "migration": {"to": unlinked}})).await?;
     let on_trip = crate::links::link_type_name(&"claim".into(), &"on_trip".into());
     let set = json!([{"field": "label", "value": "'x'"}]);
     l.declare_json(
@@ -692,10 +702,6 @@ async fn a_proposal_on_a_type_its_reviewer_is_not_shown_is_not_there(store: Stor
         let called = l.cat.call(who, &verb, Some(&link), none, opts).await;
         proposal(&called.must("a `relabel` of `c1:t1`")?).map(|(_, id)| id)
     };
-    let propose = async |write: Value| {
-        let proposed = l.cat.propose(&l.own, de(write), "the owner's".into()).await;
-        proposal(&proposed.must("the owner's proposal")?).map(|(_, id)| id)
-    };
     let upsert = propose(json!({"write": "upsert", "type": "trip", "key": "t1",
                                 "patch": {"name": "paris"}}))
     .await?;
@@ -706,10 +712,6 @@ async fn a_proposal_on_a_type_its_reviewer_is_not_shown_is_not_there(store: Stor
     let text = StorageKind::Text;
     let wider = type_decl("trip", vec![field("name", text), field("extra", text)]);
     let migrate = propose(json!({"write": "migrate", "migration": {"to": wider}})).await?;
-    // `claim` without its relation to `trip`: a relation dropped.
-    let mut unlinked = claim_with("owner");
-    unlinked.relations.clear();
-    let dropping = propose(json!({"write": "migrate", "migration": {"to": unlinked}})).await?;
     // Bundles: `trip` redeclared, a verb on it, a new type related to it.
     let declare = async |d: Value| propose(json!({"write": "declare", "declarations": [d]})).await;
     let fields = |kind: &str| {

@@ -270,6 +270,23 @@ field, in the form it uses for a view:
   link type's, and the type's migration is what changes them, so the
   refusal names the link type as the one the field is read of.
 
+One refusal of this kind reads no field (lakelands#843). A migration
+that removes a relation carried by link records is refused while a verb
+in force is declared on the relation's link type, whatever the verb
+reads: it would be left the one door to a link type that takes no link
+(035, extended). The refusal has a case of its own, names the relation
+and the link type, and names the verb as below: to an author `describe`
+shows it to, one who may call it. A trigger, a view and an object set of
+the link type do not refuse the removal. A caller who is not shown the
+verb, one kept from the link type itself among them, is answered the
+same case without the verb: that a declaration is declared on the link
+type, at the preflight, the apply, a proposal and, as a reviewer, the
+accept. It is told on purpose (024): the refusal must say why the
+migration cannot go. The relation is one the caller is shown, and the
+link type's name follows from the relation's. Since only a verb refuses
+a removal, the caller learns that a verb stands there; it learns neither
+the verb's name, nor how many there are, nor what one sets or requires.
+
 The refusal names the reading declaration only to an author who is
 shown it, by the rule `describe` uses for that kind of declaration in
 force: a proposer without the `schema` grant is not shown a trigger, a
@@ -282,7 +299,8 @@ migration does not take it away (lakelands#475). The refusal stays
 `invalid` and can be acted on: the author keeps the field, or asks someone who is
 shown the reader (lakelands#495). At an acceptance the refusal goes to
 the one who accepts, who holds the `schema` grant and is shown every
-declaration.
+trigger, set and view; a verb is shown, there as anywhere, to one who
+may call it.
 
 A view is such a reader too, and it is shown only when its definition
 is: `describe` lists a view's type to a principal who may not read all

@@ -39,7 +39,10 @@
 //!   Type names starting `sys.` are reserved for system types and
 //!   refused.
 //! - Every type and value type a file refers to is declared in the
-//!   bundle. A `sys.` type may be referred to; the lake checks it.
+//!   bundle. A `sys.` type may be referred to; the lake checks it. One
+//!   the bundle can judge itself: a verb on the link type of one of its
+//!   own types (`sys.link.<type>.<relation>`) names a relation of that
+//!   type carried by link records.
 //! - The tool names a lake derives from type and verb names
 //!   ([`lakelands_api::tools`]) must come out distinct and short enough;
 //!   a bundle that would break that is refused here, before it reaches a
@@ -757,6 +760,29 @@ fn check_references(
     }
 }
 
+/// Refuse a verb on a link type of one of the bundle's own types that no
+/// relation of it carries: the lake refuses a verb there whatever it holds
+/// (035). A trigger, a set and a view may stand on one a removed relation
+/// left, and a link type whose owner the bundle does not declare is the
+/// lake's to say.
+fn check_link_type(
+    types: &[(&str, lakelands_api::ontology::TypeDecl)],
+    (file, on): (&str, &TypeName),
+    errors: &mut Vec<BundleError>,
+) {
+    let Some((owner, relation)) = crate::links::link_type_parts(on) else {
+        return;
+    };
+    let decls = || types.iter().map(|(_, t)| t);
+    if decls().any(|t| t.name == owner) && crate::links::relation_of(decls(), on).is_none() {
+        let message = format!(
+            "`on`: `{owner}` declares no relation `{relation}` carried by link records, and a \
+             verb is declared on a link type only where one does"
+        );
+        errors.push(BundleError::new(file, Problem::UnknownReference, message));
+    }
+}
+
 /// Lower every document and check the tool names, in output order.
 fn lower_all(
     docs: Docs<'_>,
@@ -806,6 +832,9 @@ fn lower_all(
         .collect();
     check_tool_names(&tool_owners, errors);
     check_references(&types, errors);
+    for (file, v) in &verbs {
+        check_link_type(&types, (file, &v.on), errors);
+    }
     let mut aging_rules: Vec<(&str, AgingRuleDoc)> = docs.aging_rules;
     aging_rules.sort_by(|a, b| a.1.name.cmp(&b.1.name));
     for (file, r) in &aging_rules {

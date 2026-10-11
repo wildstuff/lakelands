@@ -1370,6 +1370,12 @@
    "type": "t"
   },
   {
+   "code": "migration_takes_link_type",
+   "relation": "r",
+   "type": "t",
+   "unnamed": true
+  },
+  {
    "code": "migration_takes_read",
    "field": "f",
    "renamed": "f",

@@ -57,6 +57,11 @@ fields and nothing else: under the same authority, with both ends
 checked as `link` checks them, live and answered to its caller, and
 never an end. A `set` that names `from` or `to` is refused when the
 verb is declared, as `link` refuses an end among its fields.
+Each door keeps the order of its family: a verb's call on a link
+answers a stale expected version before it judges the ends, as any verb
+compares the version where it reads its record (024), and `link` judges
+the ends first, as any record write judges its references before the
+version (016).
 
 ## What it is not
 
@@ -164,9 +169,12 @@ shares (016, extended): the lake, the context, the door's own checks,
 the append.
 
 **`link`**: the type is declared and shown to the caller
-(`not_found`), and so is the relation (`invalid`), which alone give way
-to a retry: a call sent again under its key is answered as the first
-was, though the type or the relation is no longer there for its caller;
+(`not_found`), and so is the relation (`invalid`). The type declared and
+shown, and the relation shown where it is declared, alone give way to a
+retry: a call sent again under its key is answered as the first was,
+though the type is no longer there for its caller or the relation no
+longer shown to it. A relation a migration removed since does not give
+way: the call sent again is answered that the type has no such relation;
 it is not a view (`invalid`, 018, extended); it declares the relation,
 carried by link records (`invalid`); the relation's links are authored
 (`wrong_door`); `from` and `to` are not among the fields (`invalid`,
@@ -176,9 +184,9 @@ cardinality over the live links (`constraint`, naming `to`), after the
 record's grants so that a principal who may not write the link learns
 nothing of the links there are (024, extended).
 
-**`unlink`**: the type and the relation are declared and shown, or the
-call is a retry, it is not a view, it declares the relation carried by
-link records, as for `link`; then the retry and
+**`unlink`**: the type and the relation are declared and shown, a
+retry excepted as for `link`, it is not a view, it declares the relation
+carried by link records, as for `link`; then the retry and
 `retire`'s checks on the link record: its grants (`not_granted`), the
 link is live (`not_found`), the expected version (`conflict`). An
 unlink is not refused for the relation's authority (above).
@@ -224,7 +232,15 @@ A migration now names the rename, `relation_renames`, old name to new:
   relation's. An ingest into one is refused, naming it, and a verb
   declared on one is refused as on a type that is not declared
   (lakelands#759); a verb in force moves to the new link type with a
-  rename. Where a renamed
+  rename. No verb in force names a link type no relation carries: a
+  verb is the one door left there, so a relation's removal is refused
+  while a verb is declared on its link type, and its author declares the
+  verb again on another type first (027, extended; lakelands#843). A
+  trigger, a view and an object set of it stay, and may be declared
+  there anew, over the links it keeps. Neither `link`, `unlink` nor an
+  ingest reaches those links any more; a purge still takes its source's
+  links away: the trigger fires for each, and the set and the view
+  follow. Where a renamed
   relation takes a name whose link type stands, empty, in another shape,
   that link type is declared again in the shape of the links it takes;
   a declaration that reads a field of it which the renamed relation

@@ -527,6 +527,13 @@ says a hidden thing exists, and remains on purpose:
   extended, lakelands#829). An author, a proposer without `schema` and a
   reviewer at an accept learn a yes or a no for a pair of inverse and
   target, and neither the relation's name nor its owner;
+- a verb on a relation's link type, to a caller who is not shown the
+  verb, kept from the link type or not, where a migration it sends or
+  accepts removes the relation: the removal is refused, naming the
+  relation and the link type its name gives (027, extended,
+  lakelands#843). The caller learns that a verb stands there, and
+  neither its name, nor how many there are, nor what one sets or
+  requires;
 - `may.retire`, which says every field is writable.
 
 ## Extended: a relation carried by a field is walked by its reader only (lakelands#727)

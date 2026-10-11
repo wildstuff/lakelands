@@ -4,17 +4,17 @@
 //! (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 //! extended).
 
-use lakelands_api::Access;
 use lakelands_api::error::Case;
 use lakelands_api::ontology::StorageKind::{self, Json, Text};
 use lakelands_api::ontology::{RelationDecl, TypeDecl};
 use lakelands_api::principal::TypeGrants;
-use lakelands_api::write::{Declaration, Migration, ProposedWrite};
+use lakelands_api::write::{Declaration, Migration, Outcome, ProposedWrite};
+use lakelands_api::{Access, PrincipalKind};
 use serde_json::{Value, json};
 
 use crate::conformance::fixture::{
-    Lake, Must, derived, field, field_access, head_unmoved, migration, reads_all, refused_like,
-    said_like, type_decl,
+    Lake, Must, derived, field, field_access, field_writer, head_unmoved, migration, principal,
+    reads_all, refused_like, said_like, type_decl,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -150,6 +150,157 @@ async fn a_migration_keeps_the_fields_a_declaration_reads(store: Store) -> Held 
     refused_like("the same proposal by one shown its reader", refused, &shown)?;
     let refused = l.cat.migrate(&l.own, m).await;
     refused_like("the same migration by the owner", refused, &shown)?;
+    Ok(())
+}
+
+check!(
+    RELATION_KEPT_FOR_A_VERB = a_relation_stays_while_a_verb_is_declared_on_its_link_type,
+    "027 and 035, extended: a migration that removes a relation carried by link records is refused as invalid while a verb in force is declared on the relation's link type, by the preflight, by the apply and by the accept of a removal proposed before the verb, with the head unmoved, while one that keeps the relation is applied, naming a verb to an author `describe` shows it to, one who may call it, whichever of several that is, and telling another only that a declaration is declared there, with no name and no verb's place: one who writes nothing at a proposal, and one kept from the link type at the preflight, the apply, a proposal and, as its reviewer, the accept; the verb's call is still answered; once every such verb is declared again on another type the removal is applied, a `link` sent again under its key finds no relation, and a verb declared on the link type it leaves is refused as on a type that is not declared"
+);
+
+async fn a_relation_stays_while_a_verb_is_declared_on_its_link_type(store: Store) -> Held {
+    const LT: &str = "sys.link.doc.signed_by";
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("signer", vec![field("name", Text)]))
+        .await?;
+    let doc = |fields: &[&str], relations: &[&str]| {
+        let mut t = type_decl("doc", fields.iter().map(|n| field(n, Text)).collect());
+        let signed = |r: &&str| RelationDecl {
+            fields: vec![field("ok", Text), field("seen", Text)],
+            ..RelationDecl::to(*r, "signer")
+        };
+        t.relations = relations.iter().map(signed).collect();
+        t
+    };
+    l.declare(doc(&["n", "spare"], &["signed_by"])).await?;
+    let why = || "no signers".to_owned();
+    let removing = |fields: &[&str]| ProposedWrite::Migrate {
+        migration: Box::new(migration(doc(fields, &[]))),
+        report: Default::default(),
+    };
+    // Proposed while no verb stands on the link type, accepted after.
+    let early = cat.propose(own, removing(&["n", "spare"]), why()).await;
+    let Outcome::Proposed { proposal, .. } = early.must("proposing the removal early")? else {
+        return Err(Failure::new("a proposal answers `proposed`"));
+    };
+    let verb = |name: &str, on: &str, sets: &str| {
+        let set = json!([{"field": sets, "value": "'x'"}]);
+        json!({"declare": "verb", "name": name, "on": on, "risk": "low", "effect": "write",
+               "set": set})
+    };
+    // Two verbs on it: `approve`, first by name, sets a field `writer` may not.
+    l.declare_json(verb("audit", LT, "seen")).await?;
+    l.declare_json(verb("approve", LT, "ok")).await?;
+    l.upsert("signer", "s1", json!({"name": "s"})).await?;
+    l.upsert("doc", "d1", json!({"n": "1"})).await?;
+    let (ty, from, rel, to) = ("doc".into(), "d1".into(), "signed_by".into(), "s1".into());
+    let keyed = || lakelands_api::write::WriteOpts {
+        idempotency_key: Some("first".into()),
+        ..Default::default()
+    };
+    let linked = cat.link(own, &ty, &from, &rel, &to, Default::default(), keyed());
+    linked.await.must("linking d1 to s1")?;
+    let named = |verb: &str| {
+        json!({"code": "migration_takes_link_type", "unnamed": false, "relation": "signed_by",
+               "type": LT, "at": at("verb", verb)})
+    };
+    let first = named("approve");
+    // One kept from the link type is shown `doc` with `signed_by` and
+    // neither the link type nor a verb. It is told that a declaration
+    // stands on the link type its relation names, and not which: at every
+    // door, beside the owner, who is named the verb.
+    let grants = json!({"default": "write", "schema": true, "review": true,
+        "types": {LT: {"default": "none"}}});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let kept = principal(store.as_ref(), PrincipalKind::Agent, "kept", grants);
+    fn untold<T: std::fmt::Debug>(what: &str, a: lakelands_api::Result<T>) -> Held {
+        let unnamed = json!({"code": "migration_takes_link_type", "unnamed": true,
+            "relation": "signed_by", "type": LT});
+        let said = ["approve", "audit", "verb"];
+        let told = |e: &lakelands_api::Error| said.iter().any(|n| names(e, n));
+        let told = a.as_ref().is_err_and(told);
+        let wire = a.as_ref().err().map(|e| json!(e).to_string());
+        refused_like(what, a, &unnamed)?;
+        ensure!(
+            !told,
+            "{what}, must name no verb and place it at none; it said {wire:?}"
+        );
+        Ok(())
+    }
+    let before = store.head().await.must("reading the head")?;
+    let accepted = cat.accept(own, &proposal).await;
+    refused_like("the accept of the removal proposed early", accepted, &first)?;
+    let what = "the accept by a reviewer kept from the link type";
+    untold(what, cat.accept(&kept, &proposal).await)?;
+    head_unmoved(store.as_ref(), before, "a refused accept of the removal").await?;
+    // A migration that keeps the relation is not the verb's to refuse.
+    l.migrate(doc(&["n"], &["signed_by"])).await?;
+    let before = store.head().await.must("reading the head")?;
+    let (removal, proposed) = (migration(doc(&["n"], &[])), removing(&["n"]));
+    let preflight = cat.migrate(own, removal.clone()).await;
+    refused_like("the preflight of the removal", preflight, &first)?;
+    let applied = cat.migrate_apply(own, removal.clone(), "none").await;
+    refused_like("the apply of the removal", applied, &first)?;
+    let preflight = cat.migrate(&kept, removal.clone()).await;
+    untold("the preflight by one kept from the link type", preflight)?;
+    let applied = cat.migrate_apply(&kept, removal, "none").await;
+    untold("the apply by one kept from the link type", applied)?;
+    let refused = cat.propose(&kept, proposed.clone(), why()).await;
+    untold(
+        "the removal proposed by one kept from the link type",
+        refused,
+    )?;
+    // `describe` shows a verb to one who may call it: an author who writes
+    // `seen` is told the verb it is shown, one who writes nothing only that
+    // a declaration is declared there.
+    let writer = field_writer(store.as_ref(), "writer", LT, &["seen"]);
+    let refused = cat.propose(&writer, proposed.clone(), why()).await;
+    let what = "the removal proposed by one who may call `audit` alone";
+    refused_like(what, refused, &named("audit"))?;
+    let refused = cat
+        .propose(&reads_all(store.as_ref(), "reader"), proposed, why())
+        .await;
+    let told = |e: &lakelands_api::Error| ["approve", "audit"].iter().any(|n| names(e, n));
+    let told = refused.as_ref().is_err_and(told);
+    let what = "the removal proposed by one not shown the verb";
+    refused_as!(
+        what,
+        refused,
+        Case::MigrationTakesLinkType { unnamed: true, relation, ty }
+            if relation == "signed_by" && ty == LT
+    )?;
+    ensure!(!told, "{what}, must name neither verb");
+    head_unmoved(store.as_ref(), before, "a refused removal of a relation").await?;
+    let key = crate::links::link_key(&from, &to);
+    let approve = "approve".into();
+    let called = cat.call(
+        own,
+        &approve,
+        Some(&key),
+        Default::default(),
+        Default::default(),
+    );
+    called
+        .await
+        .must("calling `approve` on the link, its relation kept")?;
+    // Declared again on another type, the verbs name the link type no more.
+    l.declare_json(verb("audit", "doc", "n")).await?;
+    l.declare_json(verb("approve", "doc", "n")).await?;
+    l.migrate(doc(&["n"], &[])).await?;
+    // The link's own retry does not outlive its relation (035).
+    let again = cat.link(own, &ty, &from, &rel, &to, Default::default(), keyed());
+    let gone = json!({"code": "no_link_relation"});
+    refused_like("the `link` sent again under its key", again.await, &gone)?;
+    let late: Declaration = serde_json::from_value(verb("late", LT, "ok"))
+        .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
+    let late = cat.declare(own, late).await;
+    let undeclared = json!({"code": "undeclared", "type": LT});
+    refused_like(
+        "a verb on the link type the removal left",
+        late,
+        &undeclared,
+    )?;
     Ok(())
 }
 
