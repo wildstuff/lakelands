@@ -192,6 +192,7 @@ pub const ALL: &[Check] = &[
     authored_reads::HIDDEN_TYPE,
     masking::NONE_HIDES,
     masking::VALID_AT_PROBES,
+    masking::VALID_AT_MEETS,
     masking::WRITE_ONLY,
     masking::VIA_HIDDEN,
     authors_view::HIDDEN_FIELD_KEPT,

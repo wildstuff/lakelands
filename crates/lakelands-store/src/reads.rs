@@ -2871,6 +2871,15 @@ impl<'a> Reader<'a> {
             // after it in a chain is judged from one type.
             let one = binds || (chain && !measure && i < last);
             let reached = self.neighbour_target(&at, step, &all, one)?.or(reached);
+            // At a valid time a walk keeps each record it meets by its own
+            // type's valid time, so a step of a hop or more probes every type
+            // it can meet (024, lakelands#831): from the declarations, since a
+            // refusal that waited for a record would say that one was reached.
+            if self.valid_at.is_some() && step.depth.max > 0 {
+                for t in self.met(step, (!lenient).then_some(&here), &reach[i]) {
+                    self.visible_type(&t)?;
+                }
+            }
             let reached = reached.or_else(|| step.ty.clone()).unwrap_or(here);
             let decl = self.visible_type(&reached)?.clone();
             // A view with parameters is bound only by a read that names it
@@ -3291,6 +3300,24 @@ impl<'a> Reader<'a> {
             true => self.neighbours(step, Some(here), owner),
             false => reached,
         }
+    }
+
+    /// The types of the records a step of a hop or more can meet: the far
+    /// end of each relation its [`Reach`] walks, a hop at a time from `here`,
+    /// or with none, as a neighbourhood, a path and a component walk it,
+    /// wherever it is declared. A read at a valid time probes each.
+    fn met(&self, step: &Step, here: Option<&TypeName>, reach: &Reach) -> BTreeSet<TypeName> {
+        let far = |t: &TypeName| reach.far.as_ref().is_none_or(|f| f.contains(t));
+        let ends = |t: Option<&TypeName>| self.neighbours(step, t, reach.owner.as_ref());
+        let Some(here) = here else {
+            return ends(None).into_iter().filter(far).collect();
+        };
+        let (mut met, mut at) = (BTreeSet::new(), BTreeSet::from([here.clone()]));
+        for _ in 0..step.depth.max.min(self.lake.limits.max_depth) {
+            let next = at.iter().flat_map(|t| ends(Some(t))).filter(far);
+            at = next.filter(|t| met.insert(t.clone())).collect();
+        }
+        met
     }
 
     /// The type a step reaches, one of `reached`: the one it names as its

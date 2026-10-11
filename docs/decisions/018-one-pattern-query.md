@@ -168,9 +168,11 @@ type, as its `where`, its `type` and its own relation are read. So a
 chain's graph step that another step follows reaches one type or names
 its `type` as well: were the next step read from the first of the
 types, it would drop the others' records without a word. Its last step
-may reach several: nothing is read from them, and the graph holds the
-records of each. A range that reaches no type at all, its walk ending
-before its first hop that counts, is judged by its first hop.
+may reach several: no `where` and no later step reads them, and the
+graph holds the records of each. At a `valid_at` each of them is kept by
+its own valid time, so the step probes the valid-time fields of every
+type it can meet (024). A range that reaches no type at all, its walk
+ending before its first hop that counts, is judged by its first hop.
 
 ### A step's relation is probed before the step is judged
 
@@ -515,3 +517,7 @@ used.
   where a setting asks, which 049 added.
 - Corrected at the rewrite (lakelands#817): a view's parameter may be of
   kind `date` too, which the list of kinds left out.
+- A chain's last step that reaches several types probes the valid time
+  of each at a `valid_at`; until then "nothing is read from them" stood
+  for the valid time as well, and the walk filtered by fields nobody had
+  probed (lakelands#831).

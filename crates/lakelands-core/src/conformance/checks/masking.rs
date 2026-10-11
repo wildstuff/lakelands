@@ -549,6 +549,11 @@ check!(
 );
 
 check!(
+    VALID_AT_MEETS = a_walk_at_a_valid_time_probes_every_type_it_can_meet,
+    "024 and 006, extended (lakelands#831): a walk at `valid_at` keeps each record it meets by its own type's valid-time fields, so a pattern probes those of every type its steps can meet, judged from the declarations before a record is read, with no record of the type written as with one: where two types own a relation, a reader masked on the valid-time field of either, the one a step is judged to reach or the other, is refused not_granted naming it by a chain's graph, a graph from depth 0, a path, `degree`, `components` and rows two hops away; one masked on that of a type two hops away is refused by a range that reaches it, and by a graph from depth 0, a path and `components`, which are judged wherever the relation is declared, and answered by one hop and `degree` as a reader of every field is; a range that names its `type` is refused for a type it passes through and answered where the masked type is no way to it; one hop that names the other owner, as its `type` or by its inverse, is answered, and so is a step of no hop that names no `type`; a reader of both is answered by their dates, one who holds the field at `none` as on a type with no valid time (lakelands#726), by each of the reads in March as in July, and one not shown the types word for word as on a lake that does not declare them; without `valid_at` the masked readers are answered"
+);
+
+check!(
     VALID_AT_PROBES = a_read_at_a_valid_time_probes_the_types_valid_time_fields,
     "024 and 006: a read at `valid_at` filters on the type's `valid_from` and `valid_to`, so `find`, `get` and a pattern started on the type probe them as a filter would: refused not_granted naming the field where it is masked; where it is hidden the type is described with no valid time, and the reads are answered as on a type with none (lakelands#726); without `valid_at` the same reads are answered; what is shown does not turn on a read's valid time (lakelands#798): a reviewer with the field masked or hidden is listed a proposed upsert and a proposed call on the type at `valid_at` as without it, whole, and accepts the upsert"
 );
@@ -672,6 +677,203 @@ async fn a_read_at_a_valid_time_probes_the_types_valid_time_fields(store: Store)
             }
         }
     }
+    Ok(())
+}
+
+async fn a_walk_at_a_valid_time_probes_every_type_it_can_meet(store: Store) -> Held {
+    use crate::conformance::fixture::principal;
+    use lakelands_api::PrincipalKind;
+    use lakelands_api::query::{Depth, Step, Walk};
+    let l = Lake::of(store.as_ref());
+    let cat = l.cat.as_ref();
+    // `bill` and `quote` are each `of` a customer, its `bills` and `quotes`,
+    // and valid from a field of their own; a `note` is `of` a quote, two
+    // hops from the customer.
+    let owner = |name: &str, target: &str, from: &str| {
+        json!({"declare": "type", "name": name, "valid_from": from, "fields": [
+            {"name": from, "type": {"kind": "date_time"}},
+            {"name": "to", "type": {"kind": "reference", "target": target}}],
+            "relations": [{"name": "of", "target": target, "via": "to", "inverse": format!("{name}s")}]})
+    };
+    let day = |day: &str| format!("2026-{day}T00:00:00Z");
+    let at = |d: &str| ReadAt {
+        valid_at: Some(Timestamp::parse(&day(d)).expect("an instant")),
+        ..ReadAt::default()
+    };
+    let (march, july) = (at("03-01"), at("07-01"));
+    let deep = |min, max| Step {
+        depth: Depth { min, max },
+        ..step("of", Walk::In)
+    };
+    let from_c1 = |steps, project, at| {
+        let mut p = pattern("customer", Some("c1"), steps, project);
+        p.at = at;
+        p
+    };
+    let graph = |step, at| from_c1(vec![step], Projection::Graph, at);
+    let rows = || Projection::Rows { fields: vec![] };
+    let reads = |at| {
+        let mut path = graph(deep(0, 1), at);
+        path.to = Some(("bill".into(), "b1".into()));
+        let (one, both) = (vec![step("of", Walk::In)], vec![step("of", Walk::Both)]);
+        [
+            ("a chain's graph", graph(step("of", Walk::In), at)),
+            ("a graph from depth 0", graph(deep(0, 1), at)),
+            ("a path", path),
+            ("degree", from_c1(one, Projection::Degree, at)),
+            ("components", from_c1(both, Projection::Components, at)),
+            ("rows two hops away", from_c1(vec![deep(2, 2)], rows(), at)),
+            ("a graph one or two hops away", graph(deep(1, 2), at)),
+        ]
+    };
+    // What a read answered, whole: its data, or its refusal.
+    let said = |r: lakelands_api::Result<lakelands_api::Reply<QueryResult>>| match refused_on(&r) {
+        Some((f, Refusal::NotGranted)) => format!("not granted {f}"),
+        _ => r.map_or_else(|e| e.to_string(), |r| format!("{:?}", r.data)),
+    };
+    l.declare(type_decl("customer", vec![field("n", StorageKind::Text)]))
+        .await?;
+    l.declare_json(owner("bill", "customer", "since")).await?;
+    l.upsert("customer", "c1", json!({"n": "c"})).await?;
+    l.upsert("bill", "b1", json!({"since": day("01-15"), "to": "c1"}))
+        .await?;
+    // The answers of a lake that declares neither `quote` nor `note`.
+    let plain = reads_all(store.as_ref(), "plain");
+    let mut without = Vec::new();
+    for (_, p) in reads(march).into_iter().chain(reads(july)) {
+        without.push(said(cat.query(&plain, p).await));
+    }
+    l.declare_json(owner("quote", "customer", "start")).await?;
+    l.declare_json(owner("note", "quote", "at")).await?;
+    let to_note = |at| {
+        let ty = Some("note".into());
+        graph(Step { ty, ..deep(1, 2) }, at)
+    };
+    // Not shown `quote`, nor the `note` that hangs on it.
+    let grants = json!({"default": "read", "types": {"quote": {"default": "none"}, "note": {"default": "none"}}});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let blind = principal(store.as_ref(), PrincipalKind::Agent, "blind", grants);
+    let (mut wrong, mut pinned) = (Vec::new(), without.clone());
+    // Judged from the declarations: with no quote and no note written, and
+    // then with one of each.
+    for written in [false, true] {
+        let seen = wrong.len();
+        if written {
+            l.upsert("quote", "q1", json!({"start": day("06-15"), "to": "c1"}))
+                .await?;
+            l.upsert("note", "n1", json!({"at": day("01-01"), "to": "q1"}))
+                .await?;
+        }
+        // What a reader of every field is answered: the range to a note first.
+        let mut open = vec![said(cat.query(&plain, to_note(july)).await)];
+        for (_, p) in reads(july) {
+            open.push(said(cat.query(&plain, p).await));
+        }
+        // Masked on a valid-time field: refused by each read that can meet
+        // the type, the one a step is judged to reach or another. A note is
+        // two hops away, or wherever `of` is declared for a neighbourhood
+        // and a component; a range to a note passes a quote and no bill.
+        for (ty, timed, spared, other) in [
+            ("quote", "start", &[][..], Some("bill")),
+            ("bill", "since", &[], Some("quote")),
+            ("note", "at", &["a chain's graph", "degree"], None),
+        ] {
+            let who = field_access(store.as_ref(), "held", ty, &[(timed, Access::Masked)]);
+            let refused = format!("not granted {timed}");
+            for ((what, p), open) in reads(july).into_iter().zip(&open[1..]) {
+                let answer = said(cat.query(&who, p).await);
+                if answer != *[&refused, open][usize::from(spared.contains(&what))] {
+                    wrong.push(format!("{what}, `{ty}.{timed}` masked: {answer}"));
+                }
+            }
+            // No valid time probes nothing, and a step of no hop meets nothing.
+            let none = reads(ReadAt::default()).into_iter();
+            for (what, p) in none.chain([("a graph of no hop", graph(deep(0, 0), july))]) {
+                if let Err(e) = cat.query(&who, p).await {
+                    wrong.push(format!(
+                        "{what}, at no valid time or of no hop, `{ty}.{timed}`: {e}"
+                    ));
+                }
+            }
+            let answer = said(cat.query(&who, to_note(july)).await);
+            if answer != *if ty == "bill" { &open[0] } else { &refused } {
+                wrong.push(format!(
+                    "a range to a note, `{ty}.{timed}` masked: {answer}"
+                ));
+            }
+            // One hop that names the other owner, as its `type` or by its
+            // inverse, keeps no record of this one.
+            let Some(other) = other else { continue };
+            let ty = Some(other.into());
+            for (what, one) in [
+                (
+                    "a chain's graph",
+                    Step {
+                        ty: ty.clone(),
+                        ..deep(1, 1)
+                    },
+                ),
+                ("a graph from depth 0", Step { ty, ..deep(0, 1) }),
+                ("an inverse", step(&format!("{other}s"), Walk::Out)),
+            ] {
+                let want = said(cat.query(&plain, graph(one.clone(), july)).await);
+                let answer = said(cat.query(&who, graph(one, july)).await);
+                if answer != want {
+                    wrong.push(format!("{what}, `{other}` alone, `{timed}`: {answer}"));
+                }
+                pinned.push(want);
+            }
+        }
+        pinned.extend(open);
+        let shown = reads(march).into_iter().chain(reads(july));
+        for ((what, p), absent) in shown.zip(&without) {
+            let answer = said(cat.query(&blind, p).await);
+            if &answer != absent {
+                wrong.push(format!("{what}, not shown `quote`: {answer}, not {absent}"));
+            }
+        }
+        let tag = if written { "" } else { ", no quote written" };
+        wrong[seen..].iter_mut().for_each(|w| w.push_str(tag));
+    }
+    // A reader of both is answered by their dates; held from `start`, as
+    // on a type with no valid time: by each read in March as in July.
+    let hidden = field_access(
+        store.as_ref(),
+        "at none",
+        "quote",
+        &[("start", Access::None)],
+    );
+    for (who, at, want) in [
+        (&plain, march, "b1 c1"),
+        (&plain, july, "b1 c1 q1"),
+        (&hidden, march, "b1 c1 q1"),
+    ] {
+        let answer = walked(cat.query(who, graph(step("of", Walk::In), at)).await);
+        if answer != want {
+            wrong.push(format!(
+                "`{}` at {:?}: {answer}, not {want}",
+                who.id, at.valid_at
+            ));
+        }
+    }
+    for ((what, early), (_, late)) in reads(march).into_iter().zip(reads(july)) {
+        let early = said(cat.query(&hidden, early).await);
+        if early != said(cat.query(&hidden, late).await) {
+            wrong.push(format!(
+                "{what}, `quote.start` at `none`, in March: {early}"
+            ));
+        }
+        pinned.push(early);
+    }
+    // Each answer another was measured against is an answer.
+    let answer = |a: &&String| !a.starts_with("Graph") && !a.starts_with("Rows");
+    if let Some(e) = pinned.iter().find(answer) {
+        wrong.push(format!("a read to be answered is refused: {e}"));
+    }
+    ensure!(
+        wrong.is_empty(),
+        "a walk at a valid time probes every type it can meet: {wrong:#?}"
+    );
     Ok(())
 }
 
