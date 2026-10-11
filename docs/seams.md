@@ -597,9 +597,11 @@ and asks components again under a ceiling of five, which refuses them.
 
 A view does not aggregate. Aggregates — over `find`, over a pattern's
 rows and in a view type's measures — are the store's: it computes them
-over the records it reads, decimal-exact and grouped in the one sort
-order, so every engine answers them identically
-(`docs/decisions/029-every-answer-has-one-order.md`). A sum reads at the
+over the records it reads, decimal-exact and grouped in one order, so
+every engine answers them identically
+(`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
+A count alone is asked of the engine's `count`, where the engine can
+apply the filter. A sum reads at the
 largest scale among its values, a zero's included, whatever order they
 are added in (`docs/decisions/011-storage-kind-and-value-type.md`,
 extended): `5` and `0.00` are `5.00`. An engine may keep
@@ -725,10 +727,12 @@ head holds at least one token of the text. Tokens are what the store's one pipel
 lower-cased and folded when it has none or the pipeline has no stemmer
 for it), applied the same way to the query and to the
 fields (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
-The set of hits is the same on every engine. Hits come best first, by a
-score that is higher for a better match and may differ between engines;
-equal scores are ordered by key ascending; at most `k`. The in-memory
-engine scores a hit by the number of distinct query tokens it holds.
+The set of hits, their order and their scores are the same on every
+engine: one function ranks (`lakelands_core::engines::lexical`). A hit
+scores the number of distinct query tokens it holds; hits come best
+first, equal scores ordered by key ascending; at most `k`. A later
+release may score otherwise, on every engine at once, so a caller
+compares scores within one answer.
 With fields named, a record's text is only that of the named fields that are
 searchable in the type's declaration at the head: a record matching only
 in another field is no hit, and a record matching in a named field is a
@@ -739,8 +743,10 @@ a name that is not searchable or not readable
 
 **A vector's list** holds at most `k` records, scored by the **cosine**
 of the angle between the query and the stored vector (higher is closer;
-a vector of zeros scores 0 against everything, and a field read through
-an index leaves it out, 043), best first, equal scores by key ascending. A field holding no vectors answers nothing; a query
+a vector of zeros scores 0 against everything; PostgreSQL alone leaves
+it out of a field the lake asks an index for, while it keeps that index:
+not on a server without pgvector 0.8 or later, nor while the field's
+mark is behind the head, 025), best first, equal scores by key ascending. A field holding no vectors answers nothing; a query
 whose length differs from a stored vector's is `Invalid`.
 
 ### `VectorIndex`
