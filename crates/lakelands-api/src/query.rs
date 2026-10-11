@@ -114,7 +114,7 @@ pub enum Projection {
     },
     /// Nodes and edges. For viewers. A graph always includes the start
     /// node, the root a viewer draws from, whatever the steps' `min`;
-    /// `Rows` holds a start only when a step reaches it
+    /// `Rows` holds a start only where its steps reach a match from it
     /// (`docs/decisions/026-the-store-walks-the-graph.md`).
     Graph,
     /// Aggregates over the matches.
@@ -184,7 +184,9 @@ pub struct Pattern {
     /// What it returns.
     #[serde(default)]
     pub project: Projection,
-    /// For rows: sort keys over projected paths, most significant first.
+    /// For rows alone: sort keys over the rows' paths, most significant
+    /// first, each by its value: a row is no record, and a key by
+    /// `latest`, `known_at` or `seen_at` is refused.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub order_by: Vec<Order>,
     /// At most this many rows or nodes.

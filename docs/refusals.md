@@ -366,7 +366,7 @@ What a refusal is about.
 | `kind_sides` | `expr` (String), `left` (Kind), `right` (Kind) | `{expr}` has no meaning: its sides are {left} and {right} | Arithmetic over kinds that do not combine. |
 | `kind_takes_number` | `expr` (String), `kind` (Kind) | `{expr}` has no meaning: it takes a number, not {kind} | A number's function over what is no number. |
 | `minus_no_meaning` | `left` (Operand), `right` (Operand) | {left} minus {right} has no meaning | A difference of what are not two instants. |
-| `no_records_provenance` | — | known_at() and seen_at() read a record's provenance, and no record stands here: a view's records, a value type's constraint and a function's expression carry none | A provenance function where no record stands. |
+| `no_records_provenance` | — | known_at() and seen_at() read a record's provenance, and no record stands here: a view's records, a query's rows, a value type's constraint and a function's expression carry none | A provenance function where no record stands. |
 | `not_a_number` | `value` (Operand) | {value} is not a number | A number that is not a number. |
 | `not_aggregate` | `name` (String) | {name}() is not an aggregate | A function's call that is no aggregate where one is folded. |
 | `not_exact` | `number` (String) | `{number}` is not a number this evaluator can hold exactly | A number written that the evaluator cannot hold exactly. |
@@ -455,7 +455,7 @@ What a refusal is about.
 | `pattern_as_not_rows` | — | `as` names what a row binds, and only rows and an aggregate bind by name | A pattern naming a binding where no row binds by name. |
 | `pattern_binds_twice` | `name` (String) | the pattern binds `{name}` already; give this step another name with `as` | A pattern that binds two records under one name. |
 | `pattern_no_path` | `path` (String) | `{path}` is no path the pattern's rows hold; a row holds `<name>.<field>` for each name the pattern binds, its type's or the one `as` gives | A path a pattern orders, projects or aggregates by that no row holds. |
-| `pattern_order_not_rows` | — | `order_by` orders rows; a graph and a path come by depth, type and key | A pattern with an `order_by` that answers no rows. |
+| `pattern_order_not_rows` | — | `order_by` orders rows; a graph and a path come by depth, type and key, and an aggregate's groups by their key | A pattern with an `order_by` that answers no rows. |
 | `pattern_to_chain` | — | a pattern with `to` walks its steps as one walk from its start; every step's depth starts at 0 | A pattern with `to` whose steps are a chain. |
 | `pattern_to_not_graph` | — | a pattern with `to` answers the walk to it as a graph; ask `project` `graph` | A pattern with `to` not projected as a graph. |
 | `position_not_integer` | — | a position is a non-negative integer | A position of an `after` that is no whole number. |

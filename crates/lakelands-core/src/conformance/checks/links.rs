@@ -1,7 +1,7 @@
 //! Relations carried by link records
 //! (`docs/decisions/035-a-link-is-a-record.md`, `docs/log-format.md` §2.3).
 //!
-//! A relation declared without `via` is carried by one record per linked
+//! A relation with neither `via` nor `derived` is carried by one record per linked
 //! pair, of the link type the store derives from it. A link is written
 //! and removed through the relation's link doors, holds the relation's own
 //! fields, and is walked like a relation carried by a reference field, its
@@ -30,7 +30,7 @@ use crate::links::{link_key, link_type_name};
 
 check!(
     WRITTEN_AND_WALKED = a_link_is_written_and_walked_with_its_fields,
-    "035 and §2.3: a relation without via is carried by link records; the walk follows it out and in, and the edge carries the link's own fields"
+    "035 and §2.3: a relation with neither `via` nor `derived` is carried by link records; the walk follows it out and in, and the edge carries the link's own fields"
 );
 
 check!(

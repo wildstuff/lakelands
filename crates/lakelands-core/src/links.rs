@@ -1,7 +1,7 @@
-//! Link records: the one definition of a relation carried without `via`
+//! Link records: the one definition of the records that carry a relation
 //! (`docs/decisions/035-a-link-is-a-record.md`, `docs/log-format.md` §2.3).
 //!
-//! A relation `r` of type `t` declared without `via` is carried by records
+//! A relation `r` of type `t` with neither `via` nor `derived` is carried by records
 //! of its **link type**, `sys.link.t.r`, which this module derives from the
 //! relation, the same way for the store and every engine:
 //!

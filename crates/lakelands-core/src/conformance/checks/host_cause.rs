@@ -38,12 +38,12 @@ check!(
 
 check!(
     DEPTH_ON_EVERY_DOOR = the_reactive_ceiling_holds_on_every_door_that_writes,
-    "021, as extended on 2026-09-25 (lakelands#257): a context deeper than the lake's max_reactive_depth is refused as too_deep naming that ceiling, appending nothing, through ingest, accept, reject, declare, apply, add_field, migrate_apply and migrate_value_type_apply as through the record doors"
+    "021, as extended on 2026-09-25 (lakelands#257): a context deeper than the lake's max_reactive_depth is refused as too_deep naming that ceiling, appending nothing, through link, unlink, recompute, ingest, accept, reject, declare, apply, add_field, migrate_apply and migrate_value_type_apply as through the record doors"
 );
 
 check!(
     CONTEXT_FIRST = every_write_door_checks_the_context_before_anything_else,
-    "021, extended (lakelands#344): a context past the ceiling is refused as too_deep before anything else a door checks, so a request that also breaks the door's own first rule (a principal without grants, a link type at an ordinary door, an undeclared type, relation, verb or proposal) is refused as too_deep on every write door; a principal of another lake is refused not_granted before that"
+    "021, extended (lakelands#344): a context past the ceiling is refused as too_deep before anything else a door checks, so a request that also breaks the door's own first rule (a principal without grants, a link type at an ordinary door, an undeclared type, relation, verb or proposal) is refused as too_deep on every write door, `recompute` among them; a principal of another lake is refused not_granted before that"
 );
 
 check!(
@@ -242,12 +242,42 @@ async fn a_cause_past_the_head_is_refused_and_appends_nothing(store: Store) -> H
 async fn the_reactive_ceiling_holds_on_every_door_that_writes(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
+    let mut desk = type_decl("desk", vec![field("n", StorageKind::Text)]);
+    desk.relations = vec![lakelands_api::ontology::RelationDecl {
+        name: "of".into(),
+        target: "job".into(),
+        ..Default::default()
+    }];
     for t in [
         type_decl("job", vec![field("status", StorageKind::Text)]),
         type_decl("reading", vec![sourced("value", StorageKind::Number)]),
+        desk,
     ] {
         l.declare(t).await?;
     }
+    // A function of the suite's backing, for `recompute` to append.
+    l.declare_json(json!({"declare": "function", "name": "echo",
+        "backing": crate::conformance::backing::KIND,
+        "inputs": [{"name": "n", "type": {"kind": "text"}}], "config": {}}))
+        .await?;
+    // A job, and two desks, the first linked to it: a link to write and
+    // one to remove.
+    l.upsert("job", "j1", json!({"status": "open"})).await?;
+    for d in ["d1", "d2"] {
+        l.upsert("desk", d, json!({"n": d})).await?;
+    }
+    let (desk, of, j1): (TypeName, _, RecordKey) = ("desk".into(), "of".into(), "j1".into());
+    let (d1, d2): (RecordKey, RecordKey) = ("d1".into(), "d2".into());
+    let linked = cat.link(
+        own,
+        &desk,
+        &d1,
+        &of,
+        &j1,
+        patch(json!({})),
+        WriteOpts::default(),
+    );
+    linked.await.must("linking `d1` to `j1`")?;
     let proposal = |key: &str| ProposedWrite::Upsert {
         ty: "job".into(),
         key: key.into(),
@@ -279,7 +309,29 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(store: Store) -> H
     let ceiling = limits().max_reactive_depth;
     let deep = store.catalog(reactive(ceiling + 1, None));
     let head = store.head().await.must("reading the head")?;
+    let opts = WriteOpts::default;
     let tries: Vec<(&str, lakelands_api::Result<()>)> = vec![
+        (
+            "link",
+            deep.link(own, &desk, &d2, &of, &j1, patch(json!({})), opts())
+                .await
+                .map(drop),
+        ),
+        (
+            "unlink",
+            deep.unlink(own, &desk, &d1, &of, &j1, opts())
+                .await
+                .map(drop),
+        ),
+        (
+            "recompute",
+            deep.recompute(
+                own,
+                lakelands_api::write::Recompute::Function("echo".into()),
+            )
+            .await
+            .map(drop),
+        ),
         (
             "ingest",
             ingest(
@@ -330,17 +382,15 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(store: Store) -> H
                 .map(drop),
         ),
     ];
-    for (door, answer) in tries {
-        match answer {
-            Err(e) if matches!(reason(&e), Some(Refusal::TooDeep { max }) if *max == ceiling) => {}
-            other => {
-                return Err(Failure::new(format!(
-                    "`{door}` through a context past the ceiling must be refused as too_deep \
-                     naming the lake's ceiling {ceiling}; it answered {other:?}"
-                )));
-            }
-        }
-    }
+    let named = |a: &lakelands_api::Result<()>| matches!(reason(a), Some(Refusal::TooDeep { max }) if *max == ceiling);
+    let red: Vec<String> = (tries.iter().filter(|(_, answer)| !named(answer)))
+        .map(|(door, answer)| format!("`{door}` answered {answer:?}"))
+        .collect();
+    ensure!(
+        red.is_empty(),
+        "every door through a context past the ceiling must be refused as too_deep naming \
+         the lake's ceiling {ceiling}: {red:?}"
+    );
     head_unmoved(store.as_ref(), head, "every write past the ceiling").await?;
     let vt = value_type("code", StorageKind::Text);
     let fut = cat.declare(own, Declaration::ValueType(vt.clone()));
@@ -446,6 +496,12 @@ async fn every_write_door_checks_the_context_before_anything_else(store: Store) 
         (
             "migrate_value_type_apply",
             d.migrate_value_type_apply(p, vt.into(), "r")
+                .await
+                .map(drop),
+        ),
+        (
+            "recompute",
+            d.recompute(p, lakelands_api::write::Recompute::Type(ty.clone()))
                 .await
                 .map(drop),
         ),

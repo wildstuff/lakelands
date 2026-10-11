@@ -173,3 +173,53 @@ async fn a_field_that_reads_a_setting_is_as_of_its_records_last_write(store: Sto
     );
     Ok(())
 }
+
+check!(
+    VIEW_KEPT_HOLDS_A_BOOLEAN = a_view_kept_setting_holds_true_or_false,
+    "049: a `view_kept` setting whose value is no boolean (a text, a number, a list, an object) is refused as invalid, naming `value`, appending nothing; `false`, written where no setting stood, asks for nothing, as no setting does"
+);
+
+async fn a_view_kept_setting_holds_true_or_false(store: Store) -> Held {
+    use crate::conformance::fixture::{
+        count_view, head_unmoved, invalid_case, refused_on, try_upsert,
+    };
+    use lakelands_api::describe::{Kept, NotKept};
+    use lakelands_api::error::Case;
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl("part", vec![field("g", StorageKind::Text)]))
+        .await?;
+    l.declare(count_view("tally", "part", "g")).await?;
+    l.upsert("part", "p1", json!({"g": "a"})).await?;
+    let tally = lakelands_api::TypeName::from("tally");
+    let asked = || async {
+        let told = (l.cat).describe_type(&l.own, &tally, Default::default());
+        Ok::<_, Failure>(told.await.must("describing `tally`")?.data.lifecycle.kept)
+    };
+    let unset = asked().await?;
+    let head = store.head().await.must("reading the head")?;
+    let (ty, key, mut wrong) = (
+        lakelands_api::seam::SETTING_TYPE,
+        "view_kept.tally",
+        Vec::new(),
+    );
+    for value in [json!("yes"), json!(1), json!([true]), json!({"kept": true})] {
+        let setting = json!({"key": key, "value": value});
+        let said = try_upsert(l.cat.as_ref(), &l.own, ty, key, setting).await;
+        let on_value = matches!(refused_on(&said), Some(("value", _)));
+        if !on_value || invalid_case(&said) != Some(&Case::SettingKeptHolds) {
+            wrong.push(format!("{value} answered {said:?}"));
+        }
+    }
+    head_unmoved(store.as_ref(), head, "a `view_kept` that is no boolean").await?;
+    l.set(key, json!(false)).await?;
+    let off = asked().await?;
+    let not_asked = Some(Kept::Computed {
+        why: NotKept::NotAsked,
+    });
+    ensure!(
+        wrong.is_empty() && unset == not_asked && off == not_asked,
+        "a `view_kept` setting that is no boolean is refused as invalid naming `value`: \
+         {wrong:?}; with no setting the view is told as {unset:?}, and under `false` as {off:?}"
+    );
+    Ok(())
+}

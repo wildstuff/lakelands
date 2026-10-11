@@ -637,7 +637,9 @@ the answer and the same on every engine:
   `after` is what resumes one. A key `latest` orders records by the
   position of the event that made each one's state at the read's
   position; no two records share one, so it never needs the key to
-  break a tie.
+  break a tie. A pattern's rows are projections of a walk, not records:
+  they are sorted by their values alone, and a key of them that asks
+  for `latest`, `seen_at` or `known_at` is refused.
 - **Walks** order what they reach by depth, then type, then key, and links
   by their ends (`docs/decisions/026-the-store-walks-the-graph.md`).
 - **Graph measures** order degrees highest first, ties by type and key;
@@ -645,7 +647,8 @@ the answer and the same on every engine:
   from 0 in that order, and a component's records by type and key.
 - **Ranked search** answers best first and breaks equal scores by key
   (below).
-- **Groups** come in the order of their key's canonical bytes.
+- **Groups** come in the order of their key's canonical bytes; a
+  pattern's aggregate takes no `order_by`.
 
 ### Equal scores of one ranking follow the keys at the head, and a fused tie the key answered
 
@@ -818,3 +821,7 @@ Of an index asked for:
   fused search "starts at `max_limit` and one" only where `max_limit`
   is the larger of the two; "4 096 to 12 097 candidates" holds for
   first pulls of 65 to 4 096, and a deeper first pull is one pull.
+- An order asked for is the order given or it is refused: a pattern's
+  rows ordered by `seen_at` or `known_at` came in the order of the
+  value, and an `order_by` with a pattern's aggregate was passed over
+  (lakelands#901).

@@ -42,7 +42,7 @@ check!(
 
 check!(
     HOLD_NOT_THERE_TO_A_WRITE = a_restricted_record_is_not_there_to_a_writer_without_the_grant,
-    "006, extended (lakelands#772): to a writer without the `restricted` grant a restricted record is not there at any write door, its refusal compared whole with that of a key no record holds: a reference to it and either end of a `link` are `not_live`, `retire`, `unlink` of a link to it and a verb called on it are not found, and so is the proposal of each; a link to it ingested again is `not_live`; an upsert onto its key, made or proposed, and onto a held key retired since, made, proposed or ingested, is not granted and names no field; nothing is written; a reviewer without the grant is refused the accept of a write onto it, as not granted; the accept of a proposal is judged as its write as the records stand then, so one naming a record restricted since is refused, and one that reached a record restricted when proposed, as only a holder of the grant could, is applied"
+    "006, extended (lakelands#772): to a writer without the `restricted` grant a restricted record is not there at any write door, its refusal compared whole with that of a key no record holds: a reference to it and either end of a `link` are `not_live`, `retire`, `unlink` of a link to it and a verb called on it are not found, and so is the proposal of each; a link to it ingested again is `not_live`; an upsert onto its key, made or proposed, and onto a held key retired since, made, proposed or ingested, is not granted and names no field, as is a well-formed setting onto a held one's key; that refusal comes last of the record checks (016), so under a version, without a required field, with a key field that disagrees and with a `view_kept` setting that is no boolean the upsert onto a held key answers as onto a free one, a conflict, a constraint and twice invalid; nothing is written; a reviewer without the grant is refused the accept of a write onto it, as not granted; the accept of a proposal is judged as its write as the records stand then, so one naming a record restricted since is refused, and one that reached a record restricted when proposed, as only a holder of the grant could, is applied"
 );
 
 async fn a_restricted_record_is_withheld_but_kept(store: Store) -> Held {
@@ -506,6 +506,25 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(store: S
             .await;
         retired.must("retiring a held `rr`")?;
     }
+    // A slip under a hold, keyed by its `code` and needing a `sum`, and
+    // a `view_kept` setting under one: what the record checks before the
+    // last answer there.
+    l.declare_json(
+        json!({"declare": "type", "name": "slip", "key": ["code"], "fields": [
+        {"name": "code", "type": {"kind": "text"}}, {"name": "note", "type": {"kind": "text"}},
+        {"name": "sum", "type": {"kind": "number"}, "required": true}]}),
+    )
+    .await?;
+    for view in ["tally", "tally2"] {
+        let fields = vec![field("n", Text), field("c", Number)];
+        let counted = view_of(view, "partner", &["n"], fields, &[("c", "count()")]);
+        l.declare(counted).await?;
+    }
+    l.upsert("slip", "s2", json!({"sum": 1})).await?;
+    l.set("view_kept.tally", json!(false)).await?;
+    let setting = lakelands_api::seam::SETTING_TYPE;
+    restrict(s, "slip", "s2", "a hold").await?;
+    restrict(s, setting, "view_kept.tally", "a hold").await?;
     let writer = |id: &str, restricted| {
         let grants = Grants {
             default: Access::Write,
@@ -546,6 +565,43 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(store: S
             })
         )
     };
+    // The record checks before the last answer a probe as on a free key.
+    let v7 = WriteOpts {
+        expected_version: Some(lakelands_api::Version(7)),
+        ..opts()
+    };
+    let mut kinds = Vec::new();
+    for (ty, there, free, fields, opts) in [
+        ("slip", "s2", "s9", json!({"sum": 2}), v7),
+        ("slip", "s2", "s9", json!({"note": "x"}), opts()),
+        ("slip", "s2", "s9", json!({"sum": 2, "code": "x"}), opts()),
+        (
+            setting,
+            "view_kept.tally",
+            "view_kept.tally2",
+            json!({"value": "yes"}),
+            opts(),
+        ),
+    ] {
+        let (t, held, gone) = (ty.into(), there.into(), free.into());
+        let at = c.upsert(&w, &t, &held, patch(fields.clone()), opts.clone());
+        let at = at.await;
+        let on_free = c.upsert(&w, &t, &gone, patch(fields.clone()), opts).await;
+        let what = format!("{fields} onto the held `{there}`");
+        match (&at, &on_free) {
+            (Err(a), Err(b)) => {
+                let alike = alike_renamed(&what, a, b, (free, there));
+                apart.extend(alike.err().map(|f| f.message));
+                let e = serde_json::to_value(a).unwrap_or_default();
+                let kind = e["reason"]["refusal"].as_str().or(e["error"].as_str());
+                kinds.push(kind.unwrap_or("?").to_owned());
+            }
+            _ => apart.push(format!("{what}: {at:?}; onto a free key: {on_free:?}")),
+        }
+    }
+    if kinds != ["conflict", "constraint", "invalid", "invalid"] {
+        apart.push(format!("the probes of a held key answered {kinds:?}"));
+    }
     let fed = source_record("deal", "rr3", json!({"src": "x"}));
     for (what, answer) in [
         (
@@ -577,6 +633,18 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(store: S
         (
             "`rr3`, ingested",
             ingest(c, &w, "feed", vec![fed]).await.map(drop),
+        ),
+        (
+            "the held setting, made",
+            c.upsert(
+                &w,
+                &setting.into(),
+                &"view_kept.tally".into(),
+                patch(json!({"value": false})),
+                opts(),
+            )
+            .await
+            .map(drop),
         ),
     ] {
         if !refused(&answer) {

@@ -39,9 +39,10 @@
 //! the one key rule of `docs/log-format.md` §2.3) and measured. A group
 //! with no member has no record, except that a view without `group_by` is
 //! always one record, keyed [`lakelands_api::key::UNGROUPED`], whatever
-//! its `where` keeps. Keeping a view's records materialised would be an
-//! engine's optimisation, and it could never change an answer. A walk reads a view's records from that
-//! computation too, once per read, never from the engine.
+//! its `where` keeps. A view the setting `view_kept.<type>` asks for is
+//! kept by the fold and read from its kept records where they are exactly
+//! what the read would compute (049). A walk's step reads a view so too,
+//! one with parameters only where the start bound them.
 
 use std::cell::{OnceCell, RefCell};
 use std::cmp::Ordering;
@@ -1597,10 +1598,15 @@ impl<'a> Reader<'a> {
                 return Err(Error::Refused { field, reason });
             }
             // A view's records are computed at the read's position; none
-            // has an event of its own to order by.
+            // has an event of its own to order by, nor a provenance (028,
+            // extended).
             if o.by == OrderBy::Latest && decl.view.is_some() {
                 let ty = Some(ty.clone());
                 return Err(invalid(Case::LatestNoChange { ty }));
+            }
+            if o.by != OrderBy::Value && decl.view.is_some() {
+                let case = Case::NoRecordsProvenance;
+                return Err(crate::declare::invalid_field(&o.field, case));
             }
         }
         let filter = find
@@ -1628,8 +1634,10 @@ impl<'a> Reader<'a> {
                 match expr {
                     None => probed.push(name),
                     Some(e) => {
+                        let at = vec![Place::Group { name }];
+                        let e = crate::declare::record_stands(decl.view.is_none(), e, &at)?;
                         probed.extend(core_derive::reads(&e));
-                        asked.push((e, vec![Place::Group { name }]));
+                        asked.push((e, at));
                     }
                 }
             }
@@ -2835,10 +2843,28 @@ impl<'a> Reader<'a> {
         }
         if measures::is_measure(&p.project) {
             measures::check(p)?;
-        } else if !binds && !p.order_by.is_empty() {
-            // A graph and a path come by depth, type and key (029): an
-            // order they would pass over is refused, as `as` is.
+        } else if !matches!(p.project, Projection::Rows { .. }) && !p.order_by.is_empty() {
+            // A graph and a path come by depth, type and key, an
+            // aggregate's groups by their key (029): an order they would
+            // pass over is refused, as `as` is.
             return Err(invalid(Case::PatternOrderNotRows));
+        }
+        // A row is a projection of a walk, not a record: it has no change
+        // of its own and no provenance to order by (028, 025). Refused
+        // before a record is read, whatever the walk would meet.
+        for o in &p.order_by {
+            if let Some((field, case)) = o.misfit() {
+                let reason = Refusal::Invalid(Box::new(case.into()));
+                return Err(Error::Refused { field, reason });
+            }
+            match o.by {
+                OrderBy::Value => {}
+                OrderBy::Latest => return Err(invalid(Case::LatestNoChange { ty: None })),
+                _ => {
+                    let case = Case::NoRecordsProvenance;
+                    return Err(crate::declare::invalid_field(&o.field, case));
+                }
+            }
         }
         // What a pattern says and an arm cannot honour is refused, not
         // passed over: a path is a graph of one walk from one start. Rows
@@ -3103,9 +3129,6 @@ impl<'a> Reader<'a> {
             let groups =
                 aggregate::aggregate(&refs, a, &self.shape.settings, self.now).map_err(invalid)?;
             return Ok(Ok(QueryResult::Groups { rows: groups }));
-        }
-        if p.order_by.iter().any(|o| o.by == OrderBy::Latest) {
-            return Err(invalid(Case::LatestNoChange { ty: None }));
         }
         let order: Vec<Order> = p.order_by.clone();
         let mut keyed: Vec<(SortKey, BTreeMap<String, Value>)> = rows

@@ -201,7 +201,7 @@ interface types {
         inverse: option<relation-name>,
         via: option<field-name>,
         fields: list<field-decl>,
-        /// Who writes the links, for a relation without `via`.
+        /// Who writes the links, for a relation carried by link records.
         authority: authority,
         description: option<string>,
         /// The host's own marks, by namespaced key (`acme.icon`), each a

@@ -6813,8 +6813,8 @@ pub async fn a_step_over_an_undeclared_relation_is_refused(store: Arc<dyn LakeSt
 }
 
 /// Every path a pattern's rows are ordered or projected by is read as the
-/// rows hold it, a bound type and then one of its fields or `key`
-/// (lakelands#752): a name no bound type starts, one past a field, and a
+/// rows hold it, a bound name and then one of its fields or `key`
+/// (lakelands#752): a path no bound name starts, one past a field, and a
 /// type declared but not bound are refused as `pattern_no_path`; a field
 /// its reader may not know of answers as one its type does not have,
 /// ordered or projected; `<type>.key` is answered, and a masked field

@@ -656,7 +656,7 @@ pub struct RelationDecl {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<FieldName>,
     /// Fields of the link itself, for a relation carried by link records
-    /// (no `via`).
+    /// (neither `via` nor `derived`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<FieldDecl>,
     /// Who writes the links of a relation carried by link records:

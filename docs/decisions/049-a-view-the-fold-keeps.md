@@ -15,8 +15,9 @@ would have to reproduce one.
 - **Asked for by a setting.** The `sys.setting` record
   `view_kept.<type>` with the value `true` asks for the view to be kept.
   A write of it for a view that cannot be kept is refused, naming the
-  measure and why. Retiring it, the value `false` or no value asks for
-  nothing; any other value is refused as invalid, naming `value`.
+  measure and why. The value `false`, and a setting never written or
+  retired, ask for nothing; any other value is refused as invalid,
+  naming `value`.
 - **What can be kept is read off the declaration.** A view with no
   parameter and no clock, that reads no field computed at the read
   (052), each of whose aggregate calls is a function of
@@ -269,3 +270,6 @@ that already walks the type.
 - Corrected at the rewrite (lakelands#817): any value of the setting
   but `true` was said to ask for nothing. The door refuses a value that
   is neither `true`, `false` nor absent as invalid, naming `value`.
+- "No value" was said to ask for nothing: a setting's `value` is
+  required, so none can be written without one. What asks for nothing
+  is a setting never written or retired (lakelands#889).

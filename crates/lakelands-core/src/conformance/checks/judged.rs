@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::LakeStore;
-use lakelands_api::error::Case;
+use lakelands_api::error::{Case, Place};
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind::{Boolean, DateTime, Number, Text};
 use lakelands_api::ontology::{FieldDecl, OnInputChange, TypeDecl};
@@ -17,19 +17,19 @@ use serde_json::{Value, json};
 
 use crate::conformance::backing::KIND;
 use crate::conformance::fixture::{
-    Lake, Must, computed_by, derived, field, find_where, invalid_case, log_events, object_set_on,
-    source_record, sourced, type_decl,
+    Lake, Must, computed_by, derived, field, find_where, invalid_case, invalid_said, log_events,
+    object_set_on, refused_on, source_record, sourced, type_decl,
 };
 use crate::conformance::{Failure, Held, Store};
 
 check!(
     NO_RECORD_NO_PROVENANCE = provenance_is_refused_where_no_record_stands,
-    "028, extended (lakelands#852): where no record stands there is no provenance to read: a value type's constraint, a function's expression, and a view's `where` and measures over a source that is a view, its own or a merged one, are refused as `no_records_provenance` when they call `seen_at` or `known_at`, by `declare`, `propose` and `apply` alike; the same view over a stored type is declared; a read's `where` over a view's records is refused alike: a `find`, a pattern's start and a step that reaches the view"
+    "028, extended (lakelands#852): where no record stands there is no provenance to read: a value type's constraint, a function's expression, and a view's `where` and measures over a source that is a view, its own or a merged one, are refused as `no_records_provenance` when they call `seen_at` or `known_at`, by `declare`, `propose` and `apply` alike; the same view over a stored type is declared; a read's `where` over a view's records is refused alike: a `find`, a pattern's start and a step that reaches the view; and so are a `find`'s group key that reads one, placed at its group, and its order by `seen_at` or `known_at`, naming the field (lakelands#889), and a pattern's rows ordered by either, naming the path, over a view's records and a stored type's alike, where no record matches and where the start's `where` would be refused, as an order of them by `latest` is refused `latest_no_change`, one by `latest` with a field and one by a provenance or a value without as `find` refuses them, where an order by the value and a `find` of the stored type ordered by `known_at` answer (lakelands#901)"
 );
 
 check!(
     JUDGED_WITH_PROVENANCE = a_record_is_judged_with_its_provenance_wherever_it_stands,
-    "010 and 004, extended (lakelands#852): an object set's filter, by the membership the log holds, at a write and where the set is declared over records, a derived field, a verb's `requires`, its assignments, an aging rule's guard and a `find`'s group key read `seen_at(f)` of an ingested field and `known_at(f)` of an authored one as a `find` with the same `where` does, and so after a rebuild and for a derived field declared over the records; a view over the type holds the group its `where` finds and the instant its measure aggregates, computed, kept, after its member is written again and after a rebuild; a derived field that reads the provenance of a field the fold changes in the same event (a derived field, declared before or after its reader or two steps from the written one, a cleared field, a backed one) reads that event's instant, directly after the write, after a declaration computes it again and after a rebuild; a type that keeps no per-field provenance reads none, at a write as at a read"
+    "010 and 004, extended (lakelands#852): an object set's filter, by the membership the log holds, at a write and where the set is declared over records, a derived field, a verb's `requires`, its assignments, an aging rule's guard and a `find`'s group key read `seen_at(f)` of an ingested field and `known_at(f)` of an authored one as a `find` with the same `where` does, and so after a rebuild and for a derived field declared over the records; a view over the type holds the group its `where` finds and the instant its measure aggregates, computed, kept, after its member is written again and after a rebuild, and one whose `where` compares the instant with a parameter and is evaluated at the read holds the group it finds, at each of the four (lakelands#889); a derived field that reads the provenance of a field the fold changes in the same event (a derived field, declared before or after its reader or two steps from the written one, a cleared field, a backed one) reads that event's instant, the cleared field holding the instant of the field whose write cleared it (lakelands#889), directly after the write, after a declaration computes it again and after a rebuild; a type that keeps no per-field provenance reads none, at a write as at a read"
 );
 
 /// The two expressions, each true of `j1` alone.
@@ -283,8 +283,13 @@ async fn a_record_is_judged_with_its_provenance_wherever_it_stands(store: Store)
         ("after a backing is called", "j0", json!({"m": 7}), 3),
         ("after a held output is read", "j1", json!({"m": 7}), 4),
     ] {
+        crate::conformance::fixture::pause(std::time::Duration::from_millis(2)).await;
         l.upsert("job", key, patch).await?;
         wrong.extend(unsettled(&l, when, &EDGES[..asked]).await?);
+        // The field a write clears takes that write's instant, not a later
+        // stamp: it is the one of the field that cleared it.
+        let cleared = ["known_at(label) = known_at(n)"];
+        wrong.extend(unsettled(&l, when, &cleared).await?);
     }
     // A set and a derived field declared over the records that stand.
     for (name, expr) in [("seen_late", SEEN), ("known_late", KNOWN)] {
@@ -315,6 +320,17 @@ async fn a_record_is_judged_with_its_provenance_wherever_it_stands(store: Store)
                               "fields": fields, "view": view}))
             .await?;
     }
+    // And one whose `where` reads a parameter, evaluated at the read.
+    let since = json!({"source": "job", "where": "seen_at(status) >= param('since')",
+                       "params": [{"name": "since", "kind": "date_time"}],
+                       "group_by": ["status"], "measures": [{"name": "c", "expr": "count()"}]});
+    let fields = json!([{"name": "status", "type": {"kind": "text"}},
+                        {"name": "c", "type": {"kind": "number"}}]);
+    l.declare_json(
+        json!({"declare": "type", "name": "seen_since", "key": ["status"],
+                          "fields": fields, "view": since}),
+    )
+    .await?;
     let mut views = Vec::new();
     for state in ["computed", "kept", "written again", "rebuilt"] {
         match state {
@@ -350,6 +366,15 @@ async fn a_record_is_judged_with_its_provenance_wherever_it_stands(store: Store)
             if (rows.len(), c, &holders) != (1, Some(json!(1)), &j1) {
                 wrong.push(format!("the view `{view}`, {state}, must hold one group of `j1` alone with the instant `{measure}` reads of it; it holds {rows:?}"));
             }
+        }
+        let since = lakelands_api::Find {
+            params: [("since".into(), json!("2026-03-01T00:00:00Z"))].into(),
+            ..Default::default()
+        };
+        let rows = l.all_found("seen_since", since).await?;
+        let c = rows.first().and_then(|r| r.fields.get("c").cloned());
+        if (rows.len(), c) != (1, Some(json!(1))) {
+            wrong.push(format!("the view `seen_since`, {state}, read since `j1` was seen, must hold one group of `j1` alone; it holds {rows:?}"));
         }
         views.push(apart(at, over, ["fresh_late", "noted_late"]).await?);
         wrong.extend(unsettled(&l, state, &EDGES).await?);
@@ -475,14 +500,108 @@ async fn provenance_is_refused_where_no_record_stands(store: Store) -> Held {
         l.cat.query(&l.own, start).await,
         l.cat.query(&l.own, pattern(step)).await,
     );
+    // And a `find`'s group key and its order by a provenance.
+    let stored = "stored".into();
+    let find = |f: Value| {
+        let find = serde_json::from_value(f).expect("a find reads");
+        l.cat.find(&l.own, &stored, find)
+    };
+    let key = json!({"name": "k", "expr": SEEN});
+    let count = json!([{"name": "n", "func": "count"}]);
+    let grouped = find(json!({"aggregate": {"measures": count, "group_by": [key]}})).await;
+    let by_seen = find(json!({"order_by": [{"field": "status", "by": "seen_at"}]})).await;
+    let by_known = find(json!({"order_by": [{"field": "status", "by": "known_at"}]})).await;
     for (what, case) in [
         ("a `find`", invalid_case(&found)),
         ("a pattern's start", invalid_case(&start)),
         ("a pattern's step", invalid_case(&step)),
+        ("a `find`'s group key", invalid_case(&grouped)),
+        ("a `find` ordered by `seen_at`", invalid_case(&by_seen)),
+        ("a `find` ordered by `known_at`", invalid_case(&by_known)),
     ] {
         if !matches!(case, Some(Case::NoRecordsProvenance)) {
             wrong.push(format!("{what} over a view's records: {case:?}"));
         }
+    }
+    // The key's refusal is placed at its group, and the order's names its
+    // field.
+    let at_key = [Place::Group { name: "k".into() }];
+    let keyed = invalid_said(&grouped).is_some_and(|said| said.at == at_key);
+    let named = |a| matches!(refused_on(a), Some(("status", _)));
+    if !keyed || !named(&by_seen) || !named(&by_known) {
+        wrong.push(format!(
+            "the key's refusal names its group and the order's its field: {grouped:?}, {by_seen:?}, {by_known:?}"
+        ));
+    }
+    // And a pattern's rows, which are no records, over the view and over
+    // the stored type (lakelands#901); ordered by the value, and a `find`
+    // of the stored type by a provenance, they answer as before.
+    l.upsert("job", "j2", json!({"n": 2})).await?;
+    crate::conformance::fixture::pause(std::time::Duration::from_millis(2)).await;
+    l.upsert("job", "j1", json!({"n": 1})).await?;
+    let ordered = |start: &Value, order: Value| {
+        let p = json!({"start": start, "order_by": [order]});
+        l.cat.query(&l.own, pattern(p))
+    };
+    let (job, view) = (json!({"type": "job"}), json!({"type": "stored"}));
+    let none = json!({"type": "job", "where": "n > 9"});
+    let unread = json!({"type": "job", "where": "zz = 1"});
+    // Each start, the path an order of its rows names (none: no field)
+    // and its `by`: refused before a record is read, so where no record
+    // matches and where the start's own `where` would be refused too.
+    for (start, path, by) in [
+        (&view, "stored.status", "seen_at"),
+        (&view, "stored.status", "known_at"),
+        (&job, "job.status", "seen_at"),
+        (&job, "job.n", "known_at"),
+        (&none, "job.n", "known_at"),
+        (&none, "job.status", "seen_at"),
+        (&unread, "job.n", "known_at"),
+        (&job, "", "latest"),
+        (&view, "", "latest"),
+        (&none, "", "latest"),
+        (&unread, "", "latest"),
+        (&job, "job.n", "latest"),
+        (&job, "", "seen_at"),
+        (&job, "", "value"),
+    ] {
+        let mut order = json!({"field": path, "by": by});
+        order
+            .as_object_mut()
+            .expect("an order")
+            .retain(|_, v| v != "");
+        let case = match (by, path) {
+            ("latest", "") => Case::LatestNoChange { ty: None },
+            ("latest", _) => Case::LatestTakesNoField { field: path.into() },
+            (_, "") => Case::OrderNamesNoField,
+            _ => Case::NoRecordsProvenance,
+        };
+        let said = ordered(start, order.clone()).await;
+        if refused_on(&said).map_or("", |r| r.0) != path || invalid_case(&said) != Some(&case) {
+            wrong.push(format!(
+                "a pattern's rows from {start} ordered by {order}: {said:?}"
+            ));
+        }
+    }
+    let by_value = ordered(&job, json!({"field": "job.n", "dir": "desc"})).await;
+    let by_value = match by_value.map(|r| r.data) {
+        Ok(lakelands_api::query::QueryResult::Rows { rows, .. }) => (rows.iter())
+            .map(|r| {
+                r.get("job.key")
+                    .and_then(Value::as_str)
+                    .unwrap_or("-")
+                    .to_owned()
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let by_known = serde_json::from_value(json!({"order_by": [{"field": "n", "by": "known_at"}]}));
+    let by_known = l.all_found("job", by_known.expect("a find reads")).await?;
+    let by_known: Vec<_> = by_known.iter().map(|r| r.key.as_str()).collect();
+    if by_value != ["j2", "j1"] || by_known != ["j2", "j1"] {
+        wrong.push(format!(
+            "a pattern's rows by the value of `job.n`, descending, are {by_value:?}, and a `find` of `job` by `known_at(n)` answers {by_known:?}"
+        ));
     }
     ensure!(
         wrong.is_empty(),
