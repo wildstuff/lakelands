@@ -187,6 +187,15 @@ impl From<Error> for Failure {
                  where it says the executor was not handed the call"
                     .to_owned()
             }
+            // Waiting mends no damage. A projection is made anew from
+            // the log; what the log lost comes back only from a backup.
+            Error::Unavailable { situation }
+                if matches!(**situation, Situation::Damaged { .. }) =>
+            {
+                "restore the lake's files from a backup; where the projection alone is damaged, \
+                 `lakelands rebuild` makes it anew from the log"
+                    .to_owned()
+            }
             Error::Unavailable { .. } => {
                 "wait and retry, or check that no other process holds the lake".to_owned()
             }
@@ -231,5 +240,22 @@ mod tests {
         }
         let other = Failure::from(Error::unavailable(Situation::Moved));
         assert!(other.todo.starts_with("wait and retry"), "{}", other.todo);
+    }
+
+    /// A damaged lake is not mended by waiting: the hint names a restore.
+    #[test]
+    fn a_damaged_lake_is_advised_a_restore_not_a_retry() {
+        use lakelands_api::error::{Flaw, Part};
+        let (part, position, flaw) = (Part::Log, None, Flaw::NoSegmentFile);
+        let damaged = Situation::Damaged {
+            part,
+            position,
+            flaw,
+        };
+        let todo = Failure::from(Error::unavailable(damaged)).todo;
+        assert!(
+            todo.starts_with("restore") && !todo.contains("retry"),
+            "{todo}"
+        );
     }
 }

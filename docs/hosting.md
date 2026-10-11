@@ -227,9 +227,12 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `damaged` at every open and at an import, and nothing is cut or made;
   the way out is a restore of the files. On every engine, a projection
   folded past its log's tip is refused at an open to read, to write and
-  to create and at an import (`ends_before`): the log lost events, or
-  the projection is another lake's. A writer is refused before it takes
-  the lease, so nothing of the log is cut. An open to rebuild is not
+  to create (`ends_before`): the log lost events, or the projection is
+  another lake's. A writer is refused before it takes the lease, so
+  nothing of the log is cut. An import onto such a lake is refused too:
+  as `import_not_empty` where the log still holds an event, as onto any
+  lake that is not empty, and as `ends_before` where the log reads
+  empty. An open to rebuild is not
   refused for it. A rebuild makes the projection from the log as it
   stands, and its writer cuts what the log's index does not commit, as
   every writer does: it is for an operator who knows the log is whole.
@@ -338,7 +341,11 @@ PostgreSQL projection is marked with its engine's layout number when it
 is made, and a build whose engine lays the projection out otherwise
 refuses to open it, for reading or writing, naming the number found, the
 number wanted and `lakelands rebuild` (`projection_layout` in
-`docs/refusals.md`). Nothing repairs it in place. `lakelands rebuild`, or
+`docs/refusals.md`). A SQLite `projection.db` that holds no table yet is
+none of that: its maker has connected and not made the tables, and a
+reader that comes in that moment is answered `no_projection`, as the
+moment before, and opens a moment later. Nothing repairs a projection
+of another layout in place. `lakelands rebuild`, or
 a host's own open with `OpenMode::Rebuild`, opens it, drops the
 projection under the lease, makes it anew and folds the whole log; the
 open is the rebuild. `LakeStore::rebuild` on an open lake does the same
