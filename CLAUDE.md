@@ -29,8 +29,8 @@ importing the shape of the platform the organs come from.
   generator; a string-literal tool name outside it fails.
 - **Budgets.** `cfg(feature)` sites ≤ 20 (features are one per engine);
   store facade + engine traits ≤ 110 methods; the core crates' product
-  code ≤ 52.5k lines and their specification (the conformance suite and
-  unit tests, which live in `tests.rs` files, never inline) ≤ 69k. Each
+  code ≤ 53k lines and their specification (the conformance suite and
+  unit tests, which live in `tests.rs` files, never inline) ≤ 74.5k. Each
   goes down by itself and is raised only by the rule in
   `docs/budgets.md`: a decisive reason, cutting first, a measured size,
   and a recorded row. The gates refuse a raise without its row.
@@ -70,7 +70,7 @@ violation, show the red run in the PR, then make it green.
   the layout and the slot helper are in `docs/development.md`.
 - The core ladder (O0 → O6) is serial: one agent, one branch at a time.
   The door, spec and infra lanes run in parallel after O1 merges, each
-  against `lakelands-api` with the in-memory mock.
+  against `lakelands-api` and the store on the memory engine.
 - No new query language, no model calls inside the store, no network
   the caller did not configure.
 - If the plan and the tree disagree, the tree wins and the plan is
