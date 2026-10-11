@@ -41,6 +41,7 @@ use lakelands_api::{
     Error, FieldName, LakeId, Position, Principal, ProposalId, RecordKey, Refusal, Result,
     Timestamp, TypeName, Value, ValueTypeName, WriteContext,
 };
+use lakelands_core::sight::{InForce, Sight};
 use lakelands_core::{damaged, shape};
 
 use crate::backed::{Due, Of, Outputs, Owed, Recorded};
@@ -99,6 +100,20 @@ pub struct Shape {
     pub settings: BTreeMap<String, Value>,
     /// The lake's list of renames.
     pub renames: Vec<Renamed>,
+}
+
+impl InForce for Shape {
+    fn ty(&self, name: &TypeName) -> Option<&TypeDecl> {
+        self.ontology.ty(name).ok()
+    }
+
+    fn types(&self) -> Vec<&TypeDecl> {
+        self.ontology.types()
+    }
+
+    fn declared(&self) -> std::borrow::Cow<'_, [lakelands_api::engine::Declared]> {
+        (&self.declared[..]).into()
+    }
 }
 
 /// Whether folding `body` can change a [`Shape`]: it puts a declaration
@@ -590,38 +605,25 @@ impl Lake {
         renames_in(recorded)
     }
 
-    /// A principal with its grants held through the lake's renames
-    /// (`Grants::follow`), for a read at `at` or a write at the head, and
-    /// how many entries of the list it was followed through: `head`'s, the
-    /// list of a read's shape at the head, or the list read. The list is
-    /// asked only for one whose grants name a type: a grant that is only
-    /// a default follows a link type's rename too.
-    pub(crate) fn followed(
+    /// The sight of `who` over `force` (`Sight::new`), for a read at `at`
+    /// or a write at the head, its grants held through the lake's renames,
+    /// and how many entries of the list they were followed through:
+    /// `head`'s, the list of a read's shape at the head, or the list read.
+    /// The list is asked only for one whose grants name a type: a grant
+    /// that is only a default follows a link type's rename too.
+    pub(crate) fn sight<'o>(
         &self,
-        mut who: Principal,
+        who: Principal,
         at: Option<Position>,
         head: Option<&[Renamed]>,
-    ) -> Result<(Principal, Option<usize>)> {
+        force: &'o dyn InForce,
+    ) -> Result<(Sight<'o>, Option<usize>)> {
         if who.grants.types.is_empty() {
-            return Ok((who, None));
+            return Ok((Sight::new(who, &[], at, force), None));
         }
         let read = head.is_none().then(|| self.renames(None)).transpose()?;
         let list = head.or(read.as_deref()).unwrap_or_default();
-        who.grants.follow(list, at);
-        Ok((who, Some(list.len())))
-    }
-
-    /// `who` as the shape `o` shows it: each reference to a type it is not
-    /// shown held at `none` (`rights::hide_unshown_references`), with the
-    /// fields so hidden.
-    pub(crate) fn hidden(
-        mut who: Principal,
-        o: &Ontology,
-    ) -> (Principal, Vec<(TypeName, FieldName)>) {
-        let types: Vec<&TypeDecl> = o.types.values().map(|e| &e.decl).collect();
-        let find = |n: &TypeName| o.ty(n).ok();
-        let set = lakelands_core::rights::hide_unshown_references(&mut who, &types, &find);
-        (who, set)
+        Ok((Sight::new(who, list, at, force), Some(list.len())))
     }
 
     /// The log from a position, a page at a time, opened and checked: a

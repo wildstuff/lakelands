@@ -58,8 +58,7 @@ pub fn window(
     let mut w = lake.for_write()?;
     // Under the writer, so through every rename the lake has folded, and
     // with its references as the head's types show them (024, extended).
-    let (who, _) = lake.followed(who.clone(), None, None)?;
-    let (who, _) = Lake::hidden(who, &w.ontology);
+    let who = (lake.sight(who.clone(), None, None, &w.ontology)?.0.who()).clone();
     let (who, followed) = (&who, None);
     let call = Call {
         lake,
@@ -73,13 +72,14 @@ pub fn window(
     let mut d = call.decide(&w, view.as_ref(), now, 0);
     (d.door, d.envelope.origin) = (Door::Source, Origin::Source);
     d.envelope.source = Some(source.clone());
+    let sees = lakelands_core::sight::Sight::held(who, &w.ontology);
     let mut seen: BTreeSet<EventId> = BTreeSet::new();
     let mut drafts = Vec::new();
     let mut committed = 0u32;
     let mut window_links = Vec::new();
     let mut duplicates = 0u32;
     for r in records {
-        let decl = crate::writes::shown_type(&w.ontology, &r.ty, who)?;
+        let decl = sees.ty(&r.ty)?;
         // The key's form before the door, as `upsert` checks it. Then the
         // door: a patch that carries a field the source is not the
         // authority on is refused whole, even when that field's value is

@@ -712,22 +712,22 @@ pub type Find<'f, 'a> = &'f dyn Fn(&TypeName) -> Option<&'a TypeDecl>;
 /// is not learned through what names it. To a fixed point, since a field
 /// so hidden can leave another type unshown (006, extended). A field the
 /// effective `only` of its type names stays as granted, its value the one
-/// the host gave. `types` are the shape's types and `find` answers one by
-/// its name. Answers the fields hidden, in order.
-pub fn hide_unshown_references<'a>(
+/// the host gave. `force` are the declarations in force. Answers the
+/// fields hidden, in order. A sight is made by it, and nothing else asks.
+pub(crate) fn hide_unshown_references(
     who: &mut Principal,
-    types: &[&'a TypeDecl],
-    find: Find<'_, 'a>,
+    force: &dyn crate::sight::InForce,
 ) -> Vec<(TypeName, FieldName)> {
     let mut hidden = Vec::new();
     if !hides_some(who) {
         return hidden;
     }
+    let (types, find) = (force.types(), &|n: &TypeName| force.ty(n));
     loop {
         let unshown =
             |ty: &TypeName| find(ty).is_some_and(|d| !crate::describe::type_shown(d, find, who));
         let mut more = Vec::new();
-        for t in types {
+        for t in &types {
             let only = only(who, &t.name, find);
             let links = (t.relations.iter()).map(|r| {
                 (
