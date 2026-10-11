@@ -10,7 +10,21 @@ access is `none`), the refusal is the one for a field the type does not
 declare (006, extended in lakelands#394). A read at `valid_at` filters on its
 type's `valid_from` and `valid_to`, so it probes them as a filter on
 them would: `find`, `get`, `search`, a pattern's start and every type a
-walk reaches (lakelands#372).
+walk reaches (lakelands#372). A walk keeps each record it meets by its
+own type's valid time, so it probes every type it can meet, not only the
+one a step is judged to reach (lakelands#831). That is the far end of
+each relation the step walks, the set its relation's probe and its read
+ask for (lakelands#829), a hop at a time from where the step stands to
+its range's last hop: every type its relation reaches on the way where
+it names no `type`, and with a `type` that type and those its walk
+passes through to it. A graph from depth 0, a path and `components` walk
+a step's relation from every record they meet, so for them it is each
+type the relation reaches wherever it is declared, within the step's
+depth or not, or the step's `type` alone where it names one. A step of
+no hop meets no record: it probes the type it names, as before, and no
+other. The set is read from the declarations the reader is shown,
+before a record is read: a refusal that waited for a record of the
+type would say that one was reached.
 
 A search probes the searchable fields of its type it searches, in every
 mode, and the vector field it names. One that names no fields searches
