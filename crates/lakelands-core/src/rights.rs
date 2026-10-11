@@ -52,23 +52,75 @@ pub fn is_system(ty: &TypeName) -> bool {
 /// rather than dropped; a `none` given by name, or handed down by a
 /// source, hides it (`docs/decisions/006-grants-not-roles.md`).
 pub fn field_access(who: &Principal, decl: &TypeDecl, field: &FieldDecl) -> Access {
-    access_of(who, decl, field, &mut Vec::new())
+    settled(who, decl, field).1
 }
 
 /// What the grants give a field, before `sensitive` raises it: a type
 /// is shown by this, and `sensitive` shows a field of a type that is
 /// shown, never the type.
 pub fn granted_access(who: &Principal, decl: &TypeDecl, field: &FieldDecl) -> Access {
-    built_from(who, decl, field, &mut Vec::new()).0
+    settled(who, decl, field).0
+}
+
+/// What one walk through the fields a field is built from has asked: a
+/// field's access once it is answered, and none while the walk stands on
+/// it, so a field many others are built from is asked once, not once for
+/// every way that leads to it (lakelands#926). `before` holds the answers
+/// of the walk made before this one, and `met` whether this one came back
+/// to a field it stands on.
+#[derive(Default)]
+struct Asked<'d> {
+    now: BTreeMap<&'d FieldName, Option<Access>>,
+    before: BTreeMap<&'d FieldName, Access>,
+    met: bool,
+}
+
+/// What the grants give `field`, and what it is shown as. Written fields
+/// may list each other in a cycle: a field the walk stands on then answers
+/// as the walk before left it, lowering nothing in the first, and the walk
+/// is made again until no answer moves. So a field has one answer,
+/// whichever field is asked for and whichever way the walk comes round:
+/// the widest under which each is read no further than what it is built
+/// from.
+fn settled<'d>(who: &Principal, decl: &'d TypeDecl, field: &'d FieldDecl) -> (Access, Access) {
+    let mut asked = Asked::default();
+    loop {
+        let built = built_from(who, decl, field, &mut asked);
+        let shown = shown_as(who, decl, field, built);
+        if !asked.met {
+            return (built.0, shown);
+        }
+        // Only the field asked for is still stood on.
+        let now = (asked.now.iter()).map(|(f, a)| (*f, a.unwrap_or(shown)));
+        let now: BTreeMap<_, _> = now.collect();
+        if now == asked.before {
+            return (built.0, shown);
+        }
+        asked = Asked {
+            before: now,
+            ..Asked::default()
+        };
+    }
 }
 
 fn access_of<'d>(
     who: &Principal,
     decl: &'d TypeDecl,
     field: &'d FieldDecl,
-    seen: &mut Vec<&'d FieldName>,
+    asked: &mut Asked<'d>,
 ) -> Access {
-    let (access, from_source) = built_from(who, decl, field, seen);
+    let built = built_from(who, decl, field, asked);
+    shown_as(who, decl, field, built)
+}
+
+/// A field's access as its sources left it, a `sensitive` one nobody
+/// named and no source hid raised to masked.
+fn shown_as(
+    who: &Principal,
+    decl: &TypeDecl,
+    field: &FieldDecl,
+    (access, from_source): (Access, bool),
+) -> Access {
     let named =
         (who.grants.types.get(&decl.name)).is_some_and(|t| t.fields.contains_key(&field.name));
     match access {
@@ -79,29 +131,41 @@ fn access_of<'d>(
 
 /// A field's grant, lowered by each field it is built from that the
 /// principal may not read: to masked by a masked one, to none by any
-/// other, and whether a source hid it. `seen` guards a cycle a
-/// declaration could not hold anyway.
+/// other, and whether a source hid it. A source the walk stands on is not
+/// asked again ([`settled`]).
 fn built_from<'d>(
     who: &Principal,
     decl: &'d TypeDecl,
     field: &'d FieldDecl,
-    seen: &mut Vec<&'d FieldName>,
+    asked: &mut Asked<'d>,
 ) -> (Access, bool) {
     let mut access = who.grants.access(&decl.name, &field.name);
     let mut from_source = false;
-    seen.push(&field.name);
+    asked.now.insert(&field.name, None);
     let measured = decl.measure_reads(&field.name);
     let sources = (field.depends_on.iter())
         .chain(field.embed.iter().flat_map(|e| &e.from))
         .chain(&measured);
     for name in sources {
-        if seen.contains(&name) {
-            continue;
-        }
         let Some(source) = decl.fields.iter().find(|f| &f.name == name) else {
             continue;
         };
-        access = match access_of(who, decl, source, seen) {
+        let of_source = match asked.now.get(&source.name) {
+            Some(Some(answered)) => *answered,
+            Some(None) => {
+                asked.met = true;
+                match asked.before.get(&source.name) {
+                    Some(left) => *left,
+                    None => continue,
+                }
+            }
+            None => {
+                let answered = access_of(who, decl, source, asked);
+                asked.now.insert(&source.name, Some(answered));
+                answered
+            }
+        };
+        access = match of_source {
             s if s.reads() => access,
             // The field's value stays hidden; its write stays the
             // principal's, as the store's write check grants it. A view's
@@ -115,7 +179,6 @@ fn built_from<'d>(
             }
         };
     }
-    seen.pop();
     (access, from_source)
 }
 

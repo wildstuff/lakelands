@@ -132,6 +132,8 @@ pub const ALL: &[Check] = &[
     derived_fields::COMPUTED_BY_THE_FOLD,
     derived_fields::NO_DOOR_WRITES_IT,
     derived_fields::ADDED_LATER,
+    derived_fields::READ_EACH_OTHER,
+    derived_fields::LIST_EACH_OTHER,
     backings::UNBOUND_KIND_REFUSED,
     backings::FILLED_AND_RECORDED,
     backings::ONE_CALL_PER_INPUT,

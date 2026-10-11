@@ -235,6 +235,24 @@ is asked for every field of every record a read answers, a function's
 inputs are on another declaration, and the list `declare` checks and
 `describe` shows would then say less than the rule that reads it.
 
+#### A field is asked once a pass, and fields that list each other are read no further than each other
+
+In one pass of the walk each field is asked once, however many ways lead
+to it: the ways double with every field, so a field asked again on each
+of them makes a type of forty derived fields that each read the later
+ones answer no read, its declaration holding the lake's writer. Written
+fields may list each other as what they are built from, round a cycle,
+and **fields that list each other are read no further than each other,
+all the way round**: a reader who may not read one of them is not
+answered another as read, whichever it asks for first. The walk is made
+again, each field asked once a pass, until no answer moves. A field then
+has one answer, whichever field is asked for and in whatever order the
+type lists them: the widest answers under which every field is read no
+further than what it is built from. So of two fields that list each
+other, one masked and one its reader writes, the second is written and
+not read, being built from a masked field, and the first is hidden,
+being built from one its reader may not read.
+
 #### `sensitive` raises an inherited `none` to `masked`, and a `none` by name always hides
 
 `sensitive` raises only an *inherited* `none`, from the type's or the
@@ -2540,3 +2558,12 @@ Of `only`:
   is not answered and of a holder of `only`; a bundle listed without its
   write to a reviewer without `schema` who holds no `only` is that
   reviewer's to reject.
+- Added: a field is asked once a pass of the walk that answers its
+  access, where it was asked on every way that led to it and a type of
+  forty derived fields that each read the later ones was declared and
+  then answered no read; and fields that list each other are read no
+  further than each other, all the way round, where a cycle was answered
+  by the way the walk came, leaving out the fields it had passed: of two
+  fields listing each other, one masked and one its reader writes, the
+  first was shown masked and is hidden now; no answer is wider
+  (lakelands#926).

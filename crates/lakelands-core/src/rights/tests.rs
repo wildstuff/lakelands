@@ -296,3 +296,222 @@ fn a_view_carries_its_source_only_where_it_groups_by_the_owner() {
     }
     assert!(only.holds(&held) && computed.holds(&held) && !only.holds(&[].into()));
 }
+
+/// A type `invoice` of written fields `f0`, `f1`, …, each listing the
+/// fields of `reads` it is built from, the `sensitive` ones marked.
+fn built(reads: &[&[usize]], sensitive: &[usize]) -> TypeDecl {
+    let name = |i: usize| format!("f{i}");
+    let of = |(i, from): (usize, &&[usize])| FieldDecl {
+        depends_on: from.iter().map(|j| name(*j).as_str().into()).collect(),
+        ..field(&name(i), Authority::Authored, sensitive.contains(&i))
+    };
+    TypeDecl {
+        fields: reads.iter().enumerate().map(of).collect(),
+        ..TypeDecl::named("invoice")
+    }
+}
+
+/// The rule's one step: `f`'s grant lowered by what `of` answers for
+/// each field it is built from, a sensitive one nobody named raised.
+fn ruled(
+    who: &Principal,
+    decl: &TypeDecl,
+    f: &FieldDecl,
+    of: &dyn Fn(&FieldDecl) -> Access,
+) -> Access {
+    let mut access = who.grants.access(&decl.name, &f.name);
+    let mut from_source = false;
+    for d in &f.depends_on {
+        let source = decl.fields.iter().find(|x| &x.name == d).expect("declared");
+        access = match of(source) {
+            s if s.reads() => access,
+            _ if access.writes() => Access::WriteOnly,
+            Access::Masked if access.reads() => Access::Masked,
+            Access::Masked => access,
+            _ => {
+                from_source = true;
+                Access::None
+            }
+        };
+    }
+    let named = who.grants.types["invoice"].fields.contains_key(&f.name);
+    match access {
+        Access::None if f.sensitive && !named && !from_source => Access::Masked,
+        a => a,
+    }
+}
+
+/// A field's access with every source asked again on every way that
+/// leads to it: the rule where no field is built from itself.
+fn plainly(who: &Principal, decl: &TypeDecl, f: &FieldDecl) -> Access {
+    ruled(who, decl, f, &|source| plainly(who, decl, source))
+}
+
+/// The walk as it was: a field on the way the walk came lowers nothing.
+fn by_its_way(who: &Principal, decl: &TypeDecl, f: &FieldDecl, way: &[&FieldName]) -> Access {
+    let way = [way, &[&f.name]].concat();
+    let of = |s: &FieldDecl| match way.contains(&&s.name) {
+        true => Access::Read,
+        false => by_its_way(who, decl, s, &way),
+    };
+    ruled(who, decl, f, &of)
+}
+
+/// The widest answers under which the rule holds for every field of
+/// `decl`: every field taken as read, then the rule's step until none
+/// moves.
+fn widest(who: &Principal, decl: &TypeDecl) -> Vec<(String, Access)> {
+    let mut all: Vec<_> = (decl.fields.iter())
+        .map(|f| (f.name.to_string(), Access::Read))
+        .collect();
+    loop {
+        let of = |s: &FieldDecl| {
+            all.iter()
+                .find(|a| a.0 == s.name.as_str())
+                .expect("a field")
+                .1
+        };
+        let step = |f: &FieldDecl| (f.name.to_string(), ruled(who, decl, f, &of));
+        let next: Vec<_> = decl.fields.iter().map(step).collect();
+        if next == all {
+            all.sort();
+            return all;
+        }
+        all = next;
+    }
+}
+
+const KINDS: [Access; 5] = [
+    Access::None,
+    Access::Masked,
+    Access::Read,
+    Access::Write,
+    Access::WriteOnly,
+];
+
+/// A type of two to seven fields and a principal, the `round`th of a
+/// fixed sequence: each field built from some later ones, and where
+/// `cycles` from earlier ones too.
+fn drawn(round: u64, cycles: bool) -> (TypeDecl, Principal) {
+    let mut x = 0x9e37_79b9_7f4a_7c15 ^ (round + 1).wrapping_mul(0xff51_afd7_ed55_8ccd);
+    let mut next = |m: u64| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        (x % m) as usize
+    };
+    let n = 2 + next(6);
+    let mut reads = vec![Vec::new(); n];
+    for (i, from) in reads.iter_mut().enumerate() {
+        from.extend((0..n).filter(|j| (*j > i || cycles && *j != i) && next(3) == 0));
+    }
+    let reads: Vec<&[usize]> = reads.iter().map(Vec::as_slice).collect();
+    let sensitive: Vec<usize> = (0..n).filter(|_| next(3) == 0).collect();
+    let names: Vec<String> = (0..n).map(|i| format!("f{i}")).collect();
+    let mut grants = Vec::new();
+    for f in &names {
+        if next(2) == 0 {
+            grants.push((f.as_str(), KINDS[next(5)]));
+        }
+    }
+    (
+        built(&reads, &sensitive),
+        principal(KINDS[next(5)], &grants),
+    )
+}
+
+#[test]
+fn a_field_many_others_are_built_from_is_asked_once_and_answers_as_the_rule_does() {
+    // Under every kind of grant, the walk that asks a field once answers
+    // as the rule asked plainly does.
+    for round in 0..2_000 {
+        let (decl, who) = drawn(round, false);
+        for f in &decl.fields {
+            let (is, rule) = (field_access(&who, &decl, f), plainly(&who, &decl, f));
+            assert_eq!(is, rule, "{} of {decl:?} for {:?}", f.name, who.grants);
+        }
+    }
+    // Two ways to one masked field: the second lowers as the first does.
+    // `f1` is masked by it, `f2`, which its reader writes, is not read,
+    // and `f0`, built from both, is hidden by the second.
+    let decl = built(&[&[1, 2], &[3], &[3], &[]], &[]);
+    let who = principal(
+        Access::Read,
+        &[("f2", Access::Write), ("f3", Access::Masked)],
+    );
+    let all: Vec<_> = (decl.fields.iter())
+        .map(|f| field_access(&who, &decl, f))
+        .collect();
+    let (hidden, unread) = (Access::None, Access::WriteOnly);
+    assert_eq!(all, [hidden, Access::Masked, unread, Access::Masked]);
+    // Twenty fields, each built from every later one: 2^18 ways lead from
+    // the first to the last, and one masked field at their end masks all.
+    let reads: Vec<Vec<usize>> = (0..20).map(|i| (i + 1..20).collect()).collect();
+    let reads: Vec<&[usize]> = reads.iter().map(Vec::as_slice).collect();
+    let decl = built(&reads, &[]);
+    let who = principal(Access::Read, &[("f19", Access::Masked)]);
+    for f in &decl.fields {
+        assert_eq!(field_access(&who, &decl, f), Access::Masked, "{}", f.name);
+        assert_eq!(granted_access(&who, &decl, f), Access::Masked, "{}", f.name);
+    }
+}
+
+#[test]
+fn fields_that_list_each_other_have_one_answer_each_and_the_rule_holds_for_all() {
+    use Access::{Masked, None as Hidden, Read, Write, WriteOnly};
+    let answers = |who: &Principal, decl: &TypeDecl| -> Vec<(String, Access)> {
+        let of = |f: &FieldDecl| (f.name.to_string(), field_access(who, decl, f));
+        let mut all: Vec<_> = decl.fields.iter().map(of).collect();
+        all.sort();
+        all
+    };
+    // Two written fields, each listing the other. Read whole, the cycle
+    // lowers nothing.
+    let pair = built(&[&[1], &[0]], &[]);
+    let of = |who: &Principal| {
+        answers(who, &pair)
+            .into_iter()
+            .map(|a| a.1)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(of(&principal(Read, &[("f1", Write)])), [Read, Write]);
+    // `f0` masked: `f1` is built from it, so it is written and not read;
+    // `f0` is built from `f1`, which is not read, so it is hidden. A walk
+    // that left out the field it came from answered `f0` masked.
+    assert_eq!(
+        of(&principal(Masked, &[("f1", Write)])),
+        [Hidden, WriteOnly]
+    );
+    // A sensitive field nobody granted masks the one built from it, and
+    // stays masked itself.
+    let sensitive = built(&[&[1], &[0]], &[0]);
+    let who = principal(Hidden, &[("f1", Read)]);
+    assert_eq!(
+        answers(&who, &sensitive),
+        [("f0".to_string(), Masked), ("f1".to_string(), Masked)]
+    );
+    for round in 0..2_000 {
+        let (decl, who) = drawn(round, true);
+        let all = answers(&who, &decl);
+        // The answers are the widest under which the rule holds for every
+        // field, and none is wider than the walk that left out the fields
+        // on its way answered: read where that read, shown where that
+        // showed, written alike.
+        assert_eq!(all, widest(&who, &decl), "{decl:?}");
+        for (f, (_, is)) in decl.fields.iter().zip(&all) {
+            let was = by_its_way(&who, &decl, f, &[]);
+            let wider = is.reads() && !was.reads() || is.appears() && !was.appears();
+            assert!(
+                !wider && is.writes() == was.writes(),
+                "{}: {was:?}, now {is:?}",
+                f.name
+            );
+        }
+        // And the same in whatever order the type lists its fields and a
+        // field what it is built from.
+        let mut turned = decl.clone();
+        turned.fields.reverse();
+        (turned.fields.iter_mut()).for_each(|f| f.depends_on.reverse());
+        assert_eq!(answers(&who, &turned), all, "{decl:?}");
+    }
+}

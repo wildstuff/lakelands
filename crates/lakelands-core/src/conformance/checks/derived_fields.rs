@@ -11,12 +11,13 @@
 
 use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
 use lakelands_api::write::Declaration;
-use lakelands_api::{Error, Origin, Refusal, TypeName};
+use lakelands_api::{Access, Error, Origin, Refusal, TypeName};
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, computed_by, dec, decimal, derived, field, get_at, head_unmoved, patch, refused_on,
-    refused_unmoved, source_record, try_upsert, type_decl, value,
+    Lake, Must, computed_by, dec, decimal, derived, field, field_access, find_where, get_at,
+    head_unmoved, no_such_field, patch, read, refused_on, refused_unmoved, source_record,
+    try_upsert, type_decl, type_of, value,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -34,6 +35,129 @@ check!(
     ADDED_LATER = a_derived_field_added_to_a_live_type_is_computed_on_later_writes,
     "the ontology: a derived field added with add_field is kept by the fold for every write after it, like one declared with the type"
 );
+
+check!(
+    READ_EACH_OTHER = derived_fields_that_read_each_other_are_each_asked_once,
+    "006, extended (lakelands#926): a type of twenty-eight derived fields, each reading every later one, is declared, and the lake's next declaration, a write, a `get`, `describe` and the `get` of a reader masked from the one field they all read each answer within five seconds, where asking a field once for every way that leads to it asks 2^27 times for one; the first field holds 2^27 times what was written, and that reader is shown all twenty-eight masked"
+);
+
+check!(
+    LIST_EACH_OTHER = fields_that_list_each_other_are_read_no_further_than_each_other,
+    "006, extended (lakelands#926): fields that list each other in `depends_on` are read no further than each other, all the way round: of two written fields `a` and `b` listing each other, to a reader masked on `a` and writing `b`, `b` is written and not read and `a` is hidden, at `get` and in `describe`, and a `where` on `a` is refused as a field the type does not have; read whole they are both read; and two ways to one masked field lower alike: of a field built from two fields that are each built from one masked field, to a reader writing one of the two, the other is masked, the one written is written and not read, and the field built from them is hidden"
+);
+
+async fn fields_that_list_each_other_are_read_no_further_than_each_other(store: Store) -> Held {
+    let (l, s, text) = (Lake::of(store.as_ref()), store.as_ref(), StorageKind::Text);
+    let listing = |name: &str, from: &[&str]| FieldDecl {
+        depends_on: from.iter().map(|f| (*f).into()).collect(),
+        ..field(name, text)
+    };
+    let pair = vec![listing("a", &["b"]), listing("b", &["a"])];
+    l.declare(type_decl("pair", pair)).await?;
+    let ways = [
+        ("f0", &["f1", "f2"][..]),
+        ("f1", &["f3"]),
+        ("f2", &["f3"]),
+        ("f3", &[]),
+    ];
+    let ways = ways.map(|(n, from)| listing(n, from)).to_vec();
+    l.declare(type_decl("ways", ways)).await?;
+    l.upsert("pair", "p1", json!({"a": "x", "b": "y"})).await?;
+    l.upsert(
+        "ways",
+        "w1",
+        json!({"f0": "0", "f1": "1", "f2": "2", "f3": "3"}),
+    )
+    .await?;
+    let shown = |d: &lakelands_api::describe::TypeDescription| -> Vec<(String, Access)> {
+        (d.fields.iter())
+            .map(|f| (f.name.to_string(), f.access))
+            .collect()
+    };
+    let (w, m) = (Access::Write, Access::Masked);
+    let mut red = Vec::new();
+    // Per reader: what `describe` shows, then what `get` answers and masks.
+    for (ty, key, grants, want, answered, masked) in [
+        (
+            "pair",
+            "p1",
+            vec![("a", m), ("b", w)],
+            vec![("b", Access::WriteOnly)],
+            json!({}),
+            &[][..],
+        ),
+        (
+            "pair",
+            "p1",
+            vec![("a", w), ("b", w)],
+            vec![("a", w), ("b", w)],
+            json!({"a": "x", "b": "y"}),
+            &[],
+        ),
+        (
+            "ways",
+            "w1",
+            vec![("f2", w), ("f3", m)],
+            vec![("f1", m), ("f2", Access::WriteOnly), ("f3", m)],
+            json!({}),
+            &["f1", "f3"],
+        ),
+    ] {
+        let who = field_access(s, "reader", ty, &grants);
+        let got =
+            shown(&crate::conformance::fixture::describe_type(l.cat.as_ref(), &who, ty).await?);
+        let want: Vec<_> = want.iter().map(|(n, a)| (n.to_string(), *a)).collect();
+        if got != want {
+            red.push(format!(
+                "`{ty}` under {grants:?} is described {got:?}, not {want:?}"
+            ));
+        }
+        let record = read(l.cat.as_ref(), &who, ty, key).await?;
+        let got = (
+            json!(record.fields),
+            record.masked.iter().map(|f| f.as_str()),
+        );
+        if got.0 != answered || !got.1.clone().eq(masked.iter().copied()) {
+            let got_masked: Vec<_> = got.1.collect();
+            red.push(format!(
+                "`{ty}` `{key}` under {grants:?} answers {} masking {got_masked:?}, not {answered} masking {masked:?}",
+                got.0
+            ));
+        }
+        if grants.iter().any(|g| g.1 != w) {
+            let hidden = if ty == "pair" { "a" } else { "f0" };
+            let (on, filter) = (TypeName::from(ty), find_where(&format!("{hidden} = 'x'")));
+            let found = l.cat.find(&who, &on, filter).await;
+            if !no_such_field(&found, hidden) {
+                red.push(format!(
+                    "a `where` on `{hidden}` under {grants:?}: {found:?}"
+                ));
+            }
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "fields that list each other are read no further than each other: {}",
+        red.join("; ")
+    );
+    Ok(())
+}
+
+/// How long a call of [`READ_EACH_OTHER`] may take: far above what it
+/// costs, far below a walk that doubles with every field.
+const BOUND: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Fail a call that began at `started` and took longer than [`BOUND`].
+fn within(what: &str, started: std::time::Instant) -> Held {
+    let took = started.elapsed();
+    ensure!(
+        took < BOUND,
+        "{what} took {took:?}. Twenty-eight fields that read each other are asked once each, \
+         in milliseconds; a walk that asks a field again for every way that leads to it \
+         doubles with each field (lakelands#926)"
+    );
+    Ok(())
+}
 
 fn gross() -> FieldDecl {
     derived("gross", StorageKind::Decimal, "amount * 1.19", &["amount"])
@@ -312,5 +436,54 @@ async fn a_function_declared_again_with_the_same_inputs_computes_by_its_new_body
              read scaled, total and half as {want:?}, by the body in force there; it reads {got:?}"
         );
     }
+    Ok(())
+}
+
+async fn derived_fields_that_read_each_other_are_each_asked_once(store: Store) -> Held {
+    const N: usize = 28;
+    let (l, num) = (Lake::of(store.as_ref()), StorageKind::Number);
+    let mut fields = vec![field("base", num)];
+    for i in 0..N {
+        let later: Vec<String> = (i + 1..N).map(|j| format!("d{j}")).collect();
+        let mut reads: Vec<&str> = later.iter().map(String::as_str).collect();
+        reads.push("base");
+        fields.push(derived(&format!("d{i}"), num, &reads.join(" + "), &reads));
+    }
+    let now = std::time::Instant::now;
+    let started = now();
+    l.declare(type_decl("sum", fields)).await?;
+    within("declaring the type", started)?;
+    let started = now();
+    l.declare(type_of("other", &[("x", num)])).await?;
+    within("the lake's next declaration", started)?;
+    let started = now();
+    l.upsert("sum", "s1", json!({"base": 1})).await?;
+    within("a write of the type", started)?;
+    let started = now();
+    let rec = l.read("sum", "s1").await?;
+    within("a `get`", started)?;
+    let got = rec.fields.get("d0");
+    ensure!(
+        got.and_then(|v| v.as_f64()) == Some(134_217_728.0),
+        "each field is the sum of every later one and `base`, so `d27` is 1 and `d0` is \
+         2^27 = 134217728, but `d0` reads {got:?}"
+    );
+    let started = now();
+    l.describe().await?;
+    within("`describe`", started)?;
+    // A field is read no further than what it is built from, and theirs in
+    // turn: one masked field at the end of every way masks them all.
+    let masked = field_access(store.as_ref(), "masked", "sum", &[("base", Access::Masked)]);
+    let started = now();
+    let rec = read(l.cat.as_ref(), &masked, "sum", "s1").await?;
+    within("the `get` of a reader masked from `base`", started)?;
+    ensure!(
+        rec.fields.is_empty() && rec.masked.len() == N + 1,
+        "`base` is masked for this reader and every `d` field is built from it, so all {} \
+         are masked and none is read; it reads {:?} and is shown {} masked",
+        N + 1,
+        rec.fields.keys().collect::<Vec<_>>(),
+        rec.masked.len()
+    );
     Ok(())
 }
