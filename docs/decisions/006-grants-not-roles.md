@@ -445,12 +445,17 @@ the declarations in force at its position, which every door asks: `get`, `find`,
 migration's preflight and a refusal that would name a declaration.
 The sight is made of the principal the door is called with: its grants
 are held through the renames, and its references to types it is not
-shown are held at `none`. The listing of proposals alone still follows
-its reader's grants itself, to the position an entry was proposed at.
+shown are held at `none`. The listing of proposals, and the accept and
+the reject that go by it, alone make more than one: of the lake in
+force, of the lake as an entry would leave it, and of the lake as the
+entry was proposed against, each of the reader as its call named it,
+its grants followed there (013, extended).
 Following comes first, since a grant held through a rename may hide what
 the grants as given do not. A write judges under its lock with the
 principal its call was made with, and is refused to be sent again where
-the types moved under it.
+the types moved under it so that the head hides other references from
+it than its call was shown; one that waited while types moved that
+hide nothing more from it is applied.
 
 What is shown does not turn on a read's valid time. A read at `valid_at`
 filters records by the type's valid-time fields, so the read that
@@ -464,4 +469,7 @@ write at a valid time, and whole without one.
 The doors are held together by one row: for each of a cast of principals
 and each type of a lake, a type `describe` names is at no door a name
 that is not declared, and one it does not name is at every door exactly
-that.
+that: at a read, a write, `link` and `unlink`, an ingest, a call, a
+proposal and a migration's preflight. The accept and the reject are
+held to the listing by a second row, a grid of proposed entries and
+reviewers (013, extended).

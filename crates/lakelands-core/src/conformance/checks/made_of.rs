@@ -9,14 +9,14 @@ use lakelands_api::read::{AggFunc, Aggregate, Get, GroupKey, OrderBy};
 use lakelands_api::write::{ProposalFilter, ProposedWrite, WriteOpts};
 use lakelands_api::{
     Access, Catalog, Error, FieldName, Find, Grants, LakeStore, Missing, Principal, PrincipalKind,
-    TypeName,
+    TypeName, ingest_all,
 };
 use serde_json::json;
 
 use super::links::{SEPT, lake, link_ok};
 use crate::conformance::fixture::{
     Lake, Must, agg, aggregate, alike_renamed, field, field_access, get_at, object_set_on, order,
-    patch, pattern, principal, step, trigger_on, view_of,
+    patch, pattern, principal, source_record, step, trigger_on, view_of,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -35,7 +35,7 @@ check!(
 
 check!(
     KEPT_AT_EVERY_DOOR = a_type_kept_from_its_reader_is_kept_at_every_door,
-    "006, extended (lakelands#636, lakelands#635): to one whose grants give it nothing of a type that declares a sensitive field, the type, the link type of its relation and each view made of it (a count that reads no field, a grouping and a sum that read its fields, a view over that view, and a view that merges it beside a type the reader is shown) answer `describe_type`, `get` of a key that is there and of one that is not, `find`, with a total and with an aggregate, `search` and a pattern, and the type `upsert`, `retire` and `link`, and a verb of each risk on the type `call` and `propose`, value for value as a name that is not declared, and `describe` and the tools name none of them; so to one with no grant, to one granted to read each view and the link type by name, and to one who reads the whole lake but that type; and the doors answer by what `describe` shows (lakelands#798): a type it names to a reader, and a verb on it, is at none of them a name that is not declared"
+    "006, extended (lakelands#636, lakelands#635): to one whose grants give it nothing of a type that declares a sensitive field, the type, the link type of its relation and each view made of it (a count that reads no field, a grouping and a sum that read its fields, a view over that view, and a view that merges it beside a type the reader is shown) answer `describe_type`, `get` of a key that is there and of one that is not, `find`, with a total and with an aggregate, `search` and a pattern, and the type `upsert`, `retire`, `link`, `unlink`, an ingest and a migration's preflight, and a verb of each risk on the type `call` and `propose`, value for value as a name that is not declared, and `describe` and the tools name none of them; so to one with no grant, to one granted to read each view and the link type by name, and to one who reads the whole lake but that type; and the doors answer by what `describe` shows (lakelands#798): a type it names to a reader, and a verb on it, is at none of them a name that is not declared"
 );
 
 check!(
@@ -328,6 +328,18 @@ async fn doors(
         said_to.push(said(c.retire(who, &t, k, opts()).await));
         let linked = c.link(who, &t, k, by, to, Default::default(), opts());
         said_to.push(said(linked.await));
+        said_to.push(said(c.unlink(who, &t, k, by, to, opts()).await));
+        // An ingest of a record of it, and the preflight of its migration.
+        let record = vec![source_record(ty, key, json!({"cat": "c"}))];
+        said_to.push(said(ingest_all(c, who, &"feed".into(), record).await));
+        let to = lakelands_api::ontology::TypeDecl::named(ty);
+        said_to.push(said(
+            c.migrate(
+                who,
+                serde_json::from_value(json!({"to": to})).expect("a migration"),
+            )
+            .await,
+        ));
         // A verb on the type, called and proposed: `<type>_ok` is low risk.
         for verb in [format!("{ty}_ok"), format!("{ty}_hold")] {
             let verb = verb.as_str().into();
@@ -460,9 +472,12 @@ async fn a_type_kept_from_its_reader_is_kept_at_every_door(store: Store) -> Held
             ..Default::default()
         };
         let types = types.iter().map(|t| ((*t).into(), held.clone())).collect();
+        // Each ingests and holds `schema`, so that those doors judge the type.
         let grants = Grants {
             default,
             types,
+            ingest: true,
+            schema: true,
             ..Grants::default()
         };
         principal(store.as_ref(), PrincipalKind::Human, id, grants)

@@ -121,7 +121,10 @@ record that does not exist.
   on any type changes no shape: every schema door and the proposal of a declaration or a
   migration are refused to it, and no migration's proposal, of a type or
   a value type, is listed to it, since a report counts every owner's
-  records. A reference written into the type from another type must
+  records; its accept and its reject answer as an id that does not
+  exist, as for any entry that is not listed (013, extended), while a
+  proposed declaration is listed and not granted to decide. A
+  reference written into the type from another type must
   name an admitted record.
 - **`describe`** tells the holder its pairs in `may.only`, where the
   grant can be applied, and offers no write, link or verb that would be
@@ -273,7 +276,12 @@ record holds is refused: it is refused as that one is. A proposed call
 on such a link was listed whole to a reviewer who is not answered the
 link, and that reviewer could reject it, though its accept was refused:
 it is listed without its write, and is no more that reviewer's to
-decide than any proposal it is not listed whole. A migration's report
+decide than any proposal it is not listed whole. Its accept was
+refused for a verb that writes the link and ran for one that reaches
+outside the lake; it is refused for both. The hold has the same side:
+a proposed call on a link with a held end was listed whole to a
+reviewer without `restricted`, whose accept and reject of it were
+refused; it is listed without its write. A migration's report
 named, among its sample keys, a link with an end held from its reader,
 and the links of a link type its reader is not shown: it names
 neither, and its counts stay whole (027).

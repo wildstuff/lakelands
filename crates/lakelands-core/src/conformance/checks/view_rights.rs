@@ -5,11 +5,15 @@
 
 use std::fmt::Debug;
 
+use lakelands_api::error::Case;
 use lakelands_api::read::{Find, Get};
+use lakelands_api::write::Declaration;
 use lakelands_api::{Access, Error, Refusal};
 use serde_json::json;
 
-use crate::conformance::fixture::{Lake, Must, field_access, pattern, reads_all};
+use crate::conformance::fixture::{
+    Lake, Must, field_access, invalid_case, migration, pattern, reads_all, refused_on,
+};
 use crate::conformance::{Held, Store};
 
 check!(
@@ -174,6 +178,40 @@ async fn a_views_definition_is_shown_to_those_its_read_answers(store: Store) -> 
          then after:\n{}",
         told.join("\n")
     );
+    // `declare` and the migration preflight ask the same of a view's own
+    // sources, the preflight before it says that a view is not migrated:
+    // an author kept from `salary` and masked on `body` makes a view that
+    // names a measure as either is named, and none whose `where` reads
+    // `body`.
+    let author = &cast[2].0;
+    let masked = Some(("body", &Refusal::NotGranted));
+    for (first, filter) in [("salary", None), ("body", None), ("m", Some("body = 'x'"))] {
+        let fields = [("team", "text"), ("n", "number"), (first, "number")];
+        let fields = fields.map(|(n, k)| json!({"name": n, "type": {"kind": k}}));
+        let measures = json!([{"name": first, "expr": "count()"},
+                              {"name": "n", "expr": format!("{first} + 1")}]);
+        let view = json!({"source": "invoice", "group_by": ["team"], "measures": measures,
+                          "where": filter});
+        let to = json!({"name": "by_alias", "key": ["team"], "fields": fields, "view": view});
+        let to: lakelands_api::ontology::TypeDecl = serde_json::from_value(to).expect("a view");
+        let mut new = to.clone();
+        new.name = format!("mine_{first}").as_str().into();
+        let flown = l.cat.migrate(author, migration(to)).await;
+        let declared = l.cat.declare(author, Declaration::Type(new)).await;
+        let told = (refused_on(&flown), refused_on(&declared));
+        let of_view = matches!(invalid_case(&flown), Some(Case::MigrationOfView { .. }));
+        ensure!(
+            if filter.is_none() {
+                of_view && declared.is_ok()
+            } else {
+                told == (masked, masked)
+            },
+            "an author kept from `salary` and masked on `body` declares a view whose measure is \
+             named `{first}`, its preflight refused only as a view's; one whose `where` is \
+             {filter:?} is refused both on `body` as not granted; the preflight answered \
+             {flown:?}, the declaration {declared:?}"
+        );
+    }
     Ok(())
 }
 

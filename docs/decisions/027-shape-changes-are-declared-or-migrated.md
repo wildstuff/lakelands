@@ -573,7 +573,10 @@ To its author such a type is one that is not declared:
 - **To declare the type itself is not granted,** and so is to propose
   it. This is the one door that cannot hide that the name is taken: for
   a free name it creates the type. The refusal names no field and tells
-  nothing else, and nothing is written.
+  nothing else, and nothing is written. An object set its proposer is
+  not shown is the same (lakelands#877): to propose a set under its
+  name, of any type, is not granted, where the refusal a set's own rule
+  gives would name the type it holds.
 
 The test comes before the author's view is completed and before
 anything is appended. An accepter stays as it was: it may accept by its

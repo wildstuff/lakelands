@@ -21,6 +21,7 @@ mod concurrency;
 mod cursors;
 mod date_bucket;
 mod dates;
+mod decided_as_listed;
 mod decimals;
 mod derived_fields;
 mod derived_relations;
@@ -270,6 +271,7 @@ pub const ALL: &[Check] = &[
     verb_reads::VERB_READS_AS_A_FILTER,
     proposal_names::NAMES_AS_THE_READERS_VIEW,
     proposal_names::LISTED_AS_SHOWN,
+    decided_as_listed::DECIDED_AS_LISTED,
     report_names::REPORT_AS_ITS_READERS_VIEW,
     shown_hash::HASH_OF_THE_SHOWN_SHAPE,
     shown_hash::STALE_BY_ITS_NAMES,

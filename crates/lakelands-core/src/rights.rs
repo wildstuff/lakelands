@@ -147,17 +147,18 @@ pub fn type_access(who: &Principal, ty: &TypeName) -> Access {
         .unwrap_or(who.grants.default)
 }
 
-/// A stored record as one principal may see it; `None` when the record is
-/// withheld from it (retired, or restricted without the grant).
+/// A stored record as a sight's principal may see it; `None` when the
+/// record is retired, or held from it ([`Sight::withheld`]).
 pub fn visible(
-    who: &Principal,
+    sees: &crate::sight::Sight,
     decl: &TypeDecl,
     stored: &StoredRecord,
     with_meta: bool,
 ) -> Option<Record> {
-    if stored.retired || (stored.restricted && !who.grants.restricted) {
+    if stored.retired || sees.withheld(stored) {
         return None;
     }
+    let who = sees.who();
     let mut fields = BTreeMap::new();
     let mut masked = Vec::new();
     let mut meta = BTreeMap::new();

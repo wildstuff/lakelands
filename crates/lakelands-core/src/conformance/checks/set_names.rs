@@ -7,6 +7,7 @@
 //! is `open` (`i1`, `i2`, `i5`), `big` those above 100 (`i2` to `i5`). Every
 //! set below is counted by hand from that.
 
+use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::StorageKind::{Json, Number, Text};
@@ -18,8 +19,8 @@ use serde_json::json;
 
 use crate::conformance::fixture::{
     Lake, Must, alike_renamed, derived, events_from, field, field_access, find_at, head_unmoved,
-    limits, migration, object_set_on, reference, refused_like, refused_on, trigger_on, type_decl,
-    type_of,
+    invalid_case, limits, migration, object_set_on, reference, refused_like, refused_on,
+    trigger_on, type_decl, type_of,
 };
 use crate::conformance::{Failure, Given, Held, Store};
 
@@ -36,7 +37,7 @@ check!(
 
 check!(
     RIGHTS = a_named_set_is_read_by_the_right_to_read_what_its_filter_reads,
-    "024, extended (lakelands#552): a reader kept from a field is answered, for in_set of a set whose filter reads it, directly or through the sets it names, as for a set that is not declared; describe lists it no such set; a write's answer names it no such set joined or left; an author kept from the field declares no set that names one, and with the `schema` grant is shown each set's definition and still refused the read of one (lakelands#798)"
+    "024, extended (lakelands#552): a reader kept from a field is answered, for in_set of a set whose filter reads it, directly or through the sets it names, as for a set that is not declared; describe lists it no such set; a write's answer names it no such set joined or left; an author kept from the field declares no set that names one, and with the `schema` grant is shown each set's definition and still refused the read of one (lakelands#798); a proposer without `schema` that proposes a set, or a trigger whose `when` names one, over a set it is not shown is refused as over a name no set bears, and to declare a set under that name, of any type, is not granted to it, where its author is told the set's type; a set of a type its reader is not shown is a set that is not declared, to a read and to a trigger's `when`, and to declare a set under its name, of any type, is not granted where a name no set bears is proposed, to a holder of `schema` too (lakelands#877)"
 );
 
 const TYPE: &str = "invoice";
@@ -335,20 +336,117 @@ async fn a_named_set_is_read_by_the_right_to_read_what_its_filter_reads(store: S
     let mut author = kept.clone();
     author.grants.schema = true;
     let before = s.head().await.must("the head")?;
+    // One without `schema` proposes none either, nor a trigger whose `when`
+    // names one, and is told no more than a read tells it: the set is one
+    // that is not declared (lakelands#798, lakelands#877). A set's `where`
+    // and a trigger's `when` are the declarations that name a set; a verb's
+    // `requires` and a view's `where` take none (`REFUSED`).
+    let naming = |n: &str, when: bool| {
+        let filter = format!("in_set('{n}')");
+        let set = || set("mine", &filter);
+        let d = if when {
+            trigger_on("mine", TYPE, Some(&filter))
+        } else {
+            set()
+        };
+        let write = lakelands_api::write::ProposedWrite::Declare {
+            declarations: vec![d],
+        };
+        l.cat.propose(&kept, write, "mine".into())
+    };
+    for when in [false, true] {
+        let (mine, none) = (naming("open", when).await, naming("ghost", when).await);
+        let what = format!("`kept` proposing what names `open` (in a trigger's `when`: {when})");
+        let none = none.must_fail("proposing what names `ghost`")?;
+        alike_renamed(&what, &mine.must_fail(&what)?, &none, ("ghost", "open"))?;
+    }
+    // An author is shown each set's definition, so its refusal names what
+    // `open` reads, as a field the type does not have; and it reads no set
+    // it may not read, answered as `kept` is.
     let mine = l.cat.declare(&author, set("mine", "in_set('open')")).await;
-    ensure!(
-        mine.is_err(),
-        "an author kept from `status` declares no set naming `open`; it answered {mine:?}"
-    );
-    // It is shown each set's definition, and reads no set it may not read.
     let described = l.cat.describe(&author, Default::default()).await;
     let shown = described.must("describing the lake to an author")?.data;
     let read = found(&l, &author, "in_set('open')", None).await;
+    let what = "an author kept from `status`, shown its definition, reading by `open`";
+    alike_renamed(what, &read.must_fail(what)?, &ghost, ("ghost", "open"))?;
     ensure!(
-        shown.object_sets.len() == 3 && read.is_err(),
-        "an author kept from `status` is shown the three sets and refused a read naming \
-         `open`; it was shown {:?}, and the read answered {read:?}",
+        matches!(invalid_case(&mine), Some(Case::UnknownField { field, .. }) if field.as_str() == "status"),
+        "an author kept from `status` declares no set naming `open`, refused as on a field \
+         `invoice` does not have; it answered {mine:?}"
+    );
+    ensure!(
+        shown.object_sets.len() == 3,
+        "an author kept from `status` is shown the three sets; it was shown {:?}",
         shown.object_sets
     );
-    head_unmoved(s, before, "the refused declaration").await
+    head_unmoved(s, before, "the refused declaration").await?;
+    // To declare a set the lake declares and its proposer is not shown is
+    // not granted, for either type, as for a type (027); its author, shown
+    // it, is told that the name is taken by a set of `invoice`.
+    let again = |who: &Principal, of: &str, name: &str| {
+        let declarations = vec![object_set_on(name, of, "true")];
+        let write = lakelands_api::write::ProposedWrite::Declare { declarations };
+        let (who, cat) = (who.clone(), &l.cat);
+        async move { cat.propose(&who, write, "mine".into()).await }
+    };
+    let (other, same) = (
+        again(&kept, "partner", "open").await,
+        again(&kept, TYPE, "open").await,
+    );
+    let free = again(&kept, "partner", "ghost").await;
+    let retyped = l
+        .cat
+        .declare(&author, object_set_on("open", "partner", "true"))
+        .await;
+    ensure!(
+        crate::conformance::fixture::reason(&other) == Some(&Refusal::NotGranted)
+            && other.as_ref().err() == same.as_ref().err()
+            && matches!(free, Ok(Outcome::Proposed { .. }))
+            && matches!(invalid_case(&retyped), Some(Case::SetRetyped { was, .. }) if was.as_str() == TYPE),
+        "`kept` proposing a set `open`, of `partner` and of `invoice`, is not granted either \
+         ({other:?}, {same:?}), `ghost` is proposed ({free:?}), and an author shown `open` is \
+         told its type ({retyped:?})"
+    );
+    // A set of a type its reader is not shown is one that is not declared,
+    // at a read and in a trigger's `when`, and a set under its name is not
+    // granted (006): `nok` holds `schema` and may not know of the field
+    // that keys `vault`.
+    let vault = json!({"declare": "type", "name": "vault", "key": ["id"], "fields": [
+        {"name": "id", "type": {"kind": "text"}, "required": true},
+        {"name": "state", "type": {"kind": "text"}}]});
+    l.declare_json(vault).await?;
+    l.declare_as(object_set_on("vs", "vault", "state = 'x'"), "vs")
+        .await?;
+    let types = json!({"vault": {"fields": {"id": "none"}}});
+    let grants = json!({"default": "read", "schema": true, "types": types});
+    let nok = super::only::holder(s, "nok", grants);
+    let what = "a read naming `vs`, a set of a type `nok` is not shown";
+    let read = found(&l, &nok, "in_set('vs')", None).await;
+    alike_renamed(what, &read.must_fail(what)?, &ghost, ("ghost", "vs"))?;
+    let when = |n: &str| {
+        let d = trigger_on("mine", TYPE, Some(&format!("in_set('{n}')")));
+        let write = lakelands_api::write::ProposedWrite::Declare {
+            declarations: vec![d],
+        };
+        l.cat.propose(&nok, write, "mine".into())
+    };
+    let (mine, none) = (when("vs").await, when("ghost").await);
+    let what = "`nok` proposing a trigger whose `when` names `vs`";
+    let (taken, same) = (
+        again(&nok, "partner", "vs").await,
+        again(&nok, TYPE, "vs").await,
+    );
+    let free = again(&nok, "partner", "ghost").await;
+    let undeclared = matches!(invalid_case(&none), Some(Case::SetUndeclared { .. }));
+    ensure!(
+        undeclared
+            && crate::conformance::fixture::reason(&taken) == Some(&Refusal::NotGranted)
+            && taken.as_ref().err() == same.as_ref().err()
+            && matches!(free, Ok(Outcome::Proposed { .. })),
+        "a trigger that names `ghost` names a set that is not declared ({none:?}), `nok` is \
+         not granted a set under the name `vs`, of either type ({taken:?}, {same:?}), and \
+         is proposed one under `ghost` ({free:?})"
+    );
+    let none = none.must_fail("proposing a trigger that names `ghost`")?;
+    alike_renamed(what, &mine.must_fail(what)?, &none, ("ghost", "vs"))
 }
