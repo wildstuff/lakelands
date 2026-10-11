@@ -241,3 +241,45 @@ retired record too: a key whose retired record is held is otherwise
 closed to every writer without the grant for good. What is still told
 is accepted, as for `only`: a cardinality refusal and an accept's
 refusal each say that a record the caller is not answered exists.
+
+## Extended: one answer of what a grant admits, and one of a record (lakelands#798, lakelands#871)
+
+What `only` admits of a type's records was worked out where it was
+asked. A read took the effective pairs and checked beside them whether
+the grant can be applied; a write asked the type's own pairs; two sites
+took the bare pairs, where an empty list also meant every record.
+Whether a record is answered was stated seven times, each judging the
+hold, the pairs and a link's ends by its own means, and some left a
+part out. So each question has one answer, in the sight (006,
+extended).
+
+What a grant admits is every record, the records that hold its pairs, a
+view's records computed from the admitted ones and held to its pairs,
+or nothing. A grant that cannot be applied admits nothing
+(lakelands#771), and no reading of the answer makes every record of an
+empty list or of a missing one: a door reaches the pairs through the
+answer alone. A record is answered where it is not held from the
+principal (006) and its grant admits it, and a link with its ends: each
+end whose type the principal holds `only` on is admitted, retired or
+not, and no end is held from it. A read, a write of the record, a
+reference to it, a relation's cardinality, an aging rule in a rename's
+report, the listing of a proposed write, with the accept and the reject
+that go by it, and a migration's report ask these.
+
+Three doors judged a link by its record alone, and judge it now as a
+read of it does (lakelands#871). A reference to a link whose end the
+writer's `only` does not admit was accepted, where one to a link no
+record holds is refused: it is refused as that one is. A proposed call
+on such a link was listed whole to a reviewer who is not answered the
+link, and that reviewer could reject it, though its accept was refused:
+it is listed without its write, and is no more that reviewer's to
+decide than any proposal it is not listed whole. A migration's report
+named, among its sample keys, a link with an end held from its reader,
+and the links of a link type its reader is not shown: it names
+neither, and its counts stay whole (027).
+
+**Why.** A judgement stated twice is two rules once one of them
+changes, and the one left behind hands out what the other keeps: each
+of the three doors was a copy with a part missing. An answer that fails
+closed cannot be skipped: a site that asks nothing has no pairs to
+filter by, and so no record to hand out.

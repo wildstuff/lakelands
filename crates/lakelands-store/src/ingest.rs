@@ -132,7 +132,7 @@ pub fn window(
                 end.map(lakelands_api::RecordKey::from)
             };
             if let (Some(from), Some(to)) = (end(links::FROM), end(links::TO)) {
-                crate::writes::cardinality(view.as_ref(), who, &t.name, relation, &from, &to)?;
+                crate::writes::cardinality(view.as_ref(), &sees, &t.name, relation, &from, &to)?;
                 crate::writes::cardinality_among(&window_links, &r.ty, relation, &from, &to)?;
                 window_links.push((r.ty.clone(), from, to));
             }
