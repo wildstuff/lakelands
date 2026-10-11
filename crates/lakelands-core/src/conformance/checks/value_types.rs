@@ -11,6 +11,7 @@
 //! `scale` is neither. A migration that renames values is in
 //! `value_renames.rs`.
 
+use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind, ValueTypeDecl};
 use lakelands_api::write::{Declaration, ValueTypeReport};
@@ -18,8 +19,9 @@ use lakelands_api::{Access, Error, Grants, LakeStore, PrincipalKind, Refusal, Wr
 use serde_json::{Value, json};
 
 use crate::conformance::fixture::{
-    Lake, Must, events_after, field, field_access, head_unmoved, invalid_like, log_events,
-    object_set_on, principal, reason, refused_on, reviewer, trigger_on, try_upsert, type_decl,
+    Lake, Must, events_after, field, field_access, head_unmoved, invalid_case, invalid_like,
+    log_events, object_set_on, principal, reason, refused_on, reviewer, trigger_on, try_upsert,
+    type_decl,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -50,7 +52,7 @@ check!(
 
 check!(
     STALE_REPORT = a_value_type_report_from_before_the_lake_moved_is_refused,
-    "027: a value-type migration is applied only against the report of the lake as it stands; after the lake moved it is refused as invalid"
+    "027 and 006: a value-type migration is applied only against the report of the lake as it stands; after the lake moved it is refused as invalid; and only by the id of the report its caller was shown: two readers kept from different uses of one tightening, each applying by the other's id, are refused as `migration_stale`, appending nothing, where its own applies (lakelands#935)"
 );
 
 check!(
@@ -470,7 +472,38 @@ async fn a_value_type_report_from_before_the_lake_moved_is_refused(store: Store)
         matches!(reason(&e), Some(Refusal::Invalid(..))),
         "a stale report was refused as {e:?}; invalid was expected"
     );
-    head_unmoved(store.as_ref(), before, "a stale value-type report").await
+    head_unmoved(store.as_ref(), before, "a stale value-type report").await?;
+    // An id names the report its reader was shown: two readers kept from
+    // different uses are given two, and each other's is stale.
+    let kept = |id, ty, field| {
+        let mut who = field_access(store.as_ref(), id, ty, &[(field, Access::None)]);
+        who.grants.schema = true;
+        who
+    };
+    let (ka, kb) = (
+        kept("ka", "invoice", "status"),
+        kept("kb", "ticket", "state"),
+    );
+    let to = status(&["open", "paid", "late"]);
+    let mut ids = Vec::new();
+    for who in [&ka, &kb] {
+        let r = cat.migrate_value_type(who, to.clone().into()).await;
+        ids.push(r.must("a kept reader's preflight")?.data.report_id);
+    }
+    let before = store.head().await.must("reading the head")?;
+    for (who, other) in [(&ka, &ids[1]), (&kb, &ids[0])] {
+        let said = cat.migrate_value_type_apply(who, to.clone().into(), other);
+        let said = said.await;
+        ensure!(
+            matches!(invalid_case(&said), Some(Case::MigrationStale)),
+            "`{}` applying by the other reader's id must be `migration_stale`; it answered {said:?}",
+            who.id
+        );
+    }
+    head_unmoved(store.as_ref(), before, "an apply by another's id").await?;
+    let own = cat.migrate_value_type_apply(&ka, to.into(), &ids[0]).await;
+    own.must("applying by the id of the report `ka` was shown")?;
+    Ok(())
 }
 
 async fn a_value_type_migration_needs_the_schema_grant(store: Store) -> Held {

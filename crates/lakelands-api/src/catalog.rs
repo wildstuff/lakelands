@@ -149,14 +149,12 @@ pub trait Catalog: Send + Sync {
     /// Record a write as a proposal instead of applying it.
     async fn propose(&self, who: &Principal, write: ProposedWrite, why: String) -> Result<Outcome>;
 
-    /// Accept a proposal: its write is applied, caused by the acceptance
-    /// and written as the proposer. It is applied under the proposer's
-    /// grants as they were when it was proposed: the write was checked
-    /// whole then, and a reviewer applies exactly what was checked. At
-    /// acceptance the store checks again only what can have moved since —
-    /// the type's shape and the record's version. A proposal its reviewer
-    /// is not listed is not found, a call whose verb reads a field the
-    /// reviewer may not read among them (013, 024). An accepted external
+    /// Accept a proposal: its write is applied as it was logged, whole,
+    /// caused by the acceptance and written in the proposer's name, not
+    /// under its grant, which is not in the log. At acceptance the store
+    /// checks the write again at the head, in the order of refusals. A
+    /// proposal its reviewer is not listed is not found, a call whose verb
+    /// reads a field the reviewer may not read among them (013, 006). An accepted external
     /// verb answers its executor's recorded `output`, as `call` does, and
     /// so does the accept sent again; any other accept sent again is
     /// `decided`.
@@ -172,9 +170,10 @@ pub trait Catalog: Send + Sync {
     ) -> Result<Outcome>;
 
     /// Proposals, newest first. A principal with the review grant lists
-    /// every proposal; any other lists only its own, so a proposer can
-    /// follow what became of what it proposed
-    /// (`docs/decisions/013-verbs-run-by-declared-risk.md`).
+    /// every proposal there to it, each as its view; any other lists only
+    /// its own, so a proposer can follow what became of what it proposed
+    /// (`docs/decisions/013-verbs-run-by-declared-risk.md`,
+    /// `docs/decisions/006-grants-not-roles.md`).
     async fn proposals(
         &self,
         who: &Principal,
