@@ -570,7 +570,7 @@ impl Sight<'_> {
         let is_link = crate::links::is_link_type(&t.name);
         // A holder of `only` writes its own records, and makes one only where
         // it writes every field its `only` names (051).
-        let held = only_holder(who, t);
+        let held = only_holder(who, t, self.force);
         let may = TypeRights {
             find: true,
             get: true,
@@ -671,7 +671,7 @@ impl Sight<'_> {
         // A verb that waits for review is proposed, and a holder of `only`
         // proposes none that could move its pairs (051). One on a type not
         // shown would name it.
-        let held = only_holder(who, t) && !pinnable(who, t, Some(v));
+        let held = only_holder(who, t, self.force) && !pinnable(who, t, Some(v));
         if self.ty(&v.on).is_err() || !self.callable(t, v) || (held && v.risk != Risk::Low) {
             return None;
         }

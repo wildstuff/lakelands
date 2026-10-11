@@ -171,16 +171,17 @@ impl<'o> Sight<'o> {
     }
 
     /// Whether a link of `decl` is judged by its ends for its principal:
-    /// one that holds `only` on an end's type (051), or is without
-    /// `restricted` (006).
+    /// one that holds `only` on an end's type, or on an end's of an end
+    /// that is a link (051), or is without `restricted` (006).
     pub fn judges_ends(&self, decl: &TypeDecl) -> bool {
-        !rights::held_ends(&self.who, decl).is_empty()
+        !rights::held_ends(&self.who, decl, &|n| self.force.ty(n)).is_empty()
             || (!self.who.grants.restricted && crate::links::is_link_type(&decl.name))
     }
 
     /// Of links of `decl` holding `rows`, which are there with their ends:
     /// every end whose type its principal holds `only` on admitted, that
-    /// end retired or not (051), and no end it is not answered (006). A
+    /// end retired or not (051), no end it is not answered (006), and an
+    /// end that is a link there with its own ends, as deep as they go. A
     /// read, a write of the link and a reference to it ask this alone.
     /// `get` reads the records of an end's type by key, once for the
     /// batch. The records of any other type all pass.
@@ -188,13 +189,13 @@ impl<'o> Sight<'o> {
         &self,
         decl: &TypeDecl,
         rows: &[&BTreeMap<FieldName, Value>],
-        mut get: impl FnMut(&TypeName, &[RecordKey]) -> Result<Vec<StoredRecord>, E>,
+        get: &mut impl FnMut(&TypeName, &[RecordKey]) -> Result<Vec<StoredRecord>, E>,
     ) -> Result<Vec<bool>, E> {
         let mut out = vec![true; rows.len()];
-        if !self.judges_ends(decl) {
+        if rows.is_empty() || !self.judges_ends(decl) {
             return Ok(out);
         }
-        let held = rights::held_ends(&self.who, decl);
+        let held = rights::held_ends(&self.who, decl, &|n| self.force.ty(n));
         let named = [crate::links::FROM, crate::links::TO];
         let ends = (decl.fields.iter()).filter(|f| named.contains(&f.name.as_str()));
         for (field, end) in ends.filter_map(|f| Some((&f.name, f.ty.target.as_ref()?))) {
@@ -206,10 +207,12 @@ impl<'o> Sight<'o> {
                 .any(|(f, _)| *f == field)
                 .then(|| self.admit(end));
             let found = get(end, &keys)?;
-            let admitted = (found.iter())
-                .filter(|e| only.as_ref().is_none_or(|a| a.holds(&e.fields)))
-                .filter(|e| !self.withheld(e));
-            let admitted: BTreeSet<&RecordKey> = admitted.map(|e| &e.key).collect();
+            let deep: Vec<_> = found.iter().map(|e| &e.fields).collect();
+            let deep = (self.force.ty(end)).map_or(Ok(Vec::new()), |d| self.ends(d, &deep, get))?;
+            let admitted = (found.iter().enumerate())
+                .filter(|(i, e)| deep.get(*i) != Some(&false) && !self.withheld(e))
+                .filter(|(_, e)| only.as_ref().is_none_or(|a| a.holds(&e.fields)));
+            let admitted: BTreeSet<&RecordKey> = admitted.map(|(_, e)| &e.key).collect();
             let present: BTreeSet<&RecordKey> = found.iter().map(|e| &e.key).collect();
             for (ok, r) in out.iter_mut().zip(rows) {
                 // An end no record holds is judged by `only` alone.

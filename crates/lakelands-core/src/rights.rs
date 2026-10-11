@@ -245,17 +245,18 @@ fn only_seen<'a>(
     }
     seen.push(ty);
     let sources = std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source));
+    let ends_held = |d: &TypeDecl| !held_ends(who, d, find).is_empty();
     let held = |s: &TypeName, seen: &mut Vec<TypeName>| {
         let (p, computed) = only_seen(who, s, find, seen);
         let whole = p.is_empty() && !computed;
-        (!whole || find(s).is_some_and(|d| ends_held(who, d))).then_some((p, computed))
+        (!whole || find(s).is_some_and(ends_held)).then_some((p, computed))
     };
     let held: Vec<_> = sources.filter_map(|s| Some((s, held(s, seen)?))).collect();
     seen.pop();
     let Some((source, (p, computed))) = held.first() else {
         return (pairs, false);
     };
-    let stored = find(source).is_some_and(|d| d.view.is_none() && !ends_held(who, d));
+    let stored = find(source).is_some_and(|d| d.view.is_none() && !ends_held(d));
     let grouped = p.iter().all(|(f, _)| v.group_by.contains(f));
     let carried = !computed && v.merge.is_empty() && stored && grouped;
     pairs.extend(p.iter().filter(|_| carried).cloned());
@@ -342,10 +343,13 @@ pub(crate) fn admitted(pairs: &[(FieldName, Value)], fields: &BTreeMap<FieldName
 
 /// The end types of a link type `decl` whose records `who` is admitted
 /// only some of, with the link field that names each: a link record is
-/// withheld unless both its ends are admitted.
-pub(crate) fn held_ends<'d>(
+/// withheld unless both its ends are admitted. An end that is a link is
+/// held where an end of its own is, as deep as they go, each link type
+/// asked once: a migration can make two each other's end.
+pub(crate) fn held_ends<'d, 'a>(
     who: &Principal,
     decl: &'d TypeDecl,
+    find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
 ) -> Vec<(&'d FieldName, &'d TypeName)> {
     if !crate::links::is_link_type(&decl.name) {
         return Vec::new();
@@ -355,18 +359,17 @@ pub(crate) fn held_ends<'d>(
         .iter()
         .filter(|f| f.name.as_str() == crate::links::FROM || f.name.as_str() == crate::links::TO);
     let ends = ends.filter_map(|f| Some((&f.name, f.ty.target.as_ref()?)));
-    ends.filter(|(_, t)| !own_only(who, t).is_empty()).collect()
-}
-
-fn ends_held(who: &Principal, decl: &TypeDecl) -> bool {
-    !held_ends(who, decl).is_empty()
+    let find = |n: &TypeName| find(n).filter(|d| d.name != decl.name);
+    let held = |t: &TypeName| find(t).is_some_and(|d| !held_ends(who, d, &find).is_empty());
+    ends.filter(|(_, t)| !own_only(who, t).is_empty() || held(t))
+        .collect()
 }
 
 /// Whether `who`'s grant admits only some records of `decl`, or of an end
-/// type of a link type: its writes reach those records alone, and none
-/// waits for review (051).
-pub fn only_holder(who: &Principal, decl: &TypeDecl) -> bool {
-    !own_only(who, &decl.name).is_empty() || ends_held(who, decl)
+/// type of a link type, as deep as its ends go ([`held_ends`]): its
+/// writes reach those records alone, and none waits for review (051).
+pub fn only_holder(who: &Principal, decl: &TypeDecl, force: &dyn crate::sight::InForce) -> bool {
+    !own_only(who, &decl.name).is_empty() || !held_ends(who, decl, &|n| force.ty(n)).is_empty()
 }
 
 /// Whether a holder of `only` on `decl` may propose a write there, or a

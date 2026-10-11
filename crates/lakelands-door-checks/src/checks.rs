@@ -8064,7 +8064,7 @@ pub async fn a_reader_is_answered_the_hash_of_the_shape_it_is_described(store: A
 
 /// A relation carried by link records (`docs/decisions/035-a-link-is-a-record.md`):
 /// a link is written and walked, one per pair; the relation's cardinality
-/// holds at the door and in an ingest window; its records refuse the
+/// holds at the door and over an ingest, as one window or as two; its records refuse the
 /// ordinary doors and `propose`; a principal who may not write the link
 /// type is not granted; and unlink removes it.
 pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn LakeStore>) {
@@ -8250,7 +8250,10 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
         "{past:?}"
     );
     // A source relation's links arrive by ingest, its cardinality held in
-    // one window as at the door.
+    // one window as at the door. Where the window is cut is the store's:
+    // over the wire the two links may arrive as two windows, and then the
+    // first is committed and the second refused (lakelands#885). Either
+    // way no two links of `d1` are live.
     let window = vec![
         SourceRecord {
             upstream: None,
@@ -8271,17 +8274,29 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
         .ingest(own, &"registry".into(), stream::of(window))
         .await
         .unwrap();
-    let first = crate::stream::next(&mut commits).await;
+    let mut answers = vec![crate::stream::next(&mut commits).await];
+    if matches!(&answers[0], Some(Ok(c)) if (c.records, c.duplicates) == (1, 0)) {
+        answers.push(crate::stream::next(&mut commits).await);
+    }
+    // One window is refused for the window's links, two for the link the
+    // first committed, which it names: nothing else passes.
+    let last = answers.last().and_then(|a| a.as_ref()?.as_ref().err());
+    let held = match last.and_then(Error::case).map(|s| &s.case) {
+        Some(Case::WindowLinksAlready { .. }) => answers.len() == 1,
+        Some(Case::LinkedAlreadyFrom { to, .. }) => {
+            answers.len() == 2 && to.as_ref().is_some_and(|k| k.as_str() == "p1")
+        }
+        _ => false,
+    };
     assert!(
-        matches!(
-            &first,
-            Some(Err(Error::Refused {
-                reason: Refusal::Constraint { .. },
-                ..
-            }))
-        ),
-        "two witnesses for d1 in one window break many_to_one: {first:?}"
+        held,
+        "two witnesses for d1 break many_to_one, in one window or in two: {answers:?}"
     );
+    let witnessed = ty("sys.link.doc.witnessed_by");
+    let live = c.find(own, &witnessed, Find::default()).await.unwrap();
+    let live = serde_json::to_value(&live.data).unwrap();
+    let live = live["rows"].as_array().map(Vec::len);
+    assert_eq!(live, Some(answers.len() - 1), "{answers:?}");
     // Unlink removes the link; the walk reaches no one.
     c.unlink(
         own,
