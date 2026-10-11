@@ -5,17 +5,18 @@
 //! `docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 //! `docs/decisions/028-authoring-is-strict-and-whole.md`).
 
+use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl};
-use lakelands_api::tools::{Door, GENERIC_TOOLS, tools};
+use lakelands_api::tools::{Door, GENERIC_TOOLS, MAX_TOOL_NAME, ToolSpec, tools};
 use lakelands_api::write::{Declaration, Outcome, ProposedWrite, Recompute};
 use lakelands_api::{Error, Grants, LakeStore, PrincipalKind, ReadAt, Refusal, TypeName};
 use serde_json::{Value, json};
 
 use crate::conformance::fixture::{
-    Lake, Must, computed_by, dec, decimal, events_after, field, head_unmoved, is_invalid,
-    migration, object_set_on, principal, reason, refused_unmoved, reviewer, trigger_on, type_decl,
-    value, value_type, view_of, write_verb,
+    Lake, Must, computed_by, dec, decimal, events_after, field, head_unmoved, invalid_case,
+    is_invalid, migration, object_set_on, principal, reason, refused_unmoved, reviewer, trigger_on,
+    type_decl, value, value_type, view_of, write_verb,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -218,6 +219,96 @@ async fn declare_refuses_bad_names_unknown_references_and_tool_name_collisions(
         ensure!(
             matches!(err, Error::Refused { .. } | Error::NotFound { .. }),
             "declaring {what} must be refused; it failed with {err:?}"
+        );
+    }
+    Ok(())
+}
+
+check!(
+    DERIVED_NO_TOOL_NAME = a_derived_relation_takes_no_tool_name,
+    "014 and 044 (lakelands#902): a derived relation has no link door, so it takes no tool name: a type whose derived relation would make a link door's name too long is declared where the same relation carried by link records is refused, a verb named as the link door or the unlink door of a derived relation would be is declared, after its type or before it, and the lake's catalog is answered each time, with the verb and no link door"
+);
+
+async fn a_derived_relation_takes_no_tool_name(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl("payroll", vec![field("code", StorageKind::Text)]))
+        .await?;
+    let ty_of = |name: &str, relation: &str, derived: bool| -> Result<TypeDecl, Failure> {
+        let mut r = json!({"name": relation, "target": "payroll"});
+        if derived {
+            r["derived"] = json!({"match": [{"from": "ref", "to": "code"}]});
+        }
+        let fields = json!([{"name": "ref", "type": {"kind": "text"}}]);
+        serde_json::from_value(json!({"name": name, "fields": fields, "relations": [r]}))
+            .map_err(|e| Failure::new(format!("the check's type does not read: {e}")))
+    };
+    let link_door = |t: &ToolSpec| matches!(t.door, Door::Link { .. } | Door::Unlink { .. });
+    // Three characters, the relation and the unlink door's suffix: one
+    // character more than a tool name may have.
+    let long = "m".repeat(MAX_TOOL_NAME - 10);
+    let before = store.head().await.must("reading the head")?;
+    let answer = l.try_declare(ty_of("inl", &long, false)?).await;
+    let what = "declaring a relation carried by links whose unlink door's name is too long";
+    let err = refused_unmoved(store.as_ref(), before, what, answer).await?;
+    ensure!(
+        matches!(invalid_case(&err), Some(Case::ToolNames { .. })),
+        "{what} must be refused for its tool names; it failed with {err:?}"
+    );
+    l.declare(ty_of("inw", &long, true)?).await?;
+    l.declare(ty_of("inv", "matched", true)?).await?;
+    let described = l.describe().await?;
+    let offered = tools(&described).map_err(|p| {
+        Failure::new(format!(
+            "a lake with a derived relation of a long name must have its catalog; it has {p:?}"
+        ))
+    })?;
+    ensure!(
+        !offered.iter().any(link_door),
+        "a derived relation must have no link door; the catalog offers {:?}",
+        offered.iter().filter(|t| link_door(t)).collect::<Vec<_>>()
+    );
+    // The name a link door of a derived relation would have, from the one
+    // generator: `inv` described as if `matched` were carried by links, and
+    // the same type under the name `iny`, which is not declared yet.
+    let mut linked = described.clone();
+    linked.types.retain(|t| t.name.as_str() == "inv");
+    linked.types[0].relations[0].derived = None;
+    linked.types[0].may.link = vec!["matched".into()];
+    linked.types.push(linked.types[0].clone());
+    linked.types[1].name = "iny".into();
+    let doors = tools(&linked).unwrap_or_default();
+    // The link door's name after its type, the unlink door's before it.
+    for (ty, first) in [("inv", false), ("iny", true)] {
+        let (ty_, relation) = (ty.into(), "matched".into());
+        let door = match first {
+            true => Door::Unlink { ty: ty_, relation },
+            false => Door::Link { ty: ty_, relation },
+        };
+        let name = doors
+            .iter()
+            .find(|t| t.door == door)
+            .map(|t| t.name.clone());
+        let name = name.ok_or_else(|| Failure::new("no link door to name"))?;
+        let verb = json!({"declare": "verb", "name": name, "on": "payroll", "risk": "low",
+                          "effect": "write", "set": [{"field": "code", "value": "'x'"}]});
+        l.declare_json(verb).await?;
+        if first {
+            l.declare(ty_of(ty, "matched", true)?).await?;
+        }
+        let offered = tools(&l.describe().await?).map_err(|p| {
+            Failure::new(format!(
+                "a verb named as a link door of `{ty}.matched`, a derived relation, would be \
+                 is declared, so the lake must have its catalog; it has {p:?}"
+            ))
+        })?;
+        let call = Door::Call {
+            verb: name.as_str().into(),
+        };
+        ensure!(
+            offered.iter().any(|t| t.name == name && t.door == call)
+                && !offered.iter().any(link_door),
+            "the catalog must offer the verb `{name}` and no link door; it offers {:?}",
+            offered.iter().map(|t| &t.name).collect::<Vec<_>>()
         );
     }
     Ok(())

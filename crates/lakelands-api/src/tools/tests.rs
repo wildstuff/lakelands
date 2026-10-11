@@ -259,6 +259,20 @@ fn colliding_and_overlong_names_are_reported() {
     assert!(name_problems(&["invoice".into()], &["pay_invoice".into()], &[]).is_empty());
 }
 
+/// A derived relation has no link door (044), so its type and name make
+/// no tool name: a verb named as that door would be is the lake's tool.
+#[test]
+fn a_derived_relation_takes_no_tool_name() {
+    let mut invoice = invoice();
+    invoice.relations = vec![crate::ontology::RelationDecl {
+        derived: Some(crate::ontology::Derived { pairs: Vec::new() }),
+        ..crate::ontology::RelationDecl::to("approved_by", "partner")
+    }];
+    let named = verb("invoice_approved_by_link", Risk::Low, false, vec![]);
+    let t = tools_ok(&lake(vec![invoice], vec![named], LakeRights::default()));
+    assert!(names(&t).contains(&"invoice_approved_by_link"), "{t:?}");
+}
+
 /// `invoice` with `approved_by`, a relation carried by link records
 /// with a writable `since` and a read-only `score`, and its link type as
 /// the principal is described it.

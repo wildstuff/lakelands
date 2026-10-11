@@ -838,7 +838,7 @@ fn path(name: &FieldName) -> Expr {
 fn link_relations(t: &TypeDecl) -> Vec<(TypeName, RelationName)> {
     t.relations
         .iter()
-        .filter(|r| links::carried_by_links(r))
+        .filter(|r| r.carried_by_links())
         .map(|r| (t.name.clone(), r.name.clone()))
         .collect()
 }

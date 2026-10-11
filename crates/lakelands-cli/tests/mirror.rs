@@ -1152,6 +1152,120 @@ async fn a_target_type_the_source_does_not_own_whole_is_refused_at_start() {
     }
 }
 
+/// A derived relation of a mirrored type stores nothing, so its source
+/// writes nothing for it (lakelands#902): the mirror starts whether the
+/// source declares the relation or not, and a walk over it in the target
+/// answers what the same walk answers in the source.
+#[tokio::test]
+async fn a_derived_relation_of_a_mirrored_type_is_the_targets_own_reading() {
+    use lakelands_api::query as q;
+    async fn walked(lake: &dyn LakeStore) -> Vec<(String, String)> {
+        let step = q::Step {
+            relation: "same".into(),
+            walk: q::Walk::Out,
+            ty: None,
+            filter: None,
+            depth: Default::default(),
+            named: None,
+        };
+        let pattern = q::Pattern {
+            start: q::Start {
+                ty: "customer".into(),
+                key: Some("c1".into()),
+                filter: None,
+                search: None,
+                params: Default::default(),
+                named: None,
+            },
+            steps: vec![step],
+            to: None,
+            project: q::Projection::Graph,
+            order_by: Vec::new(),
+            limit: None,
+            cursor: None,
+            at: ReadAt::default(),
+        };
+        let answer = doors(lake).query(&owner(lake), pattern).await;
+        match answer.unwrap().data {
+            q::QueryResult::Graph { nodes, .. } => {
+                let ends = nodes.iter().map(|n| (n.ty.to_string(), n.key.to_string()));
+                ends.collect()
+            }
+            other => panic!("the walk answered {other:?}"),
+        }
+    }
+    let same = json!({"name": "same", "target": "partner",
+                      "derived": {"match": [{"from": "tier", "to": "name"}]}});
+    // The target's own reading of a copy, to a type the connection does not mirror.
+    let noted = json!({"name": "noted", "target": "note",
+                       "derived": {"match": [{"from": "name", "to": "text"}]}});
+    let source_with = |relations: Value| {
+        decl(
+            json!({"declare": "type", "name": "customer", "key": ["code"],
+            "relations": relations,
+            "fields": [required("code", "authored"), text("name", "authored"),
+                       text("tier", "authored"), text("secret", "authored"),
+                       {"name": "partner", "type": {"kind": "reference", "target": "partner"}},
+                       {"name": "parent", "type": {"kind": "reference", "target": "customer"}}]}),
+        )
+    };
+    for engine in engines() {
+        // The source derives the relation, carries one of that name by links, or has none.
+        for there in ["derived", "links", "none"] {
+            let mut source = source_types();
+            match there {
+                "derived" => source[1] = source_with(json!([same])),
+                "links" => source[1] = source_with(json!([{"name": "same", "target": "partner"}])),
+                _ => {}
+            }
+            let mut target = target_types();
+            target[1] = decl(
+                json!({"declare": "type", "name": "customer", "key": ["code"],
+                                    "fields": copy_fields(), "relations": [same, noted]}),
+            );
+            let two = Two::with(&format!("derived-{there}"), &engine, source, target).await;
+            two.upsert("partner", "gold", json!({"name": "gold"})).await;
+            two.upsert("partner", "acme", json!({"name": "acme"})).await;
+            two.upsert("customer", "c1", json!({"code": "c1", "tier": "gold"}))
+                .await;
+            if there == "links" {
+                let crm = two.crm.as_ref();
+                let (cat, who, relation) = (doors(crm), owner(crm), "same".into());
+                let (ty, c1, to) = ("customer".into(), "c1".into(), "acme".into());
+                let (fields, opts) = (Default::default(), WriteOpts::default());
+                let linked = cat.link(&who, &ty, &c1, &relation, &to, fields, opts);
+                linked.await.unwrap();
+            }
+            let mut m = two.mirror().await.unwrap();
+            settle(&mut m).await;
+            // The target answers by its own match, whatever the source carries.
+            let here = walked(two.main.as_ref()).await;
+            let ends =
+                |to: &str| [("customer", "c1"), ("partner", to)].map(|(t, k)| (t.into(), k.into()));
+            assert_eq!(here, ends("gold"), "{engine:?}, the source: {there}");
+            match there {
+                "derived" => assert_eq!(here, walked(two.crm.as_ref()).await, "{engine:?}"),
+                "links" => assert_eq!(walked(two.crm.as_ref()).await, ends("acme"), "{engine:?}"),
+                _ => {}
+            }
+        }
+        // A relation the target carries by links is not one the source derives.
+        let mut linked = same.clone();
+        linked["authority"] = json!("source");
+        linked.as_object_mut().unwrap().remove("derived");
+        let mut source = source_types();
+        source[1] = source_with(json!([same]));
+        let mut target = target_types();
+        target[1] = decl(
+            json!({"declare": "type", "name": "customer", "key": ["code"],
+                                "fields": copy_fields(), "relations": [linked]}),
+        );
+        let two = Two::with("derived-linked", &engine, source, target).await;
+        let why = two.mirror().await.unwrap_err();
+        assert!(why.contains("no relation `same` carried by links"), "{why}");
+    }
+}
+
 /// A connection's principal held at `none` on `partner.name` in the
 /// source is not shown `partner`, which is keyed by it, so neither is
 /// `customer.partner`, which refers to it (lakelands#718): the mirror is

@@ -346,7 +346,7 @@ pub fn tools(lake: &LakeDescription) -> Result<Vec<ToolSpec>, Vec<NameProblem>> 
         .flat_map(|t| {
             t.relations
                 .iter()
-                .filter(|r| r.via.is_none())
+                .filter(|r| r.carried_by_links())
                 .map(|r| (t.name.clone(), r.name.clone()))
         })
         .collect();

@@ -214,6 +214,7 @@ pub const ALL: &[Check] = &[
     schema::SCHEMA_HASH_IGNORES_MEANING,
     schema::RESHAPING_DECLARE_REFUSED,
     schema::DECLARE_REFUSALS,
+    schema::DERIVED_NO_TOOL_NAME,
     schema::ADD_FIELD_GRANT_FIRST,
     schema::SYS_RESERVED,
     migrate::APPLY_NEEDS_ITS_REPORT,

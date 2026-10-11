@@ -564,7 +564,7 @@ impl Sight<'_> {
                 .relations
                 .iter()
                 .filter(|r| {
-                    crate::links::carried_by_links(r)
+                    r.carried_by_links()
                         && r.authority == Authority::Authored
                         && self.relation(t, r)
                 })

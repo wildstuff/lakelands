@@ -1308,7 +1308,7 @@ impl Decide<'_> {
         let decl = self.w.ontology.ty(ty)?;
         rights::not_a_view(decl)?;
         let mut carried = decl.relations.iter();
-        let r = carried.find(|r| &r.name == relation && links::carried_by_links(r));
+        let r = carried.find(|r| &r.name == relation && r.carried_by_links());
         let r = r.ok_or_else(|| no_link_relation(ty, relation))?;
         let lt = links::link_type_name(ty, relation);
         self.w.ontology.ty(&lt)?;
@@ -3170,11 +3170,7 @@ impl Call<'_> {
             links::link_types_of(&m.to),
             Sight::held(self.who, &w.ontology),
         );
-        for r in before
-            .relations
-            .iter()
-            .filter(|r| links::carried_by_links(r))
-        {
+        for r in before.relations.iter().filter(|r| r.carried_by_links()) {
             let ty = links::link_type_name(&before.name, &r.name);
             // A renamed relation is the rename's to judge, below.
             let renamed = m.relation_renames.iter().any(|(old, _)| old == &r.name);
@@ -3270,11 +3266,11 @@ impl Call<'_> {
         }
         // A relation carried by link records whose cardinality narrows
         // keeps its links only if none would break the narrower rule.
-        for r in m.to.relations.iter().filter(|r| links::carried_by_links(r)) {
+        for r in m.to.relations.iter().filter(|r| r.carried_by_links()) {
             let Some(old) = before
                 .relations
                 .iter()
-                .find(|o| o.name == r.name && links::carried_by_links(o))
+                .find(|o| o.name == r.name && o.carried_by_links())
             else {
                 continue;
             };
@@ -3354,7 +3350,7 @@ impl Call<'_> {
         };
         for r in before.relations.iter().filter(removed) {
             let lt = links::link_type_name(&m.to.name, &r.name);
-            let live = match links::carried_by_links(r) {
+            let live = match r.carried_by_links() {
                 true => view.count(&lt, &every(false))?,
                 false => 0,
             };

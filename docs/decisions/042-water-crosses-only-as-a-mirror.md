@@ -19,9 +19,14 @@ target, so grants decide what crosses on both sides.
 2. **A mirrored type belongs whole to its source.** The target type
    declares only fields that cross, every one of them a `source` field
    nobody in the target can author. The target declaration is the list
-   of what crosses. The target lake's own data about a mirrored record
-   lives in a type of its own that refers to the copy, so
-   `purge_source` of the connection removes the copies whole
+   of what crosses. Its relations carried by link records are its
+   source's as its fields are. A derived relation
+   (`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`)
+   stores nothing, so it is the target's own reading of the copies, as
+   a view over them is: the source need not declare it, and what the
+   source carries under that name does not cross. The target lake's own
+   data about a mirrored record lives in a type of its own that refers
+   to the copy, so `purge_source` of the connection removes the copies whole
    (`docs/decisions/039-a-source-is-retracted-as-one.md`).
 3. **The source position rides with the data.** Every value a mirror
    delivers carries `upstream`, the source lake and the position of the
@@ -134,3 +139,5 @@ resumes from the position it stopped at once the target admits it.
   chain of reactions that crosses lakes meets a ceiling (lakelands#420).
 - A mirror whose source principal holds `restricted` and whose target
   writer does not is refused at the start (lakelands#772).
+- A mirrored type may declare a derived relation: it was refused as one
+  whose links are authored (lakelands#902).
