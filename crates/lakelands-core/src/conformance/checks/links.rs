@@ -55,7 +55,7 @@ check!(
 
 check!(
     SET_NAMES_ITS_LINK_TYPE = a_set_declares_a_relation_and_what_stands_on_its_link_type,
-    "035 and 028, extended: one set that declares a type with a relation carried by link records and a verb, a trigger, an object set and a view on the relation's link type is applied to a lake that holds none of them, and the same set of another type is proposed, listed to its reviewer with every declaration and nothing more and to a reviewer kept from the link type as the type alone with more, and accepted; on the applied one a link and the verb's call each fire the trigger; a set whose verb names the link type of a relation its type does not declare is refused as on a type that is not declared, at the verb, by `apply` and `propose` alike, and one whose type no longer declares the relation the lake holds is refused with that refusal among its problems; a set that adds a field to a link type the lake holds and reads it is applied; an author not shown a link type the lake holds is refused a trigger on it as on a type that is not declared, alone and word for word in a set that declares its owner, applied or proposed, and one kept from a field of it is refused an object set that reads the field as reading a field it does not know, at the set, alone and word for word with the owner beside it"
+    "035 and 028, extended: one set that declares a type with a relation carried by link records and a verb, a trigger, an object set and a view on the relation's link type is applied to a lake that holds none of them, and the same set of another type is proposed, listed to its reviewer with every declaration and nothing more, is not listed to a reviewer kept from the link type its relation brings, whose accept and reject of it answer as an id that does not exist (013, extended), and is accepted, and the owner alone, with nothing on its link type, is listed to that reviewer with `more` and the relation without its link fields, and applied by its accept; on the applied one a link and the verb's call each fire the trigger; a set whose verb names the link type of a relation its type does not declare is refused as on a type that is not declared, at the verb, by `apply` and `propose` alike, and one whose type no longer declares the relation the lake holds is refused with that refusal among its problems; a set that adds a field to a link type the lake holds and reads it is applied; an author not shown a link type the lake holds is refused a trigger on it as on a type that is not declared, alone and word for word in a set that declares its owner, applied or proposed, and one kept from a field of it is refused an object set that reads the field as reading a field it does not know, at the set, alone and word for word with the owner beside it"
 );
 
 check!(
@@ -1088,9 +1088,9 @@ async fn a_set_declares_a_relation_and_what_stands_on_its_link_type(store: Store
     };
     let applied = cat.apply(own, set("deal")).await;
     applied.must("applying a relation with a verb and a trigger on its link type")?;
-    // Proposed, the set is listed whole to its reviewer and accepted; a
-    // reviewer kept from the link type is listed the type alone, and that
-    // there is more.
+    // Proposed, the set is listed whole to its reviewer and accepted; to a
+    // reviewer kept from the link type its relation brings it is not there,
+    // in the listing and at the accept and the reject (013, extended).
     let named = |set: &[Declaration]| set.iter().map(Declaration::what).collect::<Vec<_>>();
     let declarations = set("pact");
     let write = ProposedWrite::Declare { declarations };
@@ -1098,8 +1098,8 @@ async fn a_set_declares_a_relation_and_what_stands_on_its_link_type(store: Store
     let Outcome::Proposed { proposal, .. } = proposed.must("proposing the set for `pact`")? else {
         return Err(Failure::new("a proposal answers `proposed`"));
     };
-    let blind = json!({"default": "read", "review": true, "schema": true,
-        "types": {"sys.link.pact.with": {"default": "none"}}});
+    let blind = json!({"default": "read", "review": true, "schema": true, "types": {
+        "sys.link.pact.with": {"default": "none"}, "sys.link.bare.with": {"default": "none"}}});
     let blind = serde_json::from_value(blind).expect("grants read");
     let blind = principal(store.as_ref(), PrincipalKind::Agent, "blind", blind);
     let mut listed = Vec::new();
@@ -1107,13 +1107,21 @@ async fn a_set_declares_a_relation_and_what_stands_on_its_link_type(store: Store
         let all = cat.proposals(who, Default::default()).await;
         let entry = all.must("a reviewer's listing")?.data;
         let entry = entry.into_iter().find(|p| p.id == proposal);
-        listed.push(entry.and_then(|p| match p.write {
-            Some(ProposedWrite::Declare { declarations }) => Some((named(&declarations), p.more)),
-            _ => None,
+        listed.push(entry.map(|p| match p.write {
+            Some(ProposedWrite::Declare { declarations }) => (named(&declarations), p.more),
+            _ => (Vec::new(), p.more),
         }));
     }
-    let pact = set("pact");
-    let whole = listed == [Some((named(&pact), false)), Some((named(&pact[4..]), true))];
+    let missing = lakelands_api::Missing::Proposal {
+        id: proposal.clone(),
+    };
+    let absent = Some(Error::NotFound { missing });
+    let decided = [
+        cat.accept(&blind, &proposal).await.err(),
+        cat.reject(&blind, &proposal, "no".into()).await.err(),
+    ];
+    let whole =
+        listed == [Some((named(&set("pact")), false)), None] && decided == [absent.clone(), absent];
     let accepted = cat.accept(own, &proposal).await;
     l.upsert("deal", "a1", json!({"amount": "1"})).await?;
     let (ty, from, rel, to) = ("deal".into(), "a1".into(), "with".into(), "p1".into());
@@ -1146,9 +1154,35 @@ async fn a_set_declares_a_relation_and_what_stands_on_its_link_type(store: Store
             && fired(&called),
         "a set of a relation with a verb, a trigger, a set and a view on its link type is \
          applied; proposed for another type it is listed to its reviewer with every \
-         declaration and nothing more, and to one kept from the link type as the type alone \
-         with more ({listed:?}), and accepted ({accepted:?}); on the \
+         declaration and nothing more, and is not there to one kept from the link type \
+         ({listed:?}; its accept and reject: {decided:?}), and accepted ({accepted:?}); on the \
          applied one a link and the verb's call each fire the trigger: {linked:?}, {called:?}"
+    );
+    // The owner alone, nothing on its link type, is listed to `blind` as
+    // `describe` would show it the owner once in force: with `more`, the
+    // relation without its link fields; and its accept applies it.
+    let declarations = set("bare").split_off(4);
+    let write = ProposedWrite::Declare { declarations };
+    let bare = cat.propose(own, write, "the owner alone".into()).await;
+    let Outcome::Proposed { proposal: bare, .. } = bare.must("proposing `bare` alone")? else {
+        return Err(Failure::new("a proposal answers `proposed`"));
+    };
+    let all = cat.proposals(&blind, Default::default()).await;
+    let entry = all.must("a reviewer's listing")?.data;
+    let entry = entry.into_iter().find(|p| p.id == bare);
+    let link_fields = match entry.as_ref().map(|p| (&p.write, p.more)) {
+        Some((Some(ProposedWrite::Declare { declarations }), true)) => match &declarations[..] {
+            [Declaration::Type(t)] => t.relations.iter().map(|r| r.fields.len()).collect(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    };
+    let applied = cat.accept(&blind, &bare).await;
+    ensure!(
+        link_fields == [0] && matches!(applied, Ok(Outcome::Applied { .. })),
+        "the owner alone, proposed, is listed to one kept from its link type with `more` and \
+         the relation without its link fields, and its accept applies it; it was listed \
+         {entry:?} and its accept answered {applied:?}"
     );
     // A set may also name a field it adds to a link type the lake holds.
     let mut noted = RelationDecl {

@@ -54,8 +54,9 @@ use lakelands_api::engine::{After, ProjectionView, Ranked, Rankings, Scan};
 use lakelands_api::error::{Case, Names, Naming, Place, Said};
 use lakelands_api::expr::{CmpOp, Expr, Func, Literal};
 use lakelands_api::ontology::{
-    FieldDecl, FieldType, MatchPair, RelationDecl, StorageKind, TypeDecl, VerbEffect,
+    FieldDecl, FieldType, MatchPair, RelationDecl, StorageKind, TypeDecl, VerbDecl, VerbEffect,
 };
+use lakelands_api::principal::{Access, Renamed, TypeGrants};
 use lakelands_api::query::{
     Axis, Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Step, Walk,
 };
@@ -80,6 +81,10 @@ use crate::declare::condition;
 use crate::kept;
 use crate::lake::{Lake, Shape};
 use crate::ontology::Ontology;
+
+/// A sight an entry of the listing is judged under beside the one in
+/// force, and the lake it is of ([`Reader::entry`]).
+type Under<'s> = Option<(&'s Sight<'s>, &'s Ontology)>;
 
 /// Everything one read sees.
 pub struct Reader<'a> {
@@ -746,11 +751,12 @@ impl<'a> Reader<'a> {
     }
 
     /// A read's condition with the filter of each set it names in the
-    /// name's place, as the ontology read holds it. A set whose filter,
-    /// with the sets it names, reads a field its reader is kept from is, to
-    /// that reader, a set that is not declared (024): the refusal names
-    /// nothing of the field. Over a view's records, which carry no
-    /// provenance, a condition that reads one is refused (028, extended).
+    /// name's place, as the ontology read holds it. A set of a type its
+    /// reader is not shown, or whose filter, with the sets it names, reads
+    /// a field its reader is kept from is, to that reader, a set that is
+    /// not declared (024): the refusal names nothing of the type or field.
+    /// Over a view's records, which carry no provenance, a condition that
+    /// reads one is refused (028, extended).
     fn named_sets(
         &self,
         ty: &TypeName,
@@ -761,7 +767,7 @@ impl<'a> Reader<'a> {
         let shown = |s: &&lakelands_api::write::ObjectSetDecl| {
             let filter = crate::declare::filter(&all, &s.of, &s.filter, Eval::Record, at);
             let reads = filter.map(|e| core_derive::reads(&e));
-            let of = self.shape.ontology.ty(&s.of);
+            let of = self.sight.ty(&s.of);
             of.is_ok_and(|t| {
                 reads.is_ok_and(|r| rights::check_probe(self.who, t, r.iter()).is_ok())
             })
@@ -1503,19 +1509,15 @@ impl<'a> Reader<'a> {
         source: &TypeName,
         filter: Option<&lakelands_api::expr::Condition>,
         group_by: &[FieldName],
-        measures: &[lakelands_api::ontology::Measure],
+        m: &[lakelands_api::ontology::Measure],
         literals: &BTreeMap<String, Literal>,
     ) -> Result<Probed> {
         let source = self.shape.ontology.ty(source)?.clone();
         let bound = |e: Expr| expr::bind_params(&e, literals);
-        let mut probed: Vec<FieldName> = group_by.to_vec();
         let where_ = filter
             .map(|w| condition(w, Eval::View, &[Place::Where]).map(bound))
             .transpose()?;
-        if let Some(w) = &where_ {
-            probed.extend(core_derive::reads(w));
-        }
-        let measures: Vec<(FieldName, Expr)> = measures
+        let measures: Vec<(FieldName, Expr)> = m
             .iter()
             .map(|m| {
                 let at = [Place::Measure {
@@ -1525,9 +1527,10 @@ impl<'a> Reader<'a> {
                 Ok((m.name.clone(), bound(e)))
             })
             .collect::<Result<_>>()?;
-        for (_, m) in &measures {
-            probed.extend(lakelands_core::describe::measure_reads(m));
-        }
+        // What it reads of the source is what `describe` shows it by; one
+        // that cannot be read there is read by no one.
+        let probed = lakelands_core::describe::source_reads(filter, group_by, m);
+        let probed = probed.ok_or_else(|| crate::writes::refused(Refusal::NotGranted))?;
         // The probe is the view's own, so its refusal names nothing of the
         // source to a reader `describe` withholds the definition from (024).
         let unnamed = |e| match self.who.grants.schema {
@@ -1723,7 +1726,7 @@ impl<'a> Reader<'a> {
         });
         let rows = keyed
             .into_iter()
-            .filter_map(|(_, r)| rights::visible(self.who, &decl, &r, find.with_meta))
+            .filter_map(|(_, r)| rights::visible(self.sight, &decl, &r, find.with_meta))
             .collect();
         // Counted at the same position, so every page of a walk agrees.
         let total = (find.total)
@@ -1913,7 +1916,7 @@ impl<'a> Reader<'a> {
                 .map(|(r, _)| r)
         };
         stored
-            .and_then(|r| rights::visible(self.who, &decl, &r, get.with_meta))
+            .and_then(|r| rights::visible(self.sight, &decl, &r, get.with_meta))
             .ok_or_else(missing)
     }
 
@@ -1936,58 +1939,23 @@ impl<'a> Reader<'a> {
             ..filter.clone()
         })?;
         let me = self.who.writer();
-        // A migration's report counts every owner's records: a holder of
-        // `only` is not listed one (051).
-        let migration = |w: &ProposedWrite| !matches!(w, ProposedWrite::Declare { .. });
-        let migration = |p: &Proposal| {
-            p.write
-                .as_ref()
-                .is_some_and(|w| w.is_schema() && migration(w))
-        };
-        let mut mine: Vec<Proposal> = all
-            .into_iter()
-            .filter(|p| self.who.grants.review || p.proposer == me)
-            .filter(|p| !rights::holds_only(self.who) || !migration(p))
-            // A proposal on a type its reader is not shown, or of a call of
-            // a verb that reads a field it may not read, is not there to
-            // it, as its accept answers (lakelands#762; 024, extended).
-            .filter(|p| {
-                let hidden = |w| crate::writes::hidden_from(&self.shape.ontology, self.who, w);
-                !p.write.as_ref().is_some_and(hidden)
-            })
-            .collect();
-        let verb_on = |v: &VerbName| self.shape.ontology.verb(v).ok().map(|d| d.on.clone());
         // The lake as its reader is described it, read once for the
         // listing and only where a proposal asks.
         let lake = OnceCell::new();
-        for p in &mut mine {
-            // `more` is what the trim left out, not what the completion added.
-            let mut logged = p.write.take();
-            logged.iter_mut().for_each(|w| self.completed(w));
-            let shown = logged.clone();
-            // A proposed migration's reader, of a type or a value type, its
-            // grants followed to the position it was proposed at: what it
-            // names, it named then.
-            // A bundle's reader is the one asking, its grants followed
-            // here, to be shown references as the bundle in force would.
-            let mut then = None;
-            match &shown {
-                Some(ProposedWrite::Migrate { .. } | ProposedWrite::MigrateValueType { .. }) => {
-                    let mut who = asked.clone();
-                    (who.grants).follow(&self.shape.renames, Some(p.position));
-                    then = Some(who);
-                }
-                Some(ProposedWrite::Declare { .. }) => {
-                    let mut who = asked.clone();
-                    (who.grants).follow(&self.shape.renames, None);
-                    then = Some(who);
-                }
-                _ => {}
+        let mut mine = Vec::new();
+        for mut p in all {
+            if !self.who.grants.review && p.proposer != me {
+                continue;
             }
-            let listing = (&lake, then.as_ref().unwrap_or(self.who), p.position);
-            p.write = shown.and_then(|mut w| self.known_shape(&mut w, listing).then_some(w));
-            p.more = p.write != logged;
+            if let Some(logged) = p.write.take() {
+                let Some(shown) = self.entry(asked, &logged, p.position, &lake) else {
+                    continue;
+                };
+                (p.write, p.more) = shown;
+            }
+            mine.push(p);
         }
+        let verb_on = |v: &VerbName| self.shape.ontology.verb(v).ok().map(|d| d.on.clone());
         mine.retain(|p| core_engines::matches(p, filter, verb_on));
         Ok(ordered_proposals(mine, &filter.order_by)?
             .into_iter()
@@ -1996,39 +1964,133 @@ impl<'a> Reader<'a> {
             .collect())
     }
 
-    /// A proposed shape completed as one in force is: a shape that is not
-    /// in force is completed before it is judged or compared.
-    fn completed(&self, write: &mut ProposedWrite) {
-        match write {
-            ProposedWrite::Migrate { migration, .. } => {
-                self.shape.ontology.complete(&mut migration.to)
+    /// The proposal logged at `at`, writing `logged`, as the listing shows
+    /// it to its reader, and whether it holds more; `None` where it is not
+    /// there to it (lakelands#762). The listing and the accept ask this
+    /// alone, so an entry is decided as it is listed (006 and 013,
+    /// extended).
+    ///
+    /// The reader is `asked`, the principal as its call named it, judged
+    /// under up to three sights, its grants followed to each: the lake in
+    /// force here; the lake as the entry would leave it, a bundle's whole
+    /// and of a migration its `to`; and the lake as it was proposed
+    /// against, where the type a migration reshapes or the verb a call
+    /// calls was declared again since, read only for a reader its grants
+    /// keep from a field. An entry is not there when one of them hides a
+    /// type it names: the type it writes or a called verb is on; of a
+    /// migration's `to` and of each type a bundle declares, what
+    /// [`TypeDecl::names_against`] names against the type in force; and
+    /// the type each verb, trigger and object set of a bundle is on. A
+    /// link type is shown only with both its ends, and a type a bundle
+    /// brings only as `describe` would show it once in force. Nor is a
+    /// call there whose verb, as either lake declares it, reads a field
+    /// its reader may not read: `describe` does not name the verb, and the
+    /// entry would tell that its `requires` held (024, extended). A
+    /// migration's report counts every owner's records, so a holder of
+    /// `only` is listed none (051).
+    pub(crate) fn entry(
+        &self,
+        asked: &Principal,
+        logged: &ProposedWrite,
+        at: Position,
+        lake: &OnceCell<LakeDescription>,
+    ) -> Option<(Option<ProposedWrite>, bool)> {
+        let (o, mut logged) = (&self.shape.ontology, logged.clone());
+        // A shape that is not in force is completed as one in force is
+        // before it is judged or compared.
+        let names = |t: &TypeDecl| t.names_against(o.ty(&t.name).ok());
+        let (mut named, mut after): (Vec<TypeName>, _) = (Vec::new(), None);
+        match &mut logged {
+            ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => {
+                named.push(ty.clone())
             }
-            ProposedWrite::Declare { declarations } => {
-                let mut after = self.shape.ontology.clone();
-                let all = declarations.iter().cloned();
-                all.for_each(|d| after.put(d, 0, None));
-                for d in declarations.iter_mut() {
-                    if let Declaration::Type(t) = d {
-                        after.complete(t);
-                    }
+            ProposedWrite::Migrate { migration: m, .. } => {
+                o.complete(&mut m.to);
+                named.extend(names(&m.to));
+                let mut renames = self.shape.renames.clone();
+                renames.push(Renamed {
+                    at: self.position.next(),
+                    ty: m.to.name.clone(),
+                    renames: m.renames.clone(),
+                    to: None,
+                });
+                let left = Sight::new(asked.clone(), &renames, None, o);
+                if rights::holds_only(self.who) || !left.would_show(&m.to) {
+                    return None;
                 }
             }
-            _ => {}
+            ProposedWrite::Declare { declarations } => {
+                let mut put = o.clone();
+                for d in declarations.iter() {
+                    crate::writes::put_as_appended(&mut put, d, Some);
+                }
+                for d in declarations.iter_mut() {
+                    match d {
+                        Declaration::Type(t) => {
+                            put.complete(t);
+                            named.extend(names(t))
+                        }
+                        Declaration::Verb(v) => named.push(v.on.clone()),
+                        Declaration::Trigger(t) => named.push(t.on.clone()),
+                        Declaration::ObjectSet(s) => named.push(s.of.clone()),
+                        Declaration::ValueType(_) | Declaration::Function(_) => {}
+                    }
+                }
+                after = Some((put.declared(), put));
+            }
+            ProposedWrite::MigrateValueType { .. } if rights::holds_only(self.who) => return None,
+            ProposedWrite::Call { .. } | ProposedWrite::MigrateValueType { .. } => {}
         }
-    }
-
-    /// Whether the listing shows its reader the proposal logged at `at`,
-    /// writing `write`, whole: a reviewer holding `only` decides no other
-    /// (051).
-    pub(crate) fn shows_whole(&self, write: &ProposedWrite, at: Position) -> bool {
-        self.listed(write, at).as_ref() == Some(write)
-    }
-
-    /// The proposal logged at `at`, writing `write`, as the listing shows
-    /// it to its reader, where it shows it.
-    pub(crate) fn listed(&self, write: &ProposedWrite, at: Position) -> Option<ProposedWrite> {
-        let mut shown = write.clone();
-        (self.known_shape(&mut shown, (&OnceCell::new(), self.who, at))).then_some(shown)
+        let subject = |d: &Declaration| match (d, &logged) {
+            (Declaration::Type(t), ProposedWrite::Migrate { migration: m, .. }) => {
+                t.name == m.to.name
+            }
+            (Declaration::Verb(v), ProposedWrite::Call { verb, .. }) => &v.name == verb,
+            _ => false,
+        };
+        let mut declared = self.shape.declared.iter();
+        let moved = declared.any(|d| d.since > at && subject(&d.declaration));
+        let reads = |a: &Access| a.reads();
+        let typed =
+            |t: &TypeGrants| t.default.as_ref().is_none_or(reads) && t.fields.values().all(reads);
+        let g = &self.who.grants;
+        let kept = !(reads(&g.default) && g.types.values().all(typed));
+        // A lake that cannot be read there shows its entry to no one.
+        let was = match moved && kept {
+            true => Some(self.ontology_at(at)?),
+            false => None,
+        };
+        let renames = &self.shape.renames;
+        let then = was.as_ref();
+        let then = then.map(|was| (Sight::new(asked.clone(), renames, Some(at), was), was));
+        let left = after.as_ref();
+        let left = left.map(|(all, put)| (Sight::new(asked.clone(), renames, None, all), put));
+        let then: Under<'_> = then.as_ref().map(|(s, o)| (s, *o));
+        let left: Under<'_> = left.as_ref().map(|(s, o)| (s, *o));
+        let force: Under<'_> = Some((self.sight, o));
+        if let ProposedWrite::Call { verb, .. } = &logged {
+            for (sees, o) in [force, then].into_iter().flatten() {
+                let Ok(v) = o.verb(verb) else { continue };
+                let on = o.ty(&v.on);
+                if on.is_ok_and(|on| !rights::reads_what_verb_reads(sees.who(), on, v)) {
+                    return None;
+                }
+                named.push(v.on.clone());
+            }
+        }
+        let hides = |(sees, o): (&Sight, &Ontology)| {
+            let mut named = named.iter();
+            named.any(|ty| o.ty(ty).is_ok() && sees.ty(ty).is_err())
+        };
+        if [force, left, then].into_iter().flatten().any(hides) {
+            return None;
+        }
+        // `more` is what the trim left out, not what the completion added.
+        let mut shown = logged.clone();
+        let known = self.known_shape(asked, &mut shown, lake, at, (left, then));
+        let shown = known.then_some(shown);
+        let more = shown.as_ref() != Some(&logged);
+        Some((shown, more))
     }
 
     /// A proposed write as its reader may know it (013 and 024, extended):
@@ -2039,14 +2101,13 @@ impl<'a> Reader<'a> {
     /// fields hidden from their author, who reads its own proposal here.
     fn known_shape(
         &self,
+        asked: &Principal,
         write: &mut ProposedWrite,
-        (lake, then, at): (&OnceCell<LakeDescription>, &Principal, Position),
+        lake: &OnceCell<LakeDescription>,
+        at: Position,
+        (left, then): (Under<'_>, Under<'_>),
     ) -> bool {
-        let read = |ty: &TypeName, field: &FieldName| {
-            let t = self.sight.ty(ty).ok();
-            let f = t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)));
-            f.is_some_and(|(t, f)| rights::field_access(self.who, t, f).reads())
-        };
+        let read = |ty: &TypeName, field: &FieldName| self.sight.reads(ty, field);
         // A record the reader is not answered: restricted, without the
         // grant, or one its `only` does not admit, before the write or
         // after it as proposed (051). An `only` that cannot be applied
@@ -2072,21 +2133,27 @@ impl<'a> Reader<'a> {
             }
             ProposedWrite::Retire { ty, key, .. } => answered(ty, key),
             // A payload is what the verb's fields become: whole to a reader
-            // who may read each field the verb sets, or see the type an
+            // who may read each field the verb sets, as it is declared and
+            // as it was where the call was proposed, or see the type an
             // executor acts on, and empty otherwise. The verb's name is its
             // type's. One whose verb reads a field the reader may not read
-            // is not listed ([`crate::writes::hidden_from`]).
+            // is not listed ([`Self::entry`]).
             ProposedWrite::Call {
                 verb, key, payload, ..
             } => {
                 let Ok(v) = self.shape.ontology.verb(verb) else {
                     return false;
                 };
-                let whole = match &v.effect {
-                    VerbEffect::Write { set } => set.iter().all(|a| read(&v.on, &a.field)),
-                    VerbEffect::External { .. } => true,
+                let sets = |(sees, o): (&Sight, &Ontology)| match o.verb(verb) {
+                    Ok(VerbDecl {
+                        on,
+                        effect: VerbEffect::Write { set },
+                        ..
+                    }) => set.iter().all(|a| sees.reads(on, &a.field)),
+                    _ => true,
                 };
-                if !whole {
+                let force = Some((self.sight, &self.shape.ontology));
+                if ![force, then].into_iter().flatten().all(sets) {
                     payload.clear();
                 }
                 match key {
@@ -2095,38 +2162,23 @@ impl<'a> Reader<'a> {
                 }
             }
             // The report names what the migration does to the type it was
-            // proposed against, so a name is judged there, with the
-            // reader's grants at the proposal; the totals stay whole. A
-            // logged report is lossless, so it names no record that would
-            // not convert or would collide. Its id is made again at the
-            // head before the proposal.
+            // proposed against, so a name is judged there, by the sight of
+            // that lake where the type was declared again since; the totals
+            // stay whole. A logged report is lossless, so it names no
+            // record that would not convert or would collide. Its id is
+            // made again at the head before the proposal.
             ProposedWrite::Migrate { migration, report } => {
                 let Ok(was) = self.sight.ty(&migration.to.name) else {
                     return false;
                 };
-                let head = self.shape.ontology.types.get(&migration.to.name);
-                let stale =
-                    head.is_none_or(|e| e.schema_hash != Some(report.from_schema_hash.clone()));
-                // The type it was proposed against, read only where the
-                // reader's grants hide a field; a failed read leaves the
-                // type as it stands.
-                let hides = stale && rights::hides_some(then);
-                let proposed = hides.then(|| self.ontology_at(at)).flatten();
-                let made = proposed
-                    .as_ref()
-                    .and_then(|o| o.ty(&migration.to.name).ok());
-                let made = made.unwrap_or(was);
-                // Its references held as the type it was proposed against
-                // shows them (024, extended).
-                let shown = proposed.as_ref().unwrap_or(&self.shape.ontology);
-                let then = Sight::new(then.clone(), &[], None, shown);
-                let then = then.who();
+                let (judge, listing) = then.unwrap_or((self.sight, &self.shape.ontology));
+                let made = listing.ty(&migration.to.name).unwrap_or(was);
+                let then = judge.who();
                 let sees = |ty: &TypeName| self.sight.ty(ty).ok();
                 let all = || self.sight.describe(&self.who.lake);
                 let described = || lake.get_or_init(all);
                 rights::shown_report(then, made, migration, report, described, sees, answered);
                 // One listing: its `to` hash is that of the `to` it lists.
-                let listing = proposed.as_ref().unwrap_or(&self.shape.ontology);
                 let find = |n: &TypeName| listing.ty(n).ok();
                 rights::shown_hashes(then, made, migration, report, &find);
                 let before = Position(at.0.saturating_sub(1));
@@ -2137,15 +2189,12 @@ impl<'a> Reader<'a> {
             // Each declaration as `describe` would show it once the bundle
             // is in force; one it would not show leaves the list.
             ProposedWrite::Declare { declarations } => {
-                let mut after = self.shape.ontology.clone();
-                for d in declarations.iter() {
-                    crate::writes::put_as_appended(&mut after, d, Some);
-                }
-                let declared = after.declared();
                 // The reader as the bundle in force would show it its
                 // references (024, extended), from its grants as asked: a
                 // reference hidden by the lake as it stands may be shown.
-                let sight = Sight::new(then.clone(), &[], None, &declared);
+                let Some((sight, after)) = left else {
+                    return false;
+                };
                 declarations.retain(|d| sight.lists(d));
                 for d in declarations.iter_mut() {
                     if let Declaration::Type(t) = d {
@@ -2179,7 +2228,7 @@ impl<'a> Reader<'a> {
                     // extended).
                     let judged = view.and_then(|v| {
                         let o = Ontology::at(v.as_ref())?;
-                        let then = Sight::new(then.clone(), &[], None, &o);
+                        let then = Sight::new(asked.clone(), &self.shape.renames, Some(at), &o);
                         crate::writes::conditions(&o, v.as_ref(), then.who(), report, &old)
                     });
                     if judged.is_err() {
@@ -2673,7 +2722,7 @@ impl<'a> Reader<'a> {
             if filter.is_some_and(|e| !self.holds(e, &r.fields, Some(&r.meta))) {
                 continue;
             }
-            if let Some(record) = rights::visible(self.who, decl, &r, with_meta) {
+            if let Some(record) = rights::visible(self.sight, decl, &r, with_meta) {
                 hits.push(Hit { record, score });
             }
         }
@@ -3367,7 +3416,7 @@ impl<'a> Reader<'a> {
     /// The record a node names, as the principal may see it, if at all.
     fn shown(&self, (ty, key): &graph::Node) -> Result<Option<Record>> {
         let decl = self.shape.ontology.ty(ty)?;
-        Ok((self.get_one(ty, key)?).and_then(|r| rights::visible(self.who, decl, &r, false)))
+        Ok((self.get_one(ty, key)?).and_then(|r| rights::visible(self.sight, decl, &r, false)))
     }
 
     /// A pattern's row as one type: for each name bound to a type in

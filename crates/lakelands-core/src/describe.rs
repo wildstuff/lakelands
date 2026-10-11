@@ -87,13 +87,7 @@ impl Sight<'_> {
 
     /// Whether its principal reads every one of `names` on type `ty`.
     fn reads_all<'a>(&self, names: impl IntoIterator<Item = &'a FieldName>, ty: &TypeName) -> bool {
-        let Some(t) = self.force.ty(ty) else {
-            return false;
-        };
-        names.into_iter().all(|n| {
-            let f = t.fields.iter().find(|f| &f.name == n);
-            f.is_some_and(|f| field_access(self.who(), t, f).reads())
-        })
+        self.force.ty(ty).is_some() && names.into_iter().all(|n| self.reads(ty, n))
     }
 }
 
@@ -259,11 +253,8 @@ impl Sight<'_> {
 }
 
 /// The fields a view reads from each of its sources, its own and the
-/// merged ones in order: a source is read as a read of it (024), so its
-/// `where`, its grouping and what its measures aggregate
-/// ([`measure_reads`]). `describe`, `declare`, the migration preflight
-/// and a read of the view all go by it. `None` when one of its conditions
-/// does not parse.
+/// merged ones in order ([`source_reads`]). `None` when one of its
+/// conditions does not parse.
 pub fn view_reads(v: &ViewDecl) -> Option<Vec<(TypeName, std::collections::BTreeSet<FieldName>)>> {
     std::iter::once((&v.source, v.r#where.as_ref(), &v.group_by, &v.measures))
         .chain(
@@ -272,17 +263,30 @@ pub fn view_reads(v: &ViewDecl) -> Option<Vec<(TypeName, std::collections::BTree
                 .map(|m| (&m.source, m.r#where.as_ref(), &m.group_by, &m.measures)),
         )
         .map(|(source, filter, group_by, measures)| {
-            let mut names: std::collections::BTreeSet<FieldName> =
-                group_by.iter().cloned().collect();
-            if let Some(f) = filter {
-                names.extend(named(f, &|_| None)?);
-            }
-            for m in measures {
-                names.extend(measure_reads(&parsed(&m.expr)?));
-            }
-            Some((source.clone(), names))
+            let names = source_reads(filter, group_by, measures)?;
+            Some((source.clone(), names.into_iter().collect()))
         })
         .collect()
+}
+
+/// The fields a view reads of one source, in the order a read probes
+/// them: a source is read as a read of it (024), so its grouping, its
+/// `where` and what its measures aggregate ([`measure_reads`]).
+/// `describe`, `declare`, the migration preflight and a read of the view
+/// all go by it. `None` when one of its conditions does not parse.
+pub fn source_reads(
+    filter: Option<&Condition>,
+    group_by: &[FieldName],
+    measures: &[lakelands_api::ontology::Measure],
+) -> Option<Vec<FieldName>> {
+    let mut names = group_by.to_vec();
+    if let Some(f) = filter {
+        names.extend(named(f, &|_| None)?);
+    }
+    for m in measures {
+        names.extend(measure_reads(&parsed(&m.expr)?));
+    }
+    Some(names)
 }
 
 /// The fields of `ty` a declaration reads: what it probes

@@ -564,8 +564,8 @@ impl Catalog for Doors {
     }
 
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome> {
-        let p = proposal.clone();
-        let accept = move |c: &Call<'_>| c.accept(&p);
+        let (p, asked) = (proposal.clone(), who.clone());
+        let accept = move |c: &Call<'_>| c.accept(&p, &asked);
         self.detached(who, MadeDue::Accepted, accept).await
     }
 
@@ -575,8 +575,8 @@ impl Catalog for Doors {
         proposal: &ProposalId,
         reason: String,
     ) -> Result<Outcome> {
-        let p = proposal.clone();
-        self.write(who, move |c| c.reject(&p, reason)).await
+        let (p, asked) = (proposal.clone(), who.clone());
+        self.write(who, move |c| c.reject(&p, &asked, reason)).await
     }
 
     async fn proposals(

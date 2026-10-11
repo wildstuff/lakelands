@@ -94,7 +94,8 @@ pub struct Writer {
 pub struct Shape {
     /// The ontology.
     pub ontology: Ontology,
-    /// Every declaration, as [`Ontology::declared`] lists them.
+    /// Every declaration, as [`Ontology::declared`] lists them, each in
+    /// force since the position the engine holds it from.
     pub declared: Vec<lakelands_api::engine::Declared>,
     /// The settings.
     pub settings: BTreeMap<String, Value>,
@@ -598,9 +599,17 @@ impl Lake {
         }
         drop(held);
         let rebuilds = self.rebuilds.load(Ordering::SeqCst);
-        let ontology = Ontology::at(view)?;
+        let stored = view.declarations()?;
+        let ontology = Ontology::from_declared(&stored);
+        let key = lakelands_core::engines::declaration_key;
+        let since = stored.iter().map(|d| (key(&d.declaration), d.since));
+        let since: BTreeMap<String, Position> = since.collect();
+        let mut declared = ontology.declared();
+        for d in &mut declared {
+            d.since = since.get(&key(&d.declaration)).map_or(d.since, |s| *s);
+        }
         let shape = Arc::new(Shape {
-            declared: ontology.declared(),
+            declared,
             settings: settings_in(view, &ontology)?,
             renames: self.renames(Some(view))?,
             ontology,

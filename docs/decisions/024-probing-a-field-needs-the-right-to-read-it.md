@@ -668,11 +668,15 @@ hidden type is not
 `proposals` leaves it out, so its count does not tell either. `accept`
 and `reject` answer as for an id no proposal holds, before anything else
 of the proposal is judged. So a reviewer is not told that the verb was
-declared again since, which would name it. The verb is the one the lake
-declares when the proposal is read or decided. A field derived from one the caller may not read, a
-write-only field and a reference to a type the caller is not shown are
-judged the same way, since a filter on them is. A verb that reads no
-such field is unchanged.
+declared again since, which would name it. The verb is judged as the
+lake declares it when the proposal is read or decided, and as it was
+declared where the call was proposed (lakelands#791): an owner who
+declared the verb again without its `requires` would otherwise bring
+back, key and `why`, every call proposal the rule had hidden. A field
+derived from one the caller may not read, a write-only field and a
+reference to a type the caller is not shown are judged the same way,
+since a filter on them is. A verb that reads no such field is
+unchanged.
 
 ## Extended: a view's definition is shown to those its read answers (lakelands#798)
 
@@ -694,7 +698,7 @@ A name a measure bears outside an aggregate is no field of the source.
 It is read from the group, an earlier measure or a grouping field,
 whatever the source holds under that name (027, 028). The read's probe
 of such a name guarded no value, and it told: of two views alike but
-for a measure's name, the one named as a field of the source is was
+for a measure's name, the one named as a field of the source was
 refused to a reader kept from that field and the other answered, so
 the reader learned that the field is declared. The read no longer
 probes it. A view that names an earlier measure is shown and answered
@@ -707,3 +711,28 @@ shown every definition, and is refused the read it may not make, on the
 field, since showing a definition is not reading what it reads. An
 object set is shown and read the same way: its definition to a holder of
 `schema`, its records to one who reads what its `where` reads.
+
+A set named in another's filter is judged the same way
+(lakelands#877). A proposer without `schema` that proposed a set, or a
+trigger whose `when` names one, was checked against every set of the
+lake, so `in_set('open')` over a set it is not shown was refused as
+reading a field the type does not have, the one that set's filter
+reads, where a name no set bears is refused as undeclared: the refusal
+told that the set is declared and what it reads. Its proposal is
+checked against the sets it is shown, and the two names answer alike.
+A verb's `requires` and a view's `where` take no set at all. A holder
+of `schema` is shown the definition, and is still refused on the field
+it may not read.
+
+Two more doors told a set the same way. To propose a set under the
+name of one its proposer is not shown was, for another type, refused by
+the set's own rule, which names the type it holds, and for the same
+type proposed, as a set declared again; it is not granted, for either
+type, as to declare a type one is not shown is (027, extended). And a
+read naming a set of a type its reader is not shown, where it reads
+every field the set's filter reads, was told that the set is of that
+type: the set is one that is not declared, as the type is at every
+door (006, extended), and so in a trigger's `when`; to declare a set
+under its name is not granted, as above. A holder of `schema` is
+answered the same: it is shown the definition only of a set whose type
+it is shown.

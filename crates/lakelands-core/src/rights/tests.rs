@@ -86,7 +86,9 @@ fn refused_on<T>(field: &str, reason: Refusal) -> Result<T, Error> {
 #[test]
 fn a_reader_sees_granted_fields_and_a_sensitive_field_only_as_masked() {
     let who = principal(Access::None, &[("amount", Access::Read)]);
-    let r = visible(&who, &invoice(), &stored(), true).unwrap();
+    let none = Vec::new();
+    let sees = crate::sight::Sight::held(&who, &none);
+    let r = visible(&sees, &invoice(), &stored(), true).unwrap();
     assert_eq!(r.fields.keys().collect::<Vec<_>>(), ["amount"]);
     assert_eq!(r.masked, [FieldName::from("iban")]);
     assert_eq!(

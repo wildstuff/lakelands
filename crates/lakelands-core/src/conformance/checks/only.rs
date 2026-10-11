@@ -20,6 +20,7 @@ use lakelands_api::{
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
+use crate::conformance::backing::EXECUTOR;
 use crate::conformance::fixture::{
     Lake, Must, field, head_unmoved, principal, reason, restrict, searchable, type_decl, vector,
     view_of,
@@ -43,7 +44,7 @@ check!(
 
 check!(
     ONLY_LINKS = a_link_is_answered_where_its_ends_are_admitted,
-    "051: a walk by a holder of `only` reaches only admitted records; a link type whose end type holds `only` answers `get`, `find`, `total` and a count over the links whose ends are admitted, a reference to any other answers as one to a link no record holds, and a call proposed on one is listed without its write and is not its reviewer's to decide (lakelands#871); `only` on a link type admits its links by their fields in a walk too"
+    "051: a walk by a holder of `only` reaches only admitted records; a link type whose end type holds `only` answers `get`, `find`, `total` and a count over the links whose ends are admitted, a reference to any other answers as one to a link no record holds, and a call proposed on one, of a verb that writes it or reaches outside the lake, is listed without its write and is not its reviewer's to accept or to reject (lakelands#871); `only` on a link type admits its links by their fields in a walk too"
 );
 
 check!(
@@ -482,14 +483,20 @@ async fn a_link_is_answered_where_its_ends_are_admitted(store: Store) -> Held {
         said[0] == said[1] && said[0] != "None",
         "a reference to the link of bob's `c2` answers alice as one to no link: {said:?}"
     );
-    // And a call proposed on it is listed to her as the retirement of
-    // bob's `c2` is, without its write.
-    let mark = json!({"declare": "verb", "name": "mark", "on": "sys.link.claim.on_trip",
-        "risk": "low", "effect": "write", "set": [{"field": "label", "value": "'seen'"}]});
+    // And a call proposed on it, of a verb that writes it or reaches
+    // outside the lake, is listed to her as the retirement of bob's `c2`
+    // is, without its write.
+    let on = "sys.link.claim.on_trip";
+    let mark = json!({"declare": "verb", "name": "mark", "on": on, "risk": "low",
+        "effect": "write", "set": [{"field": "label", "value": "'seen'"}]});
+    let chain = json!({"declare": "verb", "name": "chain", "on": on, "risk": "low",
+        "effect": "external", "executor": EXECUTOR});
     l.declare_json(mark).await?;
+    l.declare_json(chain).await?;
     for w in [
         json!({"write": "retire", "type": "claim", "key": "c2"}),
         json!({"write": "call", "verb": "mark", "key": "c2:t1", "payload": {}}),
+        json!({"write": "call", "verb": "chain", "key": "c2:t1", "payload": {}}),
     ] {
         let proposed = cat.propose(&l.own, de(w), "the owner's".into()).await;
         proposed.must("the owner's proposal")?;
@@ -499,12 +506,14 @@ async fn a_link_is_answered_where_its_ends_are_admitted(store: Store) -> Held {
     // Nor does she decide either: a reviewer decides what it is listed whole.
     let mut kept = Vec::new();
     for p in &listed {
+        let accepted = cat.accept(&writer, &p.id).await;
         let rejected = cat.reject(&writer, &p.id, "no".into()).await;
+        kept.push(reason(&accepted) == Some(&Refusal::NotGranted));
         kept.push(reason(&rejected) == Some(&Refusal::NotGranted));
     }
     ensure!(
-        kept == [true; 2] && listed.iter().all(|p| p.write.is_none() && p.more),
-        "a proposal on bob's claim and one on its link are listed to alice without their writes, and she rejects neither ({kept:?}): {listed:?}"
+        kept == [true; 6] && listed.iter().all(|p| p.write.is_none() && p.more),
+        "a proposal on bob's claim and two on its link are listed to alice without their writes, and she accepts and rejects none ({kept:?}): {listed:?}"
     );
     // `only` on the link type itself admits its links by their fields.
     let types = json!({"sys.link.claim.on_trip": {"only": {"from": "c2"}}});

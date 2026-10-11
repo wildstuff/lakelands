@@ -114,3 +114,25 @@ fn every_case_and_place_reads_back_as_itself_through_an_error() {
         reads(&unknown_field, at);
     }
 }
+
+/// A refusal that says what a declaration allows is shown by a listing
+/// only beside the field it is said of (lakelands#791): a call's payload
+/// lists each value, and no field whose reader could be asked.
+#[test]
+fn what_a_declaration_says_is_shown_only_beside_its_field() {
+    let listed: crate::write::ProposedWrite = serde_json::from_value(
+        json!({"write": "call", "verb": "grade", "key": "k", "payload": {"x": "mid"}}),
+    )
+    .unwrap();
+    let shown = |field: Option<&str>| {
+        let (value, allowed) = (json!("mid"), ["low", "high"].into_iter().collect());
+        let mut e = Error::invalid(Case::NotOneOf { value, allowed });
+        if let Error::Refused { field: f, .. } = &mut e {
+            *f = field.map(Into::into);
+        }
+        let mut named = Named::default();
+        e.names(&mut named);
+        named.shown_by(&listed, &|_| true, &|_| true, &|_| None)
+    };
+    assert_eq!((shown(None), shown(Some("level"))), (false, true));
+}

@@ -378,7 +378,7 @@ async fn a_record_held_across_a_rekey_is_not_there_as_of_before(store: Store) ->
 check!(
     HOLD_REACHES_LINKS_AND_REVIEWS =
         a_link_with_a_held_end_is_not_there_and_an_accept_is_judged_by_what_it_reaches,
-    "006 and 051, extended (lakelands#781): to a reader without the `restricted` grant a link with a held end is not there: `get` of it answers as of a link no record holds, compared whole, `find` on the link type does not list it, count it in a total or an aggregate, or find it by its hidden end, a kept view over the link type, and over a view over it, answers as its computed twin, a search as of before the hold judged at the head leaves it out, and a reference to it is `not_live` as one to a link no record holds; a cardinality refusal over such a link still refuses and names no end; a reviewer without the grant is refused, as not granted, the accept of a write that references a held record or a link with a held end, an upsert's or a call's in whatever form its assignment computes it (a payload member, a literal, `coalesce`, another field), which the owner applies; a high-risk call through the `call` door is judged as its caller's write, refused as not live to one without the grant and logging nothing, and proposed to a holder; and what a write reaches is computed as at its proposal, by the declarations, its record, the settings in force and its time, so one that reaches a held record only through a field retyped, a record, a setting or a time changed since is judged at the accept as its proposer's write; a holder's proposed call on a link with a held end is accepted; and the host places and lifts a hold on a retired record"
+    "006 and 051, extended (lakelands#781): to a reader without the `restricted` grant a link with a held end is not there: `get` of it answers as of a link no record holds, compared whole, `find` on the link type does not list it, count it in a total or an aggregate, or find it by its hidden end, a kept view over the link type, and over a view over it, answers as its computed twin, a search as of before the hold judged at the head leaves it out, and a reference to it is `not_live` as one to a link no record holds; a cardinality refusal over such a link still refuses and names no end; a reviewer without the grant is refused, as not granted, the accept of a write that references a held record or a link with a held end, an upsert's or a call's in whatever form its assignment computes it (a payload member, a literal, `coalesce`, another field), which the owner applies; a high-risk call through the `call` door is judged as its caller's write, refused as not live to one without the grant and logging nothing, and proposed to a holder; and what a write reaches is computed as at its proposal, by the declarations, its record, the settings in force and its time, so one that reaches a held record only through a field retyped, a record, a setting or a time changed since is judged at the accept as its proposer's write; a holder's proposed call on a link with a held end is listed to a reviewer without the grant without its write, is not that reviewer's to accept or to reject, and is accepted by one who holds it; and the host places and lifts a hold on a retired record"
 );
 
 /// Each write door that names the record `k`, as `who`: a reference to a
@@ -1102,14 +1102,28 @@ async fn a_link_with_a_held_end_is_not_there_and_an_accept_is_judged_by_what_it_
             opts(),
         )
         .await;
-    let accepted = match called.must("the holder's call")? {
-        Outcome::Proposed { proposal, .. } => c.accept(&l.own, &proposal).await.map(drop),
-        other => {
-            return Err(Failure::new(format!(
-                "the holder's call answered {other:?}"
-            )));
-        }
+    let Outcome::Proposed { proposal: id, .. } = called.must("the holder's call")? else {
+        return Err(Failure::new("the holder's call is proposed"));
     };
+    // The reviewer without the grant is listed it without its write, as
+    // it is not answered the link, and decides it not.
+    let listed = c.proposals(&reviewer, Default::default()).await;
+    let listed = listed.must("the reviewer's listing")?.data;
+    let bare = |p: &lakelands_api::write::Proposal| p.id == id && p.write.is_none() && p.more;
+    let no = [
+        c.accept(&reviewer, &id).await.map(drop),
+        c.reject(&reviewer, &id, "no".into()).await.map(drop),
+    ];
+    let refused = Err(Error::Refused {
+        field: None,
+        reason: Refusal::NotGranted,
+    });
+    if !listed.iter().any(bare) || no != [refused.clone(), refused] {
+        apart.push(format!(
+            "the holder's call on `d1:held`, to a reviewer without the grant: {no:?}, listed {listed:?}"
+        ));
+    }
+    let accepted = c.accept(&l.own, &id).await.map(drop);
     if accepted.is_err() {
         apart.push(format!(
             "the holder's call on `d1:held`, accepted: {accepted:?}"

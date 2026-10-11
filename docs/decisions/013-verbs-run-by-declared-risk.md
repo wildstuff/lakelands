@@ -274,14 +274,16 @@ reorders them counts as a change, and errs toward hiding. An
 author's declaration carries back the relations it is not shown, so a
 reader not shown a relation's target still proposes, lists and decides
 its own redeclaration and migration of the type, which it may author
-directly. Only a type the lake declares counts: a bundle may declare a
-new type its reader would not be shown once in force, and is listed
-without that declaration, as above.
+directly. A type a bundle brings counts as one the lake declares: a
+bundle that declares a type its reader would not be shown once in force
+is not there to that reader (below, lakelands#798).
 
-A listed migration is judged by its reader as it stands; its report is
-then trimmed, as above, by the reader's grants at the proposal, against
-the type as it stood. An accept or a reject judges this as soon as the
-proposal is found,
+A migration is judged by its reader under three sights (below,
+lakelands#798): as the lake stands, as the migration would leave its
+type, and, where the type was declared again since, as it stood where
+the migration was proposed; its report is trimmed, as above, by the
+reader's grants there, against the type as it stood. An accept or a
+reject judges this as soon as the proposal is found,
 before anything else of it is told: whether it is decided, whether a
 pinned record moved since it was proposed, whether its write or its
 bundle would apply. Nothing is appended. A proposal hidden only by a
@@ -306,6 +308,93 @@ type, the type is one that is not declared
 (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 extended), and a proposal on a type that is not there is not there
 either: not in the listing, and not at the accept.
+
+## Extended: an entry is decided as it is listed (lakelands#798)
+
+The listing, the accept and the reject each asked whether an entry is
+there for its reader, and each by its own lines: the listing trimmed and
+left out, the accept asked a second list of the types an entry names,
+and a holder of `only` was judged by a third. They agreed where a row
+held them together, and nowhere else by construction. One function
+answers now. For a reader and an entry it says that the entry is not
+there, or what of its write the reader is shown and whether it holds
+more. The listing shows that answer. The accept and the reject ask it at
+the head as soon as the proposal is found: an entry that is not there
+is an id that does not exist, word for word, to both; one listed without
+its write, or to a holder of `only` not whole
+(`docs/decisions/051-a-grant-may-admit-only-some-records.md`), is not
+granted to decide; and an accept's refusal is told by the same answer
+(below).
+
+**Three sights.** The reader is the principal its call named, judged
+under up to three sights, its grants followed to each: the lake in force
+where the entry is read; the lake as the entry would leave it, a
+bundle's whole and of a migration its `to`; and, where the type a
+migration reshapes or the verb a call calls was declared again since the
+proposal, the lake as it was proposed against. An entry is not there
+when any of them hides a type it names, or when its verb, as the lake
+declares it or as it was declared where the call was proposed, reads a
+field the reader may not read under that sight
+(`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+extended). A call's payload is shown only to a reader who reads each
+field the verb sets, under both.
+
+The lake as it was proposed against is read only for an entry whose
+subject moved, and only for a reader whose grants keep it from a field:
+one who reads every field of every type is judged the same there as in
+force, so an owner's listing reads no past, however many decided
+migrations the lake holds.
+
+**What turned.**
+
+- A bundle that brings a type its reader would not be shown once in
+  force was listed without that declaration, and its accept applied the
+  whole bundle. It is not there, and so where a declaration of the
+  bundle stands on the link type a relation of it calls for: what the
+  bundle declares on it is exactly what that reader is kept from. A
+  bundle that declares the owner and nothing on its link type is
+  listed to that reader as `describe` would show it the owner once in
+  force: the relation without the link fields that reader may not know
+  of, with `more` where that leaves one out. A principal that proposes
+  a type it will not be shown is not listed its own bundle: it is told
+  so on purpose, since the entry would otherwise be the one place that
+  names the type to it, and the grant is the host's to mend.
+- A call whose verb read a field its reader may not read where the call
+  was proposed, declared again since without it, was listed whole, key
+  and `why`, and its accept told that the verb was declared again. It
+  is not there (lakelands#791).
+- A migration that keys its type by a field its reader may not know of
+  was listed trimmed. Once in force the type would not be shown to that
+  reader, so the migration is not there.
+- A migration of a type declared again since, which its reader was not
+  shown where it was proposed and is shown now, was listed, its report
+  trimmed by the reader's grants then. It is not there: the entry would
+  say that the type was there and that someone proposed to reshape it,
+  which a read as of that position does not answer that reader.
+- A migration was not listed to a holder of `only`, and its accept and
+  reject were refused as not granted, which told that the id is a
+  proposal's. They answer as an id that does not exist.
+- A migration of a type declared again since was judged, for a reader
+  masked on a field and kept from none, on the type in force. It is
+  judged on the type as it was proposed against, as for a reader kept
+  from a field.
+
+What an accept applies is unchanged: a reviewer shown every type an
+entry names still applies the write whole, the part its listing trims
+included (above, lakelands#499).
+
+**Why.** Two answers to one question differ sooner or later, and here
+each difference told something: an accept that applies what the listing
+left out writes a type its reviewer may not see, and one that refuses
+what the listing never showed says that it is there. The past is asked
+because a declaration made again can take away the very thing that hid
+an entry, and the entry is of the lake it was proposed against.
+
+**The rows.** A grid of sixteen entries, an id that was never proposed
+among them, by six reviewers pins, for each
+pair, how the entry is listed and what its accept answers, and that the
+reject of one not listed or not granted answers as its accept, the head
+unmoved.
 
 ## Extended: an accept's refusal names what its reviewer's listing shows (lakelands#780)
 
@@ -333,7 +422,10 @@ extended, lakelands#779).
 
 A name of another kind, a relation's, a trigger's or a function's, is
 not judged. Any refusal is told whole to a reviewer that reads
-everything, and to the proposer, whose own write was told the same.
+everything. The proposer is judged as any reviewer, by its grants at
+the accept (lakelands#791): it named those things when it proposed, but
+a grant narrowed since keeps them from it now, and its own write would
+tell it no more today.
 Otherwise the accept answers as a proposal stale since it was proposed:
 the write changed since it was proposed, naming only the type and the
 key written, which the listing shows. A conflict names versions only,

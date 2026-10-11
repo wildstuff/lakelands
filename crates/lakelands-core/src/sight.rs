@@ -134,6 +134,24 @@ impl<'o> Sight<'o> {
         t.ok_or(Error::NotFound { missing })
     }
 
+    /// Whether its principal would be shown `t` once it stood in force
+    /// under its name: a proposed shape is judged before it is.
+    pub fn would_show(&self, t: &TypeDecl) -> bool {
+        let find = |n: &TypeName| match n == &t.name {
+            true => Some(t),
+            false => self.force.ty(n),
+        };
+        describe::type_shown(t, &find, &self.who)
+    }
+
+    /// Whether its principal reads `field` of `ty`: a field the type
+    /// declares, of a type it is shown.
+    pub fn reads(&self, ty: &TypeName, field: &FieldName) -> bool {
+        let t = self.ty(ty).ok();
+        let f = t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)));
+        f.is_some_and(|(t, f)| rights::field_access(&self.who, t, f).reads())
+    }
+
     /// What its principal's grants admit of the records of `ty` (051).
     pub fn admit(&self, ty: &TypeName) -> rights::Admit {
         rights::admit(&self.who, ty, &|n| self.force.ty(n))

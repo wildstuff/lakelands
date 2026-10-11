@@ -64,7 +64,7 @@ check!(
 
 check!(
     TOLD_AS_LISTED = an_accepts_refusal_names_what_its_reviewers_listing_shows,
-    "006 and 013, extended (lakelands#780): a refusal of the proposer's write at its accept is judged by the reviewer's view, as its listing is: whole to a reviewer shown each field, type, key and value it names, and to one kept from any of them as a write changed since it was proposed, naming only the type and key written: a reference to a record retired since, a value its field no longer takes; a call whose `requires` no longer holds is whole to a reviewer who reads what it reads, and not there to one kept from it (lakelands#779); a conflict names versions only and is whole to each, and so is a retirement's refusal, of a record gone or changed since, which names its type and key alone; nothing is appended and the proposal stays pending"
+    "006 and 013, extended (lakelands#780): a refusal of the proposer's write at its accept is judged by the reviewer's view, as its listing is: whole to a reviewer shown each field, type, key and value it names, and to one kept from any of them as a write changed since it was proposed, naming only the type and key written: a reference to a record retired since, to its proposer too once its grants keep it from the field (lakelands#791), a value its field no longer takes, a field required since that it leaves out, which names that field alone; a call whose `requires` no longer holds is whole to a reviewer who reads what it reads, and not there to one kept from it (lakelands#779); a conflict names versions only and is whole to each, and so is a retirement's refusal, of a record gone or changed since, which names its type and key alone; nothing is appended and the proposal stays pending"
 );
 
 check!(
@@ -1394,14 +1394,14 @@ async fn a_call_sent_again_while_its_executor_runs_is_unanswered(store: Store) -
 async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store) -> Held {
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     let text = json!({"kind": "text"});
-    let inv = |level: Value| {
+    let inv = |level: Value, required: bool| {
         json!({"name": "inv", "fields": [{"name": "note", "type": text},
-            {"name": "level", "type": level},
+            {"name": "level", "type": level, "required": required},
             {"name": "name", "type": {"kind": "reference", "target": "vault"}}]})
     };
     let vault = json!({"name": "vault", "fields": [{"name": "name", "type": text}]});
     l.declare(de(vault)).await?;
-    l.declare(de(inv(text.clone()))).await?;
+    l.declare(de(inv(text.clone(), false))).await?;
     l.declare_json(
         json!({"declare": "value_type", "name": "grade", "kind": "text",
                           "one_of": ["low", "high"]}),
@@ -1428,8 +1428,8 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
     for (ty, key, fields) in [
         ("vault", "v1", json!({"name": "v1"})),
         ("vault", "v2", json!({"name": "v2"})),
-        ("inv", "i2", json!({"note": "n"})),
-        ("inv", "i3", json!({"note": "n"})),
+        ("inv", "i2", json!({"note": "n", "level": "low"})),
+        ("inv", "i3", json!({"note": "n", "level": "low"})),
         ("inv", "i6", json!({"level": "low"})),
     ] {
         l.upsert(ty, key, fields).await?;
@@ -1467,9 +1467,21 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
                "opts": {"expected_version": (key == "i2").then_some(1)}})
     };
     let call = |verb: &str, key: &str, payload: Value| json!({"write": "call", "verb": verb, "key": key, "payload": payload});
-    let retired = propose(&l.own, upsert("i1", json!({"note": "v1", "name": "v1"}))).await?;
+    let retired = propose(
+        &l.own,
+        upsert("i1", json!({"note": "v1", "name": "v1", "level": "low"})),
+    )
+    .await?;
     let retyped = propose(&l.own, upsert("i4", json!({"level": "mid"}))).await?;
+    // `field`, while its grants were wider: it is told as any reviewer.
+    let wider = holder(s, "field", json!({"default": "write"}));
+    let narrowed = propose(
+        &wider,
+        upsert("i5", json!({"note": "v1", "name": "v1", "level": "low"})),
+    )
+    .await?;
     let moved = propose(&l.own, upsert("i2", json!({"note": "b"}))).await?;
+    let lacking = propose(&l.own, upsert("i7", json!({"note": "b"}))).await?;
     let refiled = propose(&l.own, call("refile", "i2", json!({"to": "v2"}))).await?;
     let closed = propose(&l.own, call("close", "i6", json!({}))).await?;
     let gone = propose(
@@ -1486,8 +1498,8 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
     l.retire("inv", "i3").await?;
     l.upsert("inv", "i2", json!({"note": "m"})).await?;
     l.upsert("inv", "i6", json!({"level": "high"})).await?;
-    l.migrate(de(inv(json!({"kind": "text", "value_type": "grade"}))))
-        .await?;
+    let graded = json!({"kind": "text", "value_type": "grade"});
+    l.migrate(de(inv(graded, true))).await?;
     let stale = |key: &str| {
         let (ty, key) = ("inv".into(), Some(key.into()));
         json!(Error::invalid(Case::WriteChangedSinceProposed { ty, key }))
@@ -1499,6 +1511,13 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
         (
             &retired,
             "i1",
+            vec![&field, &typed],
+            vec![&shown],
+            "not_live",
+        ),
+        (
+            &narrowed,
+            "i5",
             vec![&field, &typed],
             vec![&shown],
             "not_live",
@@ -1516,6 +1535,13 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
             vec![],
             vec![&field, &typed, &shown],
             "conflict",
+        ),
+        (
+            &lacking,
+            "i7",
+            vec![&field],
+            vec![&typed, &shown],
+            "required",
         ),
         (
             &refiled,

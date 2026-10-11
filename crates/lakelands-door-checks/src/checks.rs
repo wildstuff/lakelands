@@ -5027,9 +5027,9 @@ pub async fn a_reviewer_not_shown_a_type_finds_no_proposal_on_it(store: Arc<dyn 
                 .expect("a reviewer shown `invoice` accepts the call");
         }
     }
-    // A migration proposed while `xx` is keyed by a reference to `hh`, and
-    // listed once `xx` refers to `vv`: the reader judged as it stands now,
-    // its report trimmed by its grants then, and no door fails.
+    // A migration proposed while `xx` is keyed by a reference to `hh`, read
+    // once `xx` refers to `vv`: its reader was not shown `xx` where it was
+    // proposed, so the entry is not there to it, shown `xx` now though it is.
     let text = json!([{"name": "n", "type": {"kind": "text"}}]);
     let keyed = |to: &str| json!([{"name": "f", "type": {"kind": "reference", "target": to}}]);
     for (name, fields) in [("hh", text.clone()), ("vv", text), ("xx", keyed("hh"))] {
@@ -5096,19 +5096,15 @@ pub async fn a_reviewer_not_shown_a_type_finds_no_proposal_on_it(store: Arc<dyn 
         .proposals(&kept_hh, filter())
         .await
         .map(|r| r.data);
+    let accepted = f.catalog.accept(&kept_hh, &retargeted).await.map(drop);
     let rejected = f.catalog.reject(&kept_hh, &retargeted, "no".into()).await;
-    // Listed whole as the store lists it: its write the migration of `xx`,
-    // and `more`, its report trimmed by the reader's grants then.
-    let to_xx = |w: &Option<ProposedWrite>| {
-        matches!(w, Some(ProposedWrite::Migrate { migration, .. })
-            if migration.to.name.as_str() == "xx")
-    };
-    let held = listed
+    let rejected = rejected.map(drop);
+    let unlisted = listed
         .as_ref()
-        .is_ok_and(|l| (l.iter()).any(|p| p.id == retargeted && to_xx(&p.write) && p.more));
-    if !held || rejected.is_err() {
+        .is_ok_and(|l| l.iter().all(|p| p.id != retargeted));
+    if !unlisted || [&accepted, &rejected] != [&absent(&retargeted); 2] {
         wrong.push(format!(
-            "the migration of `xx` to `vv`, to one kept from `hh`: listed {listed:?}, rejected {rejected:?}"
+            "the migration of `xx` to `vv`, to one kept from `hh`: listed {listed:?}, accepted {accepted:?}, rejected {rejected:?}"
         ));
     }
     // `fare` relates to `invoice` through a link field and one computed
@@ -5895,8 +5891,8 @@ pub async fn a_proposal_shows_its_reader_the_values_it_may_read(store: Arc<dyn L
 
 /// `proposals` names what its reader may know of and says where there is
 /// more: the keeper's proposed type, which it could not see once declared,
-/// is listed without its write and matches no `kind`; a reviewer who reads
-/// both lists each whole. And a proposal reads only what its proposer may
+/// is not listed to it, its own though it is; a reviewer who reads both
+/// lists each whole. And a proposal reads only what its proposer may
 /// read: a trigger over `note`, which the clerk sees masked, or over
 /// `secret`, which the keeper writes and never reads, is refused as not
 /// granted on the field, and one over `secret` by the clerk, who may not
@@ -5969,7 +5965,7 @@ pub async fn a_proposal_names_what_its_reader_may_know_and_says_there_is_more(
     };
     let rows: [(&Principal, _, &[&str], &[bool]); 5] = [
         (clerk, ProposalFilter::default(), &["stated"], &[false]),
-        (keeper, ProposalFilter::default(), &[], &[true]),
+        (keeper, ProposalFilter::default(), &[], &[]),
         (keeper, declared(), &[], &[]),
         (clerk, declared(), &["stated"], &[false]),
         (

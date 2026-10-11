@@ -1134,54 +1134,6 @@ impl Scope for VerbScope<'_> {
     }
 }
 
-/// Whether a proposed write names a type `who` is not shown, one `o`
-/// declares: the type it writes or a called verb is on; of a migration's
-/// `to` and of each type a bundle declares, what
-/// [`TypeDecl::names_against`] names against the type in force, the shape
-/// completed as `o` keeps it; and the type each verb, trigger and object
-/// set of a bundle is on. A link type is shown only with both its ends, so
-/// a write to one with a hidden end is among them. A call of a verb that
-/// reads a field `who` may not read is hidden too: `describe` does not name
-/// the verb, and the entry would tell that its `requires` held (024,
-/// extended). Such a proposal is not there to `who`: not listed, and not
-/// found by `accept` or `reject` (lakelands#762).
-pub(crate) fn hidden_from(o: &Ontology, who: &Principal, write: &ProposedWrite) -> bool {
-    let shape = |t: &TypeDecl| {
-        let mut t = t.clone();
-        o.complete(&mut t);
-        t.names_against(o.ty(&t.name).ok())
-    };
-    let mut named: Vec<TypeName> = Vec::new();
-    match write {
-        ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => {
-            named.push(ty.clone())
-        }
-        ProposedWrite::Call { verb, .. } => {
-            let Ok(v) = o.verb(verb) else { return false };
-            let on = o.ty(&v.on);
-            if on.is_ok_and(|on| !rights::reads_what_verb_reads(who, on, v)) {
-                return true;
-            }
-            named.push(v.on.clone())
-        }
-        ProposedWrite::Migrate { migration, .. } => named.extend(shape(&migration.to)),
-        ProposedWrite::Declare { declarations } => {
-            for d in declarations {
-                match d {
-                    Declaration::Type(t) => named.extend(shape(t)),
-                    Declaration::Verb(v) => named.push(v.on.clone()),
-                    Declaration::Trigger(t) => named.push(t.on.clone()),
-                    Declaration::ObjectSet(s) => named.push(s.of.clone()),
-                    Declaration::ValueType(_) | Declaration::Function(_) => {}
-                }
-            }
-        }
-        ProposedWrite::MigrateValueType { .. } => {}
-    }
-    let sees = Sight::held(who, o);
-    (named.iter()).any(|ty| o.ty(ty).is_ok() && sees.ty(ty).is_err())
-}
-
 /// What a decision's own events carry beside the call's writer and
 /// context, set before the record they make is computed, so that what is
 /// judged on that record (a trigger's guard) reads the provenance the fold
@@ -2053,21 +2005,26 @@ impl Call<'_> {
         Ok(pinned)
     }
 
-    /// A proposal hidden from its reviewer by a type it names or a verb it
-    /// calls ([`hidden_from`]) is not there to it: answered as an id that does
-    /// not exist, as its listing leaves it out, before anything else of the
-    /// proposal is told or done (lakelands#762).
-    fn shown_to_reviewer(&self, o: &Ontology, p: &lakelands_api::write::Proposal) -> Result<()> {
-        if !p
-            .write
-            .as_ref()
-            .is_some_and(|w| hidden_from(o, self.who, w))
-        {
-            return Ok(());
-        }
-        Err(Error::NotFound {
-            missing: Missing::Proposal { id: p.id.clone() },
-        })
+    /// The proposal as the head's listing shows it to its reviewer, with
+    /// whether it holds more ([`crate::reads::Reader::entry`]). One that
+    /// is not there to it is answered as an id that does not exist, as its
+    /// listing leaves it out, before anything else of the proposal is told
+    /// or done (lakelands#762).
+    fn listed(
+        &self,
+        p: &lakelands_api::write::Proposal,
+        asked: &Principal,
+    ) -> Result<(Option<ProposedWrite>, bool)> {
+        let Some(write) = &p.write else {
+            return Ok((None, false));
+        };
+        let view = self.lake.engine.view(None)?;
+        let shape = self.lake.shape(view.as_ref())?;
+        let (sight, at) = (Sight::held(self.who, shape.as_ref()), Default::default());
+        let read = crate::reads::Reader::open(self.lake, &sight, at, view, shape.clone())?;
+        let missing = Missing::Proposal { id: p.id.clone() };
+        let listed = read.entry(asked, write, p.position, &Default::default());
+        listed.ok_or(Error::NotFound { missing })
     }
 
     /// Refuse a reviewer holding `only` a proposal it is not listed whole:
@@ -2076,13 +2033,19 @@ impl Call<'_> {
     /// one without `restricted` a write that reaches a held record, which
     /// it is not answered (006). It is judged before the reviewer is told
     /// whether the proposal is decided.
-    fn decides(&self, w: &Writer, p: &lakelands_api::write::Proposal) -> Result<()> {
-        let o = &w.ontology;
+    fn decides(
+        &self,
+        w: &Writer,
+        p: &lakelands_api::write::Proposal,
+        listed: &(Option<ProposedWrite>, bool),
+    ) -> Result<()> {
+        let (o, sees) = (&w.ontology, Sight::held(self.who, &w.ontology));
+        // The grant is asked first only to spare the walk.
         if let Some(write) = p.write.as_ref().filter(|_| !self.who.grants.restricted) {
             let view = self.lake.engine.view(None)?;
             let now = crate::lake::wall_clock().max(w.last_known_at);
             for (ty, key) in reached(o, (view.as_ref(), &w.settings, now), write)? {
-                granted(!view.get(&ty, &key)?.is_some_and(|r| r.restricted))?;
+                granted(!view.get(&ty, &key)?.is_some_and(|r| sees.withheld(&r)))?;
             }
         }
         let Some(write) = p.write.as_ref().filter(|_| rights::holds_only(self.who)) else {
@@ -2099,12 +2062,7 @@ impl Call<'_> {
         if o.ty(ty).is_ok_and(|t| !rights::only_holder(self.who, t)) {
             return Ok(());
         }
-        let view = self.lake.engine.view(None)?;
-        let shape = self.lake.shape(view.as_ref())?;
-        let sight = Sight::held(self.who, shape.as_ref());
-        let at = Default::default();
-        let read = crate::reads::Reader::open(self.lake, &sight, at, view, shape.clone())?;
-        granted(read.shows_whole(write, p.position))
+        granted(listed.0.is_some() && !listed.1)
     }
 
     /// Refuse the accept of a pinned proposal, the one logged at `at`,
@@ -2161,16 +2119,20 @@ impl Call<'_> {
     }
 
     /// `accept`: apply a pending proposal's write, written as the proposer.
-    pub fn accept(&self, proposal: &ProposalId) -> Result<(Outcome, Option<External>)> {
+    pub fn accept(
+        &self,
+        proposal: &ProposalId,
+        asked: &Principal,
+    ) -> Result<(Outcome, Option<External>)> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.review)?;
         let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
         let p = find_proposal(view.as_ref(), proposal)?;
-        self.shown_to_reviewer(&w.ontology, &p)?;
+        let listed = self.listed(&p, asked)?;
         // Before a retry is answered: an accept sent again would hand a
         // holder of `only` what an earlier accepter was answered (051).
-        self.decides(&w, &p)?;
+        self.decides(&w, &p, &listed)?;
         if p.state != ProposalState::Pending {
             let again = self.accepted_again(&w, view.as_ref(), proposal)?;
             return Ok((again, None));
@@ -2225,7 +2187,7 @@ impl Call<'_> {
         // reach, as it writes none (051). A refusal of the plan is told as
         // the reviewer's listing shows the write, whatever the op.
         let mut run = |op: Op<'_>, opts: &WriteOpts| -> Result<Vec<Draft>> {
-            let told = |e| self.told(&w.ontology, &p, write, e);
+            let told = |e| self.told(&w.ontology, write, listed.0.as_ref(), e);
             let plan = d.plan(op, opts.expected_version).map_err(told)?;
             if let Some(after) = &plan.after {
                 let (o, decl) = (&w.ontology, w.ontology.ty(&after.ty)?);
@@ -2366,13 +2328,14 @@ impl Call<'_> {
     /// (lakelands#780), judged by the reviewer's view as its listing is:
     /// whole where the listing shows the reviewer all it names, and else
     /// as a proposal stale since it was proposed, which names only what
-    /// the listing does. A conflict names versions only, and the proposer
-    /// is told what its own write would be.
+    /// the listing does. A conflict names versions only. Its proposer is
+    /// judged as any reviewer, by its grants at the accept: it hears what
+    /// its own write would tell it now (lakelands#791).
     fn told(
         &self,
         o: &Ontology,
-        p: &lakelands_api::write::Proposal,
         write: &ProposedWrite,
+        listed: Option<&ProposedWrite>,
         e: Error,
     ) -> Error {
         let (ty, key) = match write {
@@ -2386,27 +2349,17 @@ impl Call<'_> {
             _ => return e,
         };
         let judged = matches!(e, Error::Refused { .. } | Error::NotFound { .. });
-        if !judged || self.who.grants.reads_everything() || p.proposer == self.who.writer() {
+        if !judged || self.who.grants.reads_everything() {
             return e;
         }
         let sight = Sight::held(self.who, o);
-        let read = |f: &FieldName| {
-            let t = sight.ty(&ty).ok();
-            let f = t.and_then(|t| Some((t, t.fields.iter().find(|x| &x.name == f)?)));
-            f.is_some_and(|(t, f)| rights::field_access(self.who, t, f).reads())
-        };
+        let read = |f: &FieldName| sight.reads(&ty, f);
         let sees = |t: &TypeName| sight.ty(t).is_ok();
         let requires = |v: &VerbName| o.verb(v).ok().and_then(|v| v.requires.clone());
         let mut named = Named::default();
         e.names(&mut named);
-        let listed = (self.lake.engine.view(None)).and_then(|view| {
-            let shape = self.lake.shape(view.as_ref())?;
-            let (sight, at) = (Sight::held(self.who, shape.as_ref()), Default::default());
-            let read = crate::reads::Reader::open(self.lake, &sight, at, view, shape.clone())?;
-            Ok(read.listed(write, p.position))
-        });
         match listed {
-            Ok(Some(l)) if named.shown_by(&l, &sees, &read, &requires) => e,
+            Some(l) if named.shown_by(l, &sees, &read, &requires) => e,
             _ => invalid(Case::WriteChangedSinceProposed { ty, key }),
         }
     }
@@ -2452,14 +2405,13 @@ impl Call<'_> {
     }
 
     /// `reject`.
-    pub fn reject(&self, proposal: &ProposalId, reason: String) -> Result<Outcome> {
+    pub fn reject(&self, proposal: &ProposalId, asked: &Principal, why: String) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.review)?;
         let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
         let p = find_proposal(view.as_ref(), proposal)?;
-        self.shown_to_reviewer(&w.ontology, &p)?;
-        self.decides(&w, &p)?;
+        self.decides(&w, &p, &self.listed(&p, asked)?)?;
         if p.state != ProposalState::Pending {
             return Err(refused(Refusal::Decided));
         }
@@ -2469,7 +2421,7 @@ impl Call<'_> {
             Origin::Authored,
             EventBody::WriteRejected {
                 proposal: proposal.clone(),
-                reason,
+                reason: why,
             },
         );
         drop(view);
@@ -2652,6 +2604,17 @@ impl Call<'_> {
         for e in seen.types.values_mut().map(Arc::make_mut) {
             rights::known_fields(self.who, &mut e.decl, &|n| o.ty(n).ok());
         }
+        // A set its author is not shown is one that is not declared, as a
+        // read of it answers (024): a proposal that names it learns nothing
+        // of what its filter reads, and to declare it is not granted, as
+        // for a type (027). A holder of `schema` is shown each set of a
+        // type it is shown.
+        let declared = o.declared();
+        let sees = Sight::held(self.who, &declared);
+        let shown = |d| sees.lists(&Declaration::ObjectSet(d));
+        (seen.object_sets).retain(|_, e| shown(e.decl.clone()));
+        let taken = |d: &Declaration| matches!(d, Declaration::ObjectSet(s) if o.set(&s.name).is_some() && seen.set(&s.name).is_none());
+        granted(!sent.iter().any(taken))?;
         // A valid time left out where the one in force names a field outside
         // its author's view stands as declared: left out of both sides, it is
         // checked whole at apply. A valid time its author sends, the one in
@@ -2726,15 +2689,9 @@ impl Call<'_> {
     pub fn shown_value_type(&self, o: &Ontology, mut report: ValueTypeReport) -> ValueTypeReport {
         // A use is shown in a field the caller reads, of a type it is
         // shown: one keyed by a reference it may not know of is not (024).
-        let read = |ty: &TypeName, field: &FieldName| {
-            let Ok(t) = Sight::held(self.who, o).ty(ty) else {
-                return false;
-            };
-            let f = t.fields.iter().find(|f| &f.name == field);
-            f.is_some_and(|f| rights::field_access(self.who, t, f).reads())
-        };
-        report.fields.retain(|u| read(&u.ty, &u.field));
-        report.first.retain(|m| read(&m.ty, &m.field));
+        let sees = Sight::held(self.who, o);
+        report.fields.retain(|u| sees.reads(&u.ty, &u.field));
+        report.first.retain(|m| sees.reads(&m.ty, &m.field));
         report
     }
 
@@ -3671,13 +3628,9 @@ pub(crate) fn conditions(
         text("on").is_some_and(|t| using.contains(&t.into())) && (old("from") || old("to"))
     };
     let rule = TypeName::from(AGING_RULE_TYPE);
-    let decl = ontology.ty(&rule).ok();
-    let reads = |f: &str| {
-        let t = decl.filter(|_| sees.ty(&rule).is_ok());
-        let f = t.and_then(|t| Some((t, t.fields.iter().find(|x| x.name.as_str() == f)?)));
-        f.is_some_and(|(t, f)| rights::field_access(who, t, f).reads())
-    };
-    let readable = ["on", "from", "to"].into_iter().all(reads);
+    let readable = ["on", "from", "to"]
+        .iter()
+        .all(|f| sees.reads(&rule, &(*f).into()));
     live(view, &rule, |r| {
         if of_it(r) {
             match readable && sees.answers(&rule, r) {
