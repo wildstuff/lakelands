@@ -368,22 +368,28 @@ fn needs_store(e: &Expr) -> bool {
 
 /// A group's fields as a view's record holds them: its values, and each
 /// measure landed in the kind the view type declares for it, nulls left
-/// out; the computation's and the kept fold's.
+/// out; the computation's and the kept fold's. A measure whose value its
+/// field would not take written fails, named with what the field refuses:
+/// a number no reader reads exactly, an instant out of the years, a value
+/// of another kind.
 pub(crate) fn landed(
     decl: &TypeDecl,
     mut fields: aggregate::Row,
     measured: impl IntoIterator<Item = (FieldName, Value)>,
-) -> aggregate::Row {
+) -> Result<aggregate::Row, (FieldName, Case)> {
     for (name, v) in measured {
         let landed = match decl.fields.iter().find(|f| f.name == name) {
-            Some(f) => expr::eval::to_json(&expr::eval::from_json(&v), f.ty.kind, None)
-                .unwrap_or(Value::Null),
-            None => v,
+            Some(f) if !v.is_null() => {
+                let fits = expr::eval::to_json(&expr::eval::from_json(&v), f.ty.kind, None);
+                let judged = lakelands_core::value::check_kind(fits.as_ref().unwrap_or(&v), &f.ty);
+                judged.map_err(|why| (name.clone(), why))?
+            }
+            _ => v,
         };
         fields.insert(name, landed);
     }
     fields.retain(|_, v| !v.is_null());
-    fields
+    Ok(fields)
 }
 
 /// Whether a condition holds over a record's fields and their provenance,
@@ -1402,11 +1408,26 @@ impl<'a> Reader<'a> {
                 given.extend(values);
             }
             let values = measured(&folds, &by, &measures, given)?;
+            // A measure that does not land fails as one that cannot be
+            // computed: the read is refused, naming it and its group.
+            let fields = landed(decl, by.clone(), values).map_err(|(name, why)| {
+                let (group, decimal) = (key.clone(), matches!(why, Case::IntegerTooLarge { .. }));
+                let why = Box::new(why);
+                let said = Said::from(Case::MeasureUnfit {
+                    group,
+                    why,
+                    decimal,
+                });
+                let view = Place::View {
+                    name: decl.name.clone(),
+                };
+                invalid(said.within(Place::Measure { name }).within(view))
+            })?;
             out.push(StoredRecord {
                 ty: decl.name.clone(),
                 key,
                 version: lakelands_api::Version(1),
-                fields: landed(decl, by.clone(), values),
+                fields,
                 meta: BTreeMap::new(),
                 position: self.position,
                 retired: false,

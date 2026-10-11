@@ -41,6 +41,7 @@ mod ingest;
 mod initial;
 mod judged;
 mod keys;
+mod landing;
 mod latest;
 mod link_triggers;
 mod links;
@@ -122,6 +123,7 @@ pub const ALL: &[Check] = &[
     paging::MISSING_SORT_VALUES_LAST,
     paging::UNNAMED_LIMIT,
     paging::EACH_HOLDER_ONCE,
+    landing::MEASURE_LANDS,
     latest::LATEST_ORDER,
     decimals::AS_WRITTEN,
     decimals::EXACT_SUM,

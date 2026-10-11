@@ -901,13 +901,13 @@ pub fn to_json(
         (v, K::Decimal) => as_number(v).map(|d| Value::String(rounded(d).to_string())),
         (v, K::Number) => as_number(v).and_then(|d| {
             let d = rounded(d);
-            if d.fract().is_zero() {
-                d.to_i64().map(Value::from)
-            } else {
-                d.to_f64()
-                    .and_then(serde_json::Number::from_f64)
-                    .map(Value::Number)
-            }
+            // A whole number past 64 bits lands as its double, for the
+            // judgement of what is written to refuse by its size.
+            let whole = d.fract().is_zero().then(|| d.to_i64()).flatten();
+            let double = || d.to_f64().and_then(serde_json::Number::from_f64);
+            whole
+                .map(Value::from)
+                .or_else(|| double().map(Value::Number))
         }),
         (Val::Bool(b), K::Boolean) => Some(Value::Bool(*b)),
         (v, K::DateTime) => as_time(v).map(|t| Value::String(t.to_string())),
