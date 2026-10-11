@@ -76,50 +76,45 @@ of changes without polling, `propose`, `proposals`, `accept` and
 (stdio and HTTP) and REST from one catalog. Agents never write a query
 language.
 
-> **Status: `0.12.0`.** Lakelands `0.12.0` is the `lakelands` CLI, its
+> **Status: `0.13.0`.** Lakelands `0.13.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the
-> whole conformance suite (486 checks through the doors and 65 through
-> the engine seam), with 52 decision records and the event log at
-> format version 13, installable from the release. Its budgets: the
-> store facade and engine traits hold 58 of 110 methods, the core
-> crates' product code 50 299 of 50 500 lines and their specification
-> 66 309 of 66 500, and 2 of 20 `cfg(feature)` sites. A ceiling rises
+> whole conformance suite (532 checks through the doors and 67 through
+> the engine seam), with 54 decision records and the event log at
+> format version 14, installable from the release. Its budgets: the
+> store facade and engine traits hold 59 of 110 methods, the core
+> crates' product code 52 918 of 53 000 lines and their specification
+> 74 589 of 75 000, and 2 of 20 `cfg(feature)` sites. A ceiling rises
 > only by a recorded rule (decision 047): for this round the operator
-> set both as a reserve, to 50 000 and 64 000, sized to its pull
-> requests, and the round's last rights fixes raised the
-> specification's five times, to 66 500, and the product's once, to
-> 50 500, row by row. Beside what `0.11.0` held, every refusal names
-> its case: one closed catalog of cases, each with its code, its
-> parameters and its sentence (`docs/refusals.md`, held to its rules
-> by the `refusals` gate), and an outage names its situation and a
-> missing seam its seam. A holder of `only` writes its own records and
-> proposes writes to them, and a field can hold a calendar date (log
-> format 13). A query vector has a direction, a vector ranking reads a
-> vector field, and a hybrid search without a vector reads a field a
-> model fills. A kept view is paged by the order index its setting
-> asks for and read a page at a time, and one that is not kept names
-> no index. A pattern's aggregate reads its rows by their paths, and a
-> valid time is a date-time or a date field. An author's hidden name
-> is judged at the step an absent one is, and a valid time over a
-> field it may not know of answers as on a type with none. A tools
-> change is owed to a session's next stream until the session lists
-> its tools, and an end touches only its own head-only name. The round
-> ends with a sweep of rights. A reference to a type its reader is not
-> shown is a field the reader does not know of, and `describe` names
-> no verb or function on such a type. A proposal on it is not there to
-> that reader, nor one whose verb reads a field the reader may not
-> read, and an accept's refusal names only what the reviewer's listing
-> shows. A verb is callable only by a caller who may read what it
-> reads, and an `only` that cannot be applied admits no record on any
-> path. A view's key is judged where its values come from, at its
-> sources, and a view shown to a reader names no measure of a field
-> the reader may not know of. A restricted record is not there to a
-> writer without the grant, nor a link with a held end to a reader
-> without it, and a record held now is not there to such a reader as
-> of any earlier position; an accept is judged by every record its
-> write reaches, a high-risk call runs its whole write at the door,
-> and a host can hold a retired record.
+> set both as a reserve, to 52 500 and 69 000, and the round's rights
+> and integrity fixes raised the specification's ten times, to 75 000,
+> and the product's once, to 53 000, row by row. Beside what `0.12.0`
+> held, a lake is written in one log format a release: every event
+> carries it, a lake or an export of another release is refused by
+> name before anything of it is read, and there is no upgrade path
+> until the first release with real installations. The log holds only
+> numbers every reader reads exactly: a value is judged in the form it
+> is written in at every door, and what is computed, declared, landed
+> by a view's measure or verified is held to the same bound. Part of a
+> lake without its events is damage, and a projection is read only by
+> the layout that made it. Every door asks one judgement of what a
+> principal is shown: a record is judged once, by what its grant
+> admits and by its ends as deep as they go, and a proposal is decided
+> as it is listed. A reference a record computes names a live record;
+> a report names what its reader is answered, in the order of the new
+> key; a name its author is not shown is not granted, and no door
+> leaves a lake with a problem among its tools' names. A row binds each
+> record under a name of its own, every path a pattern names is one
+> its rows hold, an order reads no provenance where no record stands,
+> and a walk or a view at a valid time probes every type it can meet.
+> A search as of a position ranks by the head's declaration, and a
+> migration keeps the vector index under the head's names and keys. A
+> verb names no system type but a link type, a view's key is its
+> `group_by`, and a derived relation has no link door. A filtered poll
+> reads only what it answers, and a client reads an ingest's answer as
+> it uploads. The in-memory mock is retired and the door crates test
+> against the store; every decision record says what holds and how it
+> came to be, and one record holds what a principal is shown.
 
 ## Try it
 
