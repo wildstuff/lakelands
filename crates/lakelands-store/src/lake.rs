@@ -231,6 +231,27 @@ pub(crate) fn opener(
         })
 }
 
+/// A log's last event: its position and its hash.
+type Tip = Option<(Position, Digest)>;
+
+/// The position the projection is folded through and the log's tip, read
+/// in that order: a writer appends an event before it folds it, so the
+/// tip is never behind the projection in a lake that is whole, beside a
+/// writer too. A projection folded past the tip stands for events the
+/// log does not hold: the lake lost its log, or the projection is
+/// another lake's, and nothing is answered from it or written behind it
+/// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+pub(crate) fn ends(engine: &dyn LakeEngine) -> Result<(Option<Position>, Tip)> {
+    let folded = engine.projection().folded_through()?;
+    let tip = engine.tip()?;
+    if let Some(position) = folded
+        && tip.as_ref().is_none_or(|(at, _)| *at < position)
+    {
+        return Err(damaged(Part::Log, None, Flaw::EndsBefore { position }));
+    }
+    Ok((folded, tip))
+}
+
 thread_local! {
     /// The causes of what this thread's appends left owed since [`owing`]
     /// began.
@@ -310,6 +331,14 @@ impl Lake {
         // judges, makes and changes nothing of it, in any mode (054).
         log::one_format(&location.lake, opener.log_ends(location)?.as_ref())?;
         let engine: Arc<dyn LakeEngine> = Arc::from(opener.open(location, mode)?);
+        // A writer is judged before it takes the lease: an engine may cut
+        // its log back to what is committed as it hands the lease out,
+        // and a lake that is refused is left as it was found. A rebuild
+        // is not judged: it makes the projection from the log as it
+        // stands.
+        if matches!(mode, OpenMode::Write | OpenMode::Create) {
+            ends(engine.as_ref())?;
+        }
         let lease = match mode {
             OpenMode::Read => None,
             OpenMode::Write | OpenMode::Create | OpenMode::Rebuild => {
@@ -526,8 +555,8 @@ impl Lake {
     /// the head's ontology and settings.
     pub(crate) fn catch_up(&self) -> Result<()> {
         let mut w = self.writer();
-        w.tip = self.engine.tip()?;
-        let folded = self.engine.projection().folded_through()?;
+        let folded;
+        (folded, w.tip) = ends(self.engine.as_ref())?;
         {
             let view = self.engine.view(None)?;
             w.ontology = Ontology::at(view.as_ref())?;

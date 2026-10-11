@@ -21,6 +21,35 @@ The SQLite engine keeps a lake as a directory whose log anyone can read:
   its events' lines and nothing else. The cut takes the index before
   the segment and never a commit line that is whole; a segment shorter
   than its index commits is refused as damaged (lakelands#618).
+- **The index is part of the log, and a segment without it is damage**
+  (lakelands#865). The order of the writes tells a crash from a loss. A
+  crash leaves an index shorter than its segment, or a lake's first
+  segment with no bytes and no index yet; both are read as before. No
+  crash leaves a segment with lines and no index file, a later segment
+  with none (a seal writes the next index before the segment comes to
+  exist), or a `projection.db` with no segment file (the projection is
+  made after the first segment). Each is a lake that lost its index or
+  its log: the engine answers `damaged`, naming the segment
+  (`index_missing`) or that there is none (`no_segment_file`), at the
+  question for the log's ends and at every open, before anything is
+  read, cut or made. Such a directory was read as holding no log: an
+  import replaced its segment, and an open to create cut it. A lost
+  index is an operator's restore; nothing rebuilds it. One case nothing
+  in the files tells apart: an index file that is there and was
+  shortened by hand reads as a crash's tail.
+  - Each pair of files is looked for in the reverse of the order a
+    making writes it in: the projection before the segments, a
+    segment's lines before its index a second time. So beside a lake
+    that is being made nobody is told of damage.
+  - The segments follow each other: the first begins at position 0,
+    each later one at the position after the last of the one before
+    it, and its first event names that one's hash. A seal leaves them
+    so; a log that is otherwise lost a sealed segment or holds another
+    log's, and is refused the same way (`position`, `prev_hash`). An
+    open reads one line more of each later segment's index for it.
+  - A directory whose making stopped before its first segment holds no
+    lake. Only an open to create makes anything in it, and an open that
+    is refused makes nothing: no directory, projection or lease.
 - **A segment after the first comes to exist with its checkpoint in
   it.** The format says every later segment begins with a `checkpoint`,
   and a verifier of the directory holds it to that at whatever instant
@@ -111,7 +140,8 @@ file's contents; the operating system's lock does not.
 
 - It is not a promise that the index or the projection can be read by
   another program. They are the engine's; only the segments are the
-  format.
+  format. The projection is derived and a rebuild makes it again; the
+  index is not, and goes into a backup with the segments.
 - It is not a replication scheme. Copying a directory while a writer
   appends can catch an uncommitted tail, which the next writer cuts off.
 - It is not a requirement on other engines. An engine that keeps events

@@ -908,6 +908,58 @@ fn export_prints_its_files_and_the_head_it_read_and_refuses_a_directory_in_use()
     }
 }
 
+/// `feed` and `export` open a place that holds no lake yet to create
+/// it. A lake that is refused as it stands is not such a place: a lake
+/// whose projection is ahead of its log is asked for once, to read, and
+/// no file of its log is cut (lakelands#865).
+#[test]
+fn feed_and_export_do_not_open_a_damaged_lake_to_create_it() {
+    let sh = Shell::on("export-damaged", Backend::Store);
+    sh.lake();
+    sh.run(&["apply", &sh.fixture()]);
+    let held: Vec<_> = sh.lakes.lock().unwrap().values().cloned().collect();
+    for store in held {
+        block_on(store.close()).unwrap();
+    }
+    // The lake's directory, and its index emptied: the log reads as
+    // holding nothing, under a projection folded through its events.
+    fn find(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
+        fs::read_dir(dir).ok()?.flatten().find_map(|e| {
+            let path = e.path();
+            if path.file_name().is_some_and(|n| n == name) {
+                return Some(path);
+            }
+            path.is_dir().then(|| find(&path, name))?
+        })
+    }
+    let index = find(&sh.root, "00000000000000000000.idx").expect("the lake's index");
+    let segment = find(&sh.root, "00000000000000000000.jsonl").expect("the lake's segment");
+    fs::write(&index, b"").unwrap();
+    let lines = fs::read(&segment).unwrap();
+    assert!(!lines.is_empty());
+    let to = sh.root.join("out").display().to_string();
+    for args in [vec!["export", "--to", &to], vec!["feed"]] {
+        let asked = Mutex::new(Vec::new());
+        let open = |l: Location, mode: OpenMode, host: Seams| -> Opening {
+            asked.lock().unwrap().push(mode);
+            let engines: Vec<Arc<dyn lakelands_api::engine::EngineOpener>> =
+                vec![Arc::new(lakelands_engine_sqlite::SqliteOpener)];
+            Box::pin(lakelands_store::open(l, Seams { engines, ..host }, mode))
+        };
+        let root = sh.root.display().to_string();
+        let mut argv = vec!["lakelands", "--root", root.as_str()];
+        argv.extend_from_slice(&args);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = block_on(lakelands_cli::run(argv, &mut out, &mut err, &open));
+        let err = String::from_utf8(err).unwrap();
+        assert_eq!((code, out.as_slice()), (1, &b""[..]), "{args:?}: {err}");
+        assert!(err.contains("damaged"), "{args:?}: {err}");
+        assert_eq!(*asked.lock().unwrap(), [OpenMode::Read], "{args:?}");
+        assert_eq!(fs::read(&segment).unwrap(), lines, "{args:?} cut the log");
+        assert_eq!(fs::read(&index).unwrap(), b"", "{args:?}");
+    }
+}
+
 #[test]
 fn serve_needs_a_protocol_named() {
     for backend in BACKENDS {

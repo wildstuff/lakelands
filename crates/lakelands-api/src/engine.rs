@@ -486,7 +486,9 @@ pub trait EngineOpener: Send + Sync {
     /// files or tables or in the projection, nothing of a lake is judged,
     /// and a place with no lake stays with nothing. `None` where there is
     /// no lake or its log is empty. An engine may refuse a place that
-    /// holds something other than a lake, as its [`open`] does. The store
+    /// holds something other than a lake, as its [`open`] does, and
+    /// refuses as damaged what it can tell to be part of a lake without
+    /// its events, which is not a place with no lake. The store
     /// asks this before every [`open`] and before an import, and opens
     /// only a lake written in the format it reads
     /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).

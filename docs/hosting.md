@@ -213,12 +213,27 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   an export is the whole log, unmasked, so it is handed over as the
   lake itself would be. An export only reads: it needs no writer, appends
   nothing, and runs beside a `lakelands serve` that holds the lake.
-  Opening a lake on SQLite reads the end of each log segment's index,
-  not the index: what an open costs follows the number of segments, one
+  Opening a lake on SQLite reads the end of each log segment's index
+  and the first line of each after the first, not the index: what an
+  open costs follows the number of segments, one
   more for each `checkpoint` that sealed one, not the events the lake
   holds, so a host may open every lake at its start. A damaged index line
   is therefore not found at the open; `verify`, which reads the log,
-  finds it, as does the read that meets it. A writer's `close` truncates
+  finds it, as does the read that meets it. `index/` is part of the
+  log, not derived data: back it up and restore it with `log/`. A
+  segment without its index file, a `projection.db` with no segment
+  beside it, and a log whose segments do not follow each other (a
+  sealed segment gone, or another lake's in its place) are refused as
+  `damaged` at every open and at an import, and nothing is cut or made;
+  the way out is a restore of the files. On every engine, a projection
+  folded past its log's tip is refused at an open to read, to write and
+  to create and at an import (`ends_before`): the log lost events, or
+  the projection is another lake's. A writer is refused before it takes
+  the lease, so nothing of the log is cut. An open to rebuild is not
+  refused for it. A rebuild makes the projection from the log as it
+  stands, and its writer cuts what the log's index does not commit, as
+  every writer does: it is for an operator who knows the log is whole.
+  A writer's `close` truncates
   the projection's journal (`projection.db-wal`); a writer that ends
   without it leaves the journal as large as it grew, for the next
   `close` or `compact` (lakelands#564). A write the disk refuses, as when

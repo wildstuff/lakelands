@@ -165,6 +165,47 @@ async fn an_exported_lake_verifies_from_its_segment_files_alone() {
         );
     }
     lakelands_core::export::verify(&dir).unwrap();
+    drop(reader);
+
+    // The engine's export reads the log alone: a projection of another
+    // layout, which the store does not open, and then one whose tables
+    // are gone, each leave the same files.
+    let again = |name: &str| {
+        let out = dir.with_file_name(format!("pg-export-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        lakelands_engine_pg::export(&location, &out).unwrap();
+        for file in &names {
+            assert_eq!(
+                std::fs::read(out.join(file)).unwrap(),
+                std::fs::read(dir.join(file)).unwrap(),
+                "{name}: {file}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&out);
+    };
+    let mark = format!("UPDATE \"{schema}\".meta SET n = n + 1 WHERE k = 'layout'");
+    tokio::task::block_in_place(|| admin(&url, &mark));
+    let seams = Seams {
+        engines: vec![Arc::new(PgOpener)],
+        ..Seams::default()
+    };
+    let refused = lakelands_store::open(location.clone(), seams, OpenMode::Read).await;
+    let refused = refused
+        .err()
+        .expect("a projection of another layout opened");
+    assert!(
+        matches!(
+            refused.situation(),
+            Some(Situation::ProjectionLayout { .. })
+        ),
+        "{refused:?}"
+    );
+    tokio::task::block_in_place(|| again("layout"));
+    for table in ["records", "declarations", "text_index"] {
+        let gone = format!("DROP TABLE \"{schema}\".{table} CASCADE");
+        tokio::task::block_in_place(|| admin(&url, &gone));
+    }
+    tokio::task::block_in_place(|| again("no-projection"));
     let _ = std::fs::remove_dir_all(&via);
     let _ = std::fs::remove_dir_all(&dir);
     common::drop_schema(&url, &schema);
