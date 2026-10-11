@@ -390,31 +390,11 @@ pub(crate) fn holds(
     settings: &BTreeMap<String, Value>,
     now: Timestamp,
 ) -> bool {
-    struct S<'s> {
-        r: RecordScope<'s>,
-        meta: Option<&'s BTreeMap<FieldName, lakelands_api::FieldMeta>>,
-    }
-    impl expr::Scope for S<'_> {
-        fn value(&self, path: &[FieldName]) -> Option<Value> {
-            self.r.value(path)
-        }
-        fn meta(&self, f: &FieldName) -> Option<lakelands_api::FieldMeta> {
-            self.meta.and_then(|m| m.get(f)).cloned()
-        }
-        fn setting(&self, key: &str) -> Option<Value> {
-            self.r.setting(key)
-        }
-        fn now(&self) -> Timestamp {
-            self.r.now
-        }
-    }
-    let scope = S {
-        r: RecordScope {
-            fields,
-            settings: Some(settings),
-            now,
-        },
+    let scope = RecordScope {
+        fields,
         meta,
+        settings: Some(settings),
+        now,
     };
     expr::holds(e, &scope).unwrap_or(false)
 }
@@ -769,7 +749,8 @@ impl<'a> Reader<'a> {
     /// name's place, as the ontology read holds it. A set whose filter,
     /// with the sets it names, reads a field its reader is kept from is, to
     /// that reader, a set that is not declared (024): the refusal names
-    /// nothing of the field.
+    /// nothing of the field. Over a view's records, which carry no
+    /// provenance, a condition that reads one is refused (028, extended).
     fn named_sets(
         &self,
         ty: &TypeName,
@@ -786,7 +767,9 @@ impl<'a> Reader<'a> {
             })
         };
         let set = |n: &str| self.shape.ontology.set(n).filter(shown);
-        crate::declare::filter(&set, ty, c, Eval::Record, at)
+        let e = crate::declare::filter(&set, ty, c, Eval::Record, at)?;
+        let view = self.shape.ontology.ty(ty).is_ok_and(|t| t.view.is_some());
+        crate::declare::record_stands(!view, e, at)
     }
 
     /// A read's `where` over one record of `decl`, named `at`, after the
@@ -1455,7 +1438,7 @@ impl<'a> Reader<'a> {
         let mut members = aggregate::Grouping::new(keys, &measures, self.now);
         self.each_member(&source, down, COUNT_PAGE, |r| {
             if here.is_none_or(|w| self.holds(w, &r.fields, Some(&r.meta))) {
-                members.add(&r.fields, Some(&self.shape.settings));
+                members.add((&r.fields, Some(&r.meta)), Some(&self.shape.settings));
             }
             Ok(())
         })?;
@@ -1871,7 +1854,7 @@ impl<'a> Reader<'a> {
         };
         let mut grouping = aggregate::grouping(a, self.now).map_err(named)?;
         self.each_member(decl, filter, COUNT_PAGE, |r| {
-            grouping.add(&r.fields, Some(&self.shape.settings));
+            grouping.add((&r.fields, Some(&r.meta)), Some(&self.shape.settings));
             Ok(())
         })?;
         let mut groups = aggregate::answer(grouping, a).map_err(named)?;

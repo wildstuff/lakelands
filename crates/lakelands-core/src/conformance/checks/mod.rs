@@ -37,6 +37,7 @@ mod graph_steps;
 mod host_cause;
 mod ingest;
 mod initial;
+mod judged;
 mod keys;
 mod latest;
 mod link_triggers;
@@ -327,6 +328,8 @@ pub const ALL: &[Check] = &[
     reactions::VERB_WRITE_REACTS,
     reactions::SET_READ_BY_ITS_FILTER,
     set_declared::SET_DECLARED_OVER_RECORDS,
+    judged::JUDGED_WITH_PROVENANCE,
+    judged::NO_RECORD_NO_PROVENANCE,
     set_names::COMPOSED,
     set_names::REFUSED,
     set_names::RIGHTS,

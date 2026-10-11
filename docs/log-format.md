@@ -427,7 +427,12 @@ In the same event, the fold recomputes derived fields and applies
 `on_input_change: clear` to every field one of whose `depends_on` inputs
 the event changed; a field the fold writes carries `origin: derived` and
 the event's other provenance. Nothing about this is written to the log:
-the rules are deterministic, so a replay reproduces them. A field that
+the rules are deterministic, so a replay reproduces them. A derived
+field that calls `seen_at(f)` or `known_at(f)` reads the provenance the
+event leaves on `f`: the event's own where the event writes `f` or the
+fold computes, clears or settles it in this event, which it does before
+it computes the field that reads it; and else what `f` had. A type with
+`field_meta: false` reads none. A field that
 declares `computed_at: read` is not computed by the fold
 and holds no value: every read computes it from the record as stored,
 with its own clock (`docs/decisions/052-a-field-may-be-computed-at-the-read.md`).

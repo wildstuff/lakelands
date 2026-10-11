@@ -964,6 +964,8 @@ catalog! {
         KindTakesNumber { expr: String, kind: Kind } => "`{expr}` has no meaning: it takes a number, not {kind}",
         /// A difference of what are not two instants.
         MinusNoMeaning { #[serde(with = "closed")] left: Box<Operand>, #[serde(with = "closed")] right: Box<Operand> } => "{left} minus {right} has no meaning",
+        /// A provenance function where no record stands.
+        NoRecordsProvenance => "known_at() and seen_at() read a record's provenance, and no record stands here: a view's records, a value type's constraint and a function's expression carry none",
         /// A number that is not a number.
         NotANumber { #[serde(with = "closed")] value: Box<Operand> } => "{value} is not a number",
         /// A function's call that is no aggregate where one is folded.

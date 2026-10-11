@@ -208,6 +208,7 @@ pub fn admits(decl: Option<&TypeDecl>, record: &StoredRecord, scan: &Scan) -> bo
     let fields = &record.fields;
     let scope = RecordScope {
         fields,
+        meta: Some(&record.meta),
         settings: None,
         now: NO_CLOCK,
     };

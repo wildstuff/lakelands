@@ -220,6 +220,7 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
             }
             let scope = RecordScope {
                 fields: &record.fields,
+                meta: Some(&record.meta),
                 settings: Some(&w.settings),
                 now: today,
             };

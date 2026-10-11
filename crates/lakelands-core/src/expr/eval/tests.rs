@@ -12,6 +12,7 @@ fn run(text: &str, record: Value) -> Result<Val> {
         &parse(text).unwrap(),
         &RecordScope {
             fields: &f,
+            meta: None,
             settings: None,
             now: Timestamp::parse("2026-09-24T10:00:00Z").unwrap(),
         },
@@ -173,6 +174,7 @@ fn a_typed_call_with_the_wrong_arguments_is_an_error_not_a_panic() {
     let f = BTreeMap::new();
     let scope = RecordScope {
         fields: &f,
+        meta: None,
         settings: None,
         now: Timestamp(0),
     };
@@ -223,6 +225,7 @@ fn a_filter_reads_settings_as_of_the_position_read() {
     let settings: BTreeMap<String, Value> = [("floor".to_owned(), json!("50"))].into();
     let scope = RecordScope {
         fields: &f,
+        meta: None,
         settings: Some(&settings),
         now: Timestamp(0),
     };
@@ -379,6 +382,7 @@ fn retired_reads_whether_the_write_retires() {
     assert!(!holds_in("status = 'closed' and not retired()", &retire));
     let scope = RecordScope {
         fields: &fields,
+        meta: None,
         settings: None,
         now: Timestamp(0),
     };

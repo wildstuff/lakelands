@@ -147,7 +147,7 @@ fn measured(rows: &[Value], expr: &str) -> std::result::Result<Value, String> {
 /// One group's `named` measures over `rows`, folded in one at a time.
 fn folded(rows: &[Row], named: &[(FieldName, Expr)]) -> Result<Row> {
     let mut group = Grouping::new(Vec::new(), named, Timestamp(0));
-    rows.iter().for_each(|r| group.add(r, None));
+    rows.iter().for_each(|r| group.add((r, None), None));
     let (by, folds) = group.groups().pop().unwrap_or_default();
     measures(&folds, &by, named, Row::new(), None, Timestamp(0))
 }

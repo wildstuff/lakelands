@@ -480,6 +480,7 @@ fn member_of(
     )?;
     let scope = RecordScope {
         fields: &record.fields,
+        meta: Some(&record.meta),
         settings: Some(&w.settings),
         now,
     };
@@ -698,6 +699,7 @@ fn satisfies(vt: &ValueTypeDecl, checked: &Value) -> Result<bool> {
     let fields: BTreeMap<FieldName, Value> = [("value".into(), checked.clone())].into();
     let scope = RecordScope {
         fields: &fields,
+        meta: None,
         settings: None,
         now: Timestamp(0),
     };
@@ -966,7 +968,7 @@ fn reached(
                 .map(|k| view.get(&v.on, k))
                 .transpose()?
                 .flatten();
-            let set = record.and_then(|r| assigned(o, settings, v, &r.fields, payload, now).ok());
+            let set = record.and_then(|r| assigned(o, settings, v, &r, payload, now).ok());
             (&v.on, key.as_ref(), set.unwrap_or_default())
         }
         _ => return Ok(Vec::new()),
@@ -1041,6 +1043,7 @@ fn requires(
     let e = declare::condition(r, Eval::Record, &at)?;
     let scope = RecordScope {
         fields: &record.fields,
+        meta: Some(&record.meta),
         settings: Some(&w.settings),
         now,
     };
@@ -1058,7 +1061,7 @@ fn assigned(
     o: &Ontology,
     settings: &BTreeMap<String, Value>,
     verb: &VerbDecl,
-    record: &BTreeMap<FieldName, Value>,
+    record: &StoredRecord,
     payload: &Patch,
     now: Timestamp,
 ) -> Result<Patch> {
@@ -1066,6 +1069,12 @@ fn assigned(
         return Ok(Patch::new());
     };
     let mut patch = Patch::new();
+    let record = RecordScope {
+        fields: &record.fields,
+        meta: Some(&record.meta),
+        settings: Some(settings),
+        now,
+    };
     for a in set {
         let at = [
             Place::Verb {
@@ -1076,16 +1085,7 @@ fn assigned(
             },
         ];
         let e = declare::condition(&a.value, Eval::Record, &at)?;
-        let v = expr::eval(
-            &e,
-            &VerbScope {
-                record,
-                payload,
-                settings,
-                now,
-            },
-        )
-        .map_err(|why| {
+        let v = expr::eval(&e, &VerbScope { record, payload }).map_err(|why| {
             let (verb, field, why) = (verb.name.clone(), a.field.clone(), Box::new(why));
             invalid(Case::VerbCannotCompute { verb, field, why })
         })?;
@@ -1106,34 +1106,31 @@ fn assigned(
     Ok(patch)
 }
 
-/// The scope a verb's assignments see: the record's fields, and
-/// `payload.<name>` for the call's payload.
+/// The scope a verb's assignments see: the record's fields and their
+/// provenance, and `payload.<name>` for the call's payload.
 struct VerbScope<'a> {
-    record: &'a BTreeMap<FieldName, Value>,
+    record: RecordScope<'a>,
     payload: &'a Patch,
-    settings: &'a BTreeMap<String, Value>,
-    now: Timestamp,
 }
 
 impl Scope for VerbScope<'_> {
     fn value(&self, path: &[FieldName]) -> Option<Value> {
         match lakelands_core::derive::payload_member(path) {
             Some(name) => self.payload.get(name).filter(|v| !v.is_null()).cloned(),
-            None => RecordScope {
-                fields: self.record,
-                settings: None,
-                now: self.now,
-            }
-            .value(path),
+            None => self.record.value(path),
         }
     }
 
+    fn meta(&self, field: &FieldName) -> Option<lakelands_api::FieldMeta> {
+        self.record.meta(field)
+    }
+
     fn setting(&self, key: &str) -> Option<Value> {
-        self.settings.get(key).cloned()
+        self.record.setting(key)
     }
 
     fn now(&self) -> Timestamp {
-        self.now
+        self.record.now
     }
 }
 
@@ -1679,7 +1676,7 @@ impl Decide<'_> {
         let called_at = self.next;
         self.next = called_at.next();
         if let VerbEffect::Write { .. } = &verb.effect {
-            let patch = assigned(&w.ontology, &w.settings, verb, &record.fields, payload, now)?;
+            let patch = assigned(&w.ontology, &w.settings, verb, &record, payload, now)?;
             let version = w.ontology.verbs.get(&verb.name).map_or(1, |e| e.version);
             let procedure = Some(Procedure {
                 name: verb.name.to_string(),
