@@ -25,57 +25,51 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `rekey.json`: the event after position 7, a `migrated` event whose
-  `rekeyed` moves key `7` of `account` to `DE%3A01`: its line, which is
-  canonical, and its hash.
-- `v3.json` to `v14.json`: the lake's next events, each file's `lines`
-  following the file before it without a gap, through position 39, with
-  their `hashes`. A file is named for the format version that first
-  held what it shows; its lines are in the release's format like every
-  other.
-  - `v3.json`, positions 9 and 10: a `record_ingested` carrying
-    `upstream`, whose id leaves the member out, and a `declared` whose
-    derived field calls `date_bucket`; and `misplaced`, a
-    `record_retired` carrying `upstream`, which a reader refuses for its
-    kind.
-  - `v4.json`, 11 and 12: a `write_proposed` whose write is `declare`,
-    and one whose write is `migrate` with its preflight's report.
-  - `v5.json`, 13: a `declared` type carrying `annotations` on the type,
-    two fields and a relation, whose schema hash is the same type's
-    without them; and `misplaced`, the same event with `cause` inside
-    its `context`, which a reader refuses for where the member sits.
-  - `v6.json`, 14 and 15: a `declared` type whose relation is derived
-    from matching values, whose schema hash is the same type's with the
-    relation carried by links, and a `declared` trigger with
-    `max_depth`.
-  - `v7.json`, 16: a `declared` trigger whose guard is `retired()`.
-  - `v8.json`, 17 to 19: a `declared` view over `slip` whose `where`
-    reads a parameter, `param('shelf')`; a `declared` verb on the type
-    `slip` (`scope: type`); and its `verb_called`, with no `key`.
-  - `v9.json`, 20: a `declared` view over `slip` that merges `shelf` on
-    the same key.
-  - `v10.json`, 21 and 22: a `declared` value type `slip_state`, and a
-    `write_proposed` whose write is `migrate_value_type`, the value type
-    over fewer states with its preflight's report.
-  - `v11.json`, 23 to 30, one line each: a `declared` type whose derived
-    field calls `floor`, one whose derived field calls `date_bucket` by
-    a width, an object set whose `where` names a set with `in_set`, a
-    `migrated` whose migration renames a relation (`relation_renames`),
-    a `record_upserted` of a `view_kept.` setting, which is its first
-    version and so carries `made`, a `record_upserted` at version 4
-    that carries `made`, a record made again, a `write_proposed` whose
-    proposed migration's report holds `restated`, and a `declared` type
-    whose field declares `initial`.
-  - `v12.json`, 31 to 33: a `declared` function that carries
-    `with_the_set`, a `value_type_migrated` that renames a value, and a
-    proposed `migrate_value_type` that carries `renames`.
-  - `v13.json`, 34 to 37: a `write_proposed` upsert that carries
-    `pinned`; a `declared` type with a field of the kind `date`, a
-    `declared` value type over it, and a `record_upserted` holding a
-    date.
-  - `v14.json`, 38 and 39: an `output_recorded` that carries its output,
-    and a fill of the same call that names it by `output_at`; and
-    `misplaced`, a fill carrying both members, which a reader refuses.
+- `further.json`: the lake's next events, positions 8 to 39, each
+  following the one before it without a gap. Every entry of its `events`
+  holds a `line`, which is canonical, the line's `hash`, `about`, a
+  sentence on what the line is there to show, and `shows`, a name for
+  it. Each verifier holds one check for each name and refuses a name it
+  has none for, so a line cannot be added without saying what it shows
+  in both. What they show, in the order of the positions:
+  - a `migrated` event whose `rekeyed` moves key `7` of `account` to
+    `DE%3A01` (8);
+  - a `record_ingested` carrying `upstream`, whose id leaves the member
+    out, and a `declared` whose derived field calls `date_bucket` (9,
+    10);
+  - a `write_proposed` whose write is `declare`, and one whose write is
+    `migrate` with its preflight's report (11, 12);
+  - a `declared` type carrying `annotations`, whose schema hash is the
+    same type's without them (13);
+  - a `declared` type whose relation is derived from matching values,
+    whose schema hash is the same type's with the relation carried by
+    links, and a `declared` trigger with `max_depth` (14, 15);
+  - a `declared` trigger whose guard is `retired()` (16);
+  - a `declared` view whose `where` reads a parameter, a `declared`
+    verb on its type, and its `verb_called`, with no `key` (17 to 19);
+  - a `declared` view that merges a source on the same key (20);
+  - a `declared` value type, and a proposed `migrate_value_type` over
+    fewer states (21, 22);
+  - a derived field that calls `floor`, one that calls `date_bucket` by
+    a width, an object set whose `where` calls `in_set`, a `migrated`
+    that renames a relation, a `view_kept.` setting at its first
+    version, a record made again, a proposed migration whose report
+    holds `restated`, and a field that declares `initial` (23 to 30);
+  - a `declared` function that carries `with_the_set`, a
+    `value_type_migrated` that renames a value, and a proposed
+    `migrate_value_type` that carries `renames` (31 to 33);
+  - a `write_proposed` upsert that carries `pinned`; a type with a field
+    of the kind `date`, a value type over it, and a record holding a
+    date (34 to 37);
+  - an `output_recorded` that carries its output, and a fill of the same
+    call that names it by `output_at` (38, 39).
+
+  Its `misplaced` holds three lines that are not of the lake. Each
+  stands at its position after the event before it, in the release's
+  format and with its hash made right, and carries one member where it
+  never sits, so a reader refuses it for that alone: `upstream` on a
+  `record_retired`, `cause` inside `context`, and an `output_recorded`
+  with both `output` and `output_at`.
 - `schema-hash.json`: a view type whose conditions are written as text,
   the shape object it hashes (conditions in typed form, Appendix B), the
   shape's canonical bytes, and the schema hash; and the hash of the same
@@ -87,9 +81,13 @@ Two implementations check them, sharing no code:
 - `crates/lakelands-core/tests/log_vectors.rs` recomputes everything with
   Lakelands' canonical module and schema hash, and reads every event
   into `lakelands_api::event::Event`. It runs in CI with the rest of the
-  tests.
+  tests, and holds the lines of `further.json` to its own list of what
+  they show, in their order, and to the lake's last position.
 - `verify.py` recomputes the same values with its own RFC 8785
-  serialiser and Python's standard library: `python3 verify.py`.
+  serialiser and Python's standard library: `python3 verify.py`, one
+  line a check. `log_vectors.rs` runs it so in CI and holds it to its
+  exit and to the number of checks it makes; it fails when `python3` is
+  missing.
 
 `verify.py <dir>` checks a lake's log instead: an export
 (`lakelands export --to <dir>`) or a SQLite lake directory. It reads
@@ -98,7 +96,17 @@ from 0 and name their files in 20 digits, the hash chain, every
 checkpoint against the position, the hash and the files before it, and
 that every line is in the one format, `FORMAT` in `verify.py`; it prints
 the last position and hash, or the position where the files stop being
-the log. `crates/lakelands-store/tests/export.rs` runs it in CI over an
+the log, and exits non-zero there:
+
+- a directory with no `log/`, or with no segment file in it, is
+  `FAIL <dir>/log holds segment files`;
+- a segment file of no bytes is `FAIL position N: <file> holds an
+  event`, N the position the file should begin at;
+- a line that holds an integer beyond ±(2^53 − 1) (§1.2), or a number
+  that is not finite, is `FAIL position N: the line has no canonical
+  form`, with the number; `log_vectors.rs` holds that one.
+
+`crates/lakelands-store/tests/export.rs` runs it in CI over an
 export with a checkpoint and a re-key, and over the same export
 damaged, and `crates/lakelands-engine-sqlite/tests/lake_directory.rs`
 over a SQLite lake directory; both fail when `python3` is missing.
@@ -109,11 +117,13 @@ way.
 directory as the same lake's log in format N, with `verify.py`'s own
 serialiser: every line's `v`, `lake_created`'s `format`, each `prev` and
 `hash` along the chain, the checkpoint's hash and digest, the hashes
-`expected.json`, `rekey.json` and the `vN.json` files repeat, the
-`misplaced` lines, both negative vectors, and `FORMAT` in `verify.py`.
+`expected.json` and `further.json` repeat, the `misplaced` lines, both
+negative vectors, and `FORMAT` in `verify.py`.
 It then checks what it wrote. No id changes: none is made from `v`. The
 repository's tests hold the result to `LOG_FORMAT_VERSION` and to the
-version `docs/log-format.md` opens with.
+version `docs/log-format.md` opens with. Called without a number, or
+with something that is none, `--stamp` says how it is called and changes
+nothing.
 
 **Two negative vectors.** Each holds the first segment above with the
 event at position 6 changed and its hash made right, so only one rule
