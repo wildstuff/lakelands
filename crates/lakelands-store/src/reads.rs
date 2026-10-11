@@ -748,7 +748,7 @@ impl<'a> Reader<'a> {
     /// batch. Any other type's records all pass.
     fn admitted_ends(&self, decl: &TypeDecl, rows: &[StoredRecord]) -> Result<Vec<bool>> {
         let rows: Vec<_> = rows.iter().map(|r| &r.fields).collect();
-        (self.sight).ends(decl, &rows, |end, keys| self.view.get_many(end, keys))
+        (self.sight).ends(decl, &rows, &mut |end, keys| self.view.get_many(end, keys))
     }
 
     /// A read's condition with the filter of each set it names in the
@@ -2784,7 +2784,7 @@ impl<'a> Reader<'a> {
         let rows = head.get_many(&name, &moved)?;
         // A link's ends are judged at the head too, under the same grant.
         let fields: Vec<_> = rows.iter().map(|r| &r.fields).collect();
-        let ends = sees.ends(decl, &fields, |end, keys| head.get_many(end, keys))?;
+        let ends = sees.ends(decl, &fields, &mut |end, keys| head.get_many(end, keys))?;
         let admitted: BTreeSet<RecordKey> = (rows.into_iter().zip(ends))
             .filter(|(r, ends)| *ends && !r.retired && at_head.holds(&r.fields))
             .map(|(r, _)| r.key)
@@ -3709,7 +3709,7 @@ pub(crate) fn answered_of(
             return false;
         };
         let fields: Vec<_> = rows.iter().map(|r| &r.fields).collect();
-        let Ok(ends) = sees.ends(decl, &fields, |end, keys| view.get_many(end, keys)) else {
+        let Ok(ends) = sees.ends(decl, &fields, &mut |end, keys| view.get_many(end, keys)) else {
             return false;
         };
         let held = rows

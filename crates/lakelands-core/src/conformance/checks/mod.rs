@@ -330,6 +330,7 @@ pub const ALL: &[Check] = &[
     only::ONLY_SEARCH,
     only::ONLY_VIEWS,
     only::ONLY_LINKS,
+    only::ONLY_LINKS_OF_LINKS,
     only::ONLY_WRITES,
     only::ONLY_SCHEMA,
     only::ONLY_GRANT_CHECKED,

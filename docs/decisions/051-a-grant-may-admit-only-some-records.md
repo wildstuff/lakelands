@@ -52,8 +52,9 @@ record that does not exist.
 - **Links.** A link record is withheld from a holder of `only` on an end
   type unless that end is admitted; its ends are read once per page of
   links. `only` on a link type admits its links by their fields, in a
-  walk too. Readers holding no `only` on either end are answered as
-  before.
+  walk too. An end that is itself a link is judged as that link is.
+  Readers holding no `only` on any end, however deep, are not judged by
+  this rule.
 - **A holder writes its own records alone.** A write is judged against
   the record the holder owns at the key: the record there, retired or
   not, where its grant admits it, and otherwise none. Another's record
@@ -76,7 +77,9 @@ record that does not exist.
   takes its `restricted` mark, so the holder may not read its new
   record unless it holds that grant. A refusal for a relation's
   cardinality names the other link's end only where its writer is
-  answered that record, `restricted` judged as for any reader, and
+  answered the link that holds: by its ends, `restricted` judged as
+  for any reader, and by its `only` on the link type itself, from
+  either end; and
   `ingest` judges a link's cardinality only once the record its writer
   leaves is admitted: a link from another's record
   answers as one from a free key, and a link a grant's `only` on the
@@ -285,6 +288,27 @@ refused; it is listed without its write. A migration's report
 named, among its sample keys, a link with an end held from its reader,
 and the links of a link type its reader is not shown: it names
 neither, and its counts stay whole (027).
+
+A relation may point at a link type, and a link of it has an end that
+is a link. That end was judged by its own record alone: a holder of
+`only` on a type two links down was answered the link onto another's
+link at every read, with `restricted` or without, and so was a reader
+without `restricted` the link onto the link of a held record
+(lakelands#879). An end that is a link is there where that link is, by
+its own ends, as deep as they go: a link's key is made of its ends'
+keys, so the descent ends with the records. Whether a link type is
+judged by its ends at all is asked the same way through its
+declarations, each link type once, since a migration can point two
+link types at each other. A write that names such a link follows it as
+far: a second link where a relation allows one names the first only
+where its writer is answered it with its ends; the records a proposed
+write reaches, by which its reviewer's decision and its proposer's
+`restricted` grant are judged, are a link's ends and theirs; and a
+pinned proposal on such a link is accepted no more after a change to
+any of them. The refusal of a second link also named the other end of
+a link that `only` on the link type itself kept from its writer, whose
+`get` of that link was not found: it names an end only where its
+writer is answered the link that holds, from either side.
 
 **Why.** A judgement stated twice is two rules once one of them
 changes, and the one left behind hands out what the other keeps: each

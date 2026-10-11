@@ -949,13 +949,13 @@ fn ends(
     decl: &TypeDecl,
     fields: &BTreeMap<FieldName, Value>,
 ) -> Result<bool> {
-    let get = |end: &TypeName, keys: &[RecordKey]| {
+    let mut get = |end: &TypeName, keys: &[RecordKey]| {
         let found = keys.iter().map(|k| pending.record(view, end, k));
         found
             .filter_map(Result::transpose)
             .collect::<Result<Vec<_>>>()
     };
-    Ok(sees.ends(decl, &[fields], get)?[0])
+    Ok(sees.ends(decl, &[fields], &mut get)?[0])
 }
 
 /// Whether the grant of the sight's principal admits a record of `decl`
@@ -999,11 +999,33 @@ fn held_then(
     Ok(false)
 }
 
+/// The record of `ty` at `key` and, where it is a link, its end records,
+/// theirs too where an end is a link, by the end types the link type
+/// declares, which [`Sight::ends`] follows: a link's key is made of its
+/// ends' keys, so it ends with them.
+fn with_ends(o: &Ontology, ty: &TypeName, key: &RecordKey) -> Vec<(TypeName, RecordKey)> {
+    let mut out = vec![(ty.clone(), key.clone())];
+    let mut next = 0;
+    while let Some((t, k)) = out.get(next).cloned() {
+        next += 1;
+        let parts = lakelands_api::key::key_components(&k);
+        let (true, Ok(link), [from, to]) = (links::is_link_type(&t), o.ty(&t), &parts[..]) else {
+            continue;
+        };
+        for (end, part) in [(links::FROM, from), (links::TO, to)] {
+            let end = link.fields.iter().find(|f| f.name.as_str() == end);
+            let end = end.and_then(|f| f.ty.target.clone());
+            out.extend(end.map(|e| (e, RecordKey::from(part.as_str()))));
+        }
+    }
+    out
+}
+
 /// The records a proposed write reaches: the record it writes, those its
 /// references name, an upsert's or what a call's assignments compute for
 /// the record in `view` with these settings at `now`, those the record
-/// as planned computes anew or from a field the write sends, and the two
-/// end records of each link among them.
+/// as planned computes anew or from a field the write sends, and the end
+/// records of each link among them ([`with_ends`]).
 fn reached(
     lake: &Lake,
     o: &Ontology,
@@ -1062,16 +1084,7 @@ fn reached(
         let f = decl.fields.iter().find(|f| &f.name == n)?;
         Some((f.ty.target.clone()?, RecordKey::from(v.as_str()?)))
     }));
-    for (t, k) in out.clone() {
-        let Some((owner, r)) = links::relation_of(o.types.values().map(|e| &e.decl), &t) else {
-            continue;
-        };
-        let parts = lakelands_api::key::key_components(&k);
-        for (end, part) in [(&owner.name, parts.first()), (&r.target, parts.get(1))] {
-            out.extend(part.map(|p| (end.clone(), RecordKey::from(p.as_str()))));
-        }
-    }
-    Ok(out)
+    Ok(out.iter().flat_map(|(t, k)| with_ends(o, t, k)).collect())
 }
 
 /// Whether a migration changes nothing: its `to` is the type in force and
@@ -1896,7 +1909,7 @@ impl Call<'_> {
         scoped(&decl, key, expected)?;
         let on = w.ontology.ty(&decl.on)?;
         granted(Sight::held(self.who, &w.ontology).callable(on, &decl))?;
-        let pinned = (proposed || decl.risk != Risk::Low) && self.pin(on, Some(&decl))?;
+        let pinned = (proposed || decl.risk != Risk::Low) && self.pin(w, on, Some(&decl))?;
         if let VerbEffect::External { executor } = &decl.effect {
             bound_executor(self.lake, executor)?;
         }
@@ -2017,7 +2030,7 @@ impl Call<'_> {
         granted(!write.is_schema() || !rights::holds_only(self.who))?;
         let pin = |ty: &TypeName| {
             ordinary_door(ty)?;
-            self.pin(Sight::held(self.who, &w.ontology).ty(ty)?, None)
+            self.pin(&w, Sight::held(self.who, &w.ontology).ty(ty)?, None)
         };
         let mut d = self.decide(&w, view.as_ref(), now, 1);
         let mut pinned = false;
@@ -2093,8 +2106,8 @@ impl Call<'_> {
 
     /// Whether a proposal by this caller on `decl`, or of a call of `verb`,
     /// is pinned, refusing one that may not be (051).
-    fn pin(&self, decl: &TypeDecl, verb: Option<&VerbDecl>) -> Result<bool> {
-        let pinned = rights::only_holder(self.who, decl);
+    fn pin(&self, w: &Writer, decl: &TypeDecl, verb: Option<&VerbDecl>) -> Result<bool> {
+        let pinned = rights::only_holder(self.who, decl, &w.ontology);
         granted(!pinned || rights::pinnable(self.who, decl, verb))?;
         Ok(pinned)
     }
@@ -2153,7 +2166,7 @@ impl Call<'_> {
             },
             _ => return granted(false),
         };
-        if o.ty(ty).is_ok_and(|t| !rights::only_holder(self.who, t)) {
+        if o.ty(ty).is_ok_and(|t| !rights::only_holder(self.who, t, o)) {
             return Ok(());
         }
         granted(listed.0.is_some() && !listed.1)
@@ -2161,8 +2174,8 @@ impl Call<'_> {
 
     /// Refuse the accept of a pinned proposal, the one logged at `at`,
     /// once the record it writes or its type changed after it, or, for a
-    /// link, either end record: its proposer was judged on them as they
-    /// stood (051).
+    /// link, an end record, as deep as its ends go: its proposer was
+    /// judged on them as they stood (051).
     fn unmoved(&self, o: &Ontology, view: &dyn ProjectionView, at: Position) -> Result<()> {
         let logged = self.lake.read_events(at, 1)?;
         let Some(EventBody::WriteProposed {
@@ -2188,22 +2201,11 @@ impl Call<'_> {
         let moved_at = |ty: &TypeName, key: &RecordKey| -> Result<bool> {
             Ok(view.get(ty, key)?.is_some_and(|r| r.position > at))
         };
-        let mut moved = match key {
-            Some(key) => moved_at(ty, key)?,
-            None => false,
-        };
         // A link is its holder's by its end records too, and a change to
         // an end moves no link.
-        let types = o.types.values().map(|e| &e.decl);
-        if let Some(key) = key
-            && let Some((t, r)) = links::relation_of(types, ty)
-        {
-            let parts = lakelands_api::key::key_components(key);
-            for (end, k) in [(&t.name, parts.first()), (&r.target, parts.get(1))] {
-                if let Some(k) = k {
-                    moved = moved || moved_at(end, &RecordKey::from(k.as_str()))?;
-                }
-            }
+        let mut moved = false;
+        for (t, k) in key.iter().flat_map(|k| with_ends(o, ty, k)) {
+            moved = moved || moved_at(&t, &k)?;
         }
         if !moved && then == o.types.get(ty).map(|e| e.version) {
             return Ok(());
@@ -4378,8 +4380,10 @@ fn no_link_relation(ty: &TypeName, relation: &RelationName) -> Error {
 /// to `to` among them: `many_to_one` and `one_to_one` allow one live link
 /// per `from`, `one_to_many` and `one_to_one` one per `to`. Answered from
 /// the links the engine walks at the head, not by reading every link. The
-/// other end of the link that holds is named only where the principal of
-/// `sees` is answered that record (006, 051).
+/// other end of the link that holds is named only where a record holds
+/// its key and the principal of `sees` is answered that link: by its
+/// ends, as deep as they go, and by `only` on the link type itself (006,
+/// 051).
 pub fn cardinality(
     view: &dyn ProjectionView,
     sees: &Sight,
@@ -4392,9 +4396,12 @@ pub fn cardinality(
     let (per_from, per_to) = one_per(r.cardinality);
     let (relation, cardinality) = (r.name.clone(), r.cardinality);
     let broken = |case: Case| constraint(Some(links::TO.into()), case);
-    let shown = |ty: &TypeName, key: RecordKey| -> Result<Option<RecordKey>> {
-        let shown = view.get(ty, &key)?.is_some_and(|r| sees.answers(ty, &r));
-        Ok(shown.then_some(key))
+    let lt = links::link_type_name(ty, &r.name);
+    // A key no record holds names nothing either, nor does the end of a
+    // link its writer is not answered.
+    let shown = |end: &TypeName, key: RecordKey, link: RecordKey| -> Result<Option<RecordKey>> {
+        let there = view.get(end, &key)?.is_some();
+        Ok((there && crate::reads::answered(view, sees, &lt, &link)).then_some(key))
     };
     if per_from
         && let Some(e) = view
@@ -4403,7 +4410,8 @@ pub fn cardinality(
             .into_iter()
             .find(|e| e.to.1 != *to)
     {
-        let (from, to) = (from.clone(), shown(&r.target, e.to.1)?);
+        let link = links::link_key(from, &e.to.1);
+        let (from, to) = (from.clone(), shown(&r.target, e.to.1, link)?);
         return Err(broken(Case::LinkedAlreadyFrom {
             from,
             relation,
@@ -4418,7 +4426,8 @@ pub fn cardinality(
             .into_iter()
             .find(|e| e.from.0 == *ty && e.from.1 != *from)
     {
-        let (to, from) = (to.clone(), shown(ty, e.from.1)?);
+        let link = links::link_key(&e.from.1, to);
+        let (to, from) = (to.clone(), shown(ty, e.from.1, link)?);
         return Err(broken(Case::LinkedAlreadyTo {
             to,
             relation,
