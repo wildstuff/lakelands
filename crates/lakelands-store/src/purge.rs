@@ -80,9 +80,11 @@ fn co_owned(decl: &TypeDecl, r: &StoredRecord, source: &SourceId) -> bool {
 }
 
 /// The types a purge from `ty` reads: `ty` and the link types of the
-/// relations it declares, whose records are nothing without its own. A
-/// type that holds no records, or cannot say who brought them in, is
-/// refused.
+/// relations of it that link records carry, whose records are nothing
+/// without its own. A relation by a `via` field or derived has no link
+/// type (044), and one that stands under its name from before is not
+/// read. A type that holds no records, or cannot say who brought them
+/// in, is refused.
 fn named(ontology: &Ontology, ty: &TypeName) -> Result<BTreeSet<TypeName>> {
     let decl = ontology.ty(ty)?;
     if decl.view.is_some() {
@@ -91,7 +93,8 @@ fn named(ontology: &Ontology, ty: &TypeName) -> Result<BTreeSet<TypeName>> {
     if !decl.field_meta {
         return Err(invalid(Case::NoProvenance { ty: ty.clone() }));
     }
-    let links = (decl.relations.iter()).map(|r| links::link_type_name(ty, &r.name));
+    let carried = decl.relations.iter().filter(|r| r.carried_by_links());
+    let links = carried.map(|r| links::link_type_name(ty, &r.name));
     Ok(links.chain([ty.clone()]).collect())
 }
 

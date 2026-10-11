@@ -603,6 +603,7 @@ pub const ALL: &[Check] = &[
     purge::TYPED_LINKS,
     purge::TYPED_ID,
     purge::TYPE_REFUSED,
+    purge::CARRIED_LINKS_NAMED,
     value_types::CONSTRAINT_AND_FORMAT,
     value_types::CONDITION_NEVER_HOLDS,
     streaming::STREAMS,
