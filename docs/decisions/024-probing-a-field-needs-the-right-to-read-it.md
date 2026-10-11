@@ -749,4 +749,12 @@ type: the set is one that is not declared, as the type is at every
 door (006, extended), and so in a trigger's `when`; to declare a set
 under its name is not granted, as above. A holder of `schema` is
 answered the same: it is shown the definition only of a set whose type
-it is shown.
+it is shown. A trigger and a verb under the name of one their author
+is not shown are not granted either, nor is a function so proposed
+that computes a field; a trigger, a verb and a set proposed by one who
+is shown the one in force are not there to an accepter kept from the
+type it stands on; nor is a declaration granted whose tool would bear
+the name of one that comes from what its author is not shown
+(lakelands#893, lakelands#896;
+`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+extended).

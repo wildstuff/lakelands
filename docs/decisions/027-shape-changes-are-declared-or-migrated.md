@@ -576,12 +576,74 @@ To its author such a type is one that is not declared:
   nothing else, and nothing is written. An object set its proposer is
   not shown is the same (lakelands#877): to propose a set under its
   name, of any type, is not granted, where the refusal a set's own rule
-  gives would name the type it holds.
+  gives would name the type it holds. A trigger and a verb are the same
+  (lakelands#893), and for them it is more than a name: each is known
+  by its name alone, so one declared under the name of one its author
+  is not shown took its place, and what fired or could be called on a
+  type was gone by the hand of one who was never shown it. To declare,
+  to apply or to propose it is not granted. Not shown is what a
+  proposal's listing would not show that author of the one in force: a
+  trigger or a verb on a type it is not shown, and, to an author
+  without `schema`, one whose `when`, `requires` or values read what it
+  may not read, or that sets a field it may not know of. A verb is
+  judged by what it names, not by who may call it. A function is the
+  same to a proposer that is not shown it, one that computes a field of
+  a type that proposer is not shown, or a field or from an input it may
+  not read: accepted, its new body would compute that field again. A
+  function that computes no field is shown to no one without `schema`
+  and is not such a one: declared again it takes nothing from anyone
+  and computes nothing again, so its name answers as a free one does.
+  A holder of `schema` is shown every function, so this line does not
+  keep it from one that computes a field of a type it is not shown. An
+  author that is shown the one in force moves it to another type, or
+  gives it a new body, by declaring it again, as before.
+- **A tool's name is taken the same way** (lakelands#896). A type, a
+  verb and a relation carried by links each give tools their names, and
+  the lake refuses a declaration whose tool would bear the name of
+  another's, naming both. Where the other is a type, a relation or a
+  verb its author is not shown, that refusal told it what it was kept
+  from, whichever of the two was declared. The declaration is not
+  granted, naming nothing, before the set is checked: it is refused
+  where the lake with the set in it has a problem with its tools' names
+  that the lake as its author is shown it has not. A type declared
+  again keeps, for this, the relations its author is not shown, as its
+  view is completed with them, and a set is read with the link types
+  it brings, as its check reads it. A migration's shape passes the same
+  line, at its preview and at its proposal. Between what its author is
+  shown a collision is refused as before, naming both, and a relation
+  under the name of one its author is not shown is one declared twice,
+  as a field is.
+- **No door leaves a lake with a problem among its tools' names.** The
+  line above rests on it: a problem the set brings then has a side
+  among the set's own names, and the other is looked for among the
+  names of what its author is not shown before the two lakes are
+  compared, so a declaration that meets none there copies nothing. A
+  declaration is checked with the names of the link types it brings,
+  alone as in a set, and a migration that reshapes is read for its
+  tools' names as one that does not. Before, a type declared alone
+  with a relation whose link type's door bore another tool's name, or
+  was too long a name, was applied, and so was a migration that renamed
+  a relation into one; the lake then refused every declaration, naming
+  the two, to anyone shown both.
 
 The test comes before the author's view is completed and before
-anything is appended. An accepter stays as it was: it may accept by its
-id a proposal on a type it is not shown, and the accept's answer names
-it nothing it may not know of.
+anything is appended. An accepter is answered as its listing shows it:
+a proposal on a type it is not shown is to its accept an id that does
+not exist, and so is a proposed trigger, verb or set under the name of
+one that stands on such a type: its accept would take the place of the
+trigger or the verb, and be refused for the set in words that name the
+type (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended). A
+proposal made while a name was free and accepted, after that name was
+declared on a type its proposer is not shown, by a reviewer shown both
+is that reviewer's to decide: it is applied, as its proposer's. And an
+accept passes the line of the tools' names with its accepter as the
+one asked: a proposal, of a set or of a migration, whose tool's name
+was taken since by what its accepter is not shown is not granted to
+it, naming nothing, where the lake's own check would name it; an
+accepter shown both is refused as before, naming both. Its reject
+passes no such line, as it stands: the accepter is listed the proposal,
+with what it is not shown left out, and rejects what it is not granted
+to accept.
 
 ## Extended: a declaration in force appends nothing (lakelands#565)
 

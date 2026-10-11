@@ -12,11 +12,11 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     DECIDED_AS_LISTED = an_entry_is_decided_as_its_reviewer_is_listed_it,
-    "006 and 013, extended (lakelands#791): the listing, `accept` and `reject` ask one judgement of an entry, so over a grid of proposed writes (an upsert, a retirement, a call, a migration, a bundle, one decided, and an id that was never proposed) and reviewers (kept from a type, holding `only`, kept from a field, masked on one, shown three types, shown all) an entry that is not listed is to its accept and its reject an id that does not exist, word for word, appending nothing: a write to a type its reader is not shown, a call whose verb reads a field it may not read, as it is declared or as it was where the call was proposed, a migration to a holder of `only`, one that keys its type by a field its reader may not know of, one of a type declared again since that its reader was not shown where it was proposed, and a bundle that brings a type its reader would not be shown, which its proposer of that kind is not listed either; one listed without its write, and a declaration listed whole to a holder of `only`, is not granted to accept or to reject; and a migration of a type a field of which was renamed since is judged, for a reader kept from that field, on the type as it was proposed against"
+    "006 and 013, extended (lakelands#791): the listing, `accept` and `reject` ask one judgement of an entry, so over a grid of proposed writes (an upsert, a retirement, a call, a migration, a bundle, one decided, and an id that was never proposed) and reviewers (kept from a type, holding `only`, kept from a field, masked on one, shown three types, shown all) an entry that is not listed is to its accept and its reject an id that does not exist, word for word, appending nothing: a write to a type its reader is not shown, a call whose verb reads a field it may not read, as it is declared or as it was where the call was proposed, a migration to a holder of `only`, one that keys its type by a field its reader may not know of, one of a type declared again since that its reader was not shown where it was proposed, and a bundle that brings a type its reader would not be shown, which its proposer of that kind is not listed either; one listed without its write, and a declaration listed whole to a holder of `only`, is not granted to accept or to reject; a migration of a type a field of which was renamed since is judged, for a reader kept from that field, on the type as it was proposed against; a call's payload is listed only to one who reads each field its verb sets, as it is declared and as it was where the call was proposed; and, as it stands, a call whose verb would take the record out of its reviewer's `only` is listed whole to it, its accept not granted and its reject taken, the listing not judging the record as the call would leave it"
 );
 
 /// The entries, in the grid's order.
-const ENTRIES: [&str; 16] = [
+const ENTRIES: [&str; 18] = [
     "an upsert of `d1`, its own",
     "an upsert of `d4`, another's",
     "a retirement of `d2`",
@@ -33,46 +33,49 @@ const ENTRIES: [&str; 16] = [
     "a call of `file`, which set `secret` where it was proposed",
     "a migration that keys `slip` by `at`, proposed while `code` keyed it",
     "an id that was never proposed",
+    "a call of `lock`, which sets `secret` since",
+    "a call of `give`, which sets `owner`",
 ];
 
 /// Each reviewer with what its grants add to `read`, `review` and
 /// `schema`, and, for each entry, how it is listed it (`H` not at all, `N`
 /// without its write, `T` with `more`, `W` whole) and what its accept
 /// answers, the reviewers asked in this order (`-` as an id that does not
-/// exist, `g` not granted, `a` applied, `d` decided, `c` changed since it
-/// was proposed, `v` its verb declared again).
+/// exist, `g` not granted, `r` not granted and its reject taken, `a`
+/// applied, `d` decided, `c` changed since it was proposed, `v` its verb
+/// declared again).
 const GRID: [(&str, &str, &str); 6] = [
     (
         "far",
         r#"{"types": {"doc": {"default": "none"}}}"#,
-        "H- H- H- H- H- H- H- Wc Wc H- H- H- H- H- Wc H-",
+        "H- H- H- H- H- H- H- Wc Wc H- H- H- H- H- Wc H- H- H-",
     ),
     (
         "only",
         r#"{"types": {"doc": {"only": {"owner": "me"}}}}"#,
-        "Wa Ng Wa Wa Wa Wv H- H- H- Wg Wg Wd Wv Wv H- H-",
+        "Wa Ng Wa Wa Wa Wv H- H- H- Wg Wg Wd Wv Wv H- H- Wv Wr",
     ),
     (
         "kept",
         r#"{"types": {"doc": {"fields": {"secret": "none"}}, "memo": {"fields": {"a": "none"}},
                       "note": {"fields": {"code": "none"}}, "slip": {"fields": {"code": "none"}}}}"#,
-        "Td Wa Wd Wd H- H- Ta Tc H- Wa Wa Wd H- Tv H- H-",
+        "Td Wa Wd Wd H- H- Ta Tc H- Wa Wa Wd H- Tv H- H- Tv Wd",
     ),
     (
         "masked",
         r#"{"types": {"doc": {"fields": {"secret": "masked"}}}}"#,
-        "Td Wd Wd Wd H- H- Wd Wc Wc Wd Wd Wd H- Tv Wc H-",
+        "Td Wd Wd Wd H- H- Wd Wc Wc Wd Wd Wd H- Tv Wc H- Tv Wd",
     ),
     (
         "typed",
         r#"{"default": "none", "types": {"doc": {"default": "read"}, "memo": {"default": "read"},
                                          "note": {"default": "read"}}}"#,
-        "Wd Wd Wd Wd Wd Wv Wd Wc Wc H- Wd Wd Wv Wv H- H-",
+        "Wd Wd Wd Wd Wd Wv Wd Wc Wc H- Wd Wd Wv Wv H- H- Wv Wd",
     ),
     (
         "all",
         "{}",
-        "Wd Wd Wd Wd Wd Wv Wd Wc Wc Wd Wd Wd Wv Wv Wc H-",
+        "Wd Wd Wd Wd Wd Wv Wd Wc Wc Wd Wd Wd Wv Wv Wc H- Wv Wd",
     ),
 ];
 
@@ -120,13 +123,15 @@ async fn an_entry_is_decided_as_its_reviewer_is_listed_it(store: Store) -> Held 
     ] {
         l.declare_json(verb(name, requires)).await?;
     }
-    let file = |field: &str| {
-        let mut file = verb("file", None);
+    let file = |name: &str, field: &str| {
+        let mut file = verb(name, None);
         file["payload"] = json!([{"name": "x", "type": {"kind": "text"}}]);
         file["set"] = json!([{"field": field, "value": "payload.x"}]);
         file
     };
-    l.declare_json(file("secret")).await?;
+    for (name, field) in [("file", "secret"), ("lock", "title"), ("give", "owner")] {
+        l.declare_json(file(name, field)).await?;
+    }
     for (key, owner) in [("d1", "me"), ("d2", "me"), ("d3", "me"), ("d4", "other")] {
         let fields = json!({"title": "t", "secret": "s", "owner": owner});
         l.upsert("doc", key, fields).await?;
@@ -147,6 +152,8 @@ async fn an_entry_is_decided_as_its_reviewer_is_listed_it(store: Store) -> Held 
             "the owner's call",
         )
     };
+    let filed =
+        |verb: &str| json!({"write": "call", "verb": verb, "key": "d3", "payload": {"x": "v"}});
     let upsert = |key: &str, patch: Value| json!({"write": "upsert", "type": "doc", "key": key, "patch": patch});
     let migrate = |to: Value| json!({"write": "migrate", "migration": {"to": to}});
     let mut keyed = ty("note", &["n", "code"], false);
@@ -176,17 +183,20 @@ async fn an_entry_is_decided_as_its_reviewer_is_listed_it(store: Store) -> Held 
         propose(bundle(guard)).await?,
         propose(upsert("d3", json!({"title": "w"}))).await?,
         call("shut").await?,
-        propose(json!({"write": "call", "verb": "file", "key": "d3", "payload": {"x": "v"}}))
-            .await?,
+        propose(filed("file")).await?,
         propose(migrate(slip(false, "at"))).await?,
         ProposalId::from("none"),
+        propose(filed("lock")).await?,
+        propose(filed("give")).await?,
     ];
     // Moved since: `open` without its `requires` and `shut` with it, `file`
-    // setting `title`, `memo` with `a` renamed, `note` with a field more
-    // and `slip` keyed by `at`; and one upsert decided.
+    // setting `title` and `lock` setting `secret`, `memo` with `a` renamed,
+    // `note` with a field more and `slip` keyed by `at`; and one upsert
+    // decided.
     l.declare_json(verb("open", None)).await?;
     l.declare_json(verb("shut", reads)).await?;
-    l.declare_json(file("title")).await?;
+    l.declare_json(file("file", "title")).await?;
+    l.declare_json(file("lock", "secret")).await?;
     l.migrate(de(ty("note", &["n", "code", "m"], false)))
         .await?;
     l.migrate(de(slip(false, "at"))).await?;
@@ -234,17 +244,23 @@ async fn an_entry_is_decided_as_its_reviewer_is_listed_it(store: Store) -> Held 
                 Some(_) => 'W',
             };
             let before = s.head().await.must("the head")?;
-            let accept = said(l.cat.accept(&who, id).await, id);
+            let mut accept = said(l.cat.accept(&who, id).await, id);
             // One not listed, or not its reviewer's to decide, is refused
-            // its reject in the accept's words, and nothing is appended.
+            // its reject in the accept's words, and nothing is appended;
+            // a reject taken there is the grid's `r`.
             if cell == 'H' || accept == "g" {
-                let reject = said(l.cat.reject(&who, id, "no".into()).await, id);
-                if reject != accept {
-                    apart.push(format!(
-                        "`{name}` and {entry}: its reject answered {reject}"
-                    ));
+                let reject = l.cat.reject(&who, id, "no".into()).await;
+                if accept == "g" && reject.is_ok() {
+                    accept = "r".to_owned();
+                } else {
+                    let reject = said(reject, id);
+                    if reject != accept {
+                        apart.push(format!(
+                            "`{name}` and {entry}: its reject answered {reject}"
+                        ));
+                    }
+                    head_unmoved(s, before, "the accept and the reject of such an entry").await?;
                 }
-                head_unmoved(s, before, "the accept and the reject of such an entry").await?;
             }
             row.push(format!("{cell}{accept}"));
         }

@@ -337,7 +337,11 @@ declares it or as it was declared where the call was proposed, reads a
 field the reader may not read under that sight
 (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
 extended). A call's payload is shown only to a reader who reads each
-field the verb sets, under both.
+field the verb sets, under both. A trigger, a verb and an object set of
+a bundle name the type they are on and the type the one in force under
+their name stands on: accepted, the bundle would take that one's place,
+or be refused in words that name the type, so it is not there to a
+reader kept from the type it stands on (lakelands#893).
 
 The lake as it was proposed against is read only for an entry whose
 subject moved, and only for a reader whose grants keep it from a field:
