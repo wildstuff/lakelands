@@ -16,7 +16,7 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::principal::PrincipalKind;
 use lakelands_api::query::{Edge, Projection, QueryResult, Walk};
-use lakelands_api::write::{Outcome, WriteOpts};
+use lakelands_api::write::{Outcome, ProposedWrite, WriteOpts};
 use lakelands_api::{Catalog, Error, LakeStore, Position, Principal, Refusal};
 use serde_json::{Value, json};
 
@@ -50,7 +50,7 @@ check!(
 
 check!(
     VERB_KEEPS_ENDS = a_verb_on_a_link_type_keeps_what_the_link_door_keeps,
-    "035 and 003, extended (lakelands#759): a verb on a relation's link type writes a live link's own fields and never its ends: one whose `set` names `from` or `to` is refused as invalid where it is declared, by `declare`, `propose` and `apply` alike; its call on a link an end of which is retired is refused as `link` with a field is, word for word, on that end, and nothing is appended; a caller without `restricted` whose link has a held end, and a holder of `only` on an end's type not admitted to that end, are each answered as for a key no link has; and a verb on the link type a relation's rename left behind is refused as on a type that is not declared; each door keeps its family's order: with an end retired and a stale expected version, `link` is refused on the end as without the version, and the verb's call answers the conflict"
+    "035 and 003, extended (lakelands#759): a verb on a relation's link type writes a live link's own fields and never its ends: one whose `set` names `from` or `to` is refused as invalid where it is declared, by `declare`, `propose` and `apply` alike; its call on a link an end of which is retired is refused as `link` with a field is, word for word, on that end, and nothing is appended, and so is the accept of a call proposed while both ends were live (lakelands#847); a caller without `restricted` whose link has a held end, and a holder of `only` on an end's type not admitted to that end, are each answered as for a key no link has; and a verb on the link type a relation's rename left behind is refused as on a type that is not declared; each door keeps its family's order: with an end retired and a stale expected version, `link` is refused on the end as without the version, and the verb's call answers the conflict"
 );
 
 check!(
@@ -70,7 +70,7 @@ check!(
 
 check!(
     OWN_DOORS = link_records_are_made_through_the_link_doors_and_ingest_only,
-    "035 and §2.3: upsert and retire refuse a link type's records, before a retry under the key of a link; a caller cannot declare a link type; the link door refuses a relation whose links arrive by ingest, before `from` among the fields, `from` among the fields before a retry, and a retry before the record checks (035, extended); and ingest writes them"
+    "035 and §2.3: upsert and retire refuse a link type's records, before a retry under the key of a link, and `propose` refuses an upsert and a retirement of one as they do (lakelands#847); a caller cannot declare a link type; the link door refuses a relation whose links arrive by ingest, before `from` among the fields, `from` among the fields before a retry, and a retry before the record checks (035, extended); and ingest writes them"
 );
 
 check!(
@@ -383,7 +383,7 @@ async fn a_link_that_would_break_the_relations_cardinality_is_refused(store: Sto
 
 async fn a_verb_on_a_link_type_keeps_what_the_link_door_keeps(store: Store) -> Held {
     use crate::conformance::fixture::alike_renamed;
-    use lakelands_api::write::{Declaration, ProposedWrite};
+    use lakelands_api::write::Declaration;
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let verb = |name: &str, field: &str| -> Declaration {
@@ -424,6 +424,23 @@ async fn a_verb_on_a_link_type_keeps_what_the_link_door_keeps(store: Store) -> H
                 .await
         }
     };
+    // Proposed while both ends live, accepted below once one is retired.
+    let mut held = Vec::new();
+    for (from, to) in [("i1", "p1"), ("i2", "p2")] {
+        let key = Some(link_key(&from.into(), &to.into()));
+        let (verb, payload, opts) = ("date".into(), Default::default(), WriteOpts::default());
+        let write = ProposedWrite::Call {
+            verb,
+            key,
+            payload,
+            opts,
+        };
+        let proposed = cat.propose(own, write, "why".into()).await;
+        let Outcome::Proposed { proposal, .. } = proposed.must("proposing `date`")? else {
+            return Err(Failure::new("a proposed call answers its proposal"));
+        };
+        held.push(proposal);
+    }
     let applied = call(own, "i1", "p1").await;
     let links = all(cat.as_ref(), own, LT).await?;
     let since = |r: &lakelands_api::record::Record| r.fields.get("since") == Some(&json!(SEPT));
@@ -437,13 +454,22 @@ async fn a_verb_on_a_link_type_keeps_what_the_link_door_keeps(store: Store) -> H
     l.retire("partner", "p1").await?;
     l.retire("invoice", "i2").await?;
     let before = store.head().await.must("reading the head")?;
-    for (from, to, end) in [("i1", "p1", "to"), ("i2", "p2", "from")] {
+    for ((from, to, end), id) in [("i1", "p1", "to"), ("i2", "p2", "from")]
+        .into_iter()
+        .zip(&held)
+    {
         let by_link = link(cat.as_ref(), own, from, to, json!({"since": SEPT})).await;
         let by_verb = call(own, from, to).await;
+        let accepted = cat.accept(own, id).await;
+        let said = by_link.as_ref().err().and_then(Error::case);
         ensure!(
-            matches!(refused_on(&by_link), Some((f, _)) if f == end) && by_verb == by_link,
-            "with its `{end}` retired, `link` with a field is refused on `{end}`, and a verb on \
-             the link word for word as it; they answered {by_link:?} and {by_verb:?}"
+            matches!(refused_on(&by_link), Some((f, _)) if f == end)
+                && matches!(said.map(|s| &s.case), Some(Case::NotLive { .. }))
+                && by_verb == by_link
+                && accepted == by_link,
+            "with its `{end}` retired, `link` with a field is refused as `not_live` on `{end}`, \
+             and a verb on the link, and the accept of its call proposed before, word for word \
+             as it; they answered {by_link:?}, {by_verb:?} and {accepted:?}"
         );
     }
     // Each door keeps its family's order (035): beside a retired end, a
@@ -566,6 +592,29 @@ async fn link_records_are_made_through_the_link_doors_and_ingest_only(store: Sto
         matches!(reason(&retired), Some(Refusal::WrongDoor)),
         "retire on a link type is the wrong door; it answered {retired:?}"
     );
+    // Proposed, either is refused as it is at its own door.
+    let opts = WriteOpts::default;
+    let (ty, since) = (|| LT.into(), patch(json!({"since": SEPT})));
+    for write in [
+        ProposedWrite::Upsert {
+            ty: ty(),
+            key: key.clone(),
+            patch: since,
+            opts: opts(),
+        },
+        ProposedWrite::Retire {
+            ty: ty(),
+            key: key.clone(),
+            opts: opts(),
+        },
+    ] {
+        let proposed = cat.propose(own, write, "why".into()).await;
+        ensure!(
+            matches!(reason(&proposed), Some(Refusal::WrongDoor)),
+            "a proposed upsert or retirement of a link type's record is the wrong door; it \
+             answered {proposed:?}"
+        );
+    }
     // In link's order (035, extended): `from` among the fields before the
     // retry, the retry before the record checks; and an ordinary door
     // refuses a link type before it looks for a retry.
