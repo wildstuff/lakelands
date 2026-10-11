@@ -748,6 +748,12 @@ impl RelationDecl {
             ..RelationDecl::default()
         }
     }
+
+    /// Whether the relation is carried by link records: neither by a `via`
+    /// field nor derived. Only such a relation has link doors and a link type.
+    pub fn carried_by_links(&self) -> bool {
+        self.via.is_none() && self.derived.is_none()
+    }
 }
 
 /// A view type: records computed from other types, read with `find` like

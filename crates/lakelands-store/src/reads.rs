@@ -3758,7 +3758,7 @@ impl EdgeSource for Visible<'_, '_> {
                 .ty(&e.from.0)
                 .ok()
                 .and_then(|d| d.relations.iter().find(|x| x.name == e.relation))
-                .is_some_and(lakelands_core::links::carried_by_links)
+                .is_some_and(RelationDecl::carried_by_links)
         };
         let link_of = |e: &Edge| {
             (

@@ -564,7 +564,7 @@ fn owned_whole(t: &TypeDescription, mirrored: &BTreeSet<TypeName>) -> Result<(),
             ));
         }
     }
-    for r in t.relations.iter().filter(|r| r.via.is_none()) {
+    for r in t.relations.iter().filter(|r| r.carried_by_links()) {
         if r.authority != Authority::Source {
             return Err(format!(
                 "the links of `{name}.{}` are authored; a mirrored type's relations are \
@@ -636,11 +636,11 @@ fn admits(
     let sf: Vec<_> = s.fields.iter().collect();
     let tf: Vec<_> = t.fields.iter().collect();
     check(s.name.as_str(), t.name.as_str(), &sf, &tf)?;
-    for r in t.relations.iter().filter(|r| r.via.is_none()) {
+    for r in t.relations.iter().filter(|r| r.carried_by_links()) {
         let Some(q) = s
             .relations
             .iter()
-            .find(|q| q.name == r.name && q.via.is_none())
+            .find(|q| q.name == r.name && q.carried_by_links())
         else {
             return Err(format!(
                 "`{}` has no relation `{}` carried by links; `{}` declares it",
@@ -855,7 +855,7 @@ impl Mirror {
                     link: None,
                 },
             );
-            for r in td.relations.iter().filter(|r| r.via.is_none()) {
+            for r in td.relations.iter().filter(|r| r.carried_by_links()) {
                 let mut fields: BTreeMap<FieldName, Option<TypeName>> = BTreeMap::new();
                 fields.insert(FieldName::from(lakelands_api::key::FROM), Some(t.clone()));
                 fields.insert(
