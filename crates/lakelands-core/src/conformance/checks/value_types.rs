@@ -14,12 +14,12 @@
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind, ValueTypeDecl};
 use lakelands_api::write::{Declaration, ValueTypeReport};
-use lakelands_api::{Error, Grants, LakeStore, PrincipalKind, Refusal, WriteOpts};
+use lakelands_api::{Access, Error, Grants, LakeStore, PrincipalKind, Refusal, WriteOpts};
 use serde_json::{Value, json};
 
 use crate::conformance::fixture::{
-    Lake, Must, events_after, field, head_unmoved, invalid_like, log_events, object_set_on,
-    principal, reason, refused_on, reviewer, trigger_on, try_upsert, type_decl,
+    Lake, Must, events_after, field, field_access, head_unmoved, invalid_like, log_events,
+    object_set_on, principal, reason, refused_on, reviewer, trigger_on, try_upsert, type_decl,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -35,7 +35,7 @@ check!(
 
 check!(
     PREFLIGHT_COUNTS = the_preflight_counts_what_would_not_fit_over_every_use_and_history,
-    "027: the preflight of a value type checks every value stored under it, over every field of every type that uses it, retired and restricted records included, counts the records and the misfits per use, names the first of them of records its reader is answered, in a preview and in the refused apply, so that one held from the reader is counted and not named (lakelands#875), and appends nothing"
+    "027: the preflight of a value type checks every value stored under it, over every field of every type that uses it, retired and restricted records included, counts the records and the misfits per use, names the first of them of records its reader is answered, in a preview and in the refused apply, so that one held from the reader is counted and not named, and one in a field its reader does not read takes none of the ten places (lakelands#875), and appends nothing"
 );
 
 check!(
@@ -354,7 +354,35 @@ async fn the_preflight_counts_what_would_not_fit_over_every_use_and_history(stor
         s.misfits == 1 && s.first.first().is_some_and(|m| m.key.as_str() == "i2"),
         "`i2`'s score of -1 fails `value >= 0`, and the report says {s:?}"
     );
-    head_unmoved(store.as_ref(), before, "a value type's preflight").await
+    head_unmoved(store.as_ref(), before, "a value type's preflight").await?;
+    // A misfit in a field its reader does not read takes no place: with
+    // nine tickets more, one kept from `invoice.status` is named ten.
+    for n in 2..=10 {
+        let late = json!({"state": "late"});
+        l.upsert("ticket", &format!("t{n}"), late).await?;
+    }
+    let mut kept = field_access(
+        store.as_ref(),
+        "kept",
+        "invoice",
+        &[("status", Access::None)],
+    );
+    kept.grants.schema = true;
+    let to = status(&["open", "paid", "void"]).into();
+    let seen = l.cat.migrate_value_type(&kept, to).await;
+    let seen = seen
+        .must("the preview by one kept from `invoice.status`")?
+        .data;
+    ensure!(
+        seen.misfits == 14
+            && seen.first.len() == 10
+            && seen.first.iter().all(|m| m.ty != "invoice"),
+        "of fourteen misfits, three in a field kept from their reader, it is named ten, none \
+         of them `invoice`'s; it is named {:?} of {}",
+        seen.first,
+        seen.misfits
+    );
+    Ok(())
 }
 
 async fn applying_a_tightening_some_value_does_not_fit_is_refused(store: Store) -> Held {

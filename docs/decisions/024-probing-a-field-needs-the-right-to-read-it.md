@@ -435,8 +435,17 @@ and reads the field, and a misfit names a record: the first misfits
 named are of records their reader is answered, as a migration's sample
 keys are, so one of a record held from it is counted and not named
 (lakelands#875; before, a restricted record's key was named to a reader
-without the grant). The totals and the report's id, which names the
-whole report, stay.
+without the grant). The first ten are taken among those shown: a misfit
+in a field its reader does not read takes no place, so the length of the
+list tells nothing of that field. The totals stay whole. What the
+report's id names follows from who may be shown it: a report its reader
+may be shown in part, a tightening's with its uses and misfits, is
+named by what that reader is shown, so what it is not shown moves no
+id; one shown whole or not at all, a rename's, is named by the whole
+(lakelands#875; before, every id named the whole report, and told two
+lakes apart that their reader reads alike). Two principals shown
+different parts of one tightening therefore hold different ids for it,
+and an id handed from one to the other is refused as stale.
 
 A value type's report names a declaration by what its reader is
 described of it (lakelands#861). The report reads the description

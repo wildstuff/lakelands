@@ -15,7 +15,7 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     NAMED_IN_KEY_ORDER = the_keys_a_report_names_stand_in_the_order_of_the_new_key,
-    "027, extended (lakelands#875): the colliding keys a report names stand in the order of the new key and are its first ten, wherever a record held from their reader sorts: of two types of one shape, each with eleven keys that two records their reader is answered would take, and a restricted record that sorts first and would take the last of the keys in the one and the first in the other, the reader is named the same ten keys beside the same count and `more`"
+    "027, extended (lakelands#875): the colliding keys a report names stand in the order of the new key and are its first ten: of two types of one shape, each with eleven keys that two records their reader is answered would take, and a restricted record that sorts first and would take the last of the keys in the one and the first in the other, the reader is named the same ten keys beside the same count and `more`"
 );
 
 async fn the_keys_a_report_names_stand_in_the_order_of_the_new_key(store: Store) -> Held {
