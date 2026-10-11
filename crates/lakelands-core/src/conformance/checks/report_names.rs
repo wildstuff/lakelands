@@ -15,7 +15,7 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     REPORT_AS_ITS_READERS_VIEW = a_migrations_report_is_answered_as_its_reader_may_know_it,
-    "013, 024 and 027, extended (lakelands#531): a migration's report names a conversion, a dropped field, a re-keyed type, a rewritten reference and a colliding key only where its reader may see the type and know of the field, and a sample key only of a record it is answered, in the refusal of an accept, of `migrate_apply` and of `propose` and in a preview, an author's own too; `more` says that the report holds more, and one who may see everything reads it whole without it; the id is made over what the reader is shown, so a preview read trimmed is applied by it (lakelands#644); a relation the migration removes is listed as dropped to one who sees the type and is shown the relation (lakelands#662); to an accepter who may not see the type the proposal is one that does not exist (lakelands#762)"
+    "013, 024 and 027, extended (lakelands#531): a migration's report names a conversion, a dropped field, a re-keyed type, a rewritten reference and a colliding key only where its reader may see the type and know of the field, and a sample key only of a record it is answered, a link's with its ends and where it is shown the link type (lakelands#871), beside a count that stays whole, in the refusal of an accept, of `migrate_apply` and of `propose` and in a preview, an author's own too; `more` says that the report holds more, and one who may see everything reads it whole without it; the id is made over what the reader is shown, so a preview read trimmed is applied by it (lakelands#644); a relation the migration removes is listed as dropped to one who sees the type and is shown the relation (lakelands#662); to an accepter who may not see the type the proposal is one that does not exist (lakelands#762)"
 );
 
 /// `account` keyed by `key`, with `holder` and, when given, `score` of
@@ -157,6 +157,12 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(store: Store)
     let soon = link("box", "b1", "kept_by", json!({"since": "soon"})).await;
     soon.must("linking box b1 to x again")?;
     restrict(s, "sys.link.box.kept_by", "b1:x", "a hold").await?;
+    // A link that does not convert either, of a box then restricted.
+    l.upsert("box", "b2", json!({"code": "b2", "label": "l2"}))
+        .await?;
+    let late = link("box", "b2", "kept_by", json!({"since": "late"})).await;
+    late.must("linking box b2 to x")?;
+    restrict(s, "box", "b2", "a hold").await?;
     let fifth = json!({"number": "5", "iban": "DE1", "holder": "8", "score": "50"});
     l.upsert("account", "5", fifth).await?;
     l.upsert("entry", "5:1", json!({"account": "5", "n": "1"}))
@@ -181,11 +187,23 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(store: Store)
     let proposed = refused(l.cat.propose(&hid, again, "again".into()).await)?;
     let since = refused(l.cat.accept(&hid, &ids[4]).await)?;
     let since_whole = refused(l.cat.accept(&l.own, &ids[4]).await)?;
+    // One who is answered every record, and is not shown the link type.
+    let mut far = l.own.clone();
+    let from = [("from".into(), Access::None)].into();
+    let link = TypeGrants {
+        fields: from,
+        ..Default::default()
+    };
+    far.grants.types.insert("sys.link.box.kept_by".into(), link);
+    let far = preview(&l, &far, migrate_to(boxed("code", "number"))).await?;
+    let far = json!(far).to_string();
     let read = json!(read).to_string();
     // Per row: the report, the names it must show and those it must not.
     let (more, id, owners) = ("\"more\":true", id.as_str(), owners.as_str());
     let (one, both) = ("\"sample_keys\":[\"2\"]", "\"sample_keys\":[\"2\",\"4\"]");
     let collision = "{\"key\":\"DE1\",\"type\":\"account\"}";
+    // A count stays whole: of what is there, not of what its reader is answered.
+    let (kept, two) = ("kept_by.since", "\"not_convertible\":2");
     let what = [
         "the accept of a hidden field's conversion",
         "the accept of `holder` as a number",
@@ -198,9 +216,10 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(store: Store)
         "an author's preview of a boolean",
         "the accept of a link field as a number",
         "the same, to one who sees everything",
+        "its preview by one not shown the link type",
     ];
     let visible = "[\"1\",\"2\",\"5\"]";
-    let rows: [Row; 11] = [
+    let rows: [Row; 12] = [
         (&scored, &[more], &["score", "keys"]),
         (&held, &[more, "holder", one], &["\"4\""]),
         (&held_whole, &[both], &["more"]),
@@ -210,8 +229,9 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(store: Store)
         (&applied, &[more, id], &["entry", owners]),
         (&proposed, &[more], &["entry"]),
         (&boolean, &[more, visible], &["\"4\""]),
-        (&since, &[more, "kept_by.since"], &["b1:x"]),
-        (&since_whole, &["kept_by.since", "b1:x"], &["more"]),
+        (&since, &[more, kept, two], &["b1:x", "b2:x"]),
+        (&since_whole, &[kept, two, "b1:x", "b2:x"], &["more"]),
+        (&far, &[more, kept, two], &["b1:x", "b2:x"]),
     ];
     let mut red = Vec::new();
     for (what, (report, shows, hides)) in what.into_iter().zip(rows) {

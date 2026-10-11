@@ -21,7 +21,8 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, field, head_unmoved, principal, restrict, searchable, type_decl, vector, view_of,
+    Lake, Must, field, head_unmoved, principal, reason, restrict, searchable, type_decl, vector,
+    view_of,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -42,7 +43,7 @@ check!(
 
 check!(
     ONLY_LINKS = a_link_is_answered_where_its_ends_are_admitted,
-    "051: a walk by a holder of `only` reaches only admitted records; a link type whose end type holds `only` answers `get`, `find`, `total` and a count over the links whose ends are admitted; `only` on a link type admits its links by their fields in a walk too"
+    "051: a walk by a holder of `only` reaches only admitted records; a link type whose end type holds `only` answers `get`, `find`, `total` and a count over the links whose ends are admitted, a reference to any other answers as one to a link no record holds, and a call proposed on one is listed without its write and is not its reviewer's to decide (lakelands#871); `only` on a link type admits its links by their fields in a walk too"
 );
 
 check!(
@@ -462,11 +463,49 @@ async fn a_link_is_answered_where_its_ends_are_admitted(store: Store) -> Held {
             Ok::<_, Failure>(())
         }
     };
+    let writer = alice(store.as_ref(), json!({"default": "write", "review": true}));
     let alice = alice(store.as_ref(), json!({}));
     walked(alice.clone(), "c1 c3").await?;
     finds(&l, &alice, LINKS, Position::GENESIS).await?;
     let link = get(&l, &alice, "sys.link.claim.on_trip", "c2:t1", None).await;
     not_found("the link from bob's `c2` to alice", link)?;
+    // A reference to it answers her as one to a link that is not there
+    // (lakelands#871).
+    let memo = crate::conformance::fixture::reference("l", "sys.link.claim.on_trip");
+    l.declare(type_decl("memo", vec![memo])).await?;
+    let (memo, m1, mut said) = ("memo".into(), "m1".into(), Vec::new());
+    for k in ["c2:t1", "c9:t1"] {
+        let up = cat.upsert(&writer, &memo, &m1, de(json!({"l": k})), Default::default());
+        said.push(format!("{:?}", up.await.err()).replace(k, "?"));
+    }
+    ensure!(
+        said[0] == said[1] && said[0] != "None",
+        "a reference to the link of bob's `c2` answers alice as one to no link: {said:?}"
+    );
+    // And a call proposed on it is listed to her as the retirement of
+    // bob's `c2` is, without its write.
+    let mark = json!({"declare": "verb", "name": "mark", "on": "sys.link.claim.on_trip",
+        "risk": "low", "effect": "write", "set": [{"field": "label", "value": "'seen'"}]});
+    l.declare_json(mark).await?;
+    for w in [
+        json!({"write": "retire", "type": "claim", "key": "c2"}),
+        json!({"write": "call", "verb": "mark", "key": "c2:t1", "payload": {}}),
+    ] {
+        let proposed = cat.propose(&l.own, de(w), "the owner's".into()).await;
+        proposed.must("the owner's proposal")?;
+    }
+    let listed = cat.proposals(&writer, Default::default()).await;
+    let listed = listed.must("alice's listing")?.data;
+    // Nor does she decide either: a reviewer decides what it is listed whole.
+    let mut kept = Vec::new();
+    for p in &listed {
+        let rejected = cat.reject(&writer, &p.id, "no".into()).await;
+        kept.push(reason(&rejected) == Some(&Refusal::NotGranted));
+    }
+    ensure!(
+        kept == [true; 2] && listed.iter().all(|p| p.write.is_none() && p.more),
+        "a proposal on bob's claim and one on its link are listed to alice without their writes, and she rejects neither ({kept:?}): {listed:?}"
+    );
     // `only` on the link type itself admits its links by their fields.
     let types = json!({"sys.link.claim.on_trip": {"only": {"from": "c2"}}});
     walked(
@@ -1052,7 +1091,7 @@ async fn a_grant_that_cannot_be_applied_is_refused(store: Store) -> Held {
 
 check!(
     ONLY_UNAPPLIED_ADMITS_NONE = a_grant_that_cannot_be_applied_admits_no_record_at_any_door,
-    "051, extended (lakelands#771): a holder's `only` that cannot be applied admits none of the type's records, whatever a stored value holds: the proposal listing answers a reviewer every proposal on such a record without its write, and a reference into the type, a link's end too, is refused as naming no live record, exactly as an absent key is; an upsert, a verb, an unlink, a proposed upsert or retirement, a retirement and an ingest on a record whose value equals the pair answer as on one whose value does not, the link's end judged so too; a search as of a position admits no candidate where the grant cannot be applied to the head's declaration, a field made one the holder may not read there included, though its values stay, and no link whose end's type the grant so holds; a kept view grouped by the pair's field, and a view over it, answer nothing to such a grant through `find`, a sum, a count, groups, `total`, a read as of before and `get`, refuse it where it masks the pair's field, and answer as types not declared where it holds that field at `none`, since the view is grouped by it (lakelands#782)"
+    "051, extended (lakelands#771): a holder's `only` that cannot be applied admits none of the type's records, whatever a stored value holds: the proposal listing answers a reviewer every proposal on such a record without its write, and a reference into the type, a link's end too, is refused as naming no live record, exactly as an absent key is, and a second link over a relation that allows one names nothing of the first; an upsert, a verb, an unlink, a proposed upsert or retirement, a retirement and an ingest on a record whose value equals the pair answer as on one whose value does not, the link's end judged so too; a search as of a position admits no candidate where the grant cannot be applied to the head's declaration, a field made one the holder may not read there included, though its values stay, and no link whose end's type the grant so holds; a kept view grouped by the pair's field, and a view over it, answer nothing to such a grant through `find`, a sum, a count, groups, `total`, a read as of before and `get`, refuse it where it masks the pair's field, and answer as types not declared where it holds that field at `none`, since the view is grouped by it (lakelands#782)"
 );
 
 /// Grants on `claim` whose `only` cannot be applied though a stored value
@@ -1084,6 +1123,11 @@ async fn a_grant_that_cannot_be_applied_admits_no_record_at_any_door(store: Stor
         "fields": [{"name": "n", "type": {"kind": "text"}}], "relations": [held_by]}))
         .await?;
     l.upsert("desk", "d1", json!({"n": "d1"})).await?;
+    l.upsert("desk", "d2", json!({"n": "d2"})).await?;
+    let (desk, d2, c1) = (TypeName::from("desk"), RecordKey::from("d2"), "c1".into());
+    let (by, no, opts) = ("held_by".into(), Default::default, Default::default);
+    let linked = cat.link(&l.own, &desk, &d2, &by, &c1, no(), opts());
+    linked.await.must("linking `d2` to `c1`")?;
     let pay = json!({"declare": "verb", "name": "pay", "on": "claim", "risk": "low",
                      "effect": "write", "set": [{"field": "note", "value": "'paid'"}]});
     l.declare_json(pay).await?;
@@ -1142,6 +1186,17 @@ async fn a_grant_that_cannot_be_applied_admits_no_record_at_any_door(store: Stor
         let (held, absent) = (refused("c1").await, refused("c9").await);
         if held != absent || absent.iter().any(|e| e == "null") {
             wrong.push(format!("{what}: `c1` {held:?}, the absent `c9` {absent:?}"));
+        }
+        // A second link of `d2`, which `held_by` allows one, names nothing
+        // of the link that holds: it answers as one to the absent `c9`.
+        let mut second = Vec::new();
+        for c in ["c2", "c9"] {
+            let to = c.into();
+            let linked = cat.link(eve, &desk, &d2, &by, &to, no(), opts()).await;
+            second.push(format!("{:?}", linked.err()).replace(c, "c?"));
+        }
+        if second[0] != second[1] || second[0].contains("c1") {
+            wrong.push(format!("{what}: a second link of `d2` {second:?}"));
         }
         // Her writes on `c1`, whose value her pair equals, answer as on
         // `c2`, whose value it does not (and `b1` as `b2`): she owns neither.

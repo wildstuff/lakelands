@@ -201,7 +201,7 @@ pub fn visible(
 
 /// The pairs `who`'s grant on `ty` admits records by: its `only`, empty
 /// where it admits every record.
-pub fn own_only(who: &Principal, ty: &TypeName) -> Vec<(FieldName, Value)> {
+pub(crate) fn own_only(who: &Principal, ty: &TypeName) -> Vec<(FieldName, Value)> {
     let only = who.grants.types.get(ty).map(|t| &t.only);
     only.into_iter()
         .flatten()
@@ -209,45 +209,21 @@ pub fn own_only(who: &Principal, ty: &TypeName) -> Vec<(FieldName, Value)> {
         .collect()
 }
 
-/// What `only` makes of a type's records for one reader
-/// (`docs/decisions/051-a-grant-may-admit-only-some-records.md`).
-#[derive(Clone, Debug, PartialEq)]
-pub enum Effective {
-    /// The records whose fields hold every pair; none: every record.
-    Pairs(Vec<(FieldName, Value)>),
-    /// A view whose records are computed for this reader from the admitted
-    /// records of what it reads, then held to its own pairs.
-    ComputeOnly(Vec<(FieldName, Value)>),
-}
-
-impl Effective {
-    /// The pairs a record of the type must hold.
-    pub fn pairs(&self) -> &[(FieldName, Value)] {
-        match self {
-            Effective::Pairs(p) | Effective::ComputeOnly(p) => p,
-        }
-    }
-
-    /// Whether every record is admitted as it is kept or stored.
-    pub fn whole(&self) -> bool {
-        matches!(self, Effective::Pairs(p) if p.is_empty())
-    }
-}
-
-/// The one effective `only` of a type for `who`; every read asks this and
-/// nothing else. A stored type's is its own pairs. A view's are its own,
+/// The one effective `only` of a type for `who`, and whether its records
+/// are computed for it; [`admit`] is made of it, and every door asks
+/// that. A stored type's is its own pairs. A view's are its own,
 /// plus, where it has one stored source, no merge, and groups by every
 /// field the source's pairs name, the source's pairs on its group fields:
 /// each group's records then share those values, so the admitted records
 /// are the groups that hold them. Otherwise a view that reads a type held
 /// to some records, or a link type whose end type is, is computed from
-/// the admitted records alone. A kept name answers for its view. `find`
-/// answers a type by its name.
-pub fn only<'a>(
+/// the admitted records alone, and then held to the view's own pairs. A
+/// kept name answers for its view. `find` answers a type by its name.
+pub(crate) fn only<'a>(
     who: &Principal,
     ty: &TypeName,
     find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
-) -> Effective {
+) -> (Vec<(FieldName, Value)>, bool) {
     only_seen(who, ty, find, &mut Vec::new())
 }
 
@@ -256,55 +232,120 @@ fn only_seen<'a>(
     ty: &TypeName,
     find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
     seen: &mut Vec<TypeName>,
-) -> Effective {
+) -> (Vec<(FieldName, Value)>, bool) {
     let kept = ty.as_str().strip_prefix(lakelands_api::seam::KEPT_PREFIX);
     let ty = kept.map_or_else(|| ty.clone(), TypeName::from);
     let mut pairs = own_only(who, &ty);
     let Some(v) = find(&ty).and_then(|d| d.view.as_deref()) else {
-        return Effective::Pairs(pairs);
+        return (pairs, false);
     };
     if seen.contains(&ty) {
-        return Effective::ComputeOnly(pairs);
+        return (pairs, true);
     }
     seen.push(ty);
     let sources = std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source));
     let held = |s: &TypeName, seen: &mut Vec<TypeName>| {
-        let e = only_seen(who, s, find, seen);
-        (!e.whole() || find(s).is_some_and(|d| ends_held(who, d))).then_some(e)
+        let (p, computed) = only_seen(who, s, find, seen);
+        let whole = p.is_empty() && !computed;
+        (!whole || find(s).is_some_and(|d| ends_held(who, d))).then_some((p, computed))
     };
-    let held: Vec<(&TypeName, Effective)> =
-        sources.filter_map(|s| Some((s, held(s, seen)?))).collect();
+    let held: Vec<_> = sources.filter_map(|s| Some((s, held(s, seen)?))).collect();
     seen.pop();
-    let Some((source, e)) = held.first() else {
-        return Effective::Pairs(pairs);
+    let Some((source, (p, computed))) = held.first() else {
+        return (pairs, false);
     };
     let stored = find(source).is_some_and(|d| d.view.is_none() && !ends_held(who, d));
-    let grouped = e.pairs().iter().all(|(f, _)| v.group_by.contains(f));
-    match e {
-        Effective::Pairs(p) if v.merge.is_empty() && stored && grouped => {
-            pairs.extend(p.iter().cloned());
-            Effective::Pairs(pairs)
+    let grouped = p.iter().all(|(f, _)| v.group_by.contains(f));
+    let carried = !computed && v.merge.is_empty() && stored && grouped;
+    pairs.extend(p.iter().filter(|_| carried).cloned());
+    (pairs, !carried)
+}
+
+/// What a grant admits of a type's records for one principal (051): the
+/// one answer every door reads, and it fails closed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Admit {
+    /// Every record.
+    All,
+    /// The records whose fields hold every pair.
+    Only(Vec<(FieldName, Value)>),
+    /// A view's records, computed for this principal from the admitted
+    /// records of what it reads and then held to these pairs.
+    Computed(Vec<(FieldName, Value)>),
+    /// No record: a grant that cannot be applied, whatever a record holds
+    /// (lakelands#771).
+    Nothing,
+}
+
+impl Admit {
+    /// Whether a record holding `fields` is admitted.
+    pub fn holds(&self, fields: &BTreeMap<FieldName, Value>) -> bool {
+        self.pairs().is_some_and(|p| admitted(p, fields))
+    }
+
+    /// The pairs an admitted record holds, for an engine to filter by;
+    /// none where no record is admitted.
+    pub fn pairs(&self) -> Option<&[(FieldName, Value)]> {
+        match self {
+            Admit::All => Some(&[]),
+            Admit::Only(p) | Admit::Computed(p) => Some(p),
+            Admit::Nothing => None,
         }
-        _ => Effective::ComputeOnly(pairs),
     }
 }
 
-/// Whether `who`'s `only` on `decl` admits a record holding `fields`: one
-/// that cannot be applied admits none, whatever the record holds (051,
-/// lakelands#771).
-pub fn admits(who: &Principal, decl: &TypeDecl, fields: &BTreeMap<FieldName, Value>) -> bool {
-    check_only(who, decl).is_ok() && admitted(&own_only(who, &decl.name), fields)
+/// Whether the records of the view `ty` are computed for `who` from the
+/// admitted records of what it reads ([`only`]), a grant that cannot be
+/// applied included.
+pub fn computed_only<'a>(
+    who: &Principal,
+    ty: &TypeName,
+    find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
+) -> bool {
+    only(who, ty, find).1
+}
+
+/// What `who`'s grants admit of the records of `ty`, a kept name's as its
+/// view's ([`only`]): nothing where the grant on the type, or on the
+/// source a view reads, cannot be applied ([`check_only`]).
+pub fn admit<'a>(
+    who: &Principal,
+    ty: &TypeName,
+    find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
+) -> Admit {
+    if !holds_only(who) {
+        return Admit::All;
+    }
+    let kept = ty.as_str().strip_prefix(lakelands_api::seam::KEPT_PREFIX);
+    let decl = find(&kept.map_or_else(|| ty.clone(), TypeName::from));
+    let source = decl.and_then(|d| find(&d.view.as_ref()?.source));
+    if !decl
+        .into_iter()
+        .chain(source)
+        .all(|d| check_only(who, d).is_ok())
+    {
+        return Admit::Nothing;
+    }
+    match only(who, ty, find) {
+        (p, true) => Admit::Computed(p),
+        (p, false) if p.is_empty() => Admit::All,
+        (p, false) if decl.is_some() => Admit::Only(p),
+        _ => Admit::Nothing,
+    }
 }
 
 /// Whether a stored record holds every pair.
-pub fn admitted(pairs: &[(FieldName, Value)], fields: &BTreeMap<FieldName, Value>) -> bool {
+pub(crate) fn admitted(pairs: &[(FieldName, Value)], fields: &BTreeMap<FieldName, Value>) -> bool {
     pairs.iter().all(|(f, v)| fields.get(f) == Some(v))
 }
 
 /// The end types of a link type `decl` whose records `who` is admitted
 /// only some of, with the link field that names each: a link record is
 /// withheld unless both its ends are admitted.
-pub fn held_ends<'d>(who: &Principal, decl: &'d TypeDecl) -> Vec<(&'d FieldName, &'d TypeName)> {
+pub(crate) fn held_ends<'d>(
+    who: &Principal,
+    decl: &'d TypeDecl,
+) -> Vec<(&'d FieldName, &'d TypeName)> {
     if !crate::links::is_link_type(&decl.name) {
         return Vec::new();
     }
@@ -728,7 +769,7 @@ pub(crate) fn hide_unshown_references(
             |ty: &TypeName| find(ty).is_some_and(|d| !crate::describe::type_shown(d, find, who));
         let mut more = Vec::new();
         for t in &types {
-            let only = only(who, &t.name, find);
+            let (only, _) = only(who, &t.name, find);
             let links = (t.relations.iter()).map(|r| {
                 (
                     crate::links::link_type_name(&t.name, &r.name),
@@ -741,7 +782,7 @@ pub(crate) fn hide_unshown_references(
             {
                 let held = |f: &FieldName| {
                     let none = who.grants.types.get(&ty).and_then(|g| g.fields.get(f));
-                    none == Some(&Access::None) || own && only.pairs().iter().any(|(n, _)| n == f)
+                    none == Some(&Access::None) || own && only.iter().any(|(n, _)| n == f)
                 };
                 let refers = fields
                     .iter()

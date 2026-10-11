@@ -791,14 +791,13 @@ fn check_references(
         // (lakelands#771).
         let held = ontology.ty(target).ok();
         let found = pending.record(view, target, &to)?;
-        let mut exists = found.as_ref().is_some_and(|r| {
-            !r.retired
-                && answered(who, r)
-                && held.is_some_and(|d| rights::admits(who, d, &r.fields))
-        });
-        // A link record is there only with its ends (006).
+        let sees = Sight::held(who, ontology);
+        let mut exists = (found.as_ref())
+            .is_some_and(|r| !r.retired && held.is_some() && sees.answers(target, r));
+        // A link record is there only with its ends, as a read of it
+        // answers (006, 051; lakelands#871).
         if let (true, Some(d), Some(r)) = (exists, held, &found) {
-            exists = ends_answered(view, pending, who, d, &r.fields)?;
+            exists = ends(view, pending, &sees, d, &r.fields)?;
         }
         if !exists {
             let (field, ty, key) = (name.clone(), target.clone(), to);
@@ -887,58 +886,37 @@ impl Target {
     }
 }
 
-/// Whether `who` is answered each end of a link of `decl` holding
-/// `fields`: a link with a restricted end is not there to a writer
-/// without the grant (006).
-fn ends_answered(
+/// Whether a link of `decl` holding `fields` is there with its ends for
+/// the sight's principal, as the drafts so far leave them
+/// ([`Sight::ends`]).
+fn ends(
     view: &dyn ProjectionView,
     pending: &Pending,
-    who: &Principal,
+    sees: &Sight,
     decl: &TypeDecl,
     fields: &BTreeMap<FieldName, Value>,
 ) -> Result<bool> {
-    let link = links::link_type_parts(&decl.name).is_some();
-    for f in
-        (decl.fields.iter()).filter(|f| link && [links::FROM, links::TO].contains(&f.name.as_str()))
-    {
-        let k = fields.get(&f.name).and_then(Value::as_str);
-        if let Some((end, k)) = f.ty.target.as_ref().zip(k)
-            && pending
-                .record(view, end, &k.into())?
-                .is_some_and(|e| !answered(who, &e))
-        {
-            return Ok(false);
-        }
-    }
-    Ok(true)
+    let get = |end: &TypeName, keys: &[RecordKey]| {
+        let found = keys.iter().map(|k| pending.record(view, end, k));
+        found
+            .filter_map(Result::transpose)
+            .collect::<Result<Vec<_>>>()
+    };
+    Ok(sees.ends(decl, &[fields], get)?[0])
 }
 
-/// Whether `who`'s grant admits a record of `decl` holding `fields`: its
-/// pairs, and for a link type each end whose type it holds `only` on,
-/// that end retired or not (051); a grant that cannot be applied admits
-/// none (lakelands#771).
+/// Whether the grant of the sight's principal admits a record of `decl`
+/// holding `fields`, a link with its ends, none of them held from it
+/// (051, 006); a grant that cannot be applied admits none
+/// (lakelands#771).
 fn owns(
     view: &dyn ProjectionView,
     pending: &Pending,
-    ontology: &Ontology,
-    who: &Principal,
+    sees: &Sight,
     decl: &TypeDecl,
     fields: &BTreeMap<FieldName, Value>,
 ) -> Result<bool> {
-    if !rights::admits(who, decl, fields) {
-        return Ok(false);
-    }
-    for (f, end) in rights::held_ends(who, decl) {
-        let Some(k) = fields.get(f).and_then(Value::as_str) else {
-            return Ok(false);
-        };
-        let e = pending.record(view, end, &RecordKey::from(k))?;
-        let held = ontology.ty(end).ok();
-        if !e.is_some_and(|e| held.is_some_and(|d| rights::admits(who, d, &e.fields))) {
-            return Ok(false);
-        }
-    }
-    Ok(true)
+    Ok(sees.admit(&decl.name).holds(fields) && ends(view, pending, sees, decl, fields)?)
 }
 
 /// Whether the proposal `p` reached a record restricted when it was logged
@@ -1009,13 +987,6 @@ fn reached(
         }
     }
     Ok(out)
-}
-
-/// Whether `who` is answered the record `r`: a restricted record is not
-/// there to a principal without the `restricted` grant, at a write door
-/// as at a read (006).
-fn answered(who: &Principal, r: &StoredRecord) -> bool {
-    who.grants.restricted || !r.restricted
 }
 
 /// Whether a migration changes nothing: its `to` is the type in force and
@@ -1302,9 +1273,8 @@ impl Decide<'_> {
         let before = pending.record(view, &decl.name, key)?;
         let mine = match &before {
             Some(b) => {
-                answered(who, b)
-                    && ends_answered(view, pending, who, decl, &b.fields)?
-                    && owns(view, pending, &self.w.ontology, who, decl, &b.fields)?
+                let sees = Sight::held(who, &self.w.ontology);
+                sees.answers(&decl.name, b) && ends(view, pending, &sees, decl, &b.fields)?
             }
             None => false,
         };
@@ -1433,7 +1403,8 @@ impl Decide<'_> {
                     patch.insert(end.into(), Value::String(k.to_string()));
                 }
                 let plan = self.record(&lt, &links::link_key(key, to), &patch, expected, None)?;
-                cardinality(self.view, self.who, ty, &r, key, to)?;
+                let sees = Sight::held(self.who, &self.w.ontology);
+                cardinality(self.view, &sees, ty, &r, key, to)?;
                 self.planned(plan)
             }
             (Op::Unlink((_, key, _, to)), Some((lt, _))) => {
@@ -1489,6 +1460,7 @@ impl Decide<'_> {
         expected: Option<Version>,
     ) -> Result<RecordPlan> {
         let (w, view, who) = (self.w, self.view, self.who);
+        let sees = Sight::held(who, &w.ontology);
         // A holder of `only` is judged against the record it owns at the
         // key: another's is, to its write, a key that is free, refused
         // only once every check has passed, so no probe tells them apart
@@ -1499,7 +1471,7 @@ impl Decide<'_> {
         let other = live.is_none()
             && t.before
                 .as_ref()
-                .is_some_and(|b| !b.retired || !answered(who, b));
+                .is_some_and(|b| !b.retired || sees.withheld(b));
         if live.is_none() {
             fill_key_fields(w, decl, key, &mut patch, self.door, who)?;
         }
@@ -1549,12 +1521,11 @@ impl Decide<'_> {
         }
         if after.ty.as_str() == SETTING_TYPE {
             let declared = |t: &TypeName| w.ontology.ty(t).ok();
-            let sees = Sight::held(who, &w.ontology);
             let shown = |t: &TypeName| sees.describe_type(t);
             let value = after.fields.get("value");
             lakelands_api::seam::check_setting(after.key.as_str(), value, &declared, &shown)?;
         }
-        granted(!other && owns(view, &self.pending, &w.ontology, who, decl, &after.fields)?)?;
+        granted(!other && owns(view, &self.pending, &sees, decl, &after.fields)?)?;
         Ok(RecordPlan {
             draft,
             after,
@@ -2261,7 +2232,8 @@ impl Call<'_> {
             let plan = d.plan(op, opts.expected_version).map_err(told)?;
             if let Some(after) = &plan.after {
                 let (o, decl) = (&w.ontology, w.ontology.ty(&after.ty)?);
-                let reach = owns(view.as_ref(), &d.pending, o, self.who, decl, &after.fields)?;
+                let sees = Sight::held(self.who, o);
+                let reach = owns(view.as_ref(), &d.pending, &sees, decl, &after.fields)?;
                 granted(reach)?;
             }
             Ok(plan.drafts)
@@ -3032,10 +3004,8 @@ impl Call<'_> {
         let view = self.lake.engine.view(None)?;
         let sight = Sight::held(self.who, &w.ontology);
         let sees = |ty: &TypeName| sight.ty(ty).ok();
-        let answered = |ty: &TypeName, key: &RecordKey| {
-            let stored = view.get(ty, key).ok().flatten();
-            self.who.grants.restricted || !stored.is_some_and(|r| r.restricted)
-        };
+        let answered =
+            |ty: &TypeName, key: &RecordKey| crate::reads::answered(view.as_ref(), &sight, ty, key);
         let (was, mut m) = (w.ontology.ty(&m.to.name)?, m.clone());
         w.ontology.complete(&mut m.to);
         let described = || sight.describe(&self.who.lake);
@@ -3652,11 +3622,9 @@ pub(crate) fn conditions(
         f.is_some_and(|(t, f)| rights::field_access(who, t, f).reads())
     };
     let readable = ["on", "from", "to"].into_iter().all(reads);
-    let pairs = rights::own_only(who, &rule);
     live(view, &rule, |r| {
         if of_it(r) {
-            let answered = who.grants.restricted || !r.restricted;
-            match readable && answered && rights::admitted(&pairs, &r.fields) {
+            match readable && sees.answers(&rule, r) {
                 true => shown.push(format!("the aging rule `{}`", r.key)),
                 false => unshown = true,
             }
@@ -4225,11 +4193,11 @@ fn no_link_relation(ty: &TypeName, relation: &RelationName) -> Error {
 /// to `to` among them: `many_to_one` and `one_to_one` allow one live link
 /// per `from`, `one_to_many` and `one_to_one` one per `to`. Answered from
 /// the links the engine walks at the head, not by reading every link. The
-/// other end of the link that holds is named only where `who` is shown
-/// that record (051).
+/// other end of the link that holds is named only where the principal of
+/// `sees` is answered that record (006, 051).
 pub fn cardinality(
     view: &dyn ProjectionView,
-    who: &Principal,
+    sees: &Sight,
     ty: &TypeName,
     r: &RelationDecl,
     from: &RecordKey,
@@ -4240,11 +4208,7 @@ pub fn cardinality(
     let (relation, cardinality) = (r.name.clone(), r.cardinality);
     let broken = |case: Case| constraint(Some(links::TO.into()), case);
     let shown = |ty: &TypeName, key: RecordKey| -> Result<Option<RecordKey>> {
-        let r = view.get(ty, &key)?;
-        let only = rights::own_only(who, ty);
-        let shown = r.is_some_and(|r| {
-            (who.grants.restricted || !r.restricted) && rights::admitted(&only, &r.fields)
-        });
+        let shown = view.get(ty, &key)?.is_some_and(|r| sees.answers(ty, &r));
         Ok(shown.then_some(key))
     };
     if per_from

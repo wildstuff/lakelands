@@ -18,13 +18,14 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::Declared;
 use lakelands_api::ontology::{RelationDecl, TypeDecl, VerbDecl, VerbEffect};
 use lakelands_api::principal::Renamed;
+use lakelands_api::record::StoredRecord;
 use lakelands_api::write::Declaration;
-use lakelands_api::{Error, FieldName, Missing, Position, Principal, TypeName};
+use lakelands_api::{Error, FieldName, Missing, Position, Principal, RecordKey, TypeName, Value};
 
 use crate::{describe, rights};
 
@@ -131,6 +132,76 @@ impl<'o> Sight<'o> {
         });
         let missing = Missing::Type { name: name.clone() };
         t.ok_or(Error::NotFound { missing })
+    }
+
+    /// What its principal's grants admit of the records of `ty` (051).
+    pub fn admit(&self, ty: &TypeName) -> rights::Admit {
+        rights::admit(&self.who, ty, &|n| self.force.ty(n))
+    }
+
+    /// Whether `r` is held from its principal: a restricted record, to
+    /// one without the grant, is not there at any door (006).
+    pub fn withheld(&self, r: &StoredRecord) -> bool {
+        r.restricted && !self.who.grants.restricted
+    }
+
+    /// Whether its principal is answered the record `r` of `ty`, live or
+    /// retired: not one held from it, and only one its grant admits
+    /// (051). A link's ends are judged beside it ([`Self::ends`]).
+    pub fn answers(&self, ty: &TypeName, r: &StoredRecord) -> bool {
+        !self.withheld(r) && self.admit(ty).holds(&r.fields)
+    }
+
+    /// Whether a link of `decl` is judged by its ends for its principal:
+    /// one that holds `only` on an end's type (051), or is without
+    /// `restricted` (006).
+    pub fn judges_ends(&self, decl: &TypeDecl) -> bool {
+        !rights::held_ends(&self.who, decl).is_empty()
+            || (!self.who.grants.restricted && crate::links::is_link_type(&decl.name))
+    }
+
+    /// Of links of `decl` holding `rows`, which are there with their ends:
+    /// every end whose type its principal holds `only` on admitted, that
+    /// end retired or not (051), and no end it is not answered (006). A
+    /// read, a write of the link and a reference to it ask this alone.
+    /// `get` reads the records of an end's type by key, once for the
+    /// batch. The records of any other type all pass.
+    pub fn ends<E>(
+        &self,
+        decl: &TypeDecl,
+        rows: &[&BTreeMap<FieldName, Value>],
+        mut get: impl FnMut(&TypeName, &[RecordKey]) -> Result<Vec<StoredRecord>, E>,
+    ) -> Result<Vec<bool>, E> {
+        let mut out = vec![true; rows.len()];
+        if !self.judges_ends(decl) {
+            return Ok(out);
+        }
+        let held = rights::held_ends(&self.who, decl);
+        let named = [crate::links::FROM, crate::links::TO];
+        let ends = (decl.fields.iter()).filter(|f| named.contains(&f.name.as_str()));
+        for (field, end) in ends.filter_map(|f| Some((&f.name, f.ty.target.as_ref()?))) {
+            let key = |r: &&BTreeMap<FieldName, Value>| r.get(field)?.as_str().map(RecordKey::from);
+            let keys: Vec<RecordKey> = rows.iter().filter_map(key).collect();
+            // `None` where its principal holds no `only` on the end's type.
+            let only = held
+                .iter()
+                .any(|(f, _)| *f == field)
+                .then(|| self.admit(end));
+            let found = get(end, &keys)?;
+            let admitted = (found.iter())
+                .filter(|e| only.as_ref().is_none_or(|a| a.holds(&e.fields)))
+                .filter(|e| !self.withheld(e));
+            let admitted: BTreeSet<&RecordKey> = admitted.map(|e| &e.key).collect();
+            let present: BTreeSet<&RecordKey> = found.iter().map(|e| &e.key).collect();
+            for (ok, r) in out.iter_mut().zip(rows) {
+                // An end no record holds is judged by `only` alone.
+                *ok &= match key(r) {
+                    Some(k) => admitted.contains(&k) || (only.is_none() && !present.contains(&k)),
+                    None => only.is_none(),
+                };
+            }
+        }
+        Ok(out)
     }
 
     /// Whether its principal is shown relation `r` of `owner`: a relation
