@@ -1432,7 +1432,7 @@ impl<'a> Reader<'a> {
         literals: &BTreeMap<String, Literal>,
     ) -> Result<Source> {
         let (source, where_, measures) =
-            self.view_probe(source, filter, group_by, measures, literals)?;
+            self.view_probe(source, filter, group_by, measures, literals, true)?;
         // A `where` that read a parameter is evaluated here, never handed to
         // an engine: a bound date is text, and its arithmetic is the
         // evaluator's.
@@ -1493,7 +1493,7 @@ impl<'a> Reader<'a> {
         let merged = merged.map(|m| (&m.source, m.r#where.as_ref(), &m.group_by, &m.measures));
         for (source, filter, group_by, measures) in std::iter::once(own).chain(merged) {
             let (source, ..) =
-                self.view_probe(source, filter, group_by, measures, &BTreeMap::new())?;
+                self.view_probe(source, filter, group_by, measures, &BTreeMap::new(), false)?;
             if let Some(inner) = &source.view {
                 self.probe_view(inner)?;
             }
@@ -1503,7 +1503,8 @@ impl<'a> Reader<'a> {
 
     /// What a view reads of one source, the parameters bound: the source,
     /// its `where` and its measures, after the principal is found to read
-    /// every field they and the grouping read (024).
+    /// every field they and the grouping read (024), and, where the source
+    /// is `read` for the computation, those its valid time filters by.
     fn view_probe(
         &self,
         source: &TypeName,
@@ -1511,6 +1512,7 @@ impl<'a> Reader<'a> {
         group_by: &[FieldName],
         m: &[lakelands_api::ontology::Measure],
         literals: &BTreeMap<String, Literal>,
+        read: bool,
     ) -> Result<Probed> {
         let source = self.shape.ontology.ty(source)?.clone();
         let bound = |e: Expr| expr::bind_params(&e, literals);
@@ -1530,7 +1532,15 @@ impl<'a> Reader<'a> {
         // What it reads of the source is what `describe` shows it by; one
         // that cannot be read there is read by no one.
         let probed = lakelands_core::describe::source_reads(filter, group_by, m);
-        let probed = probed.ok_or_else(|| crate::writes::refused(Refusal::NotGranted))?;
+        let mut probed = probed.ok_or_else(|| crate::writes::refused(Refusal::NotGranted))?;
+        // The computation at a valid time filters the source by its
+        // valid-time fields besides, which `describe` does not judge by: it
+        // probes those its reader may know of (024, lakelands#881). Kept
+        // records are filtered by none.
+        if read && self.valid_at.is_some() {
+            let timed = source.valid_from.iter().chain(&source.valid_to);
+            probed.extend(timed.filter(|n| self.knows(&source, n)).cloned());
+        }
         // The probe is the view's own, so its refusal names nothing of the
         // source to a reader `describe` withholds the definition from (024).
         let unnamed = |e| match self.who.grants.schema {

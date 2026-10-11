@@ -26,6 +26,20 @@ other. The set is read from the declarations the reader is shown,
 before a record is read: a refusal that waited for a record of the
 type would say that one was reached.
 
+A view read at `valid_at` is computed from its sources' records as they
+are valid then, so the computation probes each source's valid-time
+fields too, those its reader may know of, a merged source's as the
+first, and as deep as the view goes: a view over a view is computed
+from the inner one, whose computation probes its own source
+(lakelands#881). The probe stands where the computation reads a source,
+beside the view's other probes, so every door that computes the view
+makes it: `find`, `get`, a pattern's start, and a walk where it
+computes the view it arrives at. What reads no source at a valid time
+probes none: the kept records of a view, and `describe`, which shows a
+view alike with a valid time and without (lakelands#798). The probe is
+the view's own: it names the field to a holder of `schema` and nothing
+of the source to another reader.
+
 A search probes the searchable fields of its type it searches, in every
 mode, and the vector field it names. One that names no fields searches
 the searchable fields its principal reads (lakelands#662): a field it

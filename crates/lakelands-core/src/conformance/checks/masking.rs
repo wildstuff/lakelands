@@ -554,9 +554,216 @@ check!(
 );
 
 check!(
+    VALID_AT_VIEW = a_view_read_at_a_valid_time_probes_its_sources_valid_time,
+    "024 and 006, extended (lakelands#881): a view read at `valid_at` is computed from its source's records as they are valid then, so its computation probes the source's valid-time fields, as deep as the view goes: to a reader masked on the field, the source's `valid_from` or its `valid_to`, `find`, `get`, a pattern started on the view and a walk that arrives at it are refused not_granted, of the view, of one with a `where` and of a view that reads it, in a month the source's record is valid in as in one it is not, naming the field to a holder of `schema` and nothing of the source to another (024); without `valid_at` both are answered as a reader of every field is; one who holds the field at `none` is answered at every time what a reader of every field is answered where the record is valid, the source reading to it as one with no valid time (lakelands#726); one not shown the source is shown none of the views, at any time, each answered word for word as a type no one declared and the walk as one over a relation no one declared; `describe_type` shows a kept view to each reader alike with a valid time and without (lakelands#798); a reader of every field is answered by the dates, a count of one where the record is valid"
+);
+
+check!(
     VALID_AT_PROBES = a_read_at_a_valid_time_probes_the_types_valid_time_fields,
     "024 and 006: a read at `valid_at` filters on the type's `valid_from` and `valid_to`, so `find`, `get` and a pattern started on the type probe them as a filter would: refused not_granted naming the field where it is masked; where it is hidden the type is described with no valid time, and the reads are answered as on a type with none (lakelands#726); without `valid_at` the same reads are answered; what is shown does not turn on a read's valid time (lakelands#798): a reviewer with the field masked or hidden is listed a proposed upsert and a proposed call on the type at `valid_at` as without it, whole, and accepts the upsert"
 );
+
+async fn a_view_read_at_a_valid_time_probes_its_sources_valid_time(store: Store) -> Held {
+    use lakelands_api::query::Walk;
+    const VIEWS: [&str; 3] = ["per_customer", "per_all", "per_some"];
+    // What a door answered, whole.
+    fn told<T: std::fmt::Debug>(r: lakelands_api::Result<lakelands_api::Reply<T>>) -> String {
+        match r {
+            Ok(r) => format!("answered {:?}", r.data),
+            Err(lakelands_api::Error::Refused {
+                field,
+                reason: Refusal::NotGranted,
+            }) => format!("not granted {}", field.as_ref().map_or("-", |f| f.as_str())),
+            Err(e) => e.to_string(),
+        }
+    }
+    let l = Lake::of(store.as_ref());
+    let cat = l.cat.as_ref();
+    l.declare(type_decl("customer", vec![field("n", StorageKind::Text)]))
+        .await?;
+    l.declare_json(
+        json!({"declare": "type", "name": "quote", "valid_from": "start", "valid_to": "end", "fields": [
+        {"name": "start", "type": {"kind": "date_time"}},
+        {"name": "end", "type": {"kind": "date_time"}},
+        {"name": "to", "type": {"kind": "reference", "target": "customer"}}]}),
+    )
+    .await?;
+    // `per_customer` counts a customer's quotes, `per_all` reads that view,
+    // `per_some` counts under a `where`, and an account's `tally` arrives
+    // at the first.
+    let view = |name: &str, source: &str, expr: &str| {
+        json!({"declare": "type", "name": name, "key": ["to"], "fields": [
+            {"name": "to", "type": {"kind": "reference", "target": "customer"}},
+            {"name": "n", "type": {"kind": "number"}}],
+            "view": {"source": source, "group_by": ["to"], "measures": [{"name": "n", "expr": expr}]}})
+    };
+    l.declare_json(view("per_customer", "quote", "count()"))
+        .await?;
+    l.declare_json(view("per_all", "per_customer", "sum(n)"))
+        .await?;
+    let mut some = view("per_some", "quote", "count()");
+    some["view"]["where"] = json!("to = 'c1'");
+    l.declare_json(some).await?;
+    l.declare_json(json!({"declare": "type", "name": "acct", "fields": [
+        {"name": "who", "type": {"kind": "reference", "target": "customer"}}],
+        "relations": [{"name": "tally", "target": "per_customer",
+                       "derived": {"match": [{"from": "who", "to": "to"}]}}]}))
+        .await?;
+    l.upsert("customer", "c1", json!({"n": "c"})).await?;
+    l.upsert(
+        "quote",
+        "q1",
+        json!({"start": "2026-06-15T00:00:00Z", "to": "c1"}),
+    )
+    .await?;
+    l.upsert("acct", "a1", json!({"who": "c1"})).await?;
+    l.set("view_kept.per_customer", json!(true)).await?;
+    let at = |day: &str| ReadAt {
+        valid_at: Some(Timestamp::parse(&format!("2026-{day}T00:00:00Z")).expect("an instant")),
+        ..ReadAt::default()
+    };
+    let times = [at("03-01"), at("07-01"), ReadAt::default()];
+    let masked = |id| field_access(store.as_ref(), id, "quote", &[("start", Access::Masked)]);
+    let mut author = masked("author");
+    author.grants.schema = true;
+    let end = [("end", Access::Masked)];
+    let mut late = field_access(store.as_ref(), "late", "quote", &end);
+    late.grants.schema = true;
+    let mut blind = reads_all(store.as_ref(), "blind");
+    let none = serde_json::from_value(json!({"default": "none"})).expect("a grant reads");
+    blind.grants.types.insert("quote".into(), none);
+    let readers = [
+        reads_all(store.as_ref(), "plain"),
+        masked("masked"),
+        author,
+        field_access(
+            store.as_ref(),
+            "at none",
+            "quote",
+            &[("start", Access::None)],
+        ),
+        blind,
+        late,
+    ];
+    // Each reader at each time, at every door that computes a view.
+    let mut said: Vec<Vec<Vec<(String, String)>>> = Vec::new();
+    for who in &readers {
+        let mut by_time = Vec::new();
+        for at in times {
+            let mut doors = Vec::new();
+            for v in VIEWS {
+                let ty = TypeName::from(v);
+                let find = Find {
+                    at,
+                    ..Find::default()
+                };
+                doors.push((format!("find {v}"), told(cat.find(who, &ty, find).await)));
+                let mut get = get_at("c1", None);
+                get.at = at;
+                doors.push((format!("get {v}"), told(cat.get(who, &ty, get).await)));
+                let mut start = pattern(v, None, Vec::new(), Projection::Graph);
+                start.at = at;
+                doors.push((
+                    format!("a pattern on {v}"),
+                    told(cat.query(who, start).await),
+                ));
+            }
+            let arrive = vec![step("tally", Walk::Out)];
+            let mut walk = pattern("acct", Some("a1"), arrive, Projection::Graph);
+            walk.at = at;
+            doors.push((
+                "a walk to the view".into(),
+                told(cat.query(who, walk).await),
+            ));
+            by_time.push(doors);
+        }
+        said.push(by_time);
+    }
+    let (march, july, timeless) = (0, 1, 2);
+    let answers = |who: usize, when: usize| -> Vec<String> {
+        said[who][when].iter().map(|(_, a)| a.clone()).collect()
+    };
+    let all = |refused: &str| vec![refused.to_owned(); said[0][0].len()];
+    // A reader of every field is answered by the dates: a group in July and
+    // with no valid time, none in March.
+    let mut held = vec![(
+        0,
+        timeless,
+        answers(0, july),
+        "with no valid time as in July",
+    )];
+    let mut wrong = Vec::new();
+    for ((name, early), late) in said[0][march].iter().zip(answers(0, july)) {
+        if *early == late || !late.starts_with("answered") || !late.contains("Number(1)") {
+            wrong.push(format!("`plain`, {name}: {early} in March, {late} in July"));
+        }
+    }
+    // Masked on a valid-time field of the source, its start or its end:
+    // refused in both months, the field named to the holder of `schema`
+    // alone; answered with no valid time.
+    let masked = [
+        (1, "not granted -"),
+        (2, "not granted start"),
+        (5, "not granted end"),
+    ];
+    for (who, refused) in masked {
+        held.push((who, march, all(refused), "in March"));
+        held.push((who, july, all(refused), "in July"));
+        held.push((who, timeless, answers(0, timeless), "with no valid time"));
+    }
+    // Held from the field, the source has no valid time, at every door.
+    // Not shown the source, there is no such view, and nothing says more.
+    for when in [march, july, timeless] {
+        held.push((3, when, answers(0, july), "the field at `none`"));
+        held.push((4, when, answers(4, march), "as in March"));
+    }
+    for (who, when, want, why) in held {
+        for ((name, answer), want) in said[who][when].iter().zip(want) {
+            if *answer != want {
+                wrong.push(format!("`{}`, {name}, {why}: {answer}", readers[who].id));
+            }
+        }
+    }
+    // To the one not shown the source each view is a type no one declared,
+    // and the relation that arrives at one a relation no one declared.
+    let ghost = TypeName::from("ghost");
+    let over = vec![step("ghost", Walk::Out)];
+    let walk = pattern("acct", Some("a1"), over, Projection::Graph);
+    let absent = [
+        told(cat.find(&readers[4], &ghost, Find::default()).await),
+        told(cat.get(&readers[4], &ghost, get_at("c1", None)).await),
+        told(
+            cat.query(
+                &readers[4],
+                pattern("ghost", None, Vec::new(), Projection::Graph),
+            )
+            .await,
+        ),
+        told(cat.query(&readers[4], walk).await),
+    ];
+    for (n, (name, answer)) in said[4][march].iter().enumerate() {
+        let (v, absent) = match VIEWS.get(n / 3) {
+            Some(v) => (*v, &absent[n % 3]),
+            None => ("tally", &absent[3]),
+        };
+        if answer.replace(v, "ghost") != *absent {
+            wrong.push(format!("`blind`, {name}: {answer}, not {absent}"));
+        }
+    }
+    // What a reader is shown of a kept view does not turn on a valid time.
+    for who in &readers {
+        let ty = TypeName::from("per_customer");
+        let timed = told(cat.describe_type(who, &ty, times[march]).await);
+        if timed != told(cat.describe_type(who, &ty, ReadAt::default()).await) {
+            wrong.push(format!("`{}`, describe_type in March: {timed}", who.id));
+        }
+    }
+    ensure!(
+        wrong.is_empty(),
+        "a view read at a valid time probes its source's valid-time fields: {wrong:#?}"
+    );
+    Ok(())
+}
 
 async fn a_read_at_a_valid_time_probes_the_types_valid_time_fields(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
@@ -799,6 +1006,18 @@ async fn a_walk_at_a_valid_time_probes_every_type_it_can_meet(store: Store) -> H
             if answer != *if ty == "bill" { &open[0] } else { &refused } {
                 wrong.push(format!(
                     "a range to a note, `{ty}.{timed}` masked: {answer}"
+                ));
+            }
+            // A later step is probed as the first is: from a bill out to its
+            // customer and in again, where a quote is met.
+            let steps = vec![step("of", Walk::Out), step("of", Walk::In)];
+            let mut later = pattern("bill", Some("b1"), steps, Projection::Graph);
+            later.at = july;
+            let open = cat.query(&plain, later.clone()).await.is_ok();
+            let answer = said(cat.query(&who, later).await);
+            if ty == "quote" && (answer != refused || !open) {
+                wrong.push(format!(
+                    "a chain's second step, `{ty}.{timed}` masked: {answer}; open: {open}"
                 ));
             }
             // One hop that names the other owner, as its `type` or by its
