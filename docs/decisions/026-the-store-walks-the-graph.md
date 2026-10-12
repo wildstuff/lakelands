@@ -34,9 +34,13 @@ the matches of a derived relation as that position holds the values
 caller may see, a restricted link only for a caller with the grant. A
 degree reads the links of a page of records at a time and the start's
 records a page at a time, so measuring a whole type holds a page and the
-best rows asked for, not the type. Components hold every record they
-reach, up to the lake's `max_graph_nodes`, and are refused `too_large`
-past it, never cut.
+best rows asked for, not the type. Components grow from a page of start
+records at a time, the links of a page of the records reached read
+together whichever start reached them, and two starts of a page that
+reach each other are one component; so the partition costs a question of
+the engine per page, relation and hop, not per start. Components hold every
+record they reach, up to the lake's `max_graph_nodes`, and are refused
+`too_large` past it, never cut.
 
 **A measure's page.** A read keeps nothing between calls, and a page in
 the middle of a measure cannot be made from less than the measure: a
@@ -109,3 +113,8 @@ answers identical.
   was cut, about four questions of the engine a start, 19 s for a first
   page of 50 over 10 000 starts on PostgreSQL. Rows read whole for an
   order over a far record or an aggregate gained the bound of a measure.
+- Components grow from a page of starts at a time (lakelands#1004): each
+  start grew alone, a question of the engine per start, relation and
+  hop, each in its own read; 48 000 questions, 45 s on PostgreSQL and
+  3 s on SQLite for 4 000 records read in four pages, against 0.18 s on
+  memory. The partition is the same.
