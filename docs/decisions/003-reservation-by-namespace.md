@@ -20,7 +20,7 @@ relation carried by link records, its link type
 registers them through the `SystemVocabulary` seam, and decides which
 lakes may hold them.
 
-### A verb names a link type and no other system type
+### A verb names a link type, and an external verb a host's own type
 
 A declaration that names a type through `on` or `of` names a system type
 under the same reservation. A trigger may watch any declared type, and
@@ -36,6 +36,20 @@ on `sys.setting` and `sys.aging_rule`, held to the record checks of
 under the prefix is. A verb's write would pass those checks too, so
 nothing it writes could break a setting or a rule. The rule keeps each
 reserved type to one door.
+
+One kind of verb is not a door, and is admitted on a host's own system
+type: a verb whose effect is `external`, which sets nothing. It hands an
+effect outside the lake to the host's executor with its declared risk,
+its proposal, its idempotency and its recorded output (013), which the
+host would lose by acting outside the store. It is admitted only on a
+type the host's vocabulary declares: a `sys.` type that is neither under
+`sys.link.`, which keeps the rule above, nor one of the four the store
+keeps for its own readers. No caller declares a system type and the
+writer's open refuses those, so the declarations in force tell such a
+type, whoever opened the lake. It is called under the grants of any
+external verb: write access to its type (006). A `write` effect on such
+a type stays `reserved`: the host writes its own system type through
+`upsert`, under the grant it gives.
 
 ## Why
 
@@ -71,3 +85,7 @@ carrying another product's vocabulary.
 - Corrected at the rewrite (lakelands#817): what Lakelands reserves
   names the link types the store derives, which 035 added and this
   record's list left out.
+- An external verb, which sets nothing, is admitted on a type of the
+  host's vocabulary; before, every verb on a system type other than a
+  link type was refused as `reserved`, and a host's open sequence that
+  applied its external verbs failed (lakelands#966).
