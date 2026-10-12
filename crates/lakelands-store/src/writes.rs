@@ -820,10 +820,11 @@ fn live_for(
 ) -> Result<Option<StoredRecord>> {
     // A record a holder of `only` is not admitted, or one restricted, is
     // to it not there; under an `only` that cannot be applied, none is
-    // (lakelands#771).
-    let held = ontology.ty(target).ok();
-    let found = pending.record(view, target, to)?;
+    // (lakelands#771); nor is a record of a type it is not shown
+    // (lakelands#1003).
     let sees = Sight::held(who, ontology);
+    let held = sees.ty(target).ok();
+    let found = pending.record(view, target, to)?;
     let mut exists =
         (found.as_ref()).is_some_and(|r| !r.retired && held.is_some() && sees.answers(target, r));
     // A link record is there only with its ends, as a read of it

@@ -9,13 +9,13 @@ use serde_json::{Value, json};
 use super::only::holder;
 use crate::conformance::backing::{EMBED_MODEL, KIND};
 use crate::conformance::fixture::{
-    Lake, Must, alike_renamed, patch, refused_like, restrict, source_record, try_upsert,
+    self, Lake, Must, alike_renamed, patch, refused_like, restrict, source_record, try_upsert,
 };
 use crate::conformance::{Failure, Held, Store};
 
 check!(
     COMPUTED_REFERENCE = a_reference_a_record_computes_is_judged_as_one_its_writer_sends,
-    "032 (lakelands#795): a reference field computed at the write, by an expression or an `expr` function, names a live record its writer is answered, as a written one does: for a record that is absent, retired, held or not admitted by the writer's `only`, a writer of everything, one without `restricted` and a holder of `only` are each answered what the same key written into a reference field answers, applied or refused as `not_live`, by an upsert; a verb's call, an ingest and a link to an absent key are refused as their written twins are; a writer who may not read the reference, masked or not shown it, is refused as not granted, a held key as one never there, and the key the record holds, guessed, as any other; a reference its write neither moves nor sends a field of is not judged again, and one whose field is sent again with the value it had, read directly or through another computed field, is judged as a key sent again, as is one of a record retired and written again, which has held nothing; a written reference is computed from nothing, whatever it lists; a proposal is judged at its accept by the function as declared then, while a function declared again computes every record's reference again unjudged, and a write that sends none of its fields is applied; to a reviewer without `restricted` a proposed write or call whose computed reference, from an initial value too or from a field sent again, reaches a held record is not there, its accept answered as an id no proposal holds; a reference computed at the read, by a function's backing or from a field a backing computes or, through another computed field, one an embedding computes, is refused by `declare`, `apply` and `propose`, and a function declared again with a backing is refused while a reference calls it or reads a field that does, or a field computed at the read calls it, whatever else its type's fields say"
+    "032 (lakelands#795): a reference field computed at the write, by an expression or an `expr` function, names a live record its writer is answered, as a written one does: for a record that is absent, retired, held or not admitted by the writer's `only`, a writer of everything, one without `restricted` and a holder of `only` are each answered what the same key written into a reference field answers, applied or refused as `not_live`, by an upsert; a verb's call, an ingest and a link to an absent key are refused as their written twins are; a writer who may not read the reference, masked or not shown it, is refused as not granted, a held key as one never there, and the key the record holds, guessed, as any other; to a writer kept from the target type no record of it is there (lakelands#1003), so a key it computes, live or gone, is refused `not_granted` naming nothing, alike to the byte at an upsert and an ingest, and a verb whose path reads into that type is refused so for a live far record and a gone one; a reference its write neither moves nor sends a field of is not judged again, and one whose field is sent again with the value it had, read directly or through another computed field, is judged as a key sent again, as is one of a record retired and written again, which has held nothing; a written reference is computed from nothing, whatever it lists; a proposal is judged at its accept by the function as declared then, while a function declared again computes every record's reference again unjudged, and a write that sends none of its fields is applied; to a reviewer without `restricted` a proposed write or call whose computed reference, from an initial value too or from a field sent again, reaches a held record is not there, its accept answered as an id no proposal holds; a reference computed at the read, by a function's backing or from a field a backing computes or, through another computed field, one an embedding computes, is refused by `declare`, `apply` and `propose`, and a function declared again with a backing is refused while a reference calls it or reads a field that does, or a field computed at the read calls it, whatever else its type's fields say"
 );
 
 /// A record of `p` in each state a reference may find it in, and whether
@@ -232,6 +232,47 @@ async fn a_reference_a_record_computes_is_judged_as_one_its_writer_sends(store: 
             }
         }
     }
+    // To one kept from `p` no record of it is there (lakelands#1003): a key
+    // its fields compute names none, live or gone, at an upsert and an
+    // ingest alike, and a verb whose path reads into `p` is refused before
+    // any record is read.
+    let k = holder(
+        s,
+        "k",
+        json!({"default": "write", "types": {"p": {"default": "none"}}}),
+    );
+    l.declare_json(
+        json!({"declare": "verb", "name": "peek", "on": "dw", "risk": "low",
+        "effect": "write", "requires": "r.team = 'a'", "set": [{"field": "s", "value": "'x'"}]}),
+    )
+    .await?;
+    l.upsert("p", "p3", json!({"team": "a"})).await?;
+    for (key, to) in [("k-live", "live"), ("k-gone", "p3")] {
+        l.upsert("dw", key, json!({ "r": to })).await?;
+    }
+    retire("p", "p3").await?;
+    let mut answers = Vec::new();
+    for (key, to) in [("k-live", "live"), ("k-gone", "gone")] {
+        let upsert = try_upsert(c, &k, "dr", key, json!({ "s": to })).await;
+        let sent = vec![source_record("sr", key, json!({ "s": to }))];
+        let ingest = fixture::ingest(c, &k, "feed", sent).await;
+        let (peek, on) = ("peek".into(), key.into());
+        let peek = c
+            .call(&k, &peek, Some(&on), Default::default(), opts())
+            .await;
+        ensure!(
+            [&upsert, &peek]
+                .iter()
+                .all(|a| a.as_ref().is_err_and(|e| !named(e))),
+            "one kept from `p`, computing or reading across to `{to}`, is refused \
+             `not_granted`, naming nothing: {upsert:?}; {peek:?}"
+        );
+        answers.push(serde_json::to_value((upsert, ingest, peek)).unwrap_or_default());
+    }
+    ensure!(
+        answers[0] == answers[1],
+        "one kept from `p` is answered alike for a live key and a gone one: {answers:?}"
+    );
     // A reference its write neither moves nor sends a field of is not
     // judged again; one whose field is sent again is, as a key sent again,
     // and so is one of a record retired and written again.
