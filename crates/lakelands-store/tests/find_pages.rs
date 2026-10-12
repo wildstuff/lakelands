@@ -1,5 +1,7 @@
 //! A `find` page reads a page, not the type (lakelands#134), and a
-//! pattern's page of rows reads a page of starts (lakelands#940).
+//! pattern's page of rows reads a page of starts (lakelands#940), and a
+//! walk over a derived relation asks one scan a page of them
+//! (lakelands#971).
 //!
 //! The store asks the engine for the page it answers: its order, the row
 //! after which it starts, and `limit + 1` rows. A filter the engine cannot
@@ -39,6 +41,7 @@ struct Handed {
     most: AtomicUsize,
     gets: AtomicUsize,
     edges: AtomicUsize,
+    scans: AtomicUsize,
 }
 
 struct Counting {
@@ -68,6 +71,7 @@ impl ProjectionView for CountingView<'_> {
     }
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         let rows = self.inner.scan(ty, scan)?;
+        self.handed.scans.fetch_add(1, Ordering::SeqCst);
         self.handed.rows.fetch_add(rows.len(), Ordering::SeqCst);
         self.handed.most.fetch_max(rows.len(), Ordering::SeqCst);
         Ok(rows)
@@ -438,4 +442,77 @@ async fn a_patterns_page_of_rows_reads_a_page_of_starts() {
         "a step `where` that keeps one customer in a hundred walks the starts a page at a time: \
          {scanned} rows scanned, {gets} reads by key, {edges} edge questions over {pages} pages"
     );
+}
+
+/// A walk over a derived relation asks the engine one scan for a page of
+/// near records, not one a record: rows in from 100 terms to their 2 000
+/// invoices, and out from a page of 256 invoices to their terms
+/// (lakelands#971).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_derived_walk_asks_one_scan_a_page_of_starts() {
+    use lakelands_api::query::{Pattern, QueryResult};
+    let (store, cat, who, handed) = notes("derived-walk").await;
+    drop(store);
+    for d in [
+        json!({"declare": "type", "name": "terms", "key": ["no"], "fields": [{"name": "no", "type": {"kind": "text"}}]}),
+        json!({"declare": "type", "name": "inv", "fields": [{"name": "terms_no", "type": {"kind": "text"}}],
+            "relations": [{"name": "of_terms", "target": "terms", "inverse": "invoices", "derived": {"match": [{"from": "terms_no", "to": "no"}]}}]}),
+    ] {
+        cat.declare(&who, serde_json::from_value(d).unwrap())
+            .await
+            .unwrap();
+    }
+    let put = |ty: &'static str, key: String, fields: serde_json::Value| {
+        let (cat, who) = (cat.clone(), who.clone());
+        async move {
+            let patch = serde_json::from_value(fields).unwrap();
+            cat.upsert(
+                &who,
+                &ty.into(),
+                &key.as_str().into(),
+                patch,
+                Default::default(),
+            )
+            .await
+            .unwrap();
+        }
+    };
+    for t in 0..100 {
+        put(
+            "terms",
+            format!("t{t:03}"),
+            json!({"no": format!("t{t:03}")}),
+        )
+        .await;
+    }
+    for i in 0..2000 {
+        put(
+            "inv",
+            format!("i{i:05}"),
+            json!({"terms_no": format!("t{:03}", i % 100)}),
+        )
+        .await;
+    }
+    let rows = |start: &str, relation: &str, limit: u32| -> Pattern {
+        serde_json::from_value(
+            json!({"start": {"type": start}, "steps": [{"relation": relation, "walk": "out"}],
+            "project": {"as": "rows"}, "limit": limit}),
+        )
+        .unwrap()
+    };
+    for (what, p, want) in [
+        ("in from every terms", rows("terms", "invoices", 1000), 1000),
+        ("out from every invoice", rows("inv", "of_terms", 50), 50),
+    ] {
+        handed.scans.store(0, Ordering::SeqCst);
+        let QueryResult::Rows { rows, .. } = cat.query(&who, p).await.unwrap().data else {
+            panic!("rows");
+        };
+        let scans = handed.scans.load(Ordering::SeqCst);
+        assert!(
+            rows.len() == want && scans <= 4,
+            "{what}: {} rows asked {scans} scans of the engine; a page of starts asks one scan of them and one for their matches",
+            rows.len()
+        );
+    }
 }

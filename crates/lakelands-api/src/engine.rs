@@ -362,6 +362,11 @@ pub struct Scan {
     /// pair: identity of the stored value, not the expression's `=`. A
     /// derived relation's walk asks for its matches this way.
     pub equal: Vec<(FieldName, Value)>,
+    /// Only records that hold one of these tuples, each exactly as
+    /// `equal` holds its pairs; none, no such bound. A derived relation's
+    /// walk asks for the matches of a page of records in one scan this
+    /// way (lakelands#971).
+    pub equal_any: Vec<Vec<(FieldName, Value)>>,
 }
 
 /// The rankings one pull of a search asks an engine for.

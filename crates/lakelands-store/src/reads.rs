@@ -368,6 +368,10 @@ fn decode(c: &Cursor) -> Result<CursorState> {
 /// The records a count that needs the store reads at a time.
 const COUNT_PAGE: usize = 1024;
 
+/// The most records a hop over a derived relation holds at once: a page of
+/// starts asks its matches a page of this many at a time (`derived_edges`).
+const MATCHED: u32 = 65_536;
+
 /// Whether an expression needs something only the store knows or does:
 /// the clock, the settings, per-field provenance, or a pattern match,
 /// which is never handed to an engine (`docs/seams.md`, `scan`).
@@ -532,23 +536,38 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// The records of `ty` whose fields hold every value of `equal`, as
-    /// [`Self::get_many`] reads them.
-    fn matching(&self, ty: &TypeName, equal: Vec<(FieldName, Value)>) -> Result<Vec<StoredRecord>> {
+    /// The records of `ty` whose fields hold every value of one of the
+    /// tuples `any`, as [`Self::get_many`] reads them, and the key the
+    /// next page reads after where more follow: of a type that is not a
+    /// view, a page of at most [`MATCHED`] in key order after `after`; a
+    /// view's all at once.
+    fn matching(
+        &self,
+        ty: &TypeName,
+        any: &[Vec<(FieldName, Value)>],
+        after: Option<RecordKey>,
+    ) -> Result<(Vec<StoredRecord>, Option<RecordKey>)> {
         let Some(all) = self.computed(ty)? else {
             let scan = Scan {
-                equal,
-                limit: u32::MAX,
+                equal_any: any.to_vec(),
+                limit: MATCHED,
+                after: after.map(|key| After {
+                    values: Vec::new(),
+                    key,
+                }),
                 restricted: true,
                 ..Scan::default()
             };
-            return Ok(self.at_read(ty, self.view.scan(ty, &scan)?));
+            let page = self.view.scan(ty, &scan)?;
+            let next =
+                (page.last().map(|r| r.key.clone())).filter(|_| page.len() == MATCHED as usize);
+            return Ok((self.at_read(ty, page), next));
         };
-        Ok(all
-            .iter()
-            .filter(|r| equal.iter().all(|(f, v)| r.fields.get(f) == Some(v)))
-            .cloned()
-            .collect())
+        let holds = |r: &StoredRecord, t: &[(FieldName, Value)]| {
+            t.iter().all(|(f, v)| r.fields.get(f) == Some(v))
+        };
+        let matched = all.iter().filter(|r| any.iter().any(|t| holds(r, t)));
+        Ok((matched.cloned().collect(), None))
     }
 
     /// A view's records at this read, computed once; `None` for a type
@@ -3910,7 +3929,8 @@ fn ordered_proposals(proposals: Vec<Proposal>, order_by: &[Order]) -> Result<Vec
 /// type, one list per key, resolved from the view by identity of the
 /// matched values: out to the target's records that hold the owner's
 /// values, in from the owners that hold the target's. The records are
-/// read a page at a time; each one's matches are a scan of its own. Nothing is stored; the edges are as the view's position has
+/// read a page at a time, and a page's matches are one scan a relation
+/// side, paged by [`MATCHED`] records. Nothing is stored; the edges are as the view's position has
 /// the values (`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`).
 fn derived_edges(
     r: &Reader<'_>,
@@ -3961,34 +3981,63 @@ fn derived_edges(
         .map(|(other, x, out)| (other, x, out, filter(x)))
         .filter(|w| !matches!(w.3, Some(None)))
         .collect();
-    for (key, list) in keys.iter().zip(all.iter_mut()) {
-        let Some(near) = nears.get(key) else {
-            continue;
+    // The values a near record holds for one side of a match, and the
+    // pairs a scan of the other side must hold: none when a value is
+    // missing, for null never matches.
+    let equal = |near: &StoredRecord, pairs: &[MatchPair], out: bool| {
+        let pair = |p: &MatchPair| {
+            let (here, there) = if out {
+                (&p.from, &p.to)
+            } else {
+                (&p.to, &p.from)
+            };
+            let v = near.fields.get(here).filter(|v| !v.is_null())?;
+            Some((there.clone(), v.clone()))
         };
-        // The values `near` holds for one side of a match, and the pairs a
-        // scan of the other side must hold: none when a value is missing, for
-        // null never matches.
-        let equal = |pairs: &[MatchPair], out: bool| -> Option<Vec<(FieldName, Value)>> {
-            pairs
-                .iter()
-                .map(|p| {
-                    let (here, there) = if out {
-                        (&p.from, &p.to)
-                    } else {
-                        (&p.to, &p.from)
-                    };
-                    near.fields
-                        .get(here)
-                        .filter(|v| !v.is_null())
-                        .map(|v| (there.clone(), v.clone()))
-                })
-                .collect()
-        };
-        for (other, x, out, filter) in &walked {
-            let (other, x, out) = (*other, *x, *out);
-            let pairs = &x.derived.as_ref().expect("derived").pairs;
-            if let Some(equal) = equal(pairs, out) {
-                for m in r.matching(other, equal)? {
+        pairs
+            .iter()
+            .map(pair)
+            .collect::<Option<Vec<(FieldName, Value)>>>()
+    };
+    // One scan a relation side for the whole batch, with every tuple its
+    // near records hold (lakelands#971); each near record is handed the
+    // matches that hold its own.
+    for (other, x, out, filter) in &walked {
+        let (other, x, out) = (*other, *x, *out);
+        let pairs = &x.derived.as_ref().expect("derived").pairs;
+        let tuples: Vec<Option<Vec<(FieldName, Value)>>> = keys
+            .iter()
+            .map(|k| nears.get(k).and_then(|n| equal(n, pairs, out)))
+            .collect();
+        // A tuple by its canonical bytes: two are the same exactly where
+        // their values are identical.
+        let id = |t: &Vec<(FieldName, Value)>| canonical::of(t);
+        let asked: BTreeMap<Vec<u8>, &Vec<(FieldName, Value)>> =
+            tuples.iter().flatten().map(|t| (id(t), t)).collect();
+        let asked: Vec<Vec<(FieldName, Value)>> = asked.into_values().cloned().collect();
+        // The matches a page at a time, in key order, at most `MATCHED`
+        // records held: a tuple's matches may span pages, and each start's
+        // edges still come in key order.
+        let mut after = None;
+        loop {
+            let found;
+            (found, after) = r.matching(other, &asked, after.take())?;
+            let mut by: BTreeMap<Vec<u8>, Vec<&StoredRecord>> = BTreeMap::new();
+            for m in &found {
+                let held = pairs.iter().map(|p| {
+                    let there = if out { &p.to } else { &p.from };
+                    (
+                        there.clone(),
+                        m.fields.get(there).cloned().unwrap_or(Value::Null),
+                    )
+                });
+                by.entry(id(&held.collect())).or_default().push(m);
+            }
+            for ((key, list), tuple) in keys.iter().zip(all.iter_mut()).zip(&tuples) {
+                let (Some(near), Some(tuple)) = (nears.get(key), tuple) else {
+                    continue;
+                };
+                for m in by.get(&id(tuple)).into_iter().flatten() {
                     let ends = match out {
                         true => [&near.fields, &m.fields],
                         false => [&m.fields, &near.fields],
@@ -4003,7 +4052,7 @@ fn derived_edges(
                     {
                         continue;
                     }
-                    let (this, that) = ((ty.clone(), key.clone()), (other.clone(), m.key));
+                    let (this, that) = ((ty.clone(), key.clone()), (other.clone(), m.key.clone()));
                     let (from, to) = if out { (this, that) } else { (that, this) };
                     list.push(Edge {
                         from,
@@ -4012,6 +4061,9 @@ fn derived_edges(
                         fields: BTreeMap::new(),
                     });
                 }
+            }
+            if after.is_none() {
+                break;
             }
         }
     }
