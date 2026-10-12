@@ -28,5 +28,5 @@ pub mod rekey;
 pub mod writes;
 
 pub use backing::ExprBacking;
-pub use doors::{import, open};
+pub use doors::{import, open, written_in};
 pub use lakelands_core::export;

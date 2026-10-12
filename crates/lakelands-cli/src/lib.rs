@@ -255,6 +255,16 @@ fn command() -> Command {
         .subcommand(Command::new("rebuild").about("Delete the lake's projection and rebuild it from the log"))
         .subcommand(Command::new("compact").about("Give back the storage the lake's projection no longer uses"))
         .subcommand(
+            Command::new("upgrade")
+                .about("Open the lake for writing once, which upgrades one written in an older log format; the events stay as they were written")
+                .arg(
+                    Arg::new("check")
+                        .long("check")
+                        .action(ArgAction::SetTrue)
+                        .help("Say what an upgrade would do, and open nothing"),
+                ),
+        )
+        .subcommand(
             Command::new("export")
                 .about("Write the lake's log as its segment files and a manifest; it only reads, beside a running serve")
                 .arg(
@@ -383,6 +393,12 @@ async fn dispatch(
 
     let root = root::Root::open(&root_dir)?;
     let location = root.location(text(sub, "lake").as_deref())?;
+    // `upgrade` reads the log's ends first, to say what it does; with
+    // `--check` it opens nothing (`docs/log-format.md` §6).
+    if name == "upgrade" {
+        let check = sub.get_flag("check");
+        return commands::upgrade(out, location, root.seams(), check, open).await;
+    }
     // `feed` and `export` only read: they take no lease and append
     // nothing, so they run beside a `serve` that holds the writer, and an
     // export's head is the lake's as it stood

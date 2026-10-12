@@ -18,13 +18,19 @@ use crate::record::{Origin, Patch, Value};
 use crate::time::Timestamp;
 use crate::write::{Declaration, Migration, ProposedWrite};
 
-/// The one log format version this release reads and writes. Every event
-/// of a lake carries it as `v`, from position 0, and `lake_created.format`
-/// says the same number. A lake written in another format is refused by
-/// name, with both numbers, and nothing of it is read
+/// The log format version this release writes. Every event carries the
+/// version it was written in as `v`, and `lake_created.format` says the
+/// one the lake was made in. A lake written in a format from
+/// [`OLDEST_LOG_FORMAT`] up to this one is read, each older event through
+/// its format's converter, and a writer's open upgrades it; one in another
+/// format is refused by name, with both numbers, and nothing of it is read
 /// (`docs/log-format.md` §6,
 /// `docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 pub const LOG_FORMAT_VERSION: u32 = 15;
+
+/// The oldest log format this release reads: 14, the format of the first
+/// release with real installations (054).
+pub const OLDEST_LOG_FORMAT: u32 = 14;
 
 /// A SHA-256 digest, as 64 lower-case hexadecimal digits.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -116,6 +122,16 @@ pub enum EventBody {
     LakeCreated {
         /// The log format version the lake was created with.
         format: u32,
+    },
+    /// A writer's open upgraded a lake written in an older format: from
+    /// this event on the lake is written in `to`. The events before it
+    /// stay as they were written, and are read through their format's
+    /// converter.
+    LakeUpgraded {
+        /// The format the lake was written in before.
+        from: u32,
+        /// The format it is written in from here on.
+        to: u32,
     },
     /// A writer took the lake's lease.
     LeaseTaken {
@@ -358,6 +374,7 @@ macro_rules! kinds {
 
 kinds! {
     LakeCreated => "lake_created",
+    LakeUpgraded => "lake_upgraded",
     LeaseTaken => "lease_taken",
     Declared => "declared",
     Migrated => "migrated",

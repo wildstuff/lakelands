@@ -140,6 +140,7 @@ pub(crate) fn ends_a_range(body: &EventBody) -> bool {
         | EventBody::RecordRetired { ty, .. } => setting(ty),
         EventBody::OutputRecorded { field, .. } => field.as_ref().is_some_and(|f| setting(&f.0)),
         EventBody::LakeCreated { .. }
+        | EventBody::LakeUpgraded { .. }
         | EventBody::LeaseTaken { .. }
         | EventBody::RecordRestricted { .. }
         | EventBody::RecordUnrestricted { .. }
@@ -333,9 +334,14 @@ impl Lake {
     /// first, so the whole log is folded: that open is the rebuild.
     pub fn open(location: &Location, seams: Seams, mode: OpenMode) -> Result<Lake> {
         let opener = opener(location, &seams)?;
-        // A lake of another release's format is not opened: its engine
-        // judges, makes and changes nothing of it, in any mode (054).
-        log::one_format(&location.lake, opener.log_ends(location)?.as_ref())?;
+        // A lake of a format this release does not read is not opened: its
+        // engine judges, makes and changes nothing of it, in any mode (054).
+        // One of an older format it reads is upgraded by a writer's open,
+        // and is not read as it is.
+        let written = log::one_format(&location.lake, opener.log_ends(location)?.as_ref())?;
+        if mode == OpenMode::Read {
+            log::read_as_is(&location.lake, written)?;
+        }
         let engine: Arc<dyn LakeEngine> = Arc::from(opener.open(location, mode)?);
         // A writer is judged before it takes the lease: an engine may cut
         // its log back to what is committed as it hands the lease out,
@@ -375,6 +381,20 @@ impl Lake {
                     holder: lease.holder.clone(),
                 },
             ));
+            // A lake written in an older format is written in this one from
+            // here on, the step marked right after the new writer's lease.
+            // The events before it stay as they were written; the step from
+            // 14 changes no fold, so the projection stays
+            // (`docs/log-format.md` §6).
+            // Judged by the tip read under the lease: another writer may
+            // have upgraded the lake since its ends were read.
+            let tip = w.tip.as_ref().map(|t| t.0);
+            let tip = tip.map(|p| lake.read_events(p, 1)).transpose()?;
+            let newest = tip.and_then(|t| t.first().map(|e| e.v));
+            if let Some(newest) = newest.filter(|v| *v < LOG_FORMAT_VERSION) {
+                let (from, to) = (newest, LOG_FORMAT_VERSION);
+                drafts.push(Draft::system(now, EventBody::LakeUpgraded { from, to }));
+            }
             // The system types this lake may hold and does not hold yet are
             // declared on every open for writing, so a host type added after
             // the lake was created reaches it too.
@@ -747,6 +767,17 @@ impl Lake {
     pub fn read_events(&self, from: Position, limit: u32) -> Result<Vec<Event>> {
         let mut out = Vec::new();
         let mut at = from;
+        // The format of the event before the first one read: a fall is
+        // judged at the first event too.
+        let mut before = match from.0.checked_sub(1) {
+            Some(p) => self
+                .engine
+                .read(Position(p), 1)?
+                .first()
+                .and_then(log::written_format)
+                .filter(|v| lakelands_core::log::reads_format(*v)),
+            None => None,
+        };
         loop {
             let want = (limit as usize - out.len()).min(PAGE as usize) as u32;
             if want == 0 {
@@ -757,7 +788,18 @@ impl Lake {
                 break;
             }
             for stored in &batch {
-                out.push(log::open(stored)?);
+                let e = log::open(stored)?;
+                // A lake's format never falls: refused where it is read,
+                // as an event of another format is (054).
+                if let Some(b) = before.filter(|b| u64::from(e.v) < *b) {
+                    let flaw = Flaw::FormatStep {
+                        v: e.v.into(),
+                        before: b,
+                    };
+                    return Err(damaged(Part::Log, Some(e.position), flaw));
+                }
+                before = Some(e.v.into());
+                out.push(e);
             }
             at = Position(batch.last().expect("not empty").position.0 + 1);
             if out.len() >= limit as usize {
@@ -1407,6 +1449,7 @@ impl Lake {
         })?;
         match &e.body {
             EventBody::LakeCreated { .. }
+            | EventBody::LakeUpgraded { .. }
             | EventBody::LeaseTaken { .. }
             | EventBody::Checkpoint { .. }
             | EventBody::VerbCalled { .. }
@@ -1854,6 +1897,8 @@ impl Lake {
             self.read_events(Position(from.0 - 1), 1)?.pop()
         };
         let mut before = prev.as_ref().map(|e| (e.position, e.hash.clone()));
+        let mut formats = lakelands_core::log::FormatSteps::after(prev.as_ref());
+        let mut fence = prev.as_ref().map(|e| e.fence);
         let mut known = prev.map(|e| e.known_at);
         let segments = self.engine.segments()?;
         // Where a segment after the first begins: behind each sealed one.
@@ -1882,6 +1927,20 @@ impl Lake {
                     return Err(damaged(Part::Log, Some(e.position), flaw));
                 }
                 known = Some(e.known_at);
+                // A lake's format changes only where a new writer upgrades
+                // it, and never falls (054).
+                if let Some(flaw) = formats.next(&e) {
+                    return Err(damaged(Part::Log, Some(e.position), flaw));
+                }
+                // Fences never fall (`docs/log-format.md` §4).
+                if let Some(floor) = fence.filter(|f| e.fence < *f) {
+                    let flaw = Flaw::FenceBelow {
+                        fence: e.fence,
+                        floor,
+                    };
+                    return Err(damaged(Part::Log, Some(e.position), flaw));
+                }
+                fence = Some(e.fence);
                 if let EventBody::Checkpoint {
                     through,
                     hash,
@@ -1899,6 +1958,11 @@ impl Lake {
         }
         let last =
             last.ok_or_else(|| crate::writes::refused(Refusal::OutOfRange { head: self.head() }))?;
+        // A writer's `lease_taken` that raised the format at the head, with
+        // no `lake_upgraded` after it.
+        if let Some(flaw) = formats.unmarked().filter(|_| last.position == self.head()) {
+            return Err(damaged(Part::Log, Some(last.position), flaw));
+        }
         Ok(lakelands_api::Verification {
             from,
             through: last.position,
@@ -2415,6 +2479,7 @@ fn reads_a_record(body: &EventBody) -> bool {
         EventBody::OutputRecorded { field, .. } => field.is_some(),
         // Nothing of the projection is changed for these but their mark.
         EventBody::LakeCreated { .. }
+        | EventBody::LakeUpgraded { .. }
         | EventBody::LeaseTaken { .. }
         | EventBody::Checkpoint { .. }
         | EventBody::VerbCalled { .. }

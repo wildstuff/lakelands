@@ -492,8 +492,10 @@ pub trait EngineOpener: Send + Sync {
     /// asks this before every [`open`] and before an import, and opens
     /// only a lake written in the format it reads
     /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
-    /// A tip that moves between the two calls is harmless: its writer
-    /// passed the same judgement, so it wrote the same format.
+    /// A tip that moves between the two calls was written by a writer
+    /// that passed the same judgement, in a format the store reads; what
+    /// a writer appends for its own open, an upgrade's marker among it,
+    /// is decided from the tip it reads under its lease.
     ///
     /// [`open`]: EngineOpener::open
     fn log_ends(&self, location: &Location) -> Result<Option<(CanonicalEvent, CanonicalEvent)>>;

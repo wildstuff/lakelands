@@ -854,6 +854,100 @@ fn rebuild_prints_the_position_it_rebuilt_through() {
     }
 }
 
+/// `upgrade` reads the log's ends: a lake in the format this release
+/// writes needs none, with `--check` or without. A lake of an older
+/// format is upgraded by the open it makes, which
+/// `crates/lakelands-store/tests/lake.rs` holds.
+#[test]
+fn upgrade_says_a_lake_of_this_release_s_format_needs_none() {
+    let v = lakelands_api::event::LOG_FORMAT_VERSION;
+    let sh = Shell::on("upgrade", Backend::Store);
+    sh.lake();
+    sh.run(&["apply", &sh.fixture()]);
+    let said = format!("finance is written in log format {v}: nothing to upgrade\n");
+    ok(&sh.run(&["upgrade", "--check"]), &said);
+    ok(&sh.run(&["upgrade"]), &said);
+}
+
+/// `upgrade` on a lake the release before wrote whole, in format 14:
+/// `--check` says what an open for writing does and opens none; the
+/// upgrade says the step it took; run again it has none to take.
+#[test]
+fn upgrade_takes_a_lake_of_the_format_before_one_step_once() {
+    use lakelands_api::engine::EngineOpener;
+    use lakelands_api::event::{EventBody, LOG_FORMAT_VERSION as NEW, OLDEST_LOG_FORMAT as OLD};
+    use lakelands_api::{Position, Timestamp};
+    let sh = Shell::on("upgrade-14", Backend::Store);
+    sh.lake();
+    // The lake's location, as the root keeps it, its directory under it.
+    let file = sh.root.join("lakes").join("finance.json");
+    let mut at: lakelands_api::Location =
+        serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
+    if let lakelands_api::location::EngineConfig::Sqlite { dir, .. } = &mut at.engine
+        && dir.is_relative()
+    {
+        *dir = sh.root.join(&*dir);
+    }
+    // The release before's writer: `lake_created` and its lease, in 14.
+    let engine = lakelands_engine_sqlite::SqliteOpener
+        .open(&at, OpenMode::Create)
+        .unwrap();
+    let lease = engine.take_lease("the release before").unwrap();
+    let older = |e: lakelands_api::engine::CanonicalEvent, format: bool| {
+        let mut v: serde_json::Value = serde_json::from_slice(&e.bytes).unwrap();
+        v["v"] = serde_json::json!(OLD);
+        if format {
+            v["body"]["format"] = serde_json::json!(OLD);
+        }
+        v.as_object_mut().unwrap().remove("hash");
+        let hash = lakelands_api::canonical::sha256_hex(&v);
+        v["hash"] = serde_json::json!(hash);
+        lakelands_api::engine::CanonicalEvent {
+            hash: lakelands_api::event::Digest(hash),
+            bytes: lakelands_api::canonical::to_vec(&v),
+            ..e
+        }
+    };
+    let id = &"finance".into();
+    let made =
+        lakelands_store::log::Draft::system(Timestamp(1), EventBody::LakeCreated { format: OLD });
+    let (_, made) = lakelands_store::log::seal(
+        id,
+        Position(0),
+        &lakelands_api::event::Digest::zero(),
+        0,
+        made,
+    );
+    let made = older(made, true);
+    let (fence, holder) = (lease.fence, "the release before".to_owned());
+    let taken =
+        lakelands_store::log::Draft::system(Timestamp(2), EventBody::LeaseTaken { fence, holder });
+    let (_, taken) = lakelands_store::log::seal(id, Position(1), &made.hash, fence, taken);
+    engine.append(&lease, &[made, older(taken, false)]).unwrap();
+    engine.release_lease(&lease).unwrap();
+    drop(engine);
+    ok(
+        &sh.run(&["upgrade", "--check"]),
+        &format!(
+            "finance is written in log format {OLD}: an open for writing appends `lake_upgraded` \
+             from {OLD} to {NEW} and keeps the projection; nothing was opened for writing\n"
+        ),
+    );
+    let run = sh.run(&["upgrade"]);
+    let said = format!("upgraded finance from log format {OLD} to {NEW} through position ");
+    assert!(
+        run.code == 0 && run.out.starts_with(&said),
+        "{} {}{}",
+        run.code,
+        run.out,
+        run.err
+    );
+    ok(
+        &sh.run(&["upgrade"]),
+        &format!("finance is written in log format {NEW}: nothing to upgrade\n"),
+    );
+}
+
 #[test]
 fn compact_prints_what_the_engine_measured_or_that_it_keeps_nothing() {
     for backend in [Backend::Store, Backend::StoreInMemory] {

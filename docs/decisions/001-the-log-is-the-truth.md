@@ -25,7 +25,9 @@ It also keeps the projection cheap to change. A new index, a new engine
 or a corrected fold is a rebuild, not a data migration; the only format
 a lake is bound to is the log's, and that format is specified and
 versioned. What a release owes a lake written in an older format is in
-`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`.
+`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`: it is
+upgraded and read, and its log is never rewritten, since a log that
+replaced its events would be a second truth.
 
 ## What it is not
 
@@ -46,3 +48,5 @@ versioned. What a release owes a lake written in an older format is in
 - The reason names the log's format as the only one a lake is bound to,
   and what a release owes a lake written in an older format went to
   054 (lakelands#801).
+- An upgrade to a newer log format reads the events as they were
+  written and never rewrites them (lakelands#962).

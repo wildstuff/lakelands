@@ -192,6 +192,12 @@
       "about": "A fill of the same call (the same `seam` and `input`) for `due` `d2`, which names that output by `output_at` and carries none (§2.5).",
       "line": "{\"body\":{\"field\":[\"due\",\"d2\",\"day\"],\"input\":\"bbbfae40a0d202fc24345d252fdc472570c51bda8c8aded3c9ce5ffd4512e14c\",\"kind\":\"output_recorded\",\"output_at\":38,\"seam\":\"function:http:label\"},\"cause\":37,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"ce26a63646547a682f7eb0d997d0978eb679c8d5248820078606b9ba4a66bc8e\",\"id\":\"00000000000000000000000000000027\",\"known_at\":\"2026-10-05T09:00:10.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":39,\"prev\":\"0b4e66549c94859d539ade8cc7f6c7053a87483de00f067522bfb3da49375b65\",\"procedure\":{\"name\":\"http\",\"version\":\"1\"},\"v\":15,\"writer\":\"system:lakelands\"}",
       "hash": "ce26a63646547a682f7eb0d997d0978eb679c8d5248820078606b9ba4a66bc8e"
+    },
+    {
+      "shows": "lake_upgraded",
+      "about": "A `lake_upgraded` from format 14 to 15 (§6), as a writer's open appends it right after its `lease_taken` where the lake's newest event was in 14. It stands here to show its members alone: in a whole lake it follows events of the format before, which this lake of one format does not hold.",
+      "line": "{\"body\":{\"from\":14,\"kind\":\"lake_upgraded\",\"to\":15},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"4ae98f4af94e91cd46c4b2554c6aeb7c0d062a58c5f0ddfc650bbf03efe07953\",\"id\":\"00000000000000000000000000000028\",\"known_at\":\"2026-10-05T09:00:11.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":40,\"prev\":\"ce26a63646547a682f7eb0d997d0978eb679c8d5248820078606b9ba4a66bc8e\",\"v\":15,\"writer\":\"system:lakelands\"}",
+      "hash": "4ae98f4af94e91cd46c4b2554c6aeb7c0d062a58c5f0ddfc650bbf03efe07953"
     }
   ],
   "misplaced": [

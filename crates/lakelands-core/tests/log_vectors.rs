@@ -190,7 +190,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 304, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 311, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -392,7 +392,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 32] = [
+const SHOWN: [&str; 33] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -425,10 +425,11 @@ const SHOWN: [&str; 32] = [
     "date_value",
     "output_carried",
     "output_named",
+    "lake_upgraded",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 39;
+const LAST: u64 = 40;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
@@ -577,6 +578,10 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
                 ..
             }
         ),
+        "lake_upgraded" => matches!(
+            &event.body,
+            B::LakeUpgraded { from: 14, to } if *to == event.v
+        ),
         other => panic!("`further.json` shows `{other}`, which this test has no check for"),
     }
 }
@@ -700,9 +705,9 @@ fn the_negative_vector_whose_known_at_goes_back_is_refused_at_its_position() {
 /// The negative vector `negative/another-format`: the first segment of
 /// the vectors with the last event written in the format before this
 /// release's, its hash made right. `export::verify` refuses it at that
-/// position by both numbers
+/// position by both numbers: a lake's format never falls
 /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`),
-/// as `verify.py` does.
+/// and `verify.py`, which reads the one format, refuses it there too.
 #[test]
 fn the_negative_vector_in_another_format_is_refused_at_its_position() {
     let dir = vectors().join("negative/another-format");
@@ -727,8 +732,8 @@ fn the_negative_vector_in_another_format_is_refused_at_its_position() {
         Err(lakelands_api::Error::Unavailable { situation }) => assert!(
             matches!(
                 &*situation,
-                Situation::Damaged { position: Some(at), flaw: Flaw::FormatOther { v, reads: r }, .. }
-                    if at.0 == 6 && *v == reads - 1 && *r == reads
+                Situation::Damaged { position: Some(at), flaw: Flaw::FormatStep { v, before }, .. }
+                    if at.0 == 6 && *v == reads - 1 && *before == reads
             ),
             "{situation}"
         ),
@@ -768,4 +773,110 @@ fn the_vectors_of_every_format_a_release_reads_are_kept_and_verify() {
             String::from_utf8_lossy(&run.stderr)
         );
     }
+}
+
+/// Every line of a kept format's vectors, its log and `further.json`'s,
+/// as JSON.
+fn lines_of(n: u32) -> Vec<Value> {
+    let dir = every_format().join(n.to_string());
+    let mut lines = Vec::new();
+    for seg in ["00000000000000000000.jsonl", "00000000000000000007.jsonl"] {
+        let text = fs::read_to_string(dir.join("log").join(seg)).unwrap();
+        lines.extend(
+            text.lines()
+                .map(|l| serde_json::from_str::<Value>(l).unwrap()),
+        );
+    }
+    let further: Value =
+        serde_json::from_slice(&fs::read(dir.join("further.json")).unwrap()).unwrap();
+    for e in further["events"].as_array().unwrap() {
+        lines.push(serde_json::from_str(str_of(e, "line")).unwrap());
+    }
+    lines
+}
+
+/// The step from format 14 to 15 changes no event: format 15 lets a
+/// verb's path read across a reference or a relation's link (055), and a
+/// log of format 14 holds no such declaration. So every line of format
+/// 14's vectors, of every kind they hold, is read as it was written, `v`
+/// included, and decodes into this release's structs; the kinds it holds
+/// are named, so a kind the vectors miss is seen.
+#[test]
+fn the_step_from_format_14_changes_no_event_of_any_kind() {
+    let mut kinds = std::collections::BTreeSet::new();
+    for line in lines_of(14) {
+        let v = line["v"].as_u64().unwrap();
+        assert_eq!(v, 14);
+        let read = log::converted(v, line.clone());
+        assert_eq!(read, line, "the step from 14 changed {line}");
+        let event: Event = serde_json::from_value(read).unwrap();
+        assert_eq!(canonical::of(&event), canonical::to_vec(&line));
+        kinds.insert(event.body.kind());
+    }
+    let held: Vec<_> = kinds.iter().map(|k| k.to_string()).collect();
+    assert_eq!(held.len(), kinds.len());
+    let some = [
+        "lake_created",
+        "lease_taken",
+        "declared",
+        "migrated",
+        "record_ingested",
+        "record_upserted",
+        "checkpoint",
+        "write_proposed",
+    ];
+    for kind in some {
+        assert!(
+            held.iter().any(|k| k == kind),
+            "format 14's vectors hold no `{kind}`: {held:?}"
+        );
+    }
+}
+
+/// Format 14's vectors verify as an export does, through the converter:
+/// the chain, every hash over the bytes as written, and every rule of the
+/// format, by the same verifier an import runs.
+#[test]
+fn the_vectors_of_format_14_verify_as_an_export_of_that_format() {
+    let dir = every_format().join("14");
+    let verified = lakelands_core::export::verify(&dir).unwrap();
+    assert_eq!(
+        verified.through.0, 7,
+        "the two segments run through position 7"
+    );
+}
+
+/// Fences never fall: the vectors' first segment with the event at
+/// position 6 carried under fence 0, below position 1's lease of fence 1,
+/// its hash made right, is refused at 6 by `export::verify`.
+#[test]
+fn a_fence_that_falls_is_refused_where_it_falls() {
+    let dir = std::env::temp_dir().join(format!("lakelands-fence-falls-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("log")).unwrap();
+    let text = fs::read_to_string(vectors().join("log").join(format!("{:020}.jsonl", 0))).unwrap();
+    let mut lines: Vec<Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let six = &mut lines[6];
+    six["fence"] = serde_json::json!(0);
+    six.as_object_mut().unwrap().remove("hash");
+    let hash = sha(&canonical::to_vec(six));
+    six["hash"] = serde_json::json!(hash);
+    let mut file = Vec::new();
+    for l in &lines {
+        file.extend(canonical::to_vec(l));
+        file.push(b'\n');
+    }
+    fs::write(dir.join("log").join(format!("{:020}.jsonl", 0)), file).unwrap();
+    let verified = lakelands_core::export::verify(&dir);
+    let _ = fs::remove_dir_all(&dir);
+    assert!(
+        matches!(&verified, Err(lakelands_api::Error::Unavailable { situation })
+            if matches!(&**situation, Situation::Damaged {
+                position: Some(at), flaw: Flaw::FenceBelow { fence: 0, floor: 1 }, ..
+            } if at.0 == 6)),
+        "{verified:?}"
+    );
 }

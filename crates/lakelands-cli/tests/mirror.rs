@@ -616,15 +616,15 @@ async fn a_mirror_reads_on_past_a_bounded_poll() {
 async fn a_source_lake_of_another_format_is_refused_at_its_open() {
     use lakelands_api::canonical;
     use lakelands_api::error::Situation;
-    use lakelands_api::event::LOG_FORMAT_VERSION;
+    use lakelands_api::event::{LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT};
     for engine in engines() {
         let two = Two::new("format", &engine).await;
         two.upsert("partner", "acme", json!({"name": "acme"})).await;
         two.crm.close().await.unwrap();
         let (crm_at, seams) = (two.crm_at.clone(), two.seams.clone());
-        // The source's next event as the release before wrote it: its
-        // format one below, its hash made right.
-        let other = LOG_FORMAT_VERSION - 1;
+        // The source's next event as a later release would write it: its
+        // format one above, its hash made right.
+        let other = LOG_FORMAT_VERSION + 1;
         {
             let name = match engine {
                 Engine::Memory => "memory",
@@ -661,17 +661,98 @@ async fn a_source_lake_of_another_format_is_refused_at_its_open() {
             panic!("a source lake in format {other} opened to be mirrored");
         };
         assert!(
-            matches!(e.situation(), Some(Situation::LogFormat { lake, found, reads })
+            matches!(e.situation(), Some(Situation::LogFormat { lake, found, reads, .. })
                 if lake == "crm" && *found == u64::from(other)
                     && *reads == u64::from(LOG_FORMAT_VERSION)),
             "{}: {e:?}",
             engine.name()
         );
         let said = format!(
-            "lake `crm` is written in log format {other}, and this release reads and writes \
-             format {LOG_FORMAT_VERSION} alone; nothing was read from it and nothing appended"
+            "lake `crm` is written in log format {other}, and this release reads log formats \
+             {OLDEST_LOG_FORMAT} to {LOG_FORMAT_VERSION} and writes {LOG_FORMAT_VERSION}; \
+             nothing was read from it and nothing appended"
         );
         assert!(e.to_string().contains(&said), "{e}");
+    }
+}
+
+/// A source lake the release before wrote whole, in format 14, is not
+/// read as it is: the open a mirror makes of its source, read-only, is
+/// refused with the way, on every engine; its first writer's open
+/// upgrades it (`docs/log-format.md` §6).
+#[tokio::test]
+async fn a_source_lake_of_the_format_before_is_refused_until_it_is_upgraded() {
+    use lakelands_api::canonical;
+    use lakelands_api::error::Situation;
+    use lakelands_api::event::{LOG_FORMAT_VERSION as NEW, OLDEST_LOG_FORMAT as OLD};
+    for engine in engines() {
+        let two = Two::new("format14", &engine).await;
+        let at = location(&engine, &two.dir, "older");
+        let name = match engine {
+            Engine::Memory => "memory",
+            Engine::Sqlite => "sqlite",
+            Engine::Postgres(_) => "pg",
+        };
+        let opener = two.seams.engines.iter().find(|e| e.name() == name).unwrap();
+        let seam = opener.open(&at, OpenMode::Create).unwrap();
+        let lease = seam.take_lease("the release before").unwrap();
+        let older = |e: lakelands_api::engine::CanonicalEvent, format: bool| {
+            let mut v: Value = serde_json::from_slice(&e.bytes).unwrap();
+            v["v"] = json!(OLD);
+            if format {
+                v["body"]["format"] = json!(OLD);
+            }
+            v.as_object_mut().unwrap().remove("hash");
+            let hash = canonical::sha256_hex(&v);
+            v["hash"] = json!(hash);
+            lakelands_api::engine::CanonicalEvent {
+                hash: lakelands_api::event::Digest(hash),
+                bytes: canonical::to_vec(&v),
+                ..e
+            }
+        };
+        let made = lakelands_store::log::Draft::system(
+            lakelands_api::Timestamp(1),
+            EventBody::LakeCreated { format: OLD },
+        );
+        let zero = lakelands_api::event::Digest::zero();
+        let (_, made) =
+            lakelands_store::log::seal(&at.lake, lakelands_api::Position(0), &zero, 0, made);
+        let made = older(made, true);
+        let taken = lakelands_store::log::Draft::system(
+            lakelands_api::Timestamp(2),
+            EventBody::LeaseTaken {
+                fence: lease.fence,
+                holder: lease.holder.clone(),
+            },
+        );
+        let (_, taken) = lakelands_store::log::seal(
+            &at.lake,
+            lakelands_api::Position(1),
+            &made.hash,
+            lease.fence,
+            taken,
+        );
+        seam.append(&lease, &[made, older(taken, false)]).unwrap();
+        seam.release_lease(&lease).unwrap();
+        drop(seam);
+        let Err(e) = lakelands_store::open(at.clone(), two.seams.clone(), OpenMode::Read).await
+        else {
+            panic!(
+                "{}: a source lake in format {OLD} opened as it is",
+                engine.name()
+            );
+        };
+        assert!(
+            matches!(e.situation(), Some(Situation::LogUpgradeOwed { lake, found, reads })
+                if lake == "older" && *found == u64::from(OLD) && *reads == u64::from(NEW)),
+            "{}: {e:?}",
+            engine.name()
+        );
+        let writer = lakelands_store::open(at.clone(), two.seams.clone(), OpenMode::Write).await;
+        writer.unwrap().close().await.unwrap();
+        let reader = lakelands_store::open(at, two.seams.clone(), OpenMode::Read).await;
+        assert!(reader.is_ok(), "{}: {:?}", engine.name(), reader.err());
     }
 }
 
