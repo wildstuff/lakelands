@@ -9,13 +9,21 @@
 //! a pair of values the part it hides is written otherwise in the second
 //! lake, each record its own value, ordered one way in the first and the
 //! other way in the second. In a pair of existence the second lake holds
-//! the hidden records under the vault, a type no reader is shown, so that
-//! they are not there at all. The owner, who is shown everything, is the
+//! the hidden records and the links that reach them under the vault, each
+//! one record of a type no reader is shown, so that they are not there at
+//! all. The owner, who is shown everything, is the
 //! control: at a door that shows the hidden part its two answers must
 //! differ, or the twin hides nothing there. A red cell names its feature,
 //! reader, door and record, and the first place the two answers part. A
 //! cell red for an open issue is listed in [`KNOWN`] with that issue, and
 //! must stay red until its fix removes it.
+//!
+//! The features stand on one lake beside the plain claims, trips and
+//! links: a set of a set over each hidden field, a relation matched on
+//! values, and one under a condition over the hidden field, a relation
+//! whose target is a link type, and a view over a
+//! valid-timed type, read at a valid time. Each asks the doors that read
+//! it, of the records the hidden part reaches through it.
 
 use std::collections::BTreeSet;
 
@@ -31,11 +39,12 @@ use crate::conformance::fixture::{
 };
 use crate::conformance::{Failure, Given, Held, Store};
 use Door::*;
+use Feature::*;
 use Hidden::*;
 
 check!(
-    GRID_PLAIN = the_rights_grid_holds_on_the_plain_lake,
-    "006, 024 and 051 (lakelands#962): on twin lakes that differ only in a held record, another's record, another's link, a link to a trip another's `only` keeps, a field kept from a reader or a type kept from a reviewer, either in its values (each record its own, ordered one way in one lake and the other way in the other) or in whether it is there at all (the second lake holding it under a type no reader is shown), each reader not shown that part (without `restricted`, `only` on a type, on a link type and on an end's type, masked, at `none` and `write_only` on a field, `review` and `schema` kept from a type) is answered alike to the byte by `get`, `get` as of a position, `find` with rows and total, a count and a group, a `where` and an order on the hidden field and its sum, min and max, a lexical and a vector search, a pattern's rows, graph, path, degree and components, `describe` and `describe_type`; the owner's answers differ at each of the 240 cells whose door shows the hidden part, so no twin is blind; twins whose logs part outside what they hide, in an event's kind, type, key or value, are a broken fixture; an instant the store stamps from its clock is compared by its rank among its answer's own, a fixture field bearing such a name refused, so a leak through an instant's absolute value is out of the grid's reach",
+    GRID = the_rights_grid_holds_over_every_feature,
+    "006, 024 and 051 (lakelands#962): on twin lakes that differ only in a held record, another's record, another's link, a link to a trip another's `only` keeps, a field kept from a reader or a type kept from a reviewer, either in its values (each record its own, ordered one way in one lake and the other way in the other) or in whether it is there at all (the second lake holding it, and each link that reaches it, as one record of a type no reader is shown), each reader not shown that part (without `restricted`, `only` on a type, on a link type and on an end's type, masked, at `none` and `write_only` on a field, `review` and `schema` kept from a type) is answered alike to the byte by `get`, `get` as of a position, `find` with rows and total, a count and a group, a `where` and an order on the hidden field and its sum, min and max, a lexical and a vector search, a pattern's rows, graph, path, degree and components, `describe` and `describe_type`, and through each feature that reaches the part: a set of a set over the hidden field, read by `find` and a count; a relation matched on owners, and one under a condition over the hidden field, each walked and measured by degree and components; a relation whose target is the link type, its links read at every door; and a view over valid-timed trips, read at a valid time by `find`, a count, a group, a `where` and an order; the owner's answers differ at each of the 378 cells whose door shows the hidden part, so no twin is blind; twins whose logs part outside what they hide, in an event's kind, type, key or value, are a broken fixture, a set's memberships aside, which follow from the records; an instant the store stamps from its clock is compared by its rank among its answer's own, a fixture field bearing such a name refused, and the head an answer was read at, which those memberships move, is left out, so a leak through an instant's absolute value or through the head is out of the grid's reach",
     given
 );
 
@@ -45,25 +54,41 @@ check!(
 const KNOWN: &[(&str, u32)] = &[];
 
 /// The cells whose owner's answers differ between the twins.
-const CONTROLS: usize = 240;
+const CONTROLS: usize = 378;
 
 /// The link type of `claim.on_trip`.
 const LINK: &str = "sys.link.claim.on_trip";
 
+/// The link type of `memo.about`, whose target is [`LINK`].
+const MEMO_LINK: &str = "sys.link.memo.about";
+
+/// The view over the trips, and the valid time it is read at, after
+/// every trip's `since`.
+const VIEW: &str = "trip_names";
+const SINCE: &str = "2020-01-01T00:00:00Z";
+const VALID_AT: &str = "2021-01-01T00:00:00Z";
+
 /// The type the second lake of a pair of existence holds the hidden records
-/// under, and the link types that reach it or hide a link; every reader
-/// but the owner has each at `none`.
+/// and links under, each one record of it; every reader but the owner has
+/// it at `none`.
 const VAULT: &str = "vault";
-const VAULTED: [&str; 4] = [
-    VAULT,
-    "sys.link.vault.to_trip",
-    "sys.link.claim.on_vault",
-    "sys.link.claim.kept",
-];
 
 /// Every record's key, in the order its hidden values follow.
-const KEYS: [&str; 11] = [
-    "t1", "t2", "c1", "c2", "c3", "c9", "c1:t1", "c2:t1", "c3:t1", "c9:t1", "c1:t2",
+const KEYS: [&str; 14] = [
+    "t1",
+    "t2",
+    "c1",
+    "c2",
+    "c3",
+    "c9",
+    "c1:t1",
+    "c2:t1",
+    "c3:t1",
+    "c9:t1",
+    "c1:t2",
+    "m1:c1%3At1",
+    "m2:c2%3At1",
+    "m9:c9%3At1",
 ];
 
 /// The value twin `b` holds for `v` of the record `key` where it is hidden:
@@ -101,42 +126,115 @@ enum Hidden {
 
 const HIDDEN: [Hidden; 6] = [Hold, Bobs, BobsLink, OtherTrip, Secret, TripKept];
 
-/// A record a door is asked of: its type, its key and the text field the
-/// twins hold otherwise.
-type Target = (&'static str, &'static str, &'static str);
+/// What a target's record is of: the plain lake, or a feature atop it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Feature {
+    /// The claims, trips and links alone.
+    Plain,
+    /// A set whose `where` names a set over the hidden field.
+    SetOfSet,
+    /// A relation matched on values: the claims of one owner.
+    DerivedRelation,
+    /// A relation matched on values under a condition over the hidden
+    /// field: the claims of one owner whose `secret` sorts after.
+    ConditionalEdge,
+    /// A relation whose target is a link type: a memo on a claim's link.
+    LinkOfLink,
+    /// A view over the valid-timed trips, read at a valid time.
+    ViewValid,
+}
+
+impl Feature {
+    /// Whether `door` reads the feature, about a number where `num`.
+    fn asks(self, door: Door, num: bool) -> bool {
+        match self {
+            Plain => !num || matches!(door, Group | Where | Order | Fold | Matches),
+            SetOfSet => matches!(door, Rows | Count),
+            DerivedRelation | ConditionalEdge => matches!(door, Graph | Degree | Components),
+            LinkOfLink => true,
+            ViewValid => matches!(door, Rows | Count | Group | Where | Order),
+        }
+    }
+
+    /// The type a measure starts at and the relation a walk takes.
+    fn walk(self) -> (&'static str, &'static str) {
+        match self {
+            DerivedRelation => ("claim", "peer"),
+            ConditionalEdge => ("claim", "alike"),
+            LinkOfLink => ("memo", "about"),
+            _ => ("claim", "on_trip"),
+        }
+    }
+}
+
+/// A record a door is asked of: the feature it is of, its type, its key
+/// and the text field the twins hold otherwise.
+type Target = (Feature, &'static str, &'static str, &'static str);
 
 impl Hidden {
     /// Whether the twins differ in `field` of the record `key` of `ty`; an
-    /// owner's field never, since an `only` reads it.
+    /// owner's field never, since an `only` reads it, nor a trip's valid
+    /// time.
     fn hides(self, ty: &str, key: &str, field: &str) -> bool {
+        // A link's key holds its ends', a memo's link's the link's too,
+        // its `:` written `%3A` inside the component.
+        let flat = key.replace("%3A", ":");
+        let names = |k: &str| flat.split(':').any(|x| x == k);
         let part = match self {
-            Hold => key.starts_with("c9"),
-            Bobs => key.starts_with("c2"),
-            BobsLink => key == "c2:t1",
-            OtherTrip => key.ends_with("t2"),
+            Hold => names("c9"),
+            Bobs => names("c2"),
+            BobsLink => flat.contains("c2:t1"),
+            OtherTrip => names("t2"),
             Secret => field == "secret",
-            TripKept => ty != "claim",
+            TripKept => ty == "trip" || ty == VAULT || ty.starts_with("sys.link."),
         };
-        part && !matches!(field, "owner" | "by")
+        part && !matches!(field, "owner" | "by" | "since")
     }
 
     /// The records each door is asked of.
     fn targets(self) -> &'static [Target] {
         match self {
             Hold => &[
-                ("claim", "c9", "note"),
-                ("claim", "c9", "amount"),
-                (LINK, "c9:t1", "label"),
+                (Plain, "claim", "c9", "note"),
+                (Plain, "claim", "c9", "amount"),
+                (Plain, LINK, "c9:t1", "label"),
+                (SetOfSet, "claim", "c9", "note"),
+                (SetOfSet, "claim", "c9", "amount"),
+                (DerivedRelation, "claim", "c9", "note"),
+                (ConditionalEdge, "claim", "c9", "note"),
+                (LinkOfLink, MEMO_LINK, "m9:c9%3At1", "label"),
             ],
             Bobs => &[
-                ("claim", "c2", "note"),
-                ("claim", "c2", "amount"),
-                (LINK, "c2:t1", "label"),
+                (Plain, "claim", "c2", "note"),
+                (Plain, "claim", "c2", "amount"),
+                (Plain, LINK, "c2:t1", "label"),
+                (SetOfSet, "claim", "c2", "note"),
+                (SetOfSet, "claim", "c2", "amount"),
+                (DerivedRelation, "claim", "c2", "note"),
+                (ConditionalEdge, "claim", "c2", "note"),
+                (LinkOfLink, MEMO_LINK, "m2:c2%3At1", "label"),
             ],
-            BobsLink => &[(LINK, "c2:t1", "label")],
-            OtherTrip => &[("trip", "t2", "name"), (LINK, "c1:t2", "label")],
-            Secret => &[("claim", "c1", "secret")],
-            TripKept => &[("trip", "t1", "name"), (LINK, "c1:t1", "label")],
+            BobsLink => &[
+                (Plain, LINK, "c2:t1", "label"),
+                (LinkOfLink, MEMO_LINK, "m2:c2%3At1", "label"),
+            ],
+            OtherTrip => &[
+                (Plain, "trip", "t2", "name"),
+                (Plain, LINK, "c1:t2", "label"),
+                (ViewValid, VIEW, "", "name"),
+            ],
+            Secret => &[
+                (Plain, "claim", "c1", "secret"),
+                (SetOfSet, "claim", "c1", "secret"),
+                (DerivedRelation, "claim", "c1", "secret"),
+                (ConditionalEdge, "claim", "c1", "secret"),
+            ],
+            TripKept => &[
+                (Plain, "trip", "t1", "name"),
+                (Plain, LINK, "c1:t1", "label"),
+                (LinkOfLink, MEMO_LINK, "m1:c1%3At1", "label"),
+                (ViewValid, VIEW, "", "name"),
+            ],
         }
     }
 }
@@ -251,25 +349,37 @@ impl Door {
     }
 
     /// `who`'s answer at this door about `target`, or `None` where the
-    /// door asks nothing of it: a vector of a twin that hides none, a walk
-    /// from a link, a door that reads no field about a number.
+    /// door asks nothing of it: a door that does not read the target's
+    /// feature, a vector of a twin that hides none, a walk from a link.
     async fn ask(
         self,
         cat: &dyn Catalog,
         who: &Principal,
-        (ty, key, field): Target,
+        (feature, ty, key, field): Target,
         mark: Position,
         hidden: Hidden,
     ) -> Option<Value> {
-        let (t, link, num) = (TypeName::from(ty), ty == LINK, field == "amount");
-        if num && !matches!(self, Group | Where | Order | Fold | Matches) {
+        let (t, num) = (TypeName::from(ty), field == "amount");
+        let link = ty.starts_with("sys.link.");
+        if !feature.asks(self, num) {
             return None;
         }
+        // A set of a set is read through its name, a view at a valid time.
+        let at = |mut find: Value| {
+            if feature == SetOfSet {
+                find["where"] = json!(format!("in_set('outer_{field}')"));
+            }
+            if feature == ViewValid {
+                find["valid_at"] = json!(VALID_AT);
+            }
+            de(find)
+        };
         let count = json!([{"name": "n", "func": "count"}]);
-        let walk = json!([{"relation": "on_trip", "walk": "both", "depth": {"min": 0, "max": 3}}]);
+        let (start, on) = feature.walk();
+        let walk = json!([{"relation": on, "walk": "both", "depth": {"min": 0, "max": 3}}]);
         let measure = |m: &str| {
-            json!({"start": {"type": "claim"}, "project": {"as": m},
-                                       "steps": [{"relation": "on_trip", "walk": "both"}]})
+            json!({"start": {"type": start}, "project": {"as": m},
+                   "steps": [{"relation": on, "walk": "both"}]})
         };
         Some(match self {
             Get => said(
@@ -280,14 +390,14 @@ impl Door {
                 let get = json!({"key": key, "with_meta": true, "as_of": mark});
                 said(cat.get(who, &t, de(get)).await)
             }
-            Rows => said(cat.find(who, &t, de(json!({"total": true}))).await),
+            Rows => said(cat.find(who, &t, at(json!({"total": true}))).await),
             Count => {
                 let find = json!({"aggregate": {"measures": count}});
-                said(cat.find(who, &t, de(find)).await)
+                said(cat.find(who, &t, at(find)).await)
             }
             Group => {
                 let find = json!({"aggregate": {"measures": count, "group_by": [field]}});
-                said(cat.find(who, &t, de(find)).await)
+                said(cat.find(who, &t, at(find)).await)
             }
             Where => {
                 let cond = if num {
@@ -296,11 +406,11 @@ impl Door {
                     format!("{field} < 'm'")
                 };
                 let find = json!({"where": cond, "total": true});
-                said(cat.find(who, &t, de(find)).await)
+                said(cat.find(who, &t, at(find)).await)
             }
             Order => {
                 let find = json!({"order_by": [{"field": field}]});
-                said(cat.find(who, &t, de(find)).await)
+                said(cat.find(who, &t, at(find)).await)
             }
             Fold => {
                 let of = |f: &str| json!({"name": f, "func": f, "field": field});
@@ -332,7 +442,7 @@ impl Door {
                 said(cat.query(who, de(p)).await)
             }
             Path if !link => {
-                let p = json!({"start": {"type": "claim", "key": "c3"}, "steps": walk,
+                let p = json!({"start": {"type": start, "key": "c3"}, "steps": walk,
                                "to": [ty, key], "project": {"as": "graph"}});
                 said(cat.query(who, de(p)).await)
             }
@@ -345,11 +455,13 @@ impl Door {
     }
 }
 
-/// Declares the plain lake and writes it as twin `b` of a pair: each field
+/// Declares the lake and writes it as twin `b` of a pair: each field
 /// `hidden` hides as [`hidden_value`] gives it, the first twin's values in
 /// both where the pair is of existence (`gone`), whose second twin writes
-/// each hidden record and link under the vault instead. `c9` is held last.
-/// Answers the position a read as of one reads at, before a later write.
+/// each hidden record and link under the vault instead, one record of it.
+/// Beside the claims, trips and links stand the features. `c9` is held
+/// last. Answers the position a read as of one reads at, before a later
+/// write.
 async fn plain(
     l: &Lake,
     store: &dyn lakelands_api::LakeStore,
@@ -358,6 +470,7 @@ async fn plain(
     b: bool,
 ) -> Result<Position, Failure> {
     let text = |n: &str| json!({"name": n, "type": {"kind": "text"}, "searchable": !matches!(n, "owner" | "by")});
+    let date = |n: &str| json!({"name": n, "type": {"kind": "date_time"}});
     let rel = |name: &str, target: &str| {
         json!({"name": name, "target": target, "cardinality": "many_to_many",
                "fields": [text("by"), text("label")]})
@@ -367,18 +480,40 @@ async fn plain(
                         text("secret"), {"name": "v", "type": {"kind": "vector", "dimensions": 2}}]);
     let mut vault = fields.clone();
     if let Some(f) = vault.as_array_mut() {
-        f.push(text("name"));
+        f.extend([
+            text("name"),
+            date("since"),
+            text("from"),
+            text("to"),
+            text("by"),
+            text("label"),
+        ]);
     }
-    l.declare_json(ty("trip", json!([text("name")]), json!([])))
-        .await?;
-    l.declare_json(ty(VAULT, vault, json!([rel("to_trip", "trip")])))
-        .await?;
-    let relations = json!([
-        rel("on_trip", "trip"),
-        rel("on_vault", VAULT),
-        rel("kept", "trip")
-    ]);
-    l.declare_json(ty("claim", fields, relations)).await?;
+    let mut trip = ty("trip", json!([text("name"), date("since")]), json!([]));
+    trip["valid_from"] = json!("since");
+    // Claims of one owner are peers: a relation matched on values.
+    let peer = json!({"name": "peer", "target": "claim", "cardinality": "many_to_many",
+                      "derived": {"match": [{"from": "owner", "to": "owner"}]}});
+    // And alike where the condition reads the hidden field.
+    let alike = json!({"name": "alike", "target": "claim", "cardinality": "many_to_many",
+                       "derived": {"match": [{"from": "owner", "to": "owner"}],
+                                   "where": "from.secret < to.secret"}});
+    let view = json!({"declare": "type", "name": VIEW, "key": ["name"],
+        "fields": [{"name": "name", "type": {"kind": "text"}}, {"name": "n", "type": {"kind": "decimal"}}],
+        "view": {"source": "trip", "group_by": ["name"], "measures": [{"name": "n", "expr": "count()"}]}});
+    for d in [
+        trip,
+        ty(VAULT, vault, json!([])),
+        ty(
+            "claim",
+            fields,
+            json!([rel("on_trip", "trip"), peer, alike]),
+        ),
+        ty("memo", json!([text("note")]), json!([rel("about", LINK)])),
+        view,
+    ] {
+        l.declare_json(d).await?;
+    }
     let vaulted = |ty: &str, key: &str| gone && b && hidden.hides(ty, key, "");
     let in_vault = |ty: &'static str, key: &str| if vaulted(ty, key) { VAULT } else { ty };
     let put = |ty: &str, key: &str, fields: Value| -> Result<Value, Failure> {
@@ -397,8 +532,22 @@ async fn plain(
         }
         Ok(Value::Object(out))
     };
+    // A link is a record of its link type: under the vault, one record.
+    let link = async |(ty, from, on, to): (&str, &str, &str, &str), by: &str, label: &str| {
+        let key = format!("{from}:{}", to.replace(':', "%3A"));
+        let lt = format!("sys.link.{ty}.{on}");
+        let fields = put(&lt, &key, json!({"by": by, "label": label}))?;
+        if vaulted(&lt, &key) {
+            let mut fields = fields;
+            (fields["from"], fields["to"]) = (json!(from), json!(to));
+            return l.upsert(VAULT, &key, fields).await.map(|_| ());
+        }
+        let (ty, on, from, to) = (&ty.into(), &on.into(), &from.into(), &to.into());
+        let linked = (l.cat).link(&l.own, ty, from, on, to, patch(fields), Default::default());
+        linked.await.must("linking").map(|_| ())
+    };
     for (key, name) in [("t1", "rome"), ("t2", "oslo")] {
-        let f = put("trip", key, json!({ "name": name }))?;
+        let f = put("trip", key, json!({"name": name, "since": SINCE}))?;
         l.upsert(in_vault("trip", key), key, f).await?;
     }
     for (key, owner, amount) in [
@@ -418,28 +567,32 @@ async fn plain(
         ("c9", "t1"),
         ("c1", "t2"),
     ] {
-        let key = format!("{from}:{to}");
         let by = if from == "c2" { "bob" } else { "alice" };
-        let fields = patch(put(LINK, &key, json!({"by": by, "label": "trip"}))?);
-        let (ty, on) = match (
-            vaulted("claim", from),
-            vaulted("trip", to),
-            vaulted(LINK, &key),
-        ) {
-            (true, _, _) => (VAULT, "to_trip"),
-            (_, true, _) => ("claim", "on_vault"),
-            (_, _, true) => ("claim", "kept"),
-            _ => ("claim", "on_trip"),
-        };
-        let (ty, on, from, to) = (&ty.into(), &on.into(), &from.into(), &to.into());
-        let linked = l
-            .cat
-            .link(&l.own, ty, from, on, to, fields, Default::default());
-        linked.await.must("linking a claim to a trip")?;
+        link(("claim", from, "on_trip", to), by, "trip").await?;
+    }
+    // A memo on each of three claims' links.
+    for (memo, on) in [("m1", "c1:t1"), ("m2", "c2:t1"), ("m9", "c9:t1")] {
+        l.upsert("memo", memo, json!({"note": "memo"})).await?;
+        let by = if memo == "m2" { "bob" } else { "alice" };
+        link(("memo", memo, "about", on), by, "memo").await?;
     }
     let mark = store.head().await.must("reading the head")?;
     l.upsert("claim", "c3", json!({"note": "hotel"})).await?;
     restrict(store, in_vault("claim", "c9"), "c9", "a hold").await?;
+    // A set over each field a claim hides, and a set of each, declared
+    // last: their memberships, which the hidden part moves, are logged
+    // after every write.
+    for (f, holds) in [
+        ("note", "note < 'm'"),
+        ("amount", "amount < 1500"),
+        ("secret", "secret < 'm'"),
+    ] {
+        let set = |name: String, filter: String| json!({"declare": "object_set", "name": name, "of": "claim", "where": filter});
+        l.declare_json(set(format!("inner_{f}"), holds.to_owned()))
+            .await?;
+        l.declare_json(set(format!("outer_{f}"), format!("in_set('inner_{f}')")))
+            .await?;
+    }
     Ok(mark)
 }
 
@@ -505,10 +658,13 @@ async fn twins(
     }
     let mut logs = Vec::new();
     for (store, _) in &out {
+        // A set's memberships follow from the records, not the script.
         let events = log_events(store.as_ref()).await?;
+        let script = |e: &&lakelands_api::event::Event| {
+            !matches!(e.body, EventBody::ObjectSetChanged { .. })
+        };
         logs.push(Value::Array(
-            events
-                .iter()
+            (events.iter().filter(script))
                 .map(|e| masked(&e.body, hidden, gone))
                 .collect(),
         ));
@@ -550,6 +706,11 @@ fn ranked(v: &mut Value) {
             _ => {}
         }
     }
+    // The head an answer was read at moves with every event, a set's
+    // memberships among them, which the hidden part moves: it is left out.
+    if let Some(head) = v.get_mut("ok").and_then(|o| o.get_mut("position")) {
+        *head = json!("the head");
+    }
     let mut seen = BTreeSet::new();
     each(v, &mut |x| {
         seen.insert(x.as_str().unwrap_or_default().to_owned());
@@ -589,14 +750,12 @@ fn reader(store: &dyn lakelands_api::LakeStore, name: &str, grants: &str) -> Pri
         return owner(store);
     }
     let mut grants: Value = serde_json::from_str(grants).expect("a reader's grants read");
-    for ty in VAULTED {
-        grants["types"][ty] = json!({"default": "none"});
-    }
+    grants["types"][VAULT] = json!({"default": "none"});
     let grants: Grants = serde_json::from_value(grants).expect("a reader's grants read");
     principal(store, PrincipalKind::Agent, name, grants)
 }
 
-async fn the_rights_grid_holds_on_the_plain_lake(store: Store, given: Given) -> Held {
+async fn the_rights_grid_holds_over_every_feature(store: Store, given: Given) -> Held {
     let lake = store.lake().clone();
     let mut own = Some(store);
     let (mut red, mut blind, mut alike, mut controls, mut unasked) =
@@ -625,10 +784,11 @@ async fn the_rights_grid_holds_on_the_plain_lake(store: Store, given: Given) -> 
                     let mut y = y.unwrap_or_default();
                     ranked(&mut x);
                     ranked(&mut y);
-                    let (ty, key, field) = target;
+                    let (feature, ty, key, field) = target;
                     let pair = if gone { "gone" } else { "values" };
-                    let cell =
-                        format!("plain/{name}/{door:?} on {ty} {key}.{field} ({hidden:?}, {pair})");
+                    let cell = format!(
+                        "{feature:?}/{name}/{door:?} on {ty} {key}.{field} ({hidden:?}, {pair})"
+                    );
                     match (control, x == y) {
                         (true, true) if door.shows(gone) => blind.push(cell),
                         (true, true) => {}
@@ -654,7 +814,7 @@ async fn the_rights_grid_holds_on_the_plain_lake(store: Store, given: Given) -> 
         .collect();
     ensure!(
         new.is_empty() && held.is_empty() && blind.is_empty() && controls == CONTROLS,
-        "the rights grid on the plain lake: {alike} cells alike, {} red, {controls} controls \
+        "the rights grid: {alike} cells alike, {} red, {controls} controls \
          differ (the description says {CONTROLS}), {unasked} asked nothing; red and not known:\n{}\n\
          known and holding now, to be removed:\n{}\ncontrols alike, a twin that hides nothing there:\n{}",
         red.len(),

@@ -655,5 +655,5 @@ pub const ALL: &[Check] = &[
     sealed::OUTPUT_EXACT,
     sealed::ANSWER_EXACT,
     export::INTEGER_DAMAGE,
-    grid::GRID_PLAIN,
+    grid::GRID,
 ];
