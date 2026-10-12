@@ -145,7 +145,10 @@ pub struct FormatSteps {
 
 impl FormatSteps {
     /// A walk that begins after `prev`, if any: a range that starts
-    /// inside the log, `verify` from a position.
+    /// inside the log, `verify` from a position. Right after a
+    /// `lease_taken` it takes a `lake_upgraded` whose `to` is the format
+    /// there without knowing the format before the lease: a `verify` of
+    /// the whole log is what judges the step.
     pub fn after(prev: Option<&Event>) -> FormatSteps {
         FormatSteps {
             before: prev.map(|e| e.v),

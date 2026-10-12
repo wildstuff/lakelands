@@ -588,6 +588,7 @@ pub const ALL: &[Check] = &[
     search_axes::AXES_WINDOW,
     search_axes::WEIGHTS_SET,
     upgrade::FORMAT_14_UPGRADED,
+    upgrade::LAKE_14_READ,
     vocabulary::HOST_TYPES_AT_OPEN,
     vocabulary::RESERVED_NAME_REFUSES_OPEN,
     vocabulary::TOOL_NAME_REFUSES_OPEN,

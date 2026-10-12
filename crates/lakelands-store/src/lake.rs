@@ -768,8 +768,9 @@ impl Lake {
         let mut out = Vec::new();
         let mut at = from;
         // The format of the event before the first one read: a fall is
-        // judged at the first event too.
-        let mut before = match from.0.checked_sub(1) {
+        // judged at the first event of a range too. A single lookup (a
+        // search's probe, a record's version) reads no event more.
+        let mut before = match from.0.checked_sub(1).filter(|_| limit > 1) {
             Some(p) => self
                 .engine
                 .read(Position(p), 1)?
@@ -1932,7 +1933,9 @@ impl Lake {
                 if let Some(flaw) = formats.next(&e) {
                     return Err(damaged(Part::Log, Some(e.position), flaw));
                 }
-                // Fences never fall (`docs/log-format.md` §4).
+                // Fences never fall (`docs/log-format.md` §4): the engines
+                // refuse a fall at append and at import, and this finds one
+                // written below them.
                 if let Some(floor) = fence.filter(|f| e.fence < *f) {
                     let flaw = Flaw::FenceBelow {
                         fence: e.fence,

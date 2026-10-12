@@ -637,7 +637,7 @@ pub async fn upgrade(
 ) -> Result<(), Failure> {
     use lakelands_api::engine::OpenMode;
     use lakelands_api::error::Situation;
-    use lakelands_api::event::LOG_FORMAT_VERSION as TO;
+    use lakelands_api::event::{EventBody, LOG_FORMAT_VERSION as TO};
     let lake = location.lake.clone();
     // A lake already in this release's format opens to read; an older one
     // is refused by its format, which the refusal names.
@@ -667,12 +667,33 @@ pub async fn upgrade(
     let store = open(location, OpenMode::Write, seams).await?;
     let head = store.head().await?;
     let secs = started.elapsed().as_secs_f64();
-    put(
-        out,
-        format!(
-            "upgraded {lake} from log format {from} to {TO} through position {head} in {secs:.1} s"
+    // What this open appended: its own `lease_taken` is the last one in
+    // the log, and the marker, where it upgraded, is the event after it.
+    // Another writer may have upgraded the lake since the read-only open.
+    let from_tail = Position(head.0.saturating_sub(64));
+    let tail = store
+        .feed()
+        .poll(from_tail, &FeedFilter::default(), 128)
+        .await?;
+    let leased = (tail.events.iter()).rposition(|e| matches!(e.body, EventBody::LeaseTaken { .. }));
+    let marked = leased
+        .and_then(|i| tail.events.get(i + 1))
+        .and_then(|e| match e.body {
+            EventBody::LakeUpgraded { from, to } => Some((from, to)),
+            _ => None,
+        });
+    match marked {
+        Some((from, to)) => put(
+            out,
+            format!(
+                "upgraded {lake} from log format {from} to {to} through position {head} in {secs:.1} s"
+            ),
         ),
-    )
+        None => put(
+            out,
+            format!("{lake} is written in log format {TO}: another writer upgraded it from {from}"),
+        ),
+    }
 }
 
 /// `compact`: give back the storage the projection no longer uses, and
