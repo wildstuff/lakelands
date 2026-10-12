@@ -16,7 +16,7 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     CONDITIONAL_WALK = a_derived_relation_with_a_where_connects_only_the_pairs_it_holds_for,
-    "044, extended (lakelands#960): a derived relation with a `where` connects two matching records only where the condition holds over the owner's record (`from`) and the target's (`to`): an open invoice inside its terms' discount period reaches its terms, a closed one, one past its period, one whose terms hold no period (null) and one whose terms no record holds reach none, while the same match without a condition reaches every matching terms; out, in and by the inverse alike, and `degree` and `components` count only the edges that hold; as of an earlier position the values are read as they stood and the clock is the read's, so an edge whose period has run out since is not answered there"
+    "044, extended (lakelands#960): a derived relation with a `where` connects two matching records only where the condition holds over the owner's record (`from`) and the target's (`to`): an open invoice inside its terms' discount period reaches its terms, a closed one, one past its period, one whose terms hold no period (null) and one whose terms no record holds reach none, and a condition that answers null (`from.b` unset, `if(from.b, null, true)` with `b` true) or a value that is no boolean (`from.status`) connects nothing, one that answers true connecting, while the same match without a condition reaches every matching terms; out, in and by the inverse alike, and `degree` and `components` count only the edges that hold; as of an earlier position the values are read as they stood and the clock is the read's, so an edge whose period has run out since is not answered there"
 );
 
 check!(
@@ -30,7 +30,7 @@ check!(
 );
 
 /// The terms an invoice is discounted by, keyed by `no`.
-fn terms() -> TypeDecl {
+pub(super) fn terms() -> TypeDecl {
     let mut t = type_decl(
         "terms",
         vec![
@@ -45,11 +45,11 @@ fn terms() -> TypeDecl {
 
 /// An invoice is discountable towards its terms while it is open and its
 /// terms' discount period has not passed.
-const DISCOUNTABLE: &str =
+pub(super) const DISCOUNTABLE: &str =
     "from.status = 'open' and now() <= from.invoiced_on + to.discount_days * 1d";
 
 /// A relation from the invoice to its terms by `terms_no`, under `filter`.
-fn by_terms(name: &str, inverse: &str, filter: Option<&str>) -> RelationDecl {
+pub(super) fn by_terms(name: &str, inverse: &str, filter: Option<&str>) -> RelationDecl {
     let pairs = vec![MatchPair {
         from: "terms_no".into(),
         to: "no".into(),
@@ -62,19 +62,25 @@ fn by_terms(name: &str, inverse: &str, filter: Option<&str>) -> RelationDecl {
     }
 }
 
-fn invoice(filter: &str) -> TypeDecl {
+pub(super) fn invoice(filter: &str) -> TypeDecl {
     let mut t = type_decl(
         "invoice",
         vec![
             field("terms_no", StorageKind::Text),
             field("status", StorageKind::Text),
             field("invoiced_on", StorageKind::DateTime),
+            field("discount", StorageKind::Number),
+            field("alt_no", StorageKind::Text),
+            field("b", StorageKind::Boolean),
         ],
     );
     t.relations = vec![
         by_terms("discountable", "discountable_of", Some(filter)),
         by_terms("terms", "invoices", None),
         by_terms("odd", "odd_of", Some(ODD)),
+        by_terms("flag", "flagged", Some("from.b")),
+        by_terms("unflag", "unflagged", Some("if(from.b, null, true)")),
+        by_terms("texty", "texted", Some("from.status")),
     ];
     t
 }
@@ -82,13 +88,13 @@ fn invoice(filter: &str) -> TypeDecl {
 /// A condition no pair can be judged by: text times a number.
 const ODD: &str = "from.status * 2 > 1";
 
-const LATER: &str = "2099-01-01T00:00:00Z";
+pub(super) const LATER: &str = "2099-01-01T00:00:00Z";
 const EARLIER: &str = "2000-01-01T00:00:00Z";
 
 /// Terms `t1` (fourteen days) and `t2` (no period); invoices `i1` (open,
 /// inside), `i2` (closed), `i3` (open, past), `i4` (open, on `t2`) and `i5`
 /// (open, on terms no record holds). Answers the position after them.
-async fn lake(store: &dyn LakeStore) -> Result<Position, Failure> {
+pub(super) async fn lake(store: &dyn LakeStore) -> Result<Position, Failure> {
     let l = Lake::of(store);
     l.declare(terms()).await?;
     l.declare(invoice(DISCOUNTABLE)).await?;
@@ -225,6 +231,38 @@ async fn a_derived_relation_with_a_where_connects_only_the_pairs_it_holds_for(
     ensure!(
         pairs == ["i1=2", "t1=2"],
         "`components` over `discountable` joins `t1` and `i1` alone: {joined:?}"
+    );
+    // A condition that answers null, or no boolean, connects nothing.
+    for (key, b) in [
+        ("ib1", json!(true)),
+        ("ib0", json!(false)),
+        ("ibn", Value::Null),
+    ] {
+        let fields = json!({"terms_no": "t1", "status": "open", "b": b});
+        l.upsert("invoice", key, fields).await?;
+    }
+    let mut got = Vec::new();
+    for key in ["ib1", "ib0", "ibn"] {
+        for relation in ["flag", "unflag", "texty"] {
+            let to = reached(cat, own, ("invoice", key), (relation, Walk::Out), None).await?;
+            got.push(format!("{key} {relation} {}", to.join("")));
+        }
+    }
+    let want = [
+        "ib1 flag t1",
+        "ib1 unflag ",
+        "ib1 texty ",
+        "ib0 flag ",
+        "ib0 unflag t1",
+        "ib0 texty ",
+        "ibn flag ",
+        "ibn unflag t1",
+        "ibn texty ",
+    ];
+    ensure!(
+        got == want,
+        "a condition connects where it answers true alone, null and a value that is no boolean \
+         connecting nothing: {got:?}, expected {want:?}"
     );
     // As of an earlier position the values are read as they stood.
     l.upsert("invoice", "i3", json!({"invoiced_on": LATER}))

@@ -41,9 +41,8 @@ path goes by the rule above, its `to` a reference to the far record
 is each reference after it. A record with no such link reads null
 there, as a null reference does. A relation read so holds at most one
 link from a record, `many_to_one` or `one_to_one`; one that may hold
-several is refused at the declaration (`relation_holds_many`), as are a
-derived relation (`relation_is_derived`), which holds no link record,
-and one carried by a field (`relation_via_field`), whose edge the path
+several is refused at the declaration (`relation_holds_many`), as is
+one carried by a field (`relation_via_field`), whose edge the path
 steps through by that field's name: one edge, one spelling. A
 relation's name with no field after it stays an unknown field, and so
 does a relation in a set's `where`, a trigger's `when` and a read's
@@ -86,6 +85,64 @@ by the rule of a proposed declaration
 (`docs/decisions/013-verbs-run-by-declared-risk.md`), whole to a
 reviewer shown the relation and every field the verb reads, whether the
 verb would be that reviewer's to call or not.
+
+### A path may begin at a derived relation onto its target's key, and `exists` asks whether a path reaches a record
+
+A path's first segment may name a derived relation of the verb's type
+(`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`)
+whose match names every key field of its target: `discountable.rate`
+reads the field `rate` of the one record it matches, and goes on from
+there by the rules above. It reaches one record at most by
+construction, the record at the key its match names, whatever its
+declared cardinality says, since 044 enforces none. A derived relation
+whose match is not its target's key, or whose target keys nothing or
+is a view, is refused at the declaration (`match_not_key`), naming the
+relation and its target: it may reach several records, and a verb's
+condition has one record in scope.
+
+At a call the record is read by its key, under the writer at the head
+and over the call's drafts, as a reference's is; its matched values are
+then compared as 044 compares them, and the relation's `where` is
+evaluated over the two records with the call's clock and settings. A
+record that is not there, is retired, does not hold the matched values
+as stored or for which the `where` does not hold is no match: the path
+reads null. It is never `not_live`: no reference names the record, and
+044 requires no live target. The match is a step toward `max_depth`. A
+record at that key that is there and not answered to the judged
+principal, which a hold placed since a proposal can make so at its
+accept, refuses the call `not_granted`, as a link does: read as no
+match, it would let a hold grant `not exists(…)`.
+
+`exists(<relation>)` answers whether the path that begins at the
+relation reaches a record: for a derived relation onto the key, the one
+record it matches; for a relation carried by links, the one link the
+record holds under it. It stands in a verb's `requires` and set values
+only, over a relation a path may begin at, and reads what such a path
+reads: of a link, its `from`; anywhere else, and over a field, it is
+refused (`exists_here`), and over another relation as a path from it is.
+No `exists` over several records and no count: a count is an aggregate,
+which needs a set of records in scope
+(`docs/decisions/017-one-expression-grammar.md`), and a scan at every
+call under the lake's one writer would cost what data no author
+controls; how many records an edge reaches is the business of a set.
+
+A verb that reads a derived relation is its caller's only where nothing
+of the target and of the verb's own type is held from the caller: it
+holds `restricted`, no `only` on either, is shown the relation, and may
+read every field the match and the `where` read on both sides and every
+field the path reads there. To any other caller the verb is not its own,
+`not_granted` before any record is read, as for a link. A target that is
+a link type holds its ends too: an `only` on an end's type holds the
+verb as an `only` on the target does. A derived edge does not differ
+from a link here: a held target read as no match would let `not
+exists(discountable)` pass for exactly the caller the terms are held
+from, and refusing at the call would tell that a held record matches.
+
+The record matched counts among what a proposed call reaches, as a
+record read across does, and the verb reaches by state: the match moves
+with the data and the clock. A migration or a declaration that takes
+the match off the target's key, changes the target's key, or takes a
+field the match or the `where` reads, is refused naming the verb.
 
 ### At a write a far record is reached exactly where a write that sends the reference would be accepted
 
@@ -148,7 +205,8 @@ refused tells the caller nothing it could not learn by writing the key.
   names; walking to-many relations is the pattern's job
   (`docs/decisions/018-one-pattern-query.md`).
 - It is not a walk of a relation: a relation that may hold several
-  links from a record is walked by a pattern; a path reads one link.
+  links from a record, or a derived relation off its target's key, is
+  walked by a pattern; a path reads one link or one matched record.
 - It is not a set, a trigger or a derived field across an edge. A
   trigger's `when` judged only when its own record is written would
   miss every change of the far record, a level its author cannot rely
@@ -162,3 +220,8 @@ refused tells the caller nothing it could not learn by writing the key.
   one link the record holds under it, where a relation's name was an
   unknown field in a condition; such a verb is its caller's only where
   the relation holds nothing from the caller (lakelands#567).
+- A path may begin at a derived relation onto its target's key, and
+  `exists(<relation>)` asks whether a path reaches a record, of a
+  derived relation and of one carried by links; a derived relation,
+  refused in a path before (`relation_is_derived`), is now refused only
+  off its target's key (`match_not_key`) (lakelands#960).

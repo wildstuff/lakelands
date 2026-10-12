@@ -1183,7 +1183,12 @@ fn call_reads(
 ) -> Result<(Patch, Vec<(TypeName, RecordKey)>)> {
     let far = |ty: &TypeName, k: &RecordKey| view.get(ty, k);
     let link = |r: &RelationName| key.map_or(Ok(None), |k| link_from(view, &v.on, r, k));
-    let across = Across::new(o, o.ty(&v.on)?, (&far, &link), u32::MAX);
+    let across = Across::new(
+        o,
+        o.ty(&v.on)?,
+        (&far, &link, &far),
+        (u32::MAX, (settings, now)),
+    );
     let mut set = None;
     if let Some(k) = key
         && let Some(r) = view.get(&v.on, k)?
@@ -1247,7 +1252,7 @@ fn requires(
         },
         Place::Requires,
     ];
-    let e = declare::condition(r, Eval::Record, &at)?;
+    let e = declare::condition(r, Eval::Verb, &at)?;
     let record = RecordScope {
         fields: &record.fields,
         meta: Some(&record.meta),
@@ -1306,7 +1311,7 @@ fn assigned(
                 name: a.field.clone(),
             },
         ];
-        let e = declare::condition(&a.value, Eval::Record, &at)?;
+        let e = declare::condition(&a.value, Eval::Verb, &at)?;
         let v = expr::eval(&e, &scope);
         across.reached()?;
         let v = v.map_err(|why| {
@@ -1361,8 +1366,13 @@ struct Across<'a> {
     on: &'a TypeDecl,
     far: Far<'a>,
     link: Link<'a>,
+    /// The record at a key, whoever is answered it.
+    stored: Far<'a>,
     /// The most steps a path may take: the lake's `max_depth` at a call.
     max: u32,
+    /// The settings and the clock a derived relation's `where` reads: the
+    /// call's.
+    clock: (&'a BTreeMap<String, Value>, Timestamp),
     /// The records read, none where the reference reached none.
     read: RefCell<BTreeMap<(TypeName, RecordKey), Option<StoredRecord>>>,
     /// The refusal of the first path that reached no record.
@@ -1370,17 +1380,120 @@ struct Across<'a> {
 }
 
 impl<'a> Across<'a> {
-    fn new(o: &'a Ontology, on: &'a TypeDecl, (far, link): (Far<'a>, Link<'a>), max: u32) -> Self {
+    fn new(
+        o: &'a Ontology,
+        on: &'a TypeDecl,
+        (far, link, stored): (Far<'a>, Link<'a>, Far<'a>),
+        (max, clock): (u32, (&'a BTreeMap<String, Value>, Timestamp)),
+    ) -> Self {
         let (read, refusal) = (RefCell::default(), RefCell::default());
         Across {
             o,
             on,
             far,
             link,
+            stored,
             max,
+            clock,
             read,
             refusal,
         }
+    }
+
+    /// The record `named`, read once a call as `far` reaches it.
+    fn reach(&self, named: &(TypeName, RecordKey)) -> Option<StoredRecord> {
+        let known = self.read.borrow().get(named).cloned();
+        let far = || {
+            (self.far)(&named.0, &named.1)
+                .map_err(|e| self.refuse(e))
+                .ok()
+        };
+        let found = known.unwrap_or_else(|| far().flatten());
+        self.read.borrow_mut().insert(named.clone(), found.clone());
+        found
+    }
+
+    /// Note the call's first refusal.
+    fn refuse(&self, e: Error) {
+        self.refusal.borrow_mut().get_or_insert(e);
+    }
+
+    /// The one record the derived relation `r` reaches from a record
+    /// holding `fields`: its target's record at the key the match names,
+    /// where it holds the matched values as stored and the relation's
+    /// `where` holds over the two with the call's clock (044, extended).
+    /// None reached is no edge, never a refusal: no reference names it.
+    fn matched(
+        &self,
+        fields: &BTreeMap<FieldName, Value>,
+        r: &RelationDecl,
+    ) -> Option<StoredRecord> {
+        let d = r.derived.as_ref()?;
+        let target = self.o.ty(&r.target).ok()?;
+        let value = |p: &lakelands_api::ontology::MatchPair| {
+            Some((
+                p.to.clone(),
+                fields.get(&p.from).filter(|v| !v.is_null())?.clone(),
+            ))
+        };
+        let values: BTreeMap<FieldName, Value> =
+            d.pairs.iter().map(value).collect::<Option<_>>()?;
+        let key = lakelands_api::key::record_key(target, &values)?;
+        let named = (r.target.clone(), key);
+        let Some(far) = self.reach(&named) else {
+            // One there and not answered is held from the judged principal,
+            // which a hold placed since a proposal can make so: never no
+            // match, which would let a hold grant `not exists` (055).
+            let stored = (self.stored)(&named.0, &named.1).ok().flatten();
+            if stored.is_some_and(|r| !r.retired) {
+                self.refuse(refused(Refusal::NotGranted));
+            }
+            return None;
+        };
+        // Every pair, two onto one field included, holds as stored.
+        let holds =
+            |p: &lakelands_api::ontology::MatchPair| far.fields.get(&p.to) == fields.get(&p.from);
+        if !d.pairs.iter().all(holds) {
+            return None;
+        }
+        let Some(c) = &d.filter else { return Some(far) };
+        let (settings, now) = self.clock;
+        let e = declare::condition(c, Eval::Record, &[]).ok()?;
+        let ends = crate::reads::Ends {
+            ends: [fields, &far.fields],
+            settings,
+            now,
+        };
+        expr::holds(&e, &ends).unwrap_or(false).then_some(far)
+    }
+
+    /// Whether the path that begins at `relation` reaches a record: the one
+    /// a derived relation matches, or the one link the record holds under a
+    /// relation carried by links.
+    fn exists(&self, fields: &BTreeMap<FieldName, Value>, relation: &FieldName) -> bool {
+        // The match or the link is a step toward `max_depth`.
+        if self.max == 0 {
+            self.refuse(invalid(Case::StepTooDeep { max: 0, asked: 1 }));
+            return false;
+        }
+        if let Some(r) = self.on.derived_step(relation) {
+            return self.matched(fields, r).is_some();
+        }
+        let relation = RelationName::from(relation.as_str());
+        let lt = links::link_type_name(&self.on.name, &relation);
+        let Some(link) = (self.link)(&relation)
+            .map_err(|e| self.refuse(e))
+            .ok()
+            .flatten()
+        else {
+            return false;
+        };
+        // Its caller holds nothing of the link from it (055).
+        let found = self.reach(&(lt, link)).is_some();
+        if !found {
+            self.refuse(refused(Refusal::NotGranted));
+        }
+        found
     }
 
     /// The value at `path` from a record of the verb's type holding
@@ -1389,24 +1502,32 @@ impl<'a> Across<'a> {
     /// ([`Self::reached`]). A path that begins at a relation reads the one
     /// link the record holds under it, none reading null.
     fn value(&self, fields: &BTreeMap<FieldName, Value>, path: &[FieldName]) -> Option<Value> {
-        let steps = self.on.stepped(path, &|n| self.o.ty(n).ok());
-        let (max, asked) = (self.max, steps.len().saturating_sub(1) as u32);
-        let refuse = |e: Error| {
-            self.refusal.borrow_mut().get_or_insert(e);
+        let ty = |n: &TypeName| self.o.ty(n).ok();
+        // A path that begins at a derived relation goes on from the record
+        // it matches; the match is a step.
+        let derived = self.on.derived_step(&path[0]).filter(|_| path.len() > 1);
+        let (from, path) = match derived {
+            Some(r) => (ty(&r.target)?, &path[1..]),
+            None => (self.on, path),
         };
-        if asked > max {
-            refuse(invalid(Case::StepTooDeep { max, asked }));
+        let steps = from.stepped(path, &ty);
+        let asked = steps.len().saturating_sub(1) as u32 + u32::from(derived.is_some());
+        let refuse = |e: Error| self.refuse(e);
+        if asked > self.max {
+            refuse(invalid(Case::StepTooDeep {
+                max: self.max,
+                asked,
+            }));
             return None;
         }
-        let reach = |named: &(TypeName, RecordKey)| {
-            let known = self.read.borrow().get(named).cloned();
-            let far = || (self.far)(&named.0, &named.1).map_err(refuse).ok();
-            let found = known.unwrap_or_else(|| far().flatten());
-            self.read.borrow_mut().insert(named.clone(), found.clone());
-            found
+        let reach = |named: &(TypeName, RecordKey)| self.reach(named);
+        let mut at: Option<StoredRecord> = match derived {
+            Some(r) => Some(self.matched(fields, r)?),
+            None => None,
         };
-        let mut at: Option<StoredRecord> = None;
-        let by_link = steps.first().filter(|s| s.0.name != self.on.name);
+        let by_link = steps
+            .first()
+            .filter(|s| derived.is_none() && s.0.name != self.on.name);
         if let Some((lt, _)) = by_link {
             let relation = RelationName::from(path[0].as_str());
             let link = (self.link)(&relation).map_err(refuse).ok()??;
@@ -1472,6 +1593,10 @@ impl Scope for VerbScope<'_> {
 
     fn now(&self) -> Timestamp {
         self.record.now
+    }
+
+    fn exists(&self, relation: &FieldName) -> Option<bool> {
+        Some(self.across.exists(self.record.fields, relation))
     }
 }
 
@@ -1982,7 +2107,9 @@ impl Decide<'_> {
         let (view, pending, who) = (self.view, &self.pending, self.who);
         let far = |ty: &TypeName, k: &RecordKey| live_for(view, pending, o, ty, k, who);
         let link = |r: &RelationName| link_from(view, &verb.on, r, key);
-        let across = Across::new(o, on, (&far, &link), self.call.lake.limits.max_depth);
+        let limits = (self.call.lake.limits.max_depth, (&w.settings, now));
+        let stored = |ty: &TypeName, k: &RecordKey| pending.record(view, ty, k);
+        let across = Across::new(o, on, (&far, &link, &stored), limits);
         requires(&w.settings, verb, key, &record, now, &across)?;
         // A verb on a link finds both its ends live and answered, whatever
         // its effect (035): one that writes the link has them judged where

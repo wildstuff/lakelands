@@ -137,3 +137,6 @@ that pushes filters down into its own query language, complete.
 - A path may step through a reference to the one record it names, in a
   verb's `requires` and set values; "no joins" became "no join", the
   step reading one record (lakelands#567).
+- `exists(<relation>)`, in a verb's `requires` and set values only:
+  whether a path that begins at the relation reaches its one record
+  (lakelands#960).

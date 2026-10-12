@@ -237,6 +237,11 @@
    "field": "f"
   },
   {
+   "code": "match_not_key",
+   "relation": "r",
+   "target": "t"
+  },
+  {
    "code": "measure_twice",
    "name": "f"
   },
@@ -519,6 +524,9 @@
    "code": "in_empty"
   },
   {
+   "code": "exists_here"
+  },
+  {
    "code": "in_set_here"
   },
   {
@@ -714,10 +722,6 @@
   {
    "cardinality": "one_to_one",
    "code": "relation_holds_many",
-   "relation": "r"
-  },
-  {
-   "code": "relation_is_derived",
    "relation": "r"
   },
   {

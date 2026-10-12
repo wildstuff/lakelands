@@ -303,6 +303,7 @@ What a refusal is about.
 | `link_authority` | `authority` (Authority) | its links are written by `authored` or `source`, not `{authority}` | Links of an authority no door writes them by. |
 | `link_field_authority` | `field` (FieldName), `authority` (Authority) | its links arrive from a source, so its field `{field}` is `source` (or derived); an `{authority}` field of a link no door could write | A field of a source's link that no door writes. |
 | `link_field_is_end` | `field` (FieldName) | a link's `{field}` is its end; the relation cannot name a field of its own so | A link field named as a link's end. |
+| `match_not_key` | `relation` (RelationName), `target` (TypeName) | `{relation}` matches fields of `{target}` other than its key, so it may reach several records; a verb reads a derived relation whose match names every key field of its target | A verb reading a derived relation whose match is not its target's key. |
 | `measure_twice` | `name` (FieldName) | its view names the measure `{name}` twice; a view's measures and its merged sources' share one set of names | A measure named twice in a view. |
 | `measures_nothing` | `source` (TypeName) | it calls no aggregate, so it measures nothing of `{source}` | A merged measure that calls no aggregate. |
 | `merged_group_count` | `given` (usize), `view` (usize) | it groups by {given} field(s), and the view by {view}; each lines up with one of the view's, in order | A merged source grouped by another number of fields than its view. |
@@ -363,6 +364,7 @@ What a refusal is about.
 | `call_takes_quoted` | `name` (String) | {name}() takes a quoted name | A call that takes a quoted name given something else. |
 | `division_by_zero` | — | division by zero | A division by zero. |
 | `in_empty` | — | an `in` lists one value at least | An `in` with an empty list. |
+| `exists_here` | — | exists() has meaning in a verb's `requires` and set values, over a relation a path may begin at | An `exists` outside a verb's `requires` and set values. |
 | `in_set_here` | — | in_set() has meaning in an object set's `where`, a trigger's `when` and a read's `where` | An `in_set` left where no set's filter stands. |
 | `kind_negates` | `expr` (String), `kind` (Kind) | `{expr}` has no meaning: it negates {kind} | A negation of what has no negative. |
 | `kind_sides` | `expr` (String), `left` (Kind), `right` (Kind) | `{expr}` has no meaning: its sides are {left} and {right} | Arithmetic over kinds that do not combine. |
@@ -402,7 +404,6 @@ What a refusal is about.
 | `path_empty` | — | a path names at least one field | A path with no field. |
 | `regex_unmatchable` | `pattern` (String), `limit` (usize, optional) | `{pattern}` cannot be matched[: its compiled form is over {limit} bytes] | A pattern the matcher refuses. |
 | `relation_holds_many` | `relation` (RelationName), `cardinality` (Cardinality) | `{relation}` may hold several links from a record ({cardinality}): a path reads a relation that holds at most one, `many_to_one` or `one_to_one`; walk it in a pattern | A path through a relation that may hold several links from a record. |
-| `relation_is_derived` | `relation` (RelationName) | `{relation}` is derived from matching values and holds no link record for a path to read | A path through a relation derived from matching values. |
 | `relation_via_field` | `relation` (RelationName), `field` (FieldName) | `{relation}` is carried by the field `{field}`: a path steps through `{field}` | A path through a relation carried by a reference field. |
 | `retired_only_in_guard` | — | retired() has meaning only in a trigger's guard | A `retired` outside a trigger's guard. |
 | `set_cycle` | `set` (String), `through` (Names) | in_set('{set}') names a set that names it in turn, through {through} | A set that names itself through others. |

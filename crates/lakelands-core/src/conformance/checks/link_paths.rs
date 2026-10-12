@@ -24,13 +24,13 @@ const LT: &str = "sys.link.deal.with";
 
 check!(
     LINK_PATH_READS = a_verbs_path_reads_the_one_link_a_relation_holds,
-    "055, extended (lakelands#567): a verb's `requires` and set values read the one link a record holds under a relation carried by link records: the link's fields (`with.days`) and, through its `to`, the far record's (`with.to.discount_days`), a link whose far end is retired refusing `not_live` on `to`; the verb runs where the link meets its condition, is refused precondition where it does not, copies a link's field, and a record with no such link reads null there; each step counts toward the lake's `max_depth`; a relation that may hold several links from a record, one derived from matching values and one carried by a field are refused at the declaration (`relation_holds_many`, `relation_is_derived`, `relation_via_field`), a relation's name alone and a field its links do not have are `unknown_field`, and so is a relation in a trigger's `when`, a set's `where` and a read's `where`; an author who may not know of the link type is told `unknown_field` on the verb's type for a path through it, whether the link has the field or not; a migration that retargets the relation under a verb that reads across it, or lets it hold several links from a record, is refused naming the verb, and so is the type declared again without a migration, by `declare` with the relation holding several links or a field under the relation's name, and by a set with the relation holding several links, each naming the verb; judged over the lake as it is, an author not shown the relation adds a field to the type, and one adding a field of the relation's name is told the type could not be declared"
+    "055, extended (lakelands#567): a verb's `requires` and set values read the one link a record holds under a relation carried by link records: the link's fields (`with.days`) and, through its `to`, the far record's (`with.to.discount_days`), a link whose far end is retired refusing `not_live` on `to`; the verb runs where the link meets its condition, is refused precondition where it does not, copies a link's field, and a record with no such link reads null there; `exists(with)` holds where the record holds its link and not where it holds none; each step counts toward the lake's `max_depth`; a relation that may hold several links from a record and one carried by a field are refused at the declaration (`relation_holds_many`, `relation_via_field`), and one derived from values other than its target's key is (`match_not_key`), a relation's name alone and a field its links do not have are `unknown_field`, and so is a relation in a trigger's `when`, a set's `where` and a read's `where`; an author who may not know of the link type is told `unknown_field` on the verb's type for a path through it, whether the link has the field or not; a migration that retargets the relation under a verb that reads across it, or lets it hold several links from a record, is refused naming the verb, and so is the type declared again without a migration, by `declare` with the relation holding several links or a field under the relation's name, and by a set with the relation holding several links, each naming the verb; judged over the lake as it is, an author not shown the relation adds a field to the type, and one adding a field of the relation's name is told the type could not be declared"
 );
 
 check!(
     LINK_PATH_HELD =
         a_verb_that_reads_a_link_is_its_callers_only_where_the_relation_holds_nothing_from_it,
-    "055, extended (lakelands#567): a verb whose path steps through a relation's link is its caller's only where nothing of the link type and its end types is held from the caller: one without `restricted`, one holding `only` on the link type, on the verb's own type or on the far end's type, one not shown the far end's type, not shown the link type or kept from a link field the verb reads, is refused not_granted before any record is read, appending nothing, whether the record's link is held, outside its `only`, absent, or the version it sends stale, and neither `describe` nor `describe_type` names the verb to it; one the relation holds nothing from calls as the link holds, held or not"
+    "055, extended (lakelands#567): a verb whose path steps through a relation's link is its caller's only where nothing of the link type and its end types is held from the caller: one without `restricted`, one holding `only` on the link type, on the verb's own type or on the far end's type, one not shown the far end's type, not shown the link type or kept from a link field the verb reads (`from` for `exists(with)`), is refused not_granted, as is one whose `only` holds either end of the link a verb reaches over a derived relation onto the link type, before any record is read, appending nothing, whether the record's link is held, outside its `only`, absent, or the version it sends stale, and neither `describe` nor `describe_type` names the verb to it; one the relation holds nothing from calls as the link holds, held or not"
 );
 
 check!(
@@ -200,6 +200,18 @@ async fn a_verbs_path_reads_the_one_link_a_relation_holds(store: Store) -> Held 
         "a link whose far end is retired is read on to it, `not_live` on `to`; {got:?}"
     );
 
+    // `exists` answers whether the record holds its link.
+    l.declare_json(verb("linked", "low", "exists(with)", ("grade", "'linked'")))
+        .await?;
+    let got = [
+        call(&l, &l.own, "linked", "d1").await,
+        call(&l, &l.own, "linked", "d3").await,
+    ];
+    ensure!(
+        got == [Ok("applied"), unmet("linked", "d3")],
+        "`exists(with)` holds for a deal that holds its link and not for one without; {got:?}"
+    );
+
     // The link is a step toward `max_depth`, and so is its `to`.
     let max = limits().max_depth;
     for (name, parents) in [("deep", max - 2), ("deeper", max - 1)] {
@@ -228,7 +240,7 @@ async fn a_verbs_path_reads_the_one_link_a_relation_holds(store: Store) -> Held 
         ),
         (
             "alike.days = 1",
-            json!({"code": "relation_is_derived", "relation": "alike"}),
+            json!({"code": "match_not_key", "relation": "alike", "target": "customer"}),
         ),
         (
             "by.name = 'x'",
@@ -421,6 +433,72 @@ async fn a_verb_that_reads_a_link_is_its_callers_only_where_the_relation_holds_n
         red.join("; ")
     );
     head_unmoved(s, before, "a call of a verb not the caller's").await?;
+    // `exists(with)` reads the link's `from`, as a path through it does.
+    l.declare_json(verb("linked", "low", "exists(with)", ("grade", "'linked'")))
+        .await?;
+    let mut nofrom = field_access(s, "nofrom", LT, &[("from", Access::Masked)]);
+    (nofrom.grants.default, nofrom.grants.restricted) = (Access::Write, true);
+    let got = call(&l, &nofrom, "linked", "d1").await;
+    ensure!(
+        got == nope(),
+        "`exists(with)` is not the verb of a caller masked from the link's `from`; {got:?}"
+    );
+    // A derived relation onto the link type reaches a link by its ends'
+    // keys: it is a caller's only where those ends hold nothing from it.
+    let mut memo = type_decl(
+        "memo",
+        vec![
+            reference("d", "deal"),
+            reference("c", "customer"),
+            field("note", StorageKind::Text),
+        ],
+    );
+    let pairs = vec![
+        MatchPair {
+            from: "d".into(),
+            to: "from".into(),
+        },
+        MatchPair {
+            from: "c".into(),
+            to: "to".into(),
+        },
+    ];
+    memo.relations = vec![RelationDecl {
+        derived: Some(Derived {
+            pairs,
+            filter: None,
+        }),
+        ..RelationDecl::to("onlink", LT)
+    }];
+    l.declare(memo).await?;
+    l.upsert("memo", "m5", json!({"d": "do", "c": "c5"}))
+        .await?;
+    let nolink = json!({"declare": "verb", "name": "nolink", "on": "memo", "risk": "low",
+        "requires": "not exists(onlink)", "effect": "write", "set": [{"field": "note", "value": "'n'"}]});
+    l.declare_json(nolink).await?;
+    for (id, ty, owner) in [("onlyend2", "customer", "a"), ("onlyfrom", "deal", "b")] {
+        let who = holder(s, id, grants(only(ty, "owner", owner)));
+        let head = s.head().await.must("reading the head")?;
+        let (nolink, m5) = ("nolink".into(), "m5".into());
+        let opts = WriteOpts::default();
+        let got = l.cat.call(&who, &nolink, Some(&m5), patch(json!({})), opts);
+        let got = got.await;
+        let d = l.cat.describe(&who, ReadAt::default()).await;
+        let d = d.must("describing the lake")?.data;
+        let named = d.verbs.iter().any(|v| v.name.as_str() == "nolink");
+        ensure!(
+            matches!(
+                got,
+                Err(Error::Refused {
+                    reason: Refusal::NotGranted,
+                    ..
+                })
+            ) && !named,
+            "a verb over a derived relation onto a link type is not the caller's whose `only` \
+             on `{ty}` holds an end of the link: {got:?}, described {named}"
+        );
+        head_unmoved(s, head, "`nolink` by a caller an end is held from").await?;
+    }
     let free = holder(s, "free", grants(json!({})));
     let mut got = Vec::new();
     for (verb, deal) in [("close", "dh"), ("close", "dl"), ("bare", "d3")] {

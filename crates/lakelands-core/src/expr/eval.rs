@@ -130,6 +130,12 @@ pub trait Scope {
     /// The clock `now()` and `today()` read.
     fn now(&self) -> Timestamp;
 
+    /// In a verb: whether the path that begins at `relation` reaches a
+    /// record. `None` outside a verb.
+    fn exists(&self, _relation: &FieldName) -> Option<bool> {
+        None
+    }
+
     /// An aggregate function over the set of records in scope. `None` where
     /// no set is in scope: over one record an aggregate has no meaning.
     fn aggregate(&self, _func: Func, _args: &[Expr]) -> Option<Result<Val>> {
@@ -313,6 +319,9 @@ pub enum Place {
     /// Over one source record of a view: its `where`, or an aggregate's
     /// argument in a measure. Like `Record`, and `param` has meaning.
     View,
+    /// A verb's `requires` and set values: like `Record`, and `exists`
+    /// has meaning.
+    Verb,
 }
 
 /// The units `date_bucket` knows.
@@ -398,6 +407,11 @@ pub fn check(e: &Expr, place: Place) -> Result<()> {
                     return err(Case::OnlyInWrite { name });
                 }
                 Func::Retired if place != Place::Guard => return err(Case::RetiredOnlyInGuard),
+                Func::Exists if place != Place::Verb => return err(Case::ExistsHere),
+                Func::Exists if !matches!(args.first(), Some(Expr::Path { path }) if path.len() == 1) =>
+                {
+                    return err(Case::CallTakesField { name });
+                }
                 f if f.is_aggregate() && place != Place::Group => {
                     return err(Case::AggregateHere { name });
                 }
@@ -746,6 +760,12 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
             }
             return Ok(Val::Bool(scope.retiring()));
         }
+        Func::Exists => {
+            let relation = field_arg(name, args)?;
+            return scope
+                .exists(relation)
+                .map_or(err(Case::ExistsHere), |b| Ok(Val::Bool(b)));
+        }
         Func::Count | Func::Sum | Func::Min | Func::Max | Func::Avg => {
             if let Some(v) = scope.aggregate(func, args) {
                 return v;
@@ -781,6 +801,8 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         Func::InSet => {
             return err(Case::InSetHere);
         }
+        // Answered above, from the scope.
+        Func::Exists => return err(Case::ExistsHere),
         Func::Param => match &vals[0] {
             Val::Text(name) => scope.param(name).map_or(Val::Null, |v| from_json(&v)),
             other => {

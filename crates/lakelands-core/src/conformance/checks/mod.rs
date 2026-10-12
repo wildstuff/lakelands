@@ -21,6 +21,7 @@ mod computed_inputs;
 mod computed_reference;
 mod concurrency;
 mod conditional_edges;
+mod conditional_verbs;
 mod cursors;
 mod date_bucket;
 mod dates;
@@ -439,6 +440,8 @@ pub const ALL: &[Check] = &[
     conditional_edges::CONDITIONAL_WALK,
     conditional_edges::CONDITION_PROBED,
     conditional_edges::CONDITION_DECLARED,
+    conditional_verbs::SKONTO,
+    conditional_verbs::SKONTO_HELD,
     graph_measures::DEGREE_COUNTS,
     graph_measures::COMPONENTS_PARTITION,
     graph_measures::MEASURES_AT_THEIR_POSITION,
