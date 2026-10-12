@@ -42,7 +42,7 @@ check!(
 
 check!(
     HOLD_NOT_THERE_TO_A_WRITE = a_restricted_record_is_not_there_to_a_writer_without_the_grant,
-    "006, extended (lakelands#772): to a writer without the `restricted` grant a restricted record is not there at any write door, its refusal compared whole with that of a key no record holds: a reference to it and either end of a `link` are `not_live`, `retire`, `unlink` of a link to it and a verb called on it are not found, and so is the proposal of each; a link to it ingested again is `not_live`; an upsert onto its key, made or proposed, and onto a held key retired since, made, proposed or ingested, is not granted and names no field, as is a well-formed setting onto a held one's key; that refusal comes last of the record checks (016), so under a version, without a required field, with a key field that disagrees and with a `view_kept` setting that is no boolean the upsert onto a held key answers as onto a free one, a conflict, a constraint and twice invalid; nothing is written; a reviewer without the grant is refused the accept of a write onto it, as not granted; the accept of a proposal is judged as its write as the records stand then, so one naming a record restricted since is refused, and one that reached a record restricted when proposed, as only a holder of the grant could, is applied"
+    "006, extended (lakelands#772): to a writer without the `restricted` grant a restricted record is not there at any write door, its refusal compared whole with that of a key no record holds: a reference to it and either end of a `link` are `not_live`, `retire`, `unlink` of a link to it and a verb called on it, of low risk or high, are not found, and so is the proposal of each; a link to it ingested again is `not_live`; an upsert onto its key, made or proposed, and onto a held key retired since, made, proposed or ingested, an ingest onto a live held key and a link onto a link whose own record is held are not granted and name no field, as is a well-formed setting onto a held one's key; that refusal comes last of the record checks (016), so under a version, without a required field, with a key field that disagrees and with a `view_kept` setting that is no boolean the upsert onto a held key answers as onto a free one, a conflict, a constraint and twice invalid; nothing is written; a reviewer without the grant is refused the accept of a write onto it, as not granted; the accept of a proposal is judged as its write as the records stand then, so one naming a record restricted since is refused, and one that reached a record restricted when proposed, as only a holder of the grant could, is applied"
 );
 
 async fn a_restricted_record_is_withheld_but_kept(store: Store) -> Held {
@@ -444,6 +444,10 @@ async fn write_doors(c: &dyn Catalog, who: &Principal, k: &str) -> Vec<lakelands
             c.call(who, &"rename".into(), Some(key), Default::default(), opts())
                 .await,
         ),
+        said(
+            c.call(who, &"touch".into(), Some(key), Default::default(), opts())
+                .await,
+        ),
         said(c.unlink(who, deal, d1, with, key, opts()).await),
         said(c.propose(who, retire, "why".into()).await),
         said(c.propose(who, call(Some(k.into())), "why".into()).await),
@@ -475,6 +479,8 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(store: S
             {"name": "fed", "target": "partner", "cardinality": "many_to_many", "authority": "source"}]}),
         json!({"declare": "verb", "name": "rename", "on": "partner", "risk": "high",
             "effect": "write", "set": [{"field": "n", "value": "'q'"}]}),
+        json!({"declare": "verb", "name": "touch", "on": "partner", "risk": "low",
+            "effect": "write", "set": [{"field": "n", "value": "'t'"}]}),
     ] {
         l.declare_json(d).await?;
     }
@@ -501,6 +507,12 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(store: S
         vec![source_record("sys.link.deal.fed", "d1:held", ends)],
     );
     fed.await.must("ingesting `d1` to `held`")?;
+    let (open, none) = (&"open".into(), Default::default());
+    let linked = l
+        .cat
+        .link(&l.own, deal, d1, with, open, none, WriteOpts::default());
+    linked.await.must("linking `d1` to `open`")?;
+    restrict(s, "sys.link.deal.with", "d1:open", "a hold").await?;
     restrict(s, "partner", "held", "a hold").await?;
     restrict(s, "deal", "held", "a hold").await?;
     // Each `rr` is held, then retired: one for each door, as a write that
@@ -610,6 +622,7 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(store: S
         apart.push(format!("the probes of a held key answered {kinds:?}"));
     }
     let fed = source_record("deal", "rr3", json!({"src": "x"}));
+    let live = source_record("deal", "held", json!({"src": "x"}));
     for (what, answer) in [
         (
             "`held`, made",
@@ -640,6 +653,16 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(store: S
         (
             "`rr3`, ingested",
             ingest(c, &w, "feed", vec![fed]).await.map(drop),
+        ),
+        (
+            "the live `held`, ingested",
+            ingest(c, &w, "feed", vec![live]).await.map(drop),
+        ),
+        (
+            "the held link `d1:open`, linked",
+            c.link(&w, deal, d1, with, open, Default::default(), opts())
+                .await
+                .map(drop),
         ),
         (
             "the held setting, made",
