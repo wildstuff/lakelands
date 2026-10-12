@@ -99,7 +99,7 @@ pub struct Writer {
 pub struct Shape {
     /// The ontology.
     pub ontology: Ontology,
-    /// Every declaration, as [`Ontology::declared`] lists them, each in
+    /// Every declaration, as `Ontology::declared` lists them, each in
     /// force since the position the engine holds it from.
     pub declared: Vec<lakelands_api::engine::Declared>,
     /// The settings.

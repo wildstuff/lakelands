@@ -16,7 +16,9 @@ use sha2::{Digest as _, Sha256};
 
 use crate::canonical;
 
-pub use lakelands_api::key::{key_component, key_components, keyable, record_key};
+pub use lakelands_api::key::record_key;
+#[doc(hidden)]
+pub use lakelands_api::key::{key_component, key_components, keyable};
 
 /// SHA-256 over the parts joined by `0x00`, as an event id: the first 16
 /// bytes, in lower-case hex.
@@ -28,6 +30,7 @@ fn id_of(parts: &[&[u8]]) -> EventId {
 /// version before the event (0 for a key not yet written) and its patch.
 /// A redelivery against the same state has the same id; a value that
 /// returns after a change (A, B, A) is a new event.
+#[doc(hidden)]
 pub fn ingest_id(
     source: &SourceId,
     ty: &TypeName,
@@ -47,6 +50,7 @@ pub fn ingest_id(
 
 /// The id of an authored write with an idempotency key: one key from one
 /// writer is one write in the whole lake.
+#[doc(hidden)]
 pub fn authored_id(writer: &str, key: &IdempotencyKey) -> EventId {
     id_of(&[
         b"lakelands:authored:v1",
@@ -59,6 +63,7 @@ pub fn authored_id(writer: &str, key: &IdempotencyKey) -> EventId {
 /// name, the record it moves and the date aged, in the one form of §1.3
 /// at midnight. A date aged twice gives the same ids, and the store
 /// appends nothing for an id already in the lake.
+#[doc(hidden)]
 pub fn aging_id(
     rule: &str,
     ty: &TypeName,
@@ -77,6 +82,7 @@ pub fn aging_id(
 /// The id of the answer recorded for the external verb the event at
 /// `position` made due (`docs/log-format.md` §3): a retry finds it by a
 /// seek, however far the log has grown since.
+#[doc(hidden)]
 pub fn output_id(lake: &LakeId, position: Position) -> EventId {
     id_of(&[
         b"lakelands:output:v1",
@@ -87,6 +93,7 @@ pub fn output_id(lake: &LakeId, position: Position) -> EventId {
 
 /// The id of a proposal's acceptance (`docs/log-format.md` §3): an accept
 /// sent again finds the acceptance by a seek.
+#[doc(hidden)]
 pub fn accepted_id(lake: &LakeId, proposal: &ProposalId) -> EventId {
     id_of(&[
         b"lakelands:accepted:v1",
@@ -96,6 +103,7 @@ pub fn accepted_id(lake: &LakeId, proposal: &ProposalId) -> EventId {
 }
 
 /// The id Lakelands' store gives every other event: its lake and position.
+#[doc(hidden)]
 pub fn positional_id(lake: &LakeId, position: Position) -> EventId {
     id_of(&[
         b"lakelands:event:v1",
@@ -108,6 +116,7 @@ pub fn positional_id(lake: &LakeId, position: Position) -> EventId {
 /// [`OLDEST_LOG_FORMAT`], the first a release with real installations
 /// wrote, to the one it writes
 /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+#[doc(hidden)]
 pub fn reads_format(v: u64) -> bool {
     (u64::from(OLDEST_LOG_FORMAT)..=u64::from(LOG_FORMAT_VERSION)).contains(&v)
 }
@@ -121,6 +130,7 @@ pub fn reads_format(v: u64) -> bool {
 /// - **14 → 15:** none. Format 15 lets a verb's path read across a
 ///   reference or a relation's link (055); a log of format 14 holds no
 ///   such declaration, and nothing else of an event changed.
+#[doc(hidden)]
 pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
     debug_assert!(reads_format(v), "format {v} is not one this release reads");
     event
@@ -133,6 +143,7 @@ pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
 /// one; a `lake_upgraded` anywhere else, and any other change, is a flaw
 /// at its position (`docs/log-format.md` §6).
 #[derive(Clone, Copy, Debug, Default)]
+#[doc(hidden)]
 pub struct FormatSteps {
     /// The format of the event before, if one was read.
     before: Option<u32>,
@@ -209,6 +220,7 @@ impl FormatSteps {
 /// stands: its lake was made by another release
 /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 /// A caller asks this of an event whose own `v` it has judged.
+#[doc(hidden)]
 pub fn created_in_another(event: &Event) -> Option<Flaw> {
     match event.body {
         EventBody::LakeCreated { format }
@@ -232,6 +244,7 @@ pub fn created_in_another(event: &Event) -> Option<Flaw> {
 /// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`). No door
 /// puts any there; a reader holds the rule for a log written by something
 /// else.
+#[doc(hidden)]
 pub fn misplaced(event: &Event) -> Option<Flaw> {
     if event.context.cause.is_some() {
         return Some(Flaw::CauseInContext);

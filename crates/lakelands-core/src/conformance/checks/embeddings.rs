@@ -41,7 +41,7 @@ check!(
 
 check!(
     EMBED_WRITE = a_write_embeds_its_text_and_records_the_vector,
-    "022, extended, and the log format: the store embeds the joined `from` text after the write, records the vector as output_recorded under embed:<model> naming the field, and the field holds it",
+    "022, extended, and the log format: the store embeds the joined `from` text after the write, records the vector as `output_recorded` under `embed:<model>` naming the field, and the field holds it",
     embedding
 );
 

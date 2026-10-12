@@ -764,7 +764,7 @@ belongs in the suite, not beside one engine:
 
 **embeddings**
 
-- `a_write_embeds_its_text_and_records_the_vector` — 022, extended, and the log format: the store embeds the joined `from` text after the write, records the vector as output_recorded under embed:<model> naming the field, and the field holds it
+- `a_write_embeds_its_text_and_records_the_vector` — 022, extended, and the log format: the store embeds the joined `from` text after the write, records the vector as `output_recorded` under `embed:<model>` naming the field, and the field holds it
 - `vector_coverage_counts_embedded_and_due_records_at_the_head` — 022, extended, and lakelands#147: vector_coverage answers, per embedding field at the head, the live records holding a vector and those whose text is not embedded (never embedded, failed or waiting for a retry), not counting a record without text; a redeclaration's retry and a retire move the counts; an unknown type is not found and a type without embeddings answers none
 - `the_same_text_is_embedded_once_whichever_record_asks` — 002 and 022, extended: a vector recorded for a text under a model is read back for every later record with that text, and after a record's text changed and came back; the log holds one output per distinct text
 - `a_rebuild_reads_the_vectors_back_without_embedding` — 001 and 002: a rebuild folds the recorded vectors; the fields read as before and nothing is embedded

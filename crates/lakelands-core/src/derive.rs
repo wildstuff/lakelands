@@ -42,6 +42,7 @@ pub fn reads(e: &Expr) -> BTreeSet<FieldName> {
 /// The member of the call's payload a path in a verb's value reads:
 /// `payload.<name>`, and no other path. A bare `payload` and a longer path
 /// are the record's field of that name (028, extended).
+#[doc(hidden)]
 pub fn payload_member(path: &[FieldName]) -> Option<&FieldName> {
     match path {
         [payload, name] if payload.as_str() == "payload" => Some(name),
@@ -51,6 +52,7 @@ pub fn payload_member(path: &[FieldName]) -> Option<&FieldName> {
 
 /// What a verb's value reads: the record's fields, as [`reads`] counts
 /// them, and the members of the call's payload.
+#[doc(hidden)]
 pub fn verb_reads(e: &Expr) -> (BTreeSet<FieldName>, BTreeSet<FieldName>) {
     let mut all = Vec::new();
     lakelands_api::expr::paths(e, &mut all);
@@ -77,6 +79,7 @@ fn typed(field: &FieldDecl) -> Result<Option<Expr>, Said> {
 /// The derived fields of a type in the order the fold computes them: each
 /// after every derived field it reads; among fields free to go at the same
 /// point, declaration order. A cycle is an error naming its fields.
+#[doc(hidden)]
 pub fn order(ty: &TypeDecl) -> Result<Vec<(FieldName, Expr)>, Said> {
     let mut derived: Vec<(FieldName, Expr)> = Vec::new();
     for f in &ty.fields {
@@ -117,6 +120,7 @@ pub fn order(ty: &TypeDecl) -> Result<Vec<(FieldName, Expr)>, Said> {
 }
 
 /// The context of one write, for the fold.
+#[doc(hidden)]
 pub struct Write<'a> {
     /// The record's fields before the write; `None` for a create.
     pub before: Option<&'a BTreeMap<FieldName, Value>>,
@@ -136,6 +140,7 @@ pub struct Write<'a> {
 /// (cleared or recomputed). Each takes the event's provenance with
 /// `origin: derived` in `meta` as it changes, so a field computed after it
 /// reads that; a type that keeps none reads none.
+#[doc(hidden)]
 pub fn apply(
     ty: &TypeDecl,
     order: &[(FieldName, Expr)],
@@ -201,6 +206,7 @@ pub fn apply(
 /// settings and the read's clock, in the order the fold computes derived
 /// fields; a value that cannot be computed is none. A type whose derived
 /// fields cannot be ordered was refused when declared, and has none here.
+#[doc(hidden)]
 pub fn at_read(
     ty: &TypeDecl,
     value_types: &[ValueTypeDecl],

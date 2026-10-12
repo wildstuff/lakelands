@@ -28,6 +28,7 @@ use lakelands_api::{Timestamp, Value};
 
 mod format;
 
+#[doc(hidden)]
 pub use format::ValueFormat;
 
 /// Checks one value against its field's type and returns it in its
@@ -110,6 +111,7 @@ fn resolve<'a>(
 
 /// A value in its canonical form if a field of `ty`'s storage kind takes
 /// it written: [`check`] without the value type.
+#[doc(hidden)]
 pub fn check_kind(value: &Value, ty: &FieldType) -> Result<Value, Case> {
     let wrong = |shape| Case::ValueShape {
         kind: ty.kind,
@@ -315,6 +317,7 @@ fn check_format(value: &Value, vt: &ValueTypeDecl) -> Result<(), Case> {
 /// Holds a field to the value type it names: the value type must be
 /// declared in `value_types`, and the field must be stored as its kind.
 /// A field that names no value type always conforms.
+#[doc(hidden)]
 pub fn conformance(field: &FieldDecl, value_types: &[ValueTypeDecl]) -> Result<(), Case> {
     let Some(name) = &field.ty.value_type else {
         return Ok(());

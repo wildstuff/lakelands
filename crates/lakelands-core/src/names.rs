@@ -20,6 +20,7 @@ use lakelands_api::error::{Case, Naming};
 /// ASCII letters, digits, `-` and `_`, starting with a letter or a
 /// digit. A lake id names files and directories, so it is narrower than
 /// an identifier in case and wider in `-`.
+#[doc(hidden)]
 pub fn is_lake_id(id: &str) -> bool {
     (1..=63).contains(&id.len())
         && id.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
@@ -38,11 +39,12 @@ pub fn is_identifier(name: &str) -> bool {
 }
 
 /// Whether a name is a type name: identifiers joined by `.`.
-pub fn is_type_name(name: &str) -> bool {
+pub(crate) fn is_type_name(name: &str) -> bool {
     !name.is_empty() && name.split('.').all(is_identifier)
 }
 
 /// Why a name of this kind cannot be declared, if it cannot.
+#[doc(hidden)]
 pub fn fault(what: Naming, name: &str) -> Option<Case> {
     let ok = match what {
         Naming::Type => is_type_name(name),
