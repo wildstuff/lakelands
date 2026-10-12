@@ -74,5 +74,12 @@ for engine in ${engines[@]+"${engines[@]}"}; do
     if needs_server "$engine"; then
         echo "conformance: $engine runs the CLI's mirror checks"
         cargo nextest run --locked -p lakelands-cli --test mirror
+        # Last, once every test above has ended: none left its schema
+        # behind (lakelands#1011). This holds only where this run owns the
+        # database, as CI's job and a slot's own container running one
+        # suite at a time do; another run in it leaves schemas while it
+        # runs.
+        echo "conformance: $engine finds no test schema left"
+        cargo nextest run --locked -p lakelands-engine-pg --test leftovers --run-ignored only
     fi
 done

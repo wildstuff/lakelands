@@ -217,6 +217,9 @@ struct Two {
     main: Arc<dyn LakeStore>,
     crm_at: Location,
     main_at: Location,
+    /// The engine, and every further lake's location handed out on it.
+    engine: Engine,
+    more: Vec<Location>,
     seams: Seams,
     dir: PathBuf,
     restricted: bool,
@@ -287,11 +290,21 @@ impl Two {
             main,
             crm_at,
             main_at,
+            engine: engine.clone(),
+            more: Vec::new(),
             seams,
             dir,
             restricted: false,
             grants: writer_grants(),
         }
+    }
+
+    /// The location of a further lake `name` on the same engine, whose
+    /// schema is dropped with the two (lakelands#1011).
+    fn lake(&mut self, name: &str) -> Location {
+        let at = location(&self.engine, &self.dir, name);
+        self.more.push(at.clone());
+        at
     }
 
     fn config(&self, start: Start) -> MirrorConfig {
@@ -448,6 +461,7 @@ impl Drop for Two {
     fn drop(&mut self) {
         let schemas: Vec<(String, String)> = [&self.crm_at, &self.main_at]
             .into_iter()
+            .chain(&self.more)
             .filter_map(schema)
             .collect();
         if schemas.is_empty() {
@@ -686,8 +700,8 @@ async fn a_source_lake_of_the_format_before_is_refused_until_it_is_upgraded() {
     use lakelands_api::error::Situation;
     use lakelands_api::event::{LOG_FORMAT_VERSION as NEW, OLDEST_LOG_FORMAT as OLD};
     for engine in engines() {
-        let two = Two::new("format14", &engine).await;
-        let at = location(&engine, &two.dir, "older");
+        let mut two = Two::new("format14", &engine).await;
+        let at = two.lake("older");
         let name = match engine {
             Engine::Memory => "memory",
             Engine::Sqlite => "sqlite",
