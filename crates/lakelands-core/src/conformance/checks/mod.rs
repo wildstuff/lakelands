@@ -570,6 +570,7 @@ pub const ALL: &[Check] = &[
     vocabulary::RESERVED_NAME_REFUSES_OPEN,
     vocabulary::TOOL_NAME_REFUSES_OPEN,
     vocabulary::HOST_VIEW_KEY,
+    vocabulary::HOST_EXTERNAL_VERB,
     backings::FAILURE_RETRIED,
     embeddings::EMBED_SEARCH_OTHER_BACKEND,
     embeddings::EMBED_SEARCH_JUDGED_FIRST,
