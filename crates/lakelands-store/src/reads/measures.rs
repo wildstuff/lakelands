@@ -127,11 +127,22 @@ impl Reader<'_> {
             _ => {
                 let relations: Vec<RelationName> =
                     p.steps.iter().map(|s| s.relation.clone()).collect();
-                let mut found =
-                    Components::new(hidden, relations, self.lake.limits.max_graph_nodes);
-                if let Some(moved) = self.seeds(p, carried, |node| found.add(node))? {
+                let max = self.lake.limits.max_graph_nodes;
+                let mut found = Components::new(hidden, relations, max);
+                // The seeds come a page at a time, and grow a page at a time.
+                let mut seeds: Vec<Node> = Vec::with_capacity(graph::PAGE);
+                let moved = self.seeds(p, carried, |node| {
+                    seeds.push(node);
+                    if seeds.len() == graph::PAGE {
+                        found.add(&seeds)?;
+                        seeds.clear();
+                    }
+                    Ok(())
+                })?;
+                if let Some(moved) = moved {
                     return Ok(Err(moved));
                 }
+                found.add(&seeds)?;
                 let mut all = Vec::new();
                 for (i, component) in found.finish().into_iter().enumerate() {
                     let size = component.len();

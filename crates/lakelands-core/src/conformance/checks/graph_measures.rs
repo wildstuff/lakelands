@@ -9,7 +9,9 @@ use std::collections::BTreeMap;
 
 use lakelands_api::error::Case;
 use lakelands_api::location::Limits;
-use lakelands_api::ontology::{Cardinality, RelationDecl, StorageKind, TypeDecl};
+use lakelands_api::ontology::{
+    Authority, Cardinality, FieldDecl, RelationDecl, StorageKind, TypeDecl,
+};
 use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, SearchMode, Step, Walk};
 use lakelands_api::seam::Seams;
 use lakelands_api::write::WriteOpts;
@@ -18,7 +20,7 @@ use serde_json::json;
 
 use crate::conformance::fixture::{
     Lake, Must, doors, field, invalid_case, order, owner, patch, pattern, reads_all, reason,
-    reference, restrict, searchable, step, type_decl,
+    reference, restrict, searchable, source_record, sourced, step, type_decl,
 };
 use crate::conformance::{Failure, Given, Held, Store};
 
@@ -30,6 +32,11 @@ check!(
 check!(
     COMPONENTS_PARTITION = components_partition_what_the_start_reaches_largest_first,
     "026 and 029: `components` puts every record reached from the start over the steps' relations, both ways, in exactly one component, across types; components largest first, ties by their least (type, key), members by (type, key); a start by key or by a search reaches from those records only"
+);
+
+check!(
+    COMPONENTS_ANY_PAGE = components_are_one_partition_however_their_seeds_fall_into_pages,
+    "026 and 029: `components` over a lake of 1 200 people and 400 companies, many unlinked, whose seeds reach each other within a page of seeds and across pages and where a retired company parts what it joined, answers from either start type exactly the partition the live links make, numbered largest first, then by the least (type, key), over pages of 1 000 (lakelands#1004)"
 );
 
 check!(
@@ -177,6 +184,158 @@ fn show(row: &BTreeMap<String, Value>) -> String {
             cell("key")
         )
     }
+}
+
+/// The source that writes the paged lake.
+const PAGED: &str = "paged";
+
+/// 1 200 people `p0000`… and 400 companies `c000`…: every third person
+/// works at company `i % 200`, so the two who share one are 600 apart, in
+/// different pages of seeds; every seventh knows the person before it, in
+/// the same page; every tenth company is owned by the one before it.
+/// Company `c100` is retired once written. Answers the live records and
+/// the live links between them.
+async fn paged_lake(
+    store: &dyn LakeStore,
+) -> Result<(Vec<String>, Vec<(String, String)>), Failure> {
+    let l = Lake::of(store);
+    let by_source = |name: &str, target: &str| FieldDecl {
+        authority: Authority::Source,
+        ..reference(name, target)
+    };
+    let name = || sourced("name", StorageKind::Text);
+    let carried = |name: &str, target: &str, via: &str| RelationDecl {
+        name: name.into(),
+        target: target.into(),
+        cardinality: Cardinality::ManyToOne,
+        via: Some(via.into()),
+        ..Default::default()
+    };
+    let mut company = type_decl("company", vec![name(), by_source("owner", "company")]);
+    company.relations = vec![carried("owns", "company", "owner")];
+    l.declare(company).await?;
+    let mut person = type_decl(
+        "person",
+        vec![
+            name(),
+            by_source("employer", "company"),
+            by_source("friend", "person"),
+        ],
+    );
+    person.relations = vec![
+        carried("works_at", "company", "employer"),
+        carried("knows", "person", "friend"),
+    ];
+    l.declare(person).await?;
+    // Each record as `type:key`, and the links between them.
+    let (mut records, mut nodes, mut links) = (Vec::new(), Vec::new(), Vec::new());
+    let people = (0..1_200).map(|i| ("person", format!("p{i:04}"), i));
+    for (ty, key, i) in (0..400)
+        .map(|j| ("company", format!("c{j:03}"), j))
+        .chain(people)
+    {
+        let mut fields = json!({"name": key});
+        let to = match ty {
+            "company" => vec![(
+                "owner",
+                i % 10 == 5,
+                format!("company:c{:03}", i.max(1) - 1),
+            )],
+            _ => vec![
+                ("employer", i % 3 == 0, format!("company:c{:03}", i % 200)),
+                ("friend", i % 7 == 6, format!("person:p{:04}", i.max(1) - 1)),
+            ],
+        };
+        for (field, _, to) in to.into_iter().filter(|(_, on, _)| *on) {
+            fields[field] = json!(to.split_once(':').map(|(_, k)| k));
+            links.push((format!("{ty}:{key}"), to));
+        }
+        nodes.push(format!("{ty}:{key}"));
+        records.push(source_record(ty, &key, fields));
+    }
+    l.ingest(PAGED, records)
+        .await
+        .must("ingesting the paged lake")?;
+    l.retire("company", "c100").await?;
+    let live = |n: &String| n != "company:c100";
+    nodes.retain(live);
+    links.retain(|(from, to)| live(from) && live(to));
+    Ok((nodes, links))
+}
+
+/// The rows `components` from every live record of `start` answers over
+/// `links`, worked out here: each component by a walk of its own, then
+/// largest first, ties by their least (type, key), members by (type, key).
+fn partition(links: &[(String, String)], start: &str, all: &[String]) -> Vec<String> {
+    let mut near: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (a, b) in links {
+        near.entry(a).or_default().push(b);
+        near.entry(b).or_default().push(a);
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut parts: Vec<Vec<String>> = Vec::new();
+    for seed in all.iter().filter(|n| n.starts_with(&format!("{start}:"))) {
+        if !seen.insert(seed.as_str()) {
+            continue;
+        }
+        let (mut part, mut todo) = (vec![seed.clone()], vec![seed.as_str()]);
+        while let Some(n) = todo.pop() {
+            for &m in near.get(n).into_iter().flatten() {
+                if seen.insert(m) {
+                    part.push(m.to_owned());
+                    todo.push(m);
+                }
+            }
+        }
+        part.sort();
+        parts.push(part);
+    }
+    parts.sort_by(|a, b| (b.len(), &a[0]).cmp(&(a.len(), &b[0])));
+    let mut rows = Vec::new();
+    for (i, part) in parts.iter().enumerate() {
+        rows.extend(part.iter().map(|n| format!("{i}/{} {n}", part.len())));
+    }
+    rows
+}
+
+async fn components_are_one_partition_however_their_seeds_fall_into_pages(store: Store) -> Held {
+    let (all, links) = paged_lake(store.as_ref()).await?;
+    let l = Lake::of(store.as_ref());
+    let steps = || {
+        let walk = |r: &str| step(r, Walk::Both);
+        vec![walk("works_at"), walk("owns"), walk("knows")]
+    };
+    for start in ["person", "company"] {
+        let (mut got, mut cursor, mut pages) = (Vec::new(), None, 0);
+        loop {
+            let p = Pattern {
+                limit: Some(1_000),
+                cursor,
+                ..measure(start, steps(), Projection::Components)
+            };
+            let (page, next) =
+                rows(l.cat.as_ref(), &l.own, p, "the paged lake's components").await?;
+            got.extend(page);
+            pages += 1;
+            match next {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        let want = partition(&links, start, &all);
+        let first = got.iter().zip(&want).position(|(g, w)| g != w);
+        ensure!(
+            got == want,
+            "`components` from every {start} answers the partition the live links make, \
+             {} rows in order; it answered {} rows over {pages} pages, first apart at row \
+             {first:?}: {:?} where {:?} was due",
+            want.len(),
+            got.len(),
+            first.and_then(|i| got.get(i)),
+            first.and_then(|i| want.get(i))
+        );
+    }
+    Ok(())
 }
 
 async fn degree_counts_each_records_links_to_ends_it_may_see_highest_first(store: Store) -> Held {

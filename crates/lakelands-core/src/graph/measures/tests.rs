@@ -45,7 +45,7 @@ fn each_record_is_asked_about_once_and_held_once() {
     }
     let g = Graph::new(links).retire("k11");
     let mut c = Components::new(&g, vec![rel("r")], 11);
-    c.add(n("k00")).unwrap();
+    c.add(&[n("k00")]).unwrap();
     assert_eq!(
         g.visibility_asked.get(),
         11,
@@ -86,12 +86,50 @@ fn components_read_a_page_of_the_frontier_at_a_time() {
             .collect(),
     );
     let mut c = Components::new(&g, vec![rel("r")], 1_000);
-    c.add(n("hub")).unwrap();
+    c.add(&[n("hub")]).unwrap();
     assert_eq!(c.finish()[0].len(), 301);
     assert_eq!(g.edges_asked.get(), 3, "the hub, then two pages of 256");
     assert_eq!(
         g.visible_asked.get(),
         2,
         "its 300 neighbours, a page at a time"
+    );
+}
+
+/// A page of seeds grows together: 256 seeds, each linked to a record of
+/// its own and every eighth to the next seed too, read their links in one
+/// call and their far ends' in one more, not one each; seeds that reach
+/// each other in the page are one component.
+#[test]
+fn components_grow_a_page_of_seeds_at_a_time() {
+    let mut links: Vec<_> = (0..256)
+        .map(|i| e(&format!("k{i:03}"), "r", &format!("t{i:03}")))
+        .collect();
+    links.extend(
+        (0..255)
+            .step_by(8)
+            .map(|i| e(&format!("k{i:03}"), "r", &format!("k{:03}", i + 1))),
+    );
+    let g = Graph::new(links);
+    let seeds: Vec<Node> = (0..256).map(|i| n(&format!("k{i:03}"))).collect();
+    let mut c = Components::new(&g, vec![rel("r")], 1_000);
+    c.add(&seeds).unwrap();
+    let all = c.finish();
+    assert_eq!(g.edges_asked.get(), 2, "the seeds, then their far ends");
+    assert_eq!(
+        g.visible_asked.get(),
+        1,
+        "the far ends not yet reached, once"
+    );
+    let sizes: Vec<usize> = all.iter().map(Vec::len).collect();
+    assert_eq!(
+        (sizes.len(), sizes[..32].iter().all(|&s| s == 4)),
+        (224, true),
+        "{sizes:?}"
+    );
+    assert_eq!(
+        all[0],
+        ["k000", "k001", "t000", "t001"].map(n),
+        "joined, by (type, key)"
     );
 }

@@ -447,6 +447,7 @@ pub const ALL: &[Check] = &[
     conditional_verbs::SKONTO_HELD,
     graph_measures::DEGREE_COUNTS,
     graph_measures::COMPONENTS_PARTITION,
+    graph_measures::COMPONENTS_ANY_PAGE,
     graph_measures::MEASURES_AT_THEIR_POSITION,
     graph_measures::GRAPH_TOO_LARGE,
     graph_measures::MEASURE_REFUSALS,
