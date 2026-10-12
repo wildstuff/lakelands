@@ -16,12 +16,14 @@ cut into segments and checkpointed. The Rust form of these types is
 A change to the format is a change to this document first, with the
 release's one step of the version (§6), and to the code second.
 
-`docs/log-format/vectors/` holds a worked example: a small lake's log in
-its stored form, with every hash, both kinds of content-derived id, the
-segment digests and a view's schema hash. `lakelands-core` recomputes
-them in a test, and `verify.py` beside them recomputes them with no
-Lakelands code; an implementation that agrees with both reads this
-document the way it is meant.
+`docs/log-format/vectors/<N>/` holds a worked example in format N: a
+small lake's log in its stored form, with every hash, both kinds of
+content-derived id, the segment digests and a view's schema hash.
+`lakelands-core` recomputes them in a test, and `verify.py` beside them
+recomputes them with no Lakelands code; an implementation that agrees
+with both reads this document the way it is meant. The directory of
+every format a release shipped is kept as that release left it, and
+every later release runs it (`docs/log-format/vectors/README.md`).
 
 ## 1. Events
 
@@ -1038,7 +1040,7 @@ the record's type, and no set through itself.
   `m` 60 s, `s` 1 s) in microseconds, which must come out whole: `1.5h`
   is `5400000000`, and `30d` is `2592000000000`.
 
-`docs/log-format/vectors/schema-hash.json` shows a view whose conditions
+`docs/log-format/vectors/15/schema-hash.json` shows a view whose conditions
 are written as text, its shape object with those conditions in typed
 form, and the resulting hash. A shape's `key` is the key the type's
 records carry, so a grouped view hashes alike whether its declaration

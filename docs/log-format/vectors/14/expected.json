@@ -1,0 +1,87 @@
+{
+  "events": [
+    {
+      "hash": "ae8e964f5fbd12632d65d1315124204b85454133d3071ba99f964520109f254f",
+      "id": "a0f4c1d27b3e4f5a8c9d0e1f2a3b4c5d",
+      "id_from": "random",
+      "kind": "lake_created",
+      "position": 0
+    },
+    {
+      "hash": "901d864ee10c8d927c92c1f4f963882fd6b7021e78afdc1d5cf76ec4af414dee",
+      "id": "b1e5d2c38a4f4e6b9dae1f203b4c5d6e",
+      "id_from": "random",
+      "kind": "lease_taken",
+      "position": 1
+    },
+    {
+      "hash": "83be3147c9bd2edf2746c951abc5a32e1472faa361eb1fb83e2fef40a6d85b2c",
+      "id": "c2f6e3d49b5a4f7cae0f2a314c5d6e7f",
+      "id_from": "random",
+      "kind": "declared",
+      "position": 2
+    },
+    {
+      "hash": "20bdc3e4e66a572ef735c8b258bc34770c0c181dab2343cc657f9ba4c55e0a22",
+      "id": "e4b8a5f61d7c4b9eac2b4c536e7f8091",
+      "id_from": "random",
+      "kind": "declared",
+      "position": 3
+    },
+    {
+      "hash": "6044e12dbf614f56163726bf52414a9c165aa402900d5fc93c4fa77457b0b145",
+      "id": "872839ae03575fd5e9b9aaf56e3e4e75",
+      "id_from": "ingest",
+      "kind": "record_ingested",
+      "position": 4
+    },
+    {
+      "hash": "fc7e37e7867fde870502b1487c1ecf9ea58f93dc3722db102aa5ab741400b737",
+      "id": "1b41a168bf7f1ef34676c12c97ad3051",
+      "id_from": "authored",
+      "kind": "record_upserted",
+      "position": 5
+    },
+    {
+      "hash": "fc89824de88d2af18de270f206acbd4e5a6b5e8b4ee5a54f7bbc47e8848f8625",
+      "id": "f5c9b6072e8d4caf8d3c5d647f809102",
+      "id_from": "random",
+      "kind": "record_upserted",
+      "position": 6
+    },
+    {
+      "hash": "deecee830ca5e216f3ad81bf726593e86d9497e03892a52db47b668bd4a439ab",
+      "id": "d3a7f4e50c6b4a8dbf1a3b425d6e7f80",
+      "id_from": "random",
+      "kind": "checkpoint",
+      "position": 7
+    }
+  ],
+  "lake": "vectors",
+  "schema_hashes": [
+    {
+      "position": 2,
+      "schema_hash": "7be095ba2fef82be084f0fe20d57d5bc4262673eb19a90f1c1efdd0052b36f20",
+      "type": "invoice"
+    },
+    {
+      "position": 3,
+      "schema_hash": "8e201925406a3a653beeb93c0f4375d194edb6bbef83a0e1f25378c1fa2a0eb9",
+      "type": "ledger_entry"
+    }
+  ],
+  "segments": [
+    {
+      "digest": "cd2b1aa8c377b87c9a08c404bed360ce47d6be5467b88d1047ab71c01b669842",
+      "file": "log/00000000000000000000.jsonl",
+      "first": 0,
+      "last": 6
+    },
+    {
+      "digest": "c45dc4813cf6b6002248b3f672dc1017df3d0ab5433b3f8a52446a65573af085",
+      "file": "log/00000000000000000007.jsonl",
+      "first": 7,
+      "last": 7
+    }
+  ]
+}

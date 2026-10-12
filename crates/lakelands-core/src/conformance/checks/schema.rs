@@ -51,7 +51,7 @@ check!(
     "003: every type name starting `sys.` is reserved; an ordinary principal, even the owner, is refused declaring one and nothing is appended"
 );
 
-const VECTOR: &str = include_str!("../../../../../docs/log-format/vectors/schema-hash.json");
+const VECTOR: &str = include_str!("../../../../../docs/log-format/vectors/15/schema-hash.json");
 
 async fn the_schema_hash_of_the_log_formats_vector_is_the_one_it_pins(store: Store) -> Held {
     let vector: Value = serde_json::from_str(VECTOR)
