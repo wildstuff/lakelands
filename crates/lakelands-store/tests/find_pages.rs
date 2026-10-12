@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use lakelands_api::engine::{
     CanonicalEvent, Declared, EngineOpener, LakeEngine, Lease, OpenMode, ProjectionStore,
-    ProjectionView, Scan, VectorIndex,
+    ProjectionView, Ranked, Rankings, Scan, VectorIndex,
 };
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::expr::Condition;
@@ -78,15 +78,6 @@ impl ProjectionView for CountingView<'_> {
     ) -> Result<Vec<Vec<Edge>>> {
         self.inner.edges(ty, keys, relation, walk)
     }
-    fn lexical(
-        &self,
-        ty: &TypeName,
-        text: &str,
-        fields: Option<&[lakelands_api::id::FieldName]>,
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>> {
-        self.inner.lexical(ty, text, fields, k)
-    }
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
         self.inner.proposals(filter)
     }
@@ -99,8 +90,18 @@ impl ProjectionView for CountingView<'_> {
     fn applied(&self, id: &EventId) -> Result<Option<Position>> {
         self.inner.applied(id)
     }
-    fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
+    fn output(&self, seam: &str, input: &Digest) -> Result<Option<(Position, Value)>> {
         self.inner.output(seam, input)
+    }
+
+    fn matching(
+        &self,
+        filter: &lakelands_api::seam::FeedFilter,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<lakelands_api::engine::Matched> {
+        self.inner.matching(filter, from, through, limit)
     }
 }
 
@@ -149,6 +150,9 @@ impl LakeEngine for Counting {
             handed: self.handed.clone(),
         }))
     }
+    fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked> {
+        self.inner.ranked(ty, asked, k)
+    }
     fn vectors(&self) -> Option<&dyn VectorIndex> {
         self.inner.vectors()
     }
@@ -162,6 +166,9 @@ struct CountingOpener {
 impl EngineOpener for CountingOpener {
     fn name(&self) -> &str {
         self.inner.name()
+    }
+    fn log_ends(&self, location: &Location) -> Result<Option<(CanonicalEvent, CanonicalEvent)>> {
+        self.inner.log_ends(location)
     }
     fn open(&self, location: &Location, mode: OpenMode) -> Result<Box<dyn LakeEngine>> {
         Ok(Box::new(Counting {

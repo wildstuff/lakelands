@@ -2,8 +2,6 @@
 //! append (`docs/decisions/004-the-change-feed-is-the-log.md`,
 //! `docs/decisions/001-the-log-is-the-truth.md`).
 
-use std::sync::Arc;
-
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::seam::FeedFilter;
@@ -11,11 +9,11 @@ use lakelands_api::write::ProposedWrite;
 use lakelands_api::{Access, LakeStore, Outcome, Position, RecordKey, SetOff, TypeName, WriteOpts};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, field_access, followed, log_events, patch, source_record, sourced, type_of, upsert,
     write_verb,
 };
+use crate::conformance::{Failure, Held, Store};
 
 /// What a write's answer says it set off.
 fn set_off(o: &Outcome) -> SetOff {
@@ -32,46 +30,68 @@ fn fired_at(events: &[Event]) -> Vec<Position> {
 }
 
 check!(
-    /// A key filter answers one record's events.
     BY_KEY = a_feed_filtered_by_key_answers_that_records_events_only,
-    "004 and lakelands#146: a feed filtered by types and keys answers exactly the events about those records, in log order, each once: its upserts, a trigger it fired, its object-set changes, a restrict, an unrestrict and its retire; with types empty a key matches in any type and verb_called passes too; kinds narrow it further; no event that names no record passes"
+    "004 and lakelands#146: a feed filtered by types and keys answers exactly the events about those records, in log order, each once: its upserts, a trigger it fired, its object-set changes, a restrict, an unrestrict and its retire; with types empty a key matches in any type and verb_called passes too; kinds narrow it further; no event that names no record passes; and every filtered poll answers what the log does (lakelands#678)"
 );
 
 check!(
-    /// A key filter does not follow a re-key.
     BY_OLD_KEY = a_key_filter_does_not_follow_a_rekey,
-    "004, 027 and lakelands#146: a feed filtered by a record's old key answers its events up to the migration that re-keyed it and none after; the new key answers what came after"
+    "004, 027 and lakelands#146: a feed filtered by a record's old key answers its events up to the migration that re-keyed it and none after; the new key answers what came after; and every filtered poll answers what the log does (lakelands#678)"
 );
 
 check!(
-    /// The feed answers the log from a position.
     FEED_IS_THE_LOG = the_feed_answers_the_log_from_a_position_by_kind_and_type,
     "004: `poll` answers the events from a position in log order, filtered by kind and type, with the position to poll from next and the head"
 );
 
 check!(
-    /// A rebuild changes nothing the feed says.
     REBUILD_LEAVES_THE_FEED = rebuilding_the_projection_changes_nothing_in_the_feed,
-    "001 and 004: the log is the truth and the projection an index; deleting and rebuilding the projection leaves every event as it was"
+    "001 and 004: the log is the truth and the projection an index; deleting and rebuilding the projection leaves every event as it was, and every filtered poll answers what the log does (lakelands#678)"
 );
 
 check!(
-    /// A trigger fires in the same append as the write that makes it hold.
     TRIGGER_FIRES = a_trigger_fires_on_every_write_whose_guard_holds,
     "004 and 015, extended: when a write makes a trigger's guard hold, `trigger_fired` is appended with it, and the write's answer names the trigger, `through` its position; a write under which the guard does not hold fires nothing and answers nothing more; a retry answers the same, and an acceptance what the write it applied set off"
 );
 
 check!(
-    /// An object set changes only when membership does.
     OBJECT_SET_CHANGES = an_object_set_change_is_written_only_when_membership_changes,
     "004 and 015, extended: a write that moves a record into or out of an object set appends `object_set_changed`, and its answer names the set as joined or left; one that leaves membership as it was appends none and names none"
 );
 
 check!(
-    /// A write names only the triggers and object sets its writer may know of.
     HIDDEN_TRIGGER = a_trigger_whose_guard_the_writer_may_not_read_is_not_named,
     "015, extended, and 024: a write's answer names a trigger it fired, or an object set its record joined or left, only if `describe` lists it to the writer; one whose condition reads a field the writer may not read is left out, and `through` still covers it"
 );
+
+check!(
+    INDEX_UNMASKED = a_filtered_poll_answers_the_log_unmasked,
+    "004, 051 and lakelands#678: the feed is the log unmasked and its index masks nothing: a poll filtered by a type, by the key of a restricted record, by that of a record an `only` grant would not admit and by a retired one's answers exactly what reading the whole log with no filter and keeping what the filter admits answers, whole, and moves `next` past the head as that read does; a reader who does not read everything is refused the feed at a door"
+);
+
+async fn a_filtered_poll_answers_the_log_unmasked(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(type_of("doc", &[("owner", Text), ("text", Text)]))
+        .await?;
+    for (key, owner) in [("d1", "a"), ("d2", "b"), ("d3", "a")] {
+        l.upsert("doc", key, json!({"owner": owner, "text": "first"}))
+            .await?;
+    }
+    l.upsert("doc", "d2", json!({"text": "second"})).await?;
+    store
+        .restrict(&"doc".into(), &"d2".into(), "a hold".into())
+        .await
+        .must("restricting d2")?;
+    l.retire("doc", "d3").await?;
+    let held = polled(store.as_ref(), filter(&[], &["doc"], &["d2"])).await?;
+    let kinds: Vec<&str> = held.iter().map(|e| e.body.kind()).collect();
+    ensure!(
+        kinds == ["record_upserted", "record_upserted", "record_restricted"],
+        "the restricted record d2, which an `only` grant on owner `a` would not admit either, \
+         answers its whole history to a filter by its key; it answered {kinds:?}"
+    );
+    the_index_answers_the_log(store.as_ref(), "a restricted and a retired record").await
+}
 
 async fn invoices(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
@@ -86,26 +106,21 @@ async fn all_events(store: &dyn LakeStore, from: Position) -> Result<Vec<Event>,
 }
 
 check!(
-    /// A record event says whether it made the record.
     MADE = a_record_event_says_whether_it_made_the_record,
     "004 and lakelands#572: `record_upserted` and `record_ingested` carry `made` where the write found no live record under the key and leave it out otherwise, so a consumer of the feed tells a record made from one changed without a read: a first creation with `version` 1, a record made again after its retirement with the version its history gives it, a change and a verb's write without; it is said where the event is made, of what the writer then holds: of two records of one ingest that name one key the first made it, and a proposal is judged when it is accepted, not when it was proposed"
 );
 
 check!(
-    /// Paging with `next` loses and repeats nothing.
     PAGED_FROM_NEXT = polling_from_next_in_small_pages_sees_every_matching_event_once_in_order,
     "004: a consumer that polls from the `next` each answer gives, in pages of one or two events and with writes landing between polls, sees every matching event once, in log order; this is the position a deliverer keeps"
 );
 
 check!(
-    /// A `limit` of 0 answers one event, not none.
     LIMIT_ZERO_IS_ONE = a_poll_with_a_limit_of_zero_answers_one_event,
     "seams, ChangeFeed: a limit of 0 is read as 1, so a consumer that passes 0 still moves forward instead of polling the same position for ever"
 );
 
-async fn a_record_event_says_whether_it_made_the_record(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_record_event_says_whether_it_made_the_record(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let mut bill = type_of("bill", &[("amount", Number)]);
@@ -181,15 +196,11 @@ async fn a_record_event_says_whether_it_made_the_record(
     Ok(())
 }
 
-async fn a_poll_with_a_limit_of_zero_answers_one_event(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_poll_with_a_limit_of_zero_answers_one_event(store: Store) -> Held {
     let l = invoices(store.as_ref()).await?;
     let from = store.head().await.must("reading the head")?.next();
-    let first = l
-        .upsert("invoice", "a", json!({"status": "open"}))
-        .await?
-        .position();
+    let first = l.upsert("invoice", "a", json!({"status": "open"}));
+    let first = first.await?.position();
     l.upsert("invoice", "b", json!({"status": "open"})).await?;
     let batch = store
         .feed()
@@ -208,23 +219,15 @@ async fn a_poll_with_a_limit_of_zero_answers_one_event(
     Ok(())
 }
 
-async fn the_feed_answers_the_log_from_a_position_by_kind_and_type(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn the_feed_answers_the_log_from_a_position_by_kind_and_type(store: Store) -> Held {
     let l = invoices(store.as_ref()).await?;
     let from = store.head().await.must("reading the head")?.next();
-    let a = l
-        .upsert("invoice", "a", json!({"status": "open"}))
-        .await?
-        .position();
-    let m = l
-        .upsert("memo", "m", json!({"text": "hi"}))
-        .await?
-        .position();
-    let b = l
-        .upsert("invoice", "b", json!({"status": "open"}))
-        .await?
-        .position();
+    let a = l.upsert("invoice", "a", json!({"status": "open"}));
+    let a = a.await?.position();
+    let m = l.upsert("memo", "m", json!({"text": "hi"}));
+    let m = m.await?.position();
+    let b = l.upsert("invoice", "b", json!({"status": "open"}));
+    let b = b.await?.position();
     let feed = store.feed();
 
     let everything = feed
@@ -242,10 +245,8 @@ async fn the_feed_answers_the_log_from_a_position_by_kind_and_type(
     );
 
     let invoices_only = filter(&["record_upserted"], &["invoice"], &[]);
-    let first = feed
-        .poll(from, &invoices_only, 1)
-        .await
-        .must("polling for one upsert of `invoice`")?;
+    let first = feed.poll(from, &invoices_only, 1);
+    let first = first.await.must("polling for one upsert of `invoice`")?;
     let firsts: Vec<Position> = first.events.iter().map(|e| e.position).collect();
     ensure!(
         firsts == [a] && first.next == a.next(),
@@ -279,9 +280,7 @@ async fn the_feed_answers_the_log_from_a_position_by_kind_and_type(
     Ok(())
 }
 
-async fn rebuilding_the_projection_changes_nothing_in_the_feed(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn rebuilding_the_projection_changes_nothing_in_the_feed(store: Store) -> Held {
     let l = invoices(store.as_ref()).await?;
     for (k, s) in [("a", "open"), ("b", "paid"), ("a", "held")] {
         l.upsert("invoice", k, json!({ "status": s })).await?;
@@ -301,12 +300,10 @@ async fn rebuilding_the_projection_changes_nothing_in_the_feed(
         before.len(),
         after.len()
     );
-    Ok(())
+    the_index_answers_the_log(store.as_ref(), "a rebuilt projection").await
 }
 
-async fn a_trigger_fires_on_every_write_whose_guard_holds(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_trigger_fires_on_every_write_whose_guard_holds(store: Store) -> Held {
     let l = invoices(store.as_ref()).await?;
     l.declare_json(json!({
         "declare": "trigger", "name": "paid", "on": "invoice", "when": "status = 'paid'"
@@ -320,9 +317,8 @@ async fn a_trigger_fires_on_every_write_whose_guard_holds(
         ("held", "four", false),
     ] {
         let from = store.head().await.must("reading the head")?.next();
-        let answer = l
-            .upsert("invoice", "i", json!({"status": status, "note": note}))
-            .await?;
+        let answer = l.upsert("invoice", "i", json!({"status": status, "note": note}));
+        let answer = answer.await?;
         let appended = all_events(store.as_ref(), from).await?;
         let at = fired_at(&appended);
         ensure!(
@@ -382,9 +378,7 @@ async fn a_trigger_fires_on_every_write_whose_guard_holds(
     Ok(())
 }
 
-async fn a_trigger_whose_guard_the_writer_may_not_read_is_not_named(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_trigger_whose_guard_the_writer_may_not_read_is_not_named(store: Store) -> Held {
     let l = invoices(store.as_ref()).await?;
     for (name, when) in [("noted", None), ("paid", Some("status = 'paid'"))] {
         let mut t = json!({"declare": "trigger", "name": name, "on": "invoice"});
@@ -426,9 +420,7 @@ async fn a_trigger_whose_guard_the_writer_may_not_read_is_not_named(
     Ok(())
 }
 
-async fn an_object_set_change_is_written_only_when_membership_changes(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn an_object_set_change_is_written_only_when_membership_changes(store: Store) -> Held {
     let l = invoices(store.as_ref()).await?;
     l.declare_json(json!({
         "declare": "object_set", "name": "open_ones", "of": "invoice", "where": "status = 'open'"
@@ -475,8 +467,8 @@ async fn an_object_set_change_is_written_only_when_membership_changes(
 }
 
 async fn polling_from_next_in_small_pages_sees_every_matching_event_once_in_order(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = invoices(store.as_ref()).await?;
     let invoices_only = filter(&["record_upserted"], &["invoice"], &[]);
     let mut next = store.head().await.must("reading the head")?.next();
@@ -500,10 +492,8 @@ async fn polling_from_next_in_small_pages_sees_every_matching_event_once_in_orde
             l.upsert("memo", &key, json!({"text": "aside"})).await?;
         }
         let limit = 1 + round % 2;
-        let batch = feed
-            .poll(next, &invoices_only, limit)
-            .await
-            .must("polling the feed from `next`")?;
+        let batch = feed.poll(next, &invoices_only, limit);
+        let batch = batch.await.must("polling the feed from `next`")?;
         ensure!(
             batch.events.len() <= limit as usize && batch.next > next || batch.events.is_empty(),
             "a poll from {next} with limit {limit} answered {} events and next {}",
@@ -515,10 +505,8 @@ async fn polling_from_next_in_small_pages_sees_every_matching_event_once_in_orde
     }
     // Drain what is left.
     loop {
-        let batch = feed
-            .poll(next, &invoices_only, 1)
-            .await
-            .must("polling the rest of the feed")?;
+        let batch = feed.poll(next, &invoices_only, 1);
+        let batch = batch.await.must("polling the rest of the feed")?;
         if batch.events.is_empty() {
             break;
         }
@@ -572,9 +560,7 @@ fn positions(events: &[Event]) -> Vec<u64> {
     events.iter().map(|e| e.position.0).collect()
 }
 
-async fn a_feed_filtered_by_key_answers_that_records_events_only(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_feed_filtered_by_key_answers_that_records_events_only(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     for ty in ["invoice", "credit"] {
@@ -612,14 +598,10 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(
         TypeName::from("invoice"),
         lakelands_api::RecordKey::from("INV-1"),
     );
-    store
-        .restrict(&invoice, &inv1, "a hold".into())
-        .await
-        .must("restricting INV-1")?;
-    store
-        .unrestrict(&invoice, &inv1)
-        .await
-        .must("lifting the hold")?;
+    let fut = store.restrict(&invoice, &inv1, "a hold".into());
+    fut.await.must("restricting INV-1")?;
+    let fut = store.unrestrict(&invoice, &inv1);
+    fut.await.must("lifting the hold")?;
     for key in ["INV-2", "INV-1"] {
         l.retire(invoice.as_str(), key).await?;
     }
@@ -696,10 +678,10 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(
         positions(&got),
         positions(&want)
     );
-    Ok(())
+    the_index_answers_the_log(store.as_ref(), "records of two types under one key").await
 }
 
-async fn a_key_filter_does_not_follow_a_rekey(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_key_filter_does_not_follow_a_rekey(store: Store) -> Held {
     let l = super::rekey::lake(store.as_ref(), super::rekey::IBANS).await?;
     let at = super::rekey::apply(store.as_ref()).await?;
     l.upsert("account", "DE1", json!({"holder": "after the re-key"}))
@@ -718,5 +700,96 @@ async fn a_key_filter_does_not_follow_a_rekey(store: Arc<dyn LakeStore>) -> Resu
          answered positions {:?}",
         positions(&new)
     );
+    the_index_answers_the_log(store.as_ref(), "a lake re-keyed").await
+}
+
+/// The projection's index of the log answers what the log does
+/// (lakelands#678): for every filter of a grid made from the lake's own
+/// log (each kind, type, key and type with key it holds, kinds with types,
+/// two of each, and a kind and a type it never holds), a poll from 0
+/// answers exactly the events of the whole log, read with no filter, that
+/// the filter admits, whole and in order; followed a match at a time it
+/// answers them again, each poll moving `next` on, the last one past the
+/// head. `what` names the lake in a failure.
+pub(super) async fn the_index_answers_the_log(store: &dyn LakeStore, what: &str) -> Held {
+    let log = log_events(store).await?;
+    let mut kinds = Vec::new();
+    let (mut types, mut keys, mut pairs, mut typed) = (vec![], vec![], vec![], vec![]);
+    for e in &log {
+        kinds.push(e.body.kind());
+        for a in crate::feed::about(&e.body) {
+            if let Some(ty) = &a.ty {
+                types.push(ty.to_string());
+                typed.push((e.body.kind(), ty.to_string()));
+            }
+            if let Some(key) = &a.key {
+                keys.push(key.to_string());
+                if let Some(ty) = &a.ty {
+                    pairs.push((ty.to_string(), key.to_string()));
+                }
+            }
+        }
+    }
+    for list in [&mut types, &mut keys] {
+        list.sort();
+        list.dedup();
+    }
+    kinds.sort();
+    kinds.dedup();
+    pairs.sort();
+    pairs.dedup();
+    typed.sort();
+    typed.dedup();
+    let mut grid = vec![
+        filter(&["never_a_kind"], &[], &[]),
+        filter(&[], &["no_such_type"], &[]),
+    ];
+    grid.extend(kinds.iter().map(|k| filter(&[k], &[], &[])));
+    grid.extend(types.iter().map(|t| filter(&[], &[t], &[])));
+    grid.extend(keys.iter().map(|k| filter(&[], &[], &[k])));
+    grid.extend(pairs.iter().map(|(t, k)| filter(&[], &[t], &[k])));
+    grid.extend(typed.iter().map(|(k, t)| filter(&[k], &[t], &[])));
+    if let ([a, b, ..], [c, d, ..]) = (kinds.as_slice(), types.as_slice()) {
+        grid.push(filter(&[a, b], &[], &[]));
+        grid.push(filter(&[a, b], &[c, d], &[]));
+    }
+    let head = store.head().await.must("reading the head")?;
+    for f in grid {
+        let admits =
+            |e: &&Event| crate::feed::admits(&f, e.body.kind(), &crate::feed::about(&e.body));
+        let want: Vec<Event> = log.iter().filter(admits).cloned().collect();
+        let got = followed(store, Position::GENESIS, &f).await?;
+        ensure!(
+            got == want,
+            "{what}: a poll with {f:?} answered positions {:?}; the log holds {:?} that it admits",
+            positions(&got),
+            positions(&want)
+        );
+        let (mut from, mut paged, mut polls) = (Position::GENESIS, Vec::new(), 0);
+        loop {
+            let b = store.feed().poll(from, &f, 1).await;
+            let b = b.must(&format!("polling with {f:?} from {from}"))?;
+            ensure!(
+                b.next > from && b.events.len() <= 1,
+                "{what}: a poll with {f:?} from {from} and a limit of 1 answered {} events and \
+                 next {}; it moves on and answers at most one",
+                b.events.len(),
+                b.next
+            );
+            (from, polls) = (b.next, polls + 1);
+            paged.extend(b.events);
+            if from > b.head {
+                break;
+            }
+        }
+        ensure!(
+            paged == want && polls <= want.len() + 1 && from == head.next(),
+            "{what}: following {f:?} a match at a time answered {:?} in {polls} polls and \
+             stopped at {from}; it answers {:?}, in at most one poll more, and stops past the \
+             head {head}",
+            positions(&paged),
+            positions(&want)
+        );
+    }
     Ok(())
 }

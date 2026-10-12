@@ -1127,6 +1127,28 @@ fn one_of_on_a_value_type_that_is_not_text_is_refused() {
 }
 
 #[test]
+fn a_view_keyed_by_other_fields_than_its_groups_is_refused() {
+    let view = |key: &str| {
+        format!(
+            "name: v\n{key}fields:\n  id: text\n  n: decimal\nview:\n  source: partner\n  \
+             group_by: [id]\n  measures:\n    n: \"count()\"\n"
+        )
+    };
+    let e = one(
+        &[PARTNER, ("types/v.yaml", &view("key: \"n\"\n"))],
+        Problem::Contradiction,
+    );
+    assert!(e.message.contains("`group_by`"), "{e}");
+    let total = "name: v\nkey: \"n\"\nfields:\n  n: decimal\nview:\n  source: partner\n  \
+                 measures:\n    n: \"count()\"\n";
+    one(&[PARTNER, ("types/v.yaml", total)], Problem::Contradiction);
+    for key in ["", "key: id\n"] {
+        let loaded = load(&[PARTNER, ("types/v.yaml", &view(key))]);
+        assert!(loaded.is_ok(), "{key:?}: {:#?}", loaded.err());
+    }
+}
+
+#[test]
 fn a_verb_needs_exactly_one_effect() {
     one(
         &[
@@ -1145,6 +1167,70 @@ fn a_verb_needs_exactly_one_effect() {
         ],
         Problem::Contradiction,
     );
+}
+
+#[test]
+fn a_verb_on_a_link_type_sets_none_of_its_ends() {
+    let verb = |field: &str| {
+        format!("name: v\non: sys.link.partner.knows\nrisk: low\nset:\n  {field}: \"'x'\"\n")
+    };
+    for end in ["from", "to"] {
+        let e = one(
+            &[KNOWS, ("verbs/v.yaml", &verb(end))],
+            Problem::Contradiction,
+        );
+        assert!(e.message.contains("one of its ends"), "{e}");
+    }
+    let loaded = load(&[KNOWS, ("verbs/v.yaml", &verb("since"))]);
+    assert!(loaded.is_ok(), "{:#?}", loaded.err());
+}
+
+/// `partner` with a relation carried by link records, `knows`, and one
+/// carried by a field, `led_by`.
+const KNOWS: (&str, &str) = (
+    "types/partner.yaml",
+    "name: partner\nkey: id\nfields:\n  id: text\n  lead: reference(partner)\nrelations:\n  \
+     knows: { target: partner, fields: { since: date_time } }\n  \
+     led_by: { target: partner, via: lead }\n",
+);
+
+#[test]
+fn a_verb_on_a_link_type_of_the_bundles_own_type_names_a_relation_it_carries() {
+    let verb = |on: &str| format!("name: v\non: {on}\nrisk: low\nset:\n  since: \"'x'\"\n");
+    // Carried by the bundle's own relation, or of a type the lake may hold.
+    for on in ["sys.link.partner.knows", "sys.link.other.knows"] {
+        let loaded = load(&[KNOWS, ("verbs/v.yaml", &verb(on))]);
+        assert!(loaded.is_ok(), "{on}: {:#?}", loaded.err());
+    }
+    // No relation of that name, and one a field carries.
+    for on in ["sys.link.partner.likes", "sys.link.partner.led_by"] {
+        let e = one(
+            &[KNOWS, ("verbs/v.yaml", &verb(on))],
+            Problem::UnknownReference,
+        );
+        assert!(
+            e.file == "verbs/v.yaml" && e.message.contains("carried by link"),
+            "{e}"
+        );
+    }
+    // A trigger, a set and a view may stand on one a removed relation left.
+    let on = "sys.link.partner.likes";
+    let view = "name: n\nfields:\n  n: number\nview:\n  measures:\n    n: count()\n  source: ";
+    for (file, body) in [
+        ("triggers/t.yaml", format!("name: t\non: {on}\n")),
+        (
+            "object_sets/s.yaml",
+            format!("name: s\nwhere: \"true\"\nof: {on}\n"),
+        ),
+        ("types/n.yaml", format!("{view}{on}\n")),
+    ] {
+        let loaded = load(&[KNOWS, (file, &body)]);
+        assert!(loaded.is_ok(), "{file}: {:#?}", loaded.err());
+    }
+    // An owner whose file does not parse is reported once, at its file.
+    let broken = ("types/partner.yaml", "name: partner\nextra: 1\n");
+    let e = one(&[broken, ("verbs/v.yaml", &verb(on))], Problem::Malformed);
+    assert_eq!(e.file, "types/partner.yaml", "{e}");
 }
 
 #[test]
@@ -1189,6 +1275,45 @@ fn a_function_has_exactly_one_definition() {
     );
 }
 
+/// A declaration is written into the log as it is declared, so an
+/// integer in it that no reader reads exactly is reported, at the
+/// declaration and its member, as the store refuses it.
+#[test]
+fn a_declaration_the_log_would_not_write_is_refused() {
+    let f =
+        "name: f\nbacking: http\nconfig:\n  url: https://x.example\n  limits: [9007199254740993]\n";
+    let e = one(&[("functions/f.yaml", f)], Problem::Malformed);
+    assert!(
+        e.message.contains("function `f`") && e.message.contains("`config.limits[0]`"),
+        "{e}"
+    );
+    let fits = f.replace("9007199254740993", "9007199254740991");
+    load(&[("functions/f.yaml", &fits)]).expect("the largest integer");
+    // A declaration of every kind is read by it, an expression's literal
+    // in text form too.
+    for (file, doc, member) in [
+        (
+            "object_sets/s.yaml",
+            "name: s\nof: partner\nwhere: \"now() > 104250d\"\n",
+            "`where`",
+        ),
+        (
+            "triggers/t.yaml",
+            "name: t\non: partner\nwhen: \"now() > 104250d\"\n",
+            "`when`",
+        ),
+        (
+            "value_types/v.yaml",
+            "name: v\nkind: date_time\nconstraint: \"now() - value < 104250d\"\n",
+            "`constraint`",
+        ),
+    ] {
+        let e = one(&[PARTNER, (file, doc)], Problem::Malformed);
+        assert!(e.message.contains(member), "{e}");
+        load(&[PARTNER, (file, &doc.replace("104250d", "104249d"))]).expect("the largest span");
+    }
+}
+
 #[test]
 fn a_type_that_names_fields_it_does_not_have_is_refused() {
     for body in [
@@ -1230,6 +1355,26 @@ fn an_inverse_may_not_take_a_name_its_target_already_uses() {
         ],
         Problem::Contradiction,
     );
+}
+
+#[test]
+fn an_inverse_names_one_relation_onto_its_target() {
+    let owner = |name: &str, relation: &str| {
+        format!("name: {name}\nrelations:\n  {relation}: {{ target: c, inverse: docs }}\n")
+    };
+    let (a, b) = (owner("a", "of"), owner("b", "for"));
+    let c = ("types/c.yaml", "name: c\n");
+    let e = one(
+        &[("types/a.yaml", &a), ("types/b.yaml", &b), c],
+        Problem::Contradiction,
+    );
+    assert!(
+        e.file == "types/b.yaml" && e.message.contains("`a`'s `of`"),
+        "{e}"
+    );
+    // One relation alone names it, and the same inverse onto another type.
+    let d = "name: d\nrelations:\n  of: { target: a, inverse: docs }\n";
+    load(&[("types/a.yaml", &a), c, ("types/d.yaml", d)]).expect("each onto its own target");
 }
 
 #[test]

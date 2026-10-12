@@ -2,6 +2,8 @@
 
 ## What is decided
 
+### One test decides what is inside the store: must a replay reproduce it
+
 What belongs inside the store and what belongs outside it is decided by
 one test: must the result reproduce byte-identically when the log is
 replayed?
@@ -17,6 +19,33 @@ a clock other than the event's own time), it sits behind a seam. The
 store calls the seam, records its output as an event with provenance,
 and on replay reads that recorded output instead of calling the seam
 again.
+
+### A seam's failure is its output, and only a `declared` event retries it
+
+What a seam answered is recorded, whether it answered a value or
+failed. A failure is recorded as `{"error": "<why>"}` and read back on
+replay like any other output, so a replay reproduces the failure
+exactly, and the store never calls the seam again for the same input to
+see whether it would answer differently now. That holds for a replay
+and for every later event that touches the record. It has one
+deliberate exception: a `declared` event of the function or the type
+retries a recorded failure once, and the later output holds. The door
+`recompute` appends that event; a declaration in force appends none
+(`docs/decisions/022-functions-are-declarations.md`,
+"`recompute` computes again, and retries a recorded failure").
+
+The store calls a seam only after the append that made the call due,
+outside the fold: the fold reads the log and the outputs recorded in
+it, and nothing else
+(`docs/decisions/022-functions-are-declarations.md`).
+
+### An output the log holds is named, not carried again
+
+A replay still reads every output from the log, never from the seam:
+where an output the lake holds fills a field again, the event names the
+output by its position, and the fold reads it there and checks that it
+is the call's latest
+(`docs/decisions/053-a-recorded-output-is-recorded-once.md`).
 
 ## Why
 
@@ -44,23 +73,15 @@ narrow contract that a host implements.
 - Nothing in the store calls a model, starts a sandbox or opens a
   network connection on its own.
 
-## Extended: a seam's failure is its output
+## How it came to be
 
-What a seam answered is recorded, whether it answered a value or
-failed. A failure is recorded as `{"error": "<why>"}` and read back on
-replay like any other output, so a replay reproduces the failure
-exactly, and the store never calls the seam again for the same input to
-see whether it would answer differently now. The store calls a seam
-only after the append that made the call due, outside the fold: the
-fold reads the log and the outputs recorded in it, and nothing else
-(`docs/decisions/022-functions-are-declarations.md`, extended).
-
-## Corrected (2026-09-25): a redeclaration calls again
-
-"The store never calls the seam again for the same input" holds for a
-replay and for every later event that touches the record. It has one
-deliberate exception: a `declared` event of the function or the type
-retries a recorded failure once, and the later output holds. Since
-lakelands#565 the door `recompute` appends that event; a declaration in
-force appends none (`docs/decisions/022-functions-are-declarations.md`,
-"Extended: `recompute` computes again, and retries a recorded failure").
+- The first version: the one test, and a seam's output recorded as an
+  event and read back on replay.
+- A seam's failure is recorded as its output, and a seam is called only
+  after the append, outside the fold.
+- Corrected on 2026-09-25: "never calls the seam again" has one
+  exception; a redeclaration retries a recorded failure once.
+- The door `recompute` appends the `declared` event that retries, and a
+  declaration in force appends none (lakelands#565).
+- An output the log holds is named by its position, not carried again
+  (lakelands#663).

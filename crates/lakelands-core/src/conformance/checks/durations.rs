@@ -6,8 +6,6 @@
 //! and 12 hours after it was due, `open` is not paid. Every number below
 //! is counted by hand from that.
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::StorageKind::{self, *};
@@ -18,33 +16,29 @@ use lakelands_api::{Find, Found, LakeStore, TypeName, Value};
 use rust_decimal::Decimal;
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, agg, computed_by, dec, decimal, derived, field, field_access, find_where,
-    log_events, migration, no_such_field, object_set_on, pattern, refused_alike, refused_like,
-    refused_on, trigger_on, type_decl, value, view_of, write_verb,
+    migration, no_such_field, object_set_on, pattern, refused_alike, refused_like, refused_on,
+    trigger_on, type_decl, value, view_of, write_verb,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// The days between two instants.
     DAYS = a_duration_divided_by_a_unit_is_a_number,
-    "017, extended: a duration divided by a duration is an exact number, a duration times or divided by a number is a duration, and floor(n) is the whole number below; so (paid_on - due_on) / 1d answers the days between two instants as a group key, in a where and in a derived number field, the same on every engine; log format §6: the declaration that calls floor is written in format version 11, as is every event after it"
+    "017, extended: a duration divided by a duration is an exact number, a duration times or divided by a number is a duration, and floor(n) is the whole number below; so (paid_on - due_on) / 1d answers the days between two instants as a group key, in a where and in a derived number field, the same on every engine"
 );
 
 check!(
-    /// A derived field that is never filled.
     LANDS = a_derived_field_its_expression_can_never_fill_is_refused,
     "028, extended: a derived field whose expression is certainly of a kind its field never holds is refused as invalid on that field by declare, add_field and a migration, naming both kinds, and nothing is appended; a text into a number field and an expression whose kind depends on the record are taken"
 );
 
 check!(
-    /// What a view computes, and what a function takes, never fits.
     VIEW_LANDS = a_view_value_its_field_never_holds_is_refused_and_a_function_names_both_kinds,
     "028, extended (lakelands#563): a view whose measure or group value is certainly of a kind its field never holds, `max(due_on)` into a `number` field or a text group into a `boolean` field, is refused as invalid on that field, naming the kind, and nothing is appended; the same measure into a `date_time` field is taken; a field computed by a function whose input the type holds as another kind is refused naming both kinds"
 );
 
 check!(
-    /// What can never be evaluated.
     NEVER = what_can_never_be_evaluated_is_refused_and_a_records_own_failure_is_not,
     "028, extended: an operation between two kinds that has no meaning is refused as invalid in a find's where and group key and a pattern's where, and in a trigger's when, an object set's where and a verb's requires and value, naming the operation; a reader kept from a field it names is answered as for a field the type lacks; an evaluation that fails for one record's value refuses nothing: that record does not match, and its key is null"
 );
@@ -95,9 +89,7 @@ async fn found(l: &Lake, filter: &str) -> Result<Vec<String>, Failure> {
     Ok(rows.iter().map(|r| r.key.as_str().to_owned()).collect())
 }
 
-async fn a_duration_divided_by_a_unit_is_a_number(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_duration_divided_by_a_unit_is_a_number(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     // 64 days and 12 hours are 5 572 800 seconds; a duration is answered in
     // microseconds. The record that is not paid has no key.
@@ -144,22 +136,10 @@ async fn a_duration_divided_by_a_unit_is_a_number(
         value(&paid, "late"),
         value(&open, "late")
     );
-    // The declaration that calls `floor` is the lake's first event in
-    // format 11, and every event after it carries 11.
-    let events = log_events(store.as_ref()).await?;
-    let formats: Vec<_> = events.iter().map(|e| (e.v, e.body.kind())).collect();
-    let mut from = formats.iter().skip_while(|(v, _)| *v != 11);
-    ensure!(
-        from.next() == Some(&(11, "declared")) && from.all(|(v, _)| *v == 11) && formats[0].0 < 11,
-        "the lake writes format 11 from the declaration that calls `floor` on, and not before; \
-         its events carry {formats:?}"
-    );
     Ok(())
 }
 
-async fn a_derived_field_its_expression_can_never_fill_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_derived_field_its_expression_can_never_fill_is_refused(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let ty = TypeName::from(TYPE);
@@ -219,8 +199,8 @@ async fn a_derived_field_its_expression_can_never_fill_is_refused(
 }
 
 async fn what_can_never_be_evaluated_is_refused_and_a_records_own_failure_is_not(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let ty = TypeName::from(TYPE);
@@ -267,9 +247,8 @@ async fn what_can_never_be_evaluated_is_refused_and_a_records_own_failure_is_not
         "a reader kept from `due_on` is answered as for a field the type lacks; find answered \
          {asked:?}"
     );
-    let absent = cat
-        .find(&kept, &ty, find_where("nosuch + paid_on is null"))
-        .await;
+    let absent = cat.find(&kept, &ty, find_where("nosuch + paid_on is null"));
+    let absent = absent.await;
     let names = ("nosuch", "due_on");
     refused_alike("a filter on `due_on`", &asked, absent, names)?;
     // A failure of one record's value is that record's: `i1` divides by a
@@ -287,8 +266,8 @@ async fn what_can_never_be_evaluated_is_refused_and_a_records_own_failure_is_not
 }
 
 async fn a_view_value_its_field_never_holds_is_refused_and_a_function_names_both_kinds(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = lake(store.as_ref()).await?;
     let head = store.head().await.must("reading the head")?;
     let late = |by: StorageKind, last: StorageKind| {

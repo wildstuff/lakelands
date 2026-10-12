@@ -16,49 +16,42 @@ use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::principal::WriteContext;
 use lakelands_api::write::{Declaration, ProposedWrite};
-use lakelands_api::{Catalog, LakeStore, Position, RecordKey, Refusal, TypeName, WriteOpts};
+use lakelands_api::{Catalog, Position, RecordKey, Refusal, TypeName, WriteOpts};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, events_after, field, head_unmoved, ingest, invalid_case, limits, migration, nobody,
     patch, reactive, reads_all, reason, refused_on, source_record, sourced, trigger_on, try_upsert,
     type_decl, upsert, value_type, write_verb,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A host's cause lands on its write's own events.
     CAUSE_ON_OWN_EVENTS = a_reactive_write_with_a_cause_carries_it_on_each_of_its_events,
     "021, extended: a write through a catalog whose context names a cause carries it as the envelope's `cause` on each event the write itself appends (an upsert's record, a verb's `verb_called`, an ingest's record), while the events the store derives keep the store's cause (a trigger's firing names its write, a verb's write names its `verb_called`); no event's `context` carries `cause`"
 );
 
 check!(
-    /// A cause past the head is refused.
     CAUSE_PAST_HEAD = a_cause_past_the_head_is_refused_and_appends_nothing,
     "021, extended: a write whose context names a cause past the lake's head is refused as invalid naming both positions, appending nothing, after the door's own checks (016, extended); a cause at the head, and at position 0, is taken"
 );
 
 check!(
-    /// The ceiling holds on every door that writes.
     DEPTH_ON_EVERY_DOOR = the_reactive_ceiling_holds_on_every_door_that_writes,
-    "021, as extended on 2026-09-25 (lakelands#257): a context deeper than the lake's max_reactive_depth is refused as too_deep naming that ceiling, appending nothing, through ingest, accept, reject, declare, apply, add_field, migrate_apply and migrate_value_type_apply as through the record doors"
+    "021, as extended on 2026-09-25 (lakelands#257): a context deeper than the lake's max_reactive_depth is refused as too_deep naming that ceiling, appending nothing, through link, unlink, recompute, ingest, accept, reject, declare, apply, add_field, migrate_apply and migrate_value_type_apply as through the record doors"
 );
 
 check!(
-    /// The context comes first on every door.
     CONTEXT_FIRST = every_write_door_checks_the_context_before_anything_else,
-    "021, extended (lakelands#344): a context past the ceiling is refused as too_deep before anything else a door checks, so a request that also breaks the door's own first rule (a principal without grants, a link type at an ordinary door, an undeclared type, relation, verb or proposal) is refused as too_deep on every write door; a principal of another lake is refused not_granted before that"
+    "021, extended (lakelands#344): a context past the ceiling is refused as too_deep before anything else a door checks, so a request that also breaks the door's own first rule (a principal without grants, a link type at an ordinary door, an undeclared type, relation, verb or proposal) is refused as too_deep on every write door, `recompute` among them; a principal of another lake is refused not_granted before that"
 );
 
 check!(
-    /// A trigger's ceiling is read where the cause is judged.
     TRIGGER_CEILING_AT_APPEND = a_triggers_ceiling_is_read_with_the_cause_at_the_append,
     "021, extended (lakelands#375): a reaction naming a cause past the head is refused as invalid even when the next append puts a firing there; once the firing is in the log, a reaction past its trigger's ceiling is refused too_deep naming the trigger, and that ceiling is read at the append, after the door's own checks, while the lake's ceiling comes first"
 );
 
-async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let reading = type_decl("reading", vec![sourced("value", StorageKind::Number)]);
@@ -102,14 +95,13 @@ async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(
         )
         .await
         .must("the host's reactive call of `close` on `j1`")?;
-    ingest(
+    let fut = ingest(
         reaction.as_ref(),
         own,
         "meter",
         vec![source_record("reading", "r1", json!({"value": 7}))],
-    )
-    .await
-    .must("the host's reactive ingest of `r1`")?;
+    );
+    fut.await.must("the host's reactive ingest of `r1`")?;
 
     let events = events_after(store.as_ref(), before).await?;
     let mut seen = [false; 3];
@@ -181,9 +173,7 @@ async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(
     Ok(())
 }
 
-async fn a_cause_past_the_head_is_refused_and_appends_nothing(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_cause_past_the_head_is_refused_and_appends_nothing(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
         .await?;
@@ -214,12 +204,10 @@ async fn a_cause_past_the_head_is_refused_and_appends_nothing(
         }
     }
     head_unmoved(store.as_ref(), head, "a write whose cause is past the head").await?;
-    write(store.catalog(reactive(1, Some(head))), "j2")
-        .await
-        .must("a write whose cause is the head")?;
-    write(store.catalog(reactive(1, Some(Position::GENESIS))), "j3")
-        .await
-        .must("a write whose cause is position 0")?;
+    let fut = write(store.catalog(reactive(1, Some(head))), "j2");
+    fut.await.must("a write whose cause is the head")?;
+    let fut = write(store.catalog(reactive(1, Some(Position::GENESIS))), "j3");
+    fut.await.must("a write whose cause is position 0")?;
     // The cause is judged at the append, after the door's own checks.
     let late = store.catalog(reactive(
         1,
@@ -251,17 +239,45 @@ async fn a_cause_past_the_head_is_refused_and_appends_nothing(
     Ok(())
 }
 
-async fn the_reactive_ceiling_holds_on_every_door_that_writes(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn the_reactive_ceiling_holds_on_every_door_that_writes(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
+    let mut desk = type_decl("desk", vec![field("n", StorageKind::Text)]);
+    desk.relations = vec![lakelands_api::ontology::RelationDecl {
+        name: "of".into(),
+        target: "job".into(),
+        ..Default::default()
+    }];
     for t in [
         type_decl("job", vec![field("status", StorageKind::Text)]),
         type_decl("reading", vec![sourced("value", StorageKind::Number)]),
+        desk,
     ] {
         l.declare(t).await?;
     }
+    // A function of the suite's backing, for `recompute` to append.
+    l.declare_json(json!({"declare": "function", "name": "echo",
+        "backing": crate::conformance::backing::KIND,
+        "inputs": [{"name": "n", "type": {"kind": "text"}}], "config": {}}))
+        .await?;
+    // A job, and two desks, the first linked to it: a link to write and
+    // one to remove.
+    l.upsert("job", "j1", json!({"status": "open"})).await?;
+    for d in ["d1", "d2"] {
+        l.upsert("desk", d, json!({"n": d})).await?;
+    }
+    let (desk, of, j1): (TypeName, _, RecordKey) = ("desk".into(), "of".into(), "j1".into());
+    let (d1, d2): (RecordKey, RecordKey) = ("d1".into(), "d2".into());
+    let linked = cat.link(
+        own,
+        &desk,
+        &d1,
+        &of,
+        &j1,
+        patch(json!({})),
+        WriteOpts::default(),
+    );
+    linked.await.must("linking `d1` to `j1`")?;
     let proposal = |key: &str| ProposedWrite::Upsert {
         ty: "job".into(),
         key: key.into(),
@@ -287,16 +303,35 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
     let mut widened = type_decl("job", vec![field("status", StorageKind::Text)]);
     widened.fields.push(field("note", StorageKind::Text));
     let migration = migration(widened.clone());
-    let report = cat
-        .migrate(own, migration.clone())
-        .await
-        .must("preflighting a migration of `job`")?
-        .data;
+    let report = cat.migrate(own, migration.clone());
+    let report = report.await.must("preflighting a migration of `job`")?.data;
 
     let ceiling = limits().max_reactive_depth;
     let deep = store.catalog(reactive(ceiling + 1, None));
     let head = store.head().await.must("reading the head")?;
+    let opts = WriteOpts::default;
     let tries: Vec<(&str, lakelands_api::Result<()>)> = vec![
+        (
+            "link",
+            deep.link(own, &desk, &d2, &of, &j1, patch(json!({})), opts())
+                .await
+                .map(drop),
+        ),
+        (
+            "unlink",
+            deep.unlink(own, &desk, &d1, &of, &j1, opts())
+                .await
+                .map(drop),
+        ),
+        (
+            "recompute",
+            deep.recompute(
+                own,
+                lakelands_api::write::Recompute::Function("echo".into()),
+            )
+            .await
+            .map(drop),
+        ),
         (
             "ingest",
             ingest(
@@ -347,31 +382,25 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
                 .map(drop),
         ),
     ];
-    for (door, answer) in tries {
-        match answer {
-            Err(e) if matches!(reason(&e), Some(Refusal::TooDeep { max }) if *max == ceiling) => {}
-            other => {
-                return Err(Failure::new(format!(
-                    "`{door}` through a context past the ceiling must be refused as too_deep \
-                     naming the lake's ceiling {ceiling}; it answered {other:?}"
-                )));
-            }
-        }
-    }
+    let named = |a: &lakelands_api::Result<()>| matches!(reason(a), Some(Refusal::TooDeep { max }) if *max == ceiling);
+    let red: Vec<String> = (tries.iter().filter(|(_, answer)| !named(answer)))
+        .map(|(door, answer)| format!("`{door}` answered {answer:?}"))
+        .collect();
+    ensure!(
+        red.is_empty(),
+        "every door through a context past the ceiling must be refused as too_deep naming \
+         the lake's ceiling {ceiling}: {red:?}"
+    );
     head_unmoved(store.as_ref(), head, "every write past the ceiling").await?;
     let vt = value_type("code", StorageKind::Text);
-    cat.declare(own, Declaration::ValueType(vt.clone()))
-        .await
-        .must("declaring the value type `code`")?;
+    let fut = cat.declare(own, Declaration::ValueType(vt.clone()));
+    fut.await.must("declaring the value type `code`")?;
     let tightened = lakelands_api::ontology::ValueTypeDecl {
         one_of: vec!["a".into()],
         ..vt
     };
-    let report = cat
-        .migrate_value_type(own, tightened.clone().into())
-        .await
-        .must("preflighting a tightened `code`")?
-        .data;
+    let report = cat.migrate_value_type(own, tightened.clone().into());
+    let report = report.await.must("preflighting a tightened `code`")?.data;
     let before = store.head().await.must("reading the head")?;
     match deep
         .migrate_value_type_apply(own, tightened.into(), &report.report_id)
@@ -394,9 +423,7 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
     Ok(())
 }
 
-async fn every_write_door_checks_the_context_before_anything_else(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn every_write_door_checks_the_context_before_anything_else(store: Store) -> Held {
     // Nothing is declared and nobody holds a grant: every door would
     // refuse each request below for its own reasons, after the context.
     let nobody = nobody(store.as_ref());
@@ -473,6 +500,12 @@ async fn every_write_door_checks_the_context_before_anything_else(
                 .map(drop),
         ),
         (
+            "recompute",
+            d.recompute(p, lakelands_api::write::Recompute::Type(ty.clone()))
+                .await
+                .map(drop),
+        ),
+        (
             "ingest",
             ingest(
                 d,
@@ -494,9 +527,8 @@ async fn every_write_door_checks_the_context_before_anything_else(
         lake: "elsewhere".into(),
         ..nobody.clone()
     };
-    let foreign = d
-        .upsert(&stranger, &lt, &key, patch(json!({"n": 1})), opts())
-        .await;
+    let foreign = d.upsert(&stranger, &lt, &key, patch(json!({"n": 1})), opts());
+    let foreign = foreign.await;
     if !matches!(reason(&foreign), Some(Refusal::NotGranted)) {
         red.push(format!("a principal of another lake answered {foreign:?}"));
     }
@@ -509,9 +541,7 @@ async fn every_write_door_checks_the_context_before_anything_else(
     head_unmoved(store.as_ref(), head, "the writes past the ceiling").await
 }
 
-async fn a_triggers_ceiling_is_read_with_the_cause_at_the_append(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_triggers_ceiling_is_read_with_the_cause_at_the_append(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("n", StorageKind::Number)]))
@@ -520,9 +550,8 @@ async fn a_triggers_ceiling_is_read_with_the_cause_at_the_append(
         unreachable!("trigger_on declares a trigger")
     };
     once.max_depth = Some(0);
-    cat.declare(own, Declaration::Trigger(once))
-        .await
-        .must("declaring `once` with max_depth 0")?;
+    let fut = cat.declare(own, Declaration::Trigger(once));
+    fut.await.must("declaring `once` with max_depth 0")?;
     let reader = reads_all(store.as_ref(), "reader");
     let write = |who: lakelands_api::Principal, ctx: WriteContext, key: &'static str| {
         let store = store.clone();
@@ -548,9 +577,8 @@ async fn a_triggers_ceiling_is_read_with_the_cause_at_the_append(
         "a reaction naming a cause past the head",
     )
     .await?;
-    let fired = write(own.clone(), WriteContext::default(), "j1")
-        .await
-        .must("the write that fires `once`")?;
+    let fired = write(own.clone(), WriteContext::default(), "j1");
+    let fired = fired.await.must("the write that fires `once`")?;
     ensure!(
         store.head().await.must("reading the head")? == firing,
         "the write at {} fires `once` at {firing}; the head is elsewhere",

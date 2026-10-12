@@ -6,9 +6,8 @@
 //! another's being to it a key that is free, and changes no shape.
 
 use std::fmt::Debug;
-use std::sync::Arc;
 
-use lakelands_api::error::{Case, Said};
+use lakelands_api::error::{Case, Missing, Said};
 use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::principal::PrincipalKind;
 use lakelands_api::query::{Hits, QueryResult};
@@ -21,49 +20,44 @@ use lakelands_api::{
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
-use crate::conformance::Failure;
+use crate::conformance::backing::EXECUTOR;
 use crate::conformance::fixture::{
-    Lake, Must, field, head_unmoved, principal, restrict, searchable, type_decl, vector, view_of,
+    Lake, Must, field, head_unmoved, principal, reason, restrict, searchable, type_decl, vector,
+    view_of,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// Every read answers a holder of `only` its admitted records alone.
     ONLY_READS = a_grant_admits_only_its_records_at_every_read,
     "051: a principal whose grant holds `only` on a type is answered only the records whose fields hold its values: `get` of another's record is not found, `find` with a filter, an order, `total`, a count, a sum and a group count and sum its own alone, a read as of a position judges the records as they stood then, and a count of a kept view under its pairs, at the head and as of earlier, counts its own group"
 );
 
 check!(
-    /// Search answers a holder of `only` its admitted records alone.
     ONLY_SEARCH = a_search_finds_only_admitted_records,
     "051: a lexical, a vector and a hybrid search by a holder of `only` find only its admitted records, however they rank; a search as of a position keeps a candidate only where it is admitted then and at the head, a link by its ends, under the grant followed to the head, so a field renamed since changes nothing"
 );
 
 check!(
-    /// A view is computed for a holder of `only` from its admitted records.
     ONLY_VIEWS = a_view_answers_a_holder_its_own_groups,
     "051: a view grouped by every field a source's `only` names answers its holder the groups it is admitted, kept or not; one that is not is computed from the admitted records alone, a view over it too; `only` on a view admits its groups by their fields; `describe_type` says `only some` of such a view to its holder; a pair on a kept view's measure admits a holder of the `restricted` grant only the groups whose whole face holds it too, through `find`, `total` and `get` (lakelands#628)"
 );
 
 check!(
-    /// A link record is admitted where both its ends are.
     ONLY_LINKS = a_link_is_answered_where_its_ends_are_admitted,
-    "051: a walk by a holder of `only` reaches only admitted records; a link type whose end type holds `only` answers `get`, `find`, `total` and a count over the links whose ends are admitted; `only` on a link type admits its links by their fields in a walk too"
+    "051: a walk by a holder of `only` reaches only admitted records; a link type whose end type holds `only` answers `get`, `find`, `total` and a count over the links whose ends are admitted, a reference to any other answers as one to a link no record holds, and a call proposed on one, of a verb that writes it or reaches outside the lake, is listed without its write and is not its reviewer's to accept or to reject (lakelands#871); `only` on a link type admits its links by their fields in a walk too"
 );
 
 check!(
-    /// A holder of `only` writes its own records alone.
     ONLY_WRITES = a_holder_of_only_writes_its_own_records_alone,
-    "051: a holder of `only` changes, makes, retires and makes again under its version, links, unlinks, ingests and calls a low-risk verb on its own records; another's record is to its write a key that is free, so a probe under a version, a missing required field, a disagreeing key field and a link ingested from it answer as on a free key, and another's retired key is made again, its version continued, `retire`, `unlink` and a verb answer not found, and a write that would pass, a handover and a re-delivery onto another's key are not granted, appending nothing; a link's cardinality names the other end only where its writer is answered it, restricted or not, and holds, over the lake and the window, for a link that `only` on its link type admits by a field its source sends; an aging rule stays refused; a proposal on another's record, retired or not, is listed without its write; a retry under a key used before the grant held answers as before; a reference into the type from another type, through `upsert`, `propose` or `ingest`, must name an admitted record"
+    "051: a holder of `only` changes, makes, retires and makes again under its version, links, unlinks, ingests and calls a low-risk verb on its own records; another's record is to its write a key that is free, so a probe under a version, a missing required field, a disagreeing key field and a link ingested from it answer as on a free key, and another's retired key is made again, its version continued, `retire`, `unlink` and a verb answer not found, and a write that would pass, a handover and a re-delivery onto another's key are not granted, appending nothing; a link's cardinality names the other end only where its writer is answered it, restricted or not, and the link that holds, which `only` on the link type itself keeps from it at either end and a hold on the link record keeps from one without `restricted`, and holds, over the lake and the window, for a link that `only` on its link type admits by a field its source sends; an aging rule stays refused; a proposal on another's record, retired or not, is listed without its write; a retry under a key used before the grant held answers as before; a reference into the type from another type, through `upsert`, `propose` or `ingest`, must name an admitted record"
 );
 
 check!(
-    /// A holder of `only` changes no shape.
     ONLY_SCHEMA = a_holder_of_only_changes_no_shape,
     "051: `declare`, `apply`, `recompute`, `add_field`, `migrate`, `migrate_apply`, `migrate_value_type`, `migrate_value_type_apply`, the proposal of a declaration or a migration of a type or a value type, and `accept` and `reject` of a schema proposal are refused to a principal holding `only` on any type, appending nothing, and a migration's proposal, of a type or a value type, is not listed to it"
 );
 
 check!(
-    /// A grant `only` that cannot be applied is refused at the doors that name its type.
     ONLY_GRANT_CHECKED = a_grant_that_cannot_be_applied_is_refused,
     "051: `describe_type` tells a holder its `only`, offers its writes, the type's links and its verbs but one above low risk that assigns a field its `only` names, and an upsert only where it writes every field its `only` names; `only` on a field the type does not declare, of another kind than text or reference, with a value that is not text, or on a field the holder may not read, refuses the doors that name the type as invalid, naming the type and never the field; the grant follows a rename of its field, and after the field is dropped a read at the head is refused while one as of before is answered; a walk or a view that reaches a type whose grant cannot be applied admits none of its records"
 );
@@ -169,11 +163,8 @@ async fn migrate(
     if renamed {
         m.renames = vec![("owner".into(), m.to.fields[0].name.clone())];
     }
-    let report = l
-        .cat
-        .migrate(&l.own, m.clone())
-        .await
-        .must("previewing a migration of `claim`")?;
+    let report = l.cat.migrate(&l.own, m.clone());
+    let report = report.await.must("previewing a migration of `claim`")?;
     let done = l.cat.migrate_apply(&l.own, m, &report.data.report_id).await;
     Ok(done.must("migrating `claim`")?.position())
 }
@@ -220,12 +211,7 @@ pub(super) fn node_keys(result: &QueryResult, ty: &str) -> String {
 
 /// Fails unless each `find` of `rows`, one a line `type | what | find |
 /// answer`, answers `who` as its line says; `BEFORE` in a find is `before`.
-pub(super) async fn finds(
-    l: &Lake,
-    who: &Principal,
-    rows: &str,
-    before: Position,
-) -> Result<(), Failure> {
+pub(super) async fn finds(l: &Lake, who: &Principal, rows: &str, before: Position) -> Held {
     let mut wrong = Vec::new();
     for row in rows.lines().map(str::trim).filter(|r| !r.is_empty()) {
         let [ty, what, find, want] = row.split(" | ").collect::<Vec<_>>()[..] else {
@@ -255,10 +241,7 @@ fn unappliable(e: &Error) -> bool {
 }
 
 /// Fails unless `answer` is refused as not granted, naming no field.
-pub(super) fn not_granted<T: Debug>(
-    what: &str,
-    answer: lakelands_api::Result<T>,
-) -> Result<(), Failure> {
+pub(super) fn not_granted<T: Debug>(what: &str, answer: lakelands_api::Result<T>) -> Held {
     let (field, reason) = (None, Refusal::NotGranted);
     let refused = Error::Refused { field, reason };
     ensure!(
@@ -269,10 +252,7 @@ pub(super) fn not_granted<T: Debug>(
 }
 
 /// Fails unless `answer` is not found, as for a record that is not there.
-pub(super) fn not_found<T: Debug>(
-    what: &str,
-    answer: lakelands_api::Result<T>,
-) -> Result<(), Failure> {
+pub(super) fn not_found<T: Debug>(what: &str, answer: lakelands_api::Result<T>) -> Held {
     let missing = matches!(answer, Err(Error::NotFound { .. }));
     ensure!(missing, "{what} must be not found; it answered {answer:?}");
     Ok(())
@@ -297,9 +277,7 @@ const HANDED: &str = r#"
     spend | a kept view's filtered count | {"where": "total > 0", "total": true} | alice total=1
 "#;
 
-async fn a_grant_admits_only_its_records_at_every_read(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_grant_admits_only_its_records_at_every_read(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     claims(&l, true).await?;
     let alice = alice(store.as_ref(), json!({}));
@@ -310,9 +288,8 @@ async fn a_grant_admits_only_its_records_at_every_read(
     // The owner hands `c3` to bob: it is alice's as of before, not after.
     let handed = l.upsert("claim", "c3", json!({"owner": "bob"})).await?;
     let before = Position(handed.position().0 - 1);
-    get("c3", Some(before))
-        .await
-        .must("alice's `get` of `c3` as of before")?;
+    let fut = get("c3", Some(before));
+    fut.await.must("alice's `get` of `c3` as of before")?;
     not_found("alice's `get` of `c3` at the head", get("c3", None).await)?;
     finds(&l, &alice, HANDED, before).await
 }
@@ -323,7 +300,7 @@ const SEARCHES: &str = r#"
     hybrid | {"mode": "hybrid", "text": "taxi", "field": "v", "vector": [1.0, 0.0]} | c1 c3 | c1
 "#;
 
-async fn a_search_finds_only_admitted_records(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_search_finds_only_admitted_records(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     claims(&l, false).await?;
     // With `restricted`, a fused search at the head would rank unread.
@@ -373,10 +350,8 @@ async fn a_search_finds_only_admitted_records(store: Arc<dyn LakeStore>) -> Resu
     // A link is judged by its ends at the head too.
     let link = json!({"type": "sys.link.claim.on_trip", "mode": "lexical", "text": "trip",
                       "as_of": before});
-    let hits = cat
-        .search(alice, de(link))
-        .await
-        .must("alice's search of the links")?;
+    let hits = cat.search(alice, de(link));
+    let hits = hits.await.must("alice's search of the links")?;
     if hit_keys(&hits.data) != "c1:t1" {
         wrong.push(format!(
             "the links as of before: `{}`",
@@ -402,7 +377,7 @@ const HELD_VIEWS: &str = r#"
     top | a view over a view held to bob | {"aggregate": {"measures": [{"name": "s", "func": "sum", "field": "total"}]}} | s=20
 "#;
 
-async fn a_view_answers_a_holder_its_own_groups(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_view_answers_a_holder_its_own_groups(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     claims(&l, true).await?;
     let by = vec![field("total", Number)];
@@ -470,9 +445,7 @@ const LINKS: &str = r#"
     sys.link.claim.on_trip | their count | {"aggregate": {"measures": [{"name": "n", "func": "count"}]}} | n=2
 "#;
 
-async fn a_link_is_answered_where_its_ends_are_admitted(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_link_is_answered_where_its_ends_are_admitted(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     claims(&l, false).await?;
     let walk = json!({"start": {"type": "trip", "key": "t1"},
@@ -491,11 +464,57 @@ async fn a_link_is_answered_where_its_ends_are_admitted(
             Ok::<_, Failure>(())
         }
     };
+    let writer = alice(store.as_ref(), json!({"default": "write", "review": true}));
     let alice = alice(store.as_ref(), json!({}));
     walked(alice.clone(), "c1 c3").await?;
     finds(&l, &alice, LINKS, Position::GENESIS).await?;
     let link = get(&l, &alice, "sys.link.claim.on_trip", "c2:t1", None).await;
     not_found("the link from bob's `c2` to alice", link)?;
+    // A reference to it answers her as one to a link that is not there
+    // (lakelands#871).
+    let memo = crate::conformance::fixture::reference("l", "sys.link.claim.on_trip");
+    l.declare(type_decl("memo", vec![memo])).await?;
+    let (memo, m1, mut said) = ("memo".into(), "m1".into(), Vec::new());
+    for k in ["c2:t1", "c9:t1"] {
+        let up = cat.upsert(&writer, &memo, &m1, de(json!({"l": k})), Default::default());
+        said.push(format!("{:?}", up.await.err()).replace(k, "?"));
+    }
+    ensure!(
+        said[0] == said[1] && said[0] != "None",
+        "a reference to the link of bob's `c2` answers alice as one to no link: {said:?}"
+    );
+    // And a call proposed on it, of a verb that writes it or reaches
+    // outside the lake, is listed to her as the retirement of bob's `c2`
+    // is, without its write.
+    let on = "sys.link.claim.on_trip";
+    let mark = json!({"declare": "verb", "name": "mark", "on": on, "risk": "low",
+        "effect": "write", "set": [{"field": "label", "value": "'seen'"}]});
+    let chain = json!({"declare": "verb", "name": "chain", "on": on, "risk": "low",
+        "effect": "external", "executor": EXECUTOR});
+    l.declare_json(mark).await?;
+    l.declare_json(chain).await?;
+    for w in [
+        json!({"write": "retire", "type": "claim", "key": "c2"}),
+        json!({"write": "call", "verb": "mark", "key": "c2:t1", "payload": {}}),
+        json!({"write": "call", "verb": "chain", "key": "c2:t1", "payload": {}}),
+    ] {
+        let proposed = cat.propose(&l.own, de(w), "the owner's".into()).await;
+        proposed.must("the owner's proposal")?;
+    }
+    let listed = cat.proposals(&writer, Default::default()).await;
+    let listed = listed.must("alice's listing")?.data;
+    // Nor does she decide either: a reviewer decides what it is listed whole.
+    let mut kept = Vec::new();
+    for p in &listed {
+        let accepted = cat.accept(&writer, &p.id).await;
+        let rejected = cat.reject(&writer, &p.id, "no".into()).await;
+        kept.push(reason(&accepted) == Some(&Refusal::NotGranted));
+        kept.push(reason(&rejected) == Some(&Refusal::NotGranted));
+    }
+    ensure!(
+        kept == [true; 6] && listed.iter().all(|p| p.write.is_none() && p.more),
+        "a proposal on bob's claim and two on its link are listed to alice without their writes, and she accepts and rejects none ({kept:?}): {listed:?}"
+    );
     // `only` on the link type itself admits its links by their fields.
     let types = json!({"sys.link.claim.on_trip": {"only": {"from": "c2"}}});
     walked(
@@ -518,6 +537,10 @@ fn link_said<T>(answer: lakelands_api::Result<T>) -> String {
             || "linked to no end".to_owned(),
             |k| format!("linked to `{k}`"),
         ),
+        Some(Case::LinkedAlreadyTo { from, .. }) => from.map_or_else(
+            || "linked from no end".to_owned(),
+            |k| format!("linked from `{k}`"),
+        ),
         Some(Case::WindowLinksAlready { .. }) => "linked in the window".to_owned(),
         _ => said(answer),
     }
@@ -532,9 +555,7 @@ pub(super) fn said<T>(answer: lakelands_api::Result<T>) -> String {
     }
 }
 
-async fn a_holder_of_only_writes_its_own_records_alone(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_holder_of_only_writes_its_own_records_alone(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let cat = l.cat.as_ref();
     claims(&l, false).await?;
@@ -585,9 +606,8 @@ async fn a_holder_of_only_writes_its_own_records_alone(
         let fields = json!({"from": from, "to": to});
         de(json!({"type": for_trip.as_str(), "key": key.as_str(), "fields": fields}))
     };
-    l.ingest("feed", vec![link("r2", "t1")])
-        .await
-        .must("ingesting bob's link of `r2`")?;
+    let fut = l.ingest("feed", vec![link("r2", "t1")]);
+    fut.await.must("ingesting bob's link of `r2`")?;
     let (desk, held_by) = (TypeName::from("desk"), RelationName::from("held_by"));
     for d in ["d1", "d2"] {
         l.upsert("desk", d, json!({"n": d})).await?;
@@ -596,9 +616,8 @@ async fn a_holder_of_only_writes_its_own_records_alone(
     let (ty, c1, on, t1) = names("c1");
     let (none, opts) = (Default::default, Default::default);
     let c2 = RecordKey::from("c2");
-    cat.link(&l.own, &desk, &d2, &held_by, &c2, none(), opts())
-        .await
-        .must("linking `d2` to bob's `c2`")?;
+    let fut = cat.link(&l.own, &desk, &d2, &held_by, &c2, none(), opts());
+    fut.await.must("linking `d2` to bob's `c2`")?;
     // Bob proposes a change to his claim and a claim of his; alice writes
     // `c1` under a key before her grant holds `only`, and a retry answers
     // as that did.
@@ -789,8 +808,28 @@ async fn a_holder_of_only_writes_its_own_records_alone(
     row("`d2` already held by bob's `c2`", bobs, other);
     restrict(store.as_ref(), "claim", "c2", "kept").await?;
     let carol = holder(store.as_ref(), "carol", json!({"default": "write"}));
-    let restricted = link_said(held(carol, d2.clone(), "c1").await);
+    let restricted = link_said(held(carol.clone(), d2.clone(), "c1").await);
     row("`d2` held by a restricted `c2`", restricted, other);
+    // Nor where the link that holds is itself held: two of the owner's
+    // links onto alice's claims, each restricted, answer carol alike.
+    let lt = crate::links::link_type_name(desk, held_by);
+    for (d, c) in [("d3", "c1"), ("d4", "c3")] {
+        l.upsert("desk", d, json!({"n": d})).await?;
+        let (from, to) = (k(d), k(c));
+        let linked = cat.link(&l.own, desk, &from, held_by, &to, none(), opts());
+        linked.await.must("the owner's link of a desk")?;
+        let key = crate::links::link_key(&from, &to);
+        restrict(store.as_ref(), lt.as_str(), key, "kept").await?;
+    }
+    let d3 = held(carol.clone(), k("d3"), "c7").await;
+    let d4 = held(carol.clone(), k("d4"), "c7").await;
+    row(
+        "`d3` and `d4`, each held by a restricted link",
+        said(d3),
+        &said(d4).replace("d4", "d3"),
+    );
+    let held_link = link_said(held(carol, k("d3"), "c7").await);
+    row("`d3` held by a restricted link", held_link, other);
     // `only` on a link type, on a field of the link the source sends: a
     // link it admits holds the relation's cardinality, over the lake and
     // the window.
@@ -798,13 +837,17 @@ async fn a_holder_of_only_writes_its_own_records_alone(
     l.declare_json(json!({"declare": "type", "name": "stub",
         "fields": [{"name": "n", "type": {"kind": "text"}}],
         "relations": [{"name": "sent", "target": "trip", "authority": "source",
-                       "cardinality": "many_to_one", "fields": feed}]}))
+                       "cardinality": "many_to_one", "fields": feed},
+                      {"name": "pair", "target": "trip", "authority": "source",
+                       "cardinality": "one_to_one", "fields": feed}]}))
         .await?;
-    for s in ["s1", "s2"] {
+    for s in ["s1", "s2", "s3", "s4", "s5"] {
         l.upsert("stub", s, json!({"n": s})).await?;
     }
     let lt = crate::links::link_type_name(&"stub".into(), &"sent".into());
-    let types = json!({lt.as_str(): {"only": {"feed": "a"}}});
+    let pair = crate::links::link_type_name(&"stub".into(), &"pair".into());
+    let only = json!({"only": {"feed": "a"}});
+    let types = json!({lt.as_str(): only, pair.as_str(): only});
     let grants = json!({"default": "write", "ingest": true, "types": types});
     let kim = holder(store.as_ref(), "kim", grants);
     let stub = |from: &str, to: &str| {
@@ -822,6 +865,45 @@ async fn a_holder_of_only_writes_its_own_records_alone(
         window,
         "linked in the window",
     );
+    // A link her `only` on the link type keeps from her names her no end,
+    // from either side, whichever record that end is: the owner's two
+    // pairs, fed by another feed, answer her alike.
+    let paired = |from: &str, to: &str, feed: &str| {
+        let key = crate::links::link_key(&from.into(), &to.into());
+        let fields = json!({"from": from, "to": to, "feed": feed});
+        vec![de(
+            json!({"type": pair.as_str(), "key": key.as_str(), "fields": fields}),
+        )]
+    };
+    for (from, to) in [("s3", "t1"), ("s4", "t5")] {
+        l.ingest("feed", paired(from, to, "b"))
+            .await
+            .must("the owner's pair")?;
+    }
+    let (s3, s4) = (
+        fed(paired("s3", "t5", "a")).await,
+        fed(paired("s4", "t1", "a")).await,
+    );
+    row(
+        "kim's s3 and s4, paired by another feed",
+        said(s3),
+        &said(s4).replace("s4", "s3"),
+    );
+    let (t1, t5) = (
+        fed(paired("s5", "t1", "a")).await,
+        fed(paired("s5", "t5", "a")).await,
+    );
+    row(
+        "kim's s5 onto t1 and t5, paired by another feed",
+        said(t1),
+        &said(t5).replace("t5", "t1"),
+    );
+    let hers = link_said(fed(paired("s3", "t5", "a")).await);
+    row("kim's s3 → t5", hers, "linked to no end");
+    let hers = link_said(fed(paired("s5", "t1", "a")).await);
+    row("kim's s5 → t1", hers, "linked from no end");
+    let owners = link_said(l.ingest("feed", paired("s5", "t1", "b")).await);
+    row("the owner's s5 → t1", owners, "linked from `s3`");
     let wrong: Vec<_> = rows.iter().filter(|(_, said, want)| said != want).collect();
     ensure!(
         wrong.is_empty(),
@@ -883,7 +965,7 @@ async fn a_holder_of_only_writes_its_own_records_alone(
     Ok(())
 }
 
-async fn a_holder_of_only_changes_no_shape(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_holder_of_only_changes_no_shape(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     claims(&l, false).await?;
@@ -901,9 +983,8 @@ async fn a_holder_of_only_changes_no_shape(store: Arc<dyn LakeStore>) -> Result<
     ];
     let mut proposals = Vec::new();
     for write in &writes {
-        let proposed = cat
-            .propose(own, de(write.clone()), "the owner's".into())
-            .await;
+        let proposed = cat.propose(own, de(write.clone()), "the owner's".into());
+        let proposed = proposed.await;
         let Outcome::Proposed { proposal, .. } = proposed.must("the owner's proposal")? else {
             return Err(Failure::new("a proposal must be proposed"));
         };
@@ -929,9 +1010,8 @@ async fn a_holder_of_only_changes_no_shape(store: Arc<dyn LakeStore>) -> Result<
     not_granted("`migrate_apply`", cat.migrate_apply(&alice, m(), "x").await)?;
     let vt = cat.migrate_value_type(&alice, label.clone().into()).await;
     not_granted("`migrate_value_type`", vt)?;
-    let vt = cat
-        .migrate_value_type_apply(&alice, label.into(), "x")
-        .await;
+    let vt = cat.migrate_value_type_apply(&alice, label.into(), "x");
+    let vt = vt.await;
     not_granted("`migrate_value_type_apply`", vt)?;
     for write in writes {
         not_granted(
@@ -946,10 +1026,8 @@ async fn a_holder_of_only_changes_no_shape(store: Arc<dyn LakeStore>) -> Result<
     let rejected = cat.reject(&alice, &proposals[0], why()).await;
     not_granted("`reject` of a declaration", rejected)?;
     head_unmoved(store.as_ref(), head, "every schema write by alice").await?;
-    let listed = cat
-        .proposals(&alice, Default::default())
-        .await
-        .must("alice's listing")?;
+    let listed = cat.proposals(&alice, Default::default());
+    let listed = listed.await.must("alice's listing")?;
     let listed: Vec<_> = listed.data.iter().map(|p| &p.id).collect();
     ensure!(
         listed == [&proposals[0]],
@@ -979,9 +1057,7 @@ const KEPT_UNAPPLIED: &str = r#"
     over_spend | a view over it | {"aggregate": {"measures": [{"name": "s", "func": "sum", "field": "t"}]}} | s=0
 "#;
 
-async fn a_grant_that_cannot_be_applied_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_grant_that_cannot_be_applied_is_refused(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     claims(&l, false).await?;
     for (name, risk) in [("pay", "low"), ("propose_pay", "high")] {
@@ -1090,9 +1166,8 @@ async fn a_grant_that_cannot_be_applied_is_refused(
 }
 
 check!(
-    /// A grant that cannot be applied admits no record at any door.
     ONLY_UNAPPLIED_ADMITS_NONE = a_grant_that_cannot_be_applied_admits_no_record_at_any_door,
-    "051, extended (lakelands#771): a holder's `only` that cannot be applied admits none of the type's records, whatever a stored value holds: the proposal listing answers a reviewer every proposal on such a record without its write, and a reference into the type, a link's end too, is refused as naming no live record, exactly as an absent key is; an upsert, a verb, an unlink, a proposed upsert or retirement, a retirement and an ingest on a record whose value equals the pair answer as on one whose value does not, the link's end judged so too; a search as of a position admits no candidate where the grant cannot be applied to the head's declaration, a field made one the holder may not read there included, though its values stay, and no link whose end's type the grant so holds; a kept view grouped by the pair's field, and a view over it, answer nothing to such a grant through `find`, a sum, a count, groups, `total`, a read as of before and `get`, refuse it where it masks the pair's field, and answer as types not declared where it holds that field at `none`, since the view is grouped by it (lakelands#782)"
+    "051, extended (lakelands#771): a holder's `only` that cannot be applied admits none of the type's records, whatever a stored value holds: the proposal listing answers a reviewer every proposal on such a record without its write, and a reference into the type, a link's end too, is refused as naming no live record, exactly as an absent key is, and a second link over a relation that allows one names nothing of the first; an upsert, a verb, an unlink, a proposed upsert or retirement, a retirement and an ingest on a record whose value equals the pair answer as on one whose value does not, the link's end judged so too; a search as of a position admits no candidate where the grant cannot be applied to the head's declaration, a field made one the holder may not read there included, though its values stay, and no link whose end's type the grant so holds; a kept view grouped by the pair's field, and a view over it, answer nothing to such a grant through `find`, a sum, a count, groups, `total`, a read as of before and `get`, refuse it where it masks the pair's field, and answer as types not declared where it holds that field at `none`, since the view is grouped by it (lakelands#782)"
 );
 
 /// Grants on `claim` whose `only` cannot be applied though a stored value
@@ -1103,9 +1178,7 @@ const UNAPPLIED_YET_HELD: &str = r#"
     a hidden owner | {"only": {"owner": "alice"}, "fields": {"owner": "none"}}
 "#;
 
-async fn a_grant_that_cannot_be_applied_admits_no_record_at_any_door(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_grant_that_cannot_be_applied_admits_no_record_at_any_door(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let cat = l.cat.as_ref();
     claims(&l, true).await?;
@@ -1126,6 +1199,11 @@ async fn a_grant_that_cannot_be_applied_admits_no_record_at_any_door(
         "fields": [{"name": "n", "type": {"kind": "text"}}], "relations": [held_by]}))
         .await?;
     l.upsert("desk", "d1", json!({"n": "d1"})).await?;
+    l.upsert("desk", "d2", json!({"n": "d2"})).await?;
+    let (desk, d2, c1) = (TypeName::from("desk"), RecordKey::from("d2"), "c1".into());
+    let (by, no, opts) = ("held_by".into(), Default::default, Default::default);
+    let linked = cat.link(&l.own, &desk, &d2, &by, &c1, no(), opts());
+    linked.await.must("linking `d2` to `c1`")?;
     let pay = json!({"declare": "verb", "name": "pay", "on": "claim", "risk": "low",
                      "effect": "write", "set": [{"field": "note", "value": "'paid'"}]});
     l.declare_json(pay).await?;
@@ -1184,6 +1262,17 @@ async fn a_grant_that_cannot_be_applied_admits_no_record_at_any_door(
         let (held, absent) = (refused("c1").await, refused("c9").await);
         if held != absent || absent.iter().any(|e| e == "null") {
             wrong.push(format!("{what}: `c1` {held:?}, the absent `c9` {absent:?}"));
+        }
+        // A second link of `d2`, which `held_by` allows one, names nothing
+        // of the link that holds: it answers as one to the absent `c9`.
+        let mut second = Vec::new();
+        for c in ["c2", "c9"] {
+            let to = c.into();
+            let linked = cat.link(eve, &desk, &d2, &by, &to, no(), opts()).await;
+            second.push(format!("{:?}", linked.err()).replace(c, "c?"));
+        }
+        if second[0] != second[1] || second[0].contains("c1") {
+            wrong.push(format!("{what}: a second link of `d2` {second:?}"));
         }
         // Her writes on `c1`, whose value her pair equals, answer as on
         // `c2`, whose value it does not (and `b1` as `b2`): she owns neither.
@@ -1355,6 +1444,419 @@ async fn a_grant_that_cannot_be_applied_admits_no_record_at_any_door(
     ensure!(
         wrong.is_empty(),
         "an `only` that cannot be applied admits no record, whatever a stored value holds: {wrong:?}"
+    );
+    Ok(())
+}
+
+check!(
+    ONLY_LINKS_OF_LINKS = a_link_whose_end_is_a_link_is_answered_where_that_link_is,
+    "051 and 006: a link whose end is a link is answered where that link is, by its own ends as deep as they go (lakelands#879). A holder of `only` on a type two links down, with `restricted` or without, is answered by `get`, `find`, `total`, a count, a view over the link type, a search and a walk only the links whose ends' ends are admitted, and `describe_type` says `only some` of the view; three links down, `find` and `total` answer it so too and `get` of another's is not found; one whose grant admits nothing counts none at either depth, and one who holds `restricted` and no `only` is answered every link and the view as kept. To the holder a reference to any other link, and a link onto it, answer as one to a link no record holds, a verb of low risk, one that reaches outside the lake and an `unlink` on it are not found, and a reference to its own is taken; a second link where one is allowed names the first only where its writer is answered it, at both depths; a call proposed on one is listed once, without its write, and is not its reviewer's to decide; its own proposal is pinned, accepted where nothing moved and no more once an end's end moved; a read and a search as of a position judge the ends as they stood then and at the head. One without `restricted` is not answered a link whose end's end is held, is named none by a second link while it is named another's, finds none by a low verb, an external verb or an `unlink`, and neither accepts nor rejects a call on one, while it decides another and a call proposed with `restricted` is applied. Two link types a migration made each other's end are each asked once: a link between them is answered, a second link names no end that no record holds, and the link is not answered once an end's end in the ring is held; with the inner link's relation removed and its link type standing, the outer link is still not answered to one without `restricted`, who decides no call on it, and a call proposed with `restricted` is still applied"
+);
+
+const DEEP: &str = r#"
+    sys.link.tag.tags | the links onto her claims' links | {} | g1:c1%3At1 g3:c3%3At1
+    sys.link.tag.tags | their total | {"total": true} | g1:c1%3At1 g3:c3%3At1 total=2
+    sys.link.tag.tags | their count | {"aggregate": {"measures": [{"name": "n", "func": "count"}]}} | n=2
+    sys.link.note.about | a link onto a link onto a link | {"total": true} | n1:g1%3Ac1%253At1 total=1
+    tagged | a kept view over the links | {} | trip g1 trip g3
+"#;
+
+const DEEP_NONE: &str = r#"
+    sys.link.tag.tags | the links | {"aggregate": {"measures": [{"name": "n", "func": "count"}]}} | n=0
+    sys.link.note.about | a link onto a link onto a link | {"aggregate": {"measures": [{"name": "n", "func": "count"}]}} | n=0
+    tagged | a kept view over the links | {"aggregate": {"measures": [{"name": "n", "func": "count"}]}} | n=0
+"#;
+
+const DEEP_ALL: &str = r#"
+    sys.link.tag.tags | every link | {"total": true} | g1:c1%3At1 g2:c2%3At1 g3:c3%3At1 total=3
+    sys.link.tag.tags | their count | {"aggregate": {"measures": [{"name": "n", "func": "count"}]}} | n=3
+    sys.link.note.about | every link onto a link onto a link | {"total": true} | n1:g1%3Ac1%253At1 n2:g2%3Ac2%253At1 total=2
+"#;
+
+const DEEP_HANDED: &str = r#"
+    sys.link.tag.tags | as of before | {"as_of": BEFORE} | g1:c1%3At1 g3:c3%3At1
+    sys.link.tag.tags | at the head | {} | g1:c1%3At1
+"#;
+
+/// On [`claims`]: `tag` g1, g2 and g3, each linked over `tags` to the link
+/// of c1, c2 and c3 to t1; `note` n1 and n2, linked over `about` to g1's
+/// and g2's link, and n3, linked to none; `memo`, a reference to a link
+/// of `tags`; `tagged`, a kept view over them; the verbs on them: `seen`,
+/// above low risk, `peek`, of low risk, and `ping`, which reaches outside.
+async fn links_onto_links(l: &Lake) -> Result<(), Failure> {
+    let (tags, on_trip) = ("sys.link.tag.tags", "sys.link.claim.on_trip");
+    let label = json!({"name": "label", "type": {"kind": "text"}, "searchable": true});
+    for (ty, name, target) in [("tag", "tags", on_trip), ("note", "about", tags)] {
+        let mut t = type_decl(ty, vec![field("name", Text)]);
+        t.relations = vec![de(
+            json!({"name": name, "target": target, "fields": [label]}),
+        )];
+        l.declare(t).await?;
+    }
+    let memo = crate::conformance::fixture::reference("l", tags);
+    l.declare(type_decl("memo", vec![memo])).await?;
+    let tagged = crate::conformance::fixture::count_view("tagged", tags, "label");
+    l.declare(tagged).await?;
+    l.set("view_kept.tagged", json!(true)).await?;
+    let seen = json!({"declare": "verb", "name": "seen", "on": tags,
+        "risk": "high", "effect": "write", "set": [{"field": "label", "value": "'seen'"}]});
+    let peek = json!({"declare": "verb", "name": "peek", "on": tags,
+        "risk": "low", "effect": "write", "set": [{"field": "label", "value": "'seen'"}]});
+    let ping = json!({"declare": "verb", "name": "ping", "on": tags, "risk": "low",
+        "effect": "external", "executor": EXECUTOR});
+    for verb in [seen, peek, ping] {
+        l.declare_json(verb).await?;
+    }
+    for (ty, from, on, to) in [
+        ("tag", "g1", "tags", "c1:t1"),
+        ("tag", "g2", "tags", "c2:t1"),
+        ("tag", "g3", "tags", "c3:t1"),
+        ("note", "n1", "about", "g1:c1%3At1"),
+        ("note", "n2", "about", "g2:c2%3At1"),
+        ("note", "n3", "", ""),
+    ] {
+        l.upsert(ty, from, json!({"name": from})).await?;
+        let label = de(json!({"label": format!("trip {from}")}));
+        if !to.is_empty() {
+            let (ty, from, on, to) = (ty.into(), from.into(), on.into(), to.into());
+            let linked = l
+                .cat
+                .link(&l.own, &ty, &from, &on, &to, label, Default::default());
+            linked.await.must("linking onto a link")?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether the verbs `peek` and `ping` on the link `key` of `tags`, and
+/// the `unlink` of it from `tag` to `to`, answer `who` that the link
+/// record is not found.
+async fn gone(l: &Lake, who: &Principal, key: &str, (tag, to): (&str, &str)) -> Held {
+    let (none, opts) = (Default::default, Default::default);
+    let (key, ty, tag, tags, to) = (
+        key.into(),
+        "tag".into(),
+        tag.into(),
+        "tags".into(),
+        to.into(),
+    );
+    let mut said = Vec::new();
+    for verb in ["peek", "ping"] {
+        let called = (l.cat)
+            .call(who, &verb.into(), Some(&key), none(), opts())
+            .await;
+        said.push(called.err());
+    }
+    let unlinked = (l.cat).unlink(who, &ty, &tag, &tags, &to, opts()).await;
+    said.push(unlinked.err());
+    // The record's own: the link type and the key, of no other thing.
+    let its = |e: &Option<Error>| {
+        matches!(e, Some(Error::NotFound { missing: Missing::Record { ty, key: k } })
+            if ty.as_str() == "sys.link.tag.tags" && *k == key)
+    };
+    let said: Vec<bool> = said.iter().map(its).collect();
+    if said == [true; 3] {
+        return Ok(());
+    }
+    let who = &who.id;
+    Err(Failure::new(format!(
+        "`peek`, `ping` and `unlink` on `{key}` by `{who}` are not found: {said:?}"
+    )))
+}
+
+/// Whether `link` of each `[type, from, relation, to]` answers `who` the
+/// fifth, as [`link_said`] says it.
+async fn links_said(l: &Lake, who: &Principal, links: &[[&str; 5]]) -> Vec<Held> {
+    let mut held = Vec::new();
+    for [ty, from, on, to, want] in links {
+        let (ty, from, on, end) = ((*ty).into(), (*from).into(), (*on).into(), (*to).into());
+        let (none, opts) = (Default::default(), Default::default());
+        let told = link_said((l.cat).link(who, &ty, &from, &on, &end, none, opts).await);
+        let what = format!("`{from}` linked to `{to}` by `{}` answers: {told}", who.id);
+        held.push(if told == *want {
+            Ok(())
+        } else {
+            Err(Failure::new(what))
+        });
+    }
+    held
+}
+
+async fn a_link_whose_end_is_a_link_is_answered_where_that_link_is(store: Store) -> Held {
+    let (l, s) = (Lake::of(store.as_ref()), store.as_ref());
+    claims(&l, false).await?;
+    links_onto_links(&l).await?;
+    let (cat, tags, tagged) = (&l.cat, "sys.link.tag.tags", "tagged".into());
+    let (g1, g2, g3, n2) = (
+        "g1:c1%3At1",
+        "g2:c2%3At1",
+        "g3:c3%3At1",
+        "n2:g2%3Ac2%253At1",
+    );
+    let search = |who: Principal, at: Option<Position>| {
+        let search = json!({"type": tags, "mode": "lexical", "text": "trip", "as_of": at});
+        async move {
+            let hits = cat.search(&who, de(search)).await;
+            Ok::<_, Failure>(hit_keys(&hits.must("a search of the links")?.data))
+        }
+    };
+    let walk = |who: Principal, from: &'static str| {
+        let walk = json!({"start": {"type": "note", "key": from},
+            "steps": [{"relation": "about", "walk": "out"}], "project": {"as": "graph"}});
+        async move {
+            let walked = cat
+                .query(&who, de(walk))
+                .await
+                .must("a walk over `about`")?;
+            Ok::<_, Failure>(node_keys(&walked.data, tags))
+        }
+    };
+    let kept = |who: Principal| {
+        let tagged = &tagged;
+        async move {
+            let told = cat.describe_type(&who, tagged, Default::default()).await;
+            Ok::<_, Failure>(told.must("describing `tagged`")?.data.lifecycle.kept)
+        }
+    };
+    // A call of `verb` by `who` on the link `key`: proposed, or what it answered.
+    let call = |who: Principal, verb: &'static str, key: &'static str| async move {
+        let (v, k, none, opts) = (
+            verb.into(),
+            key.into(),
+            Default::default(),
+            Default::default(),
+        );
+        match cat.call(&who, &v, Some(&k), none, opts).await {
+            Ok(Outcome::Proposed { proposal, .. }) => Ok(proposal),
+            other => Err(Failure::new(format!(
+                "`{verb}` on `{key}` by `{}` is not proposed: {other:?}",
+                who.id
+            ))),
+        }
+    };
+    // Every line is asked, and each one that fails is told.
+    let mut held: Vec<Held> = Vec::new();
+    let said = |ok: bool, what: String| if ok { Ok(()) } else { Err(Failure::new(what)) };
+    let nothing = json!({"default": "read", "restricted": true,
+        "types": {"claim": {"only": {"amount": "10"}}}});
+    let nobody = holder(s, "nobody", nothing);
+    held.push(finds(&l, &nobody, DEEP_NONE, Position::GENESIS).await);
+    // One who holds no `only` is answered every link, and the view kept.
+    let free = holder(s, "free", json!({"default": "write", "restricted": true}));
+    held.push(finds(&l, &free, DEEP_ALL, Position::GENESIS).await);
+    let whole = kept(free.clone()).await?;
+    let is_kept = whole == Some(lakelands_api::describe::Kept::Kept);
+    held.push(said(
+        is_kept,
+        format!("`tagged` is told to one who holds no `only` as {whole:?}"),
+    ));
+    for more in [json!({"restricted": true}), json!({})] {
+        let (who, alice) = (format!("alice with {more}"), alice(s, more));
+        held.push(finds(&l, &alice, DEEP, Position::GENESIS).await);
+        for (ty, key) in [(tags, g2), ("sys.link.note.about", n2)] {
+            let link = get(&l, &alice, ty, key, None).await;
+            held.push(not_found(&format!("`{key}` to {who}"), link));
+        }
+        let hers = get(&l, &alice, tags, g1, None).await;
+        held.push(said(hers.is_ok(), format!("`{g1}` to {who}: {hers:?}")));
+        let reached = (
+            walk(alice.clone(), "n1").await?,
+            walk(alice.clone(), "n2").await?,
+        );
+        held.push(said(
+            reached == (g1.to_owned(), String::new()),
+            format!("{who} walks from `n1` and from `n2` to {reached:?}"),
+        ));
+        let found = search(alice.clone(), None).await?;
+        let hers = found == "g1:c1%3At1 g3:c3%3At1";
+        held.push(said(hers, format!("{who} finds `{found}` by a search")));
+        let kept = kept(alice).await?;
+        let why = lakelands_api::describe::NotKept::OnlySome;
+        let only_some = kept == Some(lakelands_api::describe::Kept::Computed { why });
+        held.push(said(
+            only_some,
+            format!("`tagged` is told to {who} as {kept:?}"),
+        ));
+    }
+    // A reference to such a link, and a link onto it, answer her as one
+    // to a link that is not there.
+    let grants = json!({"default": "write", "review": true, "restricted": true});
+    let (writer, mut answers) = (alice(s, grants), Vec::new());
+    for k in [g2, "g9:c9%3At1"] {
+        let (memo, m1) = ("memo".into(), "m1".into());
+        let up = cat.upsert(&writer, &memo, &m1, de(json!({"l": k})), Default::default());
+        answers.push(format!("{:?}", up.await.err()).replace(k, "?"));
+        let (note, n3, on, end) = ("note".into(), "n3".into(), "about".into(), k.into());
+        let (none, opts) = (Default::default(), Default::default());
+        let linked = cat.link(&writer, &note, &n3, &on, &end, none, opts);
+        answers.push(format!("{:?}", linked.await.err()).replace(k, "?"));
+    }
+    let (memo, m1) = ("memo".into(), "m1".into());
+    let own = cat.upsert(
+        &writer,
+        &memo,
+        &m1,
+        de(json!({"l": g1})),
+        Default::default(),
+    );
+    let own = own.await;
+    let as_none = answers[..2] == answers[2..] && !answers.contains(&"None".to_string());
+    held.push(said(as_none && own.is_ok(), format!("a reference to a link onto bob's, and a link onto it, answer alice as one to no link: {answers:?}; a reference to her own: {own:?}")));
+    // A second link where one is allowed names the first only where its
+    // writer is answered it, a link with its ends.
+    let no_end = "linked to no end";
+    let hers = [
+        ["tag", "g1", "tags", "c3:t1", "linked to `c1:t1`"],
+        ["tag", "g2", "tags", "c1:t1", no_end],
+        ["note", "n2", "about", g1, no_end],
+        ["note", "n1", "about", g3, "linked to `g1:c1%3At1`"],
+    ];
+    held.extend(links_said(&l, &writer, &hers).await);
+    // A call proposed on it is listed to her without its write, and is
+    // not hers to decide.
+    let on_bobs = json!({"write": "call", "verb": "seen", "key": g2, "payload": {}});
+    let proposed = cat.propose(&l.own, de(on_bobs), "the owner's".into()).await;
+    let Outcome::Proposed { proposal, .. } = proposed.must("the owner's proposal")? else {
+        return Err(Failure::new("a proposal must be proposed"));
+    };
+    // Her own on g3's link is pinned: she holds `only` two links down.
+    let pinned = call(writer.clone(), "seen", g3).await?;
+    let listed = cat.proposals(&writer, Default::default()).await;
+    let listed = listed.must("alice's listing")?.data;
+    let bobs = listed.iter().filter(|p| p.id == proposal);
+    let bobs: Vec<_> = bobs.map(|p| p.write.is_none() && p.more).collect();
+    let rejected = cat.reject(&writer, &proposal, "no".into()).await;
+    let kept = bobs == [true] && reason(&rejected) == Some(&Refusal::NotGranted);
+    held.push(said(kept, format!("a call proposed on a link onto bob's is listed to alice once, without its write, and she does not reject it ({rejected:?}): {listed:?}")));
+    // `c3` handed to bob: g3's link is hers as of before, and found by
+    // no search of hers, which ranks at the head.
+    let handed = l.upsert("claim", "c3", json!({"owner": "bob"})).await?;
+    let before = Position(handed.position().0 - 1);
+    let alice = alice(s, json!({"restricted": true}));
+    held.push(finds(&l, &alice, DEEP_HANDED, before).await);
+    let found = search(alice, Some(before)).await?;
+    held.push(said(
+        found == "g1:c1%3At1",
+        format!("alice finds `{found}` as of before the handover"),
+    ));
+    // And her pinned proposal is accepted no more: an end's end moved.
+    let accepted = cat.accept(&l.own, &pinned).await;
+    let case = accepted.as_ref().err().and_then(Error::case);
+    let moved = matches!(
+        case.map(|s| &s.case),
+        Some(Case::WriteChangedSinceProposed { .. })
+    );
+    held.push(said(
+        moved,
+        format!(
+            "alice's proposal on g3's link, `c3` handed to bob since, is accepted: {accepted:?}"
+        ),
+    ));
+    // One on g1's link, where nothing moved, is accepted.
+    let accepted = cat
+        .accept(&l.own, &call(writer.clone(), "seen", g1).await?)
+        .await;
+    held.push(said(
+        accepted.is_ok(),
+        format!("alice's proposal on g1's link, nothing moved since, is accepted: {accepted:?}"),
+    ));
+    // Without `restricted`, a link onto a link of a held record is not
+    // there: no second link names it, and a call on it is not a
+    // reviewer's to decide, as one on another link is.
+    restrict(s, "claim", "c1", "held").await?;
+    let plain = holder(s, "plain", json!({"default": "write", "review": true}));
+    let rows = "sys.link.tag.tags | no link onto a held claim's | {} | g2:c2%3At1 g3:c3%3At1";
+    held.push(finds(&l, &plain, rows, Position::GENESIS).await);
+    let held_from = [
+        ["tag", "g1", "tags", "c2:t1", no_end],
+        ["note", "n1", "about", g2, no_end],
+        ["tag", "g2", "tags", "c3:t1", "linked to `c2:t1`"],
+    ];
+    held.extend(links_said(&l, &plain, &held_from).await);
+    let on_held = json!({"write": "call", "verb": "seen", "key": g1, "payload": {}});
+    let proposed = cat.propose(&l.own, de(on_held), "the owner's".into()).await;
+    let Outcome::Proposed {
+        proposal: on_held, ..
+    } = proposed.must("the owner's proposal")?
+    else {
+        return Err(Failure::new("a proposal must be proposed"));
+    };
+    let decided = [
+        cat.reject(&plain, &on_held, "no".into()).await,
+        cat.accept(&plain, &on_held).await,
+    ];
+    let kept = decided
+        .iter()
+        .all(|d| reason(d) == Some(&Refusal::NotGranted));
+    let other = cat.reject(&plain, &proposal, "no".into()).await;
+    held.push(said(kept && other.is_ok(), format!("a call on a link onto a link of a held claim is decided by one without `restricted`: {decided:?}; one on another link: {other:?}")));
+    // One who held `restricted` when it proposed has its call applied.
+    let accepted = cat
+        .accept(&l.own, &call(free.clone(), "seen", g1).await?)
+        .await;
+    held.push(said(accepted.is_ok(), format!("a call on a link onto a link of a held claim, proposed with `restricted`, is accepted: {accepted:?}")));
+    // Two link types a migration made each other's end are each asked
+    // once, and a link between them is judged as far as its records go.
+    let ring = |name: &str, r: &str, target: &str| {
+        let mut t = type_decl(name, vec![field("name", Text)]);
+        let mark = json!({"name": "mark", "type": {"kind": "text"}});
+        t.relations = vec![de(json!({"name": r, "target": target, "fields": [mark]}))];
+        t
+    };
+    let own = &l.own;
+    let migrated = |to| async move {
+        let m = crate::conformance::fixture::migration(to);
+        let report = cat.migrate(own, m.clone()).await.must("previewing")?;
+        let done = cat.migrate_apply(own, m, &report.data.report_id).await;
+        done.must("migrating a type of the ring").map(drop)
+    };
+    l.declare(ring("ringb", "s", "trip")).await?;
+    l.declare(ring("ringa", "r", "sys.link.ringb.s")).await?;
+    for (ty, from, on, to) in [("ringb", "b1", "s", "t1"), ("ringa", "a1", "r", "b1:t1")] {
+        l.upsert(ty, from, json!({"name": from})).await?;
+        let (ty, from, on, to) = (ty.into(), from.into(), on.into(), to.into());
+        let (none, opts) = (Default::default(), Default::default());
+        let linked = cat.link(&l.own, &ty, &from, &on, &to, none, opts);
+        linked.await.must("linking in the ring")?;
+    }
+    migrated(ring("ringb", "s", "sys.link.ringa.r")).await?;
+    let rows = r#"sys.link.ringa.r | a ring of link types | {"total": true} | a1:b1%3At1 total=1"#;
+    held.push(finds(&l, &plain, rows, Position::GENESIS).await);
+    // The end of `b1`'s link is a key no record holds now, and is named
+    // to no one; with `b1` held, the link onto its link is not there.
+    let second = [["ringb", "b1", "s", "a1:b1%3At1", no_end]];
+    held.extend(links_said(&l, &plain, &second).await);
+    restrict(s, "ringb", "b1", "held").await?;
+    let rows =
+        r#"sys.link.ringa.r | a ring's link, an end's end held | {"total": true} |  total=0"#;
+    held.push(finds(&l, &plain, rows, Position::GENESIS).await);
+    // The relation `s` removed, its link type stands for its links: a
+    // call on the link onto `b1`'s reaches the held `b1` still, so one
+    // proposed with `restricted` is applied.
+    let rung = json!({"declare": "verb", "name": "rung", "on": "sys.link.ringa.r",
+        "risk": "high", "effect": "write", "set": [{"field": "mark", "value": "'x'"}]});
+    l.declare_json(rung).await?;
+    migrated(type_decl("ringb", vec![field("name", Text)])).await?;
+    let rows =
+        r#"sys.link.ringa.r | the link, its end's relation removed | {"total": true} |  total=0"#;
+    held.push(finds(&l, &plain, rows, Position::GENESIS).await);
+    let rung = call(free, "rung", "a1:b1%3At1").await?;
+    let rejected = cat.reject(&plain, &rung, "no".into()).await;
+    let accepted = cat.accept(&l.own, &rung).await;
+    let kept = reason(&rejected) == Some(&Refusal::NotGranted) && accepted.is_ok();
+    held.push(said(kept, format!("a call on a link onto a link whose relation is removed, its end held: one without `restricted` rejects it ({rejected:?}), and, proposed with `restricted`, it is accepted ({accepted:?})")));
+    // Nor is such a link there to a verb or an `unlink`: of alice on the
+    // link onto bob's, of the one without `restricted` on the link onto
+    // the held claim's. Asked last: where one is applied the link is gone.
+    held.push(gone(&l, &writer, g2, ("g2", "c2:t1")).await);
+    held.push(gone(&l, &plain, g1, ("g1", "c1:t1")).await);
+    let wrong: Vec<String> = held
+        .into_iter()
+        .filter_map(|h| Some(h.err()?.message))
+        .collect();
+    ensure!(
+        wrong.is_empty(),
+        "a link whose end is a link is answered where that link is: {wrong:#?}"
     );
     Ok(())
 }

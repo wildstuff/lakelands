@@ -6,25 +6,21 @@
 //! append. A set with a problem appends nothing, and its refusal names
 //! every problem.
 
-use std::sync::Arc;
-
+use lakelands_api::Position;
 use lakelands_api::error::Case;
 use lakelands_api::ontology::{FieldType, StorageKind};
 use lakelands_api::write::{Declaration, Outcome, ProposedWrite};
-use lakelands_api::{LakeStore, Position};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{Lake, Must, field, get_at, invalid_case, said_like, type_decl};
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A bundle with forward references is applied whole or not at all.
     BUNDLE_WHOLE = a_bundle_with_forward_references_is_applied_whole_or_not_at_all,
     "028: apply validates a set of declarations together, so a reference may point forward within it, and appends all of it in one append or none of it"
 );
 
 check!(
-    /// A set computes its records again once, at its last declaration.
     SET_COMPUTES_ONCE = a_set_computes_its_records_again_once_at_its_last_declaration,
     "028, extended (lakelands#605): a set of declarations, applied or an accepted proposal, computes the records it changes once, as its last declaration leaves the lake: a read inside the set finds them as before it, a field reading `changed()` or `previous()` reads the whole set's change, and a type that adds a relation first does not end the set early"
 );
@@ -39,9 +35,7 @@ fn referring(name: &str, target: &str) -> Declaration {
     Declaration::Type(type_decl(name, vec![to]))
 }
 
-async fn a_bundle_with_forward_references_is_applied_whole_or_not_at_all(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_bundle_with_forward_references_is_applied_whole_or_not_at_all(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
@@ -69,16 +63,15 @@ async fn a_bundle_with_forward_references_is_applied_whole_or_not_at_all(
         "after the bundle the lake describes {names:?}; it must hold `invoice` and `partner`"
     );
 
-    let refused = cat
-        .apply(
-            own,
-            vec![
-                Declaration::Type(type_decl("fine", vec![field("n", StorageKind::Number)])),
-                referring("orphan", "ghost"),
-                referring("stray", "nowhere"),
-            ],
-        )
-        .await;
+    let refused = cat.apply(
+        own,
+        vec![
+            Declaration::Type(type_decl("fine", vec![field("n", StorageKind::Number)])),
+            referring("orphan", "ghost"),
+            referring("stray", "nowhere"),
+        ],
+    );
+    let refused = refused.await;
     let unmoved = store.head().await.must("reading the head")?;
     // The set refused whole, each problem said at the declaration it is in.
     let at = |name: &str| json!({"at": [{"name": name}]});
@@ -141,9 +134,7 @@ async fn d1(l: &Lake, at: Option<Position>) -> Result<Value, Failure> {
     Ok(json!([fields, r.meta.get("x").map(|m| m.position.0)]))
 }
 
-async fn a_set_computes_its_records_again_once_at_its_last_declaration(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_set_computes_its_records_again_once_at_its_last_declaration(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let first = vec![over_n("f", "n * 2"), over_n("g", "n + 1"), doc(false)];

@@ -11,8 +11,6 @@
 //! the calls the backing received. The checks use the suite's scripted
 //! backing ([`crate::conformance::backing`]), which every harness binds.
 
-use std::sync::Arc;
-
 use lakelands_api::error::{Case, Seam};
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind;
@@ -22,69 +20,59 @@ use lakelands_api::{
 };
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::backing::{KIND, made, plug, unplug};
 use crate::conformance::fixture::{
     Lake, Must, computed_by, derived, events_from, field, field_access, head_unmoved, invalid_case,
     reason, recorded_outputs, trigger_on, type_decl, value,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A function of a kind no backing is bound for is refused.
     UNBOUND_KIND_REFUSED = a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare,
     "022, extended: a function computed outside the store is declared only where the host bound a backing of its kind; otherwise the declaration is refused as unbound, naming the kind, after its own checks (028, extended)"
 );
 
 check!(
-    /// A backed field is filled from the recorded output.
     FILLED_AND_RECORDED = a_backed_field_is_filled_from_the_output_the_store_records,
     "022, extended, and the log format: the store calls the backing after the write, records the answer as output_recorded naming the field, and the write answers the position the filled field is visible from"
 );
 
 check!(
-    /// One input, one call.
     ONE_CALL_PER_INPUT = the_same_input_is_never_sent_to_a_backing_twice,
     "002 and 022, extended: an output recorded for a call is read back for every later call with the same input, across records and after the input changed and came back"
 );
 
 check!(
-    /// A failure clears the field and says why.
     FAILURE_CLEARS = a_failing_backing_clears_the_field_and_records_the_failure,
     "022 and 010, extended: a failure is recorded as {\"error\": …}, clears the field it fills, puts the reason in the field's metadata, and is not retried for the same input"
 );
 
 check!(
-    /// Rebuild reads recorded outputs back.
     REBUILD_READS_OUTPUTS = a_rebuild_reads_recorded_outputs_back_without_calling_the_backing,
     "001 and 002: a rebuild folds the recorded outputs; with the backing refusing every call, the rebuilt field reads as before and no call is made"
 );
 
 check!(
-    /// A fill is a record change like any write.
     FILL_REACTS = a_filled_field_recomputes_what_reads_it_and_fires_its_triggers,
     "012 and 022, extended: the field an output fills is changed through the fold's ordinary path; a derived field reading it is recomputed and a trigger on it fires, caused by the output"
 );
 
 check!(
-    /// Computed fields read one another without a cycle.
     COMPUTED_CYCLE_REFUSED = computed_fields_that_read_each_other_in_a_cycle_are_refused,
     "022, extended: a type's computed fields, derived and function-computed alike, read one another without a cycle, so a chain of fills ends; a cycle is refused at declare, naming its fields"
 );
 
 check!(
-    /// A fill from a recorded output reacts like any other.
     RECORDED_FILL_REACTS = a_second_record_with_the_same_input_has_its_derived_fields_right,
     "022, extended: a field filled from an output the lake already holds is a change of that field; the derived fields reading it are recomputed in the same event"
 );
 
 check!(
-    /// A backed field waits for the backed field it reads.
     CHAIN_WAITS = a_backed_field_reading_another_waits_for_its_output,
     "022, extended: computed fields settle in the order of what they read; a backed field whose input is not computed yet is not called, so no output is recorded under an input that was never meant"
 );
 
 check!(
-    /// An output its field's type would not take fills nothing.
     OUTPUT_NOT_A_VALUE = an_output_its_fields_type_would_not_take_clears_the_field_naming_it,
     "022 and 011, extended: an output is held to its field's type as a write is, so a vector output with a component that is not finite as an `f32` (`1e300`) is recorded, fills nothing, clears the field, and puts in its metadata's `error` why, naming the field"
 );
@@ -108,9 +96,7 @@ pub(super) async fn places(store: &dyn LakeStore, config: Value) -> Result<Lake,
     Ok(Lake::of(store))
 }
 
-async fn a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
@@ -138,9 +124,7 @@ async fn a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare(
     Ok(())
 }
 
-async fn a_backed_field_is_filled_from_the_output_the_store_records(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_backed_field_is_filled_from_the_output_the_store_records(store: Store) -> Held {
     let token = "filled_and_recorded";
     let l = places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
     let written = l.upsert("place", "p1", json!({"code": "AT"})).await?;
@@ -187,14 +171,14 @@ async fn a_backed_field_is_filled_from_the_output_the_store_records(
     };
     ensure!(
         seam == &format!("function:{KIND}:lookup")
-            && output == &json!("AT")
+            && output == &Some(json!("AT"))
             && filled
                 .as_ref()
                 .is_some_and(|(t, k, f)| t.as_str() == "place"
                     && k.as_str() == "p1"
                     && f.as_str() == "name"),
         "the output is recorded under the seam `function:{KIND}:lookup`, as \"AT\", naming \
-         the field `place` `p1` `name`; the log holds seam {seam:?}, output {output}, field \
+         the field `place` `p1` `name`; the log holds seam {seam:?}, output {output:?}, field \
          {filled:?}"
     );
     ensure!(
@@ -215,9 +199,7 @@ async fn a_backed_field_is_filled_from_the_output_the_store_records(
     Ok(())
 }
 
-async fn the_same_input_is_never_sent_to_a_backing_twice(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn the_same_input_is_never_sent_to_a_backing_twice(store: Store) -> Held {
     let token = "one_call_per_input";
     let l = places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
     for (key, code) in [("p1", "AT"), ("p2", "AT"), ("p1", "DE"), ("p1", "AT")] {
@@ -241,9 +223,7 @@ async fn the_same_input_is_never_sent_to_a_backing_twice(
     Ok(())
 }
 
-async fn a_failing_backing_clears_the_field_and_records_the_failure(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_failing_backing_clears_the_field_and_records_the_failure(store: Store) -> Held {
     let token = "failure_clears";
     places(
         store.as_ref(),
@@ -276,7 +256,7 @@ async fn a_failing_backing_clears_the_field_and_records_the_failure(
     let recorded = recorded_outputs(store.as_ref()).await?;
     let last = recorded.last().map(|e| &e.body);
     ensure!(
-        matches!(last, Some(EventBody::OutputRecorded { output, .. })
+        matches!(last, Some(EventBody::OutputRecorded { output: Some(output), .. })
             if output.as_object().is_some_and(|o| o.len() == 1 && o["error"].is_string())),
         "the failure is recorded as its output, {{\"error\": \"<why>\"}}; the last \
          `output_recorded` is {last:?}"
@@ -298,9 +278,7 @@ async fn a_failing_backing_clears_the_field_and_records_the_failure(
     Ok(())
 }
 
-async fn an_output_its_fields_type_would_not_take_clears_the_field_naming_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn an_output_its_fields_type_would_not_take_clears_the_field_naming_it(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare_json(json!({
         "declare": "function", "name": "lookup", "backing": KIND,
@@ -326,9 +304,7 @@ async fn an_output_its_fields_type_would_not_take_clears_the_field_naming_it(
     Ok(())
 }
 
-async fn a_rebuild_reads_recorded_outputs_back_without_calling_the_backing(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rebuild_reads_recorded_outputs_back_without_calling_the_backing(store: Store) -> Held {
     let token = "rebuild_reads_outputs";
     let l = places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
     l.upsert("place", "p1", json!({"code": "AT"})).await?;
@@ -355,9 +331,7 @@ async fn a_rebuild_reads_recorded_outputs_back_without_calling_the_backing(
     Ok(())
 }
 
-async fn a_filled_field_recomputes_what_reads_it_and_fires_its_triggers(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_filled_field_recomputes_what_reads_it_and_fires_its_triggers(store: Store) -> Held {
     let token = "fill_reacts";
     lookup(
         store.as_ref(),
@@ -374,9 +348,8 @@ async fn a_filled_field_recomputes_what_reads_it_and_fires_its_triggers(
         vec![field("code", StorageKind::Text), name, greeting],
     ))
     .await?;
-    cat.declare(own, trigger_on("named", "place", Some("name = 'AT'")))
-        .await
-        .must("declaring the trigger `named` on `place`")?;
+    let fut = cat.declare(own, trigger_on("named", "place", Some("name = 'AT'")));
+    fut.await.must("declaring the trigger `named` on `place`")?;
     l.upsert("place", "p1", json!({"code": "AT"})).await?;
 
     let r = l.read("place", "p1").await?;
@@ -420,9 +393,7 @@ fn greeting() -> lakelands_api::ontology::FieldDecl {
     )
 }
 
-async fn computed_fields_that_read_each_other_in_a_cycle_are_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn computed_fields_that_read_each_other_in_a_cycle_are_refused(store: Store) -> Held {
     let token = "computed_cycle_refused";
     lookup(
         store.as_ref(),
@@ -435,12 +406,11 @@ async fn computed_fields_that_read_each_other_in_a_cycle_are_refused(
     let before = store.head().await.must("reading the head")?;
     let name = computed_by("name", StorageKind::Text, "lookup", &["label"]);
     let label = derived("label", StorageKind::Text, "concat(name, '-')", &["name"]);
-    let answer = cat
-        .declare(
-            own,
-            Declaration::Type(type_decl("place", vec![name, label])),
-        )
-        .await;
+    let answer = cat.declare(
+        own,
+        Declaration::Type(type_decl("place", vec![name, label])),
+    );
+    let answer = answer.await;
     let named_both = matches!(invalid_case(&answer), Some(Case::ComputedCycle { fields })
         if ["name", "label"].iter().all(|f| fields.0.iter().any(|n| n == f)));
     ensure!(
@@ -469,9 +439,7 @@ async fn echoing(
     Ok(l)
 }
 
-async fn a_second_record_with_the_same_input_has_its_derived_fields_right(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_second_record_with_the_same_input_has_its_derived_fields_right(store: Store) -> Held {
     let token = "recorded_fill_reacts";
     let l = echoing(
         store.as_ref(),
@@ -509,9 +477,7 @@ async fn a_second_record_with_the_same_input_has_its_derived_fields_right(
     Ok(())
 }
 
-async fn a_backed_field_reading_another_waits_for_its_output(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_backed_field_reading_another_waits_for_its_output(store: Store) -> Held {
     let (first, second) = ("chain_waits_first", "chain_waits_second");
     echoing(
         store.as_ref(),
@@ -560,14 +526,13 @@ async fn a_backed_field_reading_another_waits_for_its_output(
 }
 
 check!(
-    /// A redeclaration calls again for an input whose output was a failure.
     FAILURE_RETRIED = a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds,
     "022, extended: a settle forced by `recompute` calls again, once, for an input whose recorded output is a failure, for a function backing as for an embedding; the later output holds for every record with that input"
 );
 
 async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let token = "failure_retried";
     let l = places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
     unplug(token);
@@ -628,10 +593,8 @@ async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
     .await?;
     let before = store.head().await.must("reading the head")?;
     let spot = Recompute::Type("spot".into());
-    l.cat
-        .recompute(&l.own, spot)
-        .await
-        .must("the door, by a type")?;
+    let fut = l.cat.recompute(&l.own, spot);
+    fut.await.must("the door, by a type")?;
     let appended = events_from(store.as_ref(), before.next()).await?;
     let listed = appended.iter().find_map(|e| match &e.body {
         EventBody::Declared {

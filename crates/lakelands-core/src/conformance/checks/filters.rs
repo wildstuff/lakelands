@@ -3,46 +3,40 @@
 //! `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
 //! `docs/decisions/010-provenance-per-field.md`).
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::StorageKind;
-use lakelands_api::query::Projection;
+use lakelands_api::query::{Projection, QueryResult};
 use lakelands_api::read::{AggFunc, Aggregate, OrderBy};
 use lakelands_api::{Find, LakeStore, Refusal, Timestamp};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, agg, alike_renamed, field, field_writer, find_where, no_such_field, order, pattern,
-    refused_on, source_record, sourced, type_decl, windows_reach_head,
+    Lake, Must, agg, alike_renamed, computed_by, field, field_writer, find_where, no_such_field,
+    order, pattern, refused_on, source_record, sourced, try_upsert, type_decl, value, view_of,
+    windows_reach_head,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// Absence never satisfies a comparison.
     ABSENT_NEVER_MATCHES = absent_fields_never_match_not_even_not_equal,
     "023: a comparison with an absent or null operand is false, `!=` included; `is null` is how absence is asked about"
 );
 
 check!(
-    /// Numbers and numeric text compare by value.
     NUMBERS_COMPARE_AS_NUMBERS = numbers_and_numeric_text_compare_as_numbers,
     "023: when both sides read as numbers, a JSON number or a decimal string, they compare exactly as numbers, never as text"
 );
 
 check!(
-    /// Values of kinds that do not compare match nothing.
     KINDS_THAT_DO_NOT_COMPARE = values_of_kinds_that_do_not_compare_match_nothing_and_fail_nothing,
     "023: text that is not a number against a number, a boolean against text: every operator is false, and the read does not fail"
 );
 
 check!(
-    /// A read may not probe a field its principal may not read.
     PROBING_REFUSED = probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggregate,
     "024 and 006: filtering, ordering or aggregating over a field the principal sees masked, through `find` or through a pattern's rows and its aggregate, is refused as not granted, naming the field; over one it may not see at all, it is answered as for a field the type does not declare"
 );
 
 check!(
-    /// Provenance can be filtered and ordered on.
     PROVENANCE_IN_WHERE_AND_ORDER = a_filter_and_an_order_can_read_when_a_source_saw_a_value,
     "010 and 017: `seen_at(f)` reads a field's provenance in `where`, and `order_by` may order by it"
 );
@@ -72,9 +66,7 @@ async fn keys_where(store: &dyn LakeStore, filter: &str) -> Result<Vec<String>, 
     Ok(keys)
 }
 
-async fn absent_fields_never_match_not_even_not_equal(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn absent_fields_never_match_not_even_not_equal(store: Store) -> Held {
     let l = lines(store.as_ref()).await?;
     l.upsert("line", "with", json!({"note": "x"})).await?;
     l.upsert("line", "other", json!({"note": "y"})).await?;
@@ -99,9 +91,7 @@ async fn absent_fields_never_match_not_even_not_equal(
     Ok(())
 }
 
-async fn numbers_and_numeric_text_compare_as_numbers(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn numbers_and_numeric_text_compare_as_numbers(store: Store) -> Held {
     let l = lines(store.as_ref()).await?;
     l.upsert("line", "nine", json!({"qty": 9, "price": "9.50"}))
         .await?;
@@ -129,9 +119,7 @@ async fn numbers_and_numeric_text_compare_as_numbers(
     Ok(())
 }
 
-async fn values_of_kinds_that_do_not_compare_match_nothing_and_fail_nothing(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn values_of_kinds_that_do_not_compare_match_nothing_and_fail_nothing(store: Store) -> Held {
     let l = lines(store.as_ref()).await?;
     l.upsert("line", "a", json!({"label": "abc", "qty": 1, "flag": true}))
         .await?;
@@ -157,8 +145,8 @@ async fn values_of_kinds_that_do_not_compare_match_nothing_and_fail_nothing(
 }
 
 async fn probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggregate(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = lines(store.as_ref()).await?;
     let Lake { cat, .. } = &l;
     l.upsert("line", "a", json!({"qty": 1, "note": "secret"}))
@@ -265,16 +253,13 @@ async fn probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggre
              failed with {err:?}"
             );
         }
-        cat.find(&reader, &line, find_where("qty = 1"))
-            .await
-            .must("filtering on the readable `qty`")?;
+        let fut = cat.find(&reader, &line, find_where("qty = 1"));
+        fut.await.must("filtering on the readable `qty`")?;
     }
     Ok(())
 }
 
-async fn a_filter_and_an_order_can_read_when_a_source_saw_a_value(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_filter_and_an_order_can_read_when_a_source_saw_a_value(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let ty = type_decl("reading", vec![sourced("level", StorageKind::Number)]);
     l.declare(ty).await?;
@@ -312,14 +297,16 @@ async fn a_filter_and_an_order_can_read_when_a_source_saw_a_value(
 }
 
 check!(
-    /// A cleared value matches nothing; its record is still there.
+    COMPARED_AS_ITS_INSTANT = a_text_compared_with_an_instant_is_read_as_the_instant_it_denotes,
+    "023 and the log format §1.3: a text that is only compared or computed with is read as the instant it denotes, out of the years 0000 to 9999 too, so `'9999-12-31T23:30:00-01:00'` is after every instant a field holds and `'0000-01-01T00:30:00+01:00'` before every one, where no field takes either written: at a find, a pattern's `where`, a view's `where` and a measure, a value type's `constraint`, an `expr` function, `in` on either side, a literal wrapped in `if` or `coalesce` or subtracted from, and two literals; a text field's value that denotes an instant compares as one too, and one that denotes none is a text"
+);
+
+check!(
     CLEARED_FIELD = a_cleared_field_matches_nothing_but_its_record_is_found_by_another,
     "012 and 023: a field set to null is absent, so no comparison on it holds, and the record is found by its other fields as before"
 );
 
-async fn a_cleared_field_matches_nothing_but_its_record_is_found_by_another(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_cleared_field_matches_nothing_but_its_record_is_found_by_another(store: Store) -> Held {
     let l = lines(store.as_ref()).await?;
     l.upsert("line", "a", json!({"label": "keep", "note": "gone"}))
         .await?;
@@ -331,6 +318,131 @@ async fn a_cleared_field_matches_nothing_but_its_record_is_found_by_another(
         "after `note` was cleared, `where note = 'gone'` must admit nothing and \
          `where label = 'keep' and note is null` must admit `a`; they admitted \
          {by_note:?} and {by_label:?}"
+    );
+    Ok(())
+}
+
+async fn a_text_compared_with_an_instant_is_read_as_the_instant_it_denotes(store: Store) -> Held {
+    use StorageKind::{Boolean, Date, DateTime, Number, Text};
+    let l = Lake::of(store.as_ref());
+    // Half an hour past the last year, and half an hour before the first.
+    let (high, low) = ("9999-12-31T23:30:00-01:00", "0000-01-01T00:30:00+01:00");
+    let between = |of: &str| format!("{of} < '{high}' and {of} > '{low}'");
+    l.declare_json(
+        json!({"declare": "value_type", "name": "stamp", "kind": "date_time",
+        "constraint": between("value")}),
+    )
+    .await?;
+    l.declare_json(
+        json!({"declare": "function", "name": "within", "backing": "expr",
+        "inputs": [{"name": "at", "type": {"kind": "date_time"}}], "expr": between("at")}),
+    )
+    .await?;
+    let mut stamped = field("at", DateTime);
+    stamped.ty.value_type = Some("stamp".into());
+    l.declare(type_decl("stamped", vec![stamped])).await?;
+    let fields = vec![
+        field("at", DateTime),
+        field("on", Date),
+        field("name", Text),
+        field("group", Text),
+        computed_by("inside", Boolean, "within", &["at"]),
+    ];
+    l.declare(type_decl("thing", fields)).await?;
+    let mut grouped = view_of(
+        "grouped",
+        "thing",
+        &["group"],
+        vec![
+            field("group", Text),
+            field("n", Number),
+            field("early", Number),
+        ],
+        &[
+            ("n", "count()"),
+            ("early", &format!("sum(if(at < '{high}', 1, 0))")),
+        ],
+    );
+    grouped.view.as_mut().expect("a view").r#where = Some(format!("at > '{low}'").as_str().into());
+    l.declare(grouped).await?;
+    // The first and the last instant a field holds, and one between. The
+    // value type's constraint takes each.
+    let mut red = Vec::new();
+    for (key, at, on, name) in [
+        ("first", "0000-01-01T00:00:00Z", "0000-01-01", high),
+        ("mid", "2026-09-24T05:57:11Z", "2026-09-24", "plain"),
+        ("last", "9999-12-31T23:59:59.999999Z", "9999-12-31", high),
+    ] {
+        let fields = json!({"at": at, "on": on, "name": name, "group": "g"});
+        l.upsert("thing", key, fields).await?;
+        let stamped = try_upsert(l.cat.as_ref(), &l.own, "stamped", key, json!({ "at": at }));
+        if let Err(e) = stamped.await {
+            red.push(format!("the constraint refused {at}: {e}"));
+        }
+    }
+    // The same instant as `high`, written with another offset.
+    let same = "9999-12-31T22:30:00-02:00";
+    for (filter, n) in [
+        (format!("at < '{high}'"), 3),
+        (format!("'{high}' > at"), 3),
+        (format!("at > '{low}'"), 3),
+        (format!("on < '{high}' and on > '{low}'"), 3),
+        (format!("at < if(true, '{high}', '{high}')"), 3),
+        (format!("at > coalesce('{low}', '{low}')"), 3),
+        (format!("'{high}' - at < 4000000d"), 3),
+        (format!("'{high}' in ('x', '{same}')"), 3),
+        (format!("'{same}' in ('{high}')"), 3),
+        (format!("'{high}' = '{same}'"), 3),
+        (format!("'{high}' > '9999-12-31T23:45:00+00:00'"), 3),
+        (format!("'{low}' < '0000-01-01T00:00:00Z'"), 3),
+        (format!("at in ('{high}', '{low}')"), 0),
+        // A text field's value that denotes an instant compares as one
+        // too, as two literals do; one that denotes none is a text.
+        (format!("name = '{same}'"), 2),
+        ("name = 'plain'".to_owned(), 1),
+        ("name > 'pl' and name < 'pm'".to_owned(), 1),
+    ] {
+        let found = l.all_found("thing", find_where(&filter)).await?;
+        if found.len() != n {
+            red.push(format!(
+                "a find where {filter} found {} of {n}",
+                found.len()
+            ));
+        }
+        let mut walked = pattern("thing", None, Vec::new(), Projection::default());
+        walked.start.filter = Some(filter.as_str().into());
+        let rows = l.cat.query(&l.own, walked).await;
+        let rows = match rows.must("a pattern with the filter")?.data {
+            QueryResult::Rows { rows, .. } => rows.len(),
+            _ => usize::MAX,
+        };
+        if rows != n {
+            red.push(format!("a pattern where {filter} answered {rows} of {n}"));
+        }
+    }
+    let group = l.read("grouped", "g").await?;
+    for measure in ["n", "early"] {
+        if value(&group, measure) != Some(&json!(3)) {
+            red.push(format!(
+                "the view's `{measure}` reads {:?}, not 3",
+                value(&group, measure)
+            ));
+        }
+    }
+    for key in ["first", "mid", "last"] {
+        let inside = l.read("thing", key).await?;
+        if value(&inside, "inside") != Some(&json!(true)) {
+            red.push(format!(
+                "`inside` of `{key}` reads {:?}",
+                value(&inside, "inside")
+            ));
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "`{high}` denotes an instant after every one a field holds and `{low}` one before, \
+         and each is read so wherever it is compared: {}",
+        red.join("; ")
     );
     Ok(())
 }

@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::engine::Declared;
+use lakelands_api::engine::{About, Applied, Declared};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, ProposalId, RecordKey, RelationName, TypeName};
@@ -53,9 +53,14 @@ impl<T> History<T> {
     /// The state valid at `at`: the latest put at or before it. Nothing is
     /// valid in a view of an empty projection.
     pub(crate) fn at(&self, at: Option<Position>) -> Option<&T> {
+        self.since(at).map(|(_, t)| t)
+    }
+
+    /// [`Self::at`] with the position the state is valid from.
+    pub(crate) fn since(&self, at: Option<Position>) -> Option<(Position, &T)> {
         let at = at?;
         let i = self.0.partition_point(|(p, _)| *p <= at);
-        i.checked_sub(1).map(|i| &self.0[i].1)
+        i.checked_sub(1).map(|i| (self.0[i].0, &self.0[i].1))
     }
 
     /// The latest state put.
@@ -112,13 +117,8 @@ pub(crate) enum Put {
         /// From when.
         at: Position,
     },
-    /// An event id applied at `at`.
-    Applied {
-        /// The event.
-        id: EventId,
-        /// Where it was applied.
-        at: Position,
-    },
+    /// An event applied, with what the feed's index keeps of it.
+    Applied(Applied),
 }
 
 impl Put {
@@ -127,8 +127,8 @@ impl Put {
         match self {
             Put::Declaration(d) => d.since,
             Put::Record(r) | Put::Head(r) => r.position,
+            Put::Applied(a) => a.at,
             Put::Membership { at, .. }
-            | Put::Applied { at, .. }
             | Put::HeadsEnded { at, .. }
             | Put::Proposal { at, .. }
             | Put::Output { at, .. } => *at,
@@ -146,6 +146,10 @@ pub(crate) struct Projection {
     pub(crate) members: BTreeMap<(String, TypeName, RecordKey), History<bool>>,
     pub(crate) outputs: BTreeMap<(String, Digest), History<Value>>,
     pub(crate) applied: BTreeMap<EventId, Position>,
+    /// The feed's index of the log: every applied position's kind and
+    /// what its event is about, and the positions of each kind, type and
+    /// key.
+    pub(crate) routes: Routes,
     pub(crate) folded: Option<Position>,
     /// Per type, every record state put, by position and key: the keys a
     /// page at an earlier position reads apart from the order index.
@@ -167,6 +171,30 @@ pub(crate) struct Projection {
     pub(crate) in_edges: BTreeMap<(TypeName, RecordKey), BTreeMap<EdgeFrom, Edge>>,
     /// Each head record's entries in `in_edges`: the target and the edge.
     in_edge_rows: BTreeMap<(TypeName, RecordKey), Vec<(Target, EdgeFrom)>>,
+}
+
+/// The feed's index of the log (`lakelands_core::feed`).
+#[derive(Debug, Default)]
+pub(crate) struct Routes {
+    pub(crate) events: BTreeMap<Position, (&'static str, Vec<About>)>,
+    pub(crate) kinds: BTreeMap<&'static str, BTreeSet<Position>>,
+    pub(crate) types: BTreeMap<TypeName, BTreeSet<Position>>,
+    pub(crate) keys: BTreeMap<RecordKey, BTreeSet<Position>>,
+}
+
+impl Routes {
+    fn put(&mut self, a: Applied) {
+        self.kinds.entry(a.kind).or_default().insert(a.at);
+        for about in &a.about {
+            if let Some(ty) = &about.ty {
+                self.types.entry(ty.clone()).or_default().insert(a.at);
+            }
+            if let Some(key) = &about.key {
+                self.keys.entry(key.clone()).or_default().insert(a.at);
+            }
+        }
+        self.events.insert(a.at, (a.kind, a.about));
+    }
 }
 
 /// An edge's source and relation, which tell it apart among the edges
@@ -509,8 +537,9 @@ impl Projection {
                 .entry((seam, input))
                 .or_default()
                 .put(at, output),
-            Put::Applied { id, at } => {
-                self.applied.entry(id).or_insert(at);
+            Put::Applied(a) => {
+                self.applied.entry(a.id.clone()).or_insert(a.at);
+                self.routes.put(a);
             }
             Put::Head(r) => {
                 let id = (r.ty.clone(), r.key.clone());

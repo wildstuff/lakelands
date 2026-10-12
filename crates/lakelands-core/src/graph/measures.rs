@@ -32,8 +32,8 @@ pub fn degrees<S: EdgeSource + ?Sized>(
 ) -> Result<Vec<u64>> {
     let mut links = Links::new(source);
     let mut seen: Vec<BTreeSet<EdgeId>> = vec![BTreeSet::new(); nodes.len()];
-    for (relation, walk) in steps {
-        let around = links.around(nodes, std::slice::from_ref(relation), *walk)?;
+    for (i, (relation, walk)) in steps.iter().enumerate() {
+        let around = links.around(nodes, std::slice::from_ref(relation), *walk, Some(i))?;
         for (seen, around) in seen.iter_mut().zip(around) {
             seen.extend(around.iter().map(|(_, edge)| edge_id(edge)));
         }
@@ -111,8 +111,9 @@ impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
         while !frontier.is_empty() {
             let nears = frontier.split_off(frontier.len().saturating_sub(PAGE));
             let mut found: BTreeSet<Node> = BTreeSet::new();
-            for relation in &self.relations {
-                let edges = super::edges_of(self.source, &nears, Some(relation), Walk::Both)?;
+            for (i, relation) in self.relations.iter().enumerate() {
+                let edges =
+                    super::edges_of(self.source, &nears, Some(relation), Walk::Both, Some(i))?;
                 for (near, edges) in nears.iter().zip(edges) {
                     for edge in edges {
                         let other = super::far(&edge, near);

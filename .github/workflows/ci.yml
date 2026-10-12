@@ -217,6 +217,7 @@ jobs:
           - doc-heads-its-item
           - detail-sources
           - refusals
+          - records-resolve
     name: gate (${{ matrix.gate }})
     steps:
       - uses: actions/checkout@v4

@@ -322,6 +322,147 @@ fn a_strict_declaration_is_read_back_from_what_it_writes() {
     }
 }
 
+/// A declaration is judged as a written value is: an integer anywhere
+/// in it beyond ±(2^53 − 1), in whatever form it arrived, is said at the
+/// declaration and the path of the member that holds it.
+#[test]
+fn a_declaration_is_refused_for_an_integer_no_reader_reads_exactly() {
+    use lakelands_api::error::{Case, Place};
+    use lakelands_api::write::Declaration;
+    let fault = |d: serde_json::Value| {
+        let d: Declaration = serde_json::from_value(d).unwrap();
+        d.integer_fault()
+    };
+    let function = |config: serde_json::Value| json!({"declare": "function", "name": "f", "backing": "http", "config": config});
+    let duration =
+        |micros: u64| json!({"op": "lit", "value": {"type": "duration", "value": micros}});
+    let set = |micros: u64| json!({"declare": "object_set", "name": "s", "of": "t", "where": duration(micros)});
+    let text =
+        |filter: &str| json!({"declare": "object_set", "name": "s", "of": "t", "where": filter});
+    let (f, s) = (
+        Place::Function { name: "f".into() },
+        Place::ObjectSet { name: "s".into() },
+    );
+    for (d, place, path) in [
+        (function(json!(1e16)), &f, "config"),
+        (
+            function(json!({"a": [{"b": 9007199254740993_u64}]})),
+            &f,
+            "config.a[0].b",
+        ),
+        (set(9007199254740992), &s, "where.value.value"),
+        (text("now() > 104250d"), &s, "where"),
+        // Another member holding the same text is not the one named.
+        (
+            json!({"declare": "object_set", "name": "s", "of": "t",
+                   "description": "now() > 104250d", "where": "now() > 104250d"}),
+            &s,
+            "where",
+        ),
+    ] {
+        let said = fault(d.clone()).unwrap_or_else(|| panic!("{d}"));
+        let path = path.to_owned();
+        assert_eq!(said.at, [place.clone(), Place::Member { path }], "{d}");
+        assert!(matches!(said.case, Case::IntegerTooLarge { .. }), "{d}");
+    }
+    for d in [
+        function(json!(null)),
+        function(json!({"a": 9007199254740991_u64, "b": 1e21})),
+        set(9007199254740991),
+        text("now() > 104249d"),
+        // A number literal is kept as it is written, in both forms.
+        text("n > 9007199254740993"),
+        text("not an expression 110000d"),
+    ] {
+        assert_eq!(fault(d.clone()), None, "{d}");
+    }
+}
+
+/// Every member of a declaration that holds an expression is judged: a
+/// span no duration holds, in text form, is said at that member.
+#[test]
+fn an_expression_in_text_form_is_judged_wherever_a_declaration_holds_one() {
+    use lakelands_api::error::Place;
+    use lakelands_api::write::Declaration;
+    let long = "now() > 104250d";
+    let measure = json!([{"name": "n", "expr": long}]);
+    let derived =
+        json!({"name": "f", "type": {"kind": "boolean"}, "authority": "derived", "derived": long});
+    let ty = |more: serde_json::Value| {
+        let mut d = json!({"declare": "type", "name": "t"});
+        d.as_object_mut()
+            .unwrap()
+            .extend(more.as_object().unwrap().clone());
+        d
+    };
+    let verb = |more: serde_json::Value| {
+        let mut d = json!({"declare": "verb", "name": "v", "on": "t", "risk": "low", "effect": "write", "set": []});
+        d.as_object_mut()
+            .unwrap()
+            .extend(more.as_object().unwrap().clone());
+        d
+    };
+    for (d, path) in [
+        (
+            ty(json!({"fields": [derived.clone()]})),
+            "fields[0].derived",
+        ),
+        (
+            ty(json!({"relations": [{"name": "r", "target": "t", "fields": [derived]}]})),
+            "relations[0].fields[0].derived",
+        ),
+        (
+            ty(json!({"view": {"source": "s", "where": long, "measures": []}})),
+            "view.where",
+        ),
+        (
+            ty(json!({"view": {"source": "s", "measures": measure}})),
+            "view.measures[0].expr",
+        ),
+        (
+            ty(
+                json!({"view": {"source": "s", "measures": [], "merge": [{"source": "u", "where": long, "measures": []}]}}),
+            ),
+            "view.merge[0].where",
+        ),
+        (
+            ty(
+                json!({"view": {"source": "s", "measures": [], "merge": [{"source": "u", "measures": measure}]}}),
+            ),
+            "view.merge[0].measures[0].expr",
+        ),
+        (
+            json!({"declare": "value_type", "name": "x", "kind": "date_time", "constraint": long}),
+            "constraint",
+        ),
+        (verb(json!({"requires": long})), "requires"),
+        (
+            verb(json!({"set": [{"field": "f", "value": long}]})),
+            "set[0].value",
+        ),
+        (
+            json!({"declare": "trigger", "name": "g", "on": "t", "when": long}),
+            "when",
+        ),
+        (
+            json!({"declare": "function", "name": "e", "backing": "expr", "expr": long}),
+            "expr",
+        ),
+        (
+            json!({"declare": "object_set", "name": "s", "of": "t", "where": long}),
+            "where",
+        ),
+    ] {
+        let read: Declaration =
+            serde_json::from_value(d.clone()).unwrap_or_else(|e| panic!("{d}: {e}"));
+        let said = read.integer_fault().unwrap_or_else(|| panic!("{d}"));
+        let member = Place::Member {
+            path: path.to_owned(),
+        };
+        assert_eq!(said.at.last(), Some(&member), "{d}");
+    }
+}
+
 #[test]
 fn an_annotation_is_refused_naming_the_declaration_the_key_and_where_it_sits() {
     use lakelands_api::error::{Case, Place};
@@ -351,6 +492,13 @@ fn an_annotation_is_refused_naming_the_declaration_the_key_and_where_it_sits() {
             vec![ty.clone(), field("a"), key("acme.n")],
             Case::IntegerTooLarge {
                 n: 9007199254740992_u64.into(),
+            },
+        ),
+        (
+            json!({"declare": "type", "name": "t", "annotations": {"acme.n": 1e16}}),
+            vec![ty.clone(), key("acme.n")],
+            Case::IntegerTooLarge {
+                n: serde_json::Number::from_f64(1e16).expect("finite"),
             },
         ),
         (

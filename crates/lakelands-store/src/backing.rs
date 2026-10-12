@@ -55,6 +55,7 @@ impl ExprBacking {
         };
         let scope = RecordScope {
             fields: &inputs,
+            meta: None,
             settings: None,
             now,
         };

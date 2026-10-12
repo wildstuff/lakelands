@@ -735,6 +735,61 @@ async fn verified_after_a_seal_by_another_writer(
     reader.verify(None, None).await
 }
 
+/// A log holds no number written as an integer beyond ±(2^53 − 1),
+/// whatever wrote it (`docs/log-format.md` §1.2). The seal lets none in;
+/// `verify` refuses a log that holds one, written past the seal by
+/// another writer, as damaged at that event's position, naming the
+/// number. The fold does not judge: the lake opens and takes its lease.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_integer_no_reader_reads_exactly_is_reported_by_verify() {
+    let lake = name();
+    let store = open(&lake, OpenMode::Create).await.unwrap();
+    store.close().await.unwrap();
+    drop(store);
+    let engine = opener()
+        .open(&Location::memory(lake.as_str()), OpenMode::Write)
+        .unwrap();
+    let lease = engine.take_lease("another writer").unwrap();
+    let append = |paid: serde_json::Value| {
+        let (tip, hash) = engine.tip().unwrap().unwrap();
+        let body = EventBody::OutputRecorded {
+            seam: "verb:bank:pay".into(),
+            input: Digest::zero(),
+            output: Some(json!({ "paid": paid })),
+            output_at: None,
+            field: None,
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        let now = lakelands_api::Timestamp(now.as_micros() as i64);
+        let draft = lakelands_store::log::Draft::system(now, body);
+        let (id, at) = (lake.as_str().into(), tip.next());
+        let (_, canon) = lakelands_store::log::seal(&id, at, &hash, lease.fence, draft);
+        engine.append(&lease, &[canon]).unwrap();
+        at
+    };
+    let exact = append(json!(9_007_199_254_740_991_i64));
+    let beyond = append(json!(1e16));
+    engine.release_lease(&lease).unwrap();
+    drop(engine);
+    let store = open(&lake, OpenMode::Write).await.unwrap();
+    // The fold does not judge: the lake opens, and its lease follows.
+    assert_eq!(store.head().await.unwrap(), beyond.next());
+    let through = store.verify(None, Some(exact)).await;
+    assert_eq!(
+        through.map(|v| v.through),
+        Ok(exact),
+        "2^53 − 1 is read exactly"
+    );
+    let whole = store.verify(None, None).await;
+    let fits = matches!(&whole, Err(Error::Unavailable { situation })
+        if matches!(situation.as_ref(), lakelands_api::error::Situation::Damaged {
+            position: Some(p), flaw: lakelands_api::error::Flaw::IntegerTooLarge { .. }, ..
+        } if *p == beyond));
+    assert!(fits, "{whole:?}");
+}
+
 /// A checkpoint that does not follow the segment it seals is reported.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_tampered_checkpoint_is_reported_by_verify() {
@@ -776,11 +831,29 @@ async fn a_segment_that_begins_with_no_checkpoint_is_reported_by_verify() {
     );
 }
 
-/// A log's format versions only go up (`docs/log-format.md` §6):
-/// `verify` refuses an event written in a lower version than the one
-/// before it, naming both.
-#[tokio::test(flavor = "multi_thread")]
-async fn verify_refuses_a_format_version_that_goes_down() {
+/// A stored event as another release would have written it: `v` set to
+/// `v`, its hash made right, so that its format is all that differs.
+fn in_format(
+    stored: lakelands_api::engine::CanonicalEvent,
+    v: u32,
+) -> lakelands_api::engine::CanonicalEvent {
+    use lakelands_core::canonical;
+    let mut event: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
+    event["v"] = json!(v);
+    event.as_object_mut().unwrap().remove("hash");
+    let hash = canonical::sha256_hex(&event);
+    event["hash"] = json!(hash);
+    lakelands_api::engine::CanonicalEvent {
+        hash: Digest(hash),
+        bytes: canonical::to_vec(&event),
+        ..stored
+    }
+}
+
+/// A lake a store made, with events appended through the engine seam
+/// after its tip: a `lease_taken` in each format of `formats`, in order,
+/// each linked to the one before. Answers the lake's name and its tip.
+async fn lake_continued_in(formats: &[u32]) -> (String, (Position, Digest)) {
     let lake = name();
     let store = open(&lake, OpenMode::Create).await.unwrap();
     store.close().await.unwrap();
@@ -788,50 +861,282 @@ async fn verify_refuses_a_format_version_that_goes_down() {
     let engine = opener()
         .open(&Location::memory(lake.as_str()), OpenMode::Write)
         .unwrap();
-    let lease = engine.take_lease("tamperer").unwrap();
-    let (tip, hash) = engine.tip().unwrap().unwrap();
+    let lease = engine.take_lease("another release").unwrap();
+    let (mut at, mut prev) = engine.tip().unwrap().unwrap();
     let now = lakelands_api::Timestamp(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_micros() as i64,
     );
-    let taken = |fence| {
-        lakelands_store::log::Draft::system(
+    let mut stored = Vec::new();
+    for v in formats {
+        let taken = lakelands_store::log::Draft::system(
             now,
             EventBody::LeaseTaken {
-                fence,
-                holder: "tamperer".into(),
+                fence: lease.fence,
+                holder: "another release".into(),
             },
-        )
-    };
-    let (two, canon_two) = lakelands_store::log::seal_at(
-        2,
-        &lake.as_str().into(),
-        tip.next(),
-        &hash,
-        lease.fence,
-        taken(lease.fence),
-    );
-    let (_, canon_one) = lakelands_store::log::seal_at(
-        1,
-        &lake.as_str().into(),
-        two.position.next(),
-        &two.hash,
-        lease.fence,
-        taken(lease.fence),
-    );
-    engine.append(&lease, &[canon_two, canon_one]).unwrap();
+        );
+        let id = &lake.as_str().into();
+        let (_, canon) = lakelands_store::log::seal(id, at.next(), &prev, lease.fence, taken);
+        let canon = in_format(canon, *v);
+        (at, prev) = (canon.position, canon.hash.clone());
+        stored.push(canon);
+    }
+    engine.append(&lease, &stored).unwrap();
     engine.release_lease(&lease).unwrap();
-    drop(engine);
+    (lake, (at, prev))
+}
 
+/// A lake whose newest event another release wrote, in an older format or
+/// a newer one, is refused at an open in every mode, by its name and both
+/// formats, before anything is done to it: its tip stands, its projection
+/// is where it was (a rebuild cleared nothing), and its lease is free
+/// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lake_of_another_format_is_refused_at_an_open_and_left_as_it_was() {
+    use lakelands_api::error::Situation;
+    let reads = lakelands_api::event::LOG_FORMAT_VERSION;
+    for other in [reads - 1, reads + 1] {
+        let (lake, tip) = lake_continued_in(&[other]).await;
+        let state = || {
+            let engine = opener()
+                .open(&Location::memory(lake.as_str()), OpenMode::Write)
+                .unwrap();
+            let folded = engine.projection().folded_through().unwrap();
+            let lease = engine.take_lease("a probe").expect("the lease is free");
+            engine.release_lease(&lease).unwrap();
+            (engine.tip().unwrap(), folded)
+        };
+        let before = state();
+        assert_eq!(before.0, Some(tip));
+        assert!(before.1.is_some(), "the store that made the lake folded it");
+        for mode in [
+            OpenMode::Read,
+            OpenMode::Write,
+            OpenMode::Create,
+            OpenMode::Rebuild,
+        ] {
+            let Err(e) = open(&lake, mode).await else {
+                panic!("a lake in format {other} opened for {mode:?}");
+            };
+            assert!(
+                matches!(e.situation(), Some(Situation::LogFormat { lake: l, found, reads: r })
+                    if *l == lake && *found == u64::from(other) && *r == u64::from(reads)),
+                "{mode:?}: {e:?}"
+            );
+            assert_eq!(state(), before, "{mode:?} left the lake as it was");
+        }
+    }
+}
+
+/// An opener that counts the times the store opened its engine.
+struct Watched {
+    inner: MemoryOpener,
+    opened: Arc<AtomicU64>,
+}
+
+impl lakelands_api::engine::EngineOpener for Watched {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn log_ends(
+        &self,
+        location: &Location,
+    ) -> lakelands_api::Result<
+        Option<(
+            lakelands_api::engine::CanonicalEvent,
+            lakelands_api::engine::CanonicalEvent,
+        )>,
+    > {
+        self.inner.log_ends(location)
+    }
+    fn open(
+        &self,
+        location: &Location,
+        mode: OpenMode,
+    ) -> lakelands_api::Result<Box<dyn lakelands_api::engine::LakeEngine>> {
+        self.opened.fetch_add(1, Ordering::Relaxed);
+        self.inner.open(location, mode)
+    }
+}
+
+/// A lake of two events written through the engine seam: a
+/// `lake_created` that says the format `created`, its line in the format
+/// `first`, and a `lease_taken` in the format `tip`. Answers its name.
+fn lake_written_as(first: u32, created: u32, tip: u32) -> String {
+    use lakelands_store::log::{Draft, seal};
+    let lake = name();
+    let engine = opener()
+        .open(&Location::memory(lake.as_str()), OpenMode::Create)
+        .unwrap();
+    let lease = engine.take_lease("another release").unwrap();
+    let (id, now) = (&lake.as_str().into(), lakelands_api::Timestamp(0));
+    let made = Draft::system(now, EventBody::LakeCreated { format: created });
+    // The first event of a lake carries the fence 0.
+    let (_, made) = seal(id, Position(0), &Digest::zero(), 0, made);
+    let made = in_format(made, first);
+    let taken = EventBody::LeaseTaken {
+        fence: lease.fence,
+        holder: "another release".into(),
+    };
+    let taken = Draft::system(now, taken);
+    let (_, taken) = seal(id, Position(1), &made.hash, lease.fence, taken);
+    engine
+        .append(&lease, &[made, in_format(taken, tip)])
+        .unwrap();
+    engine.release_lease(&lease).unwrap();
+    lake
+}
+
+/// The store judges a lake's format before it opens the lake's engine,
+/// in every mode: where the first event's `v`, the format its
+/// `lake_created` says or the last event's `v` is another release's, the
+/// open is refused by that number and the engine was never opened, so it
+/// judged no projection, made nothing and changed nothing
+/// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+/// A lake of the release's format opens its engine once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lake_of_another_format_is_judged_before_its_engine_is_opened() {
+    use lakelands_api::error::Situation;
+    let reads = lakelands_api::event::LOG_FORMAT_VERSION;
+    let opened = Arc::new(AtomicU64::new(0));
+    let watched = || Seams {
+        engines: vec![Arc::new(Watched {
+            inner: opener(),
+            opened: opened.clone(),
+        })],
+        ..Seams::default()
+    };
+    for other in [reads - 1, reads + 1] {
+        for (first, created, tip) in [
+            (other, reads, reads),
+            (reads, other, reads),
+            (reads, reads, other),
+        ] {
+            let lake = lake_written_as(first, created, tip);
+            for mode in [
+                OpenMode::Read,
+                OpenMode::Write,
+                OpenMode::Create,
+                OpenMode::Rebuild,
+            ] {
+                let location = Location::memory(lake.as_str());
+                let Err(e) = lakelands_store::open(location, watched(), mode).await else {
+                    panic!("a lake written as {first}, {created}, {tip} opened for {mode:?}");
+                };
+                assert!(
+                    matches!(e.situation(), Some(Situation::LogFormat { lake: l, found, reads: r })
+                        if *l == lake && *found == u64::from(other) && *r == u64::from(reads)),
+                    "{first}, {created}, {tip}, {mode:?}: {e:?}"
+                );
+                let n = opened.load(Ordering::Relaxed);
+                assert_eq!(n, 0, "{mode:?}: the engine was opened");
+            }
+        }
+    }
+    let lake = name();
+    let made = lakelands_store::open(Location::memory(lake.as_str()), watched(), OpenMode::Create);
+    made.await.unwrap();
+    assert_eq!(opened.load(Ordering::Relaxed), 1);
+}
+
+/// An import asks the same question before it opens the target's
+/// engine: onto a lake of another format it is refused by that format,
+/// and onto a lake of the release's it is told the lake holds events,
+/// through its tip. The engine is opened for neither, so an import takes
+/// no lease on a lake that is there and changes nothing of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_import_judges_the_lake_it_finds_before_its_engine_is_opened() {
+    use lakelands_api::error::Situation;
+    let reads = lakelands_api::event::LOG_FORMAT_VERSION;
+    let opened = Arc::new(AtomicU64::new(0));
+    let watched = || Seams {
+        engines: vec![Arc::new(Watched {
+            inner: opener(),
+            opened: opened.clone(),
+        })],
+        ..Seams::default()
+    };
+    // An export of a lake of that name, made on an engine of its own.
+    let exported = async |lake: &str| {
+        let seams = Seams {
+            engines: vec![Arc::new(MemoryOpener::new())],
+            ..Seams::default()
+        };
+        let location = Location::memory(lake);
+        let store = lakelands_store::open(location, seams, OpenMode::Create);
+        let store = store.await.unwrap();
+        let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("import-onto-{lake}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let written = lakelands_core::export::write(store.as_ref(), &dir);
+        written.await.unwrap();
+        dir
+    };
+    for other in [reads - 1, reads + 1] {
+        for (first, created, tip) in [
+            (other, reads, reads),
+            (reads, other, reads),
+            (reads, reads, other),
+        ] {
+            let lake = lake_written_as(first, created, tip);
+            let dir = exported(&lake).await;
+            let onto = Location::memory(lake.as_str());
+            let Err(e) = lakelands_store::import(onto, watched(), dir.clone()).await else {
+                panic!("an import onto a lake written as {first}, {created}, {tip} was taken");
+            };
+            assert!(
+                matches!(e.situation(), Some(Situation::LogFormat { lake: l, found, reads: r })
+                    if *l == lake && *found == u64::from(other) && *r == u64::from(reads)),
+                "{first}, {created}, {tip}: {e:?}"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+    let lake = lake_written_as(reads, reads, reads);
+    let dir = exported(&lake).await;
+    let onto = Location::memory(lake.as_str());
+    let e = lakelands_store::import(onto, watched(), dir.clone()).await;
+    let e = e.expect_err("an import onto a lake that holds events was taken");
+    assert!(
+        matches!(e.case().map(|s| &s.case), Some(Case::ImportNotEmpty { head, .. }) if *head == Position(1)),
+        "{e:?}"
+    );
+    assert_eq!(opened.load(Ordering::Relaxed), 0, "the engine was opened");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An event of another format below the tip is refused where it is read:
+/// by `verify`, naming its position and both formats, and by a writer's
+/// open and a rebuild, whose fold reads it. Every read of the log opens
+/// its events through one check.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_event_of_another_format_below_the_tip_is_refused_where_it_is_read() {
+    use lakelands_api::error::{Flaw, Situation};
+    let reads = lakelands_api::event::LOG_FORMAT_VERSION;
+    let (lake, (tip, _)) = lake_continued_in(&[reads - 1, reads]).await;
+    let other = Position(tip.0 - 1);
+    let refused = |e: &Error| {
+        matches!(e.situation(), Some(Situation::Damaged {
+            position: Some(p),
+            flaw: Flaw::FormatOther { v, reads: r },
+            ..
+        }) if *p == other && *v == u64::from(reads - 1) && *r == u64::from(reads))
+    };
     let reader = open(&lake, OpenMode::Read).await.unwrap();
     let r = reader.verify(None, None).await;
-    assert!(
-        matches!(&r, Err(Error::Unavailable { situation })
-            if matches!(**situation, lakelands_api::error::Situation::Damaged { flaw: lakelands_api::error::Flaw::FormatBack { v: 1, before: 2 }, .. })),
-        "{r:?}"
-    );
+    assert!(matches!(&r, Err(e) if refused(e)), "{r:?}");
+    drop(reader);
+    for mode in [OpenMode::Write, OpenMode::Rebuild] {
+        let r = open(&lake, mode).await;
+        assert!(
+            matches!(&r, Err(e) if refused(e)),
+            "{mode:?}: {:?}",
+            r.err()
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2606,4 +2911,73 @@ async fn verify_refuses_a_known_at_that_goes_back_naming_its_position() {
             panic!("a known_at going back is refused at position 6, and it answered {other:?}")
         }
     }
+}
+
+/// The seal refuses an event the log's own reading would not pass,
+/// whatever door its draft came through (lakelands#830): a number written
+/// as an integer beyond ±(2^53 − 1), a `seen_at` or a `known_at` out of
+/// the years 0000 to 9999. The whole append is refused, a draft before
+/// the refused one too, the refusal names no place, and the writer stands
+/// where it stood. No door checks these drafts: they are handed to the
+/// append as a door with a defect would hand them.
+#[test]
+fn the_seal_refuses_an_event_the_log_would_not_read() {
+    use lakelands_store::log::Draft;
+    let location = Location::memory(name());
+    let lake = lakelands_store::lake::Lake::open(&location, seams(), OpenMode::Create).unwrap();
+    let answer = |output| EventBody::OutputRecorded {
+        seam: "verb:bank:pay".into(),
+        input: Digest::zero(),
+        output: Some(output),
+        output_at: None,
+        field: None,
+    };
+    let mut w = lake.for_write().unwrap();
+    let (tip, now) = (w.tip.clone(), lake.clock(&mut w));
+    let good = Draft::system(now, answer(json!({"paid": 9_007_199_254_740_991_i64})));
+    let seen = |at| Draft {
+        seen_at: Some(lakelands_api::Timestamp(at)),
+        ..good.clone()
+    };
+    let refused = [
+        Draft::system(now, answer(json!({"paid": [1e16]}))),
+        seen(i64::MAX),
+        seen(i64::MIN),
+        Draft {
+            known_at: lakelands_api::Timestamp(i64::MIN),
+            ..good.clone()
+        },
+    ];
+    for draft in refused {
+        let what = format!("{draft:?}");
+        let answer = lake.append(&mut w, vec![good.clone(), draft]);
+        let fits = matches!(&answer, Err(Error::Refused { field: None, reason: Refusal::Invalid(said) })
+            if said.at.is_empty()
+                && matches!(said.case, Case::IntegerTooLarge { .. } | Case::NotDateTime { .. }));
+        assert!(fits, "the seal refuses {what}: {answer:?}");
+        assert_eq!(
+            (&w.tip, lake.engine.tip().unwrap()),
+            (&tip, tip.clone()),
+            "nothing of the append of {what} is in the log"
+        );
+    }
+    let events = lake
+        .append(&mut w, vec![good.clone(), seen(0)])
+        .expect("what the log reads");
+    assert_eq!(events.len(), 2, "the writer appends after a refusal");
+    drop(w);
+    // An executor's answer is drafted without a time: the writer's clock
+    // stamps it before the seal, which reads the clock's.
+    let ext = lakelands_store::writes::External {
+        executor: "bank".into(),
+        verb: "pay".into(),
+        ty: "bill".into(),
+        key: None,
+        payload: Patch::default(),
+        position: events[1].position,
+    };
+    let at = lakelands_store::writes::record_output(&lake, &ext, &json!({}), json!({"paid": 1}))
+        .expect("the answer is recorded");
+    let recorded = lake.read_events(at, 1).unwrap();
+    assert!(recorded[0].known_at >= now, "{recorded:?}");
 }

@@ -8,15 +8,23 @@
 //! drift apart without it going red. `verify.py` beside the vectors checks
 //! the same bytes with an implementation that shares no code with this
 //! one.
+//!
+//! The vectors are one lake's log in the one format version this release
+//! reads and writes, `LOG_FORMAT_VERSION`
+//! (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`):
+//! the two segments, then the events of `further.json`, each following the
+//! one before it and each named for what it shows. `verify.py --stamp N`
+//! writes them in another.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-use lakelands_api::event::{Event, EventBody};
-use lakelands_api::ontology::TypeDecl;
+use lakelands_api::error::{Flaw, Situation};
+use lakelands_api::event::{Event, EventBody, LOG_FORMAT_VERSION};
+use lakelands_api::ontology::{TypeDecl, VerbScope};
 use lakelands_api::time::Timestamp;
-use lakelands_api::write::Declaration;
+use lakelands_api::write::{Declaration, ProposedWrite};
 use lakelands_core::{canonical, log, shape};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -47,6 +55,167 @@ fn assert_one_form(t: &str, at: u64) {
         t,
         "position {at}: `{t}` is not the one form"
     );
+}
+
+/// One entry of `further.json`: what its line shows, the line, and, of
+/// an event of the lake, the hash the file repeats.
+struct Further {
+    shows: String,
+    line: String,
+    hash: Option<String>,
+}
+
+/// The entries `further.json` holds under `member`: its `events`, the
+/// lake's lines after the segments, or its `misplaced` lines.
+fn further(member: &str) -> Vec<Further> {
+    let entries = read_json("further.json")[member]
+        .as_array()
+        .unwrap()
+        .clone();
+    let entry = |e: &Value| Further {
+        shows: str_of(e, "shows").to_owned(),
+        line: str_of(e, "line").to_owned(),
+        hash: e["hash"].as_str().map(str::to_owned),
+    };
+    entries.iter().map(entry).collect()
+}
+
+/// The hash of the line with its `hash` member left out.
+fn hash_of(line: &str) -> String {
+    let mut body: Value = serde_json::from_str(line).unwrap();
+    body.as_object_mut().unwrap().remove("hash");
+    sha(&canonical::to_vec(&body))
+}
+
+/// Every line of the vectors' lake in the order its positions run: the
+/// segments, then the events of `further.json`.
+fn chain() -> Vec<Event> {
+    let mut lines: Vec<String> = Vec::new();
+    for seg in read_json("expected.json")["segments"].as_array().unwrap() {
+        let text = fs::read_to_string(vectors().join(str_of(seg, "file"))).unwrap();
+        lines.extend(text.lines().map(str::to_owned));
+    }
+    lines.extend(further("events").into_iter().map(|e| e.line));
+    lines
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+/// A release writes one format: every line of the vectors' lake carries
+/// `LOG_FORMAT_VERSION` as `v`, from position 0, whose `lake_created`
+/// says the same number. The lines are one chain without a gap, and none
+/// carries a member where it never sits.
+#[test]
+fn every_line_of_the_lake_is_in_the_one_format_this_release_writes() {
+    let chain = chain();
+    let mut prev = "0".repeat(64);
+    for (at, event) in chain.iter().enumerate() {
+        assert_eq!(event.position.0, at as u64, "the positions run on");
+        assert_eq!(event.prev.0, prev, "position {at}: prev");
+        assert_eq!(event.v, LOG_FORMAT_VERSION, "position {at}: its format");
+        assert_eq!(log::misplaced(event), None, "position {at}");
+        prev = event.hash.0.clone();
+    }
+    assert!(
+        matches!(&chain[0].body, EventBody::LakeCreated { format } if *format == LOG_FORMAT_VERSION),
+        "position 0 says the lake's format: {:?}",
+        chain[0].body
+    );
+}
+
+/// The page and the release name one format: `docs/log-format.md` opens
+/// with `**Format version N.**`, and N is `LOG_FORMAT_VERSION`.
+#[test]
+fn the_page_names_the_format_this_release_writes() {
+    let page = fs::read_to_string(vectors().join("../../log-format.md")).unwrap();
+    let named = page
+        .lines()
+        .find_map(|l| l.strip_prefix("**Format version "))
+        .and_then(|rest| rest.split_once(".**"))
+        .expect("the page opens with `**Format version N.**`")
+        .0;
+    assert_eq!(
+        named.parse(),
+        Ok(LOG_FORMAT_VERSION),
+        "the page names format {named}"
+    );
+}
+
+/// The independent reader reads the format this release writes:
+/// `verify.py` holds its one format as `FORMAT = N`, the line its
+/// `--stamp N` rewrites, and N is `LOG_FORMAT_VERSION`.
+#[test]
+fn the_independent_verifier_reads_the_format_this_release_writes() {
+    let script = fs::read_to_string(vectors().join("verify.py")).unwrap();
+    let named = script
+        .lines()
+        .find_map(|l| l.strip_prefix("FORMAT = "))
+        .expect("verify.py holds `FORMAT = N`");
+    assert_eq!(
+        named.parse(),
+        Ok(LOG_FORMAT_VERSION),
+        "verify.py reads format {named}"
+    );
+}
+
+/// The independent reader's own run over the vectors, as their README
+/// says to run it: `python3 verify.py` in their directory. It prints one
+/// line a check and exits with success, and it made every check it
+/// makes: a check dropped from it, or a line of `further.json` it no
+/// longer reads, moves the count. Fails when `python3` is missing, as
+/// the tests that run it over a lake directory do.
+#[test]
+fn the_independent_verifier_passes_every_check_of_the_vectors() {
+    let run = std::process::Command::new("python3")
+        .arg("verify.py")
+        .current_dir(vectors())
+        .output()
+        .expect("this test runs verify.py over the vectors and needs python3");
+    let said = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success(),
+        "verify.py refused the vectors:\n{said}"
+    );
+    let checks = said.lines().filter(|l| l.starts_with("ok   ")).count();
+    assert_eq!(
+        checks,
+        said.lines().count(),
+        "every line is a check that passed:\n{said}"
+    );
+    assert_eq!(checks, 304, "the checks verify.py makes:\n{said}");
+}
+
+/// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
+/// (log-format §1.2). `verify.py` answers a line that holds one with a
+/// verdict at the line's position, and with no traceback: the first
+/// segment's number at position 5 written as 2^53 + 1.
+#[test]
+fn the_independent_verifier_refuses_an_integer_too_large_at_its_position() {
+    let name = "log/00000000000000000000.jsonl";
+    let segment = fs::read_to_string(vectors().join(name)).unwrap();
+    let large = segment.replacen("\"weight\":1e+21", "\"weight\":9007199254740993", 1);
+    assert_ne!(large, segment, "position 5 holds the number");
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("vectors-integer-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("log")).unwrap();
+    fs::write(dir.join(name), large).unwrap();
+    let run = std::process::Command::new("python3")
+        .arg(vectors().join("verify.py"))
+        .arg(&dir)
+        .output()
+        .expect("this test runs verify.py over a directory and needs python3");
+    let said = String::from_utf8_lossy(&run.stdout);
+    let trace = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(1), "{said}{trace}");
+    assert!(
+        said.contains("FAIL position 5: ")
+            && said.contains("the integer 9007199254740993 in it is beyond ±(2^53 − 1)"),
+        "verify.py refuses the integer at position 5:\n{said}"
+    );
+    assert_eq!(trace, "", "a verdict, not a traceback");
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -203,646 +372,292 @@ fn a_view_hashes_its_conditions_in_typed_form() {
         str_of(&vector, "schema_hash"),
         "the declaration, conditions written as text, hashes to the vector's shape"
     );
+    let keyless = TypeDecl { key: vec![], ..ty };
+    assert_eq!(
+        shape::schema_hash(&keyless).unwrap(),
+        str_of(&vector, "key_left_out_schema_hash"),
+        "a grouped view hashes alike with its `key` left out"
+    );
 }
 
-/// Format version 2's one addition, `migrated.rekeyed`, in a worked event
-/// (`docs/log-format.md` §6): its line is canonical, it reads into the
-/// contract's event with the moved key, and its hash recomputes.
-#[test]
-fn the_version_2_rekey_event_recomputes() {
-    let v2 = read_json("rekey.json");
-    let line = str_of(&v2, "line");
-    let value: Value = serde_json::from_str(line).unwrap();
-    assert_eq!(
-        canonical::to_vec(&value),
-        line.as_bytes(),
-        "the line is canonical"
-    );
-    let event: Event = serde_json::from_value(value.clone()).unwrap();
-    assert_eq!(
-        canonical::of(&event),
-        line.as_bytes(),
-        "the contract writes the event exactly as the line"
-    );
-    assert_eq!(event.v, 2);
-    let EventBody::Migrated { rekeyed, .. } = &event.body else {
-        panic!("a migrated event")
+/// What the events of `further.json` show, in the order of their
+/// positions: every name [`shows`] has a check for, once. The file's
+/// lines are held to this list, so a line that is gone from the file, a
+/// line added to it and a line that shows another's thing are each
+/// refused, as `verify.py` refuses them by its own list.
+const SHOWN: [&str; 32] = [
+    "rekeyed",
+    "upstream",
+    "date_bucket",
+    "proposed_declare",
+    "proposed_migrate",
+    "annotations",
+    "derived_relation",
+    "max_depth",
+    "retired_guard",
+    "view_params",
+    "verb_on_type",
+    "verb_called_on_type",
+    "view_merge",
+    "value_type",
+    "proposed_tightening",
+    "floor",
+    "date_bucket_by_width",
+    "in_set",
+    "relation_renames",
+    "view_kept",
+    "made_again",
+    "restated",
+    "initial",
+    "with_the_set",
+    "value_type_migrated",
+    "proposed_renames",
+    "pinned",
+    "date_field",
+    "date_value_type",
+    "date_value",
+    "output_carried",
+    "output_named",
+];
+
+/// The last position of the vectors' lake.
+const LAST: u64 = 39;
+
+/// The members `further.json`'s misplaced lines misplace, in the file's
+/// order: every name the test of them has a check for, once.
+const MISPLACED: [&str; 3] = [
+    "upstream_on_another_kind",
+    "cause_in_context",
+    "output_twice",
+];
+
+/// Whether the event is what its entry of `further.json` says it shows,
+/// read from the contract's event where the contract has a member for it
+/// and from the line where it is a call inside an expression. A name
+/// this does not know is no vector: it panics.
+fn shows(what: &str, event: &Event, line: &str) -> bool {
+    use Declaration as D;
+    use EventBody as B;
+    let (declared, stored) = match &event.body {
+        B::Declared {
+            declaration,
+            schema_hash,
+            ..
+        } => (Some(declaration), schema_hash.as_deref()),
+        _ => (None, None),
     };
-    assert_eq!(rekeyed.len(), 1);
-    assert_eq!(rekeyed[0].to.as_str(), "DE%3A01");
-    let mut body = value;
-    body.as_object_mut().unwrap().remove("hash");
-    assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
-    assert_eq!(event.hash.0, str_of(&v2, "hash"));
+    let ty = match declared {
+        Some(D::Type(t)) => Some(t),
+        _ => None,
+    };
+    let view = ty.and_then(|t| t.view.as_ref());
+    let proposed = match &event.body {
+        B::WriteProposed { write, .. } => Some(write),
+        _ => None,
+    };
+    // The schema hash the event stores is the one `changed` hashes to.
+    let hashes_as =
+        |changed: &TypeDecl| stored == Some(shape::schema_hash(changed).unwrap().as_str());
+    match what {
+        "rekeyed" => matches!(&event.body, B::Migrated { rekeyed, .. }
+            if rekeyed.len() == 1 && rekeyed[0].to.as_str() == "DE%3A01"),
+        // The id leaves `upstream` out.
+        "upstream" => match (&event.body, &event.source) {
+            (
+                B::RecordIngested {
+                    ty,
+                    key,
+                    version,
+                    patch,
+                    ..
+                },
+                Some(source),
+            ) => {
+                event.upstream.is_some()
+                    && event.id == log::ingest_id(source, ty, key, version.0 - 1, patch)
+            }
+            _ => false,
+        },
+        "date_bucket" => ty.is_some() && line.contains("date_bucket("),
+        "proposed_declare" => matches!(proposed, Some(ProposedWrite::Declare { declarations })
+            if !declarations.is_empty()),
+        "proposed_migrate" => {
+            matches!(proposed, Some(ProposedWrite::Migrate { report, .. }) if report.lossless)
+        }
+        // Annotations are not shape.
+        "annotations" => ty.is_some_and(|t| {
+            let mut bare = t.clone();
+            bare.annotations.clear();
+            bare.fields.iter_mut().for_each(|f| f.annotations.clear());
+            bare.relations
+                .iter_mut()
+                .for_each(|r| r.annotations.clear());
+            bare != *t && hashes_as(&bare)
+        }),
+        // `derived` is not shape.
+        "derived_relation" => ty.is_some_and(|t| {
+            let mut carried = t.clone();
+            carried.relations.iter_mut().for_each(|r| r.derived = None);
+            carried != *t && hashes_as(&carried)
+        }),
+        "max_depth" => matches!(declared, Some(D::Trigger(t)) if t.max_depth == Some(1)),
+        "retired_guard" => matches!(declared, Some(D::Trigger(_))) && line.contains("retired()"),
+        "view_params" => view.is_some_and(|v| !v.params.is_empty()) && line.contains("param("),
+        "verb_on_type" => matches!(declared, Some(D::Verb(v)) if v.scope == VerbScope::Type),
+        "verb_called_on_type" => matches!(&event.body, B::VerbCalled { key: None, .. }),
+        "view_merge" => view.is_some_and(|v| !v.merge.is_empty()),
+        "value_type" => matches!(declared, Some(D::ValueType(_))),
+        "proposed_tightening" => {
+            matches!(proposed, Some(ProposedWrite::MigrateValueType { renames, .. }) if renames.is_empty())
+        }
+        "floor" => ty.is_some() && line.contains("floor("),
+        "date_bucket_by_width" => ty.is_some() && line.contains("date_bucket(on, 7d,"),
+        "in_set" => matches!(declared, Some(D::ObjectSet(_))) && line.contains("in_set("),
+        "relation_renames" => {
+            matches!(&event.body, B::Migrated { .. }) && line.contains("\"relation_renames\":")
+        }
+        "view_kept" => matches!(&event.body, B::RecordUpserted { ty, key, version, made: true, .. }
+            if ty.0 == "sys.setting" && key.0.starts_with("view_kept.") && version.0 == 1),
+        "made_again" => {
+            matches!(&event.body, B::RecordUpserted { version, made: true, .. } if version.0 > 1)
+        }
+        "restated" => {
+            matches!(proposed, Some(ProposedWrite::Migrate { .. }))
+                && line.contains("\"restated\":")
+        }
+        "initial" => ty.is_some_and(|t| t.fields.iter().any(|f| f.initial.is_some())),
+        "with_the_set" => matches!(
+            &event.body,
+            B::Declared {
+                with_the_set: true,
+                ..
+            }
+        ),
+        "value_type_migrated" => {
+            matches!(&event.body, B::ValueTypeMigrated { renames, .. } if !renames.is_empty())
+        }
+        "proposed_renames" => {
+            matches!(proposed, Some(ProposedWrite::MigrateValueType { renames, .. }) if !renames.is_empty())
+        }
+        "pinned" => matches!(
+            &event.body,
+            B::WriteProposed {
+                write: ProposedWrite::Upsert { .. },
+                pinned: true,
+                ..
+            }
+        ),
+        "date_field" => ty.is_some() && line.contains("\"kind\":\"date\""),
+        "date_value_type" => {
+            matches!(declared, Some(D::ValueType(_))) && line.contains("\"kind\":\"date\"")
+        }
+        "date_value" => {
+            matches!(&event.body, B::RecordUpserted { .. }) && line.contains("\"2026-07-05\"")
+        }
+        "output_carried" => matches!(
+            &event.body,
+            B::OutputRecorded {
+                output: Some(_),
+                output_at: None,
+                ..
+            }
+        ),
+        "output_named" => matches!(
+            &event.body,
+            B::OutputRecorded {
+                output: None,
+                output_at: Some(_),
+                ..
+            }
+        ),
+        other => panic!("`further.json` shows `{other}`, which this test has no check for"),
+    }
+}
+
+/// `further.json`'s events, the lake's lines after the segments. Each
+/// line is canonical, reads into the contract's event and back byte for
+/// byte, hashes to the hash the file repeats, follows the line before it
+/// from position 8 on, and is what the file says it shows. The lines
+/// show what [`SHOWN`] lists, each thing once and none left out, and
+/// end at [`LAST`].
+#[test]
+fn every_further_line_recomputes_and_shows_what_it_names() {
     let expected = read_json("expected.json");
     let last = expected["events"].as_array().unwrap().last().unwrap();
-    assert_eq!(event.prev.0, str_of(last, "hash"), "it follows position 7");
-}
-
-/// Format version 3's additions (`docs/log-format.md` §6) in worked
-/// events: an ingest with `upstream`, whose id leaves the member out, and
-/// a declaration calling `date_bucket`. Each line is canonical, reads into
-/// the contract's event and back byte for byte, hashes to its hash and
-/// follows the one before it, and needs version 3; the negative line, the
-/// ingest written as version 2, is refused for carrying `upstream`, and the
-/// misplaced line, a `record_retired` carrying it, for its kind.
-#[test]
-fn the_version_3_events_recompute_and_a_version_2_upstream_is_refused() {
-    let v3 = read_json("v3.json");
-    let mut prev = str_of(&read_json("rekey.json"), "hash").to_owned();
-    let lines = v3["lines"].as_array().unwrap();
-    let hashes = v3["hashes"].as_array().unwrap();
-    let mut events = Vec::new();
-    for (line, want) in lines.iter().zip(hashes) {
-        let line = line.as_str().unwrap();
-        let value: Value = serde_json::from_str(line).unwrap();
+    let mut prev = str_of(last, "hash").to_owned();
+    let mut at = last["position"].as_u64().unwrap();
+    let mut shown = Vec::new();
+    for entry in further("events") {
+        at += 1;
+        let value: Value = serde_json::from_str(&entry.line).unwrap();
         assert_eq!(
             canonical::to_vec(&value),
-            line.as_bytes(),
-            "the line is canonical"
+            entry.line.as_bytes(),
+            "position {at}: the line is canonical"
         );
-        let event: Event = serde_json::from_value(value.clone()).unwrap();
+        let event: Event = serde_json::from_value(value)
+            .unwrap_or_else(|e| panic!("position {at} reads as an Event: {e}"));
         assert_eq!(
             canonical::of(&event),
-            line.as_bytes(),
-            "the contract writes it as the line"
+            entry.line.as_bytes(),
+            "position {at}: the contract writes the event as the line"
         );
-        let mut body = value;
-        body.as_object_mut().unwrap().remove("hash");
-        assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
-        assert_eq!(event.hash.0, want.as_str().unwrap());
-        assert_eq!(event.prev.0, prev, "it follows the event before it");
-        assert_eq!(event.v, 3);
+        assert_eq!(event.position.0, at, "the positions run on");
+        assert_eq!(hash_of(&entry.line), event.hash.0, "position {at}: hash");
         assert_eq!(
-            lakelands_core::versions::needed(&event.body, event.upstream.is_some()),
-            3,
-            "it needs version 3"
+            Some(&event.hash.0),
+            entry.hash.as_ref(),
+            "position {at}: the hash the file repeats"
         );
-        prev = event.hash.0.clone();
-        events.push(event);
-    }
-    let ingested = &events[0];
-    let EventBody::RecordIngested { ty, key, patch, .. } = &ingested.body else {
-        panic!("an ingested event")
-    };
-    assert_eq!(
-        ingested.id,
-        lakelands_core::log::ingest_id(ingested.source.as_ref().unwrap(), ty, key, 0, patch),
-        "the id leaves `upstream` out"
-    );
-    let negative: Event = serde_json::from_str(v3["negative"].as_str().unwrap()).unwrap();
-    let why = lakelands_core::versions::below(&negative)
-        .expect("refused")
-        .to_string();
-    assert!(
-        why.contains("`upstream`") && why.contains("format 3 added"),
-        "{why}"
-    );
-    let misplaced: Event = serde_json::from_str(v3["misplaced"].as_str().unwrap()).unwrap();
-    assert_eq!(
-        lakelands_core::versions::below(&misplaced),
-        None,
-        "its version is right"
-    );
-    let why = lakelands_core::versions::misplaced(&misplaced)
-        .expect("refused")
-        .to_string();
-    assert!(why.contains("`record_retired`"), "{why}");
-}
-
-/// Format version 4's addition (`docs/log-format.md` §6): a proposed
-/// declaration and a proposed migration after `v3.json`'s position 10.
-/// Each line is canonical, reads into the contract's event and back byte
-/// for byte, hashes to its hash, follows the one before it and needs
-/// version 4; the negative line, the declaration proposed as version 3,
-/// is refused.
-#[test]
-fn the_version_4_proposals_recompute_and_a_version_3_one_is_refused() {
-    let v4 = read_json("v4.json");
-    let v3 = read_json("v3.json");
-    let mut prev = v3["hashes"]
-        .as_array()
-        .unwrap()
-        .last()
-        .unwrap()
-        .as_str()
-        .unwrap()
-        .to_owned();
-    for (line, want) in v4["lines"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .zip(v4["hashes"].as_array().unwrap())
-    {
-        let line = line.as_str().unwrap();
-        let value: Value = serde_json::from_str(line).unwrap();
-        assert_eq!(
-            canonical::to_vec(&value),
-            line.as_bytes(),
-            "the line is canonical"
-        );
-        let event: Event = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(
-            canonical::of(&event),
-            line.as_bytes(),
-            "the contract writes it as the line"
-        );
-        let mut body = value;
-        body.as_object_mut().unwrap().remove("hash");
-        assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
-        assert_eq!(event.hash.0, want.as_str().unwrap());
-        assert_eq!(event.prev.0, prev, "it follows the event before it");
-        assert_eq!(event.v, 4);
-        assert_eq!(lakelands_core::versions::needed(&event.body, false), 4);
-        prev = event.hash.0.clone();
-    }
-    let negative: Event = serde_json::from_str(v4["negative"].as_str().unwrap()).unwrap();
-    let why = lakelands_core::versions::below(&negative)
-        .expect("refused")
-        .to_string();
-    assert!(
-        why.contains("proposes a declaration or a migration") && why.contains("format 4 added"),
-        "{why}"
-    );
-}
-
-/// Format version 5's addition (`docs/log-format.md` §6): a `declared`
-/// type carrying annotations, after `v4.json`'s position 12. The line is
-/// canonical, reads into the contract's event and back byte for byte,
-/// hashes to its hash, follows the one before it and needs version 5; its
-/// schema hash is the one the same type without annotations hashes to;
-/// the negative line, the same event written as version 4, is refused.
-#[test]
-fn the_version_5_annotations_recompute_and_a_version_4_one_is_refused() {
-    let v5 = read_json("v5.json");
-    let v4 = read_json("v4.json");
-    let prev = v4["hashes"]
-        .as_array()
-        .unwrap()
-        .last()
-        .unwrap()
-        .as_str()
-        .unwrap();
-    let line = v5["lines"][0].as_str().unwrap();
-    let value: Value = serde_json::from_str(line).unwrap();
-    assert_eq!(
-        canonical::to_vec(&value),
-        line.as_bytes(),
-        "the line is canonical"
-    );
-    let event: Event = serde_json::from_value(value.clone()).unwrap();
-    assert_eq!(
-        canonical::of(&event),
-        line.as_bytes(),
-        "the contract writes it as the line"
-    );
-    let mut body = value;
-    body.as_object_mut().unwrap().remove("hash");
-    assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
-    assert_eq!(event.hash.0, v5["hashes"][0].as_str().unwrap());
-    assert_eq!(event.prev.0, prev, "it follows the event before it");
-    assert_eq!(event.v, 5);
-    assert_eq!(lakelands_core::versions::needed(&event.body, false), 5);
-    let lakelands_api::event::EventBody::Declared {
-        declaration: lakelands_api::write::Declaration::Type(t),
-        schema_hash,
-        ..
-    } = &event.body
-    else {
-        panic!("position 13 declares a type");
-    };
-    let mut bare = t.clone();
-    bare.annotations.clear();
-    bare.fields.iter_mut().for_each(|f| f.annotations.clear());
-    bare.relations
-        .iter_mut()
-        .for_each(|r| r.annotations.clear());
-    assert_eq!(
-        schema_hash.as_deref(),
-        Some(lakelands_api::shape::schema_hash(&bare).unwrap().as_str()),
-        "annotations are not shape"
-    );
-    let misplaced: Event = serde_json::from_str(v5["misplaced"].as_str().unwrap()).unwrap();
-    let why = lakelands_core::versions::misplaced(&misplaced)
-        .expect("refused")
-        .to_string();
-    assert!(why.contains("`context` carries `cause`"), "{why}");
-    let negative: Event = serde_json::from_str(v5["negative"].as_str().unwrap()).unwrap();
-    let why = lakelands_core::versions::below(&negative)
-        .expect("refused")
-        .to_string();
-    assert!(
-        why.contains("`annotations`") && why.contains("format 5 added"),
-        "{why}"
-    );
-}
-
-/// Format version 6's addition (`docs/log-format.md` §6): a `declared`
-/// type with a derived relation, after `v5.json`'s position 13. The line
-/// recomputes, needs version 6, and its schema hash is the one the same
-/// type with the relation carried by links hashes to; the negative line,
-/// the same event written as version 5, is refused.
-#[test]
-fn the_version_6_derived_relation_recomputes_and_a_version_5_one_is_refused() {
-    let v6 = read_json("v6.json");
-    let v5 = read_json("v5.json");
-    let prev = v5["hashes"]
-        .as_array()
-        .unwrap()
-        .last()
-        .unwrap()
-        .as_str()
-        .unwrap();
-    let line = v6["lines"][0].as_str().unwrap();
-    let value: Value = serde_json::from_str(line).unwrap();
-    assert_eq!(
-        canonical::to_vec(&value),
-        line.as_bytes(),
-        "the line is canonical"
-    );
-    let event: Event = serde_json::from_value(value.clone()).unwrap();
-    assert_eq!(
-        canonical::of(&event),
-        line.as_bytes(),
-        "the contract writes it as the line"
-    );
-    let mut body = value;
-    body.as_object_mut().unwrap().remove("hash");
-    assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
-    assert_eq!(event.hash.0, v6["hashes"][0].as_str().unwrap());
-    assert_eq!(event.prev.0, prev, "it follows the event before it");
-    assert_eq!(event.v, 6);
-    assert_eq!(lakelands_core::versions::needed(&event.body, false), 6);
-    let lakelands_api::event::EventBody::Declared {
-        declaration: lakelands_api::write::Declaration::Type(t),
-        schema_hash,
-        ..
-    } = &event.body
-    else {
-        panic!("position 14 declares a type");
-    };
-    let mut carried = t.clone();
-    carried.relations.iter_mut().for_each(|r| r.derived = None);
-    assert_eq!(
-        schema_hash.as_deref(),
-        Some(
-            lakelands_api::shape::schema_hash(&carried)
-                .unwrap()
-                .as_str()
-        ),
-        "`derived` is not shape"
-    );
-    let negative: Event = serde_json::from_str(v6["negative"].as_str().unwrap()).unwrap();
-    let why = lakelands_core::versions::below(&negative)
-        .expect("refused")
-        .to_string();
-    assert!(
-        why.contains("derived relation") && why.contains("format 6 added"),
-        "{why}"
-    );
-    // Position 15: a trigger's `max_depth`, which version 6 also added.
-    let line = v6["lines"][1].as_str().unwrap();
-    let value: Value = serde_json::from_str(line).unwrap();
-    let capped: Event = serde_json::from_value(value.clone()).unwrap();
-    assert_eq!(
-        canonical::of(&capped),
-        line.as_bytes(),
-        "the contract writes it as the line"
-    );
-    let mut body = value;
-    body.as_object_mut().unwrap().remove("hash");
-    assert_eq!(sha(&canonical::to_vec(&body)), capped.hash.0);
-    assert_eq!(capped.hash.0, v6["hashes"][1].as_str().unwrap());
-    assert_eq!(capped.prev, event.hash, "it follows position 14");
-    assert_eq!(lakelands_core::versions::needed(&capped.body, false), 6);
-    let mut below = capped.clone();
-    below.v = 5;
-    let why = lakelands_core::versions::below(&below)
-        .expect("refused")
-        .to_string();
-    assert!(why.contains("`max_depth`"), "{why}");
-}
-
-#[test]
-fn the_version_7_retired_guard_recomputes_and_a_version_6_one_is_refused() {
-    let v6 = read_json("v6.json");
-    let v7 = read_json("v7.json");
-    let line = v7["lines"][0].as_str().unwrap();
-    let value: Value = serde_json::from_str(line).unwrap();
-    assert_eq!(
-        canonical::to_vec(&value),
-        line.as_bytes(),
-        "the line is canonical"
-    );
-    let event: Event = serde_json::from_value(value.clone()).unwrap();
-    assert_eq!(
-        canonical::of(&event),
-        line.as_bytes(),
-        "the contract writes it as the line"
-    );
-    let mut body = value;
-    body.as_object_mut().unwrap().remove("hash");
-    assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
-    assert_eq!(event.hash.0, v7["hashes"][0].as_str().unwrap());
-    assert_eq!(
-        event.prev.0,
-        v6["hashes"][1].as_str().unwrap(),
-        "it follows position 15"
-    );
-    assert_eq!(event.v, 7);
-    assert_eq!(lakelands_core::versions::needed(&event.body, false), 7);
-    let negative: Event = serde_json::from_str(v7["negative"].as_str().unwrap()).unwrap();
-    assert_eq!(negative.v, 6);
-    let why = lakelands_core::versions::below(&negative)
-        .expect("refused")
-        .to_string();
-    assert!(
-        why.contains("`retired`") && why.contains("format 7 added"),
-        "{why}"
-    );
-}
-
-#[test]
-fn the_version_8_view_with_parameters_recomputes_and_a_version_7_one_is_refused() {
-    let v7 = read_json("v7.json");
-    let v8 = read_json("v8.json");
-    let line = v8["lines"][0].as_str().unwrap();
-    let value: Value = serde_json::from_str(line).unwrap();
-    assert_eq!(
-        canonical::to_vec(&value),
-        line.as_bytes(),
-        "the line is canonical"
-    );
-    let event: Event = serde_json::from_value(value.clone()).unwrap();
-    assert_eq!(
-        canonical::of(&event),
-        line.as_bytes(),
-        "the contract writes it as the line"
-    );
-    let mut body = value;
-    body.as_object_mut().unwrap().remove("hash");
-    assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
-    assert_eq!(event.hash.0, v8["hashes"][0].as_str().unwrap());
-    assert_eq!(
-        event.prev.0,
-        v7["hashes"][0].as_str().unwrap(),
-        "it follows position 16"
-    );
-    assert_eq!(event.v, 8);
-    assert_eq!(lakelands_core::versions::needed(&event.body, false), 8);
-    let negative: Event = serde_json::from_str(v8["negative"].as_str().unwrap()).unwrap();
-    assert_eq!(negative.v, 7);
-    let why = lakelands_core::versions::below(&negative)
-        .expect("refused")
-        .to_string();
-    assert!(
-        why.contains("parameters") && why.contains("format 8 added"),
-        "{why}"
-    );
-}
-
-#[test]
-fn the_version_8_verb_on_its_type_recomputes_and_a_version_7_one_is_refused() {
-    let v8 = read_json("v8.json");
-    let mut prev = v8["hashes"][0].as_str().unwrap().to_owned();
-    for (i, what) in [
-        (1, "declares a verb on its type"),
-        (2, "calls a verb with no key"),
-    ] {
-        let line = v8["lines"][i].as_str().unwrap();
-        let value: Value = serde_json::from_str(line).unwrap();
-        assert_eq!(
-            canonical::to_vec(&value),
-            line.as_bytes(),
-            "the line is canonical"
-        );
-        let event: Event = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(
-            canonical::of(&event),
-            line.as_bytes(),
-            "the contract writes it as the line"
-        );
-        let mut body = value;
-        body.as_object_mut().unwrap().remove("hash");
-        assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
-        assert_eq!(event.hash.0, v8["hashes"][i].as_str().unwrap());
-        assert_eq!(event.prev.0, prev, "it follows the event before it");
-        assert_eq!(event.v, 8);
-        assert_eq!(lakelands_core::versions::needed(&event.body, false), 8);
-        prev = event.hash.0.clone();
-        let name = if i == 1 {
-            "negative_verb"
-        } else {
-            "negative_call"
-        };
-        let negative: Event = serde_json::from_str(v8[name].as_str().unwrap()).unwrap();
-        assert_eq!(negative.v, 7);
-        let why = lakelands_core::versions::below(&negative)
-            .expect("refused")
-            .to_string();
+        assert_eq!(event.prev.0, prev, "position {at}: prev");
+        assert_eq!(event.v, LOG_FORMAT_VERSION, "position {at}: its format");
         assert!(
-            why.contains(what) && why.contains("format 8 added"),
-            "{why}"
+            shows(&entry.shows, &event, &entry.line),
+            "position {at} does not show `{}`: {}",
+            entry.shows,
+            entry.line
         );
-    }
-    let lakelands_api::event::EventBody::Declared {
-        declaration: Declaration::Verb(verb),
-        ..
-    } = &serde_json::from_str::<Event>(v8["lines"][1].as_str().unwrap())
-        .unwrap()
-        .body
-    else {
-        panic!("position 18 declares a verb");
-    };
-    assert_eq!(verb.scope, lakelands_api::ontology::VerbScope::Type);
-}
-
-#[test]
-fn the_version_10_proposed_tightening_recomputes_and_a_version_9_one_is_refused() {
-    let v9 = read_json("v9.json");
-    let v10 = read_json("v10.json");
-    let mut prev = v9["hashes"][0].as_str().unwrap().to_owned();
-    // The declared value type needs no format of its own; it is written in
-    // the version the lake had. The proposal needs 10.
-    for (line, want) in v10["lines"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .zip([(9, 1), (10, 10)])
-    {
-        let line = line.as_str().unwrap();
-        let value: Value = serde_json::from_str(line).unwrap();
-        let event: Event = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(
-            canonical::of(&event),
-            line.as_bytes(),
-            "the contract writes it as the line"
-        );
-        let mut body = value;
-        body.as_object_mut().unwrap().remove("hash");
-        assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
-        assert_eq!(event.prev.0, prev, "it follows the event before it");
-        let needed = lakelands_core::versions::needed(&event.body, false);
-        assert_eq!((event.v, needed), want);
         prev = event.hash.0;
+        shown.push(entry.shows);
     }
-    assert_eq!(prev, v10["hashes"][1].as_str().unwrap());
-    let negative: Event = serde_json::from_str(v10["negative"].as_str().unwrap()).unwrap();
-    assert_eq!(negative.v, 9);
-    let why = lakelands_core::versions::below(&negative)
-        .expect("refused")
-        .to_string();
-    assert!(
-        why.contains("tightening") && why.contains("format 10 added"),
-        "{why}"
-    );
-}
-
-#[test]
-fn the_version_11_lines_recompute_and_each_written_as_version_10_is_refused() {
-    let v11 = read_json("v11.json");
-    let mut prev = read_json("v10.json")["hashes"][1]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    for line in v11["lines"].as_array().unwrap() {
-        let line = line.as_str().unwrap();
-        let value: Value = serde_json::from_str(line).unwrap();
-        let event: Event = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(
-            canonical::of(&event),
-            line.as_bytes(),
-            "the contract writes it as the line"
-        );
-        let mut body = value;
-        body.as_object_mut().unwrap().remove("hash");
-        assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
-        assert_eq!(event.prev.0, prev, "it follows the event before it");
-        let needed = lakelands_core::versions::needed(&event.body, false);
-        assert_eq!((event.v, needed), (11, 11));
-        prev = event.hash.0;
-    }
-    let hashes = v11["hashes"].as_array().unwrap();
-    assert_eq!(prev, hashes.last().unwrap().as_str().unwrap());
-    for negative in v11["negatives"].as_array().unwrap() {
-        let negative: Event = serde_json::from_str(negative.as_str().unwrap()).unwrap();
-        assert_eq!(negative.v, 10);
-        let why = lakelands_core::versions::below(&negative)
-            .expect("refused")
-            .to_string();
-        assert!(why.contains("format 11 added"), "{why}");
-    }
-}
-
-#[test]
-fn the_version_12_line_recomputes_and_written_as_version_11_is_refused() {
-    let v12 = read_json("v12.json");
-    let mut prev = read_json("v11.json")["hashes"][7]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    for line in v12["lines"].as_array().unwrap() {
-        let line = line.as_str().unwrap();
-        let value: Value = serde_json::from_str(line).unwrap();
-        let event: Event = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(
-            canonical::of(&event),
-            line.as_bytes(),
-            "the contract writes it as the line"
-        );
-        let mut body = value;
-        body.as_object_mut().unwrap().remove("hash");
-        assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
-        assert_eq!(event.prev.0, prev, "it follows the event before it");
-        let needed = lakelands_core::versions::needed(&event.body, false);
-        assert_eq!((event.v, needed), (12, 12));
-        prev = event.hash.0;
-    }
-    let hashes = v12["hashes"].as_array().unwrap();
-    assert_eq!(prev, hashes.last().unwrap().as_str().unwrap());
-    for negative in v12["negatives"].as_array().unwrap() {
-        let negative: Event = serde_json::from_str(negative.as_str().unwrap()).unwrap();
-        assert_eq!(negative.v, 11);
-        let why = lakelands_core::versions::below(&negative)
-            .expect("refused")
-            .to_string();
-        assert!(why.contains("format 12 added"), "{why}");
-    }
-}
-
-#[test]
-fn the_version_13_lines_recompute_and_written_as_version_12_are_refused() {
-    let v13 = read_json("v13.json");
-    let mut prev = read_json("v12.json")["hashes"][2]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    for line in v13["lines"].as_array().unwrap() {
-        let line = line.as_str().unwrap();
-        let value: Value = serde_json::from_str(line).unwrap();
-        let event: Event = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(
-            canonical::of(&event),
-            line.as_bytes(),
-            "the contract writes it as the line"
-        );
-        let mut body = value;
-        body.as_object_mut().unwrap().remove("hash");
-        assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
-        assert_eq!(event.prev.0, prev, "it follows the event before it");
-        // A pinned proposal and a declaration that names a date need 13;
-        // a record holding a date is written in the lake's version.
-        let needed = lakelands_core::versions::needed(&event.body, false);
-        let added = !matches!(event.body, EventBody::RecordUpserted { .. });
-        assert_eq!((event.v, added), (13, needed == 13));
-        prev = event.hash.0;
-    }
-    let hashes = v13["hashes"].as_array().unwrap();
-    assert_eq!(prev, hashes.last().unwrap().as_str().unwrap());
-    for negative in v13["negatives"].as_array().unwrap() {
-        let negative: Event = serde_json::from_str(negative.as_str().unwrap()).unwrap();
-        assert_eq!(negative.v, 12);
-        let why = lakelands_core::versions::below(&negative)
-            .expect("refused")
-            .to_string();
-        assert!(why.contains("format 13 added"), "{why}");
-    }
-}
-
-#[test]
-fn the_version_9_view_that_merges_recomputes_and_a_version_8_one_is_refused() {
-    let v8 = read_json("v8.json");
-    let v9 = read_json("v9.json");
-    let line = v9["lines"][0].as_str().unwrap();
-    let value: Value = serde_json::from_str(line).unwrap();
     assert_eq!(
-        canonical::to_vec(&value),
-        line.as_bytes(),
-        "the line is canonical"
+        shown, SHOWN,
+        "the lines show every thing this test checks, each once"
     );
-    let event: Event = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(at, LAST, "the lake's last position");
+}
+
+/// `further.json`'s misplaced lines. Each is in the release's format,
+/// its hash its own, after the event before its position: only where a
+/// member sits is wrong, and `log::misplaced` refuses it for that member.
+#[test]
+fn every_misplaced_line_is_refused_for_the_member_it_misplaces() {
+    let chain = chain();
+    let misplaced = further("misplaced");
+    let shown: Vec<&str> = misplaced.iter().map(|e| e.shows.as_str()).collect();
     assert_eq!(
-        canonical::of(&event),
-        line.as_bytes(),
-        "the contract writes it as the line"
+        shown, MISPLACED,
+        "one line for each misplaced member this test checks"
     );
-    let mut body = value;
-    body.as_object_mut().unwrap().remove("hash");
-    assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
-    assert_eq!(event.hash.0, v9["hashes"][0].as_str().unwrap());
-    let last = v8["hashes"].as_array().unwrap().last().unwrap();
-    assert_eq!(event.prev.0, last.as_str().unwrap(), "it follows v8.json");
-    assert_eq!(event.v, 9);
-    assert_eq!(lakelands_core::versions::needed(&event.body, false), 9);
-    let negative: Event = serde_json::from_str(v9["negative"].as_str().unwrap()).unwrap();
-    assert_eq!(negative.v, 8);
-    let why = lakelands_core::versions::below(&negative)
-        .expect("refused")
-        .to_string();
-    assert!(
-        why.contains("merges sources") && why.contains("format 9 added"),
-        "{why}"
-    );
+    for entry in &misplaced {
+        let event: Event = serde_json::from_str(&entry.line).unwrap();
+        let at = event.position.0;
+        assert_eq!(hash_of(&entry.line), event.hash.0, "at {at}: hash");
+        assert_eq!(event.v, LOG_FORMAT_VERSION, "at {at}: its format is right");
+        assert_eq!(
+            event.prev,
+            chain[at as usize - 1].hash,
+            "at {at}: it follows the event before it"
+        );
+        let flaw = log::misplaced(&event).unwrap_or_else(|| panic!("at {at}: refused"));
+        let why = flaw.to_string();
+        match entry.shows.as_str() {
+            "upstream_on_another_kind" => assert!(why.contains("`record_retired`"), "{why}"),
+            "cause_in_context" => assert!(why.contains("`context` carries `cause`"), "{why}"),
+            "output_twice" => assert_eq!(flaw, Flaw::OutputOnce),
+            other => panic!("`further.json` misplaces `{other}`, which this test has no check for"),
+        }
+    }
 }
 
 /// The negative vector `negative/known-at-goes-back`: the first segment
@@ -871,6 +686,47 @@ fn the_negative_vector_whose_known_at_goes_back_is_refused_at_its_position() {
         ),
         other => {
             panic!("a known_at going back is refused at position 6, and it answered {other:?}")
+        }
+    }
+}
+
+/// The negative vector `negative/another-format`: the first segment of
+/// the vectors with the last event written in the format before this
+/// release's, its hash made right. `export::verify` refuses it at that
+/// position by both numbers
+/// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`),
+/// as `verify.py` does.
+#[test]
+fn the_negative_vector_in_another_format_is_refused_at_its_position() {
+    let dir = vectors().join("negative/another-format");
+    // Only the format is wrong: position 6's hash is its line's own, it
+    // names position 5's as the hash before it, and every line before it
+    // is in the release's format.
+    let text = fs::read_to_string(dir.join("log").join(format!("{:020}.jsonl", 0))).unwrap();
+    let lines: Vec<Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let (six, five) = (&lines[6], &lines[5]);
+    let mut body = six.clone();
+    body.as_object_mut().unwrap().remove("hash");
+    assert_eq!(sha(&canonical::to_vec(&body)), str_of(six, "hash"));
+    assert_eq!(str_of(six, "prev"), str_of(five, "hash"));
+    let formats: Vec<u64> = lines.iter().map(|l| l["v"].as_u64().unwrap()).collect();
+    let reads = u64::from(LOG_FORMAT_VERSION);
+    assert_eq!(formats[..6], [reads; 6]);
+    assert_eq!(formats[6], reads - 1);
+    match lakelands_core::export::verify(&dir) {
+        Err(lakelands_api::Error::Unavailable { situation }) => assert!(
+            matches!(
+                &*situation,
+                Situation::Damaged { position: Some(at), flaw: Flaw::FormatOther { v, reads: r }, .. }
+                    if at.0 == 6 && *v == reads - 1 && *r == reads
+            ),
+            "{situation}"
+        ),
+        other => {
+            panic!("an event in another format is refused at position 6, and it answered {other:?}")
         }
     }
 }

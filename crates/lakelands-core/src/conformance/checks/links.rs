@@ -1,7 +1,7 @@
 //! Relations carried by link records
 //! (`docs/decisions/035-a-link-is-a-record.md`, `docs/log-format.md` §2.3).
 //!
-//! A relation declared without `via` is carried by one record per linked
+//! A relation with neither `via` nor `derived` is carried by one record per linked
 //! pair, of the link type the store derives from it. A link is written
 //! and removed through the relation's link doors, holds the relation's own
 //! fields, and is walked like a relation carried by a reference field, its
@@ -10,118 +10,115 @@
 //! cardinality over live links, live ends, and the doors each link goes
 //! through.
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::ontology::{
     Authority, Cardinality, FieldDecl, RelationDecl, StorageKind, TypeDecl,
 };
 use lakelands_api::principal::PrincipalKind;
 use lakelands_api::query::{Edge, Projection, QueryResult, Walk};
-use lakelands_api::write::{Outcome, WriteOpts};
+use lakelands_api::write::{Outcome, ProposedWrite, WriteOpts};
 use lakelands_api::{Catalog, Error, LakeStore, Position, Principal, Refusal};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, all, doors, field, field_writer, head_unmoved, invalid_case, migration,
     no_such_field, patch, pattern, principal, reads_all, reason, reference, refused_on, restrict,
     source_record, step, type_decl,
 };
+use crate::conformance::{Failure, Held, Store};
 use crate::links::{link_key, link_type_name};
 
 check!(
-    /// A link is written and walked, its fields on the edge.
     WRITTEN_AND_WALKED = a_link_is_written_and_walked_with_its_fields,
-    "035 and §2.3: a relation without via is carried by link records; the walk follows it out and in, and the edge carries the link's own fields"
+    "035 and §2.3: a relation with neither `via` nor `derived` is carried by link records; the walk follows it out and in, and the edge carries the link's own fields"
 );
 
 check!(
-    /// One link per pair.
     ONE_PER_PAIR = writing_a_link_again_changes_its_fields_and_keeps_one_link,
     "035: a link is keyed by its pair, so writing it again changes its fields and advances its version, never adds a second link"
 );
 
 check!(
-    /// Unlink keeps history.
     UNLINK_KEEPS_HISTORY = an_unlinked_link_leaves_the_walk_and_stays_in_its_history,
-    "035 and §2.3: unlink retires the link record; the walk no longer follows it, and a read as of before the unlink still does"
+    "035 and §2.3: unlink retires the link record; the walk no longer follows it, and a read as of before the unlink still does; an unlink answers in a retirement's order, the grant before the record"
 );
 
 check!(
-    /// Cardinality holds over live links.
     CARDINALITY = a_link_that_would_break_the_relations_cardinality_is_refused,
     "§2.3 and 024, extended: many_to_one allows one live link per `from`; a second is refused as a constraint and nothing is appended, and a principal without write on the link type is refused not_granted before the links are read; the record already linked is named only to a caller shown it, so a writer without `restricted`, or a holder of `only` not admitted to it, finds no key of it in the whole error (051)"
 );
 
 check!(
-    /// Both ends are live records.
+    VERB_KEEPS_ENDS = a_verb_on_a_link_type_keeps_what_the_link_door_keeps,
+    "035 and 003, extended (lakelands#759): a verb on a relation's link type writes a live link's own fields and never its ends: one whose `set` names `from` or `to` is refused as invalid where it is declared, by `declare`, `propose` and `apply` alike; its call on a link an end of which is retired is refused as `link` with a field is, word for word, on that end, and nothing is appended, and so is the accept of a call proposed while both ends were live (lakelands#847); a caller without `restricted` whose link has a held end, and a holder of `only` on an end's type not admitted to that end, are each answered as for a key no link has; and a verb on the link type a relation's rename left behind is refused as on a type that is not declared; each door keeps its family's order: with an end retired and a stale expected version, `link` is refused on the end as without the version, and the verb's call answers the conflict"
+);
+
+check!(
+    SET_NAMES_ITS_LINK_TYPE = a_set_declares_a_relation_and_what_stands_on_its_link_type,
+    "035 and 028, extended: one set that declares a type with a relation carried by link records and a verb, a trigger, an object set and a view on the relation's link type is applied to a lake that holds none of them, and the same set of another type is proposed, listed to its reviewer with every declaration and nothing more, is not listed to a reviewer kept from the link type its relation brings, whose accept and reject of it answer as an id that does not exist (013, extended), and is accepted, and the owner alone, with nothing on its link type, is listed to that reviewer with `more` and the relation without its link fields, and applied by its accept; on the applied one a link and the verb's call each fire the trigger; a set whose verb names the link type of a relation its type does not declare is refused as on a type that is not declared, at the verb, by `apply` and `propose` alike, and one whose type no longer declares the relation the lake holds is refused with that refusal among its problems; a set that adds a field to a link type the lake holds and reads it is applied; an author not shown a link type the lake holds is refused a trigger on it as on a type that is not declared, alone and word for word in a set that declares its owner, applied or proposed, and one kept from a field of it is refused an object set that reads the field as reading a field it does not know, at the set, alone and word for word with the owner beside it"
+);
+
+check!(
+    REMOVED_KEEPS_READERS = a_removed_relations_link_type_keeps_its_trigger_its_set_and_its_view,
+    "035, extended: a relation with a trigger, an object set and a view on its link type and no verb is removed by its migration; `describe` still lists the three and the link type, the set holds the members and the view answers the count it did, and `link` and `unlink` over the relation are refused; a trigger, a set and a view are still declared on the link type, a `retire` of one of its links is refused at the ordinary door, as for any link type, and a retired end sets nothing off and keeps its link; a purge of the source that fed the links then retires them, fires the trigger for each, caused by its retirement, takes them out of the set and out of the view's count"
+);
+
+check!(
     LIVE_ENDS = a_link_to_a_key_that_is_no_live_record_is_refused,
     "032 and 035: a link's ends are references, so a link to a key that is not a live record of the target is refused on `to`"
 );
 
 check!(
-    /// Links go through their own doors.
-    OWN_DOORS = link_records_go_through_the_link_doors_and_ingest_only,
-    "035 and §2.3: upsert and retire refuse a link type's records, before a retry under the key of a link; a caller cannot declare a link type; the link door refuses a relation whose links arrive by ingest, before `from` among the fields, `from` among the fields before a retry, and a retry before the record checks (035, extended); and ingest writes them"
+    OWN_DOORS = link_records_are_made_through_the_link_doors_and_ingest_only,
+    "035 and §2.3: upsert and retire refuse a link type's records, before a retry under the key of a link, and `propose` refuses an upsert and a retirement of one as they do (lakelands#847); a caller cannot declare a link type; the link door refuses a relation whose links arrive by ingest, before `from` among the fields, `from` among the fields before a retry, and a retry before the record checks (035, extended); and ingest writes them"
 );
 
 check!(
-    /// A relation keeps its carrier.
     CARRIER_KEPT = a_relation_cannot_move_between_via_and_link_records,
     "035 and §2.3: a declaration that gives a relation via it did not have, or takes it away, is refused"
 );
 
 check!(
-    /// A link's fields are granted like any field.
     LINK_GRANTS = a_link_field_the_principal_may_not_write_refuses_the_link,
     "035: the link doors check the principal's grants on the link type's fields as upsert does"
 );
 
 check!(
-    /// A relation's fields follow 027.
     LINK_SHAPE = a_relations_fields_are_declared_when_added_and_migrated_when_retyped,
     "007, 027 and 035: adding an optional link field is declared; retyping one reshapes the link type, is refused at declare and goes through migrate on the owner type"
 );
 
 check!(
-    /// Retiring an end keeps the link.
     RETIRED_END = retiring_an_end_keeps_the_link_and_the_walk_skips_the_retired_end,
     "032 and 035: retiring a record others link to stays allowed and keeps the links' history; the walk does not reach the retired record"
 );
 
 check!(
-    /// One link per `to`.
     ONE_PER_TO = a_relation_that_allows_one_link_per_target_refuses_a_second,
     "§2.3: one_to_many and one_to_one allow one live link per `to`; a second link into it is refused as a constraint"
 );
 
 check!(
-    /// An authority flip swaps the door, keeps the links.
     AUTHORITY_FLIP = a_relations_authority_changes_by_declaration_and_keeps_its_links,
-    "035, extended: a relation's authority changes by an ordinary declaration; the door its links arrive by swaps, and the links already written stay"
+    "035, extended: a relation's authority changes by an ordinary declaration; the door its links arrive by swaps, and the links already written stay; `unlink` removes a source relation's link as it does any, whatever the authority"
 );
 
 check!(
-    /// Ingest holds the cardinality.
     INGEST_CARDINALITY = ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_window,
-    "§2.3: a link that arrives by ingest holds the relation's cardinality over the lake's live links and the window's, its ends read from the key when the record leaves them out"
+    "§2.3: a link that arrives by ingest holds the relation's cardinality over the lake's live links and the window's, an end read from the key when the record leaves it out"
 );
 
 check!(
-    /// A re-declared relation that reshapes its links is a migration.
     REDECLARED_TARGET = a_relation_declared_again_with_another_target_is_a_migration,
     "027 and 035, extended: a relation removed by migrate keeps its links, and the preflight lists it under `dropped` with the number of its live links, none when none is live (lakelands#554); declaring it again with another target would reshape them, and is refused, naming the link type"
 );
 
 check!(
-    /// A restricted link is not walked without the grant.
     RESTRICTED_LINK = a_restricted_link_is_walked_only_with_the_restricted_grant,
     "035 and the retention hold: a link's edge comes from its own record, so a restricted link is walked only by a principal with the `restricted` grant"
 );
 
 check!(
-    /// A narrowing that would break links is refused.
     NARROWING = narrowing_a_relations_cardinality_is_refused_while_links_would_break,
     "027 and §2.3: narrowing a relation's cardinality is a migration, and its preflight refuses it while live links would break the narrower rule"
 );
@@ -151,7 +148,12 @@ pub(super) fn dated() -> RelationDecl {
 }
 
 pub(super) fn invoice(relations: Vec<RelationDecl>) -> TypeDecl {
-    let mut t = type_decl("invoice", vec![field("amount", StorageKind::Decimal)]);
+    owner("invoice", relations)
+}
+
+/// A type `name` with an `amount` and `relations`.
+fn owner(name: &str, relations: Vec<RelationDecl>) -> TypeDecl {
+    let mut t = type_decl(name, vec![field("amount", StorageKind::Decimal)]);
     t.relations = relations;
     t
 }
@@ -244,9 +246,7 @@ pub(super) fn pairs(edges: &[Edge]) -> Vec<String> {
         .collect()
 }
 
-async fn a_link_is_written_and_walked_with_its_fields(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_link_is_written_and_walked_with_its_fields(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
@@ -270,9 +270,7 @@ async fn a_link_is_written_and_walked_with_its_fields(
     Ok(())
 }
 
-async fn writing_a_link_again_changes_its_fields_and_keeps_one_link(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn writing_a_link_again_changes_its_fields_and_keeps_one_link(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
@@ -295,14 +293,11 @@ async fn writing_a_link_again_changes_its_fields_and_keeps_one_link(
     Ok(())
 }
 
-async fn an_unlinked_link_leaves_the_walk_and_stays_in_its_history(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn an_unlinked_link_leaves_the_walk_and_stays_in_its_history(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
-    let linked = link_ok(&l, "i1", "p1", json!({"since": SEPT}))
-        .await?
-        .position();
+    let linked = link_ok(&l, "i1", "p1", json!({"since": SEPT}));
+    let linked = linked.await?.position();
     unlink(&l, "i1", "p1").await.must("unlinking i1 from p1")?;
     let now = walked(cat.as_ref(), own, "invoice", "i1", Walk::Out, None).await?;
     ensure!(
@@ -317,16 +312,20 @@ async fn an_unlinked_link_leaves_the_walk_and_stays_in_its_history(
         pairs(&then)
     );
     let missing = unlink(&l, "i1", "p1").await;
+    let reader = reads_all(store.as_ref(), "reader");
+    let (ty, rel, opts) = ("invoice".into(), "approved_by".into(), WriteOpts::default());
+    let (i1, p1) = ("i1".into(), "p1".into());
+    let ungranted = cat.unlink(&reader, &ty, &i1, &rel, &p1, opts).await;
     ensure!(
-        matches!(missing, Err(Error::NotFound { .. })),
-        "unlinking a link that is not live is not found; it answered {missing:?}"
+        matches!(missing, Err(Error::NotFound { .. }))
+            && matches!(reason(&ungranted), Some(Refusal::NotGranted)),
+        "unlinking a link that is not live is not found, and in a retirement's order not \
+         granted first to one who writes nothing; it answered {missing:?} and {ungranted:?}"
     );
     Ok(())
 }
 
-async fn a_link_that_would_break_the_relations_cardinality_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_link_that_would_break_the_relations_cardinality_is_refused(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link_ok(&l, "i1", "p1", json!({})).await?;
@@ -382,9 +381,175 @@ async fn a_link_that_would_break_the_relations_cardinality_is_refused(
     Ok(())
 }
 
-async fn a_link_to_a_key_that_is_no_live_record_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_verb_on_a_link_type_keeps_what_the_link_door_keeps(store: Store) -> Held {
+    use crate::conformance::fixture::alike_renamed;
+    use lakelands_api::write::Declaration;
+    let l = lake(store.as_ref()).await?;
+    let Lake { cat, own } = &l;
+    let verb = |name: &str, field: &str| -> Declaration {
+        let set = json!([{"field": field, "value": format!("'{SEPT}'")}]);
+        let v = json!({"declare": "verb", "name": name, "on": LT, "risk": "low",
+            "effect": "write", "set": set});
+        serde_json::from_value(v).expect("a verb reads")
+    };
+    // A `set` that names an end is refused where the verb is declared.
+    for end in ["from", "to"] {
+        let moved = verb("move", end);
+        let declared = cat.declare(own, moved.clone()).await;
+        let declarations = vec![moved.clone()];
+        let proposed = cat.propose(own, ProposedWrite::Declare { declarations }, "why".into());
+        let (proposed, applied) = (proposed.await, cat.apply(own, vec![moved]).await);
+        ensure!(
+            matches!(invalid_case(&declared), Some(Case::LinkEndAsField { end: e }) if e == end)
+                && declared == proposed
+                && declared == applied,
+            "a verb that sets a link's `{end}` is refused as `link_end_as_field` by `declare`, \
+             `propose` and `apply` alike; they answered {declared:?}, {proposed:?}, {applied:?}"
+        );
+    }
+    let date = cat.declare(own, verb("date", "since")).await;
+    date.must("declaring `date` on the link type")?;
+    for (p, i) in [("p3", "i3"), ("p4", "i4")] {
+        l.upsert("partner", p, json!({"name": p})).await?;
+        l.upsert("invoice", i, json!({"amount": "10"})).await?;
+    }
+    for n in ["1", "2", "3", "4"] {
+        link_ok(&l, &format!("i{n}"), &format!("p{n}"), json!({})).await?;
+    }
+    let call = |who: &Principal, from: &str, to: &str| {
+        let (who, key) = (who.clone(), link_key(&from.into(), &to.into()));
+        let (verb, opts) = ("date".into(), WriteOpts::default());
+        async move {
+            cat.call(&who, &verb, Some(&key), Default::default(), opts)
+                .await
+        }
+    };
+    // Proposed while both ends live, accepted below once one is retired.
+    let mut held = Vec::new();
+    for (from, to) in [("i1", "p1"), ("i2", "p2")] {
+        let key = Some(link_key(&from.into(), &to.into()));
+        let (verb, payload, opts) = ("date".into(), Default::default(), WriteOpts::default());
+        let write = ProposedWrite::Call {
+            verb,
+            key,
+            payload,
+            opts,
+        };
+        let proposed = cat.propose(own, write, "why".into()).await;
+        let Outcome::Proposed { proposal, .. } = proposed.must("proposing `date`")? else {
+            return Err(Failure::new("a proposed call answers its proposal"));
+        };
+        held.push(proposal);
+    }
+    let applied = call(own, "i1", "p1").await;
+    let links = all(cat.as_ref(), own, LT).await?;
+    let since = |r: &lakelands_api::record::Record| r.fields.get("since") == Some(&json!(SEPT));
+    ensure!(
+        matches!(applied, Ok(Outcome::Applied { .. }))
+            && links.iter().filter(|r| since(r)).count() == 1,
+        "`date` on a link with both ends live is applied and sets its `since`; it answered \
+         {applied:?}, and the links read {links:?}"
+    );
+    // An end retired: the verb is refused as `link` with a field is.
+    l.retire("partner", "p1").await?;
+    l.retire("invoice", "i2").await?;
+    let before = store.head().await.must("reading the head")?;
+    for ((from, to, end), id) in [("i1", "p1", "to"), ("i2", "p2", "from")]
+        .into_iter()
+        .zip(&held)
+    {
+        let by_link = link(cat.as_ref(), own, from, to, json!({"since": SEPT})).await;
+        let by_verb = call(own, from, to).await;
+        let accepted = cat.accept(own, id).await;
+        let said = by_link.as_ref().err().and_then(Error::case);
+        ensure!(
+            matches!(refused_on(&by_link), Some((f, _)) if f == end)
+                && matches!(said.map(|s| &s.case), Some(Case::NotLive { .. }))
+                && by_verb == by_link
+                && accepted == by_link,
+            "with its `{end}` retired, `link` with a field is refused as `not_live` on `{end}`, \
+             and a verb on the link, and the accept of its call proposed before, word for word \
+             as it; they answered {by_link:?}, {by_verb:?} and {accepted:?}"
+        );
+    }
+    // Each door keeps its family's order (035): beside a retired end, a
+    // stale version is a verb's first answer and `link`'s second.
+    let stale = WriteOpts {
+        expected_version: Some(lakelands_api::Version(9)),
+        ..Default::default()
+    };
+    let (ty, rel, date) = ("invoice".into(), "approved_by".into(), "date".into());
+    let (from, to, since) = ("i1".into(), "p1".into(), patch(json!({"since": SEPT})));
+    let by_link = cat.link(own, &ty, &from, &rel, &to, since, stale.clone());
+    let (by_link, key) = (by_link.await, link_key(&from, &to));
+    let by_verb = cat.call(own, &date, Some(&key), Default::default(), stale);
+    let by_verb = by_verb.await;
+    let fresh = link(cat.as_ref(), own, "i1", "p1", json!({"since": SEPT})).await;
+    ensure!(
+        by_link == fresh && matches!(by_verb, Err(Error::Conflict { .. })),
+        "with `to` retired and a stale expected version, `link` is refused on `to` as without \
+         the version ({fresh:?}), as any \
+         record write judges its references first, and the verb's call is a conflict, as any \
+         verb compares the version where it reads its record; they answered {by_link:?} and \
+         {by_verb:?}"
+    );
+    head_unmoved(
+        store.as_ref(),
+        before,
+        "a verb on a link with a retired end",
+    )
+    .await?;
+    // An end held, or one its caller's `only` does not admit: no such link.
+    restrict(store.as_ref(), "partner", "p3", "a hold").await?;
+    let grants = |types: Value| {
+        let grants = json!({"default": "write", "types": types});
+        serde_json::from_value(grants).expect("grants read")
+    };
+    let writer = principal(store.as_ref(), PrincipalKind::Agent, "w", grants(json!({})));
+    let holder = grants(json!({"partner": {"only": {"name": "another's"}}}));
+    let holder = principal(store.as_ref(), PrincipalKind::Agent, "h", holder);
+    for (who, from, to, what) in [
+        (&writer, "i3", "p3", "a held end"),
+        (&holder, "i4", "p4", "an end its `only` does not admit"),
+    ] {
+        let hidden = call(who, from, to).await.must_fail(what)?;
+        let absent = call(who, "i9", "p9").await.must_fail("a key no link has")?;
+        let keys = ("i9:p9", link_key(&from.into(), &to.into()));
+        alike_renamed(what, &hidden, &absent, (keys.0, keys.1.as_str()))?;
+        ensure!(
+            matches!(hidden, Error::NotFound { .. }),
+            "{what}: the link is not found; it answered {hidden:?}"
+        );
+    }
+    // The writer may call the verb: on a link it is answered, it applies.
+    let own_link = call(&writer, "i4", "p4").await;
+    ensure!(
+        matches!(own_link, Ok(Outcome::Applied { .. })),
+        "a writer answered both ends of `i4:p4` has its `date` applied: {own_link:?}"
+    );
+    // Once the relation is renamed, its old link type is a name no type has.
+    let signed_by = RelationDecl {
+        name: "signed_by".into(),
+        ..dated()
+    };
+    let rename = lakelands_api::write::Migration {
+        relation_renames: vec![("approved_by".into(), "signed_by".into())],
+        ..migration(invoice(vec![signed_by]))
+    };
+    let report = cat.migrate(own, rename.clone()).await;
+    let report = report.must("the preflight of the rename")?.data.report_id;
+    let renamed = cat.migrate_apply(own, rename, &report).await;
+    renamed.must("renaming `approved_by`")?;
+    let stale = cat.declare(own, verb("late", "since")).await;
+    ensure!(
+        matches!(invalid_case(&stale), Some(Case::Undeclared { ty }) if ty == LT),
+        "a verb on the link type a renamed relation left behind is refused as on a type that \
+         is not declared; it answered {stale:?}"
+    );
+    Ok(())
+}
+
+async fn a_link_to_a_key_that_is_no_live_record_is_refused(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
@@ -402,9 +567,7 @@ async fn a_link_to_a_key_that_is_no_live_record_is_refused(
     Ok(())
 }
 
-async fn link_records_go_through_the_link_doors_and_ingest_only(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn link_records_are_made_through_the_link_doors_and_ingest_only(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let key = link_key(&"i1".into(), &"p1".into());
@@ -429,6 +592,29 @@ async fn link_records_go_through_the_link_doors_and_ingest_only(
         matches!(reason(&retired), Some(Refusal::WrongDoor)),
         "retire on a link type is the wrong door; it answered {retired:?}"
     );
+    // Proposed, either is refused as it is at its own door.
+    let opts = WriteOpts::default;
+    let (ty, since) = (|| LT.into(), patch(json!({"since": SEPT})));
+    for write in [
+        ProposedWrite::Upsert {
+            ty: ty(),
+            key: key.clone(),
+            patch: since,
+            opts: opts(),
+        },
+        ProposedWrite::Retire {
+            ty: ty(),
+            key: key.clone(),
+            opts: opts(),
+        },
+    ] {
+        let proposed = cat.propose(own, write, "why".into()).await;
+        ensure!(
+            matches!(reason(&proposed), Some(Refusal::WrongDoor)),
+            "a proposed upsert or retirement of a link type's record is the wrong door; it \
+             answered {proposed:?}"
+        );
+    }
     // In link's order (035, extended): `from` among the fields before the
     // retry, the retry before the record checks; and an ordinary door
     // refuses a link type before it looks for a retry.
@@ -444,9 +630,8 @@ async fn link_records_go_through_the_link_doors_and_ingest_only(
                 .await
         }
     };
-    let first = link_once(own.clone(), json!({}))
-        .await
-        .must("linking i2 to p1 once")?;
+    let first = link_once(own.clone(), json!({}));
+    let first = first.await.must("linking i2 to p1 once")?;
     let bare = Principal {
         grants: Default::default(),
         ..own.clone()
@@ -540,9 +725,7 @@ async fn link_records_go_through_the_link_doors_and_ingest_only(
     Ok(())
 }
 
-async fn a_relation_cannot_move_between_via_and_link_records(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_relation_cannot_move_between_via_and_link_records(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let before = store.head().await.must("reading the head")?;
     let mut moved = invoice(vec![RelationDecl {
@@ -561,9 +744,7 @@ async fn a_relation_cannot_move_between_via_and_link_records(
     Ok(())
 }
 
-async fn a_link_field_the_principal_may_not_write_refuses_the_link(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_link_field_the_principal_may_not_write_refuses_the_link(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let cat = doors(store.as_ref());
     let clerk = field_writer(store.as_ref(), "clerk", LT, &["from", "to"]);
@@ -580,8 +761,8 @@ async fn a_link_field_the_principal_may_not_write_refuses_the_link(
 }
 
 async fn a_relations_fields_are_declared_when_added_and_migrated_when_retyped(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
@@ -620,9 +801,7 @@ async fn a_relations_fields_are_declared_when_added_and_migrated_when_retyped(
     Ok(())
 }
 
-async fn retiring_an_end_keeps_the_link_and_the_walk_skips_the_retired_end(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn retiring_an_end_keeps_the_link_and_the_walk_skips_the_retired_end(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
@@ -651,9 +830,7 @@ async fn retiring_an_end_keeps_the_link_and_the_walk_skips_the_retired_end(
     Ok(())
 }
 
-async fn a_relation_that_allows_one_link_per_target_refuses_a_second(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_relation_that_allows_one_link_per_target_refuses_a_second(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let mut handled = approved_by(vec![], Authority::Authored);
@@ -676,9 +853,8 @@ async fn a_relation_that_allows_one_link_per_target_refuses_a_second(
             .await
         }
     };
-    handle("i1")
-        .await
-        .must("linking i1 to p1 over `handled_by`")?;
+    let fut = handle("i1");
+    fut.await.must("linking i1 to p1 over `handled_by`")?;
     let before = store.head().await.must("reading the head")?;
     let second = handle("i2").await;
     ensure!(
@@ -690,9 +866,7 @@ async fn a_relation_that_allows_one_link_per_target_refuses_a_second(
     Ok(())
 }
 
-async fn a_relations_authority_changes_by_declaration_and_keeps_its_links(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_relations_authority_changes_by_declaration_and_keeps_its_links(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link_ok(&l, "i1", "p1", json!({})).await?;
@@ -730,12 +904,21 @@ async fn a_relations_authority_changes_by_declaration_and_keeps_its_links(
         "the ingested link, its ends read from its key, is walked; the walk answered {:?}",
         pairs(&arrived)
     );
+    let unlinked = unlink(&l, "i2", "p2").await;
+    unlinked.must("unlinking the link a source wrote")?;
+    let left = walked(cat.as_ref(), own, "invoice", "i2", Walk::Out, None).await?;
+    ensure!(
+        left.is_empty(),
+        "`unlink` asks the link type's grants and not the relation's authority, so the \
+         source's link is gone; the walk answered {:?}",
+        pairs(&left)
+    );
     Ok(())
 }
 
 async fn ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_window(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = lake(store.as_ref()).await?;
     // A source relation of its own, beside `approved_by`.
     let mut vouched = approved_by(vec![], Authority::Source);
@@ -756,20 +939,18 @@ async fn ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_windo
         )
     };
     // Two links from i1 in one window: many_to_one breaks.
-    let window = l
-        .ingest(
-            "registry",
-            vec![record("i1", "p1", true), record("i1", "p2", true)],
-        )
-        .await;
+    let window = l.ingest(
+        "registry",
+        vec![record("i1", "p1", true), record("i1", "p2", true)],
+    );
+    let window = window.await;
     ensure!(
         matches!(reason(&window), Some(Refusal::Constraint(..))),
         "two links from i1 in one window break `vouched_by`'s many_to_one; it answered \
          {window:?}"
     );
-    l.ingest("registry", vec![record("i1", "p1", true)])
-        .await
-        .must("ingesting the link i1 → p1")?;
+    let fut = l.ingest("registry", vec![record("i1", "p1", true)]);
+    fut.await.must("ingesting the link i1 → p1")?;
     // Against the lake, with `to` only in the key.
     let keyed = l.ingest("registry", vec![record("i1", "p2", false)]).await;
     ensure!(
@@ -780,9 +961,7 @@ async fn ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_windo
     Ok(())
 }
 
-async fn a_relation_declared_again_with_another_target_is_a_migration(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_relation_declared_again_with_another_target_is_a_migration(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     // What the preflight of removing the relation lists as dropped.
     let dropped = || async {
@@ -824,9 +1003,7 @@ async fn a_relation_declared_again_with_another_target_is_a_migration(
     Ok(())
 }
 
-async fn a_restricted_link_is_walked_only_with_the_restricted_grant(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_restricted_link_is_walked_only_with_the_restricted_grant(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
@@ -855,8 +1032,8 @@ async fn a_restricted_link_is_walked_only_with_the_restricted_grant(
 }
 
 async fn narrowing_a_relations_cardinality_is_refused_while_links_would_break(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let with = |c: Cardinality| {
@@ -868,13 +1045,382 @@ async fn narrowing_a_relations_cardinality_is_refused_while_links_would_break(
     for p in ["p1", "p2"] {
         link_ok(&l, "i1", p, json!({})).await?;
     }
-    let preflight = cat
-        .migrate(own, migration(with(Cardinality::ManyToOne)))
-        .await;
+    let preflight = cat.migrate(own, migration(with(Cardinality::ManyToOne)));
+    let preflight = preflight.await;
     ensure!(
         matches!(reason(&preflight), Some(Refusal::Constraint(..))),
         "i1 links to two partners, so narrowing `approved_by` to many_to_one would break \
          them; the preflight refuses it; it answered {preflight:?}"
+    );
+    Ok(())
+}
+
+async fn a_set_declares_a_relation_and_what_stands_on_its_link_type(store: Store) -> Held {
+    use crate::conformance::fixture::{count_view, invalid_like, object_set_on, trigger_on};
+    use lakelands_api::write::{Declaration, ProposedWrite};
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
+        .await?;
+    l.upsert("partner", "p1", json!({"name": "p1"})).await?;
+    let stamp = |name: &str, on: &str| -> Declaration {
+        let set = json!([{"field": "since", "value": format!("'{SEPT}'")}]);
+        let v = json!({"declare": "verb", "name": name, "on": on, "risk": "low",
+            "effect": "write", "set": set});
+        serde_json::from_value(v).expect("a verb reads")
+    };
+    // The relation's owner comes last: the four before it name a link type
+    // only the set brings.
+    let set = |ty: &str| {
+        let (lt, with) = (format!("sys.link.{ty}.with"), "with".into());
+        // No inverse: `partner` takes one name from one relation (lakelands#829).
+        let with = RelationDecl {
+            name: with,
+            inverse: None,
+            ..dated()
+        };
+        let linked = trigger_on(&format!("linked_{ty}"), &lt, None);
+        let dated = object_set_on(&format!("dated_{ty}"), &lt, "since is not null");
+        let counted = Declaration::Type(count_view(&format!("counted_{ty}"), &lt, "to"));
+        let stamped = stamp(&format!("stamp_{ty}"), &lt);
+        let owner = Declaration::Type(owner(ty, vec![with]));
+        vec![stamped, linked, dated, counted, owner]
+    };
+    let applied = cat.apply(own, set("deal")).await;
+    applied.must("applying a relation with a verb and a trigger on its link type")?;
+    // Proposed, the set is listed whole to its reviewer and accepted; to a
+    // reviewer kept from the link type its relation brings it is not there,
+    // in the listing and at the accept and the reject (013, extended).
+    let named = |set: &[Declaration]| set.iter().map(Declaration::what).collect::<Vec<_>>();
+    let declarations = set("pact");
+    let write = ProposedWrite::Declare { declarations };
+    let proposed = cat.propose(own, write, "one set".into()).await;
+    let Outcome::Proposed { proposal, .. } = proposed.must("proposing the set for `pact`")? else {
+        return Err(Failure::new("a proposal answers `proposed`"));
+    };
+    let blind = json!({"default": "read", "review": true, "schema": true, "types": {
+        "sys.link.pact.with": {"default": "none"}, "sys.link.bare.with": {"default": "none"}}});
+    let blind = serde_json::from_value(blind).expect("grants read");
+    let blind = principal(store.as_ref(), PrincipalKind::Agent, "blind", blind);
+    let mut listed = Vec::new();
+    for who in [own, &blind] {
+        let all = cat.proposals(who, Default::default()).await;
+        let entry = all.must("a reviewer's listing")?.data;
+        let entry = entry.into_iter().find(|p| p.id == proposal);
+        listed.push(entry.map(|p| match p.write {
+            Some(ProposedWrite::Declare { declarations }) => (named(&declarations), p.more),
+            _ => (Vec::new(), p.more),
+        }));
+    }
+    let missing = lakelands_api::Missing::Proposal {
+        id: proposal.clone(),
+    };
+    let absent = Some(Error::NotFound { missing });
+    let decided = [
+        cat.accept(&blind, &proposal).await.err(),
+        cat.reject(&blind, &proposal, "no".into()).await.err(),
+    ];
+    let whole =
+        listed == [Some((named(&set("pact")), false)), None] && decided == [absent.clone(), absent];
+    let accepted = cat.accept(own, &proposal).await;
+    l.upsert("deal", "a1", json!({"amount": "1"})).await?;
+    let (ty, from, rel, to) = ("deal".into(), "a1".into(), "with".into(), "p1".into());
+    let linked = cat.link(
+        own,
+        &ty,
+        &from,
+        &rel,
+        &to,
+        patch(json!({})),
+        WriteOpts::default(),
+    );
+    let (linked, key, verb) = (linked.await, link_key(&from, &to), "stamp_deal".into());
+    let called = cat.call(
+        own,
+        &verb,
+        Some(&key),
+        Default::default(),
+        WriteOpts::default(),
+    );
+    let called = called.await;
+    let fired = |a: &lakelands_api::Result<Outcome>| {
+        matches!(a, Ok(Outcome::Applied { set_off, .. })
+            if set_off.fired.iter().any(|t| t.as_str() == "linked_deal"))
+    };
+    ensure!(
+        whole
+            && matches!(accepted, Ok(Outcome::Applied { .. }))
+            && fired(&linked)
+            && fired(&called),
+        "a set of a relation with a verb, a trigger, a set and a view on its link type is \
+         applied; proposed for another type it is listed to its reviewer with every \
+         declaration and nothing more, and is not there to one kept from the link type \
+         ({listed:?}; its accept and reject: {decided:?}), and accepted ({accepted:?}); on the \
+         applied one a link and the verb's call each fire the trigger: {linked:?}, {called:?}"
+    );
+    // The owner alone, nothing on its link type, is listed to `blind` as
+    // `describe` would show it the owner once in force: with `more`, the
+    // relation without its link fields; and its accept applies it.
+    let declarations = set("bare").split_off(4);
+    let write = ProposedWrite::Declare { declarations };
+    let bare = cat.propose(own, write, "the owner alone".into()).await;
+    let Outcome::Proposed { proposal: bare, .. } = bare.must("proposing `bare` alone")? else {
+        return Err(Failure::new("a proposal answers `proposed`"));
+    };
+    let all = cat.proposals(&blind, Default::default()).await;
+    let entry = all.must("a reviewer's listing")?.data;
+    let entry = entry.into_iter().find(|p| p.id == bare);
+    let link_fields = match entry.as_ref().map(|p| (&p.write, p.more)) {
+        Some((Some(ProposedWrite::Declare { declarations }), true)) => match &declarations[..] {
+            [Declaration::Type(t)] => t.relations.iter().map(|r| r.fields.len()).collect(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    };
+    let applied = cat.accept(&blind, &bare).await;
+    ensure!(
+        link_fields == [0] && matches!(applied, Ok(Outcome::Applied { .. })),
+        "the owner alone, proposed, is listed to one kept from its link type with `more` and \
+         the relation without its link fields, and its accept applies it; it was listed \
+         {entry:?} and its accept answered {applied:?}"
+    );
+    // A set may also name a field it adds to a link type the lake holds.
+    let mut noted = RelationDecl {
+        name: "with".into(),
+        inverse: None,
+        ..dated()
+    };
+    noted.fields.push(field("note", StorageKind::Text));
+    let reads = object_set_on("noted_pact", "sys.link.pact.with", "note is not null");
+    let grown = vec![reads, Declaration::Type(owner("pact", vec![noted]))];
+    let grown = cat.apply(own, grown).await;
+    grown.must("a set that adds a field to a held link type and reads it")?;
+    // A link type no relation of the set's type carries: of a type new with
+    // the set, and of one the lake holds with the relation the set drops.
+    let before = store.head().await.must("reading the head")?;
+    let dropped = "a type the set leaves without the relation";
+    for (ty, what, alone) in [
+        ("bond", "a type new with the set", true),
+        ("deal", dropped, false),
+    ] {
+        let lt = format!("sys.link.{ty}.with");
+        let set = vec![stamp("late", &lt), Declaration::Type(owner(ty, vec![]))];
+        let applied = cat.apply(own, set.clone()).await;
+        let write = ProposedWrite::Declare { declarations: set };
+        let proposed = cat.propose(own, write, "one set".into()).await;
+        let at_verb =
+            json!({"code": "undeclared", "type": lt, "at": [{"code": "verb", "name": "late"}]});
+        // The type that drops its relation is a problem of its own beside it.
+        let whole = json!({"code": "set_refused", "count": 2, "problems": [{"reason": at_verb}]});
+        ensure!(
+            invalid_like(&applied, if alone { &at_verb } else { &whole }) && applied == proposed,
+            "a set with a verb on `{lt}`, the link type of a relation of {what}, is refused as \
+             `undeclared` at the verb, by `apply` and `propose` alike; they answered \
+             {applied:?} and {proposed:?}"
+        );
+    }
+    // An author kept from a link type the lake holds names it in no set,
+    // with its owner beside it or without (006).
+    let lt = "sys.link.deal.with";
+    let grants = json!({"default": "write", "schema": true, "types": {lt: {"default": "none"}}});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let kept = principal(store.as_ref(), PrincipalKind::Agent, "kept", grants);
+    // It sends `deal` as it is described it: the relation without the
+    // link's field, which is the link type's.
+    let (peek, with) = (trigger_on("peek", lt, None), "with".into());
+    let with = RelationDecl {
+        name: with,
+        fields: Vec::new(),
+        inverse: None,
+        ..dated()
+    };
+    let beside = vec![peek.clone(), Declaration::Type(owner("deal", vec![with]))];
+    let write = ProposedWrite::Declare {
+        declarations: beside.clone(),
+    };
+    let proposed = cat.propose(&kept, write, "one set".into()).await;
+    let (beside, alone) = (
+        cat.apply(&kept, beside).await,
+        cat.declare(&kept, peek).await,
+    );
+    let at_peek =
+        json!({"code": "undeclared", "type": lt, "at": [{"code": "trigger", "name": "peek"}]});
+    ensure!(
+        invalid_like(&alone, &at_peek) && beside == alone && proposed == alone,
+        "an author not shown `{lt}` is refused a trigger on it as on a type that is not \
+         declared, at the trigger: alone, and word for word in a set that declares its \
+         owner, applied or proposed; they answered {alone:?}, {beside:?} and {proposed:?}"
+    );
+    // An author kept from a field of a link type the lake holds reads it in
+    // no set: a set over it is refused at the set, alone and, word for
+    // word, with the owner that names the field beside it.
+    let grants = json!({"default": "write", "schema": true,
+        "types": {lt: {"default": "write", "fields": {"since": "none"}}}});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let blind = principal(store.as_ref(), PrincipalKind::Agent, "fieldless", grants);
+    let whole = RelationDecl {
+        name: "with".into(),
+        inverse: None,
+        ..dated()
+    };
+    let reads = object_set_on("since_known", lt, "since is not null");
+    let beside = vec![reads.clone(), Declaration::Type(owner("deal", vec![whole]))];
+    let (beside, alone) = (
+        cat.apply(&blind, beside).await,
+        cat.declare(&blind, reads).await,
+    );
+    let at_set = json!({"code": "unknown_field", "field": "since",
+        "at": [{"code": "object_set", "name": "since_known"}]});
+    ensure!(
+        invalid_like(&alone, &at_set) && beside == alone,
+        "an author kept from `since` of `{lt}` is refused an object set that reads it as \
+         reading a field it does not know, at the set: alone, and word for word with the \
+         owner in the same set; it answered {alone:?} and {beside:?}"
+    );
+    let what = "a set that names a link type no relation carries, or one its author is not shown";
+    head_unmoved(store.as_ref(), before, what).await
+}
+
+async fn a_removed_relations_link_type_keeps_its_trigger_its_set_and_its_view(
+    store: Store,
+) -> Held {
+    use crate::conformance::fixture::{
+        all_found, count_view, events_from, object_set_on, trigger_on,
+    };
+    use lakelands_api::event::EventBody;
+    use lakelands_api::write::Declaration;
+    const FED: &str = "sys.link.deal.fed";
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
+        .await?;
+    l.upsert("partner", "p1", json!({"name": "p1"})).await?;
+    let sourced = |f: FieldDecl| FieldDecl {
+        authority: Authority::Source,
+        ..f
+    };
+    let fed = RelationDecl {
+        fields: vec![sourced(field("state", StorageKind::Text))],
+        authority: Authority::Source,
+        ..RelationDecl::to("fed", "partner")
+    };
+    l.declare(owner("deal", vec![fed])).await?;
+    for d in ["d1", "d2"] {
+        l.upsert("deal", d, json!({"amount": "1"})).await?;
+    }
+    let readers = [
+        trigger_on("fed_went", FED, None),
+        object_set_on("fed_open", FED, "state = 'a'"),
+        Declaration::Type(count_view("fed_by_state", FED, "state")),
+    ];
+    for d in readers {
+        cat.declare(own, d)
+            .await
+            .must("declaring a reader of the link type")?;
+    }
+    let link = |d: &str| {
+        let ends = json!({"from": d, "to": "p1", "state": "a"});
+        source_record(FED, link_key(&d.into(), &"p1".into()).as_str(), ends)
+    };
+    l.ingest("erp", vec![link("d1"), link("d2")])
+        .await
+        .must("ingesting two `fed` links")?;
+    // What the set holds and the view answers, as text.
+    let read = || async {
+        let members = lakelands_api::read::Find {
+            filter: Some("in_set('fed_open')".into()),
+            ..Default::default()
+        };
+        let members = all_found(cat.as_ref(), own, FED, members).await?;
+        let members: Vec<_> = members.iter().map(|r| r.key.to_string()).collect();
+        let counted = all(cat.as_ref(), own, "fed_by_state").await?;
+        let counted: Vec<_> = (counted.iter())
+            .map(|r| format!("{}={}", r.key, r.fields.get("n").unwrap_or(&Value::Null)))
+            .collect();
+        Ok::<_, Failure>(format!("{members:?} {counted:?}"))
+    };
+    let held = read().await?;
+    l.migrate(owner("deal", vec![])).await?;
+    let described = cat.describe(own, Default::default()).await;
+    let d = described.must("describing the lake")?.data;
+    let typed = |n: &&str| d.types.iter().any(|t| t.name.as_str() == *n);
+    let listed = d.triggers.iter().any(|t| t.name.as_str() == "fed_went")
+        && d.object_sets.iter().any(|s| s.name.as_str() == "fed_open")
+        && ["fed_by_state", FED].iter().all(typed);
+    let kept = read().await?;
+    ensure!(
+        listed && kept == held && held == r#"["d1:p1", "d2:p1"] ["a=2"]"#,
+        "with `fed` removed, `describe` lists the trigger, the set, the view and `{FED}` \
+         ({listed}), and the set and the view read as before it, {held}; they read {kept}"
+    );
+    let (ty, rel, from, to) = ("deal".into(), "fed".into(), "d1".into(), "p1".into());
+    let linked = cat.link(
+        own,
+        &ty,
+        &from,
+        &rel,
+        &to,
+        patch(json!({})),
+        WriteOpts::default(),
+    );
+    let linked = linked.await;
+    let unlinked = cat
+        .unlink(own, &ty, &from, &rel, &to, WriteOpts::default())
+        .await;
+    let no_relation = |a: &lakelands_api::Result<Outcome>| {
+        matches!(invalid_case(a), Some(Case::NoLinkRelation { .. }))
+    };
+    ensure!(
+        no_relation(&linked) && no_relation(&unlinked),
+        "`link` and `unlink` over the removed `fed` find no relation carried by links; they \
+         answered {linked:?} and {unlinked:?}"
+    );
+    // What stands on the link type may be declared there anew; a `retire`
+    // of a link is not the ordinary door's, and an end retired sets nothing off.
+    for d in [
+        trigger_on("fed_seen", FED, None),
+        object_set_on("fed_shut", FED, "state = 'b'"),
+        Declaration::Type(count_view("fed_by_end", FED, "to")),
+    ] {
+        let declared = cat.declare(own, d).await;
+        declared.must("declaring a reader on the link type its relation left")?;
+    }
+    let (fed, key, other) = (FED.into(), link_key(&from, &to), "d2".into());
+    let retired = cat.retire(own, &fed, &key, WriteOpts::default()).await;
+    let end = cat.retire(own, &ty, &other, WriteOpts::default()).await;
+    ensure!(
+        matches!(reason(&retired), Some(Refusal::WrongDoor))
+            && matches!(&end, Ok(Outcome::Applied { set_off, .. }) if set_off.fired.is_empty()),
+        "a `retire` of a link of the removed `fed` is not the ordinary door's to make, and \
+         `d2`, an end of one, is retired and sets nothing off; they answered {retired:?} and \
+         {end:?}"
+    );
+    // A purge still takes the source's links away, and the readers follow.
+    let before = store.head().await.must("reading the head")?;
+    let purged = store.purge_source(&"erp".into(), None, None).await;
+    purged.must("purging the source that fed the links")?;
+    let feed = events_from(store.as_ref(), before.next()).await?;
+    let retired = |p: Position| {
+        let cause = feed.iter().find(|e| e.position == p);
+        cause.is_some_and(
+            |e| matches!(&e.body, EventBody::RecordRetired { ty, .. } if ty.as_str() == FED),
+        )
+    };
+    let mut fired: Vec<_> = (feed.iter())
+        .filter_map(|e| match &e.body {
+            EventBody::TriggerFired { trigger, key, .. } if trigger.as_str() == "fed_went" => {
+                Some((key.to_string(), e.cause.is_some_and(retired)))
+            }
+            _ => None,
+        })
+        .collect();
+    fired.sort();
+    let after = read().await?;
+    ensure!(
+        fired == [("d1:p1".to_owned(), true), ("d2:p1".to_owned(), true)] && after == "[] []",
+        "a purge of `erp` retires both links of `{FED}`: `fed_went` fires for each, caused by \
+         its retirement, and the set and the view hold none; it fired {fired:?}, and they read \
+         {after}"
     );
     Ok(())
 }

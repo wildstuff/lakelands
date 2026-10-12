@@ -208,9 +208,11 @@ impl Ontology {
     }
 
     /// Whether `declaration` is the one in force, in the form the lake
-    /// keeps: a type with its computed fields completed. Such a declaration
-    /// appends nothing and its version stays (027, extended). The one entry
-    /// of its kind and name is looked up, whatever the lake declares.
+    /// keeps: a type with its computed fields completed, and keyed as its
+    /// records are, so a grouped view with its `key` written is the view
+    /// without it. Such a declaration appends nothing and its version
+    /// stays (027, extended). The one entry of its kind and name is looked
+    /// up, whatever the lake declares.
     pub fn in_force(&self, declaration: &Declaration) -> bool {
         fn is<T: PartialEq>(held: Option<&impl Borrow<Entry<T>>>, d: &T) -> bool {
             held.is_some_and(|e| &e.borrow().decl == d)
@@ -219,7 +221,11 @@ impl Ontology {
             Declaration::Type(t) => {
                 let mut t = t.clone();
                 self.complete(&mut t);
-                is(self.types.get(&t.name), &t)
+                let keyed = |mut t: TypeDecl| {
+                    t.key = t.key_fields().to_vec();
+                    t
+                };
+                (self.types.get(&t.name)).is_some_and(|e| keyed(e.decl.clone()) == keyed(t))
             }
             Declaration::ValueType(v) => is(self.value_types.get(v.name.as_str()), v),
             Declaration::Verb(v) => is(self.verbs.get(&v.name), v),
@@ -279,5 +285,19 @@ impl Ontology {
         each(&self.triggers, Declaration::Trigger, &mut out);
         each(&self.object_sets, Declaration::ObjectSet, &mut out);
         out
+    }
+}
+
+impl lakelands_core::sight::InForce for Ontology {
+    fn ty(&self, name: &TypeName) -> Option<&TypeDecl> {
+        self.types.get(name).map(|e| &e.decl)
+    }
+
+    fn types(&self) -> Vec<&TypeDecl> {
+        self.types.values().map(|e| &e.decl).collect()
+    }
+
+    fn declared(&self) -> std::borrow::Cow<'_, [Declared]> {
+        self.declared().into()
     }
 }

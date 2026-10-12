@@ -43,6 +43,14 @@ pub(crate) struct Log {
 }
 
 impl Log {
+    /// The first and the last event, when the log holds any.
+    pub(crate) fn ends(&self) -> Option<(CanonicalEvent, CanonicalEvent)> {
+        self.events
+            .first()
+            .cloned()
+            .zip(self.events.last().cloned())
+    }
+
     /// Takes the lease for `holder`, or says who holds it.
     pub(crate) fn take_lease(&mut self, holder: &str) -> Result<Lease> {
         if let Some(held) = &self.lease {

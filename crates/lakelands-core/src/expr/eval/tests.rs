@@ -12,6 +12,7 @@ fn run(text: &str, record: Value) -> Result<Val> {
         &parse(text).unwrap(),
         &RecordScope {
             fields: &f,
+            meta: None,
             settings: None,
             now: Timestamp::parse("2026-09-24T10:00:00Z").unwrap(),
         },
@@ -173,6 +174,7 @@ fn a_typed_call_with_the_wrong_arguments_is_an_error_not_a_panic() {
     let f = BTreeMap::new();
     let scope = RecordScope {
         fields: &f,
+        meta: None,
         settings: None,
         now: Timestamp(0),
     };
@@ -223,6 +225,7 @@ fn a_filter_reads_settings_as_of_the_position_read() {
     let settings: BTreeMap<String, Value> = [("floor".to_owned(), json!("50"))].into();
     let scope = RecordScope {
         fields: &f,
+        meta: None,
         settings: Some(&settings),
         now: Timestamp(0),
     };
@@ -379,6 +382,7 @@ fn retired_reads_whether_the_write_retires() {
     assert!(!holds_in("status = 'closed' and not retired()", &retire));
     let scope = RecordScope {
         fields: &fields,
+        meta: None,
         settings: None,
         now: Timestamp(0),
     };
@@ -456,6 +460,10 @@ fn landing_in_a_field_follows_its_kind() {
         Some(json!(7))
     );
     assert_eq!(to_json(&text("x"), K::Number, None), None);
+    // A whole number past 64 bits lands as its double, not as nothing.
+    let wide = Val::Num(Decimal::from(i64::MAX) * Decimal::from(4));
+    let double = json!(36_893_488_147_419_103_228.0_f64);
+    assert_eq!(to_json(&wide, K::Number, None), Some(double));
     assert_eq!(
         to_json(&text("2026-09-01"), K::DateTime, None),
         Some(json!("2026-09-01T00:00:00.000000Z"))

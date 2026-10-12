@@ -29,7 +29,7 @@ use lakelands_api::error::{Case, Place, Said};
 use lakelands_api::expr::Expr;
 use lakelands_api::ontology::{FieldDecl, OnInputChange, TypeDecl, ValueTypeDecl};
 use lakelands_api::record::StoredRecord;
-use lakelands_api::{FieldName, Timestamp, Value};
+use lakelands_api::{FieldMeta, FieldName, Timestamp, Value};
 
 use crate::expr::{WriteScope, eval, eval::to_json, parse};
 
@@ -129,6 +129,8 @@ pub struct Write<'a> {
     pub before: Option<&'a BTreeMap<FieldName, Value>>,
     /// The fields the write itself sets or clears.
     pub written: &'a BTreeSet<FieldName>,
+    /// The provenance a field the fold changes takes.
+    pub stamp: &'a dyn Fn(&FieldName) -> FieldMeta,
     /// The lake's settings, by key.
     pub settings: Option<&'a BTreeMap<String, Value>>,
     /// The `known_at` of the event.
@@ -136,14 +138,19 @@ pub struct Write<'a> {
 }
 
 /// Apply the fold's own rules to a record after a write's patch was
-/// merged into `fields`. Answers the fields the fold changed (cleared or
-/// recomputed), which take the event's provenance with `origin: derived`.
+/// merged into `fields`, its derived fields computed in `order`, as
+/// [`order`] answers it for `ty`. Answers the fields the fold changed
+/// (cleared or recomputed). Each takes the event's provenance with
+/// `origin: derived` in `meta` as it changes, so a field computed after it
+/// reads that; a type that keeps none reads none.
 pub fn apply(
     ty: &TypeDecl,
+    order: &[(FieldName, Expr)],
     value_types: &[ValueTypeDecl],
     fields: &mut BTreeMap<FieldName, Value>,
+    meta: &mut BTreeMap<FieldName, FieldMeta>,
     write: &Write<'_>,
-) -> Result<BTreeSet<FieldName>, Said> {
+) -> BTreeSet<FieldName> {
     let mut changed: BTreeSet<FieldName> = write.written.clone();
     let mut touched = BTreeSet::new();
 
@@ -156,6 +163,7 @@ pub fn apply(
                 && f.depends_on.iter().any(|d| changed.contains(d));
             if clears && fields.get(&f.name).is_some_and(|v| !v.is_null()) {
                 fields.insert(f.name.clone(), Value::Null);
+                meta.insert(f.name.clone(), (write.stamp)(&f.name));
                 changed.insert(f.name.clone());
                 touched.insert(f.name.clone());
                 again = true;
@@ -168,30 +176,31 @@ pub fn apply(
 
     // 2. Recompute derived fields in dependency order; one computed at the
     //    read holds no value.
-    for (name, expr) in order(ty)? {
+    for (name, expr) in order {
         let decl = ty
             .fields
             .iter()
-            .find(|f| f.name == name)
+            .find(|f| &f.name == name)
             .expect("ordered from the type");
         let scope = WriteScope {
             after: fields,
             before: write.before,
             retiring: false,
-            meta: None,
+            meta: ty.field_meta.then_some(&*meta),
             settings: write.settings,
             now: write.now,
         };
         let value = match decl.at_read() {
             true => Value::Null,
-            false => computed(decl, &expr, value_types, &scope),
+            false => computed(decl, expr, value_types, &scope),
         };
-        if fields.get(&name).unwrap_or(&Value::Null) != &value {
+        if fields.get(name).unwrap_or(&Value::Null) != &value {
             fields.insert(name.clone(), value);
-            touched.insert(name);
+            meta.insert(name.clone(), (write.stamp)(name));
+            touched.insert(name.clone());
         }
     }
-    Ok(touched)
+    touched
 }
 
 /// A record as one read answers it: each field computed at the read

@@ -40,18 +40,113 @@
 //! A record written again after it was retired starts from no fields, and
 //! its version continues from the retired one.
 
+use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
 
-use lakelands_api::error::{Flaw, Part};
+use lakelands_api::error::{Case, Flaw, Part, Said};
 use lakelands_api::event::{Event, EventBody};
-use lakelands_api::ontology::TypeDecl;
+use lakelands_api::expr::Expr;
+use lakelands_api::ontology::{TypeDecl, ValueTypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
-use lakelands_api::{FieldName, Result, Value};
+use lakelands_api::{FieldName, Result, TypeName, Value};
 use lakelands_core::rights::Door;
 use lakelands_core::{damaged, derive, value};
 
 use crate::backed::{self, Outputs};
 use crate::ontology::Ontology;
+
+/// What computing a type's records reads of the ontology, prepared once
+/// for every record: none of it depends on the record. An ordering that
+/// fails is kept as it failed and answered only when a live record is
+/// computed, at the same record and with the same flaw as without a plan.
+pub struct Plan {
+    /// The entries it was made from ([`entries`]): held, not their
+    /// addresses, so that none is freed while the plan stands and another
+    /// allocated in its place.
+    entries: Vec<Held>,
+    /// The type with its `expr` functions' bodies put in
+    /// ([`resolve_functions`]).
+    decl: TypeDecl,
+    /// The value types its fields name.
+    value_types: Vec<ValueTypeDecl>,
+    /// Its derived fields in the order the fold computes them
+    /// ([`derive::order`]).
+    derived: std::result::Result<Vec<(FieldName, Expr)>, Said>,
+    /// Its computed fields in the order the fold settles them
+    /// ([`backed::computed_order`]).
+    pub(crate) settled: std::result::Result<Vec<(FieldName, BTreeSet<FieldName>)>, Case>,
+    /// The version of the function that computes a field, by field.
+    versions: BTreeMap<FieldName, String>,
+}
+
+impl Plan {
+    fn of(o: &Ontology, raw: &TypeDecl) -> Plan {
+        let decl = resolve_functions(raw, o);
+        let named = raw.fields.iter().filter_map(|f| f.ty.value_type.as_ref());
+        let versions = raw.fields.iter().filter_map(|f| {
+            let function = o.functions.get(f.function.as_ref()?)?;
+            Some((f.name.clone(), function.version.to_string()))
+        });
+        Plan {
+            entries: entries(o, &raw.name).collect(),
+            value_types: named
+                .filter_map(|n| o.value_types.get(n.as_str()))
+                .map(|e| e.decl.clone())
+                .collect(),
+            derived: derive::order(&decl),
+            settled: backed::computed_order(o, raw),
+            versions: versions.collect(),
+            decl,
+        }
+    }
+}
+
+/// An entry of the ontology, of whichever kind.
+type Held = Arc<dyn Any + Send + Sync>;
+
+/// The entries of an ontology a type's plan is made from: the type's, and
+/// those of the functions and the value types its fields name.
+fn entries<'o>(o: &'o Ontology, ty: &TypeName) -> impl Iterator<Item = Held> + 'o {
+    let t = o.types.get(ty);
+    let named = t.into_iter().flat_map(|t| &t.decl.fields).flat_map(|f| {
+        let function = f.function.as_ref().and_then(|n| o.functions.get(n));
+        let value_type = (f.ty.value_type.as_ref()).and_then(|n| o.value_types.get(n.as_str()));
+        let function = function.map(|e| e.clone() as Held);
+        function
+            .into_iter()
+            .chain(value_type.map(|e| e.clone() as _))
+    });
+    t.map(|t| t.clone() as Held).into_iter().chain(named)
+}
+
+/// The plans the fold, a step's walk and the write path compute by, one
+/// per type. A plan stands while the ontology it is asked of holds the
+/// very entries it was made from, compared by pointer: a declaration put
+/// in force makes a new entry, and a function declared again with the
+/// same inputs keeps its type's entry but not its own.
+#[derive(Default)]
+pub struct Plans(Mutex<BTreeMap<TypeName, Arc<Plan>>>);
+
+impl Plans {
+    /// The plan of `raw`, a type of `o`, made again when an entry it was
+    /// made from is no longer the one in `o`.
+    pub fn get(&self, o: &Ontology, raw: &TypeDecl) -> Arc<Plan> {
+        if !o.types.contains_key(&raw.name) {
+            return Arc::new(Plan::of(o, raw));
+        }
+        let mut plans = lakelands_core::lock(&self.0);
+        let ptr = |e: &Held| Arc::as_ptr(e).cast::<()>();
+        if let Some(plan) = plans.get(&raw.name)
+            && (plan.entries.iter().map(ptr)).eq(entries(o, &raw.name).map(|e| ptr(&e)))
+        {
+            return plan.clone();
+        }
+        let plan = Arc::new(Plan::of(o, raw));
+        plans.insert(raw.name.clone(), plan.clone());
+        plan
+    }
+}
 
 /// The provenance an event gives the fields it writes.
 pub(crate) fn meta_of(event: &Event, origin: Origin) -> FieldMeta {
@@ -189,21 +284,10 @@ pub fn apply(
 /// The provenance of a value the fold computed: the event's, with
 /// `origin: derived`, and for a field a function computes, that
 /// function's version as the procedure's.
-fn derived_meta(
-    event: &Event,
-    raw: &TypeDecl,
-    ontology: &Ontology,
-    field: &FieldName,
-) -> FieldMeta {
+fn derived_meta(event: &Event, plan: &Plan, field: &FieldName) -> FieldMeta {
     let mut m = meta_of(event, Origin::Derived);
-    if let Some(func) = raw
-        .fields
-        .iter()
-        .find(|f| &f.name == field)
-        .and_then(|f| f.function.as_ref())
-        .and_then(|name| ontology.functions.get(name))
-    {
-        m.procedure_version = Some(func.version.to_string());
+    if let Some(version) = plan.versions.get(field) {
+        m.procedure_version = Some(version.clone());
     }
     m
 }
@@ -333,31 +417,33 @@ fn compute(
     mut force: bool,
     outputs: &mut Outputs<'_>,
 ) -> Result<BTreeSet<FieldName>> {
-    let decl = resolve_functions(raw, ontology);
-    let value_types = ontology.value_type_list();
+    let plan = outputs.plans.get(ontology, raw);
+    let order = plan.derived.as_ref().map_err(|e| {
+        let (ty, cause) = (
+            raw.name.clone(),
+            Box::new(lakelands_core::invalid(e.clone())),
+        );
+        damaged(Part::Projection, None, Flaw::CannotDerive { ty, cause })
+    })?;
     let mut changed = BTreeSet::new();
     let mut before: Option<BTreeMap<FieldName, Value>> = before.cloned();
     // One round per computed field at most: the graph has no cycle.
     for _ in 0..=raw.fields.len() {
         let touched = derive::apply(
-            &decl,
-            &value_types,
+            &plan.decl,
+            order,
+            &plan.value_types,
             fields,
+            meta,
             &derive::Write {
                 before: before.as_ref(),
                 written: &written,
+                stamp: &|name| derived_meta(event, &plan, name),
                 settings: Some(settings),
                 now: event.known_at,
             },
-        )
-        .map_err(|e| {
-            let (ty, cause) = (raw.name.clone(), Box::new(lakelands_core::invalid(e)));
-            damaged(Part::Projection, None, Flaw::CannotDerive { ty, cause })
-        })?;
-        for name in touched {
-            meta.insert(name.clone(), derived_meta(event, raw, ontology, &name));
-            changed.insert(name);
-        }
+        );
+        changed.extend(touched);
         let snapshot = fields.clone();
         let settled = backed::settle_fields(
             ontology,
@@ -380,7 +466,7 @@ fn compute(
         before = Some(snapshot);
     }
     fields.retain(|_, v| !v.is_null());
-    if !decl.field_meta {
+    if !raw.field_meta {
         meta.clear();
     }
     Ok(changed)

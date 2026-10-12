@@ -42,12 +42,14 @@ that apply its grants, or through notifications that do.
   `LakeStore::feed()` in-process, as the CLI's `lakelands feed` does; the
   host is the lake's operator, not a caller at a door.
 - It is not the last word on narrower feeds. A per-principal view of the
-  changes is an MCP notification (lakelands#70), which applies grants
-  the way a read does, not the feed.
+  changes is an MCP notification, not the feed: an MCP session calls
+  `subscribe` and is told `notifications/lakelands/changed` for the
+  changes it may read, with grants applied the way a read applies them
+  (`docs/hosting.md`).
 
-## Corrected (2026-09-25): per-principal notifications shipped
+## How it came to be
 
-The per-principal view of the changes named above as lakelands#70 has
-shipped (lakelands#94): an MCP session calls `subscribe` and is told
-`notifications/lakelands/changed` for the changes it may read, with
-grants applied the way a read applies them (`docs/hosting.md`).
+- The first version named the per-principal view of the changes as an
+  MCP notification still to come (lakelands#70).
+- Corrected on 2026-09-25: it has shipped, as the notifications an MCP
+  session subscribes to (lakelands#94).

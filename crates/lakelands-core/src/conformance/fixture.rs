@@ -29,7 +29,7 @@ use lakelands_api::{
 };
 use rust_decimal::Decimal;
 
-use super::Failure;
+use super::{Failure, Held};
 
 /// An answer a refusal may be in: an error, or a result that may hold one.
 pub trait Answer {
@@ -103,12 +103,14 @@ pub fn invalid_case(a: &impl Answer) -> Option<&Case> {
 
 /// `answer`, to `what`, must be a refusal as invalid that `fits` holds for,
 /// `expected` saying which: what the suite's `refused_as!` writes.
+#[track_caller]
 pub fn refused_as<T: Debug>(
     what: &str,
     answer: lakelands_api::Result<T>,
     expected: &str,
     fits: impl FnOnce(&Said) -> bool,
-) -> Result<(), Failure> {
+) -> Held {
+    super::tally();
     match invalid_said(&answer) {
         Some(said) if fits(said) => Ok(()),
         Some(said) => Err(Failure::new(format!(
@@ -124,11 +126,12 @@ pub fn refused_as<T: Debug>(
 /// on the wire, hold every member `expected` holds: `{"code": …}` and the
 /// parameters a row names, `"at": [{"code": "field", …}]` for places it
 /// is said at, in their order (the others are not compared).
+#[track_caller]
 pub fn refused_like<T: Debug>(
     what: &str,
     answer: lakelands_api::Result<T>,
     expected: &Value,
-) -> Result<(), Failure> {
+) -> Held {
     let shown = expected.to_string();
     refused_as(what, answer, &shown, |said| said_like(said, expected))
 }
@@ -165,7 +168,7 @@ pub fn refused_alike<T: Debug, U: Debug>(
     hidden: &lakelands_api::Result<T>,
     absent: lakelands_api::Result<U>,
     names: (&str, &str),
-) -> Result<(), Failure> {
+) -> Held {
     let absent = absent.must_fail(&format!("{what}, as `{}`", names.0))?;
     match hidden {
         Err(e) => alike_renamed(what, e, &absent, names),
@@ -186,12 +189,7 @@ pub fn alike_each(hidden: &[Option<Error>], absent: &[Option<Error>], names: (&s
 /// `from` that `absent` was asked by is `to` in each text of it: a hidden
 /// thing is answered as an absent one of its name. `from` is used nowhere
 /// else; `("", "")` renames nothing.
-pub fn alike_renamed(
-    what: &str,
-    hidden: &Error,
-    absent: &Error,
-    (from, to): (&str, &str),
-) -> Result<(), Failure> {
+pub fn alike_renamed(what: &str, hidden: &Error, absent: &Error, (from, to): (&str, &str)) -> Held {
     let wire = |e: &Error| serde_json::to_string(e).map_err(|e| Failure::new(e.to_string()));
     let (h, a) = (wire(hidden)?, wire(absent)?);
     // `from` and `to` are names, so no escape in the wire text holds them.
@@ -221,11 +219,15 @@ pub trait Must<T> {
 }
 
 impl<T: Debug> Must<T> for lakelands_api::Result<T> {
+    #[track_caller]
     fn must(self, what: &str) -> Result<T, Failure> {
+        super::tally();
         self.map_err(|e| Failure::new(format!("{what} failed: {e} ({e:?})")))
     }
 
+    #[track_caller]
     fn must_fail(self, what: &str) -> Result<Error, Failure> {
+        super::tally();
         match self {
             Ok(v) => Err(Failure::new(format!(
                 "{what} should have been refused, but it answered {v:?}"
@@ -245,7 +247,7 @@ pub fn limits() -> lakelands_api::location::Limits {
 /// Fail unless `store` was opened with the default limits, so a harness
 /// that opens lakes otherwise fails here, naming the limits, and never
 /// in a check that happens to meet one.
-pub fn default_limits(store: &dyn LakeStore) -> Result<(), Failure> {
+pub fn default_limits(store: &dyn LakeStore) -> Held {
     let got = store.limits();
     if got == limits() {
         Ok(())
@@ -347,11 +349,26 @@ impl Lake {
     /// Migrates a type to `to` as the owner: the preflight, then the apply
     /// of the report it answered.
     pub async fn migrate(&self, to: TypeDecl) -> Result<Outcome, Failure> {
+        self.migrate_renaming(to, &[]).await
+    }
+
+    /// [`Self::migrate`], each field of `renames` renamed to its new name.
+    pub async fn migrate_renaming(
+        &self,
+        to: TypeDecl,
+        renames: &[(&str, &str)],
+    ) -> Result<Outcome, Failure> {
         let what = format!("migrating `{}`", to.name);
-        let report = self.cat.migrate(&self.own, migration(to.clone()));
+        let m = lakelands_api::write::Migration {
+            renames: renames
+                .iter()
+                .map(|(o, n)| ((*o).into(), (*n).into()))
+                .collect(),
+            ..migration(to)
+        };
+        let report = self.cat.migrate(&self.own, m.clone());
         let id = report.await.must(&what)?.data.report_id;
-        let applied = self.cat.migrate_apply(&self.own, migration(to), &id);
-        applied.await.must(&what)
+        self.cat.migrate_apply(&self.own, m, &id).await.must(&what)
     }
 
     /// Retires one record as the owner.
@@ -384,7 +401,7 @@ impl Lake {
 /// Two records of `mark`, each made under its own declaration of `flag`'s
 /// `initial`, `false` then `true`: a fold of many events at once, a
 /// rebuild's or an import's, answers each as made (050).
-pub async fn two_makes(l: &Lake) -> Result<(), Failure> {
+pub async fn two_makes(l: &Lake) -> Held {
     for (initial, key) in [(false, "m1"), (true, "m2")] {
         l.declare_json(
             serde_json::json!({"declare": "type", "name": "mark", "fields": [
@@ -705,6 +722,7 @@ pub fn step(relation: &str, walk: Walk) -> Step {
         ty: None,
         filter: None,
         depth: Depth::default(),
+        named: None,
     }
 }
 
@@ -718,6 +736,7 @@ pub fn pattern(ty: &str, key: Option<&str>, steps: Vec<Step>, project: Projectio
             filter: None,
             search: None,
             params: Default::default(),
+            named: None,
         },
         steps,
         to: None,
@@ -1052,11 +1071,7 @@ pub async fn ingest(
 
 /// Fail unless the lake's head is still `before`: a refused write must
 /// append nothing at all.
-pub async fn head_unmoved(
-    store: &dyn LakeStore,
-    before: Position,
-    what: &str,
-) -> Result<(), Failure> {
+pub async fn head_unmoved(store: &dyn LakeStore, before: Position, what: &str) -> Held {
     let after = store.head().await.must("reading the head")?;
     if after == before {
         Ok(())
@@ -1098,11 +1113,7 @@ pub async fn refused_unmoved<T: Debug>(
 /// Fail unless an ingest's windows answer positions in log order and the
 /// last of them is the lake's head: everything the delivery committed is
 /// visible from the position its last window names.
-pub async fn windows_reach_head(
-    store: &dyn LakeStore,
-    windows: &[Committed],
-    what: &str,
-) -> Result<(), Failure> {
+pub async fn windows_reach_head(store: &dyn LakeStore, windows: &[Committed], what: &str) -> Held {
     let head = store.head().await.must("reading the head")?;
     let Some(last) = windows.last() else {
         return Err(Failure::new(format!(

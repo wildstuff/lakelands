@@ -36,7 +36,14 @@ fn a_system_type_in_the_closure_is_refused() {
         None,
     );
     let keyed = vec![(RecordKey::from("1"), Some(RecordKey::from("DE1")))];
-    let refused = plan(&after, view.as_ref(), &"account".into(), keyed, &[]);
+    let refused = plan(
+        &after,
+        view.as_ref(),
+        &"account".into(),
+        keyed,
+        &[],
+        &|_, _| true,
+    );
     assert!(
         matches!(invalid_case(&refused), Some(Case::RekeySystem { system, .. }) if system == "sys.hold"),
         "{:?}",

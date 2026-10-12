@@ -3,47 +3,44 @@
 //! §5).
 
 use std::cmp::Ordering;
-use std::sync::Arc;
 
-use lakelands_api::ontology::{ComputedAt, FieldDecl, FieldType, StorageKind, ValueTypeDecl};
+use lakelands_api::error::Case;
+use lakelands_api::ontology::{
+    Authority, ComputedAt, FieldDecl, FieldType, StorageKind, ValueTypeDecl,
+};
 use lakelands_api::read::{Direction, OrderBy};
-use lakelands_api::write::Declaration;
+use lakelands_api::write::{Declaration, ProposedWrite, WriteOpts};
 use lakelands_api::{Find, LakeStore, Record, Refusal};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, derived, doors, field, head_unmoved, order, owner, refused_on, try_upsert,
-    type_decl, value, value_type,
+    Lake, Must, derived, doors, field, head_unmoved, order, owner, patch, refused_on,
+    source_record, try_upsert, type_decl, value, value_type,
 };
+use crate::conformance::{Failure, Held, Store};
 use crate::expr::order::cmp_values;
 
 check!(
-    /// An instant reads back in its one written form.
     DATE_TIME_CANONICAL = date_time_values_read_back_in_their_one_canonical_form,
     "the log format §5: a date-time is kept in UTC as YYYY-MM-DDTHH:MM:SS.ffffffZ, whatever offset it was written with"
 );
 
 check!(
-    /// Bytes have one spelling.
     BYTES_ONE_SPELLING = bytes_are_padded_standard_base64_and_nothing_else,
     "the log format §5: bytes are canonical standard base64, padded and with zero pad bits; unpadded, url-safe or non-canonical spellings are refused"
 );
 
 check!(
-    /// A vector has its declared length and finite components.
     VECTOR_LENGTH = a_vector_of_the_wrong_length_or_an_infinite_component_is_refused,
     "011 and the log format §5: a vector field declares its dimensions, and a value of another length does not fit it, nor one with a component that is not finite as an `f32` (`1e300`); a vector of zeros fits; a vector derived from a `json` field, written or computed at the read, holding what no vector of the field is (`[1e300, 0, 0]`, `[\"a\", \"b\", \"c\"]`, two numbers) holds no value"
 );
 
 check!(
-    /// A value type's rules hold on every write.
     VALUE_TYPE_RULES = a_value_types_one_of_format_and_scale_hold_on_every_write,
     "011: a value's `one_of`, named `format` and decimal `scale` are the value type's, checked on every write; scale rounds half away from zero"
 );
 
 check!(
-    /// Null clears a field whatever its value type says.
     NULL_CLEARS_ANY_TYPE = null_clears_a_field_whatever_its_value_type_allows,
     "012 and 011: `null` in a patch clears the field; it is not a value the value type must allow"
 );
@@ -60,11 +57,11 @@ async fn one_field(store: &dyn LakeStore, name: &str, ty: FieldType) -> Result<L
 
 /// Write `v` to `thing` and expect a refusal on field `v`, with nothing
 /// appended.
-async fn refused(store: &dyn LakeStore, v: Value, why: &str) -> Result<(), Failure> {
+async fn refused(store: &dyn LakeStore, v: Value, why: &str) -> Held {
     refused_in(store, "thing", v, why).await
 }
 
-async fn refused_in(store: &dyn LakeStore, ty: &str, v: Value, why: &str) -> Result<(), Failure> {
+async fn refused_in(store: &dyn LakeStore, ty: &str, v: Value, why: &str) -> Held {
     let before = store.head().await.must("reading the head")?;
     let what = format!("writing {v} ({why})");
     let err = try_upsert(
@@ -87,9 +84,7 @@ async fn refused_in(store: &dyn LakeStore, ty: &str, v: Value, why: &str) -> Res
     Ok(())
 }
 
-async fn date_time_values_read_back_in_their_one_canonical_form(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn date_time_values_read_back_in_their_one_canonical_form(store: Store) -> Held {
     one_field(
         store.as_ref(),
         "thing",
@@ -114,9 +109,7 @@ async fn date_time_values_read_back_in_their_one_canonical_form(
     refused(store.as_ref(), json!("2026-02-30"), "no such day").await
 }
 
-async fn bytes_are_padded_standard_base64_and_nothing_else(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn bytes_are_padded_standard_base64_and_nothing_else(store: Store) -> Held {
     let l = one_field(store.as_ref(), "thing", FieldType::kind(StorageKind::Bytes)).await?;
     for ok in ["aGVsbG8=", "aGk=", "+/+/", ""] {
         l.upsert("thing", "k", json!({ "v": ok })).await?;
@@ -133,9 +126,7 @@ async fn bytes_are_padded_standard_base64_and_nothing_else(
     Ok(())
 }
 
-async fn a_vector_of_the_wrong_length_or_an_infinite_component_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_vector_of_the_wrong_length_or_an_infinite_component_is_refused(store: Store) -> Held {
     let ty = FieldType {
         dimensions: Some(3),
         ..FieldType::kind(StorageKind::Vector)
@@ -186,14 +177,13 @@ async fn a_vector_of_the_wrong_length_or_an_infinite_component_is_refused(
     Ok(())
 }
 
-async fn typed(store: &dyn LakeStore, ty: &str, vt: ValueTypeDecl) -> Result<(), Failure> {
+async fn typed(store: &dyn LakeStore, ty: &str, vt: ValueTypeDecl) -> Held {
     let l = Lake::of(store);
     let Lake { cat, own } = &l;
     let kind = vt.kind;
     let name = vt.name.clone();
-    cat.declare(own, Declaration::ValueType(vt))
-        .await
-        .must(&format!("declaring value type `{name}`"))?;
+    let fut = cat.declare(own, Declaration::ValueType(vt));
+    fut.await.must(&format!("declaring value type `{name}`"))?;
     one_field(
         store,
         ty,
@@ -206,9 +196,7 @@ async fn typed(store: &dyn LakeStore, ty: &str, vt: ValueTypeDecl) -> Result<(),
     Ok(())
 }
 
-async fn a_value_types_one_of_format_and_scale_hold_on_every_write(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_value_types_one_of_format_and_scale_hold_on_every_write(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
 
@@ -268,9 +256,7 @@ async fn a_value_types_one_of_format_and_scale_hold_on_every_write(
     Ok(())
 }
 
-async fn null_clears_a_field_whatever_its_value_type_allows(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn null_clears_a_field_whatever_its_value_type_allows(store: Store) -> Held {
     let status = ValueTypeDecl {
         one_of: vec!["open".into(), "paid".into()],
         ..value_type("status", StorageKind::Text)
@@ -290,14 +276,11 @@ async fn null_clears_a_field_whatever_its_value_type_allows(
 }
 
 check!(
-    /// A decimal is written as a string of digits, never a number.
     DECIMAL_NOT_A_NUMBER = a_decimal_written_as_a_json_number_is_refused,
     "the log format §5: a decimal's one JSON form is a string of digits, so a JSON number, which may already have lost digits, is refused"
 );
 
-async fn a_decimal_written_as_a_json_number_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_decimal_written_as_a_json_number_is_refused(store: Store) -> Held {
     let l = one_field(
         store.as_ref(),
         "thing",
@@ -311,19 +294,26 @@ async fn a_decimal_written_as_a_json_number_is_refused(
 }
 
 check!(
-    /// A geometry reads back in one form; a malformed one is refused.
     GEO_VALUES = a_geo_value_reads_back_in_its_one_form_and_a_malformed_one_is_refused,
     "011, extended, and the log format §5: a geo value is a GeoJSON geometry whose numbers take their one JSON form, the same through get and find, live and after a rebuild; empty `coordinates` are the empty geometry of every type alike, while an empty part inside one is refused; an open ring, a missing `type` or a GeoJSON object that is not a geometry is refused naming the field; null clears it"
 );
 
 check!(
-    /// A JSON value reads back in one form, and null clears it.
     JSON_VALUES = a_json_value_reads_back_in_its_one_form_and_null_clears_it,
     "011, extended, and the log format §5: a json value is kept as written but for its numbers, which take their one JSON form (`1`, never `1.0`), the same through get and find, live and after a rebuild; null clears it like any field"
 );
 
 check!(
-    /// A page ordered by a geo or json field takes the fallback order.
+    WRITTEN_FORM_AT_EVERY_DOOR = a_value_its_written_form_would_not_pass_is_refused_at_every_door,
+    "the log format §1.2 and §1.3: a value is judged in the form the log writes it in, by one check at every door; a number written as an integer beyond ±(2^53 − 1) (`1e16`, `9007199254740993.0`, `1e17` inside a `json` value) and a date-time an offset carries out of the years 0000 to 9999 are refused by `upsert`, `ingest`, a call whose verb sets a field from its payload and `propose`, on the field or the payload member, appending nothing; the largest integer, `1e21` and an offset that stays within the years are written and read back in their one form"
+);
+
+check!(
+    COMPUTED_IN_ITS_WRITTEN_FORM = a_computed_value_its_field_would_not_take_written_holds_no_value,
+    "the log format §1.2 and §1.3: what an expression computes is judged as what is written is; a derived number that would be written as an integer beyond ±(2^53 − 1) (`n + 1` at the largest integer, `n * 2`, `n * 1.5`) and a derived date-time or date carried out of the years 0000 to 9999 hold no value, through get and find, where the largest integer and the last days hold theirs; a verb that sets such a value is refused on the field it sets, appending nothing"
+);
+
+check!(
     GEO_JSON_ORDER = a_page_ordered_by_a_geo_or_json_field_takes_the_rulebooks_fallback_order,
     "029: a geo or json value has no order of its own, so a find ordered by one ranks it as `cmp_values` does, a JSON value by its canonical bytes, a missing value last either way, ties by key; paging walks the same order"
 );
@@ -352,7 +342,7 @@ async fn texts(store: &dyn LakeStore, keys: &[&str]) -> Result<Vec<(String, Stri
 /// Writes each value to its own `thing` record, then reads every record
 /// through `get` and `find`, live and after a rebuild, and holds each to
 /// its one form.
-async fn one_form(store: Arc<dyn LakeStore>, cases: &[(&str, Value, &str)]) -> Result<(), Failure> {
+async fn one_form(store: Store, cases: &[(&str, Value, &str)]) -> Held {
     let l = Lake::of(store.as_ref());
     for (key, written, _) in cases {
         l.upsert("thing", key, json!({ "v": written })).await?;
@@ -375,8 +365,8 @@ async fn one_form(store: Arc<dyn LakeStore>, cases: &[(&str, Value, &str)]) -> R
 }
 
 async fn a_geo_value_reads_back_in_its_one_form_and_a_malformed_one_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     one_field(store.as_ref(), "thing", FieldType::kind(StorageKind::Geo)).await?;
     one_form(
         store.clone(),
@@ -466,9 +456,7 @@ async fn a_geo_value_reads_back_in_its_one_form_and_a_malformed_one_is_refused(
     Ok(())
 }
 
-async fn a_json_value_reads_back_in_its_one_form_and_null_clears_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_json_value_reads_back_in_its_one_form_and_null_clears_it(store: Store) -> Held {
     one_field(store.as_ref(), "thing", FieldType::kind(StorageKind::Json)).await?;
     one_form(
         store.clone(),
@@ -495,8 +483,8 @@ async fn a_json_value_reads_back_in_its_one_form_and_null_clears_it(
 }
 
 async fn a_page_ordered_by_a_geo_or_json_field_takes_the_rulebooks_fallback_order(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(type_decl(
         "thing",
@@ -575,6 +563,242 @@ async fn a_page_ordered_by_a_geo_or_json_field_takes_the_rulebooks_fallback_orde
                 );
             }
         }
+    }
+    Ok(())
+}
+
+async fn a_value_its_written_form_would_not_pass_is_refused_at_every_door(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let kinds = [
+        ("n", StorageKind::Number),
+        ("j", StorageKind::Json),
+        ("at", StorageKind::DateTime),
+    ];
+    let shared = |(name, kind): &(&str, StorageKind)| FieldDecl {
+        authority: Authority::Shared,
+        ..field(name, *kind)
+    };
+    l.declare(type_decl("thing", kinds.iter().map(shared).collect()))
+        .await?;
+    for (f, kind) in kinds {
+        let payload = json!([{"name": "v", "type": {"kind": kind.to_string()}}]);
+        l.declare_json(
+            json!({"declare": "verb", "name": format!("put_{f}"), "on": "thing",
+            "risk": "low", "effect": "write", "payload": payload,
+            "set": [{"field": f, "value": "payload.v"}]}),
+        )
+        .await?;
+    }
+    let (cat, own) = (l.cat.as_ref(), &l.own);
+    let max = 9_007_199_254_740_991_i64;
+    for (f, written, one) in [
+        ("n", json!(9007199254740991.0), json!(max)),
+        ("n", json!(1e21), json!(1e21)),
+        (
+            "at",
+            json!("9999-12-31T23:30:00+01:00"),
+            json!("9999-12-31T22:30:00.000000Z"),
+        ),
+    ] {
+        l.upsert("thing", "k", json!({ f: written })).await?;
+        let r = l.read("thing", "k").await?;
+        ensure!(
+            value(&r, f) == Some(&one),
+            "`{f}` written {written} must read back as {one}; it reads {:?}",
+            value(&r, f)
+        );
+    }
+    // Each door at a record of its own, so that none answers what another wrote.
+    for key in ["upserted", "ingested", "called", "proposed"] {
+        l.upsert("thing", key, json!({"n": 1})).await?;
+    }
+    let before = store.head().await.must("reading the head")?;
+    let mut red = Vec::new();
+    for (f, v) in [
+        ("n", json!(1e16)),
+        ("n", json!(9007199254740993.0)),
+        ("j", json!({"a": [1e17]})),
+        ("at", json!("9999-12-31T23:30:00-01:00")),
+        ("at", json!("0000-01-01T00:30:00+01:00")),
+    ] {
+        let fields = json!({ f: v });
+        let upserted = try_upsert(cat, own, "thing", "upserted", fields.clone()).await;
+        let record = source_record("thing", "ingested", fields.clone());
+        let ingested = l.ingest("feed", vec![record]).await;
+        let (verb, key) = (format!("put_{f}").as_str().into(), "called".into());
+        let payload = patch(json!({ "v": v }));
+        let called = cat.call(own, &verb, Some(&key), payload, WriteOpts::default());
+        let called = called.await;
+        let write = ProposedWrite::Upsert {
+            ty: "thing".into(),
+            key: "proposed".into(),
+            patch: patch(fields),
+            opts: WriteOpts::default(),
+        };
+        let proposed = cat.propose(own, write, "later".into()).await;
+        for (door, on, got) in [
+            ("upsert", f, upserted.map(drop)),
+            ("ingest", f, ingested.map(drop)),
+            ("a call that sets it from `v`", "v", called.map(drop)),
+            ("propose", f, proposed.map(drop)),
+        ] {
+            let fits = match refused_on(&got) {
+                Some((named, Refusal::Constraint(said))) if named == on => match &said.case {
+                    Case::IntegerTooLarge { .. } => !v.is_string(),
+                    Case::NotDateTime { .. } => v.is_string(),
+                    _ => false,
+                },
+                _ => false,
+            };
+            if !fits {
+                red.push(format!("{door} of `{f}` = {v} answered {got:?}"));
+            }
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "a number the log writes as an integer beyond ±(2^53 − 1), and a date-time whose \
+         instant leaves the years 0000 to 9999, is refused at every door on the field it is \
+         sent in, a verb's on its payload member `v`: {}",
+        red.join("; ")
+    );
+    head_unmoved(store.as_ref(), before, "the refused values").await
+}
+
+async fn a_computed_value_its_field_would_not_take_written_holds_no_value(store: Store) -> Held {
+    use StorageKind::{Date, DateTime, Number};
+    let l = Lake::of(store.as_ref());
+    let mut fields = vec![
+        field("at", DateTime),
+        field("n", Number),
+        field("set_at", DateTime),
+        field("set_n", Number),
+    ];
+    for (name, kind, expr, dep) in [
+        ("after", DateTime, "at + 1d", "at"),
+        ("before", DateTime, "at - 1d", "at"),
+        ("day", Date, "at + 12h", "at"),
+        ("next", Number, "n + 1", "n"),
+        ("twice", Number, "n * 2", "n"),
+        ("half_more", Number, "n * 1.5", "n"),
+    ] {
+        fields.push(derived(name, kind, expr, &[dep]));
+    }
+    l.declare(type_decl("thing", fields)).await?;
+    for (verb, f, expr) in [
+        ("later", "set_at", "at + 1d"),
+        ("earlier", "set_at", "at - 1d"),
+        ("count", "set_n", "n + 1"),
+        ("grow", "set_n", "n * 1.5"),
+    ] {
+        l.declare_json(
+            json!({"declare": "verb", "name": verb, "on": "thing", "risk": "low",
+            "effect": "write", "set": [{"field": f, "value": expr}]}),
+        )
+        .await?;
+    }
+    let max = 9_007_199_254_740_991_i64;
+    // Each record with what its derived fields hold; one not named holds no value.
+    let records = [
+        (
+            "last",
+            json!({"at": "9999-12-31T12:00:00Z", "n": max}),
+            json!({"before": "9999-12-30T12:00:00.000000Z"}),
+        ),
+        (
+            "first",
+            json!({"at": "0000-01-01T12:00:00Z", "n": -max}),
+            json!({"after": "0000-01-02T12:00:00.000000Z", "day": "0000-01-02", "next": 1 - max}),
+        ),
+        (
+            "within",
+            json!({"at": "9999-12-30T12:00:00Z", "n": max - 1}),
+            json!({"after": "9999-12-31T12:00:00.000000Z", "day": "9999-12-31",
+                "before": "9999-12-29T12:00:00.000000Z", "next": max}),
+        ),
+    ];
+    for (key, written, _) in &records {
+        l.upsert("thing", key, written.clone()).await?;
+    }
+    let found = l.all_found("thing", Find::default()).await?;
+    let mut red = Vec::new();
+    for (key, _, derived) in &records {
+        let got = l.read("thing", key).await?;
+        let listed = found.iter().find(|r| r.key.as_str() == *key);
+        for f in ["after", "before", "day", "next", "twice", "half_more"] {
+            let (want, read) = (derived.get(f), value(&got, f));
+            let at_find = listed.and_then(|r| value(r, f));
+            if read != want || at_find != want {
+                red.push(format!(
+                    "`{f}` of `{key}` reads {read:?} at get and {at_find:?} at find, not {want:?}"
+                ));
+            }
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "a derived number written as an integer beyond ±(2^53 − 1), and a derived date-time \
+         or date out of the years 0000 to 9999, holds no value, and one within them holds \
+         its own: {}",
+        red.join("; ")
+    );
+    let before = store.head().await.must("reading the head")?;
+    for (verb, key, on) in [
+        ("later", "last", "set_at"),
+        ("earlier", "first", "set_at"),
+        ("count", "last", "set_n"),
+        ("grow", "last", "set_n"),
+        ("grow", "first", "set_n"),
+    ] {
+        let (name, k) = (verb.into(), key.into());
+        let called = (l.cat).call(
+            &l.own,
+            &name,
+            Some(&k),
+            patch(json!({})),
+            WriteOpts::default(),
+        );
+        let called = called.await.map(drop);
+        let fits = match refused_on(&called) {
+            Some((named, Refusal::Constraint(said))) if named == on => match &said.case {
+                Case::IntegerTooLarge { .. } => on == "set_n",
+                Case::NotDateTime { .. } => on == "set_at",
+                _ => false,
+            },
+            _ => false,
+        };
+        if !fits {
+            red.push(format!("`{verb}` on `{key}` answered {called:?}"));
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "a verb that sets a number written as an integer beyond ±(2^53 − 1), or a date-time \
+         out of the years 0000 to 9999, is refused on the field it sets: {}",
+        red.join("; ")
+    );
+    head_unmoved(store.as_ref(), before, "the refused calls").await?;
+    for (verb, f, set) in [
+        ("later", "set_at", json!("9999-12-31T12:00:00.000000Z")),
+        ("count", "set_n", json!(max)),
+    ] {
+        let (name, k) = (verb.into(), "within".into());
+        let called = (l.cat).call(
+            &l.own,
+            &name,
+            Some(&k),
+            patch(json!({})),
+            WriteOpts::default(),
+        );
+        called
+            .await
+            .must("a call that sets a value within the range")?;
+        let r = l.read("thing", "within").await?;
+        ensure!(
+            value(&r, f) == Some(&set),
+            "`{verb}` on `within` must set `{f}` to {set}; it reads {:?}",
+            value(&r, f)
+        );
     }
     Ok(())
 }

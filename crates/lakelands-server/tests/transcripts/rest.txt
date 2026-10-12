@@ -457,8 +457,10 @@
 < 200
 < content-type: application/x-ndjson
 < lakelands-position: 23
-< {"duplicates":0,"position":25,"records":2}
-< {"duplicates":0,"position":27,"records":2}
+< {"duplicates":0,"position":24,"records":1}
+< {"duplicates":0,"position":25,"records":1}
+< {"duplicates":0,"position":26,"records":1}
+< {"duplicates":0,"position":27,"records":1}
 < {"duplicates":0,"position":28,"records":1}
 
 > POST /lakes/finance/ingest/bank
@@ -470,7 +472,8 @@
 < 200
 < content-type: application/x-ndjson
 < lakelands-position: 28
-< {"duplicates":1,"position":29,"records":1}
+< {"duplicates":1,"position":28,"records":0}
+< {"duplicates":0,"position":29,"records":1}
 < {"error":"refused","message":"refused: line 3 is not a record `ingest` takes: not JSON, at column 2","reason":{"code":"line_not_record","column":2,"fault":"syntax","line":3,"message":"line 3 is not a record `ingest` takes: not JSON, at column 2","refusal":"invalid"},"todo":"correct that line and send the body again; what came before it is committed, and sending it again appends nothing","what":"line 3 is not a record `ingest` takes: not JSON, at column 2"}
 
 # The feed is the unmasked log: the clerk may not open it. A position

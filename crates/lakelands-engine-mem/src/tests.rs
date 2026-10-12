@@ -15,6 +15,7 @@ use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposalState, ProposedWrite};
 use lakelands_api::{Error, Refusal};
+use lakelands_core::conformance::engine::reads::{lexical, nearest};
 use serde_json::{Value, json};
 
 use super::*;
@@ -129,6 +130,25 @@ fn a_lake_that_was_never_created_is_unavailable_to_read_and_write() {
     }
     assert!(open(&name, OpenMode::Create).is_ok());
     assert!(open(&name, OpenMode::Write).is_ok());
+}
+
+/// The ends of a lake's log are read without opening it: the first and
+/// the last event, none for an empty log, and none for a lake that was
+/// never created, which is not created by the asking.
+#[test]
+fn the_ends_of_a_log_are_read_and_nothing_is_made() {
+    let name = unique("ends");
+    let ends = || OPENER.with(|o| o.log_ends(&Location::memory(name.as_str())).unwrap());
+    assert_eq!(ends(), None);
+    let unmade = open(&name, OpenMode::Read);
+    assert!(unmade.is_err(), "asking for a log's ends made a lake");
+    let engine = open(&name, OpenMode::Create).unwrap();
+    assert_eq!(ends(), None);
+    let lease = engine.take_lease("a writer").unwrap();
+    let events = chain(0, 3, lease.fence, Digest::zero());
+    engine.append(&lease, &events).unwrap();
+    assert_eq!(ends(), Some((events[0].clone(), events[2].clone())));
+    assert_eq!(engine.tip().unwrap().map(|(at, _)| at), Some(Position(2)));
 }
 
 #[test]
@@ -320,8 +340,16 @@ fn declarations_memberships_proposals_outputs_and_applied_ids_keep_history() {
             .unwrap();
         p.put_proposal(&proposal(ProposalState::Pending), Position(1))
             .unwrap();
-        p.mark_applied(&lakelands_api::event::EventId("e1".into()), Position(1))
-            .unwrap();
+        p.mark_applied(&lakelands_api::engine::Applied {
+            id: lakelands_api::event::EventId("e1".into()),
+            at: Position(1),
+            kind: "checkpoint",
+            about: vec![lakelands_api::engine::About {
+                ty: None,
+                key: None,
+            }],
+        })
+        .unwrap();
     });
     fold(e.as_ref(), 3, |p| {
         p.put_declaration(&ty, 2, Some("h2"), Position(3)).unwrap();
@@ -356,7 +384,8 @@ fn declarations_memberships_proposals_outputs_and_applied_ids_keep_history() {
         now.proposals(&ProposalFilter::default()).unwrap()[0].state,
         ProposalState::Rejected
     );
-    assert_eq!(now.output("fn", &Digest::zero()).unwrap(), Some(json!(42)));
+    let output = now.output("fn", &Digest::zero()).unwrap();
+    assert_eq!(output, Some((Position(3), json!(42))));
 }
 
 // ---- scans ---------------------------------------------------------------
@@ -714,8 +743,7 @@ fn lexical_search_scores_matched_tokens_over_searchable_text() {
         held.restricted = true;
         p.put_record(&held).unwrap();
     });
-    let v = e.view(None).unwrap();
-    let hits = v.lexical(&"doc".into(), "invoice runs", None, 10).unwrap();
+    let hits = lexical(e.as_ref(), &"doc".into(), "invoice runs", None, 10).unwrap();
     assert_eq!(
         hits,
         vec![
@@ -727,13 +755,13 @@ fn lexical_search_scores_matched_tokens_over_searchable_text() {
         "a restricted record is a candidate; a retired one is not"
     );
     assert_eq!(
-        v.lexical(&"doc".into(), "invoice runs", None, 1)
+        lexical(e.as_ref(), &"doc".into(), "invoice runs", None, 1)
             .unwrap()
             .len(),
         1
     );
     assert!(
-        v.lexical(&"nope".into(), "invoice", None, 10)
+        lexical(e.as_ref(), &"nope".into(), "invoice", None, 10)
             .unwrap()
             .is_empty()
     );
@@ -834,11 +862,7 @@ fn the_vector_index_is_shared_by_every_handle_to_the_lake() {
         .unwrap()
         .put(&ty, &key, "emb", &[1.0, 0.0])
         .unwrap();
-    let hits = b
-        .vectors()
-        .unwrap()
-        .nearest(&ty, "emb", &[1.0, 0.0], 5)
-        .unwrap();
+    let hits = nearest(b.as_ref(), &ty, "emb", &[1.0, 0.0], 5).unwrap();
     assert_eq!(hits, vec![(key.clone(), 1.0)]);
     a.vectors().unwrap().remove(&ty, &key, "emb").unwrap();
     assert_eq!(b.vectors().unwrap().count(&ty, "emb").unwrap(), 0);

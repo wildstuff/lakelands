@@ -84,21 +84,13 @@ pub(crate) fn at_scale(d: rust_decimal::Decimal, scale: u32) -> rust_decimal::De
     r
 }
 
-/// Refuse an integer anywhere in a value that lies outside ±(2^53 − 1).
+/// Refuse an integer anywhere in a value that lies outside ±(2^53 − 1),
+/// judged in the form the value is written in: the check answers a value
+/// a second check answers the same.
 fn check_integers(value: &Value) -> Result<(), Case> {
-    const MAX: u64 = (1 << 53) - 1;
-    match value {
-        Value::Number(n) => {
-            let big = n.as_u64().is_some_and(|u| u > MAX)
-                || n.as_i64().is_some_and(|i| i.unsigned_abs() > MAX);
-            if big {
-                return Err(Case::IntegerTooLarge { n: n.clone() });
-            }
-            Ok(())
-        }
-        Value::Array(items) => items.iter().try_for_each(check_integers),
-        Value::Object(m) => m.values().try_for_each(check_integers),
-        _ => Ok(()),
+    match crate::canonical::integer_too_large(value) {
+        Some(n) => Err(Case::IntegerTooLarge { n: n.clone() }),
+        None => Ok(()),
     }
 }
 
@@ -116,7 +108,9 @@ fn resolve<'a>(
     }
 }
 
-fn check_kind(value: &Value, ty: &FieldType) -> Result<Value, Case> {
+/// A value in its canonical form if a field of `ty`'s storage kind takes
+/// it written: [`check`] without the value type.
+pub fn check_kind(value: &Value, ty: &FieldType) -> Result<Value, Case> {
     let wrong = |shape| Case::ValueShape {
         kind: ty.kind,
         shape,

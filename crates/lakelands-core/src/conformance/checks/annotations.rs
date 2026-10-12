@@ -12,7 +12,6 @@
 //! reserved, and one declaration holds a bounded amount.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use lakelands_api::describe::TypeDescription;
 use lakelands_api::event::EventBody;
@@ -23,32 +22,28 @@ use lakelands_api::write::Declaration;
 use lakelands_api::{Access, LakeStore, Position, ReadAt, Refusal, TypeName};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, events_from, field, field_access, head_unmoved, invalid_like, reason, refused_on,
     type_decl,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// Annotations come back as declared.
     ROUND_TRIP = annotations_round_trip_through_declare_the_feed_and_describe,
     "007, 024 and 027, extended: annotations on a type, a field, a relation and a relation's link field, declared or applied, come back exactly in the feed's `declared` event and in `describe` for the owner, in canonical form"
 );
 
 check!(
-    /// An annotation change alone moves the version, not the hash.
     VERSION_NOT_HASH = an_annotation_change_alone_moves_the_version_and_not_the_schema_hash,
     "007 and 027, extended: re-declaring a type with only an annotation changed is taken by `declare`, moves its version by one and leaves its schema hash byte-identical"
 );
 
 check!(
-    /// A masked field is described without its annotations.
     MASKED_WITHOUT = a_masked_field_is_described_without_its_annotations,
     "024, extended: a field the principal may not read is described by its shape alone, without its annotations, and so is a relation's link field it may not read (no description, label or annotations); the type's and the relation's own annotations are still shown"
 );
 
 check!(
-    /// A bad annotation is refused, naming it.
     REFUSED_NAMING = an_unnamespaced_reserved_null_or_oversized_annotation_is_refused_naming_it,
     "the contract's annotation rules: a key without a namespace, a `null` value and a declaration holding more than 16 KiB of annotations are refused as invalid, a key in `sys.` or `lakelands.` as reserved, each naming the key or the declaration, with nothing appended; a declaration holding exactly 16 KiB is taken"
 );
@@ -156,9 +151,7 @@ async fn declared_event(
         .ok_or_else(|| Failure::new(format!("the feed holds no `declared` event of `{name}`")))
 }
 
-async fn annotations_round_trip_through_declare_the_feed_and_describe(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn annotations_round_trip_through_declare_the_feed_and_describe(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
@@ -184,9 +177,8 @@ async fn annotations_round_trip_through_declare_the_feed_and_describe(
     let mut crate_ = shelf.clone();
     crate_.name = "crate".into();
     crate_.annotations = marks(&[("acme.icon", json!("box"))]);
-    cat.apply(own, vec![Declaration::Type(crate_.clone())])
-        .await
-        .must("applying the annotated `crate`")?;
+    let fut = cat.apply(own, vec![Declaration::Type(crate_.clone())]);
+    fut.await.must("applying the annotated `crate`")?;
     let d = l.describe_type("crate").await?;
     let (want, got) = (
         canonical(&declared_maps(&crate_)),
@@ -201,8 +193,8 @@ async fn annotations_round_trip_through_declare_the_feed_and_describe(
 }
 
 async fn an_annotation_change_alone_moves_the_version_and_not_the_schema_hash(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(room()).await?;
     let mut shelf = shelf();
@@ -232,9 +224,7 @@ async fn an_annotation_change_alone_moves_the_version_and_not_the_schema_hash(
     Ok(())
 }
 
-async fn a_masked_field_is_described_without_its_annotations(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_masked_field_is_described_without_its_annotations(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, .. } = &l;
     l.declare(room()).await?;
@@ -312,8 +302,8 @@ async fn a_masked_field_is_described_without_its_annotations(
 }
 
 async fn an_unnamespaced_reserved_null_or_oversized_annotation_is_refused_naming_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     // `{"acme.blob":""}` is 16 bytes; the string fills the rest.

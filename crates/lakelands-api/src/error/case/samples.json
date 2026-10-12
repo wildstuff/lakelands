@@ -34,6 +34,9 @@
    "code": "at_read_authority"
   },
   {
+   "code": "reference_unjudged"
+  },
+  {
    "code": "at_read_backed"
   },
   {
@@ -203,6 +206,11 @@
   },
   {
    "code": "initial_reference"
+  },
+  {
+   "code": "inverse_twice",
+   "inverse": "r",
+   "target": "t"
   },
   {
    "code": "json_named_as_type"
@@ -428,6 +436,12 @@
    "field": "f"
   },
   {
+   "code": "view_key",
+   "group_by": [
+    "a"
+   ]
+  },
+  {
    "carrier": "via",
    "code": "view_relation",
    "type": "t"
@@ -527,6 +541,9 @@
    "right": {
     "kind": "null"
    }
+  },
+  {
+   "code": "no_records_provenance"
   },
   {
    "code": "not_a_number",
@@ -733,6 +750,16 @@
    }
   },
   {
+   "code": "measure_unfit",
+   "decimal": true,
+   "group": "k",
+   "why": {
+    "code": "unknown_field",
+    "field": "f",
+    "type": "t"
+   }
+  },
+  {
    "call": "s",
    "code": "kept_adds_kind",
    "kind": "boolean"
@@ -875,6 +902,10 @@
    "measure": "s"
   },
   {
+   "code": "measure_no_type",
+   "measure": "s"
+  },
+  {
    "code": "measure_no_where",
    "measure": "s"
   },
@@ -932,8 +963,18 @@
    "count": 1
   },
   {
+   "code": "pattern_as_not_rows"
+  },
+  {
+   "code": "pattern_binds_twice",
+   "name": "s"
+  },
+  {
    "code": "pattern_no_path",
    "path": "s"
+  },
+  {
+   "code": "pattern_order_not_rows"
   },
   {
    "code": "pattern_to_chain"
@@ -970,6 +1011,9 @@
    "kind": "text"
   },
   {
+   "also": [
+    "a"
+   ],
    "code": "step_reaches",
    "reached": "t",
    "type": "t"
@@ -1340,6 +1384,12 @@
   {
    "code": "migration_takes_key",
    "type": "t"
+  },
+  {
+   "code": "migration_takes_link_type",
+   "relation": "r",
+   "type": "t",
+   "unnamed": true
   },
   {
    "code": "migration_takes_read",
@@ -1885,14 +1935,6 @@
    "code": "verb_type_header",
    "header": "s",
    "verb": "v"
-  },
-  {
-   "code": "mock_cannot",
-   "what": "rekey"
-  },
-  {
-   "code": "mock_unevaluated",
-   "name": "s"
   }
  ],
  "Place": [

@@ -70,6 +70,10 @@ pub struct Start {
     /// The values bound to the parameters of a view the pattern starts on.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: Params,
+    /// The name a row binds the start's record under; its type's name
+    /// when left out.
+    #[serde(default, rename = "as", skip_serializing_if = "Option::is_none")]
+    pub named: Option<String>,
 }
 
 /// One step of a pattern.
@@ -91,6 +95,10 @@ pub struct Step {
     /// How many hops.
     #[serde(default)]
     pub depth: Depth,
+    /// The name a row binds the reached record under; its type's name
+    /// when left out.
+    #[serde(default, rename = "as", skip_serializing_if = "Option::is_none")]
+    pub named: Option<String>,
 }
 
 /// What a pattern returns.
@@ -106,7 +114,7 @@ pub enum Projection {
     },
     /// Nodes and edges. For viewers. A graph always includes the start
     /// node, the root a viewer draws from, whatever the steps' `min`;
-    /// `Rows` holds a start only when a step reaches it
+    /// `Rows` holds a start only where its steps reach a match from it
     /// (`docs/decisions/026-the-store-walks-the-graph.md`).
     Graph,
     /// Aggregates over the matches.
@@ -176,7 +184,9 @@ pub struct Pattern {
     /// What it returns.
     #[serde(default)]
     pub project: Projection,
-    /// For rows: sort keys over projected paths, most significant first.
+    /// For rows alone: sort keys over the rows' paths, most significant
+    /// first, each by its value: a row is no record, and a key by
+    /// `latest`, `known_at` or `seen_at` is refused.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub order_by: Vec<Order>,
     /// At most this many rows or nodes.
@@ -199,6 +209,7 @@ impl Pattern {
                 filter: None,
                 search: None,
                 params: Default::default(),
+                named: None,
             },
             steps,
             to: None,
@@ -210,7 +221,10 @@ impl Pattern {
         }
     }
 
-    /// The records one hop away over one relation.
+    /// The records one hop away over one relation. A row binds one record
+    /// of one type under a name: over a relation to the start's own type
+    /// its caller names the step with `as`, and over one that reaches
+    /// several types the step's `type`.
     pub fn neighbors(ty: TypeName, key: RecordKey, relation: RelationName, walk: Walk) -> Pattern {
         let step = Step {
             relation,
@@ -218,6 +232,7 @@ impl Pattern {
             ty: None,
             filter: None,
             depth: Depth::default(),
+            named: None,
         };
         Pattern::from(ty, key, vec![step], Projection::default())
     }
@@ -248,6 +263,7 @@ impl Pattern {
                 ty: None,
                 filter: None,
                 depth: Depth { min: 0, max: depth },
+                named: None,
             })
             .collect();
         Pattern::from(ty, key, steps, Projection::Graph)
@@ -627,7 +643,7 @@ pub struct Hit {
 
 /// The score of a vector search: the cosine of the angle between two
 /// vectors of one length, computed in `f64`; 0 when either is all zeros.
-/// The store, every engine and the mock score with this one definition,
+/// Every engine scores with this one definition,
 /// so a ranking never depends on whose arithmetic made it.
 pub fn cosine(a: &[f32], b: &[f32]) -> f64 {
     let (mut dot, mut na, mut nb) = (0.0f64, 0.0f64, 0.0f64);

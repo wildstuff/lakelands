@@ -247,7 +247,8 @@ fn output(config: Value, title: &str, output: Value, fills: Option<(&str, &str)>
     EventBody::OutputRecorded {
         seam,
         input,
-        output,
+        output: Some(output),
+        output_at: None,
         field: fills.map(|(ty, key)| (ty.into(), key.into(), "sum".into())),
     }
 }
@@ -471,7 +472,8 @@ fn row_3_an_output_for_the_call_the_step_made_finds_its_record() {
         EventBody::OutputRecorded {
             seam: backed::seam(&f),
             input: backed::digest(&call),
-            output: json!(output),
+            output: Some(json!(output)),
+            output_at: None,
             field: Some(("doc".into(), "a".into(), "sum".into())),
         }
     };
@@ -762,7 +764,8 @@ fn row_9_the_flush_indexes_the_vectors_it_fills() {
     let vector = |text: &str, v: Value| EventBody::OutputRecorded {
         seam: backed::embed_seam("m"),
         input: backed::digest(&backed::embed_call(text)),
-        output: v,
+        output: Some(v),
+        output_at: None,
         field: None,
     };
     let q = l.bodies(vec![
@@ -792,8 +795,14 @@ fn row_9_the_flush_indexes_the_vectors_it_fills() {
         (json!({"title": "c", "vec": [0, 0, 1]}), true, q[5]),
         "row 9: `c` is retired as the step left it, with its vector"
     );
-    let index = l.lake.engine.vectors().expect("the memory engine's index");
-    let found = index.nearest(&"doc".into(), "vec", &[0.0, 0.0, 1.0], 3);
+    let engine = l.lake.engine.as_ref();
+    let found = lakelands_core::conformance::engine::reads::nearest(
+        engine,
+        &"doc".into(),
+        "vec",
+        &[0.0, 0.0, 1.0],
+        3,
+    );
     let mut found: Vec<String> = (found.expect("a search").iter())
         .map(|(k, _)| k.to_string())
         .collect();

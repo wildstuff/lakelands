@@ -1,12 +1,24 @@
 //! The projection in PostgreSQL, with its kept history.
 //!
-//! **History.** Every state the fold puts is a row valid from a position
-//! (`since`) until the position of the state that supersedes it (`until`,
-//! none while it is the latest). A view at a position reads, for each
-//! record, declaration, proposal, membership and recorded output, the row
-//! whose interval holds that position; nothing is replayed. A state put
-//! again at the same position replaces the row there, which is the same
-//! state folded twice.
+//! **History.** Every state the fold puts is a row from its position
+//! (`since`) on, written once and never changed: a state holds until the
+//! next one of the same thing begins, and an ended record is a state too,
+//! stored as the seam hands it (version 0): the seam reads an end as a
+//! state, so no read rebuilds one.
+//! A view at a position reads, for each record, declaration, proposal,
+//! membership and recorded output, the latest row at or before it; nothing
+//! is replayed. A state put again at the same position replaces the row
+//! there, which is the same state folded twice.
+//!
+//! **Heads.** Beside the declarations and the records, the two histories
+//! read at the head, `<table>_head` holds one narrow row per thing: the
+//! position of its latest state. Proposals, members and outputs are read
+//! only by their states in force at a position, and keep no heads. A read at the head joins it
+//! to its state. Only `since` changes in it, a column no index holds, and
+//! its pages are left room (`fillfactor`), so moving a head is an update in
+//! place, without a new index entry; superseding a state writes one row
+//! and moves one head, where an end written onto the superseded row wrote
+//! the whole state twice and every index entry of both.
 //!
 //! **Head indexes.** Beside the history the engine keeps indexes of the
 //! latest states only: exact text values for equality lookups, the links
@@ -35,12 +47,12 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use lakelands_api::engine::Declared;
+use lakelands_api::engine::{Applied, Declared};
 use lakelands_api::error::Result;
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::StoredRecord;
-use lakelands_api::seam::{KEPT_PREFIX, SETTING_TYPE, SORT_INDEX_SETTING};
+use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING};
 use lakelands_api::write::Declaration;
 use lakelands_core::engines::{self, decode};
 use postgres::types::ToSql;
@@ -72,13 +84,11 @@ impl Names {
     /// key order (`in_key_order` in `view.rs`). A lake made with a primary
     /// key there keeps it and gains the index.
     ///
-    /// `records_head` holds the states with no end of the kept names
-    /// ([`kept_range`]) in the order keys are read in, bytewise:
-    /// `records_at` holds the key in the database's collation and
-    /// `records_key_c` every state. A kept name's page and count at the
-    /// head read from it (`kept_sql` in `view.rs`).
+    /// A record's key is compared bytewise (`COLLATE "C"`), so the primary
+    /// keys of `records` and `records_head` hold the order keys are read
+    /// in.
     pub(crate) fn schema_sql(&self) -> String {
-        let (s, kept) = (&self.schema, kept_range());
+        let (s, heads) = (&self.schema, heads_sql(&self.schema));
         format!(
             "
 CREATE SCHEMA IF NOT EXISTS {s};
@@ -98,36 +108,38 @@ CREATE TABLE IF NOT EXISTS {s}.log (
 );
 CREATE INDEX IF NOT EXISTS log_segment ON {s}.log (segment, position);
 CREATE TABLE IF NOT EXISTS {s}.declarations (
-    ident TEXT NOT NULL, since BIGINT NOT NULL, until BIGINT, state TEXT NOT NULL,
+    ident TEXT NOT NULL, since BIGINT NOT NULL, state TEXT NOT NULL,
     PRIMARY KEY (ident, since)
 );
 CREATE TABLE IF NOT EXISTS {s}.records (
-    ty TEXT NOT NULL, key TEXT NOT NULL, since BIGINT NOT NULL, until BIGINT,
+    ty TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, since BIGINT NOT NULL,
     state TEXT NOT NULL,
     PRIMARY KEY (ty, key, since)
 );
-CREATE INDEX IF NOT EXISTS records_at ON {s}.records (ty, until, key);
 CREATE INDEX IF NOT EXISTS records_since ON {s}.records (ty, since);
-CREATE INDEX IF NOT EXISTS records_key_c ON {s}.records (ty, key COLLATE \"C\", since);
-CREATE INDEX IF NOT EXISTS records_head ON {s}.records (ty, key COLLATE \"C\")
-    WHERE until IS NULL AND {kept};
 CREATE TABLE IF NOT EXISTS {s}.proposals (
-    id TEXT NOT NULL, since BIGINT NOT NULL, until BIGINT, state TEXT NOT NULL,
+    id TEXT NOT NULL, since BIGINT NOT NULL, state TEXT NOT NULL,
     PRIMARY KEY (id, since)
 );
 CREATE TABLE IF NOT EXISTS {s}.members (
     object_set TEXT NOT NULL, ty TEXT NOT NULL, key TEXT NOT NULL,
-    since BIGINT NOT NULL, until BIGINT, state BOOLEAN NOT NULL,
+    since BIGINT NOT NULL, state BOOLEAN NOT NULL,
     PRIMARY KEY (object_set, ty, key, since)
 );
 CREATE TABLE IF NOT EXISTS {s}.outputs (
-    seam TEXT NOT NULL, input TEXT NOT NULL, since BIGINT NOT NULL, until BIGINT,
+    seam TEXT NOT NULL, input TEXT NOT NULL, since BIGINT NOT NULL,
     state TEXT NOT NULL,
     PRIMARY KEY (seam, input, since)
 );
-CREATE TABLE IF NOT EXISTS {s}.applied (
+{heads}CREATE TABLE IF NOT EXISTS {s}.applied (
     id TEXT PRIMARY KEY, at BIGINT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS {s}.routes (
+    at BIGINT NOT NULL, kind TEXT NOT NULL, ty TEXT, key TEXT
+);
+CREATE INDEX IF NOT EXISTS routes_kind ON {s}.routes (kind, at);
+CREATE INDEX IF NOT EXISTS routes_ty ON {s}.routes (ty, at);
+CREATE INDEX IF NOT EXISTS routes_key ON {s}.routes (key, at);
 CREATE TABLE IF NOT EXISTS {s}.text_index (
     ty TEXT NOT NULL, field TEXT NOT NULL, value TEXT NOT NULL, key TEXT NOT NULL
 );
@@ -161,21 +173,38 @@ CREATE TABLE IF NOT EXISTS {s}.vectors (
     }
 }
 
-/// The condition that the column `ty` holds a kept name
-/// (`lakelands_api::seam::KEPT_PREFIX`): the range, bytewise, that the
-/// names with that prefix fill. `records_head` is over these rows alone,
-/// so a stored type's put does not maintain it, and a kept name's
-/// statements at the head repeat the condition word for word, by which
-/// the planner knows the index holds their rows.
-pub(crate) fn kept_range() -> String {
-    let (last, rest) = KEPT_PREFIX.as_bytes().split_last().expect("a prefix");
-    let end = format!("{}{}", String::from_utf8_lossy(rest), char::from(last + 1));
-    format!("ty COLLATE \"C\" >= '{KEPT_PREFIX}' AND ty COLLATE \"C\" < '{end}'")
+/// The heads tables, one per history that keeps heads: each thing's
+/// identifying columns, as its history types them, and the position of
+/// its latest state.
+fn heads_sql(s: &str) -> String {
+    HISTORIES
+        .iter()
+        .filter(|h| h.head)
+        .map(|h| {
+            let columns = h.each(", ", |_, c| match c {
+                "key" if h.table == "records" => "key TEXT COLLATE \"C\" NOT NULL".to_owned(),
+                _ => format!("{c} TEXT NOT NULL"),
+            });
+            format!(
+                "CREATE TABLE IF NOT EXISTS {s}.{t}_head ({columns}, since BIGINT NOT NULL, \
+                 PRIMARY KEY ({ident})) WITH (fillfactor = 70);\n",
+                t = h.table,
+                ident = h.ident.join(", "),
+            )
+        })
+        .collect()
 }
+
+/// The layout of the projection this build reads and writes, marked in
+/// `meta` as `layout` when the lake is made. It is raised whenever a
+/// table changes so that a projection made before would answer wrongly,
+/// not fail: one made with another layout is never read, and is rebuilt
+/// from the log.
+pub(crate) const LAYOUT: u64 = 2;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
-pub(crate) const LAKE_TABLES: [&str; 15] = [
+pub(crate) const LAKE_TABLES: [&str; 18] = [
     "meta",
     "lease",
     "segments",
@@ -186,11 +215,14 @@ pub(crate) const LAKE_TABLES: [&str; 15] = [
     "members",
     "outputs",
     "applied",
+    "routes",
     "text_index",
     "edges",
     "full_text",
     "sort_index",
     "vectors",
+    "declarations_head",
+    "records_head",
 ];
 
 /// The projection's tables, cleared by a rebuild; the log, its segments,
@@ -203,21 +235,32 @@ pub(crate) struct History {
     pub(crate) ident: &'static [&'static str],
     /// The SQL type of its `state` column.
     pub(crate) state: &'static str,
+    /// Whether it keeps a heads table, for reads at the head.
+    head: bool,
 }
 
-pub(crate) const DECLARATIONS: History = History::new("declarations", &["ident"], "text");
-pub(crate) const RECORDS: History = History::new("records", &["ty", "key"], "text");
-pub(crate) const PROPOSALS: History = History::new("proposals", &["id"], "text");
-pub(crate) const OUTPUTS: History = History::new("outputs", &["seam", "input"], "text");
+pub(crate) const DECLARATIONS: History = History::new("declarations", &["ident"], "text", true);
+pub(crate) const RECORDS: History = History::new("records", &["ty", "key"], "text", true);
+pub(crate) const PROPOSALS: History = History::new("proposals", &["id"], "text", false);
+pub(crate) const OUTPUTS: History = History::new("outputs", &["seam", "input"], "text", false);
 pub(crate) const MEMBERS: History =
-    History::new("members", &["object_set", "ty", "key"], "boolean");
+    History::new("members", &["object_set", "ty", "key"], "boolean", false);
+
+/// Every history.
+const HISTORIES: [&History; 5] = [&DECLARATIONS, &RECORDS, &PROPOSALS, &MEMBERS, &OUTPUTS];
 
 impl History {
-    const fn new(table: &'static str, ident: &'static [&'static str], state: &'static str) -> Self {
+    const fn new(
+        table: &'static str,
+        ident: &'static [&'static str],
+        state: &'static str,
+        head: bool,
+    ) -> Self {
         History {
             table,
             ident,
             state,
+            head,
         }
     }
 
@@ -228,13 +271,48 @@ impl History {
         all.join(sep)
     }
 
-    /// Put a state of one thing valid from `since`, keeping every other
-    /// state: the one it supersedes ends at `since`, and it ends where the
-    /// next one, if any, begins. A state already at `since` is replaced
-    /// and keeps its end.
-    ///
-    /// One statement: the supersede and the insert or replace, in one
-    /// snapshot. Declarations are put so, as they come; every other state
+    /// Each thing's head, `h`, beside its latest state, `r`: what a read at
+    /// the head reads from. The state is sought by its primary key, one
+    /// seek per head; a join of the two tables is estimated as if position
+    /// and key were independent, at about one row, and a page planned on
+    /// that sorts every head instead of walking them in order.
+    pub(crate) fn at_head(&self, names: &Names) -> String {
+        let t = names.t(self.table);
+        format!(
+            "{t}_head h CROSS JOIN LATERAL (SELECT x.state FROM {t} x \
+             WHERE {on} AND x.since = h.since LIMIT 1) r",
+            on = self.each(" AND ", |_, c| format!("x.{c} = h.{c}")),
+        )
+    }
+
+    /// The states in force at the position bound as `$n` among the rows
+    /// `cond` admits, `r`: each thing's latest state at or before it.
+    pub(crate) fn in_force(&self, names: &Names, n: usize, cond: &str) -> String {
+        let ident = self.ident.join(", ");
+        format!(
+            "(SELECT DISTINCT ON ({ident}) * FROM {} WHERE since <= ${n} {cond} \
+             ORDER BY {ident}, since DESC) r",
+            names.t(self.table)
+        )
+    }
+
+    /// The upsert that moves the heads of the things `rows` names, with
+    /// their positions, to those positions, never back past the state a
+    /// head is at; a head at the same position is touched, since the state
+    /// there is replaced.
+    fn move_heads(&self, names: &Names, rows: &str) -> String {
+        let columns = self.ident.join(", ");
+        format!(
+            "INSERT INTO {}_head AS h ({columns}, since) {rows} \
+             ON CONFLICT ({columns}) DO UPDATE SET since = EXCLUDED.since \
+             WHERE h.since <= EXCLUDED.since",
+            names.t(self.table)
+        )
+    }
+
+    /// Put a state of one thing from `since` on, and move its head there
+    /// unless a later state holds it. A state already at `since` is
+    /// replaced. Declarations are put so, as they come; every other state
     /// is buffered and put with [`History::put_many`].
     pub(crate) fn put(
         &self,
@@ -244,7 +322,6 @@ impl History {
         since: Position,
         state: &(dyn ToSql + Sync),
     ) -> Result<()> {
-        let table = names.t(self.table);
         let n = self.ident.len();
         let at = since.0 as i64;
         let mut args: Vec<&(dyn ToSql + Sync)> = ident.to_vec();
@@ -252,34 +329,28 @@ impl History {
         args.push(state);
         let columns = self.ident.join(", ");
         let marks: Vec<String> = (1..=n + 1).map(|i| format!("${i}")).collect();
+        let marks = marks.join(", ");
         db.execute(
             &format!(
-                "WITH superseded AS (\
-                   UPDATE {table} SET until = ${s} WHERE {w} AND since = \
-                   (SELECT max(since) FROM {table} WHERE {w} AND since < ${s}) \
-                   AND (until IS NULL OR until > ${s})\
-                 ) \
-                 INSERT INTO {table} ({columns}, since, until, state) VALUES ({marks}, \
-                 (SELECT min(since) FROM {table} WHERE {w} AND since > ${s}), ${v}) \
+                "WITH h AS ({heads}) INSERT INTO {table} ({columns}, since, state) \
+                 VALUES ({marks}, ${v}) \
                  ON CONFLICT ({columns}, since) DO UPDATE SET state = EXCLUDED.state",
-                w = self.each(" AND ", |i, c| format!("{c} = ${i}")),
-                s = n + 1,
+                heads = self.move_heads(names, &format!("VALUES ({marks})")),
+                table = names.t(self.table),
                 v = n + 2,
-                marks = marks.join(", "),
             ),
             &args,
         )
     }
 
-    /// Put the states a transaction buffered, all in one statement, as
-    /// the one-row put would put them one after the other: for every
-    /// thing, its rows from the one in force at its earliest buffered
-    /// position on and its buffered rows (a buffered row replacing one at
-    /// the same position) are ordered by position, and each ends where the
-    /// next begins. Its earlier rows are not touched.
+    /// Put the states a transaction buffered in one statement: each row
+    /// inserted (a buffered row replacing one at the same position), and,
+    /// in a history that keeps heads, each thing's head moved to its latest
+    /// buffered position. No row put before is touched.
     ///
     /// Answers the things whose latest state is now a buffered one, each
-    /// with whether the history held a state of it before.
+    /// with whether the history held a state of it before; nothing where
+    /// the history keeps no heads.
     pub(crate) fn put_many<S: ToSql + Sync>(
         &self,
         db: &mut Db,
@@ -289,7 +360,6 @@ impl History {
         if rows.is_empty() {
             return Ok(Vec::new());
         }
-        let table = names.t(self.table);
         let n = self.ident.len();
         let mut idents: Vec<Vec<&str>> = vec![Vec::with_capacity(rows.len()); n];
         let mut since = Vec::with_capacity(rows.len());
@@ -309,51 +379,32 @@ impl History {
         args.push(&states);
         let columns = self.ident.join(", ");
         let arrays: Vec<String> = (1..=n).map(|i| format!("${i}::text[]")).collect();
+        // An upserted head reads `xmax` 0 when it was inserted: the thing
+        // had no state before.
+        let heads = match self.head {
+            true => format!(
+                "{} RETURNING {columns}, xmax <> 0",
+                self.move_heads(
+                    names,
+                    &format!("SELECT {columns}, max(since) FROM b GROUP BY {columns}")
+                )
+            ),
+            false => "SELECT 1 WHERE false".to_owned(),
+        };
         let answer = db.query(
             &format!(
                 "WITH b AS (\
                    SELECT * FROM unnest({arrays}, ${s}::int8[], ${v}::{ty}[]) \
                    AS b({columns}, since, state)\
-                 ), f AS (\
-                   SELECT {columns}, min(since) AS first FROM b GROUP BY {columns}\
-                 ), u AS (\
-                   SELECT {columns}, since, bool_or(fresh) AS fresh FROM (\
-                     SELECT {scolumns}, s.since, false AS fresh FROM f CROSS JOIN LATERAL (\
-                       (SELECT {pcolumns}, p.since, p.until FROM {table} p \
-                        WHERE {pf} AND p.since <= f.first ORDER BY p.since DESC LIMIT 1) \
-                       UNION ALL \
-                       (SELECT {pcolumns}, p.since, p.until FROM {table} p \
-                        WHERE {pf} AND p.since > f.first)\
-                     ) s WHERE s.until IS NULL OR s.until > f.first \
-                     UNION ALL SELECT {columns}, since, true FROM b\
-                   ) x GROUP BY {columns}, since\
-                 ), n AS (\
-                   SELECT {columns}, since, fresh, \
-                   lead(since) OVER (PARTITION BY {columns} ORDER BY since) AS next FROM u\
-                 ), ended AS (\
-                   UPDATE {table} t SET until = n.next FROM n \
-                   WHERE NOT n.fresh AND {tn} AND t.since = n.since \
-                   AND t.until IS DISTINCT FROM n.next\
                  ), put AS (\
-                   INSERT INTO {table} ({columns}, since, until, state) \
-                   SELECT {bcolumns}, b.since, n.next, b.state FROM b JOIN n ON {bn} \
-                   AND b.since = n.since \
-                   ON CONFLICT ({columns}, since) DO UPDATE \
-                   SET state = EXCLUDED.state, until = EXCLUDED.until\
-                 ) \
-                 SELECT {ncolumns}, EXISTS (SELECT 1 FROM {table} t WHERE {tn}) \
-                 FROM n WHERE n.fresh AND n.next IS NULL",
+                   INSERT INTO {table} ({columns}, since, state) SELECT * FROM b \
+                   ON CONFLICT ({columns}, since) DO UPDATE SET state = EXCLUDED.state\
+                 ) {heads}",
                 arrays = arrays.join(", "),
                 s = n + 1,
                 v = n + 2,
                 ty = self.state,
-                scolumns = self.each(", ", |_, c| format!("s.{c}")),
-                pcolumns = self.each(", ", |_, c| format!("p.{c}")),
-                bcolumns = self.each(", ", |_, c| format!("b.{c}")),
-                ncolumns = self.each(", ", |_, c| format!("n.{c}")),
-                pf = self.each(" AND ", |_, c| format!("p.{c} = f.{c}")),
-                tn = self.each(" AND ", |_, c| format!("t.{c} = n.{c}")),
-                bn = self.each(" AND ", |_, c| format!("b.{c} = n.{c}")),
+                table = names.t(self.table),
             ),
             &args,
         )?;
@@ -399,10 +450,10 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
     let view = engines::kept_view(ty);
     let row = db.query_one(
         &format!(
-            "SELECT (SELECT state FROM {d} WHERE ident = $1 AND until IS NULL), \
-             (SELECT state FROM {r} WHERE ty = $2 AND key = $3 AND until IS NULL)",
-            d = names.t("declarations"),
-            r = names.t("records"),
+            "SELECT (SELECT r.state FROM {d} WHERE h.ident = $1), \
+             (SELECT r.state FROM {r} WHERE h.ty = $2 AND h.key = $3)",
+            d = DECLARATIONS.at_head(names),
+            r = RECORDS.at_head(names),
         ),
         &[
             &format!("type {}", view.as_ref().unwrap_or(ty)),
@@ -423,9 +474,27 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
     Ok(HeadType { decl, sorted })
 }
 
-/// The condition that a history row holds at the position bound as `$n`.
-pub(crate) fn holds_at(n: usize) -> String {
-    format!("since <= ${n} AND (until IS NULL OR until > ${n})")
+/// The statement of a feed filter's positions in `routes` from `$2`
+/// through `$3`, at most `$4`: those of each value of `$1` in the column
+/// `by` the filter is sought by (`lakelands_core::feed::Seek`), or every
+/// row's without one, each row checked against the kinds `$5`, types `$6`
+/// and keys `$7` that are not empty.
+pub(crate) fn routes_sql(names: &Names, by: Option<&str>) -> String {
+    let routes = names.t("routes");
+    let checked = "at BETWEEN $2 AND $3 AND (cardinality($5::text[]) = 0 OR kind = ANY($5)) \
+         AND (cardinality($6::text[]) = 0 OR ty = ANY($6)) \
+         AND (cardinality($7::text[]) = 0 OR key = ANY($7))";
+    match by {
+        Some(column) => format!(
+            "SELECT DISTINCT r.at FROM unnest($1::text[]) v(value) CROSS JOIN LATERAL (\
+             SELECT DISTINCT at FROM {routes} WHERE {column} = v.value AND {checked} \
+             ORDER BY at LIMIT $4) r ORDER BY r.at LIMIT $4"
+        ),
+        None => format!(
+            "SELECT DISTINCT at FROM {routes} WHERE cardinality($1::text[]) = 0 AND {checked} \
+             ORDER BY at LIMIT $4"
+        ),
+    }
 }
 
 /// The position the projection reflects, if any.
@@ -456,13 +525,20 @@ pub(crate) fn set_folded(db: &mut Db, names: &Names, through: Position) -> Resul
 /// The records an order index's rebuild reads at a time.
 const REBUILD_PAGE: i64 = 1024;
 
-/// `ANALYZE` over the tables a view plans from: `records` and the head
-/// indexes. One statement, run outside any transaction.
+/// `ANALYZE` over the tables a view plans from: `records`, its heads and
+/// the head indexes. One statement, run outside any transaction.
 pub(crate) fn analyze(db: &mut Db, names: &Names) -> Result<()> {
-    let tables: Vec<String> = ["records", "text_index", "edges", "full_text", "sort_index"]
-        .iter()
-        .map(|t| names.t(t))
-        .collect();
+    let tables: Vec<String> = [
+        "records",
+        "records_head",
+        "text_index",
+        "edges",
+        "full_text",
+        "sort_index",
+    ]
+    .iter()
+    .map(|t| names.t(t))
+    .collect();
     db.batch(&format!("ANALYZE {}", tables.join(", ")))
 }
 
@@ -542,9 +618,8 @@ pub(crate) fn catch_up_sorted(db: &mut Db, names: &Names) -> Result<()> {
         };
         let asked: Vec<String> = db.column(
             &format!(
-                "SELECT substr(key, $1) FROM {} WHERE ty = $2 AND left(key, $1 - 1) = $3 \
-                   AND until IS NULL",
-                names.t("records"),
+                "SELECT substr(key, $1) FROM {} WHERE ty = $2 AND left(key, $1 - 1) = $3",
+                names.t("records_head"),
             ),
             &[
                 &(SORT_INDEX_SETTING.len() as i32 + 1),
@@ -595,17 +670,20 @@ pub(crate) fn type_at(
     at: Option<Position>,
 ) -> Result<Option<TypeDecl>> {
     let ident = format!("type {ty}");
-    let table = names.t("declarations");
     let row = match at {
         Some(at) => db.query_opt(
             &format!(
-                "SELECT state FROM {table} WHERE ident = $1 AND {}",
-                holds_at(2)
+                "SELECT state FROM {} WHERE ident = $1 AND since <= $2 \
+                 ORDER BY since DESC LIMIT 1",
+                names.t("declarations")
             ),
             &[&ident, &(at.0 as i64)],
         )?,
         None => db.query_opt(
-            &format!("SELECT state FROM {table} WHERE ident = $1 AND until IS NULL"),
+            &format!(
+                "SELECT r.state FROM {} WHERE h.ident = $1",
+                DECLARATIONS.at_head(names)
+            ),
             &[&ident],
         )?,
     };
@@ -624,8 +702,6 @@ pub(crate) fn declared_type(state: Option<String>) -> Result<Option<TypeDecl>> {
 
 /// At most `n` latest states of one type's records, in key order after
 /// `after`: a page of the type, so a pass over it holds a page at a time.
-/// A kept name's are read through `records_head`, whose condition the
-/// statement repeats.
 pub(crate) fn head_records_after(
     db: &mut Db,
     names: &Names,
@@ -633,15 +709,10 @@ pub(crate) fn head_records_after(
     after: &str,
     n: i64,
 ) -> Result<Vec<StoredRecord>> {
-    let kept = match lakelands_api::seam::is_kept_name(ty) {
-        true => format!("AND {} ", kept_range()),
-        false => String::new(),
-    };
     db.records(
         &format!(
-            "SELECT state FROM {} WHERE ty = $1 AND until IS NULL {kept}AND key COLLATE \"C\" > $2 \
-             ORDER BY key COLLATE \"C\" LIMIT $3",
-            names.t("records")
+            "SELECT r.state FROM {} WHERE h.ty = $1 AND h.key > $2 ORDER BY h.key LIMIT $3",
+            RECORDS.at_head(names)
         ),
         &[&ty.as_str(), &after, &n],
     )
@@ -656,8 +727,8 @@ pub(crate) fn head_record(
 ) -> Result<Option<StoredRecord>> {
     db.query_opt(
         &format!(
-            "SELECT state FROM {} WHERE ty = $1 AND key = $2 AND until IS NULL",
-            names.t("records")
+            "SELECT r.state FROM {} WHERE h.ty = $1 AND h.key = $2",
+            RECORDS.at_head(names)
         ),
         &[&ty.as_str(), &key.as_str()],
     )?
@@ -855,6 +926,9 @@ pub(crate) struct Buffer {
     members: BTreeMap<(Vec<String>, i64), bool>,
     /// Applied ids, each with the first position it was marked at.
     applied: BTreeMap<String, i64>,
+    /// The feed index's rows of the events applied: position, kind, type
+    /// and key.
+    routes: Vec<(i64, &'static str, Option<String>, Option<String>)>,
 }
 
 impl Buffer {
@@ -901,8 +975,13 @@ impl Buffer {
         self.members.insert((ident, at.0 as i64), member);
     }
 
-    pub(crate) fn applied(&mut self, id: &str, at: Position) {
-        self.applied.entry(id.to_owned()).or_insert(at.0 as i64);
+    pub(crate) fn applied(&mut self, applied: &Applied) {
+        let at = applied.at.0 as i64;
+        self.applied.entry(applied.id.0.clone()).or_insert(at);
+        for a in &applied.about {
+            let (ty, key) = (a.ty.as_ref().map(|t| t.to_string()), a.key.as_ref());
+            (self.routes).push((at, applied.kind, ty, key.map(|k| k.to_string())));
+        }
     }
 
     /// Write every buffered put: one statement per history table, the
@@ -928,10 +1007,15 @@ impl Buffer {
             })
             .collect();
         let heads = RECORDS.put_many(db, names, &records)?;
-        let table = names.t("records");
+        // A head-only name's key is one row, written over in place, and its
+        // head beside it.
+        let (table, head) = (names.t("records"), names.t("records_head"));
         if !self.ended.is_empty() {
             let tys: Vec<&str> = self.ended.iter().map(String::as_str).collect();
-            let gone = format!("DELETE FROM {table} WHERE ty = ANY($1::text[])");
+            let gone = format!(
+                "WITH h AS (DELETE FROM {head} WHERE ty = ANY($1::text[])) \
+                 DELETE FROM {table} WHERE ty = ANY($1::text[])"
+            );
             db.execute(&gone, &[&tys])?;
         }
         if !self.heads.is_empty() {
@@ -943,14 +1027,18 @@ impl Buffer {
                 states.push(state.as_deref());
             }
             let b = "unnest($1::text[], $2::text[]) AS b(ty, key)";
-            let gone =
-                format!("DELETE FROM {table} t USING {b} WHERE t.ty = b.ty AND t.key = b.key");
-            db.execute(&gone, &[&tys, &keys])?;
+            let gone = |t: &str| {
+                format!("DELETE FROM {t} t USING {b} WHERE t.ty = b.ty AND t.key = b.key")
+            };
+            let (h, r) = (gone(&head), gone(&table));
+            db.execute(&format!("WITH h AS ({h}) {r}"), &[&tys, &keys])?;
             db.execute(
                 &format!(
-                    "INSERT INTO {table} (ty, key, since, state) SELECT * FROM \
+                    "WITH b AS (SELECT * FROM \
                      unnest($1::text[], $2::text[], $3::int8[], $4::text[]) AS b(ty, key, since, state) \
-                     WHERE state IS NOT NULL"
+                     WHERE state IS NOT NULL), \
+                     h AS (INSERT INTO {head} (ty, key, since) SELECT ty, key, since FROM b) \
+                     INSERT INTO {table} (ty, key, since, state) SELECT * FROM b"
                 ),
                 &[&tys, &keys, &since, &states],
             )?;
@@ -1015,6 +1103,23 @@ impl Buffer {
                 &[&ids, &at],
             )?;
         }
+        if !self.routes.is_empty() {
+            let (mut at, mut kinds, mut tys, mut keys) = (vec![], vec![], vec![], vec![]);
+            for (p, kind, ty, key) in &self.routes {
+                at.push(*p);
+                kinds.push(*kind);
+                tys.push(ty.as_deref());
+                keys.push(key.as_deref());
+            }
+            db.execute(
+                &format!(
+                    "INSERT INTO {} (at, kind, ty, key) \
+                     SELECT * FROM unnest($1::int8[], $2::text[], $3::text[], $4::text[])",
+                    names.t("routes")
+                ),
+                &[&at, &kinds, &tys, &keys],
+            )?;
+        }
         Ok(rebuilt)
     }
 }
@@ -1069,9 +1174,9 @@ pub(crate) fn index_older(
 ) -> Result<()> {
     let head = types.get(db, names, ty)?;
     let page = format!(
-        "SELECT state FROM {} WHERE ty = $1 AND until IS NULL AND since < $2 \
-         AND key COLLATE \"C\" > $3 ORDER BY key COLLATE \"C\" LIMIT {PAGE}",
-        names.t("records")
+        "SELECT r.state FROM {} WHERE h.ty = $1 AND h.since < $2 AND h.key > $3 \
+         ORDER BY h.key LIMIT {PAGE}",
+        RECORDS.at_head(names)
     );
     // A page of the type at a time; an ended key has no index rows.
     let mut after = String::new();

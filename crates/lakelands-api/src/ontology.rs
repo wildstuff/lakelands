@@ -342,12 +342,14 @@ pub struct EmbedDecl {
 
 impl TypeDecl {
     /// The fields a record of the type is keyed by: its `key`, or, of a
-    /// grouped view, its `group_by`, which its records carry whatever
-    /// `key` says (lakelands#782).
+    /// view, its `group_by`, none where it groups by nothing. A view's
+    /// `key` names the same or is left out; one that came in past
+    /// `declare` and says otherwise keys nothing (lakelands#782,
+    /// lakelands#788).
     pub fn key_fields(&self) -> &[FieldName] {
         match &self.view {
-            Some(v) if !v.group_by.is_empty() => &v.group_by,
-            _ => &self.key,
+            Some(v) => &v.group_by,
+            None => &self.key,
         }
     }
 
@@ -389,7 +391,7 @@ impl TypeDecl {
     /// drops. Both are compared completed, as a lake keeps a type (each
     /// computed field's `depends_on` filled), so a relation or a field
     /// restated as it stands names nothing the type in force does not. The
-    /// store and the mock judge a proposal's types by it.
+    /// store judges a proposal's types by it.
     pub fn names_against(&self, held: Option<&TypeDecl>) -> Vec<TypeName> {
         let (rels, fields) = held.map_or((&[][..], &[][..]), |h| (&h.relations[..], &h.fields[..]));
         let moved = |a: &[RelationDecl], b: &[RelationDecl]| {
@@ -456,7 +458,9 @@ impl TypeDecl {
     /// not required, sensitive by itself, cleared or searched; it is no
     /// key, validity bound, `via` or derived relation's match, no field of
     /// a view or of a link; and no field computed at the write reads it.
-    /// `None` when every field keeps them. Every door checks this.
+    /// A reference is computed at the write by an expression alone, where
+    /// its writer is judged for the record it names (032). `None` when
+    /// every field keeps them. Every door checks this.
     pub fn computed_at_problem<'f>(
         &self,
         function: impl Fn(&str) -> Option<&'f crate::write::FunctionDecl>,
@@ -547,6 +551,9 @@ fn computed_at_problem<'f>(
             return Some(Case::ClockUnsaid);
         }
         Some(ComputedAt::Read) => {}
+        _ if f.ty.target.is_some() && lands_in_the_fold(fields, f, function, &mut Vec::new()) => {
+            return Some(Case::ReferenceUnjudged);
+        }
         _ => {
             let field = reads.into_iter().find(at_read)?.clone();
             return Some(Case::AtWriteReadsAtRead { field });
@@ -567,8 +574,41 @@ fn computed_at_problem<'f>(
         Case::AtReadCleared
     } else if f.searchable {
         Case::AtReadSearchable
+    } else if f.ty.target.is_some() {
+        Case::ReferenceUnjudged
     } else {
         return None;
+    })
+}
+
+/// Whether `f` is computed outside the lake, by a function's backing or
+/// an embedding, or reads a field that is, directly or through other
+/// computed fields: its value then lands in the fold, when the output
+/// does, and not at a write. `fields` are those `f` stands among, a
+/// type's or one relation's; a function `function` does not know counts
+/// as none. `seen` holds the fields asked already, none at first.
+pub fn lands_in_the_fold<'f>(
+    fields: &[FieldDecl],
+    f: &FieldDecl,
+    function: &dyn Fn(&str) -> Option<&'f crate::write::FunctionDecl>,
+    seen: &mut Vec<FieldName>,
+) -> bool {
+    let called = f.function.as_deref().and_then(function);
+    if f.embed.is_some() || called.is_some_and(|func| func.backing != "expr") {
+        return true;
+    }
+    let expr = (f.derived.as_ref()).or(called.and_then(|func| func.expr.as_ref()));
+    let Some(expr) = expr.and_then(|c| c.typed().ok()) else {
+        return false;
+    };
+    let reads = expr.fields_read();
+    let mut read = fields.iter().filter(|d| reads.contains(&d.name));
+    read.any(|d| {
+        let new = !seen.contains(&d.name);
+        new && {
+            seen.push(d.name.clone());
+            lands_in_the_fold(fields, d, function, seen)
+        }
     })
 }
 
@@ -654,7 +694,7 @@ pub struct RelationDecl {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<FieldName>,
     /// Fields of the link itself, for a relation carried by link records
-    /// (no `via`).
+    /// (neither `via` nor `derived`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<FieldDecl>,
     /// Who writes the links of a relation carried by link records:
@@ -707,6 +747,12 @@ impl RelationDecl {
             target: target.into(),
             ..RelationDecl::default()
         }
+    }
+
+    /// Whether the relation is carried by link records: neither by a `via`
+    /// field nor derived. Only such a relation has link doors and a link type.
+    pub fn carried_by_links(&self) -> bool {
+        self.via.is_none() && self.derived.is_none()
     }
 }
 
@@ -920,7 +966,7 @@ pub struct VerbDecl {
     /// is called on.
     pub on: TypeName,
     /// Whether it is called on a record of `on` (the default, never
-    /// written) or on `on` itself (log format 8).
+    /// written) or on `on` itself.
     #[serde(default, skip_serializing_if = "VerbScope::is_record")]
     pub scope: VerbScope,
     /// The payload's fields.

@@ -213,12 +213,30 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   an export is the whole log, unmasked, so it is handed over as the
   lake itself would be. An export only reads: it needs no writer, appends
   nothing, and runs beside a `lakelands serve` that holds the lake.
-  Opening a lake on SQLite reads the end of each log segment's index,
-  not the index: what an open costs follows the number of segments, one
+  Opening a lake on SQLite reads the end of each log segment's index
+  and the first line of each after the first, not the index: what an
+  open costs follows the number of segments, one
   more for each `checkpoint` that sealed one, not the events the lake
   holds, so a host may open every lake at its start. A damaged index line
   is therefore not found at the open; `verify`, which reads the log,
-  finds it, as does the read that meets it. A writer's `close` truncates
+  finds it, as does the read that meets it. `index/` is part of the
+  log, not derived data: back it up and restore it with `log/`. A
+  segment without its index file, a `projection.db` with no segment
+  beside it, and a log whose segments do not follow each other (a
+  sealed segment gone, or another lake's in its place) are refused as
+  `damaged` at every open and at an import, and nothing is cut or made;
+  the way out is a restore of the files. On every engine, a projection
+  folded past its log's tip is refused at an open to read, to write and
+  to create (`ends_before`): the log lost events, or the projection is
+  another lake's. A writer is refused before it takes the lease, so
+  nothing of the log is cut. An import onto such a lake is refused too:
+  as `import_not_empty` where the log still holds an event, as onto any
+  lake that is not empty, and as `ends_before` where the log reads
+  empty. An open to rebuild is not
+  refused for it. A rebuild makes the projection from the log as it
+  stands, and its writer cuts what the log's index does not commit, as
+  every writer does: it is for an operator who knows the log is whole.
+  A writer's `close` truncates
   the projection's journal (`projection.db-wal`); a writer that ends
   without it leaves the journal as large as it grew, for the next
   `close` or `compact` (lakelands#564). A write the disk refuses, as when
@@ -277,7 +295,38 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   is behind and appends nothing, and every writer's open folds that event
   again and fails the same way. Reads answer as before; writes do not,
   until the host raises `/dev/shm` or `maintenance_work_mem`, or sets
-  `max_parallel_maintenance_workers = 0`, and opens the writer again. SQLite and in-memory lakes keep no such
+  `max_parallel_maintenance_workers = 0`, and opens the writer again.
+  Under the index a page of a search is the index's answer at the depth
+  that page asks for, so the pages of one query may answer a record
+  twice or leave one out (043): a host that needs a ranked result whole
+  and in order reads it in one page, up to `max_limit`, or leaves the
+  field without the setting. A group of equally near vectors is no
+  exception: the members the index hands out at a page's depth come
+  once and in key order there, and the index may hand out a part of
+  the group and go on with farther vectors. A vector of zeros is never
+  answered for a field read through its index, whether the index or the
+  scan after it answers the search; a field without the setting scores
+  it 0, and so does every field on a server without pgvector, and a
+  field whose index is behind the head, which a writer's open builds.
+  Some searches read every vector of the
+  field after the index. One is a search the index hands fewer
+  candidates than it asked for: on a field smaller than what the search
+  pulls (a field under 65 vectors for a search of one ranking, a field
+  no larger than `max_limit` for one that fuses rankings, and a page
+  deep into a larger one); past 20 000 candidates or pgvector's memory limit for such a
+  scan (`hnsw.scan_mem_multiplier` times `work_mem`, which stays the
+  server's), which a search under a filter that keeps few records
+  reaches on a large field; and over a group of several hundred
+  identical vectors, of which the index reaches a part. The other is a
+  search whose pull of 4 096 candidates or more ends inside a group of
+  equally near vectors. **The engine sets `hnsw.max_scan_tuples`
+  itself,** to pgvector's default of 20 000, for each search and
+  whatever the server's value: where the index ends decides which
+  searches the scan answers, and an answer must not move with a
+  server's setting. It is set with `SET LOCAL`, for the search's own
+  transaction only; nothing of the role's or the server's is changed,
+  and a value a host set there has no effect on a lake's searches.
+  SQLite and in-memory lakes keep no such
   index and answer every search exactly; a SQLite lake that needs one
   moves to PostgreSQL by export and import (lakelands#215).
 
@@ -317,6 +366,41 @@ since it verifies the files and then folds them: the streaming check's
 long run imported 257 606 events (100 000 records) in 40 s on the memory
 engine, 136 s on SQLite and 335 s on PostgreSQL, holding at most 23 MiB
 of heap, on a 12-core machine at a load of 17 to 31.
+
+**A projection is read only by the layout that made it.** A SQLite or
+PostgreSQL projection is marked with its engine's layout number when it
+is made, and a build whose engine lays the projection out otherwise
+refuses to open it, for reading or writing, naming the number found, the
+number wanted and `lakelands rebuild` (`projection_layout` in
+`docs/refusals.md`). A SQLite `projection.db` that holds no table yet is
+none of that: its maker has connected and not made the tables, and a
+reader that comes in that moment is answered `no_projection`, as the
+moment before, and opens a moment later. Nothing repairs a projection
+of another layout in place. `lakelands rebuild`, or
+a host's own open with `OpenMode::Rebuild`, opens it, drops the
+projection under the lease, makes it anew and folds the whole log; the
+open is the rebuild. `LakeStore::rebuild` on an open lake does the same
+for a lake that opened.
+
+**A lake is read only by a release of its log format.** A release reads
+and writes one log format, and a lake that was created in another or
+whose newest event is in another, older or newer, is refused at its
+open in every mode, naming the lake and both numbers (`log_format` in
+`docs/refusals.md`;
+`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`). The
+store reads the two ends of the log before it opens the lake's engine,
+so such a lake is left as it stands: its projection is not judged, and
+nothing of it is made, folded or changed. An import asks the same
+before it opens its target: onto such a lake it is refused the same
+way, and onto a lake of the release's format as `import_not_empty`,
+with no lease taken and nothing changed. The
+number steps only in a release that changes the format, and the
+release's notes say so. There is no upgrade path yet: a host that moves
+its pin across such a step starts the new release on fresh lakes. An
+export the older release wrote is not imported, and a connection whose
+source lake is in another format does not start. From the first release
+with real installations on, a change of the format carries its upgrade
+path.
 
 **Configuration is not a seam.** Engine configuration, tuning, limits
 and an optional key handle reach a lake through `Location`, and a
@@ -532,7 +616,10 @@ A host that already has a store of its own moves in four steps.
   value refuses it; re-key the type through its migration first. A field
   computed by a function with a backing keeps what its backing answered:
   widen the value type, change the function so that it answers the new
-  value, and rename then. Renaming one value of 50 000 of 100 000 records holds the writer
+  value, and rename then. A rename calls a backing or the embedding
+  backend once for each call that carries a renamed value, and for no
+  other: a recorded failure is not called again by it, and `recompute`
+  is the door for that (lakelands#857). Renaming one value of 50 000 of 100 000 records holds the writer
   2.1 s on SQLite and 8.2 s on PostgreSQL, at a peak of 3 MB and 6 MB
   (`tests/value_renamed.rs` in both engines, by hand); widening, writing
   the 50 000 records again and tightening took 17.1 s and 49.1 s, at
@@ -541,8 +628,9 @@ A host that already has a store of its own moves in four steps.
   that is the one in force is answered `applied` at the head and appends
   nothing, by `declare` and by `apply`: a type, a value type, a function,
   a verb, a trigger, an object set. A computed field may be stated with
-  the inputs `describe` shows or without them. A declaration's version
-  counts its changes. See
+  the inputs `describe` shows or without them, and a grouped view with
+  its `key` or without it. A declaration's version counts its changes.
+  See
   `docs/decisions/027-shape-changes-are-declared-or-migrated.md`.
 - **A read costs the same however much the lake declares
   (lakelands#557).** A handle builds what the lake declares once for a
@@ -744,7 +832,7 @@ A host that already has a store of its own moves in four steps.
   (`docs/decisions/048-the-fold-keeps-the-event-not-the-records-it-changed.md`).
   A set that declares several functions of one type again, applied or
   accepted as a proposal, reads the type once and computes and puts each
-  record once, at the set's last declaration (log format 12): at 2 000
+  record once, at the set's last declaration: at 2 000
   records of 52 fields, a set of 50 such functions takes 0.56 ms a
   record on SQLite, where computing it again at each declaration took
   24.6 ms (lakelands#605). A read at a position inside the set finds
@@ -754,7 +842,7 @@ A host that already has a store of its own moves in four steps.
   hand), the writer is held 4.1 to 4.5 s on SQLite and 13.3 to 14 s on
   PostgreSQL, whichever of the two is declared again, and about 20 s
   and 51 to 56 s at 400 000; the peak of the append is 3 MB on SQLite
-  and 9 MB on PostgreSQL at both sizes. Before format 12, a bundle of
+  and 9 MB on PostgreSQL at both sizes. Before that, a bundle of
   two changed functions held the writer 12 s on SQLite and 21 s on
   PostgreSQL at 100 000 records (50 s and 99 s at 400 000), at 4 MB and
   11 MB. The time grows with the type's records; the peak does not. One
@@ -848,6 +936,19 @@ A host that already has a store of its own moves in four steps.
     instant under text or reference group fields. The setting's write is
     refused otherwise and says which measure. `describe_type` says for a
     view whether it is kept, and why not.
+- **A view's measure lands in its field's kind, or the view is not
+  read.** A measure whose value its field would not take written, a sum
+  past ±(2^53 − 1) into `number` or an instant out of the years 0000 to
+  9999, refuses every read of its view, a read of another group too,
+  naming the view, the measure and the group. So the day a sum outgrows
+  `number`, its view answers nothing until the measure is declared
+  `decimal`, which answers its digits: declare a sum that can grow so
+  as `decimal` from the start. A kept view with such a group says
+  `not_whole` and is computed, and so refused. The refused range ends
+  at 10^21: from there a number is written with an exponent and read
+  as a double by everyone, so a value of that size lands as its nearest
+  double, in a view's measure, a derived field and a verb's set alike,
+  and is no longer exact to the unit.
 - **A kept view is made to be read at the head.** The records of a
   view kept as its sources are written (the setting `view_kept.<view>`)
   are put again at every write to their group, and SQLite and

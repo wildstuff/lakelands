@@ -2,76 +2,22 @@
 
 ## What is decided
 
+### Every write answers an outcome
+
 A write never makes its caller guess what happened. `upsert`, `retire`,
 every verb call and every schema change answer an outcome: `applied`,
 with the position it is visible from, or `proposed`, with the proposal
 and the reason it waits. A writer does not need to know beforehand
 whether its write will run or wait for review.
 
-Every failure is one of five errors, and the set is closed:
-
-- `refused`: the store would not do it, with the field it concerns and a
-  reason from a closed list (no grant, another authority writes the
-  field, a reserved name, a request that does not fit the lake's map, a
-  broken constraint or precondition, a reaction chain too deep, a
-  migration that would lose information, a proposal already decided, a
-  retry of a call of an external verb whose executor's answer is not
-  recorded, a position outside the log);
-- `not_found`: a type, record, verb or proposal does not exist at the
-  position read;
-- `conflict`: the record is not at the version the write expected;
-- `unbound`: the call needs a seam the host has not bound;
-- `unavailable`: the lake cannot answer now (another writer holds it, it
-  is read-only here, its storage failed), with a message for the
-  operator.
-
-Each error has a sentence for a reader who is not an engineer. No error
-carries an engine's own code or a free-form error string as its type.
-
-## Why
-
-An agent acts on what a call answers. If a write can silently become a
-proposal, or fail with a string that only a developer can interpret, the
-agent either stops or guesses. A closed set of outcomes is one that every
-door, every transport and every client can handle completely, and the
-compiler checks that they do.
-
-Keeping engine errors out of the set keeps engines interchangeable: a
-caller cannot come to depend on a SQLite error code that the in-memory
-engine will never produce.
-
-## What it is not
-
-- A proposal is not an error. It is a normal answer to a write.
-- `unavailable` is not a place for errors that belong elsewhere. A
-  request that is wrong is `refused`; `unavailable` is for a lake that
-  cannot answer a correct request right now.
-- Adding a variant is a change to the contract, not an extension point.
-  Because the set is closed, a host's exhaustive `match` breaks when a
-  release adds one, which is what makes it handle the new case. That is
-  why every release names such an addition in its notes, under "Changes
-  a host must make" (lakelands#260).
-
-## Extended: a refusal's sentence is not part of the contract
-
-A refusal's kind and the field it names are the contract; its sentence
-is for people and belongs to the implementation. The mock and the store
-word their refusals each their own way, and no door test pins a
-refusal's sentence: a test checks the kind, the field and, for a door,
-its own framing lines. What would otherwise tie a second implementation
-to the first one's wording is left free.
-
-(Superseded by "a refusal says a case" below: the case is the contract
-now, and the mock builds the store's cases.)
-
-## Extended: an outcome says what the write set off (lakelands#431)
+### An applied outcome says what the write set off
 
 A write that fires a trigger or moves its record into or out of an object
-set appends those reactions after its own event, in the same append. The
-answer named only the write's own event. A caller that read next was then
-answered at a later position and could not tell its own doing from someone
-else's. An applied outcome now says what the write set off, in members left
-out when it set off nothing, so such an answer reads exactly as before:
+set appends those reactions after its own event, in the same append. An
+answer that names only the write's own event leaves a caller that reads
+next answered at a later position, unable to tell its own doing from
+someone else's. So an applied outcome says what the write set off, in
+members left out when it set off nothing:
 
 - `through`: the last position of what the write set off, when that lies
   after `position`. Within the append, everything between the two is the
@@ -85,7 +31,7 @@ out when it set off nothing, so such an answer reads exactly as before:
 What the write set off is its reactions, and an external verb's output;
 nothing else in the append counts. A declaration that brings link types
 with it, or a migration that migrates them, appends those as part of the
-write itself, so their answers stay as they were.
+write itself, so its answer names none of them as set off.
 
 The answer names a trigger or an object set only if `describe` lists it to
 the caller. One whose condition reads a field the caller may not read is
@@ -101,11 +47,34 @@ after the drain, and what it fires is that append's. The answer's
 A retry with the write's idempotency key answers the same members, read
 back from the log, and judged by the caller's grants at the retry, as any
 read is. Accepting a proposal answers what the write it applied set off.
-An ingest window's answer already names the window's last event, its
-reactions included, and gains nothing: a host follows reactions in the
-feed.
+An ingest window's answer names the window's last event, its reactions
+included, and carries none of these members: a host follows reactions in
+the feed.
 
-## Extended: why a lake cannot answer, and the seam a call needs, are cases (lakelands#650)
+### Every failure is one of five errors
+
+Every failure is one of five errors, and the set is closed:
+
+- `refused`: the store would not do it, with the field it concerns and a
+  reason from a closed list (no grant, another authority writes the
+  field, a reserved name, a request that does not fit the lake's map, a
+  broken constraint or precondition, a reaction chain too deep, a
+  request that would reach, skip or change more than the lake allows, a
+  migration that would lose information, a proposal already decided, a
+  retry of a call of an external verb whose executor's answer is not
+  recorded, a position outside the log);
+- `not_found`: a type, record, verb, function or proposal does not exist
+  at the position read;
+- `conflict`: the record is not at the version the write expected;
+- `unbound`: the call needs a seam the host has not bound;
+- `unavailable`: the lake cannot answer now (another writer holds it, it
+  is read-only here, its storage failed), with a message for the
+  operator.
+
+Each error has a sentence for a reader who is not an engineer. No error
+carries an engine's own code or a free-form error string as its type.
+
+### Why a lake cannot answer, and the seam a call needs, are cases
 
 A host renders a failure in its users' language, and its assistant acts
 on what failed. Neither can do that from an English sentence. So
@@ -115,7 +84,7 @@ holds it, which part of the log is damaged and how (a closed `Flaw`),
 which remote end failed and in what exchange, which seam and which name.
 
 - **One sentence source.** A case's sentence is its `Display`, and no
-  sentence is built anywhere else. The store, the engines, the mock, the
+  sentence is built anywhere else. The store, the engines, the
   backings and the client build the case. A door that advises what to do
   decides by the case, never by the words.
 - **On the wire** a case is an object: its `code`, its parameters, and
@@ -160,23 +129,19 @@ which remote end failed and in what exchange, which seam and which name.
   import's source are "the lake's directory" and "the export's
   directory".
 
-This is a change for a host: an `unavailable` or `unbound` answer is an
-object with a code, not a string, every error carries a `message`, and
-some sentences changed their words. A client and a lake on either side
-of this change cannot read each other's errors.
+### A refusal says a case
 
-## Extended: a refusal says a case (lakelands#650)
-
-What part 1 did for an outage, part 2 does for every refusal of
-`invalid`, `constraint`, `precondition` and `unanswered`: it carries a
-`Said`, a case and the places it is said at, instead of a sentence.
+As `unavailable` and `unbound` do, every refusal of `invalid`,
+`constraint`, `precondition` and `unanswered` says a case: it carries a
+`Said`, a case and the places it is said at, instead of a sentence. On
+the wire a refusal's `reason` carries `code`, `at` when it has places,
+its parameters and `message`.
 
 - **One catalog.** Every case is one entry of a closed set in
   `lakelands_api::error`: its code, its parameters and its template. The
   template is the case's only sentence, and nothing else builds one.
   `docs/refusals.md` is generated from the entries, so a host reads the
-  catalog it renders from. The outage sets of part 1 are entries of the
-  same form now.
+  catalog it renders from. The outage sets are entries of the same form.
 - **A place is data.** "type `T`, field `f`: …" is a case said at
   `[type T, field f]`, outermost first. A check inside a place does not
   say it twice.
@@ -198,6 +163,19 @@ What part 1 did for an outage, part 2 does for every refusal of
   and a reader ignores a member it does not know. A retired code is not
   used again. The gate compares the catalog with the page of the last
   release tag, which lists each parameter's type.
+- **A code leaves by a recorded withdrawal.** A code goes only when
+  the product can no longer say its sentence: what it told of is gone,
+  as a refusal about a range of log formats is once a release reads
+  one. A rename is never a withdrawal; a code whose sentence is still
+  true keeps its name. The withdrawal is a row in
+  `scripts/refusals.withdrawn`: the set, the code, the tag it shipped
+  in, the release it leaves in, and why. The gate refuses a shipped code
+  that is gone without its row, and a code that has a row and is in the
+  catalog, so a row cannot be written ahead of the removal and a
+  withdrawn code is not used again. The rows stay for good, and
+  `docs/refusals.md` lists them under "Withdrawn": a host may still meet
+  such a code from an older server, and reads it as it reads any code it
+  does not know. The release's notes name the codes that left.
 - **A code is the case's name.** A case carries no serde attribute of
   its own, and no parameter takes a name the wire gives the case itself
   (`code`, `message`, the set's tag, and for a refusal's case `at` and
@@ -210,9 +188,9 @@ What part 1 did for an outage, part 2 does for every refusal of
 - **A parameter is a value, not a sentence.** A parameter of text is a
   name or a value the caller gave, never words built elsewhere; the gate
   refuses a case built from `format!`. Foreign words are a `Detail`, as
-  in part 1.
-- **The suite compares cases,** and the mock builds the store's: a door
-  check compares the two `Error`s whole. A row keeps words only where
+  in an outage.
+- **The suite compares cases:** a door check asserts the case a refusal
+  says, with its places and parameters. A row keeps words only where
   the words are its subject.
 - **What stays out of the catalog, and why.** Each of these is said to
   the operator who runs the tool, never answered by a lake to a caller:
@@ -224,6 +202,57 @@ What part 1 did for an outage, part 2 does for every refusal of
   says which grant is missing, and its door words say only how to
   authenticate. A door's advice (`todo`) is a function of the case.
 
-This is a change for a host: a refusal's `reason` carries `code`, `at`
-when it has places, its parameters and `message`, and many sentences
-changed their words, so a host that matched words matches codes now.
+## Why
+
+An agent acts on what a call answers. If a write can silently become a
+proposal, or fail with a string that only a developer can interpret, the
+agent either stops or guesses. A closed set of outcomes is one that every
+door, every transport and every client can handle completely, and the
+compiler checks that they do.
+
+Keeping engine errors out of the set keeps engines interchangeable: a
+caller cannot come to depend on a SQLite error code that the in-memory
+engine will never produce.
+
+## What it is not
+
+- A proposal is not an error. It is a normal answer to a write.
+- `unavailable` is not a place for errors that belong elsewhere. A
+  request that is wrong is `refused`; `unavailable` is for a lake that
+  cannot answer a correct request right now.
+- Adding a variant is a change to the contract, not an extension point.
+  Because the set is closed, a host's exhaustive `match` breaks when a
+  release adds one, which is what makes it handle the new case. That is
+  why every release names such an addition in its notes, under "Changes
+  a host must make".
+
+## How it came to be
+
+- The first version: every write answers `applied` or `proposed`, and
+  every failure is one of five errors.
+- A refusal's sentence was left out of the contract: its kind and the
+  field it names were the contract, the mock and the store worded their
+  refusals each their own way, and no door test pinned a sentence.
+- A release names an added variant in its notes, under "Changes a host
+  must make" (lakelands#260).
+- An applied outcome says what the write set off, where the answer had
+  named only the write's own event; the answer of a write that set off
+  nothing reads as before (lakelands#431).
+- The reasons of a refusal gained the retry of a call of an external
+  verb whose executor's answer is not recorded (lakelands#616).
+- `unavailable` carries a `Situation` and `unbound` a `Seam`
+  (lakelands#650). For a host, an `unavailable` or `unbound` answer
+  became an object with a code, not a string, every error came to carry
+  a `message`, and some sentences changed their words; a client and a
+  lake on either side of the change cannot read each other's errors.
+- A refusal says a case, which replaced "a refusal's sentence is not
+  part of the contract": the case is the contract (lakelands#650). Many
+  sentences changed their words, so a host that matched words matches
+  codes.
+- The mock that worded its own refusals, and then built the store's
+  cases, is retired (lakelands#800).
+- A code leaves by a recorded withdrawal (lakelands#801).
+- Corrected at the rewrite (lakelands#817): a refusal's reasons name
+  the request too large, and what is not found names a function; the
+  contract's `Refusal` and `Missing` hold both, and the lists left them
+  out.

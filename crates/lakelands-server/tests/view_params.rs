@@ -2,8 +2,8 @@
 //! catalog through both JSON doors, so the answer is the catalog's: it
 //! names the parameter. The MCP tool of such a type lists no `params`,
 //! and its unknown-argument check lets a read's `params` through; REST
-//! takes `params` on both read routes. Run on the mock and on the store
-//! over both engines; nothing is appended.
+//! takes `params` on both read routes. Run on the store over both
+//! engines; nothing is appended.
 
 mod common;
 

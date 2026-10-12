@@ -39,7 +39,10 @@
 //!   Type names starting `sys.` are reserved for system types and
 //!   refused.
 //! - Every type and value type a file refers to is declared in the
-//!   bundle. A `sys.` type may be referred to; the lake checks it.
+//!   bundle. A `sys.` type may be referred to; the lake checks it. One
+//!   the bundle can judge itself: a verb on the link type of one of its
+//!   own types (`sys.link.<type>.<relation>`) names a relation of that
+//!   type carried by link records.
 //! - The tool names a lake derives from type and verb names
 //!   ([`lakelands_api::tools`]) must come out distinct and short enough;
 //!   a bundle that would break that is refused here, before it reaches a
@@ -644,10 +647,12 @@ pub fn parse(files: &[(String, String)]) -> Result<Bundle, Vec<BundleError>> {
 /// Refuse a type whose declaration names fields or relations that do not
 /// exist: its `key`, `valid_from` / `valid_to`, a relation's `via`, a
 /// field's `depends_on`, a view's `group_by` (fields of the view's
-/// source). A relation's `inverse` must not already name a relation of
-/// its target. A `json` field may not carry the name of a type, because
-/// `name.member` would then read as a path into the field and as the
-/// field of a pattern step at once.
+/// source). A view's `key` is its `group_by` or left out. A relation's
+/// `inverse` must not already name a relation of its target, nor be the
+/// inverse of another relation onto it: it names one relation. A `json`
+/// field may not carry the name of a type, because `name.member` would
+/// then read as a path into the field and as the field of a pattern step
+/// at once.
 fn check_references(
     types: &[(&str, lakelands_api::ontology::TypeDecl)],
     errors: &mut Vec<BundleError>,
@@ -695,6 +700,17 @@ fn check_references(
                 want("view, `group_by`".into(), g.as_str(), source);
             }
         }
+        if let Some(v) = &t.view
+            && !t.key.is_empty()
+            && t.key != v.group_by
+        {
+            fail(
+                Problem::Contradiction,
+                "`key` names other fields than the view groups by, and a view's records are keyed \
+                 by its `group_by`"
+                    .into(),
+            );
+        }
         for r in &t.relations {
             let (Some(inverse), Some(target)) = (&r.inverse, by_name.get(r.target.as_str())) else {
                 continue;
@@ -705,6 +721,27 @@ fn check_references(
                     format!(
                         "relation `{}` names its inverse `{inverse}`, which `{}` already declares",
                         r.name, target.name
+                    ),
+                );
+            }
+        }
+        // An inverse names one relation onto its target: said once, of the
+        // later of the two by owner and name.
+        for r in t.relations.iter().filter(|r| r.inverse.is_some()) {
+            let same = |(o, x): &(&str, &lakelands_api::ontology::RelationDecl)| {
+                (*o, x.name.as_str()) < (t.name.as_str(), r.name.as_str())
+                    && (&x.inverse, &x.target) == (&r.inverse, &r.target)
+            };
+            let mut all = types
+                .iter()
+                .flat_map(|(_, o)| o.relations.iter().map(|x| (o.name.as_str(), x)));
+            if let Some((owner, other)) = all.find(same) {
+                fail(
+                    Problem::Contradiction,
+                    format!(
+                        "relation `{}` names an inverse that is the inverse of `{owner}`'s `{}` \
+                         onto `{}` already; an inverse names one relation",
+                        r.name, other.name, r.target
                     ),
                 );
             }
@@ -720,6 +757,29 @@ fn check_references(
                 );
             }
         }
+    }
+}
+
+/// Refuse a verb on a link type of one of the bundle's own types that no
+/// relation of it carries: the lake refuses a verb there whatever it holds
+/// (035). A trigger, a set and a view may stand on one a removed relation
+/// left, and a link type whose owner the bundle does not declare is the
+/// lake's to say.
+fn check_link_type(
+    types: &[(&str, lakelands_api::ontology::TypeDecl)],
+    (file, on): (&str, &TypeName),
+    errors: &mut Vec<BundleError>,
+) {
+    let Some((owner, relation)) = crate::links::link_type_parts(on) else {
+        return;
+    };
+    let decls = || types.iter().map(|(_, t)| t);
+    if decls().any(|t| t.name == owner) && crate::links::relation_of(decls(), on).is_none() {
+        let message = format!(
+            "`on`: `{owner}` declares no relation `{relation}` carried by link records, and a \
+             verb is declared on a link type only where one does"
+        );
+        errors.push(BundleError::new(file, Problem::UnknownReference, message));
     }
 }
 
@@ -772,6 +832,9 @@ fn lower_all(
         .collect();
     check_tool_names(&tool_owners, errors);
     check_references(&types, errors);
+    for (file, v) in &verbs {
+        check_link_type(&types, (file, &v.on), errors);
+    }
     let mut aging_rules: Vec<(&str, AgingRuleDoc)> = docs.aging_rules;
     aging_rules.sort_by(|a, b| a.1.name.cmp(&b.1.name));
     for (file, r) in &aging_rules {

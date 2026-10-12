@@ -89,10 +89,15 @@ pub fn convert(value: &Value, from: &FieldType, to: &FieldType) -> Conversion {
 }
 
 /// Whether a (non-null) value is in the JSON form of a field type
-/// (`docs/log-format.md` §5), including a vector's declared length.
+/// (`docs/log-format.md` §5), including a vector's declared length and
+/// the range of a number written as an integer (§1.2): what a field's
+/// type would not take when it is written, it does not take computed.
 /// Value-type constraints are not checked here; they need the value
 /// type's declaration.
 pub fn fits(ty: &FieldType, value: &Value) -> bool {
+    if canonical::integer_too_large(value).is_some() {
+        return false;
+    }
     match ty.kind {
         StorageKind::Text => value.is_string(),
         StorageKind::Number => value.is_number(),
@@ -138,6 +143,7 @@ pub fn preflight(
     before: &TypeDecl,
     migration: &Migration,
     records: impl IntoIterator<Item = (RecordKey, BTreeMap<FieldName, Value>)>,
+    answered: &dyn Fn(&RecordKey) -> bool,
 ) -> Result<MigrationReport, Said> {
     let plan = Plan::new(before, migration)?;
     let mut tallies: Vec<Tally> = plan.checked().map(|_| Tally::default()).collect();
@@ -168,7 +174,7 @@ pub fn preflight(
                 Some(None) => {}
                 None => {
                     tally.not_convertible += 1;
-                    tally.sample(&key);
+                    tally.sample(&key, answered);
                 }
             }
         }
@@ -328,11 +334,12 @@ struct Tally {
 impl Tally {
     const SAMPLES: usize = 5;
 
-    fn sample(&mut self, key: &RecordKey) {
-        if self.samples.len() < Self::SAMPLES {
-            self.samples.insert(key.clone());
-        } else if self.samples.last().is_some_and(|last| key < last) {
-            self.samples.insert(key.clone());
+    /// Keeps the smallest keys among those `answered` admits, asking only
+    /// of a key that would be a sample.
+    fn sample(&mut self, key: &RecordKey, answered: &dyn Fn(&RecordKey) -> bool) {
+        let full = self.samples.len() == Self::SAMPLES;
+        let takes = !full || self.samples.last().is_some_and(|last| key < last);
+        if takes && answered(key) && self.samples.insert(key.clone()) && full {
             self.samples.pop_last();
         }
     }
@@ -355,7 +362,9 @@ fn is_base64(s: &str) -> bool {
 
 // ---- the conversions -----------------------------------------------------
 
-const MAX_EXACT_INTEGER: f64 = 9_007_199_254_740_992.0; // 2^53
+/// The largest integer every reader reads exactly, 2^53 − 1
+/// (`docs/log-format.md` §1.2).
+const MAX_EXACT_INTEGER: f64 = 9_007_199_254_740_991.0;
 
 /// A number in its canonical text form: the digits of an integer, the
 /// RFC 8785 form of a float.

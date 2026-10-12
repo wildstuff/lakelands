@@ -7,9 +7,23 @@
 //! it, ordered by L2 distance, which on unit vectors is cosine's order.
 //! A search over such a field reads its candidates from the index, as many
 //! as it asks for, and ranks them by the one cosine
-//! (`lakelands_api::query::cosine`, then `TopK`), ties by key: the
-//! answer is the index's set, which may miss a neighbour the exact scan
-//! would find. Every other field is searched by the exact scan.
+//! (`lakelands_api::query::cosine`), ties by key: the answer is the
+//! index's set, which may miss a neighbour the exact scan would find.
+//! Every other field is searched by the exact scan.
+//!
+//! **A tie at the boundary is pulled deeper.** The index hands out equal
+//! distances in its graph's order, not the keys'. A search asks for one
+//! candidate more than it answers; while that one scores as the last one
+//! answered, it asks for twice as many, so the members of that tie the
+//! index hands out are all in the set before the keys cut it. A tie at
+//! the boundary of 4 096 candidates or more is the exact scan's.
+//!
+//! **A short answer is not the field's end.** The index hands out fewer
+//! candidates than it was asked for where the field holds no more, and
+//! also where it holds more: pgvector reaches only a part of a large
+//! group of identical vectors, and ends an iterative scan at
+//! `hnsw.max_scan_tuples`. The engine cannot tell these apart by what
+//! came, so a pull that comes back short is answered by the exact scan.
 //!
 //! **Only while it describes the head.** Each indexed field has a mark
 //! (`vindex.<type>.<field>`, its dimensions beside it) that the fold keeps
@@ -25,9 +39,13 @@
 //! open says so once on standard error when the lake asks for an index.
 //!
 //! **Constants.** `m = 16` and `ef_construction = 64`, pgvector's defaults;
-//! a search asks the index for `ef_search = max(k, 200)`, at most 1 000,
-//! with `hnsw.iterative_scan = relaxed_order`, so a search asking for more
-//! candidates than `ef_search` still gets them.
+//! a pull asks the index with `ef_search` at the candidates it pulls, at
+//! least 200 and at most 1 000; with `hnsw.iterative_scan =
+//! relaxed_order`, so a pull of more candidates than `ef_search` gets
+//! them as far as the index hands them out; and with
+//! `hnsw.max_scan_tuples = 20 000`, pgvector's default, set by the search
+//! itself, so that where a pull comes back short does not move with the
+//! server's value of it.
 
 use lakelands_api::error::Result;
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
@@ -46,6 +64,14 @@ const EF_CONSTRUCTION: u32 = 64;
 const EF_SEARCH_FLOOR: u32 = 200;
 /// ... and at most: pgvector's own ceiling.
 const EF_SEARCH_MAX: u32 = 1000;
+/// The most candidates a search pulls for a tie at its boundary; a tie
+/// still cut there is the exact scan's
+/// (`docs/decisions/043-an-index-asked-for-answers-its-set.md`).
+const TIE_CEILING: u32 = 4096;
+/// About how many tuples an iterative scan visits before it ends:
+/// pgvector's default, which the search sets itself, so that an answer
+/// does not move with the server's value.
+const MAX_SCAN_TUPLES: u32 = 20_000;
 /// The oldest pgvector with iterative index scans.
 const MIN_VERSION: (u32, u32) = (0, 8);
 /// The rows a rebuild fills at a time.
@@ -106,11 +132,16 @@ pub(crate) fn find(db: &mut Db, create: bool) -> std::result::Result<Pgvector, S
 
 /// Give `vectors` its `unit` column, once pgvector is there.
 pub(crate) fn prepare(db: &mut Db, names: &Names, v: &Pgvector) -> Result<()> {
-    db.batch(&format!(
+    db.batch(&prepare_sql(names, v))
+}
+
+/// The statement of [`prepare`].
+pub(crate) fn prepare_sql(names: &Names, v: &Pgvector) -> String {
+    format!(
         "ALTER TABLE {} ADD COLUMN IF NOT EXISTS unit {}",
         names.t("vectors"),
         v.ty(None)
-    ))
+    )
 }
 
 /// The meta row marking `ty.field`'s index kept through a position.
@@ -118,14 +149,19 @@ pub(crate) fn mark(ty: &TypeName, field: &str) -> String {
     format!("vindex.{ty}.{field}")
 }
 
-/// A vector's direction as pgvector reads it: `v / |v|`, the length taken
-/// in `f64`, each component rounded to `f32`; none for a vector of zeros,
-/// which points nowhere and is never indexed.
-pub(crate) fn unit_text(v: &[f32]) -> Option<String> {
+/// A vector's length, taken in `f64`; none where it is zero or not
+/// finite. A vector of zeros points nowhere: it is never indexed, and
+/// never answered for a field read through its index, whichever way the
+/// field is then read.
+pub(crate) fn length(v: &[f32]) -> Option<f64> {
     let norm = v.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>().sqrt();
-    if norm == 0.0 || !norm.is_finite() {
-        return None;
-    }
+    (norm != 0.0 && norm.is_finite()).then_some(norm)
+}
+
+/// A vector's direction as pgvector reads it: `v / |v|`, each component
+/// rounded to `f32`; none for a vector without a [`length`].
+pub(crate) fn unit_text(v: &[f32]) -> Option<String> {
+    let norm = length(v)?;
     let parts: Vec<String> = v
         .iter()
         .map(|x| ((f64::from(*x) / norm) as f32).to_string())
@@ -330,9 +366,8 @@ pub(crate) fn catch_up(
         };
         let asked: Vec<String> = db.column(
             &format!(
-                "SELECT substr(key, $1) FROM {} WHERE ty = $2 AND left(key, $1 - 1) = $3 \
-                 AND until IS NULL",
-                names.t("records"),
+                "SELECT substr(key, $1) FROM {} WHERE ty = $2 AND left(key, $1 - 1) = $3",
+                names.t("records_head"),
             ),
             &[
                 &(VECTOR_INDEX_SETTING.len() as i32 + 1),
@@ -429,15 +464,37 @@ pub(crate) fn candidates_sql(
     )
 }
 
-/// The settings a search's transaction starts with: the candidate list the
-/// index keeps for `k` candidates, iterative scans past it, and no plan
-/// that sorts the field instead. On a small field the planner would rather
-/// scan and sort, and its choice moves with the table's statistics; an
-/// indexed field answers the index's set whatever the statistics say.
+/// Whether the boundary of the best `k` cuts a tie among the candidates
+/// the index handed out, more than `k` of them: fewer than `k` score
+/// above the least, so the `k`th scores as the least does, and a
+/// candidate the index did not hand out may score so too.
+pub(crate) fn cuts_a_tie(came: &[(RecordKey, f64)], k: u32) -> bool {
+    let Some(least) = came.iter().map(|c| c.1).min_by(f64::total_cmp) else {
+        return false;
+    };
+    let above = came.iter().filter(|c| c.1.total_cmp(&least).is_gt());
+    came.len() > k as usize && above.count() < k as usize
+}
+
+/// The depth a search asks its index for after `depth` candidates cut a
+/// tie: twice as many, at most the ceiling; none past it, where the scan
+/// answers.
+pub(crate) fn deeper(depth: u32) -> Option<u32> {
+    let next = depth.saturating_mul(2).min(TIE_CEILING);
+    (next > depth).then_some(next)
+}
+
+/// The settings a pull of the index starts with: the candidate list the
+/// index keeps for a pull of `k` candidates, iterative scans past it as far as the
+/// engine's own number of tuples, and no plan that sorts the field
+/// instead. On a small field the planner would rather scan and sort, and
+/// its choice moves with the table's statistics; an indexed field answers
+/// the index's set whatever the statistics say.
 pub(crate) fn search_settings(k: u32) -> String {
     let ef = k.clamp(EF_SEARCH_FLOOR, EF_SEARCH_MAX);
     format!(
         "SET LOCAL hnsw.ef_search = {ef}; SET LOCAL hnsw.iterative_scan = relaxed_order; \
+         SET LOCAL hnsw.max_scan_tuples = {MAX_SCAN_TUPLES}; \
          SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off"
     )
 }

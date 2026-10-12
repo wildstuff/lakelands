@@ -32,11 +32,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use lakelands_api::engine::{
-    CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
-    Reclaimed, VectorIndex,
+    Applied, CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
+    ProjectionView, Ranked, Rankings, Reclaimed, VectorIndex,
 };
 use lakelands_api::error::{Act, Case, Error, Part, Result, Situation};
-use lakelands_api::event::{Digest, EventId, SegmentDigest};
+use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::query::cosine;
 use lakelands_api::record::{StoredRecord, Value};
@@ -104,6 +104,15 @@ impl PgLake {
             let (lake, schema) = (lake.to_string(), Some(target.schema.clone()));
             return Err(Error::unavailable(Situation::NoLake { lake, schema }));
         }
+        // A projection is read only by the layout it was made with, and
+        // its tables are not touched before that is known; a new one is
+        // made with this build's (`prepare`). One opened for a rebuild is
+        // made anew by `clear` before anything reads it.
+        if exists && mode != OpenMode::Rebuild {
+            let marked = format!("SELECT n FROM {} WHERE k = 'layout'", names.t("meta"));
+            let found: Option<i64> = reader.query_opt(&marked, &[])?.and_then(|r| r.get(0));
+            engines::layout(&lake, found.map(|n| n as u64), projection::LAYOUT)?;
+        }
         let (writing, pgvector) = match mode {
             OpenMode::Read => (None, vector_index::find(&mut reader, false).ok()),
             OpenMode::Write | OpenMode::Create => {
@@ -127,6 +136,17 @@ impl PgLake {
                     unanalysed: AtomicU64::new(0),
                 };
                 (Some(writing), found.ok())
+            }
+            OpenMode::Rebuild => {
+                let lease = connect::session_keeping_state(&target)?;
+                let mut projection = connect::connect(&target)?;
+                let found = vector_index::find(&mut projection, true).ok();
+                let writing = Writing {
+                    lease: Mutex::new(lease),
+                    projection: Mutex::new(projection),
+                    unanalysed: AtomicU64::new(0),
+                };
+                (Some(writing), found)
             }
         };
         check_name(&mut reader, &names, &target.schema, &lake)?;
@@ -186,6 +206,21 @@ impl PgLake {
     }
 }
 
+/// The first and the last event of the log in the target's schema, when
+/// it holds a lake with any: read, never made or changed.
+pub(crate) fn log_ends(target: &Target) -> Result<Option<(CanonicalEvent, CanonicalEvent)>> {
+    let names = Names::new(target.quoted_schema()?);
+    let mut db = connect::connect(target)?;
+    if !matches!(shape(&mut db, &target.schema)?, Shape::Lake) {
+        return Ok(None);
+    }
+    let Some((tip, _)) = log::tip(&mut db, &names)? else {
+        return Ok(None);
+    };
+    let mut at = |position| log::read(&mut db, &names, position, 1).map(|mut e| e.pop());
+    Ok(at(Position(0))?.zip(at(tip)?))
+}
+
 /// What a schema holds, as the engine sees it at open.
 enum Shape {
     /// No schema, or one holding no table.
@@ -239,6 +274,11 @@ fn prepare(db: &mut Db, names: &Names, schema: &str, lake: &LakeId, mode: OpenMo
             &[&schema],
         )?;
         db.batch(&names.schema_sql())?;
+        db.batch(&format!(
+            "INSERT INTO {} (k, n) VALUES ('layout', {}) ON CONFLICT DO NOTHING",
+            names.t("meta"),
+            projection::LAYOUT
+        ))?;
         if mode == OpenMode::Create {
             db.execute(
                 &format!(
@@ -363,6 +403,58 @@ impl LakeEngine for PgLake {
         let folded = projection::folded(&mut lock(&self.reader), &self.names)?;
         let at = engines::view_at(as_of, folded)?;
         Ok(Box::new(PgView { lake: self, at }))
+    }
+
+    /// One transaction's snapshot holds the position and every list. A
+    /// snapshot does not hold back a rebuild's `clear`, which drops the
+    /// tables and makes them again: the tables read here are taken in
+    /// `ACCESS SHARE` mode before the snapshot is, in the order `clear`
+    /// drops them, so a list is never an emptied table's under the
+    /// position read before it (`crate::view`).
+    fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked> {
+        let mut db = lock(&self.reader);
+        let read = |t: &&&str| match **t {
+            "vectors" => !asked.vectors.is_empty(),
+            "declarations" | "declarations_head" | "records" | "records_head" | "full_text" => {
+                asked.text.is_some()
+            }
+            _ => false,
+        };
+        let tables: Vec<String> = PROJECTION_TABLES
+            .iter()
+            .filter(read)
+            .map(|t| self.names.t(t))
+            .collect();
+        let lock = match tables.is_empty() {
+            true => String::new(),
+            false => format!("LOCK TABLE {} IN ACCESS SHARE MODE; ", tables.join(", ")),
+        };
+        let folded = db.simple(&format!(
+            "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; {lock}\
+             SELECT n FROM {} WHERE k = 'folded'",
+            self.names.t("meta")
+        ));
+        let ranked = folded.and_then(|folded| {
+            let folded = folded.into_iter().flatten().next();
+            let position = folded.and_then(|f| f.parse().ok()).map(Position);
+            let mut lists = Vec::new();
+            if let Some((text, fields)) = &asked.text {
+                let fields = fields.as_deref();
+                lists.push(crate::view::lexical(
+                    &mut db,
+                    &self.names,
+                    ty,
+                    text,
+                    fields,
+                    k,
+                )?);
+            }
+            for (field, query) in &asked.vectors {
+                lists.push(self.nearest(&mut db, ty, field, query, k)?);
+            }
+            Ok(Ranked { position, lists })
+        });
+        db.end(ranked)
     }
 
     fn vectors(&self) -> Option<&dyn VectorIndex> {
@@ -507,13 +599,14 @@ impl ProjectionStore for PgLake {
         self.stage(at, |b| b.output(seam, input.0.as_str(), at, state))
     }
 
-    fn mark_applied(&self, id: &EventId, at: Position) -> Result<()> {
-        self.stage(at, |b| b.applied(&id.0, at))
+    fn mark_applied(&self, applied: &Applied) -> Result<()> {
+        self.stage(applied.at, |b| b.applied(applied))
     }
 
-    /// Drops the projection, its kept history and the vector index; the
-    /// log, the lease and the lake's name stay. An open transaction is
-    /// abandoned.
+    /// Drops the projection, its kept history and the vector index, and
+    /// makes the projection's tables again at this build's layout, marked
+    /// with it; the log, the lease and the lake's name stay. An open
+    /// transaction is abandoned.
     fn clear(&self) -> Result<()> {
         let writing = self.writing()?;
         *lock(&self.transaction) = None;
@@ -521,14 +614,22 @@ impl ProjectionStore for PgLake {
         writing.unanalysed.store(0, Ordering::Relaxed);
         let mut db = lock(&writing.projection);
         let _ = db.batch("ROLLBACK");
-        let statements: String = PROJECTION_TABLES
+        let dropped: String = PROJECTION_TABLES
             .iter()
-            .map(|t| format!("DELETE FROM {};", self.names.t(t)))
+            .map(|t| format!("DROP TABLE IF EXISTS {} CASCADE;", self.names.t(t)))
             .collect();
+        let vectors = match &self.pgvector {
+            Some(v) => vector_index::prepare_sql(&self.names, v),
+            None => String::new(),
+        };
         db.batch(&format!(
-            "BEGIN; {statements} DELETE FROM {m} WHERE k = 'folded' OR k LIKE 'vindex.%'; \
-             COMMIT;",
-            m = self.names.t("meta")
+            "BEGIN; {dropped} {schema} {vectors}; \
+             DELETE FROM {m} WHERE k = 'folded' OR k LIKE 'vindex.%'; \
+             INSERT INTO {m} (k, n) VALUES ('layout', {layout}) \
+             ON CONFLICT (k) DO UPDATE SET n = EXCLUDED.n; COMMIT;",
+            schema = self.names.schema_sql(),
+            m = self.names.t("meta"),
+            layout = projection::LAYOUT,
         ))
     }
 
@@ -571,16 +672,100 @@ fn size(db: &mut Db, schema: &str, tables: &[&str]) -> Result<u64> {
     Ok(row.get::<_, i64>(0) as u64)
 }
 
-/// The vector index: each field's vectors in one table, searched by brute
-/// force with the one cosine every engine uses
-/// (`lakelands_api::query::cosine`), so its answers are those of every
-/// other engine to the last bit. A query streams every vector of the
-/// field from the server a row at a time and keeps only the best `k`
-/// (`lakelands_core::engines::TopK`), so its cost grows linearly with them
-/// and what it holds does not: the ceiling `docs/seams.md` states.
-/// Vectors are indexed at the head only, in the fold's
-/// transaction; filtering the candidates by what an earlier view could see
-/// is the store's.
+impl PgLake {
+    /// The `k` vectors of one field nearest to `query`, read through `db`
+    /// in its open transaction and ranked by the one cosine every engine
+    /// uses (`lakelands_api::query::cosine`). The exact scan streams every
+    /// vector of the field from the server a row at a time and keeps only
+    /// the best `k` (`lakelands_core::engines::TopK`), so its cost grows
+    /// linearly with them and what it holds does not: the ceiling
+    /// `docs/seams.md` states, and its answers are those of every other
+    /// engine to the last bit, but for the vectors of zeros it leaves out
+    /// where it answers for an index. A field read through its index holds
+    /// the candidates of one pull, `k` and one more or a tie's deeper pull.
+    fn nearest(
+        &self,
+        db: &mut Db,
+        ty: &TypeName,
+        field: &str,
+        query: &[f32],
+        k: u32,
+    ) -> Result<Vec<(RecordKey, f64)>> {
+        let mut indexed = false;
+        // A field the lake asks an index for, whose index describes the
+        // head, answers the index's candidates, ranked by the one cosine
+        // (`crate::vector_index`); every other search scans. The index
+        // orders equal distances its own way, so a tie the `k`th
+        // candidate stands in is pulled before it is cut by key: one
+        // candidate more shows whether the boundary cuts one, and a cut
+        // one is pulled deeper, to the scan past the ceiling. An index
+        // that hands out fewer than it was asked for has not thereby
+        // shown the field's end, so the scan answers then too. The
+        // index's settings end with its statement: the transaction
+        // reads other lists.
+        if let (Some(v), Some(unit)) = (&self.pgvector, vector_index::unit_text(query))
+            && let Some(n) = vector_index::usable(db, &self.names, ty, field)?
+            && n as usize == query.len()
+        {
+            indexed = true;
+            let sql = vector_index::candidates_sql(&self.names, v, ty, field, n);
+            let first = k.saturating_add(1);
+            let mut pull = Some(first);
+            while let Some(depth) = pull {
+                let mut came = Vec::new();
+                db.batch(&vector_index::search_settings(depth))?;
+                db.query_each(&sql, &[&unit, &i64::from(depth)], |row| {
+                    let v = vector_of(&row.get::<_, Vec<u8>>(1));
+                    came.push((RecordKey::from(row.get::<_, String>(0)), cosine(query, &v)));
+                    Ok(())
+                })?;
+                db.batch("SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on")?;
+                if came.len() < depth as usize {
+                    break;
+                }
+                if !vector_index::cuts_a_tie(&came, k) {
+                    // Where no tie was cut the candidate more only showed
+                    // it, and the answer is the index's `k`.
+                    if depth == first {
+                        came.truncate(k as usize);
+                    }
+                    engines::rank(&mut came, k);
+                    return Ok(came);
+                }
+                pull = vector_index::deeper(depth);
+            }
+        }
+        // The exact scan checks every vector's dimensions; the index holds
+        // only vectors of the query's.
+        let mut top = lakelands_core::engines::TopK::new(k);
+        db.query_each(
+            &format!(
+                "SELECT key, data FROM {} WHERE ty = $1 AND field = $2 ORDER BY key COLLATE \"C\"",
+                self.names.t("vectors")
+            ),
+            &[&ty.as_str(), &field],
+            |row| {
+                let key: String = row.get(0);
+                let v = vector_of(&row.get::<_, Vec<u8>>(1));
+                if v.len() != query.len() {
+                    return Err(engines::dimensions(query.len(), v.len(), ty, field));
+                }
+                // The index never hands out a vector of zeros, so the scan
+                // that answers for it leaves one out too: a hit must not
+                // show which of the two answered, and so how far the field
+                // goes (043).
+                if !indexed || vector_index::length(&v).is_some() {
+                    top.push(&RecordKey::from(key), cosine(query, &v));
+                }
+                Ok(())
+            },
+        )?;
+        Ok(top.into_ranked())
+    }
+}
+
+/// The vector index's write side and its size: each field's vectors in
+/// one table, indexed at the head only, in the fold's transaction.
 impl VectorIndex for PgLake {
     fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()> {
         let writing = self.writing()?;
@@ -621,51 +806,6 @@ impl VectorIndex for PgLake {
         )
     }
 
-    fn nearest(
-        &self,
-        ty: &TypeName,
-        field: &str,
-        query: &[f32],
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>> {
-        let mut top = lakelands_core::engines::TopK::new(k);
-        // The exact scan checks every vector's dimensions; the index holds
-        // only vectors of the query's.
-        let mut rank = |row: &postgres::Row, exact: bool| {
-            let key: String = row.get(0);
-            let v = vector_of(&row.get::<_, Vec<u8>>(1));
-            if exact && v.len() != query.len() {
-                return Err(engines::dimensions(query.len(), v.len(), ty, field));
-            }
-            top.push(&RecordKey::from(key), cosine(query, &v));
-            Ok(())
-        };
-        let mut db = lock(&self.reader);
-        // A field the lake asks an index for, whose index describes the
-        // head, answers the index's `k` candidates, ranked by the one
-        // cosine (`crate::vector_index`); every other search scans.
-        if let (Some(v), Some(unit)) = (&self.pgvector, vector_index::unit_text(query))
-            && let Some(n) = vector_index::usable(&mut db, &self.names, ty, field)?
-            && n as usize == query.len()
-        {
-            let sql = vector_index::candidates_sql(&self.names, v, ty, field, n);
-            db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY", |db| {
-                db.batch(&vector_index::search_settings(k))?;
-                db.query_each(&sql, &[&unit, &i64::from(k)], |row| rank(row, false))
-            })?;
-            return Ok(top.into_ranked());
-        }
-        db.query_each(
-            &format!(
-                "SELECT key, data FROM {} WHERE ty = $1 AND field = $2 ORDER BY key COLLATE \"C\"",
-                self.names.t("vectors")
-            ),
-            &[&ty.as_str(), &field],
-            |row| rank(row, true),
-        )?;
-        Ok(top.into_ranked())
-    }
-
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64> {
         let n: i64 = lock(&self.reader)
             .query_one(
@@ -681,12 +821,20 @@ impl VectorIndex for PgLake {
 }
 
 /// Write a lake's log as the segment files `docs/log-format.md` §4.2
-/// describes, `<dir>/log/<first>.jsonl`, through a handle that only reads.
+/// describes, `<dir>/log/<first>.jsonl`, over a connection of its own
+/// that only reads. A raw copy of the log's lines, for a lake whose
+/// store cannot be opened: no event is judged, not its format either,
+/// and what is written is judged by whoever verifies or imports it.
+/// The schema must hold a lake of the location's name; nothing of its
+/// projection is read, so one of another layout, or none, is no bar.
 pub fn export(location: &lakelands_api::Location, dir: &std::path::Path) -> Result<()> {
-    let lake = PgLake::open(
-        location.lake.clone(),
-        crate::target(location)?,
-        OpenMode::Read,
-    )?;
-    log::export(&mut lock(&lake.reader), &lake.names, dir)
+    let target = crate::target(location)?;
+    let names = Names::new(target.quoted_schema()?);
+    let mut db = connect::connect(&target)?;
+    if !matches!(shape(&mut db, &target.schema)?, Shape::Lake) {
+        let (lake, schema) = (location.lake.to_string(), Some(target.schema.clone()));
+        return Err(Error::unavailable(Situation::NoLake { lake, schema }));
+    }
+    check_name(&mut db, &names, &target.schema, &location.lake)?;
+    log::export(&mut db, &names, dir)
 }

@@ -21,119 +21,100 @@ use serde_json::json;
 use sha2::{Digest as _, Sha256};
 
 use super::{EngineHarness, chain, event, seal};
-use crate::conformance::Failure;
 use crate::conformance::fixture::{Must, is_invalid};
+use crate::conformance::{Failure, Held};
 
 engine_check!(
-    /// Bytes are stored and returned unchanged.
     BYTES_UNCHANGED = appended_bytes_come_back_unchanged,
     "log format §1.2: the engine keeps each event's canonical bytes and returns them unchanged, so the store can verify the hash chain over what it reads"
 );
 
 engine_check!(
-    /// An import keeps each event's fence; the next lease is greater.
     IMPORT_KEEPS_FENCES = an_import_keeps_each_events_fence_and_the_next_lease_is_greater,
     "030 and log format §4.1: `import` stores events carried over from another lake with the fences they were written under, which never fall, refuses a fence below the one before it, and the next lease taken is greater than every fence imported"
 );
 
 engine_check!(
-    /// An import goes only into a log of imported events.
     IMPORT_ONLY_INTO_IMPORTED = an_import_is_refused_once_the_log_holds_an_appended_event,
     "030: `import` continues only a log that holds nothing but imported events; once anything was appended, an import is refused and nothing of it is written"
 );
 
 engine_check!(
-    /// A stale lease cannot append.
     STALE_LEASE = a_stale_lease_cannot_append,
     "008: every append is checked against the current fencing token, so a writer that lost the lease cannot fork the chain"
 );
 
 engine_check!(
-    /// A held lease is refused at once, naming its holder.
     HELD_LEASE = a_held_lease_is_refused_at_once_naming_its_holder,
     "008: a second writer fails at once with an unavailable error that names the lease's holder; it never waits"
 );
 
 engine_check!(
-    /// Every take of the lease has a greater fence.
     GREATER_FENCE = every_take_of_the_lease_has_a_greater_fence,
     "008: the fencing token increases with every new writer, which is what makes an older token stale"
 );
 
 engine_check!(
-    /// An append that does not continue the chain is refused whole.
     WHOLE_OR_NOTHING = an_append_with_a_gap_or_a_wrong_prev_is_refused_whole,
     "log format §4.1: an append whose positions do not continue the tip, or whose prev is not the hash before it, is refused, and none of it is appended"
 );
 
 engine_check!(
-    /// A sealed segment's digest is SHA-256 over its lines.
     SEGMENT_DIGEST = a_sealed_segment_is_digested_as_its_lines,
     "log format §4.2: a segment's digest is SHA-256 over its file's bytes, each event's canonical bytes followed by a line feed, whatever the engine keeps them in"
 );
 
 engine_check!(
-    /// Releasing a stale lease leaves the current holder's lease.
     RELEASE_STALE = releasing_a_stale_lease_leaves_the_current_holders_lease,
     "008: a writer that lost the lease cannot release its successor's, so the successor goes on appending"
 );
 
 engine_check!(
-    /// Reading past the tip or with limit 0 answers nothing.
     READ_BOUNDS = reading_past_the_tip_or_with_limit_zero_answers_nothing,
     "seams §LakeEngine: read answers at most `limit` events from `from` on, nothing past the tip or for a limit of 0, and an empty lake has no tip"
 );
 
 engine_check!(
-    /// An event at position 0 with a fence is refused.
     FENCE_AT_ZERO = an_event_at_position_zero_with_a_fence_is_refused,
     "log format §4.1: the event at position 0 is written before any lease exists, under fence 0, and an engine refuses it under any other"
 );
 
 engine_check!(
-    /// Sealing needs the current lease; seals list contiguous ranges.
     SEALS = sealing_under_a_stale_lease_is_refused_and_two_seals_list_contiguous_ranges,
     "log format §4.2: only the writer seals, and the sealed segments' ranges start at 0 and follow each other with no gap"
 );
 
 engine_check!(
-    /// A seal that cannot begin the next segment seals nothing.
     SEAL_OR_NOTHING = a_seal_that_cannot_begin_the_next_segment_leaves_the_log_as_it_was,
     "log format §4.2: a seal closes the active segment and begins the next with its first event in one step; one whose events do not continue the log by hash or by position, that is handed none, or whose events are imported behind appended ones is refused as invalid, one whose `first` answers an error answers that error, and one under a lease no longer current is unavailable before `first` is asked; each seals nothing and leaves the tip, with no segment sealed and behind a sealed one, and the next append lands in the segment that was active"
 );
 
 engine_check!(
-    /// Opening a missing lake is unavailable; create opens an existing one.
     OPENING = reopening opening_a_missing_lake_to_read_or_write_is_unavailable_and_create_opens_an_existing_one,
     "seams §EngineOpener: reading or writing a lake that does not exist is unavailable, and create opens a lake that exists, as it is"
 );
 
 engine_check!(
-    /// A read-only open creates and changes nothing.
     READ_ONLY_OPEN = reopening a_read_only_open_creates_and_changes_nothing,
     "008 and seams §EngineOpener: a reader opens a lake as it is; opening a missing lake read-only makes none, and a read-only handle writes neither the log nor the projection"
 );
 
 engine_check!(
-    /// A writer's handle that is dropped gives its lease up.
     DROPPED_WRITER = reopening a_dropped_writer_releases_its_lease,
     "008: a lake is closed when its last handle goes, so a writer that ends without closing does not keep every later writer out"
 );
 
 engine_check!(
-    /// A handle opened read-only refuses the lease and every append.
     READ_ONLY_HANDLE = reopening a_read_only_handle_refuses_the_lease_and_appends,
     "008: any number of readers may open a lake, and none of them can take the lease, append or seal, so only the writer extends the chain"
 );
 
 engine_check!(
-    /// A handle that never took the lease cannot append, import or seal.
     UNLEASED_HANDLE = reopening a_handle_that_never_took_the_lease_cannot_append_import_or_seal,
     "008: only the handle that took the lease extends the chain; another opened for writing, handed a copy of that lease, is refused an append, an import and a seal, and the writer goes on"
 );
 
 engine_check!(
-    /// What an append returned from is there for the next handle.
     APPENDED_OUTLIVES_ITS_HANDLE = reopening an_append_that_returned_is_read_by_the_next_handle,
     "seams, append: an append is durable before it returns, so the events are there, byte for byte, for a handle opened after the writer's handle was dropped without closing"
 );
@@ -141,7 +122,7 @@ engine_check!(
 fn an_append_that_returned_is_read_by_the_next_handle(
     engine: &dyn LakeEngine,
     harness: &dyn EngineHarness,
-) -> Result<(), Failure> {
+) -> Held {
     let writer = harness
         .reopen(engine.lake(), OpenMode::Write)
         .map_err(|e| Failure::new(format!("opening a handle for writing: {e}")))?;
@@ -175,7 +156,7 @@ fn an_append_that_returned_is_read_by_the_next_handle(
 fn a_dropped_writer_releases_its_lease(
     engine: &dyn LakeEngine,
     harness: &dyn EngineHarness,
-) -> Result<(), Failure> {
+) -> Held {
     let writer = harness
         .reopen(engine.lake(), OpenMode::Write)
         .map_err(|e| Failure::new(format!("opening a second handle for writing: {e}")))?;
@@ -195,7 +176,7 @@ fn a_dropped_writer_releases_its_lease(
 fn a_read_only_handle_refuses_the_lease_and_appends(
     engine: &dyn LakeEngine,
     harness: &dyn EngineHarness,
-) -> Result<(), Failure> {
+) -> Held {
     let lease = engine.take_lease("conformance").must("taking the lease")?;
     let first = chain(0, 2, &Digest::zero(), &lease);
     engine.append(&lease, &first).must("appending two events")?;
@@ -234,7 +215,7 @@ fn a_read_only_handle_refuses_the_lease_and_appends(
 fn a_handle_that_never_took_the_lease_cannot_append_import_or_seal(
     engine: &dyn LakeEngine,
     harness: &dyn EngineHarness,
-) -> Result<(), Failure> {
+) -> Held {
     let lease = engine.take_lease("the writer").must("taking the lease")?;
     let other = harness
         .reopen(engine.lake(), OpenMode::Write)
@@ -278,7 +259,7 @@ fn a_handle_that_never_took_the_lease_cannot_append_import_or_seal(
     Ok(())
 }
 
-fn appended_bytes_come_back_unchanged(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn appended_bytes_come_back_unchanged(engine: &dyn LakeEngine) -> Held {
     let lease = engine.take_lease("conformance").must("taking the lease")?;
     // Traps for an engine that parses and re-serialises: a member name
     // beyond the basic plane sorts before one inside it in canonical
@@ -338,7 +319,7 @@ fn render(events: &[CanonicalEvent]) -> Vec<String> {
         .collect()
 }
 
-fn a_stale_lease_cannot_append(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn a_stale_lease_cannot_append(engine: &dyn LakeEngine) -> Held {
     let old = engine.take_lease("first writer").must("taking the lease")?;
     engine.release_lease(&old).must("releasing the lease")?;
     let new = engine
@@ -376,9 +357,7 @@ fn a_stale_lease_cannot_append(engine: &dyn LakeEngine) -> Result<(), Failure> {
     Ok(())
 }
 
-fn a_held_lease_is_refused_at_once_naming_its_holder(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn a_held_lease_is_refused_at_once_naming_its_holder(engine: &dyn LakeEngine) -> Held {
     let holder = "writer 7 on host lake-a";
     engine.take_lease(holder).must("taking the lease")?;
     let started = Instant::now();
@@ -404,7 +383,7 @@ fn a_held_lease_is_refused_at_once_naming_its_holder(
     Ok(())
 }
 
-fn every_take_of_the_lease_has_a_greater_fence(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn every_take_of_the_lease_has_a_greater_fence(engine: &dyn LakeEngine) -> Held {
     let mut fences = Vec::new();
     for holder in ["one", "two", "three"] {
         let lease = engine.take_lease(holder).must("taking the lease")?;
@@ -418,9 +397,7 @@ fn every_take_of_the_lease_has_a_greater_fence(engine: &dyn LakeEngine) -> Resul
     Ok(())
 }
 
-fn an_append_with_a_gap_or_a_wrong_prev_is_refused_whole(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn an_append_with_a_gap_or_a_wrong_prev_is_refused_whole(engine: &dyn LakeEngine) -> Held {
     let lease = engine.take_lease("conformance").must("taking the lease")?;
     let first = chain(0, 2, &Digest::zero(), &lease);
     engine.append(&lease, &first).must("appending two events")?;
@@ -454,7 +431,7 @@ fn an_append_with_a_gap_or_a_wrong_prev_is_refused_whole(
     Ok(())
 }
 
-fn a_sealed_segment_is_digested_as_its_lines(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn a_sealed_segment_is_digested_as_its_lines(engine: &dyn LakeEngine) -> Held {
     let lease = engine.take_lease("conformance").must("taking the lease")?;
     let events = chain(0, 3, &Digest::zero(), &lease);
     let empty = seal(engine, &lease, &events).must("sealing an empty segment")?;
@@ -498,9 +475,7 @@ fn a_sealed_segment_is_digested_as_its_lines(engine: &dyn LakeEngine) -> Result<
     Ok(())
 }
 
-fn releasing_a_stale_lease_leaves_the_current_holders_lease(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn releasing_a_stale_lease_leaves_the_current_holders_lease(engine: &dyn LakeEngine) -> Held {
     let old = engine.take_lease("first writer").must("taking the lease")?;
     engine.release_lease(&old).must("releasing the lease")?;
     let new = engine
@@ -521,9 +496,7 @@ fn releasing_a_stale_lease_leaves_the_current_holders_lease(
     Ok(())
 }
 
-fn reading_past_the_tip_or_with_limit_zero_answers_nothing(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn reading_past_the_tip_or_with_limit_zero_answers_nothing(engine: &dyn LakeEngine) -> Held {
     let empty = engine.tip().must("reading the tip of an empty lake")?;
     ensure!(
         empty.is_none(),
@@ -555,9 +528,7 @@ fn reading_past_the_tip_or_with_limit_zero_answers_nothing(
     Ok(())
 }
 
-fn an_event_at_position_zero_with_a_fence_is_refused(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn an_event_at_position_zero_with_a_fence_is_refused(engine: &dyn LakeEngine) -> Held {
     let lease = engine.take_lease("conformance").must("taking the lease")?;
     let fenced = event(0, &Digest::zero(), lease.fence, json!({"kind": "note"}));
     let refused = engine
@@ -575,7 +546,7 @@ fn an_event_at_position_zero_with_a_fence_is_refused(
 
 fn sealing_under_a_stale_lease_is_refused_and_two_seals_list_contiguous_ranges(
     engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+) -> Held {
     let old = engine.take_lease("first writer").must("taking the lease")?;
     engine.release_lease(&old).must("releasing the lease")?;
     let lease = engine
@@ -608,7 +579,7 @@ fn sealing_under_a_stale_lease_is_refused_and_two_seals_list_contiguous_ranges(
 
 fn a_seal_that_cannot_begin_the_next_segment_leaves_the_log_as_it_was(
     engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+) -> Held {
     let old = engine.take_lease("first writer").must("taking the lease")?;
     engine.release_lease(&old).must("releasing the lease")?;
     let lease = engine.take_lease("conformance").must("taking the lease")?;
@@ -671,7 +642,7 @@ fn a_seal_that_cannot_begin_the_next_segment_leaves_the_log_as_it_was(
 fn opening_a_missing_lake_to_read_or_write_is_unavailable_and_create_opens_an_existing_one(
     engine: &dyn LakeEngine,
     harness: &dyn EngineHarness,
-) -> Result<(), Failure> {
+) -> Held {
     let missing = lakelands_api::id::LakeId::from(format!("{}-never-created", engine.lake()));
     for mode in [OpenMode::Read, OpenMode::Write] {
         let opened = harness.reopen(&missing, mode).map(|e| e.lake().clone());
@@ -701,7 +672,7 @@ fn opening_a_missing_lake_to_read_or_write_is_unavailable_and_create_opens_an_ex
 fn a_read_only_open_creates_and_changes_nothing(
     engine: &dyn LakeEngine,
     harness: &dyn EngineHarness,
-) -> Result<(), Failure> {
+) -> Held {
     let missing = lakelands_api::id::LakeId::from(format!("{}-read-only", engine.lake()));
     for attempt in ["first", "second"] {
         let opened = harness
@@ -765,7 +736,7 @@ fn another_lakes_log() -> Vec<CanonicalEvent> {
 
 fn an_import_keeps_each_events_fence_and_the_next_lease_is_greater(
     engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+) -> Held {
     let lease = engine
         .take_lease("conformance import")
         .must("taking the lease")?;
@@ -804,9 +775,7 @@ fn an_import_keeps_each_events_fence_and_the_next_lease_is_greater(
     Ok(())
 }
 
-fn an_import_is_refused_once_the_log_holds_an_appended_event(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn an_import_is_refused_once_the_log_holds_an_appended_event(engine: &dyn LakeEngine) -> Held {
     let lease = engine.take_lease("conformance").must("taking the lease")?;
     let first = event(0, &Digest::zero(), 0, json!({"kind": "note", "n": 0}));
     engine

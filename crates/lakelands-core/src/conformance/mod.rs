@@ -24,9 +24,9 @@
 //!
 //! # Adding a check
 //!
-//! A check is one `async fn(Arc<dyn LakeStore>) -> Result<(), Failure>`
-//! whose name is a sentence in snake_case, stating what must hold, and
-//! one `check!` line turning it into a [`Check`] constant. Adding a check
+//! A check is one `async fn(Store) -> Held` whose name is a sentence in
+//! snake_case, stating what must hold, and one `check!` line turning it
+//! into a [`Check`] constant, whose doc is its `about`. Adding a check
 //! is one new file in `checks/` (or one function in an existing file of
 //! the same subject) plus one line in the registry,
 //! [`checks::ALL`](crate::conformance::checks::ALL), in `checks/mod.rs`.
@@ -37,7 +37,15 @@
 //! A failure message is written for the person who reads the report: it
 //! says what was done, what came back and what the rule is, so the
 //! engine's author can act on it without opening the check.
+//!
+//! The report keeps each check's [`Tally`]: the assertions it evaluated
+//! and the places in the suite they are written at. A rewrite of checks
+//! proves it dropped no comparison when every tally on one engine is
+//! equal or higher after it (a check polling while writes run varies in
+//! evaluations from run to run, never in places).
 
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::fmt;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
@@ -51,37 +59,38 @@ use lakelands_api::LakeStore;
 use lakelands_api::seam::Seams;
 
 /// Turns an `async fn` of the suite into a [`Check`] constant whose
-/// `name` is the function's own name. A trailing `, embedding` runs the
+/// `name` is the function's own name and whose doc is its `about`, so
+/// the line takes no `///` of its own. A trailing `, embedding` runs the
 /// check on a lake with the suite's embedding backend bound; a trailing
 /// `, reopens` hands the check the harness's [`Reopen`] as its second
 /// argument, a trailing `, scratch` the directory of its own the
 /// harness supplies ([`Harness::scratch`]), a trailing `, given` all
 /// of [`Given`], and `, given, embedding` both.
 macro_rules! check {
-    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr) => {
-        check!(@make $(#[$doc])* $konst = $run, $about, false, |store, _| Box::pin($run(store)));
+    ($konst:ident = $run:ident, $about:expr) => {
+        check!(@make $konst = $run, $about, false, |store, _| Box::pin($run(store)));
     };
-    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, embedding) => {
-        check!(@make $(#[$doc])* $konst = $run, $about, true, |store, _| Box::pin($run(store)));
+    ($konst:ident = $run:ident, $about:expr, embedding) => {
+        check!(@make $konst = $run, $about, true, |store, _| Box::pin($run(store)));
     };
-    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, reopens) => {
-        check!(@make $(#[$doc])* $konst = $run, $about, false,
+    ($konst:ident = $run:ident, $about:expr, reopens) => {
+        check!(@make $konst = $run, $about, false,
             |store, given| Box::pin($run(store, given.reopen)));
     };
-    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, scratch) => {
-        check!(@make $(#[$doc])* $konst = $run, $about, false,
+    ($konst:ident = $run:ident, $about:expr, scratch) => {
+        check!(@make $konst = $run, $about, false,
             |store, given| Box::pin($run(store, given.scratch)));
     };
-    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, given) => {
-        check!(@make $(#[$doc])* $konst = $run, $about, false,
+    ($konst:ident = $run:ident, $about:expr, given) => {
+        check!(@make $konst = $run, $about, false,
             |store, given| Box::pin($run(store, given)));
     };
-    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, given, embedding) => {
-        check!(@make $(#[$doc])* $konst = $run, $about, true,
+    ($konst:ident = $run:ident, $about:expr, given, embedding) => {
+        check!(@make $konst = $run, $about, true,
             |store, given| Box::pin($run(store, given)));
     };
-    (@make $(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, $embedding:expr, $call:expr) => {
-        $(#[$doc])*
+    (@make $konst:ident = $run:ident, $about:expr, $embedding:expr, $call:expr) => {
+        #[doc = $about]
         pub const $konst: $crate::conformance::Check = $crate::conformance::Check {
             name: stringify!($run),
             about: $about,
@@ -93,11 +102,12 @@ macro_rules! check {
 
 /// Fails the check with a formatted message unless the condition holds.
 macro_rules! ensure {
-    ($cond:expr, $($msg:tt)+) => {
+    ($cond:expr, $($msg:tt)+) => {{
+        $crate::conformance::tally();
         if !$cond {
             return Err($crate::conformance::Failure::new(format!($($msg)+)));
         }
-    };
+    }};
 }
 
 /// Fails the check unless the answer is a refusal as invalid whose case
@@ -178,6 +188,20 @@ pub trait Harness: Send + Sync {
         })
     }
 
+    /// How this harness writes to a lake's log below the store and opens
+    /// the lake again: the [`Continue`] a check of a lake that another
+    /// release's writer left is given. A harness that reaches no engine
+    /// answers `unbound`.
+    fn continuer(&self) -> Continue {
+        Arc::new(|_, _, _, _, _| {
+            Box::pin(async {
+                let op = "continue".to_owned();
+                let seam = lakelands_api::error::Seam::Operation { op };
+                Err(lakelands_api::Error::unbound(seam))
+            })
+        })
+    }
+
     /// How many records the suite's large lake holds at its first size;
     /// it grows to four times this. [`LARGE_LAKE`] unless the engine's
     /// test asks for more, as a long run does.
@@ -223,6 +247,9 @@ pub struct Given {
     pub harness: String,
     /// How the harness imports an export as a lake of its engine.
     pub import: Import,
+    /// How the harness writes to a lake's log below the store and opens
+    /// the lake again.
+    pub continued: Continue,
 }
 
 /// Closes a lake the harness opened and opens it again for writing with
@@ -248,6 +275,112 @@ pub type Import = Arc<
         + Sync,
 >;
 
+/// Closes the lake a store holds, if one is given, appends lines to the
+/// log of the lake named, through its engine's seam and below the store,
+/// as another release's writer would, and opens the lake through the
+/// store in the mode named. A harness makes it of [`continue_below`] and
+/// [`below`].
+pub type Continue = Arc<
+    dyn Fn(
+            Option<Arc<dyn LakeStore>>,
+            lakelands_api::LakeId,
+            Lines,
+            lakelands_api::engine::OpenMode,
+            Seams,
+        ) -> ContinueFuture
+        + Send
+        + Sync,
+>;
+
+/// The lines a [`Continue`] appends, made from the log's tip and the
+/// fence of the lease they are appended under; none, to append nothing.
+/// With them, how many positions past the tip they leave the projection
+/// is then committed through, as no fold leaves it: 0 leaves the
+/// projection where it is.
+pub type Lines = Box<
+    dyn FnOnce(
+            (lakelands_api::Position, lakelands_api::event::Digest),
+            u64,
+        ) -> (Vec<lakelands_api::engine::CanonicalEvent>, u64)
+        + Send,
+>;
+
+/// The future a [`Continue`] answers.
+pub type ContinueFuture =
+    Pin<Box<dyn Future<Output = lakelands_api::Result<Continued>> + Send + 'static>>;
+
+/// What a [`Continue`] found.
+pub struct Continued {
+    /// What the store's open answered.
+    pub opened: lakelands_api::Result<Arc<dyn LakeStore>>,
+    /// The lake below the store after the lines were appended, before
+    /// that open.
+    pub before: Below,
+    /// The lake below the store after that open, where it was refused.
+    pub after: Option<Below>,
+}
+
+/// What a lake says below the store: its log's tip, the position its
+/// projection is folded through, and whether its lease is free.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Below {
+    /// The log's tip.
+    pub tip: Option<(lakelands_api::Position, lakelands_api::event::Digest)>,
+    /// The position the projection is folded through.
+    pub folded_through: Option<lakelands_api::Position>,
+    /// Whether the lease could be taken, and was given back.
+    pub lease_free: bool,
+}
+
+/// Reads a lake below the store, through its engine's seam: for a
+/// harness's [`Continue`].
+pub fn below(
+    opener: &dyn lakelands_api::engine::EngineOpener,
+    location: &lakelands_api::Location,
+) -> lakelands_api::Result<Below> {
+    let engine = opener.open(location, lakelands_api::engine::OpenMode::Write)?;
+    let lease = engine.take_lease("the suite, below the store");
+    if let Ok(lease) = &lease {
+        engine.release_lease(lease)?;
+    }
+    Ok(Below {
+        tip: engine.tip()?,
+        folded_through: engine.projection().folded_through()?,
+        lease_free: lease.is_ok(),
+    })
+}
+
+/// Appends `lines` to a lake's log through its engine's seam, under a
+/// lease taken for it and given back, commits the projection ahead of
+/// the log where they ask it, and reads the lake [`below`]: for a
+/// harness's [`Continue`].
+pub fn continue_below(
+    opener: &dyn lakelands_api::engine::EngineOpener,
+    location: &lakelands_api::Location,
+    lines: Lines,
+) -> lakelands_api::Result<Below> {
+    let engine = opener.open(location, lakelands_api::engine::OpenMode::Write)?;
+    let lease = engine.take_lease("another release")?;
+    let appended = match engine.tip()? {
+        Some(tip) => {
+            let (lines, ahead) = lines(tip, lease.fence);
+            engine.append(&lease, &lines).and_then(|()| {
+                let Some((tip, _)) = engine.tip()?.filter(|_| ahead > 0) else {
+                    return Ok(());
+                };
+                let projection = engine.projection();
+                projection.begin()?;
+                projection.commit(lakelands_api::Position(tip.0 + ahead))
+            })
+        }
+        None => Ok(()),
+    };
+    engine.release_lease(&lease)?;
+    drop(engine);
+    appended?;
+    below(opener, location)
+}
+
 /// The future an [`Import`] answers.
 pub type ImportFuture =
     Pin<Box<dyn Future<Output = lakelands_api::Result<ImportedLake>> + Send + 'static>>;
@@ -268,8 +401,14 @@ pub struct ImportedLake {
 pub type FreshLake<'a> =
     Pin<Box<dyn Future<Output = lakelands_api::Result<Arc<dyn LakeStore>>> + Send + 'a>>;
 
+/// The lake a check is handed: its store, as the contract sees it.
+pub type Store = Arc<dyn LakeStore>;
+
+/// What a check, or a step of one, answers: it held, or why not.
+pub type Held = Result<(), Failure>;
+
 /// The future one check runs as.
-pub type CheckFuture = Pin<Box<dyn Future<Output = Result<(), Failure>> + Send>>;
+pub type CheckFuture = Pin<Box<dyn Future<Output = Held> + Send>>;
 
 /// One behaviour every engine must honour.
 #[derive(Clone, Copy)]
@@ -326,6 +465,8 @@ pub struct Report {
     pub passed: Vec<&'static str>,
     /// The checks that failed, in registry order, with why.
     pub failed: Vec<(&'static str, Failure)>,
+    /// Every check run, in registry order, with what it asserted.
+    pub tallies: Vec<(&'static str, Tally)>,
 }
 
 impl Report {
@@ -351,6 +492,62 @@ impl fmt::Display for Report {
     }
 }
 
+/// What one check asserted while it ran.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tally {
+    /// The assertions evaluated, each time one was.
+    pub evaluations: u64,
+    /// The distinct places in the suite those assertions are written at.
+    pub sites: usize,
+}
+
+/// What the check being run has asserted so far.
+#[derive(Default)]
+struct Counting {
+    evaluations: u64,
+    sites: HashSet<(&'static str, u32, u32)>,
+}
+
+thread_local! {
+    static COUNTING: RefCell<Counting> = RefCell::default();
+}
+
+/// Counts one assertion of the check being run, at the place that wrote
+/// it: `ensure!`, `refused_as!` and [`Must`](fixture::Must) call it.
+#[track_caller]
+pub fn tally() {
+    let at = std::panic::Location::caller();
+    COUNTING.with_borrow_mut(|c| {
+        c.evaluations += 1;
+        c.sites.insert((at.file(), at.line(), at.column()));
+    });
+}
+
+/// Runs `step` with `counting` as this thread's count, so that checks
+/// polled in turn on one thread, or on several, never mix their counts.
+fn counting<T>(counting: &mut Counting, step: impl FnOnce() -> T) -> T {
+    let outer = COUNTING.replace(std::mem::take(counting));
+    let out = step();
+    *counting = COUNTING.replace(outer);
+    out
+}
+
+impl Counting {
+    fn tally(&self) -> Tally {
+        Tally {
+            evaluations: self.evaluations,
+            sites: self.sites.len(),
+        }
+    }
+}
+
+/// Drives `fut` with a count of its own, answering what it asserted too.
+async fn counted<F: Future>(fut: F) -> (F::Output, Tally) {
+    let (mut count, mut fut) = (Counting::default(), std::pin::pin!(fut));
+    let out = std::future::poll_fn(|cx| counting(&mut count, || fut.as_mut().poll(cx))).await;
+    (out, count.tally())
+}
+
 /// Runs every registered check against fresh lakes from `harness`, in
 /// registry order, and reports them all.
 pub async fn run_all(harness: &dyn Harness) -> Report {
@@ -370,7 +567,9 @@ async fn run_checks(harness: &dyn Harness, checks: &[Check]) -> Report {
         ..Report::default()
     };
     for check in checks {
-        match run_check(harness, check).await {
+        let (outcome, tally) = counted(run_check(harness, check)).await;
+        report.tallies.push((check.name, tally));
+        match outcome {
             Ok(()) => report.passed.push(check.name),
             Err(failure) => report.failed.push((check.name, failure)),
         }
@@ -409,6 +608,7 @@ async fn run_check(harness: &dyn Harness, check: &Check) -> Result<(), Failure> 
         large_lake: harness.large_lake(),
         harness: harness.name().to_owned(),
         import: harness.importer(),
+        continued: harness.continuer(),
     };
     match caught((check.run)(store, given)).await {
         Ok(outcome) => outcome,

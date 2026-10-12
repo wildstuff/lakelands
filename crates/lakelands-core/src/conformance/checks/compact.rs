@@ -39,37 +39,33 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::rekey;
-use crate::conformance::Failure;
 use crate::conformance::backing::{EMBED_MODEL, made, plug, unplug};
 use crate::conformance::fixture::{
     Caller, Lake, Must, embedding, field, get_at, join_all, log_events, partner_totals, patch,
     pattern, read_at, step, type_decl, upsert,
 };
+use crate::conformance::{Failure, Held, Store};
 use crate::export;
 
 check!(
-    /// Every read answers as before.
     ANSWERS_AS_BEFORE = a_compacted_lake_answers_every_read_as_before,
-    "040: after a compact of a churned lake (overwrites, a retire, a restrict, a derived field, a view, recorded outputs, embedded vectors, a proposal, a value-type migration, a re-key and a rebuild), every read answers byte for byte as before: every record with provenance at the head and as of every position, a lexical and a vector search, a walk and the proposals; a retry of a keyed write is still recognised and appends nothing; an input the lake recorded is not called again after the compact, and a rebuild after it answers as before",
+    "040: after a compact of a churned lake (overwrites, a retire, a restrict, a derived field, a view, recorded outputs, embedded vectors, a proposal, a value-type migration, a re-key and a rebuild), every read answers byte for byte as before: every record with provenance at the head and as of every position, a lexical and a vector search, a walk and the proposals; a retry of a keyed write is still recognised and appends nothing; an input the lake recorded is not called again after the compact, and a rebuild after it answers as before; every filtered poll answers after it what the log does (lakelands#678)",
     embedding
 );
 
 check!(
-    /// The log and the export are untouched.
     APPENDS_NOTHING = compact_appends_nothing_and_exports_the_same_bytes,
     "040: a compact appends nothing: the head, the whole feed and verify's answer are as before, the report names the head unmoved, and an export before and after is the same, file for file and byte for byte, manifest included",
     scratch
 );
 
 check!(
-    /// A second compact, then writes as ever.
     AGAIN_AND_ON = a_lake_compacts_again_and_writes_on,
     "040: a lake compacts again and nothing changes either; a write after it continues the record's version and the log's position",
     embedding
 );
 
 check!(
-    /// Writes during a compact wait, and each lands once.
     WRITES_DURING = writes_made_while_a_compact_runs_each_land_once_before_or_after_it,
     "040 and 008: writers writing while compacts run each land once, before or after a compact; every write answers a position its value is visible from, the log grows by the writes alone, and every read of the churned lake answers as before",
     embedding
@@ -113,7 +109,7 @@ async fn keyed(cat: &dyn Catalog, who: &Principal) -> Result<Outcome, Failure> {
 
 /// `lookup`, a function of the suite's backing echoing its input `code`
 /// under the check's own `token`, and `place`, whose `name` it computes.
-async fn places(store: &dyn LakeStore, token: &str) -> Result<(), Failure> {
+async fn places(store: &dyn LakeStore, token: &str) -> Held {
     let l = super::backings::places(store, json!({"token": token, "echo": "code"})).await?;
     for (key, code) in [("q1", "harbour"), ("q2", "quay"), ("q1", "lock")] {
         l.upsert("place", key, json!({"code": code})).await?;
@@ -122,7 +118,7 @@ async fn places(store: &dyn LakeStore, token: &str) -> Result<(), Failure> {
 }
 
 /// `note`, whose `vec` the suite's embedding backend makes from `title`.
-async fn notes(l: &Lake) -> Result<(), Failure> {
+async fn notes(l: &Lake) -> Held {
     let vec = embedding("vec", 2, &["title"], EMBED_MODEL);
     l.declare(type_decl(
         "note",
@@ -170,7 +166,7 @@ async fn churned(store: &dyn LakeStore, embedded: bool, token: &str) -> Result<L
         .restrict(&"invoice".into(), &"i2".into(), "a retention hold".into())
         .await
         .must("restricting invoice i2")?;
-    cat.propose(
+    let fut = cat.propose(
         own,
         ProposedWrite::Upsert {
             ty: "invoice".into(),
@@ -179,9 +175,8 @@ async fn churned(store: &dyn LakeStore, embedded: bool, token: &str) -> Result<L
             opts: WriteOpts::default(),
         },
         "a correction".into(),
-    )
-    .await
-    .must("proposing an upsert of invoice i3")?;
+    );
+    fut.await.must("proposing an upsert of invoice i3")?;
     let tighter: ValueTypeDecl = serde_json::from_value(
         json!({"name": "account_kind", "kind": "text", "one_of": ["giro", "savings"]}),
     )
@@ -191,9 +186,8 @@ async fn churned(store: &dyn LakeStore, embedded: bool, token: &str) -> Result<L
         .await
         .must("running the preflight of tightening `account_kind`")?
         .data;
-    cat.migrate_value_type_apply(own, tighter.into(), &r.report_id)
-        .await
-        .must("tightening `account_kind`")?;
+    let fut = cat.migrate_value_type_apply(own, tighter.into(), &r.report_id);
+    fut.await.must("tightening `account_kind`")?;
     rekey::apply(store).await?;
     store.rebuild().await.must("rebuilding the projection")?;
     crate::conformance::fixture::two_makes(&l).await?;
@@ -304,11 +298,7 @@ async fn answers(
 }
 
 /// Fails naming the first read that answers otherwise than before.
-fn same(
-    before: &[(String, String)],
-    after: &[(String, String)],
-    when: &str,
-) -> Result<(), Failure> {
+fn same(before: &[(String, String)], after: &[(String, String)], when: &str) -> Held {
     for (b, a) in before.iter().zip(after) {
         ensure!(
             b == a,
@@ -331,7 +321,7 @@ async fn compact(store: &dyn LakeStore) -> Result<CompactReport, Failure> {
     store.compact().await.must("compacting the lake")
 }
 
-fn unmoved(report: &CompactReport, head: Position) -> Result<(), Failure> {
+fn unmoved(report: &CompactReport, head: Position) -> Held {
     ensure!(
         report.head == head,
         "a compact at head {head} reports the head {}",
@@ -340,9 +330,7 @@ fn unmoved(report: &CompactReport, head: Position) -> Result<(), Failure> {
     Ok(())
 }
 
-async fn a_compacted_lake_answers_every_read_as_before(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_compacted_lake_answers_every_read_as_before(store: Store) -> Held {
     let l = churned(store.as_ref(), true, "compact_answers").await?;
     let head = store.head().await.must("reading the head")?;
     let before = answers(store.as_ref(), head).await?;
@@ -371,6 +359,8 @@ async fn a_compacted_lake_answers_every_read_as_before(
     unmoved(&report, head)?;
     let after = answers(store.as_ref(), head).await?;
     same(&before, &after, "after a compact")?;
+    // The feed's index is not storage the projection no longer uses.
+    super::feed::the_index_answers_the_log(store.as_ref(), "a compacted lake").await?;
     // The retry is recognised from what the projection keeps of applied
     // ids: it answers what the write answered, and appends nothing.
     let retried = keyed(l.cat.as_ref(), &l.own).await?;
@@ -445,18 +435,17 @@ fn tree(dir: &Path) -> Result<Vec<(String, Vec<u8>)>, Failure> {
 }
 
 async fn compact_appends_nothing_and_exports_the_same_bytes(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     scratch: PathBuf,
-) -> Result<(), Failure> {
+) -> Held {
     let scratch = super::export::Scratch::new(scratch);
     churned(store.as_ref(), false, "compact_appends").await?;
     let head = store.head().await.must("reading the head")?;
     let log = log_of(store.as_ref()).await?;
     let verified = store.verify(None, None).await.must("verifying the lake")?;
     let (first, second) = (scratch.dir("before"), scratch.dir("after"));
-    let manifest = export::write(store.as_ref(), &first)
-        .await
-        .must("exporting before the compact")?;
+    let manifest = export::write(store.as_ref(), &first);
+    let manifest = manifest.await.must("exporting before the compact")?;
 
     let report = compact(store.as_ref()).await?;
     unmoved(&report, head)?;
@@ -471,9 +460,8 @@ async fn compact_appends_nothing_and_exports_the_same_bytes(
         again == verified,
         "verify answers {again:?} after a compact and {verified:?} before"
     );
-    let later = export::write(store.as_ref(), &second)
-        .await
-        .must("exporting after the compact")?;
+    let later = export::write(store.as_ref(), &second);
+    let later = later.await.must("exporting after the compact")?;
     ensure!(
         later == manifest,
         "the export's manifest after a compact is {later:?}, and before it was {manifest:?}"
@@ -495,7 +483,7 @@ async fn compact_appends_nothing_and_exports_the_same_bytes(
     Ok(())
 }
 
-async fn a_lake_compacts_again_and_writes_on(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_lake_compacts_again_and_writes_on(store: Store) -> Held {
     churned(store.as_ref(), true, "compact_again").await?;
     let head = store.head().await.must("reading the head")?;
     let before = answers(store.as_ref(), head).await?;
@@ -560,23 +548,19 @@ fn writer(cat: Arc<dyn Catalog>, who: Principal, w: usize) -> Doing {
 }
 
 /// One caller compacting three times over.
-fn compactor(store: Arc<dyn LakeStore>) -> Doing {
+fn compactor(store: Store) -> Doing {
     Box::pin(async move {
         let mut out = Vec::new();
         for _ in 0..3 {
-            let report = store
-                .compact()
-                .await
-                .must("compacting while others write")?;
+            let report = store.compact();
+            let report = report.await.must("compacting while others write")?;
             out.push(Done::Compacted(report.head));
         }
         Ok(out)
     })
 }
 
-async fn writes_made_while_a_compact_runs_each_land_once_before_or_after_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn writes_made_while_a_compact_runs_each_land_once_before_or_after_it(store: Store) -> Held {
     let l = churned(store.as_ref(), true, "compact_writes").await?;
     let Lake { cat, own } = &l;
     l.declare(type_decl("item", vec![field("n", StorageKind::Number)]))

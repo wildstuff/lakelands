@@ -3,8 +3,6 @@
 //! narrowed (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
 //! `docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::query::{Hits, SearchMode};
 use lakelands_api::{Error, LakeStore, Principal, Refusal};
@@ -14,30 +12,27 @@ use super::search::{doc_search, keys, masking, refused};
 use crate::conformance::fixture::{
     Lake, Must, doors, embedding, field, owner, searchable, type_decl, vector,
 };
-use crate::conformance::{Failure, Reopen, backing};
+use crate::conformance::{Failure, Held, Reopen, Store, backing};
 
 check!(
-    /// Named fields narrow the match and the ranking.
     FIELDS_NARROW_THE_MATCH = a_search_limited_to_named_fields_matches_and_ranks_in_those_only,
     "024 and 025: a lexical or hybrid search that names `fields` matches, scores and ties over those searchable fields only, the same on every engine; without `fields` it searches every searchable field; a hybrid search without a vector or a backend, over a field a model fills, falls back to its text in those fields",
     reopens
 );
 
 check!(
-    /// Named fields lift the probe of the fields not named.
     FIELDS_LIFT_THE_PROBE = a_search_limited_to_readable_fields_is_answered_beside_a_masked_one,
     "024: a search that names `fields` probes only those, and one that names none searches the searchable fields its principal reads, so a searchable field the principal may not read neither refuses nor ranks a search that does not name it; the field stays masked in every hit"
 );
 
 check!(
-    /// Named fields refuse what they may not name.
     FIELDS_REFUSED = naming_an_undeclared_unsearchable_or_unreadable_field_is_refused,
     "024: a named field that is not declared or not searchable is invalid, one the principal may not read is not granted, judged before its searchability, and a search naming no field is invalid"
 );
 
 check!(
-    /// Named fields leave the vector's own probe in place.
-    FIELDS_KEEP_THE_EMBED_PROBE = a_hybrid_search_limited_to_named_fields_still_probes_what_its_vector_is_embedded_from,
+    FIELDS_KEEP_THE_EMBED_PROBE =
+        a_hybrid_search_limited_to_named_fields_still_probes_what_its_vector_is_embedded_from,
     "024: `fields` narrows only the text half of a hybrid search; its vector still encodes every field it is embedded from, so a hybrid search over it is refused, naming the field, when the principal may not read one, whatever `fields` names",
     embedding
 );
@@ -46,7 +41,7 @@ check!(
 /// not searchable, `label`, and a plain vector `w`. For "harbour
 /// quayside", `a` and `b` hold both words and `c` one over every
 /// searchable field; `b` holds both in `note`, `a` one, `c` none.
-async fn accounts(store: &dyn LakeStore) -> Result<(), Failure> {
+async fn accounts(store: &dyn LakeStore) -> Held {
     let l = Lake::of(store);
     let w = vector("w", 2);
     l.declare(type_decl(
@@ -117,9 +112,9 @@ async fn answer(
 }
 
 async fn a_search_limited_to_named_fields_matches_and_ranks_in_those_only(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     reopen: Reopen,
-) -> Result<(), Failure> {
+) -> Held {
     accounts(store.as_ref()).await?;
     let own = owner(store.as_ref());
     let every = answer(
@@ -196,9 +191,7 @@ async fn a_search_limited_to_named_fields_matches_and_ranks_in_those_only(
     Ok(())
 }
 
-async fn a_search_limited_to_readable_fields_is_answered_beside_a_masked_one(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_search_limited_to_readable_fields_is_answered_beside_a_masked_one(store: Store) -> Held {
     accounts(store.as_ref()).await?;
     let reader = masking(store.as_ref(), "secret");
     let every = answer(
@@ -255,7 +248,7 @@ async fn invalid(
     mode: SearchMode,
     field: Option<&str>,
     what: &str,
-) -> Result<(), Failure> {
+) -> Held {
     match doors(store).search(who, doc_search(mode)).await {
         Err(Error::Refused {
             field: f,
@@ -271,9 +264,7 @@ async fn invalid(
     }
 }
 
-async fn naming_an_undeclared_unsearchable_or_unreadable_field_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn naming_an_undeclared_unsearchable_or_unreadable_field_is_refused(store: Store) -> Held {
     accounts(store.as_ref()).await?;
     let s = store.as_ref();
     let own = owner(s);
@@ -315,8 +306,8 @@ async fn naming_an_undeclared_unsearchable_or_unreadable_field_is_refused(
 }
 
 async fn a_hybrid_search_limited_to_named_fields_still_probes_what_its_vector_is_embedded_from(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     use crate::conformance::backing::EMBED_MODEL;
 
     let l = Lake::of(store.as_ref());

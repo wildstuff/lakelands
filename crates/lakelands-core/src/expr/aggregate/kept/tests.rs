@@ -1,7 +1,7 @@
 use super::*;
 use crate::expr::aggregate::Grouping;
 use crate::expr::parse;
-use serde_json::json;
+use serde_json::{Value, json};
 
 type Answer = std::result::Result<Value, String>;
 
@@ -34,19 +34,21 @@ impl Kept {
 
     fn put(&mut self, key: &str, fields: &Value) -> &mut Kept {
         let (key, fields) = (RecordKey::from(key), row(fields));
-        self.keeping.put(&mut self.folds, &key, &fields, None);
+        self.keeping
+            .put(&mut self.folds, (&key, (&fields, None)), None);
         self
     }
 
     fn take(&mut self, key: &str, fields: &Value) -> bool {
         let (key, fields) = (RecordKey::from(key), row(fields));
-        self.keeping.take(&mut self.folds, &key, &fields, None)
+        self.keeping
+            .take(&mut self.folds, (&key, (&fields, None)), None)
     }
 
     fn change(&mut self, was: (&str, &Value), is: (&str, &Value)) -> bool {
         let was = (RecordKey::from(was.0), row(was.1));
         let is = (RecordKey::from(is.0), row(is.1));
-        let (was, is) = ((&was.0, &was.1), (&is.0, &is.1));
+        let (was, is) = ((&was.0, (&was.1, None)), (&is.0, (&is.1, None)));
         self.keeping.change(&mut self.folds, was, is, None)
     }
 
@@ -72,7 +74,9 @@ impl Kept {
 fn computed(members: &[(&str, Value)], expr: &str) -> Answer {
     let named = [(FieldName::from("m"), parse(expr).unwrap())];
     let mut group = Grouping::new(Vec::new(), &named, Timestamp(0));
-    members.iter().for_each(|(_, v)| group.add(&row(v), None));
+    members
+        .iter()
+        .for_each(|(_, v)| group.add((&row(v), None), None));
     let (by, folds) = group.groups().pop().unwrap_or_default();
     let answer = super::super::measures(&folds, &by, &named, Row::new(), None, Timestamp(0));
     answer
@@ -416,13 +420,15 @@ fn a_waiting_extreme_is_read_from_its_order_after_the_holder() {
     let (k, settings) = (RecordKey::from("k2"), None);
     // Each extreme's entry: a `max` puts the greatest value first, and a
     // value whose key begins another's after it.
-    let entries = kept.keeping.entries(&k, &row(&x("1")), settings);
-    let longer = kept.keeping.entries(&k, &row(&x("1.5")), settings);
+    let entries = kept.keeping.entries((&k, (&row(&x("1")), None)), settings);
+    let longer = kept
+        .keeping
+        .entries((&k, (&row(&x("1.5")), None)), settings);
     assert_eq!(entries.iter().map(|e| e.0).collect::<Vec<_>>(), [0, 1]);
     assert!(longer[0].1 < entries[0].1 && entries[1].1 < longer[1].1);
     assert!(
         kept.keeping
-            .entries(&k, &row(&json!({})), settings)
+            .entries((&k, (&row(&json!({})), None)), settings)
             .is_empty()
     );
     kept.put("k1", &x("1.5")).put("k2", &x("1"));
@@ -433,7 +439,7 @@ fn a_waiting_extreme_is_read_from_its_order_after_the_holder() {
     let waiting = kept.keeping.waiting(&kept.folds);
     let held = kept
         .keeping
-        .entries(&RecordKey::from("k1"), &row(&x("1.5")), settings);
+        .entries((&RecordKey::from("k1"), (&row(&x("1.5")), None)), settings);
     assert_eq!(
         waiting,
         [

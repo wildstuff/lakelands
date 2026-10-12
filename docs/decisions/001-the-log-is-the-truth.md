@@ -23,8 +23,9 @@ wrote it.
 
 It also keeps the projection cheap to change. A new index, a new engine
 or a corrected fold is a rebuild, not a data migration; the only format
-that must stay stable across versions is the log's, and that format is
-specified and versioned.
+a lake is bound to is the log's, and that format is specified and
+versioned. What a release owes a lake written in an older format is in
+`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`.
 
 ## What it is not
 
@@ -37,3 +38,11 @@ specified and versioned.
   second copy of the state that could disagree with the log: retiring a
   record is an event like any other write, and the projection shows
   what the fold makes of it.
+
+## How it came to be
+
+- The first version said that the log's format is the only one that
+  must stay stable across versions.
+- The reason names the log's format as the only one a lake is bound to,
+  and what a release owes a lake written in an older format went to
+  054 (lakelands#801).

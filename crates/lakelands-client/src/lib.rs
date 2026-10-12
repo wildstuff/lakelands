@@ -2,7 +2,7 @@
 //! the contract's [`LakeStore`], [`Catalog`] and [`ChangeFeed`] for a
 //! caller that does not hold the lake itself.
 //!
-//! One contract, a third implementation beside the store and the mock:
+//! One contract, a second implementation beside the store:
 //! the door checks run unchanged against it, behind `serve_http` over a
 //! store. Each door is its REST route and nothing more; the client adds
 //! no semantics of its own.
@@ -168,6 +168,22 @@ impl RemoteLake {
         silence: Duration,
     ) -> std::result::Result<RemoteLake, ConfigError> {
         let wire = Wire::new(&config, silence)?;
+        Ok(RemoteLake {
+            wire: Arc::new(wire),
+            limits: config.limits,
+        })
+    }
+
+    /// As [`connect_with_silence`](RemoteLake::connect_with_silence),
+    /// over a connection the test holds the server's end of, so a test
+    /// on a paused clock measures the bound exactly.
+    #[cfg(test)]
+    pub(crate) fn connect_over(
+        config: RemoteConfig,
+        silence: Duration,
+        conn: tokio::io::DuplexStream,
+    ) -> std::result::Result<RemoteLake, ConfigError> {
+        let wire = Wire::new(&config, silence)?.over(conn);
         Ok(RemoteLake {
             wire: Arc::new(wire),
             limits: config.limits,

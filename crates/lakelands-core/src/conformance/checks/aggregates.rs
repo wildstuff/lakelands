@@ -1,57 +1,48 @@
 //! Aggregates over a set of records (`lakelands_api::read::Aggregate`,
 //! `docs/decisions/011-storage-kind-and-value-type.md`).
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, ValueTypeDecl};
 use lakelands_api::query::{Projection, QueryResult};
 use lakelands_api::read::{AggFunc, Aggregate, ReadAt};
 use lakelands_api::write::Declaration;
-use lakelands_api::{Find, Found, LakeStore, Timestamp, TypeName, Value};
+use lakelands_api::{Find, Found, Timestamp, TypeName, Value};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, agg, aggregate, all_found, count_view, dec, decimal, field, pattern, reads_all,
     restrict, type_decl, value_type,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A count is a full walk's length.
     COUNT_IS_THE_WALK = a_count_answers_as_many_records_as_a_full_find_walk,
     "the read contract and 029: `find` with only `count()` answers as many records as a walk of every page of the same `find` returns, with no filter, a filter the engine applies and one only the store evaluates, at `valid_at`, at an earlier position and over a view, for a principal with the `restricted` grant and one without; a superseded state, a retired record and, without the grant, a restricted one are not counted"
 );
 
 check!(
-    /// A group key reads a setting as `where` does.
     SETTING_IN_A_GROUP_KEY = a_group_key_reads_a_setting_as_a_where_reads_it,
     "the read contract (lakelands#563): an aggregate's named group key that calls `setting` reads the lake's setting, as the same call in `where` does, in `find` and in a pattern: `setting('threshold')` groups by its value, and `amount > setting('threshold')`, in a pattern `bill.amount > setting('threshold')` (lakelands#720), splits the records it holds for from the rest"
 );
 
 check!(
-    /// A pattern's aggregate reads its rows by their paths.
     PATTERN_AGGREGATE_READS_PATHS = a_pattern_aggregate_reads_its_rows_by_their_paths,
-    "018, extended (lakelands#720): a pattern's aggregate names each value as its rows hold it, `<type>.<field>` or `<type>.key` of a type the pattern binds: a field key and a measure by the path, a named key's paths through a field into members, over a step too; a name no bound type starts is refused alike for a type absent and one not shown, over a step binding it too, a named key reading a field its reader may not know of is refused as a field key on it is, one reading a masked or a write-only field as not granted, as `find` refuses it, and one with no meaning as `find` refuses it; a holder of `only` is grouped, counted and keyed over its admitted records alone, at the start and over a step; a null and a missing value fall into one null group; `<type>.key` is a field `key` its reader may know of, judged by its kind as `find` judges it, null where a record holds none, grouping, summing and ordering as `find` does, and the record's key to one kept from it, as over a type with none"
+    "018, extended (lakelands#720): a pattern's aggregate names each value as its rows hold it, `<name>.<field>` or `<name>.key` of a name the pattern binds: a field key and a measure by the path, a named key's paths through a field into members, over a step too; a path no bound name starts is refused alike for a type absent and one not shown, over a step binding it too, a named key reading a field its reader may not know of is refused as a field key on it is, one reading a masked or a write-only field as not granted, as `find` refuses it, and one with no meaning as `find` refuses it; a holder of `only` is grouped, counted and keyed over its admitted records alone, at the start and over a step; a null and a missing value fall into one null group; `<name>.key` is a field `key` its reader may know of, judged by its kind as `find` judges it, null where a record holds none, grouping, summing and ordering as `find` does, and the record's key to one kept from it, as over a type with none, by whose `<name>.key` rows are ordered (lakelands#752); a step walked both ways at depth 0, or over a relation two types declare at the default depth, names its `type` where rows or an aggregate bind it or it reads a `where` (lakelands#680), and then binds that type, for an order, `fields` and a group key alike, and rows are sorted before `fields` leaves out a path an order reads"
 );
 
 check!(
-    /// Nothing counts as zero.
     EMPTY_AGGREGATE = an_aggregate_over_no_records_answers_zero,
     "the read contract and 011: an aggregate over an empty set answers one group with a count of 0 and a sum of zero, kept at the field's scale"
 );
 
-async fn an_aggregate_over_no_records_answers_zero(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn an_aggregate_over_no_records_answers_zero(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let money = ValueTypeDecl {
         scale: Some(2),
         ..value_type("money", StorageKind::Decimal)
     };
-    cat.declare(own, Declaration::ValueType(money))
-        .await
-        .must("declaring the value type `money`")?;
+    let fut = cat.declare(own, Declaration::ValueType(money));
+    fut.await.must("declaring the value type `money`")?;
     let amount = FieldDecl {
         ty: FieldType {
             value_type: Some("money".into()),
@@ -87,9 +78,7 @@ async fn an_aggregate_over_no_records_answers_zero(
     Ok(())
 }
 
-async fn a_count_answers_as_many_records_as_a_full_find_walk(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_count_answers_as_many_records_as_a_full_find_walk(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let mut item = type_decl(
@@ -182,9 +171,7 @@ async fn a_count_answers_as_many_records_as_a_full_find_walk(
     Ok(())
 }
 
-async fn a_group_key_reads_a_setting_as_a_where_reads_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_group_key_reads_a_setting_as_a_where_reads_it(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(type_decl(
         "bill",
@@ -228,9 +215,7 @@ async fn a_group_key_reads_a_setting_as_a_where_reads_it(
     Ok(())
 }
 
-async fn a_pattern_aggregate_reads_its_rows_by_their_paths(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_pattern_aggregate_reads_its_rows_by_their_paths(store: Store) -> Held {
     use crate::conformance::fixture::{
         field_access, invalid_case, principal, reason, reference, step,
     };
@@ -340,7 +325,7 @@ async fn a_pattern_aggregate_reads_its_rows_by_their_paths(
             wrong.push(format!("{a}: {got:?}, not {want}"));
         }
     }
-    // Refused: a name no bound type starts, one the type does not have, one
+    // Refused: a path no bound name starts, one its type does not have, one
     // with no meaning.
     let no_path = |path: &str| Case::PatternNoPath { path: path.into() };
     let unknown = Case::UnknownField {
@@ -460,7 +445,7 @@ async fn a_pattern_aggregate_reads_its_rows_by_their_paths(
             wrong.push(format!("`only` {only}, {a}: {got:?}, not {want}"));
         }
     }
-    // A row's `<type>.key` is a field `key` its reader may know of, judged
+    // A row's `<name>.key` is a field `key` its reader may know of, judged
     // by its kind as `find` judges it; one kept from it reads the record's
     // key, as over a type with no such field.
     let keyed = [("acct", StorageKind::Text), ("flag", StorageKind::Boolean)];
@@ -593,6 +578,141 @@ async fn a_pattern_aggregate_reads_its_rows_by_their_paths(
         wrong.push(format!(
             "rows ordered by `held.key`: {walked:?}, `find` by `key` {found:?}"
         ));
+    }
+    // Rows from `start` ordered down by `by`, projecting `fields`, as each
+    // row's `read` joined, or the answer (lakelands#752).
+    type Steps = Vec<lakelands_api::query::Step>;
+    let rows = |start: &str, steps: Steps, fields: &[&str], by: &str, read: &str| {
+        let fields = fields.iter().map(|f| f.to_string()).collect();
+        let mut p = pattern(start, None, steps, Projection::Rows { fields });
+        p.order_by = vec![crate::conformance::fixture::order(
+            by,
+            lakelands_api::read::OrderBy::Value,
+            lakelands_api::read::Direction::Desc,
+        )];
+        let (cat, own, read) = (l.cat.clone(), l.own.clone(), read.to_owned());
+        async move {
+            match cat.query(&own, p).await.map(|r| r.data) {
+                Ok(QueryResult::Rows { rows, .. }) => (rows.iter())
+                    .map(|r| r.get(&read).map_or("-".into(), |v| v.to_string()))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                other => format!("{other:?}"),
+            }
+        }
+    };
+    // The groups by the path `key` from `start`, each with its count.
+    let grouped = |start: &str, steps: Steps, key: &str| {
+        let a = serde_json::from_value(by(key)).expect("an aggregate");
+        let p = pattern(start, None, steps, Projection::Aggregate(a));
+        let (cat, own, key) = (l.cat.clone(), l.own.clone(), key.to_owned());
+        async move {
+            match cat.query(&own, p).await.map(|r| r.data) {
+                Ok(QueryResult::Groups { rows }) => (rows.iter())
+                    .map(|g| format!("{}={}", g.by[key.as_str()], g.values["n"]))
+                    .collect::<Vec<_>>()
+                    .join("|"),
+                other => format!("{other:?}"),
+            }
+        }
+    };
+    // A depth-0 step walked both ways reaches `bill` and `customer`: rows
+    // that bind it name its `type` (lakelands#680), and then hold its
+    // paths.
+    let both = |ty: Option<&str>| {
+        let mut s = step("of", Walk::Both);
+        (s.depth.min, s.ty) = (0, ty.map(Into::into));
+        vec![s]
+    };
+    let tiers = grouped("bill", both(Some("customer")), "customer.tier").await;
+    if tiers != r#""gold"="2"|"tin"="1""# {
+        wrong.push(format!(
+            "grouped by `customer.tier` over a step both ways: {tiers}"
+        ));
+    }
+    // A relation two types declare, walked in at the default depth: the
+    // step reaches bills and quotes, and names its `type` alike.
+    let mut quote = type_decl("quote", vec![field("x", StorageKind::Text)]);
+    quote.fields.push(reference("cust", "customer"));
+    quote.relations = vec![RelationDecl {
+        via: Some("cust".into()),
+        ..RelationDecl::to("of", "customer")
+    }];
+    l.declare(quote).await?;
+    l.upsert("quote", "q1", json!({"x": "qx", "cust": "c1"}))
+        .await?;
+    let into = |ty: Option<&str>| {
+        let mut s = step("of", Walk::In);
+        s.ty = ty.map(Into::into);
+        vec![s]
+    };
+    for (start, steps, path) in [
+        ("bill", both(None), "customer.tier"),
+        ("customer", into(None), "quote.x"),
+    ] {
+        let untyped = rows(start, steps.clone(), &[path], path, path).await;
+        let groups = grouped(start, steps, path).await;
+        if !untyped.contains("StepSeveralTypes") || !groups.contains("StepSeveralTypes") {
+            wrong.push(format!(
+                "rows and groups by `{path}` over a step with no `type`: {untyped}, {groups}"
+            ));
+        }
+    }
+    let quotes = grouped("customer", into(Some("quote")), "quote.x").await;
+    if quotes != r#""qx"="1""# {
+        wrong.push(format!(
+            "grouped by `quote.x` over a relation two types declare: {quotes}"
+        ));
+    }
+    // Its `where` is read against one type: the step names its `type`, as
+    // a neighbourhood's does, where it dropped the other type's records.
+    let kept = |ty: Option<&str>| {
+        let mut s = step("of", Walk::In);
+        (s.ty, s.filter) = (ty.map(Into::into), Some("x = 'qx'".into()));
+        rows("customer", vec![s], &[], "quote.x", "quote.x")
+    };
+    let (untyped, typed) = (kept(None).await, kept(Some("quote")).await);
+    if !untyped.contains("StepSeveralTypes") || typed != r#""qx""# {
+        wrong.push(format!(
+            "a `where` over a relation two types declare: {untyped}, with its `type` {typed}"
+        ));
+    }
+    for (start, steps, fields, by, read, want) in [
+        // Over a type with no field `key`, by the record's key.
+        ("bill", Vec::new(), &[][..], "bill.key", r#""b3","b2","b1""#),
+        // Sorted before `fields`, by a path it leaves out.
+        (
+            "bill",
+            Vec::new(),
+            &["bill.key"][..],
+            "bill.on",
+            r#""b2","b3","b1""#,
+        ),
+        (
+            "bill",
+            both(Some("customer")),
+            &["customer.tier"][..],
+            "customer.tier",
+            r#""tin","gold","gold""#,
+        ),
+        (
+            "customer",
+            into(Some("quote")),
+            &["quote.x"][..],
+            "quote.x",
+            r#""qx""#,
+        ),
+    ]
+    .map(|(start, steps, fields, by, want)| {
+        let read = fields.first().copied().unwrap_or(by);
+        (start, steps, fields, by, read, want)
+    }) {
+        let got = rows(start, steps, fields, by, read).await;
+        if got != want {
+            wrong.push(format!(
+                "rows of `{start}` by `{by}` down, `fields` {fields:?}: {got}"
+            ));
+        }
     }
     let flag = over("flag", &l.own, named("flag.key + 1")).await;
     let mut find = crate::conformance::fixture::aggregate(Vec::new());

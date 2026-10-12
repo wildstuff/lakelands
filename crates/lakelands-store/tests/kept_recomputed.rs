@@ -218,6 +218,7 @@ impl Kept {
             kept.extend(held(&kept_name(&v.into())));
             let input = lakelands_store::backed::digest(&Value::from(v));
             let state = view.output("sys:kept", &input).expect("the state");
+            let state = state.map(|(_, state)| state);
             kept.push(format!("{v} {}", json!(state)));
         }
         At {

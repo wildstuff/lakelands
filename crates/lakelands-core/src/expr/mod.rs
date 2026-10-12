@@ -7,8 +7,10 @@ pub mod aggregate;
 pub mod eval;
 pub mod iregexp;
 pub mod order;
+pub mod walk;
 
 pub use eval::{
     Place, RecordScope, Scope, Val, WriteScope, bind_params, check, eval, holds, params_read,
 };
 pub use lakelands_api::expr::{ParseError, arity, children, func_name, parse, print};
+pub use walk::{calls, declares, names_text};

@@ -21,11 +21,11 @@
 //!
 //! # Adding a check
 //!
-//! A check is one `fn(&dyn LakeEngine) -> Result<(), Failure>` whose name
-//! is a sentence in snake_case stating what must hold, turned into an
-//! [`EngineCheck`] constant by one `engine_check!` line in the file of its
-//! subject, and one line in [`ENGINE_CHECKS`]. Nothing else registers a
-//! check.
+//! A check is one `fn(&dyn LakeEngine) -> Held` whose name is a sentence
+//! in snake_case stating what must hold, turned into an [`EngineCheck`]
+//! constant by one `engine_check!` line in the file of its subject, and
+//! one line in [`ENGINE_CHECKS`]. Nothing else registers a check. The
+//! constant's doc is its `about`, so the line takes no `///` of its own.
 
 use std::fmt;
 use std::panic::AssertUnwindSafe;
@@ -36,15 +36,15 @@ use lakelands_api::id::LakeId;
 use lakelands_api::id::Position;
 use serde_json::{Value, json};
 
-use super::{Failure, Report, panic_message};
+use super::{Counting, Failure, Held, Report, counting, panic_message};
 
 /// Turns a check function into an [`EngineCheck`] constant whose `name`
-/// is the function's own name.
+/// is the function's own name and whose doc is its `about`.
 /// A check marked `reopening` also gets the harness, to open more
 /// handles onto the same lake.
 macro_rules! engine_check {
-    ($(#[$doc:meta])* $konst:ident = reopening $run:ident, $about:expr) => {
-        $(#[$doc])*
+    ($konst:ident = reopening $run:ident, $about:expr) => {
+        #[doc = $about]
         pub const $konst: $crate::conformance::engine::EngineCheck =
             $crate::conformance::engine::EngineCheck {
                 name: stringify!($run),
@@ -52,8 +52,8 @@ macro_rules! engine_check {
                 run: $run,
             };
     };
-    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr) => {
-        $(#[$doc])*
+    ($konst:ident = $run:ident, $about:expr) => {
+        #[doc = $about]
         pub const $konst: $crate::conformance::engine::EngineCheck =
             $crate::conformance::engine::EngineCheck {
                 name: stringify!($run),
@@ -80,6 +80,16 @@ pub trait EngineHarness: Send + Sync {
     /// Another handle onto the lake `lake` names, opened in `mode`, as a
     /// second process would open it.
     fn reopen(&self, lake: &LakeId, mode: OpenMode) -> lakelands_api::Result<Box<dyn LakeEngine>>;
+
+    /// Leave the projection of the lake `lake` names as a build of
+    /// another layout would: marked with `layout`, or with none, as one
+    /// made before projections were marked, and its table `routes` holding
+    /// one column `x` and none of this build's. `false` for an engine
+    /// whose projection lives only as long as its handles, which no other
+    /// build opens. A mark that cannot be made panics.
+    fn mark_layout(&self, _lake: &LakeId, _layout: Option<u64>) -> bool {
+        false
+    }
 }
 
 /// One promise of the engine seam.
@@ -90,7 +100,7 @@ pub struct EngineCheck {
     /// Where the rule is stated, and why it matters, in one sentence.
     pub about: &'static str,
     /// The check itself, run against a fresh lake; the harness reopens it.
-    pub run: fn(&dyn LakeEngine, &dyn EngineHarness) -> Result<(), Failure>,
+    pub run: fn(&dyn LakeEngine, &dyn EngineHarness) -> Held,
 }
 
 impl fmt::Debug for EngineCheck {
@@ -138,6 +148,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     projection::PUT_BEFORE_A_LATER_STATE,
     projection::PUTS_IN_ONE_TRANSACTION,
     projection::CLEAR,
+    projection::OTHER_LAYOUT,
     reads::MIXED_KINDS,
     reads::AFTER_AND_LIMIT,
     reads::KEY_BATCHES,
@@ -153,7 +164,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::COUNT_IS_THE_SCAN,
     reads::LEXICAL_HITS,
     reads::LEXICAL_BEYOND_ASCII,
-    reads::LEXICAL_EARLIER,
+    reads::RANKED_ONE_STATE,
     reads::LEXICAL_NAMED_FIELDS,
     reads::CHANGED_ROWS,
     reads::MANY_PUTS,
@@ -164,6 +175,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::EARLIER_STATES,
     reads::LATER_OUTPUT_HOLDS,
     reads::FIRST_APPLIED,
+    reads::ROUTES,
     reads::PROPOSALS,
     reads::LINK_EDGES,
     reads::EDGES_READ_WHAT_THEY_REACH,
@@ -178,7 +190,10 @@ pub fn run_engine_checks(harness: &dyn EngineHarness) -> Report {
         ..Report::default()
     };
     for check in ENGINE_CHECKS {
-        match run_engine_check(harness, check) {
+        let mut count = Counting::default();
+        let outcome = counting(&mut count, || run_engine_check(harness, check));
+        report.tallies.push((check.name, count.tally()));
+        match outcome {
             Ok(()) => report.passed.push(check.name),
             Err(failure) => report.failed.push((check.name, failure)),
         }
@@ -188,7 +203,7 @@ pub fn run_engine_checks(harness: &dyn EngineHarness) -> Report {
 
 /// Runs one engine check on a fresh lake. A harness that cannot open
 /// one, and a check that panics, are failures of that check.
-pub fn run_engine_check(harness: &dyn EngineHarness, check: &EngineCheck) -> Result<(), Failure> {
+pub fn run_engine_check(harness: &dyn EngineHarness, check: &EngineCheck) -> Held {
     let engine = match std::panic::catch_unwind(AssertUnwindSafe(|| harness.fresh())) {
         Ok(Ok(engine)) => engine,
         Ok(Err(e)) => {

@@ -1,47 +1,39 @@
 //! A cursor is bound to the position of its first page
 //! (`docs/glossary.md`, `docs/decisions/009-every-response-carries-its-position.md`).
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::ontology::{FieldDecl, StorageKind};
 use lakelands_api::query::{Projection, QueryResult, Search, SearchMode};
 use lakelands_api::read::{Direction, OrderBy};
-use lakelands_api::{Cursor, Find, Found, LakeStore, ReadAt, TypeName};
+use lakelands_api::{Cursor, Find, Found, ReadAt, TypeName};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, count_view, field, invalid_case, order, pattern, type_decl,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A cursor continues only the answer it was handed out for.
     CURSOR_ONE_ANSWER = a_cursor_continues_only_the_answer_it_was_handed_out_for,
     "018 and 029: a page continues only the answer its cursor was handed out for, the same door and the same type: a cursor of `find` on one type continues that `find`, and is refused as invalid by `find` on another type, by `query` and by `search`, naming where it belongs; a cursor of `query` or `search` is refused by `find` alike"
 );
 
 check!(
-    /// A cursor continues only the order it was handed out for.
     CURSOR_ONE_ORDER = a_cursor_handed_to_a_find_of_another_order_length_is_refused,
     "018 and lakelands#436: a cursor of `find` holds one sort value per key of the `order_by` its first page was read with; handed to a `find` whose `order_by` is longer or shorter, on a stored type or on a view, it is refused as invalid, naming the order, and never answers a page or `unavailable`"
 );
 
 check!(
-    /// A cursor continues only the read it was handed out for.
     CURSOR_ONE_READ = a_cursor_continues_only_the_read_it_was_handed_out_for,
     "018 and lakelands#419: a cursor carries a digest of the read it was handed out for, so `find` under another `where` or an `order_by` of the same length, `search` for other words or in named fields, and `query` with another start `where` or projection refuse it as invalid; another page size, `with_meta` or `total` continue it"
 );
 
 check!(
-    /// Later pages read where the first page was read.
     CURSOR_STAYS = a_cursor_stays_on_the_position_of_its_first_page,
     "the glossary: a cursor is bound to the position its first page was read at, so a page set is stable while the lake is written"
 );
 
-async fn a_cursor_stays_on_the_position_of_its_first_page(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_cursor_stays_on_the_position_of_its_first_page(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("item", vec![field("n", StorageKind::Number)]))
@@ -56,10 +48,8 @@ async fn a_cursor_stays_on_the_position_of_its_first_page(
         ..Find::default()
     };
 
-    let first = cat
-        .find(own, &item, page(None))
-        .await
-        .must("reading the first page")?;
+    let first = cat.find(own, &item, page(None));
+    let first = first.await.must("reading the first page")?;
     let Found::Records {
         rows, next_cursor, ..
     } = first.data
@@ -76,10 +66,8 @@ async fn a_cursor_stays_on_the_position_of_its_first_page(
     l.retire(item.as_str(), "e").await?;
 
     loop {
-        let next = cat
-            .find(own, &item, page(Some(cursor)))
-            .await
-            .must("reading a later page")?;
+        let next = cat.find(own, &item, page(Some(cursor)));
+        let next = next.await.must("reading a later page")?;
         ensure!(
             next.position == first.position,
             "a later page answered position {}, but its cursor is bound to the first \
@@ -117,9 +105,7 @@ async fn a_cursor_stays_on_the_position_of_its_first_page(
     Ok(())
 }
 
-async fn a_cursor_continues_only_the_answer_it_was_handed_out_for(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_cursor_continues_only_the_answer_it_was_handed_out_for(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     for ty in ["alpha", "beta"] {
@@ -234,9 +220,7 @@ async fn a_cursor_continues_only_the_answer_it_was_handed_out_for(
     Ok(())
 }
 
-async fn a_cursor_handed_to_a_find_of_another_order_length_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_cursor_handed_to_a_find_of_another_order_length_is_refused(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("doc", vec![field("t", StorageKind::Text)]))
@@ -292,9 +276,7 @@ async fn a_cursor_handed_to_a_find_of_another_order_length_is_refused(
     Ok(())
 }
 
-async fn a_cursor_continues_only_the_read_it_was_handed_out_for(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_cursor_continues_only_the_read_it_was_handed_out_for(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let name = FieldDecl {

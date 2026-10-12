@@ -6,29 +6,25 @@
 //! ingests. A relation carried by a reference field has no link type; its
 //! links change with the field, which `changed(<field>)` watches.
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::ontology::{Authority, Cardinality, FieldDecl, RelationDecl, StorageKind};
 use lakelands_api::write::WriteOpts;
-use lakelands_api::{Error, LakeStore, Position, Refusal};
+use lakelands_api::{Error, Position, Refusal};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, events_from, field, patch, reference, source_record, trigger_on, type_decl,
 };
+use crate::conformance::{Failure, Held, Store};
 use crate::links::{link_key, link_type_name};
 
 check!(
-    /// A trigger on a link type fires on every write of a link.
     LINK_TRIGGER_FIRES = a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest,
     "035 and 004: a trigger naming a relation's link type fires on link, on the link written again, on unlink and on each ingested link, naming the link type and the link's key, caused by that write; its guard reads the link's fields, and `changed(f)` holds on a write that changes f and not on unlink"
 );
 
 check!(
-    /// No trigger on the link type of a reference relation.
     VIA_LINK_TYPE_REFUSED = a_trigger_on_the_link_type_of_a_reference_relation_is_refused,
     "035: a relation carried by a reference field has no link type, so a trigger naming one is refused as invalid on `on`, saying to watch the type with `changed(<field>)`"
 );
@@ -50,9 +46,7 @@ fn relation(
     }
 }
 
-async fn a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
@@ -189,9 +183,7 @@ async fn a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest(
     Ok(())
 }
 
-async fn a_trigger_on_the_link_type_of_a_reference_relation_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_trigger_on_the_link_type_of_a_reference_relation_is_refused(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))

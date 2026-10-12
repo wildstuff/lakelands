@@ -10,16 +10,25 @@
 //! **Everything is read before anything is written.** The export is
 //! verified whole (`lakelands_core::export::verify`: canonical lines, consecutive
 //! positions, the hash chain, every checkpoint against the files before
-//! it, versions), then read once more for what only an import needs:
+//! it, the one format), then read once more for what only an import needs:
 //! every event belongs to the lake the location names, and every fence is
 //! the one its writer held (`docs/log-format.md` §4.1: 0 at position 0,
 //! each `lease_taken` carrying the fence it names, every other event the
 //! fence of the `lease_taken` before it). A fault in the files refuses the
 //! import before the new lake holds anything.
 //!
-//! **The target must be empty.** The engine is opened `Create` and the
-//! lease taken; a log that holds anything refuses the import, naming its
-//! head: an import is a lake's birth, not a merge.
+//! **The target must be empty,** and a lake that is there is not opened.
+//! The opener is asked for the ends of the target's log first, as an open
+//! asks it
+//! (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`): a
+//! lake written in another format is refused for its format, and a log
+//! that holds anything refuses the import, naming its head. Neither opens
+//! the engine, so an import onto a lake in use takes no lease and changes
+//! nothing of it: an import is a lake's birth, not a merge. Where there is
+//! no lake the engine is opened `Create` and the lease taken; a
+//! projection found there with no log under it is another lake's, or
+//! what is left of one, and refuses the import as damaged before an
+//! event is carried.
 //!
 //! **Then the files, as they are.** The first file's events go to
 //! `LakeEngine::import` [`BATCH`] at a time. Each later file starts with
@@ -183,11 +192,21 @@ pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported>
     let files = lakelands_core::export::segment_files(dir)?;
     let digests = check(&files, &location.lake)?;
     let opener = crate::lake::opener(location, &seams)?;
+    if let Some(ends) = opener.log_ends(location)? {
+        crate::log::one_format(&location.lake, Some(&ends))?;
+        let (lake, head) = (Box::new(location.lake.clone()), ends.1.position);
+        return Err(precondition(Case::ImportNotEmpty { lake, head }));
+    }
     let engine: Arc<dyn lakelands_api::engine::LakeEngine> =
         Arc::from(opener.open(location, OpenMode::Create)?);
+    // A projection with no log under it is not a place with no lake. It
+    // is asked before the lease is taken, as an open asks it: taking the
+    // lease may cut the log.
+    crate::lake::ends(engine.as_ref())?;
     let lease = engine.take_lease(&format!("lakelands import {}", std::process::id()))?;
     let written = (|| {
-        if let Some((head, _)) = engine.tip()? {
+        // A lake another writer made since the ends were asked for.
+        if let (_, Some((head, _))) = crate::lake::ends(engine.as_ref())? {
             let lake = Box::new(location.lake.clone());
             return Err(precondition(Case::ImportNotEmpty { lake, head }));
         }

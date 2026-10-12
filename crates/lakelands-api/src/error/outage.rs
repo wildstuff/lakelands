@@ -646,66 +646,6 @@ catalog! {
     }
 }
 
-named! {
-    /// What a format version added that an event carries, written in an older format.
-    pub enum Added {
-        /// It carries `rekeyed`.
-        Rekeyed = "rekeyed" => "carries `rekeyed`",
-        /// It declares a call of `date_bucket`.
-        DateBucket = "date_bucket" => "declares a call of `date_bucket`",
-        /// It carries `upstream`.
-        Upstream = "upstream" => "carries `upstream`",
-        /// It proposes a declaration or a migration.
-        ProposesSchema = "proposes_schema" => "proposes a declaration or a migration",
-        /// It carries `annotations` in a declaration.
-        Annotations = "annotations" => "carries `annotations` in a declaration",
-        /// It declares a derived relation.
-        DerivedRelation = "derived_relation" => "declares a derived relation",
-        /// It declares a trigger's `max_depth`.
-        TriggerDepth = "trigger_depth" => "declares a trigger's `max_depth`",
-        /// It declares a call of `retired`.
-        Retired = "retired" => "declares a call of `retired`",
-        /// It declares a view's parameters.
-        ViewParams = "view_params" => "declares a view's parameters",
-        /// It calls a verb with no key.
-        NoKey = "no_key" => "calls a verb with no key",
-        /// It declares a verb on its type.
-        VerbOnType = "verb_on_type" => "declares a verb on its type",
-        /// It declares a view that merges sources.
-        MergedSources = "merged_sources" => "declares a view that merges sources",
-        /// It proposes a value type's tightening.
-        Tightening = "tightening" => "proposes a value type's tightening",
-        /// It declares a call of `floor`.
-        Floor = "floor" => "declares a call of `floor`",
-        /// It declares a call of `date_bucket` by a width.
-        DateBucketByWidth = "date_bucket_by_width" => "declares a call of `date_bucket` by a width",
-        /// It declares a call of `in_set`.
-        InSet = "in_set" => "declares a call of `in_set`",
-        /// It renames a relation.
-        RelationRename = "relation_rename" => "renames a relation",
-        /// It writes a `view_kept.` setting.
-        KeptSetting = "kept_setting" => "writes a `view_kept.` setting",
-        /// It carries `made`.
-        Made = "made" => "carries `made`",
-        /// It proposes a migration whose report holds `restated`.
-        Restated = "restated" => "proposes a migration whose report holds `restated`",
-        /// It declares an `initial` value.
-        Initial = "initial" => "declares an `initial` value",
-        /// It declares `with_the_set`.
-        WithTheSet = "with_the_set" => "declares `with_the_set`",
-        /// It declares when a field is computed.
-        ComputedAt = "computed_at" => "declares when a field is computed",
-        /// It renames a value type's values.
-        ValueRenames = "value_renames" => "renames a value type's values",
-        /// It proposes a value type's migration that renames values.
-        ProposesValueRenames = "proposes_value_renames" => "proposes a value type's migration that renames values",
-        /// It proposes a write pinned to its record.
-        Pinned = "pinned" => "proposes a write pinned to its record",
-        /// It declares the kind `date`.
-        Date = "date" => "declares the kind `date`",
-    }
-}
-
 catalog! {
     /// What is wrong with stored or exported events, a checkpoint, or the files that hold them.
     pub enum Flaw {
@@ -717,12 +657,10 @@ catalog! {
         NotCanonical => "the bytes are not canonical",
         /// A member is not in its one written form.
         NotOneForm => "a member is not in its one written form",
-        /// It is written in a format outside the formats read.
-        FormatOutside { v: u64, lowest: u64, highest: u64 } => "written in log format {v}, and the formats read are {lowest} to {highest}",
-        /// It is written in a format before that of the event before it.
-        FormatBack { v: u64, before: u64 } => "written in format {v} after an event in format {before}",
-        /// It carries what a later format added.
-        FormatBelow { v: u64, carries: Added, need: u64 } => "a format {v} event {carries}, which format {need} added",
+        /// It is written in a log format this release does not read.
+        FormatOther { v: u64, reads: u64 } => "written in log format {v}, and this release reads and writes format {reads} alone",
+        /// Its `lake_created` says another log format than the release's.
+        CreatedInAnother { format: u64, reads: u64 } => "its `lake_created` says log format {format}, and this release reads and writes format {reads} alone",
         /// `context` carries `cause`, which the envelope carries.
         CauseInContext => "`context` carries `cause`, which the envelope carries",
         /// The envelope carries the origin `initial`, a field's alone.
@@ -743,6 +681,8 @@ catalog! {
         PrevHash => "it does not name the hash of the event before it",
         /// Its `known_at` is before that of the event before it.
         KnownAtBack { known_at: Timestamp, before: Timestamp } => "its known_at {known_at} is before the {before} of the event before it",
+        /// It holds a number written as an integer beyond ±(2^53 − 1).
+        IntegerTooLarge { n: serde_json::Number } => "the integer {n} in it is beyond ±(2^53 − 1), which not every reader reads exactly",
         /// A segment begins there, and its first event is no checkpoint.
         NoCheckpoint => "a segment begins there, and its first event is no checkpoint",
         /// It ends before a position it should hold.
@@ -759,6 +699,10 @@ catalog! {
         } => "a migration moves `{ty}` `{key}`, which the lake does not hold",
         /// A value type's renames reach other types than those that use it.
         RenamesOtherTypes { value_type: String } => "it renames values of `{value_type}` in other types than those that use it",
+        /// An `output_recorded` event carries both `output` and `output_at`, or neither.
+        OutputOnce => "an `output_recorded` event carries both `output` and `output_at`, or neither",
+        /// It names an output that is not its call's latest.
+        NotLatestOutput { at: Position } => "it names the output at position {at}, which is not its call's latest output",
         /// It records under a seam that is the store's own.
         OwnSeam { seam: String } => "it records under `{seam}`: a seam that begins `sys:` is the store's own",
         /// It declares or writes a type whose name is the store's own.
@@ -845,6 +789,8 @@ catalog! {
         NoEventIn { name: String } => "the file {name} holds no event",
         /// There is no segment file.
         NoSegmentFile => "there is no segment file under log/",
+        /// A segment has no index file beside it.
+        IndexMissing { name: String } => "the segment {name} has no index file",
         /// An event carries another fence than its writer's lease had.
         FenceMismatch { carried: u64, lease: u64 } => "an event carries fence {carried}, and its writer's lease had fence {lease}",
         /// The engine and the file digest a segment differently.
@@ -903,6 +849,15 @@ catalog! {
         Unmade { part: Part } => "this engine did not create what is there: {part} is missing",
         /// The lake has no projection yet.
         NoProjection { lake: String } => "lake `{lake}` has no projection yet; open it for writing first",
+        /// The lake's projection was laid out by another build: nothing reads it, and a rebuild makes it anew from the log.
+        ProjectionLayout {
+            lake: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            found: Option<u64>,
+            wanted: u64,
+        } => "lake `{lake}`'s projection [has layout {found}|has no layout number], and this build reads layout {wanted}; nothing was read from it: rebuild it from the log with `lakelands rebuild`",
+        /// The lake's log is written in the format of another release: nothing reads it and nothing is appended.
+        LogFormat { lake: String, found: u64, reads: u64 } => "lake `{lake}` is written in log format {found}, and this release reads and writes format {reads} alone; nothing was read from it and nothing appended",
         /// The lake could not be compacted while a reader holds a snapshot.
         Busy { lake: String } => "lake `{lake}` could not be compacted: a reader holds a snapshot of its projection; nothing a read answers has changed, so compact again when the reader is done",
         /// The projection is behind the log and could not catch up; nothing was appended.

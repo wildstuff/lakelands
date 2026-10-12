@@ -2,17 +2,28 @@
 
 ## What is decided
 
+### `Catalog` and `LakeStore` are `dyn`-compatible and asynchronous
+
 `Catalog` and the store facade `LakeStore` are `dyn`-compatible: a door
 holds `Arc<dyn Catalog>`, a host holds `Arc<dyn LakeStore>`, and the
-in-memory mock, the real store and a remote client are interchangeable
+real store and a remote client are interchangeable
 behind them. They are asynchronous. `ingest` therefore takes a boxed
 stream, `Pin<Box<dyn Stream<Item = SourceRecord> + Send>>`, and answers
 a boxed stream of commit acknowledgements. Every other seam is
 `dyn`-compatible too.
 
+### The engine traits are synchronous, and the store hands off to them in one place
+
 The engine traits (`LakeEngine`, `ProjectionStore`, `ProjectionView`,
 `VectorIndex`) are synchronous. The store runs them off its async
 callers.
+
+The store dispatches every call into an engine through one place, a
+single hand-off to the runtime's blocking pool. Nothing in the store
+starts a runtime of its own or parks a caller's executor, so a slow disk
+delays the call that needs it and nothing else.
+
+### The contract crate performs no I/O and names no async runtime
 
 `lakelands-api` performs no I/O, depends on no engine and names no async
 runtime; its only asynchronous vocabulary is the `Stream` trait and
@@ -20,12 +31,14 @@ boxed futures.
 
 ## Why
 
-The doors are built and tested before the store exists, against a mock,
-and must keep passing the same tests against the store afterwards. That
-only works if the mock and the store are two implementations of one
-object-safe trait. A remote client is a third implementation of the same
-trait, so a program can move a lake out of process without changing a
-line that calls it.
+The doors were built and tested before the store existed, against an
+in-memory mock, and had to keep passing the same tests against the store
+afterwards. That only worked because the mock and the store were two
+implementations of one object-safe trait. The mock is retired
+(lakelands#800): the doors test against the store on the memory engine.
+A remote client is the second implementation of the same trait, so a
+program can move a lake out of process without changing a line that
+calls it.
 
 Engines do blocking storage work, and SQLite, the reference engine, is
 synchronous. Making the engine seam asynchronous would force every
@@ -43,9 +56,8 @@ exists.
 - It does not let an engine block the caller's executor; that is the
   store's job to prevent.
 
-## Extended: one hand-off
+## How it came to be
 
-The store dispatches every call into an engine through one place, a
-single hand-off to the runtime's blocking pool. Nothing in the store
-starts a runtime of its own or parks a caller's executor, so a slow disk
-delays the call that needs it and nothing else.
+- The first version: the object-safe, asynchronous contract, the
+  synchronous engine traits, and a contract crate without a runtime.
+- The store's calls into an engine go through one hand-off.

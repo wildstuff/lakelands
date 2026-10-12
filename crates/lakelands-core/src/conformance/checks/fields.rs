@@ -7,56 +7,50 @@
 //! per field, and a field that depends on another is cleared or kept by
 //! the fold, never by the caller.
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::{OnInputChange, StorageKind};
 use lakelands_api::{Catalog, Error, FieldName, LakeStore, Outcome, Principal, Refusal, TypeName};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, declare, doors, field, field_writer, get_at, head_unmoved, owner, read, refused_on,
     try_upsert, type_decl, upsert, value,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// The record checks refuse in their order.
     RECORD_CHECKS_IN_ORDER = a_write_breaking_two_record_checks_is_refused_by_the_earlier,
-    "016, extended (lakelands#338): a record write that breaks two adjacent record checks is refused by the earlier: the type before an empty patch, the key before the fields, field by field in name order with the door before the grant, the grant before the value, the value before the key fill, the key's agreement before a reference, a reference before the version, the version before a required field; a retry answers its first outcome before any of them"
+    "016, extended (lakelands#338): a record write that breaks two adjacent record checks is refused by the earlier: the type before an empty patch, the key before the fields, field by field in name order with the door before the grant, the grant before the value, the value before the key fill, the key's agreement before a reference, a reference before the version, the version before a required field, a required field before the shape of a setting the store reads; a retry answers its first outcome before any of them"
 );
 
 check!(
-    /// Writer A's rewrite leaves writer B's field standing.
-    REWRITE_LEAVES_OTHER_WRITERS_FIELDS = a_rewrite_by_one_writer_leaves_another_writers_fields_alone,
+    REWRITE_LEAVES_OTHER_WRITERS_FIELDS =
+        a_rewrite_by_one_writer_leaves_another_writers_fields_alone,
     "012: a patch is merged per field, so a writer that sends only its own fields cannot erase anyone else's"
 );
 
 check!(
-    /// A dependent field declared `clear` is cleared by the fold.
     CLEAR_ON_INPUT_CHANGE = changing_an_input_clears_a_dependent_field_declared_clear,
     "012: with on_input_change clear, the fold clears the dependent field in the same event that changes its input"
 );
 
 check!(
-    /// A dependent field declared `keep` stays, visibly older.
-    KEEP_ON_INPUT_CHANGE = changing_an_input_keeps_a_dependent_field_declared_keep_and_shows_it_older,
+    KEEP_ON_INPUT_CHANGE =
+        changing_an_input_keeps_a_dependent_field_declared_keep_and_shows_it_older,
     "012 and 010: with on_input_change keep, the value stays and its provenance shows it is older than its input"
 );
 
 check!(
-    /// One forbidden field refuses the whole patch.
-    UNGRANTED_FIELD_REFUSES_WHOLE_PATCH = a_patch_with_a_field_the_principal_may_not_write_is_refused_whole,
+    UNGRANTED_FIELD_REFUSES_WHOLE_PATCH =
+        a_patch_with_a_field_the_principal_may_not_write_is_refused_whole,
     "006 and 012: a write carrying a field its principal may not write is refused whole, never applied in part"
 );
 
 check!(
-    /// Absent is unchanged, `null` clears.
     SPARSE_PATCH = a_field_absent_from_a_patch_is_unchanged_and_null_clears_it,
     "012 and the log format: an upsert is a sparse patch; an absent field is unchanged and null clears the field"
 );
 
 check!(
-    /// A field the type does not declare refuses the whole patch.
     UNDECLARED_FIELD_REFUSES_WHOLE_PATCH = a_patch_with_an_undeclared_field_is_refused_whole,
     "015: a field the lake's map does not declare is refused as invalid, and nothing of the patch is written"
 );
@@ -68,10 +62,7 @@ async fn i1(cat: &dyn Catalog, who: &Principal, fields: Value) -> Result<Outcome
 
 /// Declares `invoice` with the importer's `amount` and the reviewer's
 /// `verdict`, the latter depending on `amount` as `on_change` says.
-async fn two_writer_invoice(
-    store: &dyn LakeStore,
-    on_change: OnInputChange,
-) -> Result<(), Failure> {
+async fn two_writer_invoice(store: &dyn LakeStore, on_change: OnInputChange) -> Held {
     let mut verdict = field("verdict", StorageKind::Text);
     verdict.depends_on = vec![FieldName::from("amount")];
     verdict.on_input_change = on_change;
@@ -83,9 +74,7 @@ async fn two_writer_invoice(
     Ok(())
 }
 
-async fn a_rewrite_by_one_writer_leaves_another_writers_fields_alone(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rewrite_by_one_writer_leaves_another_writers_fields_alone(store: Store) -> Held {
     let cat = doors(store.as_ref());
     let mut ty = type_decl(
         "invoice",
@@ -129,9 +118,7 @@ async fn a_rewrite_by_one_writer_leaves_another_writers_fields_alone(
     Ok(())
 }
 
-async fn changing_an_input_clears_a_dependent_field_declared_clear(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn changing_an_input_clears_a_dependent_field_declared_clear(store: Store) -> Held {
     two_writer_invoice(store.as_ref(), OnInputChange::Clear).await?;
     let cat = doors(store.as_ref());
     let a = field_writer(store.as_ref(), "importer", "invoice", &["amount"]);
@@ -172,8 +159,8 @@ async fn changing_an_input_clears_a_dependent_field_declared_clear(
 }
 
 async fn changing_an_input_keeps_a_dependent_field_declared_keep_and_shows_it_older(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     two_writer_invoice(store.as_ref(), OnInputChange::Keep).await?;
     let cat = doors(store.as_ref());
     let a = field_writer(store.as_ref(), "importer", "invoice", &["amount"]);
@@ -215,9 +202,7 @@ async fn changing_an_input_keeps_a_dependent_field_declared_keep_and_shows_it_ol
     Ok(())
 }
 
-async fn a_patch_with_a_field_the_principal_may_not_write_is_refused_whole(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_patch_with_a_field_the_principal_may_not_write_is_refused_whole(store: Store) -> Held {
     two_writer_invoice(store.as_ref(), OnInputChange::Keep).await?;
     let cat = doors(store.as_ref());
     let a = field_writer(store.as_ref(), "importer", "invoice", &["amount"]);
@@ -257,9 +242,7 @@ async fn a_patch_with_a_field_the_principal_may_not_write_is_refused_whole(
     Ok(())
 }
 
-async fn a_field_absent_from_a_patch_is_unchanged_and_null_clears_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_field_absent_from_a_patch_is_unchanged_and_null_clears_it(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let ty = type_decl(
         "note",
@@ -303,9 +286,7 @@ async fn a_field_absent_from_a_patch_is_unchanged_and_null_clears_it(
     Ok(())
 }
 
-async fn a_patch_with_an_undeclared_field_is_refused_whole(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_patch_with_an_undeclared_field_is_refused_whole(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let ty = type_decl("memo", vec![field("text", StorageKind::Text)]);
@@ -315,11 +296,10 @@ async fn a_patch_with_an_undeclared_field_is_refused_whole(
     for key in ["m1", "m2"] {
         let before = store.head().await.must("reading the head")?;
         let remark = json!({"text": "changed", "remark": "call before dunning"});
-        let err = try_upsert(cat.as_ref(), own, "memo", key, remark)
-            .await
-            .must_fail(&format!(
-                "writing the undeclared field `remark` to `memo` `{key}`"
-            ))?;
+        let err = try_upsert(cat.as_ref(), own, "memo", key, remark);
+        let err = err.await.must_fail(&format!(
+            "writing the undeclared field `remark` to `memo` `{key}`"
+        ))?;
         head_unmoved(
             store.as_ref(),
             before,
@@ -353,9 +333,7 @@ async fn a_patch_with_an_undeclared_field_is_refused_whole(
     Ok(())
 }
 
-async fn a_write_breaking_two_record_checks_is_refused_by_the_earlier(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_write_breaking_two_record_checks_is_refused_by_the_earlier(store: Store) -> Held {
     use lakelands_api::write::WriteOpts;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -423,6 +401,15 @@ async fn a_write_breaking_two_record_checks_is_refused_by_the_earlier(
             "constraint part",
         ),
         ("o", "k3", r#"{"need": null}"#, 9, false, "conflict"),
+        // A `view_kept` setting of no view, and without its value.
+        (
+            "sys.setting",
+            "view_kept.nowhere",
+            r#"{"key": "view_kept.nowhere"}"#,
+            0,
+            false,
+            "constraint value",
+        ),
     ];
     let head = store.head().await.must("reading the head")?;
     let mut red = Vec::new();

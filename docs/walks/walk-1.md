@@ -36,7 +36,8 @@ records it and goes on; it is never smoothed over on the spot.
 | `data/partners.map.json`, `data/invoices.map.json` | the column maps `lakelands ingest --map` takes |
 
 Two tests keep these from rotting: `crates/lakelands-cli/tests/walk_1.rs`
-loads the bundle and runs the commands below on the in-memory mock, and
+loads the bundle and runs the commands below on the real store, over
+SQLite and in memory, and
 `crates/lakelands-store/tests/walk_1.rs` asks the question below on the
 real store and checks the answers on this page.
 

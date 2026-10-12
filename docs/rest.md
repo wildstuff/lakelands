@@ -203,7 +203,13 @@ for review.
 source record per line (`{"type":…,"key":…,"fields":{…},"seen_at":…}`),
 and is read as it arrives. The answer is NDJSON too: one line per commit
 window as it becomes durable,
-`{"position":…,"records":…,"duplicates":…}`. While a window takes
+`{"position":…,"records":…,"duplicates":…}`. Where a window is cut is
+the store's: a client cannot make two records share one, so what is
+judged over a window (a relation's cardinality among the links that
+arrive together) is judged over whatever the store took as one. Two
+links that break a cardinality together are refused as one window, or
+the first is committed and the second refused; a host takes both
+answers. While a window takes
 longer than fifteen seconds to commit, the answer carries an empty line
 every fifteen seconds, so a client that holds the answer to a silence
 bound knows the server is working; a client skips it. The reply's
@@ -266,7 +272,26 @@ named, and nothing from the environment.
   caller's own timeout is the bound for that. An ingest is held to the
   same silence bound: while records are sent, when the server stops
   taking them (time spent waiting on the source never counts), and once
-  they have all been sent, when its answer goes quiet.
+  they have all been sent, when its answer goes quiet. Only a client
+  that ran calls an ingest's answer silent: a silent server is refused
+  at exactly the bound, and a client that did not run for a while (a
+  suspended process, a stalled machine) first hears the server for one
+  more quarter of the bound. One stop it cannot tell from listening:
+  one that begins in the last quarter of the bound and ends within a
+  quarter after it. So a client stopped for up to just under half the
+  bound (15 s of 30 s) can still take a working server for silent; a
+  longer stop, or one that began earlier, cannot.
+- The client reads an ingest's answer while it sends, at least every
+  512 KiB of records, so a window's line, or a refusal, reaches the
+  caller while the upload flows and not when it has ended. When the
+  answer's stream ends, the upload ends at its next record: the source
+  is not asked again, the body ends with its last chunk, and the source
+  is dropped at the connection's next turn. That holds for every
+  ending: a line that carries an error, an answer that went silent, was
+  cut off or grew too long, and a caller that drops the stream; and for
+  an ingest refused with a status before any line. A refused ingest
+  therefore sends a few hundred KiB past its refusal, not the rest of
+  its source.
 - No answer is held past `max_answer_bytes`: a whole answer, one event
   of the feed or one line of an ingest's answer that grows past it is
   `unavailable`, and the client stops reading.

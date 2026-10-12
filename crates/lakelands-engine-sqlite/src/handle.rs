@@ -13,11 +13,11 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use lakelands_api::engine::{
-    CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
-    Reclaimed, VectorIndex,
+    Applied, CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
+    ProjectionView, Ranked, Rankings, Reclaimed, VectorIndex,
 };
 use lakelands_api::error::Result;
-use lakelands_api::event::{Digest, EventId, SegmentDigest};
+use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::location::SqliteTuning;
 use lakelands_api::record::{StoredRecord, Value};
@@ -109,37 +109,60 @@ impl SqliteLake {
         mode: OpenMode,
     ) -> Result<SqliteLake> {
         let create = mode == OpenMode::Create;
-        if !dir.join("log").is_dir() {
-            if !create {
-                let (lake, schema) = (lake.to_string(), None);
-                return Err(Error::unavailable(Situation::NoLake { lake, schema }));
-            }
+        // A log that is there is judged before anything is made beside
+        // it, and a directory with no segment file holds no lake: only an
+        // open to create makes anything in it.
+        let log = if crate::log::kept(&dir)? {
+            let log = Log::open(&dir, false)?;
+            check_name(&dir, &lake, create)?;
+            log
+        } else if create {
             std::fs::create_dir_all(&dir).map_err(|e| io_error(Doing::Create, Part::File, e))?;
-        }
-        check_name(&dir, &lake, create)?;
-        let log = Log::open(&dir, create)?;
+            check_name(&dir, &lake, create)?;
+            Log::open(&dir, true)?
+        } else {
+            let (lake, schema) = (lake.to_string(), None);
+            return Err(Error::unavailable(Situation::NoLake { lake, schema }));
+        };
         let path = dir.join("projection.db");
+        let no_projection = || {
+            let lake = lake.to_string();
+            Error::unavailable(Situation::NoProjection { lake })
+        };
         // A handle opened read-only creates and changes nothing in the
         // directory: it needs the projection a writer made.
         let writer = match mode {
-            OpenMode::Read => {
-                if !path.is_file() {
-                    let lake = lake.to_string();
-                    return Err(Error::unavailable(Situation::NoProjection { lake }));
-                }
-                None
-            }
+            OpenMode::Read if !path.is_file() => return Err(no_projection()),
+            OpenMode::Read => None,
             OpenMode::Write | OpenMode::Create => {
                 let conn = connect(&path, &tuning, true)?;
-                conn.execute_batch(projection::SCHEMA).map_err(sql)?;
+                // A projection is read only by the layout it was made
+                // with; one that holds no table yet is made with this build's.
+                if projection::made(&conn)? {
+                    engines::layout(&lake, projection::layout(&conn)?, projection::LAYOUT)?;
+                }
+                let (schema, mark) = (projection::SCHEMA, projection::mark());
+                conn.execute_batch(&format!("BEGIN IMMEDIATE; {schema} {mark} COMMIT;"))
+                    .map_err(sql)?;
                 // An order index a writer did not keep (a binary that lacks
                 // it folded past its mark or wrote its setting) is rebuilt
                 // from the head, once.
                 projection::catch_up_sorted(&conn)?;
                 Some(conn)
             }
+            // Whatever layout made the projection, nothing is read from it
+            // or made in it before `clear` makes it anew.
+            OpenMode::Rebuild => Some(connect(&path, &tuning, true)?),
         };
         let reader = connect(&path, &tuning, false)?;
+        // Between a maker's connect and its tables a reader finds no
+        // table: no projection yet, as the moment before.
+        if mode == OpenMode::Read && !projection::made(&reader)? {
+            return Err(no_projection());
+        }
+        if mode != OpenMode::Rebuild {
+            engines::layout(&lake, projection::layout(&reader)?, projection::LAYOUT)?;
+        }
         Ok(SqliteLake {
             lease_file: LeaseFile::new(&dir),
             lake,
@@ -176,7 +199,7 @@ impl SqliteLake {
     fn writable(&self) -> Result<()> {
         match self.mode {
             OpenMode::Read => Err(self.read_only()),
-            OpenMode::Write | OpenMode::Create => Ok(()),
+            OpenMode::Write | OpenMode::Create | OpenMode::Rebuild => Ok(()),
         }
     }
 
@@ -390,6 +413,24 @@ impl LakeEngine for SqliteLake {
         Ok(Box::new(SqliteView { lake: self, at }))
     }
 
+    /// One read transaction holds the position and every list.
+    fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked> {
+        let conn = lock(&self.reader);
+        conn.execute_batch("BEGIN").map_err(sql)?;
+        let ranked = projection::folded(&conn).and_then(|position| {
+            let mut lists = Vec::new();
+            if let Some((text, fields)) = &asked.text {
+                lists.push(crate::view::lexical(&conn, ty, text, fields.as_deref(), k)?);
+            }
+            for (field, query) in &asked.vectors {
+                lists.push(nearest(&conn, ty, field, query, k)?);
+            }
+            Ok(Ranked { position, lists })
+        });
+        let _ = conn.execute_batch("COMMIT");
+        ranked
+    }
+
     fn vectors(&self) -> Option<&dyn VectorIndex> {
         Some(self)
     }
@@ -499,27 +540,43 @@ impl ProjectionStore for SqliteLake {
         })
     }
 
-    fn mark_applied(&self, id: &EventId, at: Position) -> Result<()> {
-        self.stage(at, |conn, _| {
+    fn mark_applied(&self, applied: &Applied) -> Result<()> {
+        let at = applied.at.0 as i64;
+        self.stage(applied.at, |conn, _| {
             conn.prepare_cached("INSERT OR IGNORE INTO applied (id, at) VALUES (?1, ?2)")
-                .and_then(|mut s| s.execute(params![id.0, at.0 as i64]))
-                .map(|_| ())
-                .map_err(sql)
+                .and_then(|mut s| s.execute(params![applied.id.0, at]))
+                .map_err(sql)?;
+            let mut route = conn
+                .prepare_cached("INSERT INTO routes (at, kind, ty, key) VALUES (?1, ?2, ?3, ?4)")
+                .map_err(sql)?;
+            for a in &applied.about {
+                let (ty, key) = (a.ty.as_ref().map(TypeName::as_str), a.key.as_ref());
+                let key = key.map(RecordKey::as_str);
+                route
+                    .execute(params![at, applied.kind, ty, key])
+                    .map_err(sql)?;
+            }
+            Ok(())
         })
     }
 
-    /// Drops the projection, its kept history and the vector index; the
-    /// log and the lease stay. An open transaction is abandoned.
+    /// Drops the projection, its kept history and the vector index, and
+    /// makes the projection's tables again at this build's layout, marked
+    /// with it; the log and the lease stay. An open transaction is
+    /// abandoned.
     fn clear(&self) -> Result<()> {
         *lock(&self.transaction) = None;
         self.write(|conn| {
             abandon(conn)?;
-            let statements: String = projection::TABLES
+            let dropped: String = projection::TABLES
                 .iter()
-                .map(|t| format!("DELETE FROM {t};"))
+                .map(|t| format!("DROP TABLE IF EXISTS {t};"))
                 .collect();
-            conn.execute_batch(&format!("BEGIN IMMEDIATE; {statements} COMMIT;"))
-                .map_err(sql)
+            let (schema, mark) = (projection::SCHEMA, projection::mark());
+            conn.execute_batch(&format!(
+                "BEGIN IMMEDIATE; {dropped} {schema} {mark} COMMIT;"
+            ))
+            .map_err(sql)
         })
     }
 
@@ -575,15 +632,45 @@ fn truncate_journal(conn: &Connection) -> Result<bool> {
     Ok(busy == 0)
 }
 
-/// The vector index: each field's vectors in one table, searched by
-/// brute force with the one cosine every engine uses
+/// The `k` vectors of one field nearest to `query`, read through `conn`,
+/// by brute force with the one cosine every engine uses
 /// (`lakelands_api::query::cosine`), so its answers are those of every
-/// other engine to the last bit. A query steps through every vector of
-/// the field and keeps only the best `k`
-/// (`lakelands_core::engines::TopK`), so its cost grows linearly with them
-/// and what it holds does not: the ceiling `docs/seams.md` states.
-/// Vectors are indexed at the head only; filtering the candidates by what
-/// an earlier view could see is the store's.
+/// other engine to the last bit. It steps through every vector of the
+/// field and keeps only the best `k` (`lakelands_core::engines::TopK`), so
+/// its cost grows linearly with them and what it holds does not: the
+/// ceiling `docs/seams.md` states.
+fn nearest(
+    conn: &Connection,
+    ty: &TypeName,
+    field: &str,
+    query: &[f32],
+    k: u32,
+) -> Result<Vec<(RecordKey, f64)>> {
+    let mut stmt = conn
+        .prepare_cached("SELECT key, data FROM vectors WHERE ty = ?1 AND field = ?2 ORDER BY key")
+        .map_err(sql)?;
+    let rows = stmt
+        .query_map(params![ty.as_str(), field], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })
+        .map_err(sql)?;
+    let mut top = lakelands_core::engines::TopK::new(k);
+    for row in rows {
+        let (key, data) = row.map_err(sql)?;
+        let v = vector_of(&data);
+        if v.len() != query.len() {
+            return Err(engines::dimensions(query.len(), v.len(), ty, field));
+        }
+        top.push(
+            &RecordKey::from(key),
+            lakelands_api::query::cosine(query, &v),
+        );
+    }
+    Ok(top.into_ranked())
+}
+
+/// The vector index's write side and its size: each field's vectors in
+/// one table, indexed at the head only, in the fold's transaction.
 impl VectorIndex for SqliteLake {
     fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()> {
         self.write(|conn| {
@@ -603,39 +690,6 @@ impl VectorIndex for SqliteLake {
                 .map(|_| ())
                 .map_err(sql)
         })
-    }
-
-    fn nearest(
-        &self,
-        ty: &TypeName,
-        field: &str,
-        query: &[f32],
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>> {
-        let conn = lock(&self.reader);
-        let mut stmt = conn
-            .prepare_cached(
-                "SELECT key, data FROM vectors WHERE ty = ?1 AND field = ?2 ORDER BY key",
-            )
-            .map_err(sql)?;
-        let rows = stmt
-            .query_map(params![ty.as_str(), field], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
-            })
-            .map_err(sql)?;
-        let mut top = lakelands_core::engines::TopK::new(k);
-        for row in rows {
-            let (key, data) = row.map_err(sql)?;
-            let v = vector_of(&data);
-            if v.len() != query.len() {
-                return Err(engines::dimensions(query.len(), v.len(), ty, field));
-            }
-            top.push(
-                &RecordKey::from(key),
-                lakelands_api::query::cosine(query, &v),
-            );
-        }
-        Ok(top.into_ranked())
     }
 
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64> {

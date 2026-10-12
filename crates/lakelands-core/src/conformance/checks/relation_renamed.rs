@@ -1,16 +1,15 @@
 //! A migration renames a relation and keeps its edges
 //! (`docs/decisions/035-a-link-is-a-record.md`, extended, lakelands#429).
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
-use lakelands_api::event::EventBody;
+use lakelands_api::event::{Event, EventBody};
 use lakelands_api::ontology::{
     Authority, Cardinality, Derived, MatchPair, RelationDecl, StorageKind,
 };
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{Edge, Projection, QueryResult, Search, SearchMode, Walk};
 use lakelands_api::read::Found;
+use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{
     Carried, Carrier, Migration, Outcome, ProposedWrite, RelationRename, WriteOpts,
 };
@@ -18,12 +17,12 @@ use lakelands_api::{Access, Error, Find, Grants, LakeStore, Position, Principal,
 use serde_json::json;
 
 use super::links::{SEPT, dated, invoice, lake, link_ok, pairs};
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, derived, events_after, field, find_at, get_at, head_unmoved, invalid_case,
-    invalid_like, object_set_on, patch, pattern, principal, reference, source_record, sourced,
-    step, trigger_on, type_decl, vector,
+    Lake, Must, derived, events_after, field, find_at, followed, get_at, head_unmoved,
+    invalid_case, invalid_like, object_set_on, patch, pattern, principal, reference, source_record,
+    sourced, step, trigger_on, type_decl, vector,
 };
+use crate::conformance::{Failure, Held, Store};
 
 const OLD: &str = "sys.link.invoice.approved_by";
 const NEW: &str = "sys.link.invoice.signed_by";
@@ -40,7 +39,7 @@ fn renaming() -> Migration {
 }
 
 /// The owner applies `m` after its preflight.
-async fn apply(l: &Lake, m: Migration) -> Result<(), Failure> {
+async fn apply(l: &Lake, m: Migration) -> Held {
     let report = l.cat.migrate(&l.own, m.clone()).await;
     let id = report.must("the preflight")?.data.report_id;
     let applied = l.cat.migrate_apply(&l.own, m, &id).await;
@@ -48,9 +47,8 @@ async fn apply(l: &Lake, m: Migration) -> Result<(), Failure> {
 }
 
 check!(
-    /// A renamed relation keeps its edges.
     RENAMED_KEEPS_EDGES = a_migration_renames_a_relation_and_keeps_its_edges,
-    "035, extended (lakelands#429): a migration that names a relation's rename keeps its edges: the report lists the relation with its carrier and the link records that move, and no drop; the apply appends the `migrated` and the new link type's declaration and no event for a link; a walk by the new name answers the edges with their fields, a walk as of before answers them by the old name, and the links are records of the new link type; as of the `migrated` itself the walk answers them already, and the new link type is found from its declaration, one position later, on"
+    "035, extended (lakelands#429, lakelands#678): a migration that names a relation's rename keeps its edges: the report lists the relation with its carrier and the link records that move, and no drop; the apply appends the `migrated` and the new link type's declaration and no event for a link; a walk by the new name answers the edges with their fields, a walk as of before answers them by the old name, and the links are records of the new link type; as of the `migrated` itself the walk answers them already, and the new link type is found from its declaration, one position later, on; a consumer of the old link type and one of the new each hear of the `migrated`, and every filtered poll answers what the log does"
 );
 
 /// The edges a walk over `relation` from invoice `key` answers.
@@ -69,9 +67,7 @@ async fn walked(
     }
 }
 
-async fn a_migration_renames_a_relation_and_keeps_its_edges(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_migration_renames_a_relation_and_keeps_its_edges(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
     link_ok(&l, "i2", "p2", json!({})).await?;
@@ -124,11 +120,25 @@ async fn a_migration_renames_a_relation_and_keeps_its_edges(
         pairs(&now),
         pairs(&then)
     );
-    Ok(())
+    // A consumer of either link type hears of the move (lakelands#678).
+    for ty in [OLD, NEW] {
+        let only = FeedFilter {
+            types: vec![ty.into()],
+            ..FeedFilter::default()
+        };
+        let heard = followed(store.as_ref(), Position::GENESIS, &only).await?;
+        let migrated = |e: &&Event| matches!(e.body, EventBody::Migrated { .. });
+        ensure!(
+            heard.iter().filter(migrated).count() == 1,
+            "a consumer of `{ty}` hears of the rename that moves its links: it read the kinds \
+             {:?}",
+            heard.iter().map(|e| e.body.kind()).collect::<Vec<_>>()
+        );
+    }
+    super::feed::the_index_answers_the_log(store.as_ref(), "a relation renamed").await
 }
 
 check!(
-    /// A grant on a link type follows its relation's rename.
     RENAMED_GRANT_FOLLOWS = a_grant_on_a_link_type_follows_its_relations_rename,
     "006, extended (lakelands#429): a grant on a link type holds its records through the relation's rename, in both directions of time and only to take away: a principal kept from the old link type by a default alone is kept from the new one, by `find` and in a walk's link fields; one kept from the new name is kept from the old one as of before; a permission on the old name gives nothing under the new; and a field granted `write` under the name borne with a default of none under the earlier name is none"
 );
@@ -173,9 +183,7 @@ async fn seen(l: &Lake, who: &Principal, ty: &str, as_of: Option<Position>) -> S
     }
 }
 
-async fn a_grant_on_a_link_type_follows_its_relations_rename(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_grant_on_a_link_type_follows_its_relations_rename(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
     let before = store.head().await.must("reading the head")?;
@@ -306,14 +314,11 @@ async fn link(l: &Lake, relation: &str, from: &str, to: &str) -> lakelands_api::
 }
 
 check!(
-    /// A rename that would change or lose edges is refused.
     RENAME_REFUSED = a_rename_that_would_change_or_lose_edges_is_refused,
     "035, extended (lakelands#429): a rename is refused as invalid, naming the relation, and nothing is appended, when its first name is no relation of the type or its second none of the new shape, when it changes the relation's link fields, when the same migration re-keys records, when the link type of the new name still holds the links of an earlier relation, and when a reference field or a relation of another type names the link type that would move: that type is named to one `describe` shows it to, and to another only that a declaration refers to it"
 );
 
-async fn a_rename_that_would_change_or_lose_edges_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rename_that_would_change_or_lose_edges_is_refused(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
     // An earlier relation `signed_by`, linked, then dropped: its links stay.
@@ -434,14 +439,11 @@ async fn a_rename_that_would_change_or_lose_edges_is_refused(
 }
 
 check!(
-    /// What names the old link type is carried to the new.
     RENAME_CARRIES = a_trigger_and_a_set_on_the_link_type_follow_the_rename,
     "035, extended (lakelands#429): a trigger on a renamed relation's link type and an object set of it are declared again by the lake under the new link type, after its declaration, in the migration's append, and the report lists them as carried; the set's members stay its members, and a link written or removed under the new name fires the trigger and leaves the set"
 );
 
-async fn a_trigger_and_a_set_on_the_link_type_follow_the_rename(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_trigger_and_a_set_on_the_link_type_follow_the_rename(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     l.declare_as(trigger_on("signed", OLD, None), "the trigger")
         .await?;
@@ -536,14 +538,11 @@ async fn a_trigger_and_a_set_on_the_link_type_follow_the_rename(
 }
 
 check!(
-    /// Every carrier keeps its edges, through a second rename and a rebuild.
     RENAMED_EVERY_CARRIER = every_carrier_keeps_its_edges_through_renames_and_a_rebuild,
-    "035, extended (lakelands#429): a relation carried by a `via` field, by link records or derived from matching values keeps its edges under its new name, and the report says how each is carried and how many links move; the walk backwards by the relation's inverse name follows; the `migrated` event is written in format 11 and a migration that renames no relation leaves the format where it was; renamed a second time the links are records of the third name's link type alone; a read as of a position between answers by the name borne there; and a rebuilt projection answers all of it as the live one did"
+    "035, extended (lakelands#429): a relation carried by a `via` field, by link records or derived from matching values keeps its edges under its new name, and the report says how each is carried and how many links move; the walk backwards by the relation's inverse name follows; renamed a second time the links are records of the third name's link type alone; a read as of a position between answers by the name borne there; and a rebuilt projection answers all of it as the live one did"
 );
 
-async fn every_carrier_keeps_its_edges_through_renames_and_a_rebuild(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn every_carrier_keeps_its_edges_through_renames_and_a_rebuild(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
         .await?;
@@ -599,12 +598,6 @@ async fn every_carrier_keeps_its_edges_through_renames_and_a_rebuild(
         (report.relations.iter().map(|r| (r.carrier, r.links))).collect();
     let applied = l.cat.migrate_apply(&l.own, m, &report.report_id).await;
     let between = applied.must("the first rename")?.position();
-    let formats: Vec<u32> = (events_after(store.as_ref(), Position(before.0 - 1))
-        .await?
-        .iter())
-    .take(2)
-    .map(|e| e.v)
-    .collect();
     let third = ["countersigned_by", "settled_by", "close_to"];
     apply(&l, renamed(third, second)).await?;
     let mut answers = Vec::new();
@@ -649,10 +642,8 @@ async fn every_carrier_keeps_its_edges_through_renames_and_a_rebuild(
             (Carrier::Links, 1),
             (Carrier::Via, 0),
             (Carrier::Derived, 0)
-        ] && formats == [11, 11]
-            && answers == [want.clone(), want.clone()],
-        "the report says {how:?}; the migration before and the renaming one are written in \
-         the lake's format, 11, and carry {formats:?}; live and rebuilt answer {answers:?}, each must be {want}"
+        ] && answers == [want.clone(), want.clone()],
+        "the report says {how:?}; live and rebuilt answer {answers:?}, each must be {want}"
     );
     Ok(())
 }
@@ -674,14 +665,11 @@ fn rename(to: Vec<RelationDecl>, old: &str, new: &str) -> Migration {
 }
 
 check!(
-    /// Of the chains that end in a type's old name, the newest continues.
     RENAMED_NEWEST_CHAIN = the_newest_chain_of_a_link_types_names_continues,
     "006, extended (lakelands#429): a relation renamed onto a name, removed, and another renamed onto that name and renamed on: the grants on the first relation's link type do not follow the second relation's links, and the grants on the second's do, at the head and under every name"
 );
 
-async fn the_newest_chain_of_a_link_types_names_continues(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn the_newest_chain_of_a_link_types_names_continues(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     // `w` is renamed to `x` and removed, never linked; `y` is linked, renamed
     // to `x`, the name `w` bore last, and on to `z`.
@@ -709,14 +697,11 @@ async fn the_newest_chain_of_a_link_types_names_continues(
 }
 
 check!(
-    /// A proposed rename is listed, logged and accepted as it was checked.
     RENAME_PROPOSED = a_proposed_rename_is_listed_logged_and_accepted,
     "013 and 035, extended (lakelands#429): a proposed migration that renames a relation is listed to its reviewer with the pair and the preflight's report of it, and to one kept from the type with neither; the `write_proposed` event holds the report whole; accepted, the relation keeps its edges under the new name"
 );
 
-async fn a_proposed_rename_is_listed_logged_and_accepted(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_proposed_rename_is_listed_logged_and_accepted(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
     let before = store.head().await.must("reading the head")?;
@@ -893,14 +878,11 @@ async fn lists_since(
 }
 
 check!(
-    /// A name two chains bear is the chain's that took it last.
     RENAMED_NAME_BORNE_TWICE = a_name_two_chains_bear_is_held_by_the_one_that_took_it_last,
     "006, extended (lakelands#429): where two chains of a link type's names bear one name, the grants follow the chain that took it last, whichever was begun first: a principal kept from a relation's links is kept from them under a name another relation bore before and was removed under; and as of a position where two chains begin at one name, a principal kept from either is kept; a relation renamed back to a name it bore is kept from as before"
 );
 
-async fn a_name_two_chains_bear_is_held_by_the_one_that_took_it_last(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_name_two_chains_bear_is_held_by_the_one_that_took_it_last(store: Store) -> Held {
     let (s, none) = (store.as_ref(), Some(Access::None));
     let lt = |relation: &str| format!("sys.link.invoice.{relation}");
     // `c` is linked and renamed to `e`; `a`, never linked, is renamed to `b`
@@ -966,14 +948,11 @@ async fn a_name_two_chains_bear_is_held_by_the_one_that_took_it_last(
 }
 
 check!(
-    /// A rename onto a name whose link type still stands keeps the link fields.
     RENAME_ONTO_A_STANDING_TYPE = a_rename_onto_a_standing_link_type_keeps_the_link_fields,
     "035, extended (lakelands#429): a removed relation's link type stays declared; a relation renamed onto that name, or back onto a name it bore before a link field was added, keeps every link field of its links, a required one too: the standing link type is declared again in the renamed relation's shape, and a rebuilt projection answers the same; a rename onto a name whose standing link type a set reads a field of, which the renamed relation lacks, is refused, naming the set"
 );
 
-async fn a_rename_onto_a_standing_link_type_keeps_the_link_fields(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rename_onto_a_standing_link_type_keeps_the_link_fields(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     // Every link bears `since`: the fold moves a link under a link type
     // that stood without its required field, and does not fail.
@@ -1055,7 +1034,7 @@ async fn link_ok_over(
     from: &str,
     to: &str,
     fields: serde_json::Value,
-) -> Result<(), Failure> {
+) -> Held {
     let (ty, opts) = ("invoice".into(), WriteOpts::default());
     let (from, to, relation) = (from.into(), to.into(), relation.into());
     let linked = (l.cat).link(&l.own, &ty, &from, &relation, &to, patch(fields), opts);
@@ -1063,14 +1042,11 @@ async fn link_ok_over(
 }
 
 check!(
-    /// The vectors of moved links are found under the new link type.
     RENAMED_VECTORS_FOLLOW = the_vectors_of_moved_links_are_found_under_the_new_link_type,
     "035, extended (lakelands#429): a link's vector field is searched under the new link type after its relation's rename, as it was under the old, live and after a rebuild"
 );
 
-async fn the_vectors_of_moved_links_are_found_under_the_new_link_type(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn the_vectors_of_moved_links_are_found_under_the_new_link_type(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let pointed = |name: &str| {
         let mut r = named(name);
@@ -1107,14 +1083,11 @@ async fn the_vectors_of_moved_links_are_found_under_the_new_link_type(
 }
 
 check!(
-    /// A rebuild recomputes moved links as the live fold did.
     RENAMED_LINKS_RECOMPUTED = a_rebuild_recomputes_the_links_a_rename_moved,
     "035, extended (lakelands#429): links written in an earlier page of the log, their relation renamed, and then a derived link field of it declared with another expression: every link is computed again under the new link type, by the live fold and by a rebuild, which folds the rename and the declaration in one page"
 );
 
-async fn a_rebuild_recomputes_the_links_a_rename_moved(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rebuild_recomputes_the_links_a_rename_moved(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let noted = |name: &str, expr: &str| {
         let mut r = named(name);
@@ -1128,9 +1101,8 @@ async fn a_rebuild_recomputes_the_links_a_rename_moved(
     l.declare(type_decl("filler", vec![sourced("n", StorageKind::Number)]))
         .await?;
     let filler = (0..1100).map(|i| source_record("filler", &format!("f{i:04}"), json!({"n": i})));
-    l.ingest("load", filler.collect())
-        .await
-        .must("filling a page")?;
+    let fut = l.ingest("load", filler.collect());
+    fut.await.must("filling a page")?;
     apply(&l, rename(vec![noted("r2", "upper(note)")], "r1", "r2")).await?;
     l.declare(invoice(vec![noted("r2", "lower(note)")])).await?;
     let mut answers = Vec::new();
@@ -1150,14 +1122,11 @@ async fn a_rebuild_recomputes_the_links_a_rename_moved(
 }
 
 check!(
-    /// The old link type takes no link after the rename.
     RENAMED_OLD_TYPE_CLOSED = the_old_link_type_takes_no_link_after_the_rename,
     "035, extended (lakelands#429): after a relation's rename an ingest into the link type of its old name is refused as invalid, naming it, since no relation carries it; an ingest into the new link type is an edge of the renamed relation"
 );
 
-async fn the_old_link_type_takes_no_link_after_the_rename(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn the_old_link_type_takes_no_link_after_the_rename(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let fed = |name: &str| {
         let mut r = named(name);
@@ -1172,12 +1141,10 @@ async fn the_old_link_type_takes_no_link_after_the_rename(
     let first = l.ingest("feed", one("sys.link.invoice.src", "i1", "p1"));
     first.await.must("ingesting a link over `src`")?;
     apply(&l, rename(vec![fed("dst")], "src", "dst")).await?;
-    let old = l
-        .ingest("feed", one("sys.link.invoice.src", "i2", "p2"))
-        .await;
-    let new = l
-        .ingest("feed", one("sys.link.invoice.dst", "i2", "p2"))
-        .await;
+    let old = l.ingest("feed", one("sys.link.invoice.src", "i2", "p2"));
+    let old = old.await;
+    let new = l.ingest("feed", one("sys.link.invoice.dst", "i2", "p2"));
+    let new = new.await;
     let edges = walked(&l, "dst", "i2", None).await.must("walking `dst`")?;
     ensure!(
         matches!(invalid_case(&old), Some(Case::UnclaimedLinkType { ty })

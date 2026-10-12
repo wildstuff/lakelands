@@ -7,7 +7,7 @@ members = [
     "crates/lakelands-engine-sqlite",
     "crates/lakelands-engine-pg",
     "crates/lakelands-engine-mem",
-    "crates/lakelands-mock",
+    "crates/lakelands-door-checks",
     "crates/lakelands-cli",
     "crates/lakelands-server",
     "crates/lakelands-backings",
@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -51,7 +51,7 @@ sha2 = "0.10"
 unicode-normalization = "0.1"
 lakelands-api = { path = "crates/lakelands-api" }
 lakelands-backings = { path = "crates/lakelands-backings" }
-lakelands-mock = { path = "crates/lakelands-mock" }
+lakelands-door-checks = { path = "crates/lakelands-door-checks" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

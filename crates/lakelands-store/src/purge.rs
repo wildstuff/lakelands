@@ -39,7 +39,7 @@ use lakelands_core::{invalid, links};
 use crate::lake::{Lake, every};
 use crate::log::Draft;
 use crate::ontology::Ontology;
-use crate::writes::{self, Call, Pending};
+use crate::writes::{self, Call};
 
 /// How many co-owned records a refusal names, and how many referring
 /// records a report names per relation.
@@ -304,13 +304,11 @@ pub fn run(
         unsearched,
     )?;
     let now = lake.clock(&mut w);
-    let mut pending = Pending::default();
+    let mut d = call.decide(&w, view.as_ref(), now, 0);
     let mut drafts = Vec::new();
     for before in purged {
         let body = writes::retirement(&before.ty, &before.key, before.version);
-        let d = Draft::system(now, body);
-        let at = writes::position_after(&w, drafts.len());
-        drafts.extend(call.retiring(&w, view.as_ref(), &mut pending, &before, d, at, now)?);
+        drafts.extend(d.retiring(&before, Draft::system(now, body))?);
     }
     drop(view);
     if !drafts.is_empty() {

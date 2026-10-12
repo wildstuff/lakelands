@@ -96,7 +96,7 @@ pub(crate) struct State {
 /// The state of `view` at the position `at` reads, if the fold kept one.
 pub(crate) fn state(at: &dyn ProjectionView, view: &TypeName) -> Result<Option<State>> {
     let input = crate::backed::digest(&Value::from(view.as_str()));
-    let recorded = at.output(KEPT, &input)?;
+    let recorded = at.output(KEPT, &input)?.map(|(_, v)| v);
     Ok(recorded.and_then(|s| serde_json::from_value(s).ok()))
 }
 
@@ -294,12 +294,20 @@ pub(crate) struct At<'a> {
 }
 
 /// A member of one source on one face: its group's key and values, and the
-/// key and fields it is folded with.
+/// key, the fields and the provenance it is folded with, a view's record
+/// with none.
 struct Member {
     group: RecordKey,
     by: Row,
     key: RecordKey,
     fields: Row,
+    meta: Option<BTreeMap<FieldName, lakelands_api::FieldMeta>>,
+}
+
+impl Member {
+    fn keyed(&self) -> (&RecordKey, lakelands_core::expr::aggregate::Member<'_>) {
+        (&self.key, (&self.fields, self.meta.as_ref()))
+    }
 }
 
 impl At<'_> {
@@ -357,6 +365,7 @@ impl At<'_> {
             by,
             key: r.key.clone(),
             fields,
+            meta: meta.cloned(),
         })
     }
 }
@@ -438,7 +447,7 @@ impl Work {
                 let (Some(m), Some(letter)) = (m, letter) else {
                     return Vec::new();
                 };
-                let of = src.keeping.entries(&m.key, &m.fields, settings).into_iter();
+                let of = src.keeping.entries(m.keyed(), settings).into_iter();
                 let key = |j, place: &[u8]| {
                     format!("{}{}.{}", within(i, j, &m.group, letter), hex(place), m.key)
                 };
@@ -457,19 +466,16 @@ impl Work {
                 (Some(w), Some(n)) if w.group == n.group => {
                     let g = group((&mut *groups, &mut *touched), kept, cx, &n.group, &n.by)?;
                     let folds = &mut g.folds[face][i];
-                    src.keeping
-                        .change(folds, (&w.key, &w.fields), (&n.key, &n.fields), settings);
+                    src.keeping.change(folds, w.keyed(), n.keyed(), settings);
                 }
                 (was, is) => {
                     if let Some(w) = was {
                         let g = group((&mut *groups, &mut *touched), kept, cx, &w.group, &w.by)?;
-                        src.keeping
-                            .take(&mut g.folds[face][i], &w.key, &w.fields, settings);
+                        src.keeping.take(&mut g.folds[face][i], w.keyed(), settings);
                     }
                     if let Some(n) = is {
                         let g = group((&mut *groups, &mut *touched), kept, cx, &n.group, &n.by)?;
-                        src.keeping
-                            .put(&mut g.folds[face][i], &n.key, &n.fields, settings);
+                        src.keeping.put(&mut g.folds[face][i], n.keyed(), settings);
                     }
                 }
             }
@@ -506,7 +512,7 @@ impl Work {
             first
                 .keeping
                 .measures(&folds[0], &g.by, &first.measures, given, Some(settings))?;
-        Ok(crate::reads::landed(&kept.decl, g.by.clone(), values))
+        crate::reads::landed(&kept.decl, g.by.clone(), values).map_err(|(_, why)| why)
     }
 
     /// The record a group has after the event at `at`, and the counters

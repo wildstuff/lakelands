@@ -7,23 +7,20 @@
 //! broken by key, missing values last in either direction. The row it
 //! names need not still exist.
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::read::{Aggregate, Direction, Order, OrderBy};
 use lakelands_api::{
-    After, Catalog, Find, Found, LakeStore, Position, Principal, Record, Refusal, TypeName, Value,
+    After, Catalog, Find, Found, Position, Principal, Record, Refusal, TypeName, Value,
 };
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, all_found, invalid_like, read_at, refused_on, type_of, upsert, value,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// `after` resumes where the cursor would.
     AFTER_RESUMES = after_resumes_where_the_cursor_would,
     "029: `after` names the position a cursor carries — a row's sort values and key — and continues strictly after it in the one order, at the caller's read position; it is refused beside a cursor or an aggregate, with a value count other than `order_by`'s, or with a value its key's field cannot hold"
 );
@@ -138,7 +135,7 @@ async fn item(
     upsert(cat, own, "item", key, Value::Object(fields)).await
 }
 
-async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn after_resumes_where_the_cursor_would(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let (cat, own) = (l.cat.as_ref(), &l.own);
     l.declare(type_of(
@@ -221,15 +218,14 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
         .ok_or_else(|| Failure::new("the first page's last row is not in the walk"))?;
     let expected = listed[at + 1..].to_vec();
     l.retire("item", gone.key.as_str()).await?;
-    let resumed: Vec<String> = by_after(
+    let resumed = by_after(
         cat,
         own,
         whole.clone(),
         Some(position_of(&order, &gone)),
         100,
-    )
-    .await?
-    .concat();
+    );
+    let resumed: Vec<String> = resumed.await?.concat();
     ensure!(
         resumed == expected,
         "after retiring `{}`, resuming after its position ({:?}) at the head walked \

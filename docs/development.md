@@ -207,8 +207,8 @@ more than the table above suggests. These rules follow from that.
 
 The plan of record (lakelands#20) decides this. In short, the core
 ladder is serial: one slot holds it at a time. The door, spec and infra
-lanes build against `lakelands-api` with the in-memory mock, so they
-open up once the contract has merged. Two slots that would edit the
+lanes build against `lakelands-api` and test against the store on the
+memory engine, so they open up once the contract has merged. Two slots that would edit the
 same file (for example a CI workflow, or a spec document that the
 workspace step creates as a stub) are sequenced, not raced.
 

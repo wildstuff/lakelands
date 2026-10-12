@@ -4,8 +4,8 @@
 //! [`tools`] is a pure function of a [`LakeDescription`]. Because
 //! `describe` already answers as one principal may see the lake, the
 //! tools it yields — their names, and the JSON schemas in and out — are
-//! filtered by that principal's grants without a second rule. The mock,
-//! the store's catalog and every transport take names from here; the
+//! filtered by that principal's grants without a second rule. The
+//! store's catalog and every transport take names from here; the
 //! `single-catalog` gate refuses a tool name written anywhere else.
 //!
 //! Per type: `<type>_find`, `<type>_get`, `<type>_upsert`,
@@ -14,10 +14,10 @@
 //! `<type>_<relation>_link` and `<type>_<relation>_unlink`, named by the
 //! type and the relation, since relation names are unique per type only. Per verb: the
 //! verb's name. Generic: `describe`, `query`, `search`, `propose`,
-//! `proposals`, `accept`, `reject`, `declare_type`, `add_field`,
-//! `migrate`, each only if the principal may use it, and `pin`, the MCP
-//! session's door for pinning `as_of` across a turn. A 20-type lake
-//! offers about 80 tools.
+//! `proposals`, `accept`, `reject`, `declare_type`, `add_field`, `recompute`,
+//! `migrate`, each only if the principal may use it, and the MCP session's
+//! doors: `pin`, for `as_of` across a turn, and `subscribe` and `unsubscribe`,
+//! for being told of changes. A 20-type lake offers about 80 tools.
 //!
 //! Four doors of [`Catalog`](crate::Catalog) have no tool of their own:
 //! `describe_type` is `describe` with a `type`, `migrate_apply` is
@@ -346,7 +346,7 @@ pub fn tools(lake: &LakeDescription) -> Result<Vec<ToolSpec>, Vec<NameProblem>> 
         .flat_map(|t| {
             t.relations
                 .iter()
-                .filter(|r| r.via.is_none())
+                .filter(|r| r.carried_by_links())
                 .map(|r| (t.name.clone(), r.name.clone()))
         })
         .collect();
@@ -885,6 +885,9 @@ fn verb_tool(verb: &VerbDescription, lake: &LakeDescription) -> ToolSpec {
     }
 }
 
+/// What a pattern's `as` says to the model that writes one.
+const BINDING: &str = "The name a row binds this record under, `<name>.<field>`; its type's name when left out. Two records of one type in a row need a name each.";
+
 fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
     let names = |pick: fn(&TypeDescription) -> bool| -> Value {
         one_of(
@@ -998,7 +1001,8 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                     "type": names(|t| t.may.find), "key": {"type": "string"},
                     "where": {"type": "string"}, "search": {"type": "object"},
                     "params": {"type": "object",
-                               "description": "The parameters of a view the pattern starts on, by name."}},
+                               "description": "The parameters of a view the pattern starts on, by name."},
+                    "as": {"type": "string", "description": BINDING}},
                     "required": ["type"]}),
             ),
             (
@@ -1008,7 +1012,8 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                     "type": {"type": "string"}, "where": {"type": "string"},
                     "depth": {"type": "object", "properties": {
                         "min": {"type": "integer", "minimum": 0},
-                        "max": {"type": "integer", "minimum": 0}}}},
+                        "max": {"type": "integer", "minimum": 0}}},
+                    "as": {"type": "string", "description": BINDING}},
                     "required": ["relation"]}}),
             ),
             (
@@ -1021,10 +1026,17 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 "project",
                 json!({"type": "object", "properties": {
                 "as": {"enum": ["rows", "graph", "aggregate", "degree", "components"],
-                       "description": "`degree` answers rows of `type`, `key` and `degree` (links over the steps' relations), highest first; `components` answers rows of `component`, `size`, `type` and `key`, largest component first. Both take steps without `depth` or `where`; `components` walks each step `both`."},
+                       "description": "`degree` answers rows of `type`, `key` and `degree` (links over the steps' relations), highest first; `components` answers rows of `component`, `size`, `type` and `key`, largest component first. Both take steps without `depth`, `where` or `type`; `components` walks each step `both`."},
                 "fields": {"type": "array", "items": {"type": "string"}}}}),
             ),
-            ("order_by", order_by_schema(json!({"type": "string"}))),
+            (
+                "order_by",
+                json!({"type": "array", "items": {"type": "object",
+                    "description": "One sort key of the rows: a path they hold, by its value.",
+                    "properties": {"field": {"type": "string"}, "dir": {"enum": ["asc", "desc"]}},
+                    "required": ["field"],
+                    "additionalProperties": false}}),
+            ),
             ("limit", json!({"type": "integer", "minimum": 1})),
             ("cursor", json!({"type": "string"})),
         ]);

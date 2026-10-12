@@ -205,7 +205,7 @@ fn a_read_of_a_kept_name_takes_the_steps_of_one_whose_keys_were_written_once() {
             (KEYS + 1, Some(&json!(n)), KEYS + 1),
             "as of {as_of:?}"
         );
-        let output = view.output(seam, &Digest("much".into())).unwrap();
+        let output = (view.output(seam, &Digest("much".into())).unwrap()).map(|(_, v)| v);
         assert_eq!(output, Some(json!({"at": n})), "as of {as_of:?}");
     }
     drop(engine);

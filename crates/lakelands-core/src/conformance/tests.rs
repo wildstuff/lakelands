@@ -23,9 +23,10 @@ use lakelands_api::{
     TypeName, VerbName, Verification, WriteContext, WriteOpts,
 };
 
+use super::fixture::Must;
 use super::{
-    Check, Failure, FreshLake, Harness, Relimit, Reopen, Report, checks, run_all, run_checks,
-    run_one,
+    Check, Failure, FreshLake, Harness, Held, Relimit, Reopen, Report, Store, Tally, checks,
+    run_all, run_checks, run_one,
 };
 
 /// Drives a future to completion on this thread. Everything the tests
@@ -192,7 +193,7 @@ impl Harness for DownHarness {
     }
     fn fresh(&self, _: Seams) -> FreshLake<'_> {
         Box::pin(async {
-            let store: Arc<dyn LakeStore> = Arc::new(DownStore(LakeId::from("conformance")));
+            let store: Store = Arc::new(DownStore(LakeId::from("conformance")));
             Ok(store)
         })
     }
@@ -268,20 +269,31 @@ fn a_harness_that_cannot_open_a_lake_fails_every_check() {
     );
 }
 
-async fn passes(_: Arc<dyn LakeStore>) -> std::result::Result<(), Failure> {
+async fn passes(_: Store) -> Held {
     Ok(())
 }
 
-async fn panics(_: Arc<dyn LakeStore>) -> std::result::Result<(), Failure> {
+async fn panics(_: Store) -> Held {
     panic!("on purpose")
 }
 
-async fn fails(_: Arc<dyn LakeStore>) -> std::result::Result<(), Failure> {
+async fn fails(_: Store) -> Held {
     ensure!(1 + 1 == 3, "arithmetic holds, so this fails");
     Ok(())
 }
 
+async fn asserts(_: Store) -> Held {
+    for n in 0..3 {
+        ensure!(n < 3, "{n} is below three");
+    }
+    Ok::<_, Error>(1).must("one answer")?;
+    Ok::<_, Error>(2).must("another")?;
+    Err::<(), _>(down()).must_fail("a refusal")?;
+    Ok(())
+}
+
 check!(PASSES = passes, "passes");
+check!(ASSERTS = asserts, "asserts");
 check!(PANICS = panics, "panics");
 check!(FAILS = fails, "fails");
 
@@ -301,6 +313,22 @@ fn a_panicking_check_fails_alone_and_the_run_goes_on() {
     );
     let shown = report.to_string();
     assert!(shown.contains("2 passed, 2 failed"), "{shown}");
+}
+
+#[test]
+fn a_check_is_tallied_by_the_assertions_it_evaluates_and_where_they_are_written() {
+    let list: [Check; 4] = [ASSERTS, PANICS, FAILS, PASSES];
+    let report = block_on(run_checks(&DownHarness, &list));
+    let tally = |evaluations, sites| Tally { evaluations, sites };
+    assert_eq!(
+        report.tallies,
+        [
+            ("asserts", tally(6, 4)),
+            ("panics", tally(0, 0)),
+            ("fails", tally(1, 1)),
+            ("passes", tally(0, 0)),
+        ]
+    );
 }
 
 #[test]

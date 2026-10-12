@@ -17,7 +17,7 @@
   head and counts there. `total` beside an `aggregate` is refused as
   invalid: the aggregate is already the count.
 - **A jump, bounded.** `Find.offset` skips that many rows of `find`'s
-  one order (029) before the page. The page's `next_cursor` continues by
+  one order (025) before the page. The page's `next_cursor` continues by
   keyset after its last row, as any page's does, so page 8 after a jump
   to page 7 is one cursor read. `offset` beside `cursor`, `after` or
   `aggregate` is refused as invalid, naming both: each already says
@@ -50,12 +50,20 @@ while a refresh, which reads the head, shows the head's.
 
 - **Not a positional cursor.** `next_cursor` stays keyset. A write
   between two pages moves no row into or out of a page the walk has not
-  read yet, the guarantee 029 gives every walk.
+  read yet, the guarantee 025 gives a cursor of `find`: it carries its
+  position in the one order, and so pins a page set.
 - **Not an estimate.** The total is exact at its position. An engine's
   statistics would answer faster and wrongly.
 - **Not offered for an aggregate**, whose groups are no page.
+- **Rejected: no offset.** A host could reach page k by walking k
+  cursors, or by keeping every cursor it has handed out. That pushes the
+  cost of a jump onto every host and leaves it unbounded. A bounded
+  `offset` states the cost once, here, and keeps it inside the store.
 
-**Rejected: no offset.** A host could reach page k by walking k cursors,
-or by keeping every cursor it has handed out. That pushes the cost of a
-jump onto every host and leaves it unbounded. A bounded `offset` states
-the cost once, here, and keeps it inside the store.
+## How it came to be
+
+- The first version: a total when asked, and a bounded jump
+  (lakelands#381).
+- The order and the cursor it cites stand in 025, where the rules of
+  029 moved; "the guarantee 029 gives every walk" names a cursor of
+  `find` (lakelands#817).

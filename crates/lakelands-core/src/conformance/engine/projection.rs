@@ -13,118 +13,193 @@
 use std::collections::BTreeMap;
 
 use lakelands_api::Refusal;
-use lakelands_api::engine::{LakeEngine, ProjectionStore, ProjectionView};
+use lakelands_api::engine::{LakeEngine, OpenMode, ProjectionStore, ProjectionView};
+use lakelands_api::error::Situation;
 use lakelands_api::event::Digest;
-use lakelands_api::id::{Position, RecordKey, RelationName, TypeName, Version};
+use lakelands_api::id::{LakeId, Position, RecordKey, RelationName, TypeName, Version};
 use lakelands_api::query::Walk;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::Declaration;
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
+use super::EngineHarness;
 use crate::conformance::fixture::{Must, is_invalid, reason};
+use crate::conformance::{Failure, Held};
 
 engine_check!(
-    /// A view at a position reads the states valid then.
     VIEW_AT_A_POSITION = a_view_at_a_position_sees_the_states_then,
     "seams §Engine: the projection keeps every superseded state, so a view at an earlier position reads the lake as it was right after folding it"
 );
 
 engine_check!(
-    /// A view past the folded position is refused.
     PAST_THE_FOLD = a_view_past_the_folded_position_is_refused,
     "seams §Engine: a view at a position the projection has not folded is refused as out of range, naming the head"
 );
 
 engine_check!(
-    /// A rolled-back transaction leaves nothing.
     ROLLBACK = a_rolled_back_transaction_leaves_nothing,
     "seams §Engine: the fold writes one transaction per append, so a crash or an abandoned append leaves the projection at a whole append"
 );
 
 engine_check!(
-    /// Edges walk in, out and both.
     EDGES_IN_OUT_BOTH = edges_walk_in_out_and_both,
     "026: out gives the links a record declares, in the links that point at it, both their union with each link once; the store's walks are built on them"
 );
 
 engine_check!(
-    /// Links to a retired record are returned.
     EDGES_TO_RETIRED = edges_to_a_retired_record_are_returned,
     "026: an engine returns a link to a retired or missing record as it is; hiding that end is the store's"
 );
 
 engine_check!(
-    /// Edges over many keys answer each key as it is answered alone.
     EDGES_OF_MANY_KEYS = edges_over_many_keys_answer_each_key_as_it_answers_alone,
     "seams §ProjectionView (lakelands#227): edges over many records of one type answer one list per key, in the keys' order, each what the key alone answers, at the head and at an earlier position; a link between two of the keys is in both lists"
 );
 
 engine_check!(
-    /// `get_many` answers what `get` answers, key by key.
     GET_MANY = get_many_answers_what_get_answers_key_by_key,
     "seams §ProjectionView (lakelands#227): get_many answers each record of the keys that exists at the view's position, retired and restricted ones included, once, in key order; a key with no record is left out"
 );
 
 engine_check!(
-    /// Edges follow a record's latest state.
     EDGES_FOLLOW_THE_LATEST_STATE = edges_follow_a_records_latest_state,
     "026: a record put again links where its new state says, and no longer where its earlier state did, in both directions"
 );
 
 engine_check!(
-    /// A commit backwards, or with a put past `through`, is invalid.
     COMMIT_INVALID = a_commit_backwards_or_with_a_put_past_through_is_invalid,
     "seams §ProjectionStore: a commit never moves the projection backwards, and never commits a state valid from after the position it says it folded through"
 );
 
 engine_check!(
-    /// A view does not see an open transaction.
     OPEN_TRANSACTION = a_view_does_not_see_an_open_transaction,
     "seams §ProjectionStore: nothing put in a transaction is visible to any view until it commits, and then all of it at once"
 );
 
 engine_check!(
-    /// A view keeps its position after later commits.
     VIEW_KEEPS_POSITION = a_view_keeps_its_position_after_later_commits,
     "seams §LakeEngine: a view keeps answering its own position while the fold moves on"
 );
 
 engine_check!(
-    /// A put at the same position replaces the state there.
     SAME_POSITION = a_put_at_the_same_position_replaces_the_state_there,
     "seams §ProjectionStore: a put of the same thing at the same position replaces the state there; the fold writing a state again never adds a second one"
 );
 
 engine_check!(
-    /// A put before a later state ends where that state begins.
     PUT_BEFORE_A_LATER_STATE = a_put_before_a_later_state_ends_where_that_state_begins,
     "seams §ProjectionStore: a state put at a position before a later state of the same thing is valid until that later state begins, which stays the latest"
 );
 
 engine_check!(
-    /// Several puts in one transaction leave what they leave one by one.
-    PUTS_IN_ONE_TRANSACTION = several_puts_of_one_thing_in_one_transaction_leave_what_they_leave_one_by_one,
+    PUTS_IN_ONE_TRANSACTION =
+        several_puts_of_one_thing_in_one_transaction_leave_what_they_leave_one_by_one,
     "seams §ProjectionStore: puts of the same things in one transaction, at later positions, at the same one or before a later one, leave the history and the head's indexes a commit after each put would leave"
 );
 
 engine_check!(
-    /// A key written often is put and read as a key written twice.
     MUCH_WRITTEN_KEY = a_much_written_key_is_put_and_read_as_one_written_twice,
     "seams §Engine (lakelands#596): a key put forty thousand times answers at the head, at an earlier position, in a page and in a count as a key put twice; what its puts and reads cost is counted in each disk engine's own tests"
 );
 
 engine_check!(
-    /// A head-only name keeps one state for each key.
     HEAD_ONLY_NAME = a_head_only_name_keeps_one_state_for_each_key,
     "seams §ProjectionStore (lakelands#629): under a head-only name, `sys:order.<view>`, a put replaces its key's state and an end deletes it, a rollback leaves what the key held, and a page in key order after a key reads the next key's one row, an ended key between them read as none; it is read at the head only. `end_head_only` deletes every key's state at once, whether put before or earlier in the transaction, and keeps a key put after it in the same transaction, also where the transaction's puts are written a page at a time around it (2 600 puts); it leaves a sibling name (`sys:order.vx`) as it was, and refuses a name that is not head-only as invalid, leaving that type's records"
 );
 
 engine_check!(
-    /// `clear` empties the projection and the vector index.
     CLEAR = clear_empties_the_projection_and_the_vector_index,
     "seams §ProjectionStore: clear deletes every state, kept history and the vector index included, and leaves nothing folded, for a rebuild from the log"
 );
+
+engine_check!(
+    OTHER_LAYOUT = reopening a_projection_of_another_layout_is_refused_until_it_is_rebuilt,
+    "004 and seams §EngineOpener (lakelands#678): a disk engine marks a projection with the layout it was made with; a writer's open, a creator's and a reader's refuse one marked with another or with none, naming the layout found, the one wanted and `lakelands rebuild`, since a table it lacks would answer wrongly without failing; one opened for a rebuild is neither read nor made before `clear` makes it anew at the engine's layout, and every open then reads what was folded since"
+);
+
+fn a_projection_of_another_layout_is_refused_until_it_is_rebuilt(
+    engine: &dyn LakeEngine,
+    harness: &dyn EngineHarness,
+) -> Held {
+    let lake = engine.lake();
+    fold_one(engine, 1, record("t", "a", json!({}), 1))?;
+    // The memory engine's projection lives as long as its lake's handles:
+    // no other build opens it.
+    if !harness.mark_layout(lake, None) {
+        return Ok(());
+    }
+    let wanted = refused_for_its_layout(harness, lake, OpenMode::Write, None)?;
+    refused_for_its_layout(harness, lake, OpenMode::Read, None)?;
+    let other = Some(wanted + 1);
+    harness.mark_layout(lake, other);
+    for mode in [OpenMode::Write, OpenMode::Create, OpenMode::Read] {
+        let again = refused_for_its_layout(harness, lake, mode, other)?;
+        ensure!(
+            again == wanted,
+            "a {mode:?} open wants layout {again}, and another {wanted}"
+        );
+    }
+    // Opened for a rebuild, nothing of it is read or made before `clear`
+    // makes it anew; then it folds, and every open reads it.
+    let rebuilt = harness
+        .reopen(lake, OpenMode::Rebuild)
+        .map_err(|e| Failure::new(format!("opening the projection for a rebuild: {e}")))?;
+    rebuilt.projection().clear().must("clearing it")?;
+    fold_one(rebuilt.as_ref(), 2, record("t", "b", json!({}), 2))?;
+    drop(rebuilt);
+    for mode in [OpenMode::Write, OpenMode::Read] {
+        let opened = harness
+            .reopen(lake, mode)
+            .map_err(|e| Failure::new(format!("opening it {mode:?} after the rebuild: {e}")))?;
+        let head = view(opened.as_ref(), None)?;
+        let (a, b) = (
+            head.get(&"t".into(), &"a".into()),
+            head.get(&"t".into(), &"b".into()),
+        );
+        let (a, b) = (a.must("reading `a`")?, b.must("reading `b`")?);
+        ensure!(
+            a.is_none() && b.as_ref().is_some_and(|b| b.position == Position(2)),
+            "opened {mode:?} after the rebuild, the projection reads {a:?} and {b:?}: \
+             only what was folded since the rebuild"
+        );
+    }
+    Ok(())
+}
+
+/// Opens the lake in `mode` and expects the refusal of its projection,
+/// marked `found`; answers the layout the refusal wants.
+fn refused_for_its_layout(
+    harness: &dyn EngineHarness,
+    lake: &LakeId,
+    mode: OpenMode,
+    found: Option<u64>,
+) -> Result<u64, Failure> {
+    let error = match harness.reopen(lake, mode) {
+        Ok(_) => {
+            return Err(Failure::new(format!(
+                "a projection marked {found:?} opened {mode:?}"
+            )));
+        }
+        Err(e) => e,
+    };
+    let said = error.to_string();
+    match error.situation() {
+        Some(Situation::ProjectionLayout {
+            lake: named,
+            found: f,
+            wanted,
+        }) if named == lake.as_str()
+            && *f == found
+            && Some(*wanted) != found
+            && said.contains("`lakelands rebuild`") =>
+        {
+            Ok(*wanted)
+        }
+        _ => Err(Failure::new(format!(
+            "opening {mode:?} a projection marked {found:?} was refused otherwise: {said}"
+        ))),
+    }
+}
 
 /// A record state of `ty` at `position`, with version 1 and no flags.
 pub(super) fn record(ty: &str, key: &str, fields: Value, position: u64) -> StoredRecord {
@@ -155,7 +230,7 @@ pub(super) fn fold(
     engine: &dyn LakeEngine,
     through: u64,
     puts: impl FnOnce(&dyn ProjectionStore) -> lakelands_api::Result<()>,
-) -> Result<(), Failure> {
+) -> Held {
     let p = engine.projection();
     p.begin().must("beginning a transaction")?;
     puts(p).must("writing the projection")?;
@@ -165,15 +240,11 @@ pub(super) fn fold(
 
 /// One record folded in a transaction of its own, committed through
 /// `through`: the same begin, put and commit as `fold`.
-pub(super) fn fold_one(
-    engine: &dyn LakeEngine,
-    through: u64,
-    state: StoredRecord,
-) -> Result<(), Failure> {
+pub(super) fn fold_one(engine: &dyn LakeEngine, through: u64, state: StoredRecord) -> Held {
     fold(engine, through, |p| p.put_record(&state))
 }
 
-fn a_view_at_a_position_sees_the_states_then(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn a_view_at_a_position_sees_the_states_then(engine: &dyn LakeEngine) -> Held {
     for (n, at) in [(1, 1), (2, 2), (3, 4)] {
         fold_one(engine, at, record("counter", "k", json!({"n": n}), at))?;
     }
@@ -201,7 +272,7 @@ fn a_view_at_a_position_sees_the_states_then(engine: &dyn LakeEngine) -> Result<
     Ok(())
 }
 
-fn a_view_past_the_folded_position_is_refused(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn a_view_past_the_folded_position_is_refused(engine: &dyn LakeEngine) -> Held {
     let refused = engine.view(Some(Position(0))).map(|v| v.position());
     ensure!(
         matches!(reason(&refused), Some(Refusal::OutOfRange { .. })),
@@ -222,7 +293,7 @@ fn a_view_past_the_folded_position_is_refused(engine: &dyn LakeEngine) -> Result
     Ok(())
 }
 
-fn a_rolled_back_transaction_leaves_nothing(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn a_rolled_back_transaction_leaves_nothing(engine: &dyn LakeEngine) -> Held {
     fold_one(engine, 0, record("counter", "a", json!({}), 0))?;
     let p = engine.projection();
     p.begin().must("beginning a transaction")?;
@@ -259,7 +330,7 @@ fn a_rolled_back_transaction_leaves_nothing(engine: &dyn LakeEngine) -> Result<(
 
 /// Invoices billed to customers and replacing other invoices, both
 /// relations carried by reference fields.
-fn billing(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn billing(engine: &dyn LakeEngine) -> Held {
     let invoice: Declaration = serde_json::from_value(json!({
         "declare": "type", "name": "invoice", "fields": [],
         "relations": [
@@ -326,7 +397,7 @@ type EdgeCase = (
     &'static [&'static str],
 );
 
-fn edges_walk_in_out_and_both(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn edges_walk_in_out_and_both(engine: &dyn LakeEngine) -> Held {
     billing(engine)?;
     let cases: [EdgeCase; 5] = [
         (
@@ -376,7 +447,7 @@ fn edges_walk_in_out_and_both(engine: &dyn LakeEngine) -> Result<(), Failure> {
     Ok(())
 }
 
-fn edges_follow_a_records_latest_state(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn edges_follow_a_records_latest_state(engine: &dyn LakeEngine) -> Held {
     billing(engine)?;
     let mut moved = record("invoice", "i2", json!({"customer": "c2"}), 1);
     moved.version = Version(2);
@@ -396,7 +467,7 @@ fn edges_follow_a_records_latest_state(engine: &dyn LakeEngine) -> Result<(), Fa
     Ok(())
 }
 
-fn edges_to_a_retired_record_are_returned(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn edges_to_a_retired_record_are_returned(engine: &dyn LakeEngine) -> Held {
     billing(engine)?;
     let mut retired = record("customer", "c1", json!({}), 1);
     retired.retired = true;
@@ -417,9 +488,7 @@ fn edges_to_a_retired_record_are_returned(engine: &dyn LakeEngine) -> Result<(),
     Ok(())
 }
 
-fn a_commit_backwards_or_with_a_put_past_through_is_invalid(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn a_commit_backwards_or_with_a_put_past_through_is_invalid(engine: &dyn LakeEngine) -> Held {
     fold_one(engine, 4, record("t", "a", json!({}), 4))?;
     let p = engine.projection();
     p.begin().must("beginning a transaction")?;
@@ -450,7 +519,7 @@ fn a_commit_backwards_or_with_a_put_past_through_is_invalid(
     Ok(())
 }
 
-fn a_view_does_not_see_an_open_transaction(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn a_view_does_not_see_an_open_transaction(engine: &dyn LakeEngine) -> Held {
     let t = TypeName::from("t");
     let declared = |fields: Value| {
         serde_json::from_value::<Declaration>(
@@ -502,8 +571,14 @@ fn a_view_does_not_see_an_open_transaction(engine: &dyn LakeEngine) -> Result<()
             .must("putting an output")?;
     }
     let outputs = (
-        before.output("seam", &held).must("reading an output")?,
-        before.output("seam", &new).must("reading an output")?,
+        before
+            .output("seam", &held)
+            .must("reading an output")?
+            .map(|(_, v)| v),
+        before
+            .output("seam", &new)
+            .must("reading an output")?
+            .map(|(_, v)| v),
     );
     p.put_record(&record("t", "b", json!({}), 2))
         .must("putting a record")?;
@@ -556,7 +631,7 @@ fn a_view_does_not_see_an_open_transaction(engine: &dyn LakeEngine) -> Result<()
         .get(&TypeName::from("t"), &RecordKey::from("a"))
         .must("reading after the commit")?
         .and_then(|r| r.fields.get("n").cloned());
-    let output = after.output("seam", &held).must("reading an output")?;
+    let output = (after.output("seam", &held).must("reading an output")?).map(|(_, v)| v);
     ensure!(
         n == Some(json!(2)) && output == Some(json!("two")),
         "after the commit `a` reads n = {n:?} and the output {output:?}; they must be 2 and \
@@ -565,7 +640,7 @@ fn a_view_does_not_see_an_open_transaction(engine: &dyn LakeEngine) -> Result<()
     Ok(())
 }
 
-fn a_view_keeps_its_position_after_later_commits(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn a_view_keeps_its_position_after_later_commits(engine: &dyn LakeEngine) -> Held {
     fold_one(engine, 1, record("t", "a", json!({"n": 1}), 1))?;
     let early = view(engine, None)?;
     fold(engine, 2, |p| {
@@ -596,9 +671,7 @@ fn a_view_keeps_its_position_after_later_commits(engine: &dyn LakeEngine) -> Res
     Ok(())
 }
 
-fn a_put_at_the_same_position_replaces_the_state_there(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn a_put_at_the_same_position_replaces_the_state_there(engine: &dyn LakeEngine) -> Held {
     fold_one(engine, 1, record("t", "a", json!({"n": 1}), 1))?;
     fold(engine, 2, |p| {
         p.put_record(&record("t", "a", json!({"n": 2}), 2))?;
@@ -620,9 +693,7 @@ fn a_put_at_the_same_position_replaces_the_state_there(
     Ok(())
 }
 
-fn clear_empties_the_projection_and_the_vector_index(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn clear_empties_the_projection_and_the_vector_index(engine: &dyn LakeEngine) -> Held {
     let ty = TypeName::from("t");
     fold_one(engine, 1, record("t", "a", json!({}), 1))?;
     if let Some(index) = engine.vectors() {
@@ -658,9 +729,7 @@ fn clear_empties_the_projection_and_the_vector_index(
     Ok(())
 }
 
-fn a_put_before_a_later_state_ends_where_that_state_begins(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn a_put_before_a_later_state_ends_where_that_state_begins(engine: &dyn LakeEngine) -> Held {
     let words: Declaration = serde_json::from_value(json!({
         "declare": "type", "name": "t", "language": "en",
         "fields": [{"name": "word", "type": {"kind": "text"}, "searchable": true}]
@@ -691,9 +760,8 @@ fn a_put_before_a_later_state_ends_where_that_state_begins(
              {as_of:?} read {got:?}, but the state valid there is {expected:?}"
         );
     }
-    let head = view(engine, None)?;
-    let five = head.lexical(&ty, "five", None, 10).must("searching")?;
-    let three = head.lexical(&ty, "three", None, 10).must("searching")?;
+    let five = super::reads::lexical(engine, &ty, "five", None, 10).must("searching")?;
+    let three = super::reads::lexical(engine, &ty, "three", None, 10).must("searching")?;
     ensure!(
         five.len() == 1 && three.is_empty(),
         "at the head, `five` answered {five:?} and `three` {three:?}; the state put at 3 is \
@@ -704,7 +772,7 @@ fn a_put_before_a_later_state_ends_where_that_state_begins(
 
 fn several_puts_of_one_thing_in_one_transaction_leave_what_they_leave_one_by_one(
     engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+) -> Held {
     let words: Declaration = serde_json::from_value(json!({
         "declare": "type", "name": "t", "language": "en",
         "fields": [{"name": "word", "type": {"kind": "text"}, "searchable": true}],
@@ -743,11 +811,9 @@ fn several_puts_of_one_thing_in_one_transaction_leave_what_they_leave_one_by_one
             );
         }
     }
-    let head = view(engine, None)?;
     let mut hits = BTreeMap::new();
     for word in ["one", "four", "ten", "six", "zero", "three", "five"] {
-        let found: Vec<String> = head
-            .lexical(&ty, word, None, 10)
+        let found: Vec<String> = super::reads::lexical(engine, &ty, word, None, 10)
             .must("searching")?
             .into_iter()
             .map(|(k, _)| k.to_string())
@@ -782,7 +848,7 @@ fn several_puts_of_one_thing_in_one_transaction_leave_what_they_leave_one_by_one
 /// [`billing`], and a relation `approved_by` from invoices to customers
 /// carried by link records: through position 1, i1 and i2 approved by
 /// c1; at position 2, i2's link removed and a record i3 retired.
-fn billing_with_links(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn billing_with_links(engine: &dyn LakeEngine) -> Held {
     billing(engine)?;
     let read = |v: Value| {
         serde_json::from_value::<Declaration>(v)
@@ -828,9 +894,7 @@ fn billing_with_links(engine: &dyn LakeEngine) -> Result<(), Failure> {
     })
 }
 
-fn edges_over_many_keys_answer_each_key_as_it_answers_alone(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn edges_over_many_keys_answer_each_key_as_it_answers_alone(engine: &dyn LakeEngine) -> Held {
     billing_with_links(engine)?;
     let sorted = |edges: Vec<lakelands_api::query::Edge>| {
         let mut out: Vec<String> = edges
@@ -890,7 +954,7 @@ fn edges_over_many_keys_answer_each_key_as_it_answers_alone(
     Ok(())
 }
 
-fn get_many_answers_what_get_answers_key_by_key(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn get_many_answers_what_get_answers_key_by_key(engine: &dyn LakeEngine) -> Held {
     billing_with_links(engine)?;
     let mut restricted = record("invoice", "i1", json!({"customer": "c1"}), 3);
     restricted.restricted = true;
@@ -925,9 +989,7 @@ fn get_many_answers_what_get_answers_key_by_key(engine: &dyn LakeEngine) -> Resu
     Ok(())
 }
 
-fn a_much_written_key_is_put_and_read_as_one_written_twice(
-    engine: &dyn LakeEngine,
-) -> Result<(), Failure> {
+fn a_much_written_key_is_put_and_read_as_one_written_twice(engine: &dyn LakeEngine) -> Held {
     // `b` is put twice and `a` forty thousand times.
     const STATES: u64 = 40_000;
     let put = |key: &str, at: u64| record("t", key, json!({"n": at}), at);
@@ -964,7 +1026,7 @@ fn a_much_written_key_is_put_and_read_as_one_written_twice(
     Ok(())
 }
 
-fn a_head_only_name_keeps_one_state_for_each_key(engine: &dyn LakeEngine) -> Result<(), Failure> {
+fn a_head_only_name_keeps_one_state_for_each_key(engine: &dyn LakeEngine) -> Held {
     let ty = TypeName::from(format!("{}v", lakelands_api::seam::ORDER_PREFIX));
     let entry =
         |key: &str, n: u64, at: u64| record(ty.as_str(), key, json!({"sys:entry": {"n": n}}), at);

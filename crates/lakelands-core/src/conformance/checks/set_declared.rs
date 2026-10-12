@@ -1,31 +1,28 @@
 //! A set's declaration decides the membership of the records already
 //! there (`docs/decisions/004-the-change-feed-is-the-log.md`, extended).
 
-use std::sync::Arc;
-
 use lakelands_api::event::EventBody;
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::seam::Seams;
-use lakelands_api::{LakeStore, Outcome, Refusal};
+use lakelands_api::{Outcome, Refusal};
 use serde_json::json;
 
 use crate::conformance::fixture::{
     Lake, Must, events_from, head_unmoved, limits, object_set_on, refused_on, type_of,
 };
-use crate::conformance::{Failure, Given};
+use crate::conformance::{Failure, Given, Held, Store};
 
 check!(
-    /// A set declared over records decides their membership.
     SET_DECLARED_OVER_RECORDS = a_sets_declaration_decides_the_membership_of_the_records_there,
     "004, extended: a set declared over records already written appends, in its declaration's append and caused by its `declared`, an `object_set_changed` joining each live record its filter holds for and no other; declared again with another filter, it joins and leaves exactly the records the change moves; declared again unchanged, it appends none; and a later write decides against the membership so kept; past the lake's `max_set_changes` a declaration is refused `too_large`, naming the set and the ceiling, and appends nothing",
     given
 );
 
 async fn a_sets_declaration_decides_the_membership_of_the_records_there(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     given: Given,
-) -> Result<(), Failure> {
+) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(type_of("invoice", &[("status", Text), ("amount", Number)]))
         .await?;
@@ -66,9 +63,8 @@ async fn a_sets_declaration_decides_the_membership_of_the_records_there(
         ("amount > 100", vec![]),
     ] {
         let from = store.head().await.must("reading the head")?.next();
-        let answer = l
-            .declare_as(object_set_on("open", "invoice", filter), filter)
-            .await?;
+        let answer = l.declare_as(object_set_on("open", "invoice", filter), filter);
+        let answer = answer.await?;
         let got = changes(from).await?;
         // The answer names `open` once however many records it moves, and
         // `through` covers them (015, extended).

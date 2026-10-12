@@ -1,11 +1,14 @@
-//! A lake made before aging (lakelands#67) gains `sys.aging_rule` the next
-//! time a writer opens it (`docs/seams.md`, `SystemVocabulary`).
+//! A writer's open declares each system type the lake does not hold yet
+//! (`docs/seams.md`, `SystemVocabulary`): it appends its lease and the
+//! declaration, and nothing else. So a lake gains a system type a later
+//! build adds, the next time a writer opens it.
 //!
-//! The contract cannot make such a lake, since every lake the store
-//! creates declares the type at once, so the test writes one through the
-//! engine seam as the store wrote lakes then: `lake_created`, the lease,
-//! and `sys.setting`. It runs on the memory engine, the store's one engine
-//! among its test dependencies.
+//! The contract cannot make a lake that lacks one, since every lake the
+//! store creates declares them all at once, so the test writes one
+//! through the engine seam with `lake_created`, the lease and
+//! `sys.setting` alone, and `sys.aging_rule` is the type it gains. It
+//! runs on the memory engine, the store's one engine among its test
+//! dependencies.
 
 use std::sync::Arc;
 
@@ -21,7 +24,7 @@ use lakelands_engine_mem::MemoryOpener;
 use lakelands_store::log::{Draft, seal};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_lake_made_before_aging_gains_the_rule_type_on_its_next_open_for_writing() {
+async fn a_lake_that_lacks_a_system_type_gains_it_on_its_next_open_for_writing() {
     let opener = MemoryOpener::new();
     let lake = "made-before-aging";
     let location = Location::memory(lake);

@@ -1,4 +1,4 @@
-package lakelands:data@0.12.0;
+package lakelands:data@0.13.0;
 
 /// The types every interface of the package shares: the contract of
 /// `lakelands-api`, type for type.
@@ -201,7 +201,7 @@ interface types {
         inverse: option<relation-name>,
         via: option<field-name>,
         fields: list<field-decl>,
-        /// Who writes the links, for a relation without `via`.
+        /// Who writes the links, for a relation carried by link records.
         authority: authority,
         description: option<string>,
         /// The host's own marks, by namespaced key (`acme.icon`), each a
@@ -283,7 +283,7 @@ interface types {
     }
 
     /// What a verb is called on: one record of its type, or the type,
-    /// with no key (log format 8).
+    /// with no key.
     enum verb-scope { %record, %type }
 
     record verb-decl {
@@ -439,8 +439,7 @@ interface types {
     enum origin { source, authored, derived, system, initial }
 
     /// Where values read from another lake's log came from: that lake and
-    /// the position of the event there whose state they are (log format
-    /// version 3).
+    /// the position of the event there whose state they are.
     record upstream {
         lake: lake-id,
         position: position,
@@ -766,6 +765,9 @@ interface types {
         where: option<condition>,
         search: option<search-mode>,
         params: list<tuple<param-name, json>>,
+        /// The name a row binds the start's record under; its type's name
+        /// when none.
+        %as: option<string>,
     }
 
     record step {
@@ -774,6 +776,9 @@ interface types {
         %type: option<type-name>,
         where: option<condition>,
         depth: depth,
+        /// The name a row binds the reached record under; its type's name
+        /// when none.
+        %as: option<string>,
     }
 
     variant projection {

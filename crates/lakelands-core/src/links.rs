@@ -1,9 +1,9 @@
-//! Link records: the one definition of a relation carried without `via`
+//! Link records: the one definition of the records that carry a relation
 //! (`docs/decisions/035-a-link-is-a-record.md`, `docs/log-format.md` §2.3).
 //!
-//! A relation `r` of type `t` declared without `via` is carried by records
+//! A relation `r` of type `t` with neither `via` nor `derived` is carried by records
 //! of its **link type**, `sys.link.t.r`, which this module derives from the
-//! relation, the same way for the store, every engine and the mock:
+//! relation, the same way for the store and every engine:
 //!
 //! - its key fields are `from` (a `reference` to `t`) and `to` (a
 //!   `reference` to the relation's target), both required, so a link's key
@@ -57,7 +57,7 @@ pub fn moved(
     m: &lakelands_api::write::Migration,
 ) -> std::collections::BTreeMap<TypeName, TypeName> {
     let carried = |(_, new): &&(RelationName, RelationName)| {
-        (m.to.relations.iter()).any(|r| &r.name == new && carried_by_links(r))
+        (m.to.relations.iter()).any(|r| &r.name == new && r.carried_by_links())
     };
     let link = |r| link_type_name(&m.to.name, r);
     (m.relation_renames.iter().filter(carried))
@@ -83,11 +83,6 @@ pub fn renamed(m: &lakelands_api::write::Migration, at: Position) -> Vec<Renamed
     });
     let fields = (!m.renames.is_empty()).then_some(fields);
     fields.into_iter().chain(types).collect()
-}
-
-/// Whether a relation is carried by link records.
-pub fn carried_by_links(r: &RelationDecl) -> bool {
-    r.via.is_none() && r.derived.is_none()
 }
 
 fn key_field(name: &str, target: &TypeName, authority: Authority) -> FieldDecl {
@@ -121,7 +116,7 @@ pub fn link_type(t: &TypeName, r: &RelationDecl) -> TypeDecl {
 pub fn link_types_of(t: &TypeDecl) -> Vec<TypeDecl> {
     t.relations
         .iter()
-        .filter(|r| carried_by_links(r))
+        .filter(|r| r.carried_by_links())
         .map(|r| link_type(&t.name, r))
         .collect()
 }
@@ -135,7 +130,7 @@ pub fn relation_of<'a>(
     types.into_iter().find_map(|t| {
         t.relations
             .iter()
-            .filter(|r| carried_by_links(r))
+            .filter(|r| r.carried_by_links())
             .find(|r| link_type_name(&t.name, &r.name) == *link_type)
             .map(|r| (t, r))
     })
@@ -189,7 +184,7 @@ pub fn link_edges<'a, E>(
         for r in t
             .relations
             .iter()
-            .filter(|r| carried_by_links(r) && relation.is_none_or(|want| *want == r.name))
+            .filter(|r| r.carried_by_links() && relation.is_none_or(|want| *want == r.name))
         {
             let lt = link_type_name(&t.name, &r.name);
             let mut wanted: Vec<&str> = Vec::new();

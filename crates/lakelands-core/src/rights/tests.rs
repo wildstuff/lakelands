@@ -86,7 +86,9 @@ fn refused_on<T>(field: &str, reason: Refusal) -> Result<T, Error> {
 #[test]
 fn a_reader_sees_granted_fields_and_a_sensitive_field_only_as_masked() {
     let who = principal(Access::None, &[("amount", Access::Read)]);
-    let r = visible(&who, &invoice(), &stored(), true).unwrap();
+    let none = Vec::new();
+    let sees = crate::sight::Sight::held(&who, &none);
+    let r = visible(&sees, &invoice(), &stored(), true).unwrap();
     assert_eq!(r.fields.keys().collect::<Vec<_>>(), ["amount"]);
     assert_eq!(r.masked, [FieldName::from("iban")]);
     assert_eq!(
@@ -266,26 +268,31 @@ fn a_view_carries_its_source_only_where_it_groups_by_the_owner() {
     };
     who.grants.types.insert("claim".into(), alice);
     let pairs = vec![(FieldName::from("owner"), json!("alice"))];
-    let only = |ty: &str| only(&who, &ty.into(), &find);
+    let admit = |who: &Principal, ty: &str| admit(who, &ty.into(), &find);
+    let only = Admit::Only(pairs);
+    assert_eq!(admit(&who, "claim"), only);
+    assert_eq!(admit(&who, "by_owner"), only, "rule 16 maps the pairs");
     assert_eq!(
-        only("by_owner"),
-        Effective::Pairs(pairs.clone()),
-        "rule 16 maps the pairs"
-    );
-    assert_eq!(
-        only("sys:kept.by_owner"),
-        Effective::Pairs(pairs),
+        admit(&who, "sys:kept.by_owner"),
+        only,
         "a kept name is its view"
     );
-    assert_eq!(
-        only("all"),
-        Effective::ComputeOnly(vec![]),
-        "no group holds the owner"
-    );
-    assert_eq!(
-        only("merged"),
-        Effective::ComputeOnly(vec![]),
-        "a merge computes"
-    );
-    assert!(only("invoice").whole());
+    let computed = Admit::Computed(vec![]);
+    assert_eq!(admit(&who, "all"), computed, "no group holds the owner");
+    assert_eq!(admit(&who, "merged"), computed, "a merge computes");
+    assert_eq!(admit(&who, "invoice"), Admit::All);
+    // It fails closed: a pair no engine can hold a record to admits none,
+    // of the type and of a view over it, whatever a record holds.
+    let grant = who.grants.types.get_mut("claim").expect("granted");
+    grant.only.insert("gone".into(), json!("x"));
+    let held = [
+        ("owner".into(), json!("alice")),
+        ("gone".into(), json!("x")),
+    ]
+    .into();
+    for ty in ["claim", "by_owner", "sys:kept.by_owner", "all", "merged"] {
+        assert_eq!(admit(&who, ty), Admit::Nothing, "{ty}");
+        assert!(!admit(&who, ty).holds(&held) && admit(&who, ty).pairs().is_none());
+    }
+    assert!(only.holds(&held) && computed.holds(&held) && !only.holds(&[].into()));
 }

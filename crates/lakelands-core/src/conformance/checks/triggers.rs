@@ -9,8 +9,6 @@
 //! creation. A trigger may cap the depth of the reactions that name its
 //! firing as their cause, below the lake's own ceiling.
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::expr::Condition;
@@ -24,45 +22,44 @@ use serde_json::json;
 
 use crate::conformance::fixture::{
     Lake, Must, events_after, field, find_where, head_unmoved, limits, reactive, reason,
-    refused_like, refused_on, try_upsert, type_decl,
+    refused_like, refused_on, source_record, sourced, try_upsert, type_decl,
 };
-use crate::conformance::{Failure, Given};
+use crate::conformance::{Failure, Given, Held, Store};
 
 check!(
-    /// A transition guard fires on its transition only.
     TRANSITION = a_transition_guard_fires_on_open_to_closed_only,
     "004, extended: a guard `previous(status) = 'open' and status = 'closed'` fires on open → closed and not on draft → closed, open → open or a record created closed (`previous` is null for it); `previous` outside a guard is refused as invalid naming it"
 );
 
 check!(
-    /// A guard tells a retirement from an update.
     RETIREMENT = a_guard_tells_a_retirement_from_an_update,
-    "004, extended: a guard `status = 'closed' and not retired()` fires on closing a record and on updating a closed one but not on retiring it, and a guard `retired()` fires on the retirement only, caused by it, as it does on a proposed retirement when it is accepted; the declaration calling `retired` is written in log format 7"
+    "004, extended: a guard `status = 'closed' and not retired()` fires on closing a record and on updating a closed one but not on retiring it, and a guard `retired()` fires on the retirement only, caused by it, as it does on a proposed retirement when it is accepted"
 );
 
 check!(
-    /// A revival reads as a creation in a guard.
     REVIVAL = a_revival_is_a_creation_to_a_guard,
     "004, extended: an upsert of a retired record is a creation to a guard: `previous(f)` is null, `changed(f)` is true and `retired()` is false"
 );
 
 check!(
-    /// `retired()` belongs to a trigger's guard alone.
     RETIRED_ONLY_IN_A_GUARD = retired_outside_a_triggers_guard_is_refused_naming_it,
     "004, extended: `retired()` in an object set's filter, a verb's `requires`, a derived field or a find's filter, and `retired` called with an argument in a guard, are refused as invalid naming `retired`, appending nothing"
 );
 
 check!(
-    /// A reaction past its trigger's ceiling is refused.
     PER_TRIGGER_DEPTH = a_reaction_past_its_triggers_max_depth_is_refused_naming_it,
     "021, extended: a reactive write whose `cause` names a firing of a trigger with `max_depth` is refused too_deep naming the trigger when it is deeper than that ceiling, appending nothing, while the lake's own ceiling is higher; a reaction to another trigger, or naming no cause, at the same depth is taken"
 );
 
 check!(
-    /// A trigger's ceiling lies within the lake's.
     TRIGGER_CEILING = a_trigger_max_depth_above_the_lakes_ceiling_is_refused,
     "021, extended: a trigger whose `max_depth` is above the lake's `max_reactive_depth` is refused as invalid naming the trigger and both numbers, by `declare`, `apply` and `propose`, and by `accept` once the lake is opened again with a lower ceiling; the lake's ceiling itself and 0 are taken",
     given
+);
+
+check!(
+    GUARD_PROVENANCE = a_guard_reads_the_provenance_its_write_leaves,
+    "004 and 010, extended (lakelands#850): a trigger's guard judges the record its write leaves, provenance included: `seen_at(f)` of an ingested record is the instant its source states in that window, so `seen_at(status) >= '2026-03-01'` fires on the record its source saw then and not on one seen earlier or with no instant stated; a record later in the window is judged with what an earlier one of its key left, so one that brings another field fires it again"
 );
 
 fn trigger(name: &str, when: Option<&str>, max_depth: Option<u32>) -> Declaration {
@@ -101,23 +98,20 @@ async fn fired_after(
         .collect())
 }
 
-async fn a_transition_guard_fires_on_open_to_closed_only(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_transition_guard_fires_on_open_to_closed_only(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
         .await?;
-    cat.declare(
+    let fut = cat.declare(
         own,
         trigger(
             "closed",
             Some("previous(status) = 'open' and status = 'closed'"),
             None,
         ),
-    )
-    .await
-    .must("declaring the transition trigger")?;
+    );
+    fut.await.must("declaring the transition trigger")?;
     for (key, states) in [
         ("a", vec!["open", "closed"]),
         ("b", vec!["draft", "closed"]),
@@ -158,9 +152,48 @@ async fn a_transition_guard_fires_on_open_to_closed_only(
     Ok(())
 }
 
-async fn a_guard_tells_a_retirement_from_an_update(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_guard_reads_the_provenance_its_write_leaves(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let fields = ["status", "note"].map(|f| sourced(f, StorageKind::Text));
+    l.declare(type_decl("job", fields.to_vec())).await?;
+    let when = Some("seen_at(status) >= '2026-03-01'");
+    l.declare_as(trigger("seen", when, None), "the trigger")
+        .await?;
+    let mut fired = Vec::new();
+    for seen in [Some("2026-03-02"), Some("2026-02-01"), None] {
+        let before = store.head().await.must("reading the head")?;
+        let mut r = source_record("job", seen.unwrap_or("none"), json!({"status": "open"}));
+        r.seen_at = seen.map(|d| format!("{d}T00:00:00Z").parse().expect("an instant"));
+        l.ingest("feed", vec![r]).await.must("ingesting a job")?;
+        fired.push(
+            !fired_after(store.as_ref(), before, "seen")
+                .await?
+                .is_empty(),
+        );
+    }
+    ensure!(
+        fired == [true, false, false],
+        "a guard must read `seen_at(status)` as the ingest that fires it states it: seen \
+         on 2 March, on 1 February and at no stated instant, it fired {fired:?}"
+    );
+    // Two records of one key in one window: the second brings another
+    // field, and `status` keeps the instant the first stated.
+    let before = store.head().await.must("reading the head")?;
+    let mut first = source_record("job", "twice", json!({"status": "open"}));
+    first.seen_at = Some("2026-03-02T00:00:00Z".parse().expect("an instant"));
+    let second = source_record("job", "twice", json!({"note": "x"}));
+    let window = l.ingest("feed", vec![first, second]).await;
+    window.must("ingesting two records of one job")?;
+    let twice = fired_after(store.as_ref(), before, "seen").await?.len();
+    ensure!(
+        twice == 2,
+        "a record later in a window is judged with the provenance an earlier one of its key \
+         left: the guard fires on both, and it fired {twice} times"
+    );
+    Ok(())
+}
+
+async fn a_guard_tells_a_retirement_from_an_update(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl(
@@ -171,26 +204,12 @@ async fn a_guard_tells_a_retirement_from_an_update(
         ],
     ))
     .await?;
-    let before = store.head().await.must("reading the head")?;
     for d in [
         trigger("closed", Some("status = 'closed' and not retired()"), None),
         trigger("retired", Some("retired()"), None),
     ] {
         cat.declare(own, d).await.must("declaring the triggers")?;
     }
-    let declared = events_after(store.as_ref(), before)
-        .await?
-        .into_iter()
-        .find(|e| {
-            matches!(&e.body, EventBody::Declared { declaration: Declaration::Trigger(t), .. }
-                if t.name.as_str() == "retired")
-        })
-        .ok_or_else(|| Failure::new("the feed must hold the trigger `retired` declared"))?;
-    ensure!(
-        declared.v == 7,
-        "a declaration calling `retired` is written in log format 7; it was written in {}",
-        declared.v
-    );
     let names = ["closed", "retired"];
     for (step, write, want) in [
         (
@@ -234,9 +253,8 @@ async fn a_guard_tells_a_retirement_from_an_update(
         return Err(Failure::new("a proposed retirement answers `proposed`"));
     };
     let at = store.head().await.must("reading the head")?;
-    cat.accept(own, &proposal)
-        .await
-        .must("accepting the retirement of `b`")?;
+    let fut = cat.accept(own, &proposal);
+    fut.await.must("accepting the retirement of `b`")?;
     let events = events_after(store.as_ref(), at).await?;
     let retired = events
         .iter()
@@ -257,21 +275,20 @@ async fn a_guard_tells_a_retirement_from_an_update(
     Ok(())
 }
 
-async fn a_revival_is_a_creation_to_a_guard(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_revival_is_a_creation_to_a_guard(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
         .await?;
-    cat.declare(
+    let fut = cat.declare(
         own,
         trigger(
             "created",
             Some("previous(status) is null and changed(status) and not retired()"),
             None,
         ),
-    )
-    .await
-    .must("declaring the trigger")?;
+    );
+    fut.await.must("declaring the trigger")?;
     let fired = |step: &'static str, want: bool, at: Position| {
         let store = store.clone();
         async move {
@@ -303,9 +320,7 @@ async fn a_revival_is_a_creation_to_a_guard(store: Arc<dyn LakeStore>) -> Result
     .await
 }
 
-async fn retired_outside_a_triggers_guard_is_refused_naming_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn retired_outside_a_triggers_guard_is_refused_naming_it(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
@@ -351,9 +366,7 @@ async fn retired_outside_a_triggers_guard_is_refused_naming_it(
     )
 }
 
-async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("n", StorageKind::Number)]))
@@ -422,16 +435,15 @@ async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(
     write(reactive(2, Some(always_1)), "j3")
         .await
         .must("a depth-2 reaction naming `always`'s firing")?;
-    write(reactive(2, None), "j4")
-        .await
-        .must("a depth-2 reaction naming no cause")?;
+    let fut = write(reactive(2, None), "j4");
+    fut.await.must("a depth-2 reaction naming no cause")?;
     Ok(())
 }
 
 async fn a_trigger_max_depth_above_the_lakes_ceiling_is_refused(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     given: Given,
-) -> Result<(), Failure> {
+) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("n", StorageKind::Number)]))

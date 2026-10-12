@@ -2,32 +2,28 @@
 //! (`docs/decisions/050-a-field-declares-its-initial-value.md`,
 //! lakelands#551).
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl, ValueTypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, SourceRecord, Upstream};
 use lakelands_api::write::{Declaration, Outcome, ProposedWrite};
-use lakelands_api::{Access, LakeStore, Position, PrincipalKind, Record, Refusal, Timestamp};
+use lakelands_api::{Access, Position, PrincipalKind, Record, Refusal, Timestamp};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, committed, field, field_access, invalid_case, log_events, migration, principal,
     refused_on, reviewer, source_record, trigger_on, value_type, write_verb,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A record takes its initial values when it comes to exist.
     FILLED_AT_CREATION = a_record_takes_its_initial_values_when_it_comes_to_exist,
     "050 (lakelands#551): a declared `initial` is kept in the one form a write of its field stores, so `\"1.50\"` after `\"1.5\"` on a decimal of scale 2 is the declaration in force; the event that makes a record fills each field that declares `initial` and holds no value after its patch, in the field's one form, at the record's first version, with the origin `initial`, the event's position, time and writer and nothing of its source, and a derived field reads it there; so a source's delivery makes a record whose required authored field it does not carry, the same content again is a duplicate, an author moves the value and the next delivery leaves it; an authored create is filled too, one that carries the field keeps what it carries, and a null there is filled; a later declaration with another value changes no record and is what the next one takes, a field added with one fills no record that exists, a record retired and made again starts again as a create to a trigger, an author's clear clears, and a re-key fills nothing"
 );
 
 check!(
-    /// `initial` stands on an authored field of a type's own.
     DECLARED = an_initial_value_is_declared_on_an_authored_field_of_a_types_own,
-    "050 (lakelands#551): `initial` is refused as invalid, naming the field, on a field a source writes, a shared one, a derived one, one with an expression, a key's field, a reference, a relation's `via` field, a field its inputs clear, a view's field, a relation's field, a verb's payload and a function's input; a value its field would not take is refused as a constraint naming the field, by its kind or its value type; the schema hash leaves it out, so a changed `initial` is a new version under the same hash, and a migration proposed before it changed is refused at its accept by what it restates; a value type's tightening that a declared `initial` no longer fits counts it a misfit of its field, shown to the owner, and to a proposer who may not see the type or reads the field masked is refused by its count alone"
+    "050 (lakelands#551): `initial` is refused as invalid, naming the field, on a field a source writes, a shared one, a derived one, one with an expression, a key's field, a reference, a relation's `via` field, a field its inputs clear, a view's field, a relation's field, a verb's payload and a function's input; a value its field would not take is refused as a constraint naming the field, by its kind or its value type, a number written as an integer beyond ±(2^53 − 1) before that at its member, as anywhere in a declaration (the log format §1.2); the schema hash leaves it out, so a changed `initial` is a new version under the same hash, and a migration proposed before it changed is refused at its accept by what it restates; a value type's tightening that a declared `initial` no longer fits counts it a misfit of its field, shown to the owner, and to a proposer who may not see the type or reads the field masked is refused by its count alone"
 );
 
 /// One field of a record in a line: the record's version, the value, its
@@ -53,9 +49,7 @@ fn note(key: &str) -> TypeDecl {
     .expect("the check's type reads")
 }
 
-async fn a_record_takes_its_initial_values_when_it_comes_to_exist(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_record_takes_its_initial_values_when_it_comes_to_exist(store: Store) -> Held {
     let l = &Lake::of(store.as_ref());
     let order = |initial: &str| {
         json!({"declare": "type", "name": "order", "key": ["id"], "fields": [
@@ -206,9 +200,7 @@ async fn a_record_takes_its_initial_values_when_it_comes_to_exist(
     Ok(())
 }
 
-async fn an_initial_value_is_declared_on_an_authored_field_of_a_types_own(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn an_initial_value_is_declared_on_an_authored_field_of_a_types_own(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let text = json!({"kind": "text"});
     l.declare_json(
@@ -341,10 +333,8 @@ async fn an_initial_value_is_declared_on_an_authored_field_of_a_types_own(
         "one_of": ["paid"]}))
     .expect("the check's value type reads");
     let to = || Box::new(narrower.clone());
-    let shown = l
-        .cat
-        .migrate_value_type(&l.own, narrower.clone().into())
-        .await;
+    let shown = l.cat.migrate_value_type(&l.own, narrower.clone().into());
+    let shown = shown.await;
     let shown = shown.must("the owner's preflight of the tightening")?.data;
     let uses = json!(shown.fields);
     ensure!(

@@ -14,6 +14,9 @@ use std::collections::BTreeMap;
 use lakelands_api::error::Result;
 use lakelands_api::id::{RecordKey, TypeName};
 
+/// One write of the index: a record's vector for one field, or its end.
+pub(crate) type Indexed = (TypeName, RecordKey, String, Option<Vec<f32>>);
+
 /// Every indexed vector, by type and field, then by record key.
 #[derive(Debug, Default)]
 pub(crate) struct Vectors(BTreeMap<(TypeName, String), BTreeMap<RecordKey, Vec<f32>>>);
@@ -31,6 +34,14 @@ impl Vectors {
     pub(crate) fn remove(&mut self, ty: &TypeName, key: &RecordKey, field: &str) {
         if let Some(field) = self.0.get_mut(&(ty.clone(), field.to_owned())) {
             field.remove(key);
+        }
+    }
+
+    /// Applies one write.
+    pub(crate) fn set(&mut self, (ty, key, field, vector): Indexed) {
+        match vector {
+            Some(v) => self.put(&ty, &key, &field, &v),
+            None => self.remove(&ty, &key, &field),
         }
     }
 

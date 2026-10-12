@@ -39,13 +39,13 @@ mod log;
 mod projection;
 mod view;
 
-use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
+use lakelands_api::engine::{CanonicalEvent, EngineOpener, LakeEngine, OpenMode};
 use lakelands_api::error::{Case, Detail, Doing, Error, Part, Result, Situation};
-use lakelands_api::location::{EngineConfig, Location};
+use lakelands_api::location::{EngineConfig, Location, SqliteTuning};
 
 pub use handle::SqliteLake;
 #[doc(hidden)]
-pub use view::{first_page_statements, read_statements, seek_statements};
+pub use view::{few_holders_statements, first_page_statements, read_statements, seek_statements};
 
 /// The name the engine answers to, in [`EngineConfig::Sqlite`] and in
 /// [`LakeEngine::name`].
@@ -95,19 +95,19 @@ impl EngineOpener for SqliteOpener {
         NAME
     }
 
+    /// Reads the log's files in the location's directory and nothing
+    /// else of it; a directory that is not there is not made. A segment
+    /// without its index file, or a projection with no segment file, is
+    /// damage and not a directory with no lake.
+    fn log_ends(&self, location: &Location) -> Result<Option<(CanonicalEvent, CanonicalEvent)>> {
+        log::ends(kept_in(location)?.0)
+    }
+
     /// Opens the lake in the location's directory. `Create` makes the
     /// directory and the lake when there is none; `Read` and `Write` on a
     /// directory holding no lake answer `Unavailable`.
     fn open(&self, location: &Location, mode: OpenMode) -> Result<Box<dyn LakeEngine>> {
-        let EngineConfig::Sqlite { dir, tuning } = &location.engine else {
-            let lake = Box::new(location.lake.clone());
-            let (engine, location) = (NAME.to_owned(), "sqlite".to_owned());
-            return Err(invalid(Case::EngineOtherLocation {
-                engine,
-                location,
-                lake,
-            }));
-        };
+        let (dir, tuning) = kept_in(location)?;
         Ok(Box::new(SqliteLake::open(
             location.lake.clone(),
             dir.clone(),
@@ -115,6 +115,20 @@ impl EngineOpener for SqliteOpener {
             mode,
         )?))
     }
+}
+
+/// The directory and the tuning of a location this engine keeps.
+fn kept_in(location: &Location) -> Result<(&std::path::PathBuf, &SqliteTuning)> {
+    let EngineConfig::Sqlite { dir, tuning } = &location.engine else {
+        let lake = Box::new(location.lake.clone());
+        let (engine, location) = (NAME.to_owned(), "sqlite".to_owned());
+        return Err(invalid(Case::EngineOtherLocation {
+            engine,
+            location,
+            lake,
+        }));
+    };
+    Ok((dir, tuning))
 }
 
 #[cfg(test)]

@@ -75,9 +75,7 @@
 //! measures and in `find`'s aggregate, where a set of records is in
 //! scope.
 //! `date_bucket(x, 'unit')` serves reads (`find`'s `where` and group
-//! keys, a pattern's `where`) and, from log format version 3 on, every
-//! expression a declaration keeps; the event that first declares such a
-//! call is written in version 3 (`docs/log-format.md` §6).
+//! keys, a pattern's `where`) and every expression a declaration keeps.
 //!
 //! # Determinism
 //!
@@ -110,7 +108,7 @@ pub enum Expr {
         /// The constant's value.
         value: Literal,
     },
-    /// A field of the record in scope, or `<type>.<field>` in a pattern.
+    /// A field of the record in scope, or `<name>.<field>` in a pattern.
     Path {
         /// The path's segments.
         path: Vec<FieldName>,
@@ -247,20 +245,17 @@ pub enum Func {
     /// that key, as it stood at the position being read or folded.
     Setting,
     /// `param('name')`: the value a read binds to the view's parameter of
-    /// that name. Only a view's `where` and `measures` may call it. Format 8
-    /// (`docs/log-format.md` §6).
+    /// that name. Only a view's `where` and `measures` may call it.
     Param,
     /// `in_set('name')`: whether the named object set's filter holds for
     /// the record: the filter in the call's place, bound when the
     /// condition is read, never stored membership. In an object set's
-    /// `where`, a trigger's `when` and a read's `where`. Format 11
-    /// (`docs/log-format.md` §6).
+    /// `where`, a trigger's `when` and a read's `where`.
     InSet,
     /// `changed(field)`: in a guard, whether the write changes the field.
     Changed,
     /// `retired()`: in a trigger's guard, whether the write retires the
-    /// record (live before it, retired after it). Format 7
-    /// (`docs/log-format.md` §6).
+    /// record (live before it, retired after it).
     Retired,
     /// `coalesce(a, b, …)`: the first operand that is not null.
     Coalesce,

@@ -12,125 +12,112 @@
 //! computed again, the sets decide again, and a field's `initial` that
 //! names an old value is declared again with the new one.
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::ontology::{StorageKind, ValueTypeDecl};
-use lakelands_api::seam::FeedFilter;
+use lakelands_api::seam::{FeedFilter, Seams};
 use lakelands_api::write::{
     Declaration, Migration, Outcome, ProposedWrite, ValueTypeMigration, ValueTypeReport,
 };
 use lakelands_api::{Access, LakeStore, Position, Refusal, TypeName};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, all_found, computed_by, derived, events_after, field, field_access, find_at,
-    followed, get_at, head_unmoved, migration, object_set_on, reason, refused_like, restrict,
-    reviewer, trigger_on, try_upsert, type_decl,
+    followed, get_at, head_unmoved, migration, object_set_on, outputs_from, reason, refused_like,
+    restrict, reviewer, trigger_on, try_upsert, type_decl,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A value renamed by its type's migration, in one event.
     RENAMES_IN_ONE_STEP = a_value_type_migration_renames_a_value_in_every_record_in_one_event,
     "027, extended (lakelands#553): a value type's migration with `renames` is preflighted through them, counting per field the values each pair rewrites, and applied as one `value_type_migrated` at the value type's next version, naming the types that use it; a record that held the old value holds the new one from that position, with its version and its field's provenance as they were, and as of the position before it holds the old; a record that held none is unchanged; a later write of the old value is refused"
 );
 
 check!(
-    /// Retired and restricted records are renamed too.
     RENAMES_EVERY_RECORD = a_value_rename_reaches_retired_and_restricted_records_and_leaves_them_so,
     "027, extended (lakelands#553): a value type's renames reach every stored record, retired and restricted ones included, in every field of every type that uses the value type, and leave a retired record retired and a restricted one restricted"
 );
 
 check!(
-    /// Renames that cannot be applied are refused before any walk.
     RENAMES_REFUSED = renames_that_name_a_value_twice_or_one_not_accepted_are_refused,
     "027, extended (lakelands#553): a rename of a value to itself, of a value twice, of a value the declaration in force does not accept, to one the new declaration does not accept, and any rename of a value type that is not text, are each refused as invalid, naming the pair, and nothing is appended; a stored value neither renamed nor accepted is a misfit, and the apply is refused"
 );
 
 check!(
-    /// Pairs map a value as it stood before.
     RENAMES_AT_ONCE = renames_apply_at_once_so_a_chain_and_a_swap_need_no_order,
     "027, extended (lakelands#553): every pair maps a value as it stood before the migration: `a → b, b → c` leaves no `a` at `c`, and `a → b, b → a` swaps them; two old values may take one new value"
 );
 
 check!(
-    /// A key field holding an old value refuses the rename.
     RENAMES_NO_KEY = a_rename_of_a_value_a_key_field_holds_is_refused,
     "027, extended (lakelands#553): a rename of a value a key field holds is refused as invalid, naming the type and the field and pointing to a re-key through the type's migration, and nothing is appended; a key field that holds no old value does not refuse it"
 );
 
 check!(
-    /// What reads a renamed value is computed again.
     RENAMES_COMPUTE_AGAIN = what_reads_a_renamed_value_is_computed_again_and_an_old_literal_refuses,
     "027, extended (lakelands#553): a derived field of the value type is renamed and computed again, a derived field that reads a renamed value is computed again as of the event, and a derived field of the value type whose expression holds an old value refuses the rename as invalid, naming the field"
 );
 
 check!(
-    /// Sets decide again in the same append.
     RENAMES_DECIDE_SETS = a_value_rename_decides_set_membership_in_its_append,
     "004 and 027, extended (lakelands#553): a value type's renames decide set membership again in their append, caused by the `value_type_migrated`, over the records as the step and the computation leave them: a set whose `where` names the new value, and one whose `where` reads a derived field over the renamed one; past the lake's `max_set_changes` the migration is refused `too_large`, naming the set, and appends nothing",
     given
 );
 
 check!(
-    /// A field's `initial` that names an old value is declared again.
     RENAMES_INITIAL = a_rename_declares_again_a_field_initial_that_names_an_old_value,
     "027 and 050, extended (lakelands#553): a field's `initial` that names an old value takes the new one: the system declares its type again after the `value_type_migrated`, in its append, and a record made later holds the new value"
 );
 
 check!(
-    /// No trigger fires at the step.
     RENAMES_FIRE_NOTHING = a_value_rename_fires_no_trigger,
     "021 and 027, extended (lakelands#553): a value type's renames change records by the fold, and no trigger fires at them"
 );
 
 check!(
-    /// A proposed rename is preflighted and accepted.
     RENAMES_PROPOSED = a_proposed_value_rename_is_accepted_only_over_the_fields_it_reported,
     "013 and 027, extended (lakelands#553): a proposed value type's migration carries its renames and its preflight's report; accepted, the `value_type_migrated` follows the `write_accepted`, caused by it; one whose report no longer names the fields that use the value type is refused as changed, and nothing is appended"
 );
 
 check!(
-    /// Renames need every using field shown.
     RENAMES_SHOWN = a_value_rename_is_not_granted_to_one_not_shown_every_field_it_writes,
     "024 and 027, extended (lakelands#553): a value type's migration with renames writes every field that uses it, so its preflight, its apply and its proposal are not granted, naming nothing, to a caller not shown one of them"
 );
 
 check!(
-    /// The feed names the event under each type it rewrites.
     RENAMES_IN_THE_FEED = the_feed_shows_a_value_rename_to_a_consumer_of_a_type_it_rewrites,
-    "004 and 027, extended (lakelands#553): the change feed filtered by type shows a `value_type_migrated` to a consumer of a type it rewrites, and not to one of another type"
+    "004 and 027, extended (lakelands#553): the change feed filtered by type shows a `value_type_migrated` to a consumer of a type it rewrites, and not to one of another type; and every filtered poll answers what the log does (lakelands#678)"
 );
 
 check!(
-    /// A rebuild leaves what the live fold left.
     RENAMES_REBUILT = a_rebuild_leaves_what_a_value_rename_left,
     "001 and 027, extended (lakelands#553): a projection rebuilt from a log that renames values, a page of the rebuild ending at the `value_type_migrated` over records earlier pages wrote, answers as the live one did, at the head and as of each position"
 );
 
 check!(
-    /// The report lists what may name an old value.
-    RENAMES_LIST_CONDITIONS = a_rename_report_lists_the_declarations_and_rules_that_may_name_an_old_value,
-    "024 and 027, extended (lakelands#553): the preflight of a rename lists, by kind and name, each declaration in force whose expressions hold an old value as a literal (a set, a trigger, a verb, a view, a function) and each aging rule on a type that uses the value type that moves from or to one, and changes none of them; a declaration the reader is not shown (a function too, judged as `describe` judges it, lakelands#770), and a rule whose `from` it may not read, is told only as one there may be, by its preflight and by the proposal listed to it, there with its grants followed to the proposal through the renames since"
+    RENAMES_LIST_CONDITIONS =
+        a_rename_report_lists_the_declarations_and_rules_that_may_name_an_old_value,
+    "024 and 027, extended (lakelands#553): the preflight of a rename lists, by kind and name, each declaration in force whose expressions hold an old value as a literal (a set, a trigger, a verb, a view, a function; a view that names it only in a merged source's `where` and a type that names it only in a relation's field's `derived` too) and each aging rule on a type that uses the value type that moves from or to one, and changes none of them; a declaration the reader is not shown (a function too, judged as `describe` judges it, lakelands#770), and a rule whose `from` it may not read, is told only as one there may be, by its preflight and by the proposal listed to it, there with its grants followed to the proposal through the renames since"
 );
 
 check!(
-    /// A kept view counts by the new value.
+    RENAMES_NAME_THE_DESCRIBED = a_rename_report_names_a_type_by_what_its_reader_is_described_of_it,
+    "024 and 027, extended (lakelands#861): a value type's report names a type's declaration only where the description its reader is given of the type holds the old value; held in a relation it is not shown, in a relation's field or a derived field it may not read, or in a view's definition held from it, the old value only sets `conditions_unshown`, and the report is else the one the reader was given before the member was declared; the listing of the proposed rename answers each reader that report, and an apply takes the id of its caller's own"
+);
+
+check!(
     RENAMES_KEPT_VIEW = a_kept_view_over_a_renamed_value_counts_by_the_new_one,
     "027 and the `view_kept.` setting, extended (lakelands#553): a kept view grouped by a renamed field is ended and made again at the `value_type_migrated`, and counts by the new value, as its twin computes, live and after a rebuild"
 );
 
 check!(
-    /// An embedding over a renamed value is due, owed to the event.
     RENAMES_EMBED = an_embedding_over_a_renamed_value_is_embedded_again_caused_by_the_rename,
     "022 and 027, extended (lakelands#553): an embedding made from a renamed field is due on every record the rename changed, its answers recorded with the `value_type_migrated` as their cause, one call per new text; the lake's declaration again of a type whose `initial` a rename changes settles that type's records again, as every declaration of a type with a field computed outside the lake does",
     embedding
 );
 
 check!(
-    /// A backed answer holding an old value is a misfit.
     RENAMES_BACKED_MISFIT = a_backed_answer_that_holds_an_old_value_is_a_misfit_of_the_rename,
     "022 and 027, extended (lakelands#553): a field computed by a function with a backing is not renamed, since the lake does not write its answer: one that holds an old value is a misfit, named, and the rename is refused until the backing answers new values"
 );
@@ -246,9 +233,7 @@ async fn tasks(
     Ok(out)
 }
 
-async fn a_value_type_migration_renames_a_value_in_every_record_in_one_event(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_value_type_migration_renames_a_value_in_every_record_in_one_event(store: Store) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![]).await?;
     l.upsert("task", "t1", json!({"state": "open"})).await?;
     l.upsert("task", "t2", json!({"state": "done"})).await?;
@@ -301,8 +286,8 @@ async fn a_value_type_migration_renames_a_value_in_every_record_in_one_event(
 }
 
 async fn a_value_rename_reaches_retired_and_restricted_records_and_leaves_them_so(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![of_status("next")]).await?;
     for (key, state) in [("t1", "open"), ("t2", "open"), ("t3", "done")] {
         l.upsert("task", key, json!({"state": state, "next": "open"}))
@@ -339,9 +324,7 @@ async fn a_value_rename_reaches_retired_and_restricted_records_and_leaves_them_s
     Ok(())
 }
 
-async fn renames_that_name_a_value_twice_or_one_not_accepted_are_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn renames_that_name_a_value_twice_or_one_not_accepted_are_refused(store: Store) -> Held {
     let l = lake(store.as_ref(), &["open", "done", "void"], vec![]).await?;
     let score = Declaration::ValueType(vt(json!({"name": "score", "kind": "number"})));
     l.declare_as(score, "declaring `score`").await?;
@@ -383,9 +366,7 @@ async fn renames_that_name_a_value_twice_or_one_not_accepted_are_refused(
     head_unmoved(store.as_ref(), before, "a refused rename").await
 }
 
-async fn renames_apply_at_once_so_a_chain_and_a_swap_need_no_order(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn renames_apply_at_once_so_a_chain_and_a_swap_need_no_order(store: Store) -> Held {
     let l = lake(store.as_ref(), &["a", "b", "c"], vec![]).await?;
     for (key, state) in [("x1", "a"), ("x2", "b"), ("x3", "c")] {
         l.upsert("task", key, json!({ "state": state })).await?;
@@ -415,9 +396,7 @@ async fn renames_apply_at_once_so_a_chain_and_a_swap_need_no_order(
     Ok(())
 }
 
-async fn a_rename_of_a_value_a_key_field_holds_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rename_of_a_value_a_key_field_holds_is_refused(store: Store) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![]).await?;
     let mut keyed = type_decl("stage", vec![of_status("name")]);
     keyed.key = vec!["name".into()];
@@ -452,8 +431,8 @@ async fn a_rename_of_a_value_a_key_field_holds_is_refused(
 }
 
 async fn what_reads_a_renamed_value_is_computed_again_and_an_old_literal_refuses(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let mut copy = derived("shown", StorageKind::Text, "state", &["state"]);
     copy.ty.value_type = Some("status".into());
     let l = lake(store.as_ref(), &["open", "done"], vec![copy, is_active()]).await?;
@@ -485,9 +464,9 @@ async fn what_reads_a_renamed_value_is_computed_again_and_an_old_literal_refuses
 }
 
 async fn a_value_rename_decides_set_membership_in_its_append(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     given: crate::conformance::Given,
-) -> Result<(), Failure> {
+) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![is_active()]).await?;
     for d in [
         object_set_on("active", "task", "state = 'active'"),
@@ -552,9 +531,7 @@ async fn a_value_rename_decides_set_membership_in_its_append(
     head_unmoved(store.as_ref(), before, "a rename past the ceiling").await
 }
 
-async fn a_rename_declares_again_a_field_initial_that_names_an_old_value(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rename_declares_again_a_field_initial_that_names_an_old_value(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let decl = Declaration::ValueType(status(&["open", "done"]));
     l.declare_as(decl, "declaring `status`").await?;
@@ -592,7 +569,7 @@ async fn a_rename_declares_again_a_field_initial_that_names_an_old_value(
     Ok(())
 }
 
-async fn a_value_rename_fires_no_trigger(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_value_rename_fires_no_trigger(store: Store) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![]).await?;
     let woke = trigger_on("woke", "task", Some("state = 'active'"));
     l.declare_as(woke, "declaring a trigger").await?;
@@ -610,8 +587,8 @@ async fn a_value_rename_fires_no_trigger(store: Arc<dyn LakeStore>) -> Result<()
 }
 
 async fn a_proposed_value_rename_is_accepted_only_over_the_fields_it_reported(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![]).await?;
     l.upsert("task", "t1", json!({"state": "open"})).await?;
     let m = renamed(&["active", "done"], &[("open", "active")]);
@@ -646,8 +623,8 @@ async fn a_proposed_value_rename_is_accepted_only_over_the_fields_it_reported(
 }
 
 async fn a_value_rename_is_not_granted_to_one_not_shown_every_field_it_writes(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![]).await?;
     l.upsert("task", "t1", json!({"state": "open"})).await?;
     let mut blank = reviewer(store.as_ref(), true);
@@ -673,9 +650,7 @@ async fn a_value_rename_is_not_granted_to_one_not_shown_every_field_it_writes(
     head_unmoved(store.as_ref(), before, "a rename not granted").await
 }
 
-async fn the_feed_shows_a_value_rename_to_a_consumer_of_a_type_it_rewrites(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn the_feed_shows_a_value_rename_to_a_consumer_of_a_type_it_rewrites(store: Store) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![]).await?;
     l.declare(type_decl("note", vec![field("text", StorageKind::Text)]))
         .await?;
@@ -695,12 +670,10 @@ async fn the_feed_shows_a_value_rename_to_a_consumer_of_a_type_it_rewrites(
         "a consumer of `task` hears of the rename and one of `note` does not; they read \
          {task:?} and {note:?}"
     );
-    Ok(())
+    super::feed::the_index_answers_the_log(store.as_ref(), "a value renamed").await
 }
 
-async fn a_rebuild_leaves_what_a_value_rename_left(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rebuild_leaves_what_a_value_rename_left(store: Store) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![is_active()]).await?;
     let set = object_set_on("active", "task", "state = 'active'");
     l.declare_as(set, "declaring a set").await?;
@@ -739,8 +712,8 @@ async fn a_rebuild_leaves_what_a_value_rename_left(
 }
 
 async fn a_rename_report_lists_the_declarations_and_rules_that_may_name_an_old_value(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let more = ["note", "flag", "secret"].map(|f| field(f, StorageKind::Text));
     let l = lake(store.as_ref(), &["open", "done"], more.into()).await?;
     l.declare_json(
@@ -877,12 +850,177 @@ async fn a_rename_report_lists_the_declarations_and_rules_that_may_name_an_old_v
         "`kept`, held from `flag` under its new name, is told that a set it is not shown may \
          name a value; it is listed {report:?}"
     );
+    // An old value named only in a merged source's `where`, and only in a
+    // relation's field's `derived`: each is an expression its declaration
+    // holds.
+    let (text, count) = (
+        json!({"kind": "text"}),
+        |n: &str| json!([{"name": n, "expr": "count()"}]),
+    );
+    l.declare_json(json!({"declare": "type", "name": "piles", "key": ["note"],
+        "fields": [{"name": "note", "type": text}, {"name": "boxes", "type": {"kind": "number"}},
+                   {"name": "tasks", "type": {"kind": "number"}}],
+        "view": {"source": "box", "group_by": ["note"], "measures": count("boxes"),
+                 "merge": [{"source": "task", "where": "state = 'open'", "group_by": ["note"],
+                            "measures": count("tasks")}]}}))
+        .await?;
+    let is_open = json!({"name": "is_open", "type": {"kind": "boolean"}, "authority": "derived",
+                         "derived": "label = 'open'", "depends_on": ["label"]});
+    l.declare_json(
+        json!({"declare": "type", "name": "shelf", "fields": [{"name": "n", "type": text}],
+        "relations": [{"name": "holds", "target": "task", "cardinality": "many_to_many",
+                       "fields": [{"name": "label", "type": text}, is_open]}]}),
+    )
+    .await?;
+    let report = preflight(&l, m).await?;
+    let named = |n: &str| report.conditions.iter().any(|c| c.contains(n));
+    ensure!(
+        named("`piles`") && named("`shelf`"),
+        "the report lists the view that names `open` in a merged source's `where` and the type \
+         that names it in a relation's field's `derived`; it lists {:?}",
+        report.conditions
+    );
     Ok(())
 }
 
-async fn a_kept_view_over_a_renamed_value_counts_by_the_new_one(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rename_report_names_a_type_by_what_its_reader_is_described_of_it(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    l.declare_as(
+        Declaration::ValueType(status(&["open", "done"])),
+        "declaring `status`",
+    )
+    .await?;
+    let texts = |names: &[&str]| names.iter().map(|f| field(f, StorageKind::Text)).collect();
+    l.declare(type_decl("task", texts(&["n"]))).await?;
+    let card = [vec![of_status("state")], texts(&["note", "kind"])].concat();
+    l.declare(type_decl("card", card)).await?;
+    // The three members that name `open`, each declared in its turn: a
+    // relation's field's `derived`, a derived field, a view's `where`.
+    let text = json!({"kind": "text"});
+    let is_open = json!({"name": "is_open", "type": {"kind": "boolean"}, "authority": "derived",
+                         "derived": "label = 'open'", "depends_on": ["label"]});
+    let shelf = json!({"declare": "type", "name": "shelf", "fields": [{"name": "n", "type": text}],
+        "relations": [{"name": "holds", "target": "task", "cardinality": "many_to_many",
+                       "fields": [{"name": "label", "type": text}, is_open]}]});
+    let flag = derived("flag", StorageKind::Boolean, "note = 'open'", &["note"]);
+    let pile = json!({"declare": "type", "name": "pile", "key": ["note"],
+        "fields": [{"name": "note", "type": text}, {"name": "cards", "type": {"kind": "number"}}],
+        "view": {"source": "card", "group_by": ["note"], "where": "kind = 'open'",
+                 "measures": [{"name": "cards", "expr": "count()"}]}});
+    // Each reader is kept from one member: `far` is not shown the
+    // relation's target, `loose` nothing of its link type; `masked` reads
+    // `flag` masked; `blind` may not know of `kind`, which the view reads,
+    // and holds no `schema`, which shows every definition.
+    let reader = |name, ty: &str, fields: &[(&str, Access)], unseen: bool| {
+        let mut p = field_access(s, name, ty, fields);
+        (p.grants.schema, p.grants.review) = (true, true);
+        p.grants.types.entry(ty.into()).or_default().default = unseen.then_some(Access::None);
+        p
+    };
+    let far = reader("far", "task", &[], true);
+    let loose = reader("loose", "sys.link.shelf.holds", &[], true);
+    let masked = reader("masked", "card", &[("flag", Access::Masked)], false);
+    let mut blind = reader("blind", "card", &[("kind", Access::None)], false);
+    blind.grants.schema = false;
+    let m = renamed(&["active", "done"], &[("open", "active")]);
+    // The report of the proposal `id` as `who` is listed it.
+    let listed = |who: &lakelands_api::Principal, id: lakelands_api::ProposalId| {
+        let (cat, who) = (l.cat.clone(), who.clone());
+        async move {
+            let all = cat.proposals(&who, Default::default()).await;
+            let mut all = all.must("listing the proposals")?.data;
+            all.retain(|p| p.id == id);
+            match all.pop().and_then(|p| p.write) {
+                Some(ProposedWrite::MigrateValueType { report, .. }) => Ok(*report),
+                other => Err(Failure::new(format!("a rename is listed: {other:?}"))),
+            }
+        }
+    };
+    // The report as `who` is told it: by its preflight or, without
+    // `schema`, by the listing of the rename proposed now.
+    let told = |who: &lakelands_api::Principal| {
+        let (l, m, who) = (&l, &m, who.clone());
+        async move {
+            if !who.grants.schema {
+                return listed(&who, propose(l, m).await?).await;
+            }
+            let report = l.cat.migrate_value_type(&who, m.clone()).await;
+            Ok::<_, Failure>(report.must("a reader's preflight")?.data)
+        }
+    };
+    let mut red = Vec::new();
+    for (kept, name) in [
+        (vec![&far, &loose], "shelf"),
+        (vec![&masked], "card"),
+        (vec![&blind], "pile"),
+    ] {
+        let mut before = Vec::new();
+        for who in &kept {
+            before.push(told(who).await?);
+        }
+        match name {
+            "card" => {
+                let added = l.cat.add_field(&l.own, &"card".into(), flag.clone()).await;
+                added.must("adding `flag`")?
+            }
+            "shelf" => l.declare_json(shelf.clone()).await?,
+            _ => l.declare_json(pile.clone()).await?,
+        };
+        let whole = preflight(&l, m.clone()).await?;
+        let named = |r: &ValueTypeReport| r.conditions.iter().any(|c| c.contains(name));
+        if !named(&whole) || whole.conditions_unshown {
+            red.push(format!(
+                "the owner is named `{name}`: {:?}",
+                whole.conditions
+            ));
+        }
+        // The same report but the flag, and the id made over it and the head.
+        for (who, mut was) in kept.into_iter().zip(before) {
+            let is = told(who).await?;
+            (was.conditions_unshown, was.report_id) = (true, is.report_id.clone());
+            if is != was {
+                let (id, is) = (&who.id, &is.conditions);
+                red.push(format!("`{id}`, kept from the member of `{name}`: {is:?}"));
+            }
+        }
+    }
+    let red = red.join("; ");
+    ensure!(
+        red.is_empty(),
+        "a type is named to one whose description of it holds the old value, and another is \
+         told only that a declaration it is not shown may name one: {red}"
+    );
+    // The listing of the proposed rename answers each the report its
+    // preflight gave it before the proposal, the id too.
+    let mut before = Vec::new();
+    for who in [&far, &loose, &masked] {
+        before.push((who, told(who).await?));
+    }
+    let id = propose(&l, &m).await?;
+    for (who, told) in before {
+        let listed = listed(who, id.clone()).await?;
+        ensure!(
+            listed == told && told.conditions_unshown,
+            "the proposal is listed to `{}` with the report its preflight gave it, {told:?}; \
+             it is listed {listed:?}",
+            who.id
+        );
+    }
+    // An apply takes the id of its caller's report, which names no more.
+    let (owners, own) = (preflight(&l, m.clone()).await?, told(&far).await?);
+    let said = (l.cat).migrate_value_type_apply(&far, m.clone(), &owners.report_id);
+    refused_as!(
+        "an apply by the owner's id",
+        said.await,
+        Case::MigrationStale
+    )?;
+    let applied = (l.cat).migrate_value_type_apply(&far, m.clone(), &own.report_id);
+    let applied = applied.await;
+    applied.must("applying by the id of the report `far` was given")?;
+    Ok(())
+}
+
+async fn a_kept_view_over_a_renamed_value_counts_by_the_new_one(store: Store) -> Held {
     let l = lake(store.as_ref(), &["open", "done"], vec![]).await?;
     let mut by = crate::conformance::fixture::count_view("by_state", "task", "state");
     by.fields[0].ty.value_type = Some("status".into());
@@ -928,8 +1066,8 @@ async fn a_kept_view_over_a_renamed_value_counts_by_the_new_one(
 }
 
 async fn an_embedding_over_a_renamed_value_is_embedded_again_caused_by_the_rename(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     use crate::conformance::backing::{EMBED_MODEL, embedded};
     let (old, new) = ("renames-553-open", "renames-553-active");
     let l = Lake::of(store.as_ref());
@@ -959,9 +1097,7 @@ async fn an_embedding_over_a_renamed_value_is_embedded_again_caused_by_the_renam
     Ok(())
 }
 
-async fn a_backed_answer_that_holds_an_old_value_is_a_misfit_of_the_rename(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_backed_answer_that_holds_an_old_value_is_a_misfit_of_the_rename(store: Store) -> Held {
     use crate::conformance::backing::KIND;
     let l = Lake::of(store.as_ref());
     let decl = Declaration::ValueType(status(&["open", "done"]));
@@ -999,4 +1135,182 @@ async fn a_backed_answer_that_holds_an_old_value_is_a_misfit_of_the_rename(
          says {report:?}, the apply {applied:?}"
     );
     head_unmoved(store.as_ref(), before, "a rename over a backed answer").await
+}
+
+check!(
+    RENAMES_NO_RETRY = a_value_rename_calls_what_reads_the_new_value_and_no_recorded_failure_again,
+    "022 and 027, extended (lakelands#857): a value type's rename calls once where a call reads a renamed value, and calls no recorded failure again: not of a type that uses the value type, whether its call reads that field or another and whether or not its record was renamed, for a function as for an embedding, not of another record of the type whose call moved, and not of a type that uses another value type or none; each kept failure still reads with its `error`, and the rename is the cause of the one output; `recompute` retries as before; and a rename folded with no backing bound leaves, in the lake opened again, the failures failures and the one moved call waiting, made when its record is next written",
+    reopens
+);
+
+/// The types of [`RENAMES_NO_RETRY`]: the value type each uses, what its
+/// call reads, and its record's value of that type. Each has a backing
+/// token of its own, so its calls are counted alone; the last embeds.
+const RETRIED: [(&str, &str, &str, &str); 7] = [
+    ("read_kept", "status", "state", "done"),
+    ("read_moved", "status", "state", "open"),
+    ("beside_moved", "status", "code", "open"),
+    ("beside_kept", "status", "code", "done"),
+    ("other", "colour", "code", "red"),
+    ("plain", "", "code", ""),
+    ("embeds", "status", "title", "done"),
+];
+
+async fn a_value_rename_calls_what_reads_the_new_value_and_no_recorded_failure_again(
+    store: Store,
+    reopen: crate::conformance::Reopen,
+) -> Held {
+    use super::embeddings::{reopen_failed, with_embedder};
+    use crate::conformance::backing::{
+        EMBED_MODEL, KIND, embedded, embedder, made, plug, plug_text, unplug, unplug_text,
+    };
+    let bound = || with_embedder(Some(embedder()));
+    let again = |e| reopen_failed("with the suite's backings", e);
+    let mut store = reopen(store, bound()).await.map_err(again)?;
+    let l = Lake::of(store.as_ref());
+    let colour = |one_of: &[&str]| vt(json!({"name": "colour", "kind": "text", "one_of": one_of}));
+    for decl in [status(&["open", "done"]), colour(&["red", "blue"])] {
+        l.declare_as(Declaration::ValueType(decl), "declaring a value type")
+            .await?;
+    }
+    let (text, token) = ("renames-857 fails once", |ty: &str| {
+        format!("renames_857_{ty}")
+    });
+    for (ty, uses, reads, value) in RETRIED {
+        let mut state = field("state", StorageKind::Text);
+        state.ty.value_type = (!uses.is_empty()).then(|| uses.into());
+        let mut fields = vec![state];
+        fields.extend(["code", "title", "note"].map(|f| field(f, StorageKind::Text)));
+        if ty == "embeds" {
+            let vec = crate::conformance::fixture::embedding("out", 2, &[reads], EMBED_MODEL);
+            fields.push(vec);
+        } else {
+            l.declare_json(json!({
+                "declare": "function", "name": format!("f_{ty}"), "backing": KIND,
+                "inputs": [{"name": reads, "type": {"kind": "text"}}],
+                "config": {"token": token(ty), "echo": reads}
+            }))
+            .await?;
+            let f = format!("f_{ty}");
+            fields.push(computed_by("out", StorageKind::Text, &f, &[reads]));
+        }
+        l.declare(type_decl(ty, fields)).await?;
+        let state = (!value.is_empty()).then_some(value);
+        let record = json!({"state": state, "code": "XX", "title": text});
+        // Every call fails once but that of `read_moved`'s `r1`, which
+        // will move; its `r2` fails and will not: the sweep the rename
+        // leaves owed of the type passes it.
+        let (key, record) = match ty {
+            "read_moved" => {
+                l.upsert(ty, "r1", record).await?;
+                ("r2", json!({"state": "done"}))
+            }
+            _ => ("r1", record),
+        };
+        unplug(&token(ty));
+        unplug_text(text);
+        l.upsert(ty, key, record).await?;
+        plug(&token(ty));
+    }
+    plug_text(text);
+    // The calls each type's backing received, and the records that read a
+    // failure, no value and an `error` in the field's metadata, each with
+    // the position its provenance names: each type's `r1`, then
+    // `read_moved`'s `r2`.
+    let calls =
+        || RETRIED.map(|(ty, ..)| made(&token(ty)) + embedded(text) * usize::from(ty == "embeds"));
+    let failed = async |store: &dyn LakeStore| {
+        let mut out = Vec::new();
+        let records = RETRIED.iter().map(|(ty, ..)| (*ty, "r1"));
+        for (ty, key) in records.chain([("read_moved", "r2")]) {
+            let r = Lake::of(store).read(ty, key).await?;
+            let error = r.meta.get("out").filter(|m| m.error.is_some());
+            out.push(
+                error
+                    .filter(|_| !r.fields.contains_key("out"))
+                    .map(|m| m.position),
+            );
+        }
+        Ok::<_, Failure>(out)
+    };
+    let more = |before: [usize; 7]| -> Vec<usize> {
+        let now = calls();
+        now.iter().zip(before).map(|(now, b)| now - b).collect()
+    };
+    let only = |i: usize| (0..7).map(|at| usize::from(at == i)).collect::<Vec<_>>();
+    let first = failed(store.as_ref()).await?;
+    ensure!(
+        calls() == [1, 2, 1, 1, 1, 1, 1] && (0..8).all(|at| first[at].is_some() == (at != 1)),
+        "every call was made once and all but that of `read_moved`'s `r1` failed; the calls \
+         are {:?} and the records that read a failure {first:?}",
+        calls()
+    );
+
+    let before = calls();
+    let m = renamed(&["active", "done"], &[("open", "active")]);
+    let (_, events) = apply(store.as_ref(), &l, m).await?;
+    let (called, kept) = (more(before), failed(store.as_ref()).await?);
+    let at = events.first().map(|e| e.position);
+    let recorded = outputs_from(store.as_ref(), Position::GENESIS).await?;
+    let caused = recorded.iter().filter(|e| e.cause == at).count();
+    ensure!(
+        called == only(1) && kept == first && caused == 1,
+        "a rename of `status` calls once for `read_moved`, whose `r1` reads the renamed \
+         value, and for no recorded failure, which still reads with its `error` and the \
+         provenance of its own output; and it is the cause of that one output, since it \
+         settles no other field. It called {called:?} (in the order of the table), the \
+         failures read {kept:?}, not {first:?}, and {caused} outputs name it as their cause"
+    );
+    let before = calls();
+    let m = ValueTypeMigration {
+        to: colour(&["crimson", "blue"]),
+        renames: vec![("red".to_owned(), "crimson".to_owned())],
+    };
+    apply(store.as_ref(), &l, m).await?;
+    let (called, kept) = (more(before), failed(store.as_ref()).await?);
+    ensure!(
+        called == [0; 7] && kept == first,
+        "a rename of `colour` calls nothing, since no call reads it; it called {called:?} \
+         and the failures read {kept:?}"
+    );
+    let before = calls();
+    let what = lakelands_api::write::Recompute::Type("plain".into());
+    l.cat.recompute(&l.own, what).await.must("the door")?;
+    let (called, kept) = (more(before), failed(store.as_ref()).await?);
+    let mut healed = first;
+    healed[5] = None;
+    ensure!(
+        called == only(5) && kept == healed,
+        "`recompute` of `plain` retries its recorded failure, once, and no other; it called \
+         {called:?} and the failures read {kept:?}"
+    );
+
+    // A rename folded with no backing bound: its calls are not made, and
+    // the lake opened again hands none out.
+    let unbound = |e| reopen_failed("with no backing", e);
+    store = reopen(store, Seams::default()).await.map_err(unbound)?;
+    let l = Lake::of(store.as_ref());
+    let before = calls();
+    let m = renamed(&["live", "done"], &[("active", "live")]);
+    apply(store.as_ref(), &l, m).await?;
+    store = reopen(store, bound()).await.map_err(again)?;
+    let (called, kept) = (more(before), failed(store.as_ref()).await?);
+    ensure!(
+        called == [0; 7] && kept == healed,
+        "a rename folded with no backing bound, and the lake opened again, call nothing, and \
+         the failures are failures still, not fields that wait; they called {called:?} and \
+         the failures read {kept:?}"
+    );
+    let l = Lake::of(store.as_ref());
+    let records = RETRIED.iter().map(|(ty, ..)| (*ty, "r1"));
+    for (ty, key) in records.chain([("read_moved", "r2")]) {
+        l.upsert(ty, key, json!({"note": "written again"})).await?;
+    }
+    let (called, kept) = (more(before), failed(store.as_ref()).await?);
+    ensure!(
+        called == only(1) && kept == healed,
+        "the next write of each record makes the one call the rename moved, and calls no \
+         recorded failure again; they called {called:?} and the failures read {kept:?}"
+    );
+    Ok(())
 }

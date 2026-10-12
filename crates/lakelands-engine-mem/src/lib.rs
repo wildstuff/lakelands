@@ -46,7 +46,7 @@ mod view;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
+use lakelands_api::engine::{CanonicalEvent, EngineOpener, LakeEngine, OpenMode};
 use lakelands_api::error::{Case, Error, Result, Situation};
 use lakelands_api::id::LakeId;
 use lakelands_api::location::{EngineConfig, Location};
@@ -106,6 +106,11 @@ impl EngineOpener for MemoryOpener {
         NAME
     }
 
+    fn log_ends(&self, location: &Location) -> Result<Option<(CanonicalEvent, CanonicalEvent)>> {
+        let lakes = lock(&self.lakes);
+        Ok((lakes.get(&location.lake)).and_then(|lake| lock(lake).log.ends()))
+    }
+
     /// Opens the lake `location` names. `Create` makes it when it does not
     /// exist yet; `Read` and `Write` on a lake this process never created
     /// answer `Unavailable`, since there is nothing to open.
@@ -127,7 +132,7 @@ impl EngineOpener for MemoryOpener {
                     .entry(location.lake.clone())
                     .or_insert_with(|| Arc::new(Mutex::new(Lake::default()))),
             ),
-            (None, OpenMode::Read | OpenMode::Write) => {
+            (None, OpenMode::Read | OpenMode::Write | OpenMode::Rebuild) => {
                 let lake = location.lake.to_string();
                 let schema = None;
                 return Err(Error::unavailable(Situation::NoLake { lake, schema }));

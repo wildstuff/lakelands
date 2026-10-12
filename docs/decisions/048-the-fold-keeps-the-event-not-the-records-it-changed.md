@@ -2,6 +2,8 @@
 
 ## What is decided
 
+### The fold of an event that changes every record of a type keeps the event as a step, and none of the records it changes
+
 Two kinds of event change every record of a type: a `migrated`, and a
 `declared` that computes derived fields again (a function declared again
 with a change, a type declared again with another computed field, a
@@ -9,74 +11,84 @@ with a change, a type declared again with another computed field, a
 view at a time, puts each record it changes, and keeps none of them. It
 keeps the event, as a **step**: what the event does to one record.
 
-- **A later read goes through the steps.** An event later in the same
-  transaction that reads a record the transaction did not write reads
-  the view's row and takes it through every step kept so far, in the
-  order of their events. A record the transaction wrote is read from
-  what it wrote, and a step changes it where it is kept. A migration's
-  step may move a record to another key, or a link to the link type of
-  its relation's new name (035, extended): the view holds it where it
-  was, and a recomputation names its types as they are after the steps
-  kept before it.
-- **A recomputation's step holds what its computation reads, as it stood
-  at its event.** The event whole, since the fields it changes take its
-  provenance member by member; the declarations of the types it computes
-  and of the functions and value types their fields name, each shared
-  with the ontology and not copied; the settings. A name the ontology
-  did not hold then is one the step does not hold: such a field is not
-  computed, by the walk or by a later read. A record of another type is
-  as it was.
-- **It reads the outputs recorded before its own event,** whenever it is
-  asked. A transaction keeps every recording of a call with its
-  position, so an output recorded after the event, even for the same
-  call, is never read by it.
-- **Its records are walked once for every declaration that is pending.**
-  A `declared` that recomputes leaves its step pending. The pending
-  steps are flushed before the fold of the next event that reads a
-  record, and before the commit: each type is walked once, each record
-  taken through the pending steps in order and put at every step that
-  changes it, at that step's position. Which kinds of event read a
-  record is said for each kind where the fold decides it; a new kind
-  does not compile until it is said. A step that put no record is
-  dropped.
-- **A set computes its records again once, at its last declaration**
-  (extended, lakelands#605). A set of declarations that holds a function,
-  or a type the lake held before it, says so in the log: every `declared`
-  of it but the last carries `with_the_set` (`docs/log-format.md` §2.3,
-  format 12), the link types the system declares among them too. Such a
-  `declared` leaves no step; what it would compute again is carried to
-  the set's last `declared`, whose one step computes all of it with the
-  ontology and settings as the whole set leaves them. Each record is
-  computed once and put once, at that position, and its fields take that
-  event's provenance with each function's own version. A view the lake
-  keeps over such a type waits for the set's end as it waits for a
-  pending step, and is made once, from the records the step put.
-  A page of a fold of the log never ends inside a set: when the page's
-  last `declared` carries `with_the_set`, it reads on, a chunk at a time,
-  to the set's last declaration and past the memberships an object set
-  of the set changed, which carry no mark, also where they begin the
-  next chunk; it stops reading there and ends there. The rest of the
-  chunk read last goes to the next page and is read again, so a page
-  reads at most a chunk beyond the set it had to finish, and two large
-  sets back to back are two pages. A log that ends inside a set is
-  damaged, and its fold is refused. A foreign log, which no write path
-  drafts, may also make a record read inside a set commit in the middle
-  of a page; the set's list is carried across that commit, but a restart
-  after it may lose it.
-- **A fold of the log ends its transaction after a flush that kept a
-  step.** A rebuild, an open's catch-up and an import fold a page of
-  1 024 events; such a page commits through the last event folded and
-  begins again, so the events after it read the recomputed records in
-  the projection. Every commit holds every event through its position,
-  whole. An append's own fold is one transaction, always; an append
-  whose fold failed is folded again as a fold of the log, which may
-  commit inside it.
-- **A fold of the log makes no call due.** A step hands out the calls
-  it makes due only on an append, as a record's event does (022,
-  extended): a rebuild, an open's catch-up and an import walk the
-  records, leave a field whose output is not recorded waiting, and hold
-  nothing for it. An append whose fold failed is the exception: the
-  fold that catches up over it hands out its calls.
+### A later read goes through the steps
+
+An event later in the same transaction that reads a record the
+transaction did not write reads the view's row and takes it through
+every step kept so far, in the order of their events. A record the
+transaction wrote is read from what it wrote, and a step changes it
+where it is kept. A migration's step may move a record to another key,
+or a link to the link type of its relation's new name (035, extended):
+the view holds it where it was, and a recomputation names its types as
+they are after the steps kept before it.
+
+### A recomputation's step holds what its computation reads, as it stood at its event
+
+The event whole, since the fields it changes take its provenance member
+by member; the declarations of the types it computes and of the
+functions and value types their fields name, each shared with the
+ontology and not copied; the settings. A name the ontology did not hold
+then is one the step does not hold: such a field is not computed, by the
+walk or by a later read. A record of another type is as it was.
+
+### A recomputation's step reads the outputs recorded before its own event
+
+It reads the outputs recorded before its own event, whenever it is
+asked. A transaction keeps every recording of a call with its position,
+so an output recorded after the event, even for the same call, is never
+read by it.
+
+### A recomputation's records are walked once for every declaration that is pending
+
+A `declared` that recomputes leaves its step pending. The pending steps
+are flushed before the fold of the next event that reads a record, and
+before the commit: each type is walked once, each record taken through
+the pending steps in order and put at every step that changes it, at
+that step's position. Which kinds of event read a record is said for
+each kind where the fold decides it; a new kind does not compile until
+it is said. A step that put no record is dropped.
+
+### A set computes its records again once, at its last declaration
+
+A set of declarations that holds a function, or a type the lake held
+before it, says so in the log: every `declared` of it but the last
+carries `with_the_set` (`docs/log-format.md` §2.3), the link types the
+system declares among them too. Such a `declared` leaves no step; what
+it would compute again is carried to the set's last `declared`, whose
+one step computes all of it with the ontology and settings as the whole
+set leaves them. Each record is computed once and put once, at that
+position, and its fields take that event's provenance with each
+function's own version. A view the lake keeps over such a type waits for
+the set's end as it waits for a pending step, and is made once, from the
+records the step put. A page of a fold of the log never ends inside a
+set: when the page's last `declared` carries `with_the_set`, it reads
+on, a chunk at a time, to the set's last declaration and past the
+memberships an object set of the set changed, which carry no mark, also
+where they begin the next chunk; it stops reading there and ends there.
+The rest of the chunk read last goes to the next page and is read again,
+so a page reads at most a chunk beyond the set it had to finish, and two
+large sets back to back are two pages. A log that ends inside a set is
+damaged, and its fold is refused. A foreign log, which no write path
+drafts, may also make a record read inside a set commit in the middle of
+a page; the set's list is carried across that commit, but a restart
+after it may lose it.
+
+### A fold of the log ends its transaction after a flush that kept a step
+
+A rebuild, an open's catch-up and an import fold a page of 1 024 events;
+such a page commits through the last event folded and begins again, so
+the events after it read the recomputed records in the projection. Every
+commit holds every event through its position, whole. An append's own
+fold is one transaction, always; an append whose fold failed is folded
+again as a fold of the log, which may commit inside it.
+
+### A fold of the log makes no call due
+
+A step hands out the calls it makes due only on an append, as a record's
+event does (022, extended): a rebuild, an open's catch-up and an import
+walk the records, leave a field whose output is not recorded waiting,
+and hold nothing for it. An append whose fold failed is the exception:
+the fold that catches up over it hands out its calls.
 
 ## Why
 
@@ -137,7 +149,19 @@ the log never stack: the next walk reads the records as put.
   the records as they were before it, and the declarations as each was
   declared up to that position. A field that reads `changed()` or
   `previous()` reads the whole set's change, and a value type declared
-  later in the set counts for every field: a format-12 log computes
-  these as one act, where a log below 12 computed them at each
-  declaration and left the last declaration's answer. A set of new
-  types, triggers or verbs computes nothing and carries no mark.
+  later in the set counts for every field: the set computes these as
+  one act, not at each declaration. A set of new types, triggers or
+  verbs computes nothing and carries no mark.
+
+## How it came to be
+
+- The first version: the fold of an event that changes every record of
+  a type keeps the event as a step, and none of the records it changes
+  (lakelands#523).
+- Added that a fold of the log makes no call due, and the calls held
+  narrowed to those of an append's recomputation (lakelands#604).
+- Each declaration of a set computed its records at its own position;
+  a set now computes them once, at its last (lakelands#605).
+- A page that ends at a set read on to the set's last declaration in
+  one read; replaced by a chunk at a time, at most a chunk beyond the
+  set (lakelands#682).

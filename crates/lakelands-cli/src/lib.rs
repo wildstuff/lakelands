@@ -101,6 +101,11 @@ pub fn open_store(location: Location, mode: OpenMode, host: Seams) -> Opening {
             .expect("a location serialises");
         let mut lakes = opened().lock().await;
         if let Some(store) = lakes.get(&key) {
+            // The lake is open in this process already: a rebuild is its
+            // store's own.
+            if mode == OpenMode::Rebuild {
+                store.rebuild().await?;
+            }
             return Ok(store.clone());
         }
         let seams = Seams {
@@ -110,6 +115,7 @@ pub fn open_store(location: Location, mode: OpenMode, host: Seams) -> Opening {
         let mode = match mode {
             OpenMode::Read => OpenMode::Read,
             OpenMode::Write | OpenMode::Create => OpenMode::Create,
+            OpenMode::Rebuild => OpenMode::Rebuild,
         };
         let store = lakelands_store::open(location, seams, mode).await?;
         lakes.insert(key, store.clone());
@@ -381,13 +387,17 @@ async fn dispatch(
     // nothing, so they run beside a `serve` that holds the writer, and an
     // export's head is the lake's as it stood
     // (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`).
-    // A lake never opened yet is created by the first open.
-    let store = if name == "feed" || name == "export" {
+    // A lake never opened yet is created by the first open, and only
+    // such a place is opened to create: a lake that is refused as it
+    // stands, a damaged one among them, is not opened again for writing.
+    // `rebuild` opens the lake for a rebuild, which that open is: a
+    // projection of another layout opens only so.
+    let store = if name == "rebuild" {
+        open(location, OpenMode::Rebuild, root.seams()).await?
+    } else if name == "feed" || name == "export" {
         match open(location.clone(), OpenMode::Read, root.seams()).await {
             Ok(store) => store,
-            Err(Error::Unavailable { .. }) => {
-                open(location, OpenMode::Create, root.seams()).await?
-            }
+            Err(e) if unmade(&e) => open(location, OpenMode::Create, root.seams()).await?,
             Err(e) => return Err(e.into()),
         }
     } else {
@@ -446,6 +456,16 @@ async fn dispatch(
         "serve" => serve(&root, store, who, open).await,
         other => unreachable!("clap knows no command `{other}`"),
     }
+}
+
+/// Whether `e` says the place holds no lake yet, or one whose making
+/// stopped before its projection: what an open to create finishes.
+fn unmade(e: &Error) -> bool {
+    use lakelands_api::error::Situation;
+    matches!(
+        e.situation(),
+        Some(Situation::NoLake { .. } | Situation::NoProjection { .. })
+    )
 }
 
 /// `serve --mcp`: the lake on standard input and output, as the principal

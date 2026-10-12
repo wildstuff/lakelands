@@ -2,8 +2,8 @@
 //! store facade a host holds for one open lake.
 //!
 //! Both are `dyn`-compatible: the CLI and the MCP server hold
-//! `Arc<dyn Catalog>`, a host holds `Arc<dyn LakeStore>`, and the mock,
-//! the store and a remote client are interchangeable behind them.
+//! `Arc<dyn Catalog>`, a host holds `Arc<dyn LakeStore>`, and the store
+//! and a remote client are interchangeable behind them.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -154,9 +154,9 @@ pub trait Catalog: Send + Sync {
     /// grants as they were when it was proposed: the write was checked
     /// whole then, and a reviewer applies exactly what was checked. At
     /// acceptance the store checks again only what can have moved since —
-    /// the type's shape and the record's version; a call is accepted only
-    /// by a reviewer who may read every field its verb reads (024). An
-    /// accepted external
+    /// the type's shape and the record's version. A proposal its reviewer
+    /// is not listed is not found, a call whose verb reads a field the
+    /// reviewer may not read among them (013, 024). An accepted external
     /// verb answers its executor's recorded `output`, as `call` does, and
     /// so does the accept sent again; any other accept sent again is
     /// `decided`.

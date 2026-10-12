@@ -522,6 +522,8 @@ named! {
         AgingRule = "aging_rule" => "aging rule",
         /// An aggregate's group key.
         Group = "group" => "group",
+        /// A name a pattern binds a record under.
+        Binding = "binding" => "binding",
     }
 }
 
@@ -659,26 +661,6 @@ named! {
 }
 
 named! {
-    /// What the in-memory mock of a lake does not do, which the store does.
-    pub enum Unmocked {
-        /// A migration that changes the key.
-        Rekey = "rekey" => "re-key a type, which keeps its key fields here",
-        /// A `find`'s aggregate.
-        Aggregate = "aggregate" => "aggregate",
-        /// A pattern's start of another kind.
-        PatternStart = "pattern_start" => "start a pattern but from a key or a filter",
-        /// A pattern walked to a record it names.
-        PatternTo = "pattern_to" => "walk a pattern to a record it names",
-        /// A pattern's projection of another kind.
-        PatternProjection = "pattern_projection" => "project a pattern but as rows",
-        /// A step's depth or a walk both ways.
-        Hops = "hops" => "walk a step but one hop in one direction",
-        /// The proposer of a proposal it did not log.
-        Proposer = "proposer" => "know who made this proposal",
-    }
-}
-
-named! {
     /// What a REST path segment a client sends names.
     pub enum Segment {
         /// A type.
@@ -739,6 +721,8 @@ catalog! {
         AnnotationsTooLarge { bytes: usize, max: usize } => "it holds {bytes} bytes of annotations, over the {max} a declaration may hold",
         /// A field computed at the read that a door would write.
         AtReadAuthority => "computed at the read, it has the authority `derived`: no door writes it",
+        /// A reference computed at the read, by a function's backing or an embedding, or from a field so computed.
+        ReferenceUnjudged => "a reference is computed at the write by an expression, where its writer is judged for the record it names; computed at the read, by a function's backing or an embedding, or from a field so computed, nothing judges it",
         /// A field computed at the read by a function a backing computes.
         AtReadBacked => "computed at the read, an expression computes it; a function's backing is called at a write",
         /// A field computed at the read that a change of its inputs clears.
@@ -837,6 +821,8 @@ catalog! {
         InitialNotOfType => "only a field of a type declares one",
         /// An `initial` value on a field that names a record.
         InitialReference => "a field that names a record is checked against that record by the door that writes it",
+        /// An inverse two relations name onto one target.
+        InverseTwice { inverse: RelationName, target: TypeName } => "`{inverse}` is already the inverse of a relation onto `{target}`; an inverse names one relation",
         /// A `json` field named as a type.
         JsonNamedAsType => "a json field may not carry the name of a type",
         /// A type keyed by a field no key may be.
@@ -932,6 +918,8 @@ catalog! {
         ViewCycle { chain: Names } => "its view closes a cycle, reading {chain} in turn; a view may not read itself, through other views or directly",
         /// A view's field nothing fills.
         ViewFieldUnfilled { field: FieldName } => "its field `{field}` is neither a `group_by` field nor a measure of its view, so nothing would fill it",
+        /// A view's `key` that names other fields than its `group_by`.
+        ViewKey { group_by: Option<Names> } => "a view's records are keyed by its `group_by`[ ({group_by})|, and it has none]; its `key` names the same fields in that order, or is left out",
         /// A stored relation on a view.
         ViewRelation { #[serde(rename = "type")] ty: TypeName, carrier: Carrier } => "`{ty}` is a view, whose records are computed and never written, so a relation carried by {carrier} could never hold an edge; a relation on a view is derived from matching values",
         /// A view's field that a search would read.
@@ -978,6 +966,8 @@ catalog! {
         KindTakesNumber { expr: String, kind: Kind } => "`{expr}` has no meaning: it takes a number, not {kind}",
         /// A difference of what are not two instants.
         MinusNoMeaning { #[serde(with = "closed")] left: Box<Operand>, #[serde(with = "closed")] right: Box<Operand> } => "{left} minus {right} has no meaning",
+        /// A provenance function where no record stands.
+        NoRecordsProvenance => "known_at() and seen_at() read a record's provenance, and no record stands here: a view's records, a query's rows, a value type's constraint and a function's expression carry none",
         /// A number that is not a number.
         NotANumber { #[serde(with = "closed")] value: Box<Operand> } => "{value} is not a number",
         /// A function's call that is no aggregate where one is folded.
@@ -1060,6 +1050,8 @@ catalog! {
         SumNotNumber { #[serde(with = "closed")] value: Box<Operand> } => "sum() met {value}, which is not a number",
 
         // ---- views
+        /// A measure's value for a group that its field would not take written.
+        MeasureUnfit { group: RecordKey, #[serde(with = "closed")] why: Box<Case>, decimal: bool } => "its value for the group `{group}` does not fit its field: {why}[{?decimal}; a field of kind `decimal` takes it]",
         /// A sum or an average of a kind that is no number.
         KeptAddsKind { call: String, kind: Kind } => "`{call}` adds {kind}; it is kept where its argument is certainly a number",
         /// A sum or an average of what is of no certain kind.
@@ -1128,6 +1120,8 @@ catalog! {
         MeasureNoSteps { measure: String } => "`{measure}` walks the relations its steps name; name at least one",
         /// A measure with a `to`.
         MeasureNoTo { measure: String } => "`{measure}` is a measure over the steps' relations and takes no `to`",
+        /// A measure's step with a `type`.
+        MeasureNoType { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `type`: it reads every link of a relation, whatever it reaches",
         /// A measure's step with a `where`.
         MeasureNoWhere { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `where`",
         /// A step over a relation that its type does not walk that way.
@@ -1157,8 +1151,14 @@ catalog! {
         ParamValue { name: ParamName, #[serde(rename = "type")] ty: TypeName, kind: StorageKind, value: Box<Value> } => "parameter `{name}` of view `{ty}` is {kind}, and {value} is not one",
         /// A path with several starts.
         PathStarts { count: usize } => "a path has one start, and this pattern's start names {count} records",
-        /// A name a pattern's aggregate reads that no row holds.
-        PatternNoPath { path: String } => "`{path}` is no path the pattern's rows hold; a row holds `<type>.<field>` for each type the pattern binds",
+        /// A pattern naming a binding where no row binds by name.
+        PatternAsNotRows => "`as` names what a row binds, and only rows and an aggregate bind by name",
+        /// A pattern that binds two records under one name.
+        PatternBindsTwice { name: String } => "the pattern binds `{name}` already; give this step another name with `as`",
+        /// A path a pattern orders, projects or aggregates by that no row holds.
+        PatternNoPath { path: String } => "`{path}` is no path the pattern's rows hold; a row holds `<name>.<field>` for each name the pattern binds, its type's or the one `as` gives",
+        /// A pattern with an `order_by` that answers no rows.
+        PatternOrderNotRows => "`order_by` orders rows; a graph and a path come by depth, type and key, and an aggregate's groups by their key",
         /// A pattern with `to` whose steps are a chain.
         PatternToChain => "a pattern with `to` walks its steps as one walk from its start; every step's depth starts at 0",
         /// A pattern with `to` not projected as a graph.
@@ -1178,9 +1178,9 @@ catalog! {
         /// A vector ranking over a field that holds no vectors.
         SearchNotVector { field: FieldName, kind: StorageKind } => "`{field}` is a {kind} field; a vector ranking reads a vector field",
         /// A step that reaches another type than it names.
-        StepReaches { reached: TypeName, #[serde(rename = "type")] ty: TypeName } => "it reaches `{reached}`, not `{ty}`",
-        /// A step reaching several types that reads a `where`.
-        StepSeveralTypes => "it reaches several types and reads a `where`; name the step's `type`",
+        StepReaches { reached: TypeName, #[serde(rename = "type")] ty: TypeName, also: Option<Names> } => "it reaches `{reached}`[, {also}], not `{ty}`",
+        /// A step reaching several types where a `where`, a row or the next step reads one.
+        StepSeveralTypes => "it reaches several types, and a `where`, a row or the step after it reads one; name the step's `type`",
         /// A step deeper than the lake walks.
         StepTooDeep { max: u32, asked: u32 } => "a step may walk at most {max} hops; this one asks for {asked}",
         /// A `text_weight` out of range.
@@ -1223,7 +1223,7 @@ catalog! {
         /// A key that is empty or holds a NUL.
         KeyEmpty => "a record key is not empty and holds no NUL character",
         /// A link's end given among its fields.
-        LinkEndAsField { end: FieldName } => "a link's `{end}` is given as `key` and `to`, not among its fields",
+        LinkEndAsField { end: FieldName } => "a link's `{end}` is one of its ends, which `link` takes as `key` and `to`; no write sets it among the link's fields",
         /// A link from a record that links already where one is allowed, to a record named when the caller is shown it.
         LinkedAlreadyFrom { from: RecordKey, relation: RelationName, #[serde(default, skip_serializing_if = "Option::is_none")] to: Option<RecordKey>, cardinality: Cardinality } => "`{from}` already links over `{relation}`[ to `{to}`], and it allows one ({cardinality}); unlink it first",
         /// A link to a record that is linked already where one is allowed, from a record named when the caller is shown it.
@@ -1357,6 +1357,8 @@ catalog! {
         MigrationStale => "the lake moved since that preflight report; run the preflight again",
         /// A migration that takes every key field away.
         MigrationTakesKey { #[serde(rename = "type")] ty: TypeName } => "the migration takes every key field of `{ty}` away, and leaves no rule to make its records' keys",
+        /// A migration that removes a relation a verb is declared on the link type of.
+        MigrationTakesLinkType { unnamed: bool, relation: RelationName, #[serde(rename = "type")] ty: TypeName } => "[{?unnamed}a declaration|it] is declared on `{ty}`, the link type of the relation `{relation}`, which the migration removes; declare it on another type first",
         /// A migration that takes away a field a declaration reads.
         MigrationTakesRead { unnamed: bool, field: FieldName, #[serde(rename = "type")] ty: TypeName, renamed: Option<FieldName> } => "[{?unnamed}a declaration|it] reads `{field}` of `{ty}`, which the migration [renames to `{renamed}`|drops]",
         /// A migration that would make a stored type a view.
@@ -1614,12 +1616,6 @@ catalog! {
         ValueTypeNoRelations => "a value type has no relations to rename; `relation_renames` belongs to `to`",
         /// A compare-and-set header on a verb called on its type.
         VerbTypeHeader { header: String, verb: VerbName } => "`POST …/verbs/<verb>` takes no `{header}`: verb `{verb}` is called on its type, which has no record version",
-
-        // ---- the in-memory mock
-        /// What the in-memory mock does not do, which the store does.
-        MockCannot { what: Unmocked } => "the in-memory mock does not {what}",
-        /// A function the in-memory mock does not evaluate where it is called.
-        MockUnevaluated { name: String } => "the in-memory mock does not evaluate {name}() here",
     }
 }
 

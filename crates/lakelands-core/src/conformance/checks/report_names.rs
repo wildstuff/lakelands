@@ -5,20 +5,57 @@
 //! extended): in a listing, in a preview, and in the refusal of a
 //! migration that is not lossless, whoever proposes, applies or accepts it.
 
-use std::sync::Arc;
-
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::write::{Migration, MigrationReport, ProposalFilter, ProposedWrite};
-use lakelands_api::{Access, Error, LakeStore, Missing, Outcome, Principal, Refusal, WriteOpts};
+use lakelands_api::{Access, Error, Missing, Outcome, Principal, Refusal, WriteOpts};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{Lake, Must, field_access, patch, reason, restrict, reviewer};
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A report is trimmed for its reader wherever it is answered.
+    NAMED_IN_KEY_ORDER = the_keys_a_report_names_stand_in_the_order_of_the_new_key,
+    "027, extended (lakelands#875): the colliding keys a report names stand in the order of the new key and are its first ten: of two types of one shape, each with eleven keys that two records their reader is answered would take, and a restricted record that sorts first and would take the last of the keys in the one and the first in the other, the reader is named the same ten keys beside the same count and `more`"
+);
+
+async fn the_keys_a_report_names_stand_in_the_order_of_the_new_key(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let shape = |ty: &str, key: &str| json!({"name": ty, "key": [key], "fields": [text("number"), text("iban")]});
+    for (ty, held) in [("ta", "K11"), ("tb", "K01")] {
+        let mut declared = shape(ty, "number");
+        declared["declare"] = json!("type");
+        l.declare_json(declared).await?;
+        // The restricted record sorts before every other by its key.
+        l.upsert(ty, "0", json!({"number": "0", "iban": held}))
+            .await?;
+        restrict(s, ty, "0", "a hold").await?;
+        for (n, half) in (1..=11).flat_map(|n| [(n, "a"), (n, "b")]) {
+            let (number, iban) = (format!("{half}{n:02}"), format!("K{n:02}"));
+            let fields = json!({"number": number, "iban": iban});
+            l.upsert(ty, &number, fields).await?;
+        }
+    }
+    let reader = reviewer(s, true);
+    let mut said = Vec::new();
+    for ty in ["ta", "tb"] {
+        let r = preview(&l, &reader, migrate_to(shape(ty, "iban"))).await?;
+        let keys = r.sample_collisions.iter().map(|c| c.key.to_string());
+        let counts: Vec<u64> = r.rekeyed.iter().map(|k| k.collisions).collect();
+        said.push((keys.collect::<Vec<_>>(), counts, r.more));
+    }
+    let ten: Vec<String> = (1..=10).map(|n| format!("K{n:02}")).collect();
+    ensure!(
+        said[0] == said[1] && said[0] == (ten, vec![23], true),
+        "the keys named are the first ten in the order of the new key, with 23 records \
+         colliding and `more`, whichever key the restricted record would take; `ta`, where it \
+         would take the last, and `tb`, the first, are answered {said:?}"
+    );
+    Ok(())
+}
+
+check!(
     REPORT_AS_ITS_READERS_VIEW = a_migrations_report_is_answered_as_its_reader_may_know_it,
-    "013, 024 and 027, extended (lakelands#531): a migration's report names a conversion, a dropped field, a re-keyed type, a rewritten reference and a colliding key only where its reader may see the type and know of the field, and a sample key only of a record it is answered, in the refusal of an accept, of `migrate_apply` and of `propose` and in a preview, an author's own too; `more` says that the report holds more, and one who may see everything reads it whole without it; the id is made over what the reader is shown, so a preview read trimmed is applied by it (lakelands#644); a relation the migration removes is listed as dropped to one who sees the type and is shown the relation (lakelands#662); to an accepter who may not see the type the proposal is one that does not exist (lakelands#762)"
+    "013, 024 and 027, extended (lakelands#531): a migration's report names a conversion, a dropped field, a re-keyed type, a rewritten reference and a colliding key only where its reader may see the type and know of the field, and a sample key only of a record it is answered, a link's with its ends and where it is shown the link type (lakelands#871), beside a count that stays whole; a colliding key only where it is answered two or more of the records that would take it, a held one beside them or not, and reads every field of the new key, a link's key with its ends, and the keys a report names are the first among those its reader may be named (lakelands#875), in the refusal of an accept, of `migrate_apply` and of `propose` and in a preview, an author's own too; `more` says that an entry was left out or that a count is larger than the keys named beside it, to one who may see everything too, and nothing else; the id is made over what the reader is shown, so a preview read trimmed is applied by it (lakelands#644); a relation the migration removes is listed as dropped to one who sees the type and is shown the relation (lakelands#662); to an accepter who may not see the type the proposal is one that does not exist (lakelands#762)"
 );
 
 /// `account` keyed by `key`, with `holder` and, when given, `score` of
@@ -32,11 +69,13 @@ fn account(key: &str, holder: &str, score: Option<&str>, linked: bool) -> Migrat
     migrate_to(json!({"name": "account", "key": [key], "fields": fields, "relations": relations}))
 }
 
-/// `box` keyed by `key`, with its relation `kept_by`, whose links hold
-/// `since` of that kind.
+/// `box` keyed by `key`, with its relation `kept_by` to any number of
+/// persons, whose links hold `since` of that kind.
 fn boxed(key: &str, since: &str) -> Value {
     let link = json!([{"name": "since", "type": {"kind": since}}]);
-    let kept_by = json!({"name": "kept_by", "target": "person", "fields": link});
+    let many = "many_to_many";
+    let kept_by =
+        json!({"name": "kept_by", "target": "person", "cardinality": many, "fields": link});
     let fields = json!([text("code"), text("label")]);
     json!({"name": "box", "key": [key], "fields": fields, "relations": [kept_by]})
 }
@@ -73,9 +112,7 @@ pub(super) fn refused(answer: lakelands_api::Result<Outcome>) -> Result<String, 
     }
 }
 
-async fn a_migrations_report_is_answered_as_its_reader_may_know_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_migrations_report_is_answered_as_its_reader_may_know_it(store: Store) -> Held {
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     let keyed = |name: &str, key: &[&str], fields: Value| json!({"declare": "type", "name": name, "key": key, "fields": fields});
     let to = |ty: &str| json!({"name": ty, "type": {"kind": "reference", "target": ty}, "required": true});
@@ -84,7 +121,7 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(
         ty
     };
     for d in [
-        keyed("person", &["name"], json!([text("name")])),
+        keyed("person", &["name"], json!([text("name"), text("nick")])),
         declared(json!(account("number", "text", Some("text"), true).to)),
         keyed(
             "entry",
@@ -102,7 +139,7 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(
         l.upsert("account", n, fields).await?;
     }
     for (ty, key, fields) in [
-        ("person", "x", json!({"name": "x"})),
+        ("person", "x", json!({"name": "x", "nick": "nx"})),
         ("entry", "1:1", json!({"account": "1", "n": "1"})),
         ("box", "b1", json!({"code": "b1", "label": "l1"})),
         ("slot", "b1:1", json!({"box": "b1", "n": "1"})),
@@ -117,9 +154,8 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(
                 .await
         }
     };
-    link("account", "1", "owner", json!({}))
-        .await
-        .must("linking account 1 to x")?;
+    let fut = link("account", "1", "owner", json!({}));
+    fut.await.must("linking account 1 to x")?;
     let kept = link("box", "b1", "kept_by", json!({"since": "1"})).await;
     kept.must("linking box b1 to x")?;
     // The reviewer and author: it may not know of `score`, may not see
@@ -163,16 +199,63 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(
     let soon = link("box", "b1", "kept_by", json!({"since": "soon"})).await;
     soon.must("linking box b1 to x again")?;
     restrict(s, "sys.link.box.kept_by", "b1:x", "a hold").await?;
+    // A link that does not convert either, of a box then restricted.
+    l.upsert("box", "b2", json!({"code": "b2", "label": "l2"}))
+        .await?;
+    let late = link("box", "b2", "kept_by", json!({"since": "late"})).await;
+    late.must("linking box b2 to x")?;
+    restrict(s, "box", "b2", "a hold").await?;
     let fifth = json!({"number": "5", "iban": "DE1", "holder": "8", "score": "50"});
     l.upsert("account", "5", fifth).await?;
     l.upsert("entry", "5:1", json!({"account": "5", "n": "1"}))
         .await?;
+    // An account whose `iban` the restricted one holds, a restricted one
+    // that holds the `iban` of two its reader is answered, and five links
+    // that do not convert either, behind the two that are held.
+    let sixth = json!({"number": "6", "iban": "DE4", "holder": "9", "score": "60"});
+    l.upsert("account", "6", sixth).await?;
+    let seventh = json!({"number": "7", "iban": "DE1", "holder": "9", "score": "70"});
+    l.upsert("account", "7", seventh).await?;
+    restrict(s, "account", "7", "a hold").await?;
+    for n in 3..8 {
+        let code = format!("b{n}");
+        let fields = json!({"code": code, "label": format!("l{n}")});
+        l.upsert("box", &code, fields).await?;
+        let linked = link("box", &code, "kept_by", json!({"since": "s"})).await;
+        linked.must("linking a box whose link does not convert")?;
+    }
+
+    // A box kept by two persons of one `nick`, one of them restricted:
+    // re-keyed by it, their links would take one key.
+    l.upsert("box", "bx", json!({"code": "bx", "label": "lx"}))
+        .await?;
+    for name in ["b1", "hp"] {
+        let fields = json!({"name": name, "nick": "n"});
+        l.upsert("person", name, fields).await?;
+        let (of, bx, kept_by) = ("box".into(), "bx".into(), "kept_by".into());
+        let (to, since, opts) = (
+            name.into(),
+            patch(json!({"since": "1"})),
+            WriteOpts::default(),
+        );
+        let linked = (l.cat).link(&l.own, &of, &bx, &kept_by, &to, since, opts);
+        linked.await.must("linking box bx to a person")?;
+    }
+    restrict(s, "person", "hp", "a hold").await?;
+    let nick = json!({"name": "person", "key": ["nick"], "fields": [text("name"), text("nick")]});
+    let nicked = json!(preview(&l, &hid, migrate_to(nick.clone())).await?).to_string();
+    let nicked_whole = json!(preview(&l, &l.own, migrate_to(nick)).await?).to_string();
 
     // The reports, each as its reader is answered it.
     let view = account("iban", "text", None, true);
     let whole = preview(&l, &l.own, account("iban", "text", Some("text"), true)).await?;
     let read = preview(&l, &hid, view.clone()).await?;
     let boolean = preview(&l, &hid, account("number", "boolean", None, true)).await?;
+    // One who reads `iban` masked, and so not the key the re-key makes.
+    let mut masked = field_access(s, "masked", "account", &[("iban", Access::Masked)]);
+    (masked.grants.review, masked.grants.schema) = (true, true);
+    let masked = preview(&l, &masked, account("iban", "text", Some("text"), true)).await?;
+    let masked = json!(masked).to_string();
     // The author's id is of what it is shown, never the owner's.
     let (id, owners) = (read.report_id.clone(), whole.report_id);
     let boolean = json!(boolean).to_string();
@@ -187,11 +270,28 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(
     let proposed = refused(l.cat.propose(&hid, again, "again".into()).await)?;
     let since = refused(l.cat.accept(&hid, &ids[4]).await)?;
     let since_whole = refused(l.cat.accept(&l.own, &ids[4]).await)?;
+    // One who is answered every record, and is not shown the link type.
+    let mut far = l.own.clone();
+    let from = [("from".into(), Access::None)].into();
+    let link = TypeGrants {
+        fields: from,
+        ..Default::default()
+    };
+    far.grants.types.insert("sys.link.box.kept_by".into(), link);
+    let far = preview(&l, &far, migrate_to(boxed("code", "number"))).await?;
+    let far = json!(far).to_string();
     let read = json!(read).to_string();
     // Per row: the report, the names it must show and those it must not.
     let (more, id, owners) = ("\"more\":true", id.as_str(), owners.as_str());
     let (one, both) = ("\"sample_keys\":[\"2\"]", "\"sample_keys\":[\"2\",\"4\"]");
     let collision = "{\"key\":\"DE1\",\"type\":\"account\"}";
+    // `DE4` is the `iban` of one account its reader is answered and of a
+    // restricted one, `DE1` of two it is answered and of a restricted
+    // one, which moves the count alone.
+    let (held_key, counts) = ("DE4", "\"collisions\":5");
+    let five = "\"sample_keys\":[\"b3:x\",\"b4:x\",\"b5:x\",\"b6:x\",\"b7:x\"]";
+    // A count stays whole: of what is there, not of what its reader is answered.
+    let (kept, two) = ("kept_by.since", "\"not_convertible\":7");
     let what = [
         "the accept of a hidden field's conversion",
         "the accept of `holder` as a number",
@@ -204,20 +304,40 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(
         "an author's preview of a boolean",
         "the accept of a link field as a number",
         "the same, to one who sees everything",
+        "its preview by one not shown the link type",
+        "the preview of the re-key by one masked on the new key",
+        "the preview of a re-key whose colliding link has an end held from its reader",
+        "the same, to one who sees everything",
     ];
-    let visible = "[\"1\",\"2\",\"5\"]";
-    let rows: [Row; 11] = [
+    let visible = "[\"1\",\"2\",\"5\",\"6\"]";
+    let rows: [Row; 15] = [
         (&scored, &[more], &["score", "keys"]),
         (&held, &[more, "holder", one], &["\"4\""]),
         (&held_whole, &[both], &["more"]),
-        (&rekeyed, &[more, collision], &["entry"]),
-        (&rekeyed_whole, &["entry", "DE1:1"], &["more"]),
-        (&read, &[more, id], &["entry", owners]),
-        (&applied, &[more, id], &["entry", owners]),
-        (&proposed, &[more], &["entry"]),
+        (&rekeyed, &[more, collision, counts], &["entry", held_key]),
+        (&rekeyed_whole, &[more, "entry", "DE1:1", held_key], &[]),
+        (
+            &read,
+            &[more, id, collision, counts],
+            &["entry", owners, held_key],
+        ),
+        (
+            &applied,
+            &[more, id, collision],
+            &["entry", owners, held_key],
+        ),
+        (&proposed, &[more, collision], &["entry", held_key]),
         (&boolean, &[more, visible], &["\"4\""]),
-        (&since, &[more, "kept_by.since"], &["b1:x"]),
-        (&since_whole, &["kept_by.since", "b1:x"], &["more"]),
+        (&since, &[more, kept, two, five], &["b1:x", "b2:x"]),
+        (&since_whole, &[more, kept, two, "b1:x", "b2:x"], &[]),
+        (&far, &[more, kept, two], &["b1:x", "b2:x"]),
+        (
+            &masked,
+            &[more, counts, "\"collisions\":2"],
+            &["sample_collisions"],
+        ),
+        (&nicked, &[more, "\"collisions\":2"], &["sample_collisions"]),
+        (&nicked_whole, &[more, "bx:n"], &[]),
     ];
     let mut red = Vec::new();
     for (what, (report, shows, hides)) in what.into_iter().zip(rows) {

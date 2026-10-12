@@ -5,8 +5,6 @@
 //! `restricted` grant and present, unchanged, for one with it, its history
 //! included; lifting the hold brings it back, at every position.
 
-use std::sync::Arc;
-
 use lakelands_api::key::UNGROUPED;
 use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::ontology::{StorageKind, TypeDecl};
@@ -14,46 +12,40 @@ use lakelands_api::principal::{Grants, PrincipalKind, TypeGrants};
 use lakelands_api::read::{AggFunc, Found};
 use lakelands_api::write::{Outcome, ProposedWrite, WriteOpts};
 use lakelands_api::{
-    Access, Catalog, Error, Find, LakeStore, Position, Principal, Refusal, Timestamp, TypeName,
+    Access, Catalog, Error, Find, Position, Principal, Refusal, Timestamp, TypeName,
 };
 use serde_json::{Value, json};
 
 use super::only::{claim_with, claims, de, finds, get, hit_keys, holder, node_keys};
 use super::rekey;
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, agg, aggregate, alike_renamed, field, get_at, head_unmoved, ingest, migration,
     patch, pause, principal, restrict, source_record, type_decl, view_of,
 };
+use crate::conformance::{Failure, Held, Store};
 use lakelands_api::describe::{Kept, NotKept};
 
 check!(
-    /// A restricted record is withheld from principals without the grant.
     HOLD_WITHHOLDS_AND_KEEPS = a_restricted_record_is_withheld_but_kept,
     "the facade: restrict hides a record from principals without the restricted grant, keeps it and its history for those with it, and unrestrict lifts it, its history readable again"
 );
 
 check!(
-    /// A record held across a re-key is not there as of before it.
     HOLD_ACROSS_A_REKEY = a_record_held_across_a_rekey_is_not_there_as_of_before,
     "006, extended (lakelands#790): a record is found at the head by the name and the key it bears there, so a record held before a re-key and still held, and one held under its new key since, are not there as of before it to a reader without `restricted`, each compared whole with a key no record holds, nor counted in a `total`; one migration's re-keys move its records at once, never one through another, and a key taken by another record since names that one, never the record it held then; a holder of `only` searching as of before a re-key is judged at the head by each candidate's key there"
 );
 
 check!(
-    /// A record held now is not there at any position.
     HOLD_AT_EVERY_POSITION = a_record_held_now_is_not_there_at_any_position,
     "006, extended (lakelands#790): the hold as it stands now governs every position: to a reader without the `restricted` grant a record held at the head is not there as of an earlier position at `get` (compared whole with a key no record holds), `find` (rows and `total`), aggregates, a computed and a kept view, a walk, a pattern from it (compared whole with one from an absent record) and a link with an end held now (`get` compared whole, and the listing), a search, lexical and by vector, whose answers, scores and pages are those of a type that never held it; a link held under the name its relation was renamed to since is not there either; `describe` says a view so read is computed; a record held then and released since is answered there as any record is"
 );
 
 check!(
-    /// A restricted record is not there to a writer without the grant.
     HOLD_NOT_THERE_TO_A_WRITE = a_restricted_record_is_not_there_to_a_writer_without_the_grant,
-    "006, extended (lakelands#772): to a writer without the `restricted` grant a restricted record is not there at any write door, its refusal compared whole with that of a key no record holds: a reference to it and either end of a `link` are `not_live`, `retire`, `unlink` of a link to it and a verb called on it are not found, and so is the proposal of each; a link to it ingested again is `not_live`; an upsert onto its key, made or proposed, and onto a held key retired since, made, proposed or ingested, is not granted and names no field; nothing is written; a reviewer without the grant is refused the accept of a write onto it, as not granted; the accept of a proposal is judged as its write as the records stand then, so one naming a record restricted since is refused, and one that reached a record restricted when proposed, as only a holder of the grant could, is applied"
+    "006, extended (lakelands#772): to a writer without the `restricted` grant a restricted record is not there at any write door, its refusal compared whole with that of a key no record holds: a reference to it and either end of a `link` are `not_live`, `retire`, `unlink` of a link to it and a verb called on it are not found, and so is the proposal of each; a link to it ingested again is `not_live`; an upsert onto its key, made or proposed, and onto a held key retired since, made, proposed or ingested, is not granted and names no field, as is a well-formed setting onto a held one's key; that refusal comes last of the record checks (016), so under a version, without a required field, with a key field that disagrees and with a `view_kept` setting that is no boolean the upsert onto a held key answers as onto a free one, a conflict, a constraint and twice invalid; nothing is written; a reviewer without the grant is refused the accept of a write onto it, as not granted; the accept of a proposal is judged as its write as the records stand then, so one naming a record restricted since is refused, and one that reached a record restricted when proposed, as only a holder of the grant could, is applied"
 );
 
-async fn a_restricted_record_is_withheld_but_kept(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_restricted_record_is_withheld_but_kept(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl("file", vec![field("body", StorageKind::Text)]))
@@ -79,10 +71,8 @@ async fn a_restricted_record_is_withheld_but_kept(
         matches!(hidden, Err(Error::NotFound { .. })),
         "a principal without the restricted grant must not find `f1` after the hold; it answered {hidden:?}"
     );
-    let seen = cat
-        .get(own, &ty, get_at("f1", None))
-        .await
-        .must("reading `f1` with the restricted grant")?;
+    let seen = cat.get(own, &ty, get_at("f1", None));
+    let seen = seen.await.must("reading `f1` with the restricted grant")?;
     ensure!(
         seen.data.fields.get("body") == Some(&json!("kept")) && seen.position == held,
         "the owner must read `f1` unchanged at the hold's position {held}; it read {:?} at {}",
@@ -99,9 +89,8 @@ async fn a_restricted_record_is_withheld_but_kept(
         .unrestrict(&ty, &"f1".into())
         .await
         .must("lifting the hold on `f1`")?;
-    cat.get(&reader, &ty, get_at("f1", None))
-        .await
-        .must("reading `f1` after the hold is lifted")?;
+    let fut = cat.get(&reader, &ty, get_at("f1", None));
+    fut.await.must("reading `f1` after the hold is lifted")?;
     cat.get(&reader, &ty, get_at("f1", before))
         .await
         .must("reading `f1` before the hold, once it is lifted")?;
@@ -120,9 +109,7 @@ const HELD_NOW: &str = r#"
     trips | a kept view no hold reached then | {"aggregate": {"measures": [{"name": "s", "func": "sum", "field": "n"}]}, "as_of": BEFORE} | s=1
 "#;
 
-async fn a_record_held_now_is_not_there_at_any_position(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_record_held_now_is_not_there_at_any_position(store: Store) -> Held {
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     claims(&l, true).await?;
     let (by, sum) = (
@@ -293,9 +280,7 @@ async fn a_record_held_now_is_not_there_at_any_position(
     Ok(())
 }
 
-async fn a_record_held_across_a_rekey_is_not_there_as_of_before(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_record_held_across_a_rekey_is_not_there_as_of_before(store: Store) -> Held {
     let s = store.as_ref();
     // `4` is held before the re-key and `DE2`, once `2`, only after it.
     let l = rekey::lake(s, rekey::IBANS).await?;
@@ -391,9 +376,9 @@ async fn a_record_held_across_a_rekey_is_not_there_as_of_before(
 }
 
 check!(
-    /// A link with a held end, and a write that reaches a held record.
-    HOLD_REACHES_LINKS_AND_REVIEWS = a_link_with_a_held_end_is_not_there_and_an_accept_is_judged_by_what_it_reaches,
-    "006 and 051, extended (lakelands#781): to a reader without the `restricted` grant a link with a held end is not there: `get` of it answers as of a link no record holds, compared whole, `find` on the link type does not list it, count it in a total or an aggregate, or find it by its hidden end, a kept view over the link type, and over a view over it, answers as its computed twin, a search as of before the hold judged at the head leaves it out, and a reference to it is `not_live` as one to a link no record holds; a cardinality refusal over such a link still refuses and names no end; a reviewer without the grant is refused, as not granted, the accept of a write that references a held record or a link with a held end, an upsert's or a call's in whatever form its assignment computes it (a payload member, a literal, `coalesce`, another field), which the owner applies; a high-risk call through the `call` door is judged as its caller's write, refused as not live to one without the grant and logging nothing, and proposed to a holder; and what a write reaches is computed as at its proposal, by the declarations, its record, the settings in force and its time, so one that reaches a held record only through a field retyped, a record, a setting or a time changed since is judged at the accept as its proposer's write; a holder's proposed call on a link with a held end is accepted; and the host places and lifts a hold on a retired record"
+    HOLD_REACHES_LINKS_AND_REVIEWS =
+        a_link_with_a_held_end_is_not_there_and_an_accept_is_judged_by_what_it_reaches,
+    "006 and 051, extended (lakelands#781): to a reader without the `restricted` grant a link with a held end is not there: `get` of it answers as of a link no record holds, compared whole, `find` on the link type does not list it, count it in a total or an aggregate, or find it by its hidden end, a kept view over the link type, and over a view over it, answers as its computed twin, a search as of before the hold judged at the head leaves it out, and a reference to it is `not_live` as one to a link no record holds; a cardinality refusal over such a link still refuses and names no end; a reviewer without the grant is refused, as not granted, the accept of a write that references a held record or a link with a held end, an upsert's or a call's in whatever form its assignment computes it (a payload member, a literal, `coalesce`, another field), which the owner applies; a high-risk call through the `call` door is judged as its caller's write, refused as not live to one without the grant and logging nothing, and proposed to a holder; and what a write reaches is computed as at its proposal, by the declarations, its record, the settings in force and its time, so one that reaches a held record only through a field retyped, a record, a setting or a time changed since is judged at the accept as its proposer's write; a holder's proposed call on a link with a held end is listed to a reviewer without the grant without its write, is not that reviewer's to accept or to reject, and is accepted by one who holds it; and the host places and lifts a hold on a retired record"
 );
 
 /// Each write door that names the record `k`, as `who`: a reference to a
@@ -472,9 +457,7 @@ async fn write_doors(c: &dyn Catalog, who: &Principal, k: &str) -> Vec<lakelands
     ]
 }
 
-async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(store: Store) -> Held {
     let (l, s) = (Lake::of(store.as_ref()), store.as_ref());
     let to_partner = json!({"kind": "reference", "target": "partner"});
     for d in [
@@ -523,6 +506,25 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(
             .await;
         retired.must("retiring a held `rr`")?;
     }
+    // A slip under a hold, keyed by its `code` and needing a `sum`, and
+    // a `view_kept` setting under one: what the record checks before the
+    // last answer there.
+    l.declare_json(
+        json!({"declare": "type", "name": "slip", "key": ["code"], "fields": [
+        {"name": "code", "type": {"kind": "text"}}, {"name": "note", "type": {"kind": "text"}},
+        {"name": "sum", "type": {"kind": "number"}, "required": true}]}),
+    )
+    .await?;
+    for view in ["tally", "tally2"] {
+        let fields = vec![field("n", Text), field("c", Number)];
+        let counted = view_of(view, "partner", &["n"], fields, &[("c", "count()")]);
+        l.declare(counted).await?;
+    }
+    l.upsert("slip", "s2", json!({"sum": 1})).await?;
+    l.set("view_kept.tally", json!(false)).await?;
+    let setting = lakelands_api::seam::SETTING_TYPE;
+    restrict(s, "slip", "s2", "a hold").await?;
+    restrict(s, setting, "view_kept.tally", "a hold").await?;
     let writer = |id: &str, restricted| {
         let grants = Grants {
             default: Access::Write,
@@ -563,6 +565,43 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(
             })
         )
     };
+    // The record checks before the last answer a probe as on a free key.
+    let v7 = WriteOpts {
+        expected_version: Some(lakelands_api::Version(7)),
+        ..opts()
+    };
+    let mut kinds = Vec::new();
+    for (ty, there, free, fields, opts) in [
+        ("slip", "s2", "s9", json!({"sum": 2}), v7),
+        ("slip", "s2", "s9", json!({"note": "x"}), opts()),
+        ("slip", "s2", "s9", json!({"sum": 2, "code": "x"}), opts()),
+        (
+            setting,
+            "view_kept.tally",
+            "view_kept.tally2",
+            json!({"value": "yes"}),
+            opts(),
+        ),
+    ] {
+        let (t, held, gone) = (ty.into(), there.into(), free.into());
+        let at = c.upsert(&w, &t, &held, patch(fields.clone()), opts.clone());
+        let at = at.await;
+        let on_free = c.upsert(&w, &t, &gone, patch(fields.clone()), opts).await;
+        let what = format!("{fields} onto the held `{there}`");
+        match (&at, &on_free) {
+            (Err(a), Err(b)) => {
+                let alike = alike_renamed(&what, a, b, (free, there));
+                apart.extend(alike.err().map(|f| f.message));
+                let e = serde_json::to_value(a).unwrap_or_default();
+                let kind = e["reason"]["refusal"].as_str().or(e["error"].as_str());
+                kinds.push(kind.unwrap_or("?").to_owned());
+            }
+            _ => apart.push(format!("{what}: {at:?}; onto a free key: {on_free:?}")),
+        }
+    }
+    if kinds != ["conflict", "constraint", "invalid", "invalid"] {
+        apart.push(format!("the probes of a held key answered {kinds:?}"));
+    }
     let fed = source_record("deal", "rr3", json!({"src": "x"}));
     for (what, answer) in [
         (
@@ -594,6 +633,18 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(
         (
             "`rr3`, ingested",
             ingest(c, &w, "feed", vec![fed]).await.map(drop),
+        ),
+        (
+            "the held setting, made",
+            c.upsert(
+                &w,
+                &setting.into(),
+                &"view_kept.tally".into(),
+                patch(json!({"value": false})),
+                opts(),
+            )
+            .await
+            .map(drop),
         ),
     ] {
         if !refused(&answer) {
@@ -642,13 +693,12 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(
         apart.push(format!("the holder's accepted proposal: {accepted:?}"));
     }
     // A reviewer without the grant decides no proposal on a held record.
-    let said = c
-        .propose(
-            &holder,
-            onto("partner", "held", json!({"n": "z"})),
-            "why".into(),
-        )
-        .await;
+    let said = c.propose(
+        &holder,
+        onto("partner", "held", json!({"n": "z"})),
+        "why".into(),
+    );
+    let said = said.await;
     let Outcome::Proposed { proposal, .. } = said.must("the holder's proposal")? else {
         return Err(Failure::new("the holder's write onto `held` is proposed"));
     };
@@ -669,8 +719,8 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(
 }
 
 async fn a_link_with_a_held_end_is_not_there_and_an_accept_is_judged_by_what_it_reaches(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let (l, s) = (Lake::of(store.as_ref()), store.as_ref());
     let to = json!({"kind": "reference", "target": "partner"});
     let p = json!([{"name": "p", "type": {"kind": "text"}}]);
@@ -784,10 +834,8 @@ async fn a_link_with_a_held_end_is_not_there_and_an_accept_is_judged_by_what_it_
         ),
         (a, b) => apart.push(format!("`get` of `d1:held`: {a:?}; of `d1:gone`: {b:?}")),
     }
-    let listed = c
-        .find(&w, &lt, Default::default())
-        .await
-        .must("finding the links")?;
+    let listed = c.find(&w, &lt, Default::default());
+    let listed = listed.await.must("finding the links")?;
     if format!("{:?}", listed.data).contains("held") {
         apart.push(format!("`find` lists {:?}", listed.data));
     }
@@ -854,9 +902,8 @@ async fn a_link_with_a_held_end_is_not_there_and_an_accept_is_judged_by_what_it_
     searcher.grants.types.insert("memo".into(), held);
     let search =
         json!({"type": "sys.link.deal.with", "mode": "lexical", "text": "x", "as_of": before.0});
-    let hits = c
-        .search(&searcher, serde_json::from_value(search).expect("a search"))
-        .await;
+    let hits = c.search(&searcher, serde_json::from_value(search).expect("a search"));
+    let hits = hits.await;
     if !format!("{hits:?}").contains("d1:p1") || format!("{hits:?}").contains("held") {
         apart.push(format!("a search as of before the hold: {hits:?}"));
     }
@@ -973,9 +1020,8 @@ async fn a_link_with_a_held_end_is_not_there_and_an_accept_is_judged_by_what_it_
     for (verb, key, payload) in doors {
         let (v, k) = (verb.into(), key.into());
         let head = s.head().await.must("the head")?;
-        let refused = c
-            .call(&w, &v, Some(&k), patch(payload.clone()), opts())
-            .await;
+        let refused = c.call(&w, &v, Some(&k), patch(payload.clone()), opts());
+        let refused = refused.await;
         let logged = s.head().await.must("the head")? != head;
         let said = c.call(&holder, &v, Some(&k), patch(payload), opts()).await;
         let applied = match said {
@@ -1096,17 +1142,10 @@ async fn a_link_with_a_held_end_is_not_there_and_an_accept_is_judged_by_what_it_
         {"name": "t", "type": to}, {"name": "u", "type": to}]}))
     .expect("a type");
     let m = migration(to);
-    let report = l
-        .cat
-        .migrate(&l.own, m.clone())
-        .await
-        .must("retyping `tick`")?
-        .data
-        .report_id;
-    l.cat
-        .migrate_apply(&l.own, m, &report)
-        .await
-        .must("retyping `tick`")?;
+    let report = l.cat.migrate(&l.own, m.clone());
+    let report = report.await.must("retyping `tick`")?.data.report_id;
+    let fut = l.cat.migrate_apply(&l.own, m, &report);
+    fut.await.must("retyping `tick`")?;
     for proposal in retyped {
         let late = c.accept(&l.own, &proposal).await;
         if !matches!(
@@ -1131,14 +1170,28 @@ async fn a_link_with_a_held_end_is_not_there_and_an_accept_is_judged_by_what_it_
             opts(),
         )
         .await;
-    let accepted = match called.must("the holder's call")? {
-        Outcome::Proposed { proposal, .. } => c.accept(&l.own, &proposal).await.map(drop),
-        other => {
-            return Err(Failure::new(format!(
-                "the holder's call answered {other:?}"
-            )));
-        }
+    let Outcome::Proposed { proposal: id, .. } = called.must("the holder's call")? else {
+        return Err(Failure::new("the holder's call is proposed"));
     };
+    // The reviewer without the grant is listed it without its write, as
+    // it is not answered the link, and decides it not.
+    let listed = c.proposals(&reviewer, Default::default()).await;
+    let listed = listed.must("the reviewer's listing")?.data;
+    let bare = |p: &lakelands_api::write::Proposal| p.id == id && p.write.is_none() && p.more;
+    let no = [
+        c.accept(&reviewer, &id).await.map(drop),
+        c.reject(&reviewer, &id, "no".into()).await.map(drop),
+    ];
+    let refused = Err(Error::Refused {
+        field: None,
+        reason: Refusal::NotGranted,
+    });
+    if !listed.iter().any(bare) || no != [refused.clone(), refused] {
+        apart.push(format!(
+            "the holder's call on `d1:held`, to a reviewer without the grant: {no:?}, listed {listed:?}"
+        ));
+    }
+    let accepted = c.accept(&l.own, &id).await.map(drop);
     if accepted.is_err() {
         apart.push(format!(
             "the holder's call on `d1:held`, accepted: {accepted:?}"

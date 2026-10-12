@@ -4,34 +4,31 @@
 //! extended): in the shape's own lists, or in `restated`.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use lakelands_api::error::Case;
 use lakelands_api::id::ProposalId;
 use lakelands_api::ontology::{FieldDecl, RelationDecl, TypeDecl};
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::write::{Migration, ProposalFilter, ProposedWrite};
-use lakelands_api::{Access, LakeStore, Outcome, Principal};
+use lakelands_api::{Access, Outcome, Principal};
 use serde_json::{Value, json};
 
 use super::export::Scratch;
 use super::report_names::{preview, refused};
-use crate::conformance::Failure;
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
     Lake, Must, describe_type, field_access, invalid_case, is_invalid, log_events,
 };
+use crate::conformance::{Failure, Held, Store};
 use crate::links::link_type_name;
 
 check!(
-    /// Every member of a declaration, changed alone, is in the report.
     EVERY_MEMBER = a_migration_reports_every_member_its_to_states_otherwise,
     "027, extended (lakelands#554): every member of a type's, a field's, a relation's and a link field's declaration, as it serialises, changed alone in a migration's `to`, is in its preflight's report: a type that changes and a `required` that tightens in `fields`, every other member in `restated` with what was declared and what `to` states, a member left out as null, and nothing for a `depends_on` left to the store; an added field and relation are restated member by member; `describe` shows a field its reader does not read by its shape alone (024)",
     embedding
 );
 
 check!(
-    /// What a migration restates is shown as its fields are, and holds.
     AS_ITS_READERS = what_a_migration_restates_is_shown_as_its_fields_are_and_holds_at_the_accept,
     "027, 024 and 013, extended (lakelands#554): a `to` that leaves out `sensitive`, `searchable` and the labels is lossless and its report restates each; an entry is answered where its reader may know of the field, a renamed field's where it may know of the name it had, in a proposal's listing and in the refusal of an accept that is not lossless, with `more`, and an author kept from a field restates nothing of it; one who knows of a field or a link field and does not read it, in `to` or as the type stands, is answered its shape alone, `sensitive` and no label, description, annotation, `searchable`, initial value or expression, in its own preflight, in a listing and in a refusal, and in the `to` and the types a listing hands it; the `write_proposed` event carries the report whole in the feed and in an export, and without the member where nothing is restated; an accept is refused where the type gained a mark the proposal's report does not restate",
     scratch
@@ -223,9 +220,7 @@ fn migrate_to(to: Value, renames: &[(&str, &str)]) -> Migration {
     }
 }
 
-async fn a_migration_reports_every_member_its_to_states_otherwise(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_migration_reports_every_member_its_to_states_otherwise(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let name = json!([{"name": "name", "type": {"kind": "text"}, "required": true}]);
     let function = |name: &str, expr: &str| {
@@ -361,9 +356,9 @@ async fn listed(l: &Lake, who: &Principal, id: &ProposalId) -> Result<String, Fa
 }
 
 async fn what_a_migration_restates_is_shown_as_its_fields_are_and_holds_at_the_accept(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     scratch: PathBuf,
-) -> Result<(), Failure> {
+) -> Held {
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     let text = |n: &str| json!({"name": n, "type": {"kind": "text"}});
     let marked = |n: &str, l: &str| json!({"name": n, "type": {"kind": "text"}, "label": l});

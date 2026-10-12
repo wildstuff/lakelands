@@ -9,13 +9,15 @@
 //! the name and the key it bears there ([`Since`]).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
-use lakelands_api::engine::{After, Declared, ProjectionView, Scan};
+use lakelands_api::engine::{After, Declared, Matched, ProjectionView, Scan};
 use lakelands_api::event::{Digest, EventBody, EventId};
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::StoredRecord;
+use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
-use lakelands_api::{FieldName, Position, RecordKey, RelationName, Result, TypeName, Value};
+use lakelands_api::{Position, RecordKey, RelationName, Result, TypeName, Value};
 use lakelands_core::engines as core_engines;
 
 use crate::lake::Lake;
@@ -32,6 +34,8 @@ pub(crate) struct Since {
     /// By a type's name at the head, each key a re-key since moved, and
     /// the key it bears at the head.
     moved: BTreeMap<TypeName, BTreeMap<RecordKey, RecordKey>>,
+    /// The same, from the key at the head back to the key then.
+    back: BTreeMap<TypeName, BTreeMap<RecordKey, RecordKey>>,
 }
 
 impl Since {
@@ -74,6 +78,7 @@ impl Since {
         let mut since = Since {
             renamed,
             moved: BTreeMap::new(),
+            back: BTreeMap::new(),
         };
         // From each key a record of `at` bears now to its key then. One
         // migration moves its records at once, never one through another,
@@ -97,6 +102,10 @@ impl Since {
                 first.insert((ty.clone(), to.clone()), was.clone());
                 since.moved.entry(ty).or_default().insert(was, to);
             }
+        }
+        for (ty, moved) in &since.moved {
+            let back = moved.iter().map(|(was, to)| (to.clone(), was.clone()));
+            since.back.insert(ty.clone(), back.collect());
         }
         Ok(since)
     }
@@ -123,21 +132,46 @@ impl Since {
         let moved = self.moved.get(name).and_then(|m| m.get(key));
         moved.unwrap_or(key).clone()
     }
+
+    /// The key at the earlier position of the record at `key` of the type
+    /// named `name` at the head: the key a re-key since moved it from, or
+    /// `key` itself. `None` where a re-key moved the earlier position's
+    /// record at `key` away, so that `key` names another record now.
+    pub(crate) fn key_then(&self, name: &TypeName, key: &RecordKey) -> Option<RecordKey> {
+        if let Some(was) = self.back.get(name).and_then(|b| b.get(key)) {
+            return Some(was.clone());
+        }
+        let away = self.moved.get(name).is_some_and(|m| m.contains_key(key));
+        (!away).then(|| key.clone())
+    }
 }
 
 /// The view at a position, with the head beside it.
 pub(crate) struct HeldNow<'a> {
     then: Box<dyn ProjectionView + 'a>,
-    head: Box<dyn ProjectionView + 'a>,
-    since: Since,
+    head: Rc<dyn ProjectionView + 'a>,
+    since: Rc<Since>,
 }
 
 impl<'a> HeldNow<'a> {
     /// `then`, a view of `lake` at an earlier position, read as held now.
-    pub(crate) fn new(lake: &'a Lake, then: Box<dyn ProjectionView + 'a>) -> Result<Self> {
-        let head = lake.engine.view(None)?;
-        let at = then.position().unwrap_or(Position::GENESIS);
-        let since = Since::new(lake, head.as_ref(), at)?;
+    /// Where the read has `ranks`, a search's head, the holds are read from
+    /// that head's one view, with the moves it found: a view of its own,
+    /// opened later, could hold a re-key the moves do not know of.
+    pub(crate) fn new(
+        lake: &'a Lake,
+        then: Box<dyn ProjectionView + 'a>,
+        ranks: Option<&super::Head<'a>>,
+    ) -> Result<Self> {
+        let (head, since) = match ranks {
+            Some(h) => (h.view.clone(), h.since.clone()),
+            None => {
+                let head: Rc<dyn ProjectionView + 'a> = Rc::from(lake.engine.view(None)?);
+                let at = then.position().unwrap_or(Position::GENESIS);
+                let since = Rc::new(Since::new(lake, head.as_ref(), at)?);
+                (head, since)
+            }
+        };
         Ok(HeldNow { then, head, since })
     }
 
@@ -252,16 +286,6 @@ impl ProjectionView for HeldNow<'_> {
         self.then.edges(ty, keys, relation, walk)
     }
 
-    fn lexical(
-        &self,
-        ty: &TypeName,
-        text: &str,
-        fields: Option<&[FieldName]>,
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>> {
-        self.then.lexical(ty, text, fields, k)
-    }
-
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
         self.then.proposals(filter)
     }
@@ -278,8 +302,18 @@ impl ProjectionView for HeldNow<'_> {
         self.then.applied(id)
     }
 
-    fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
+    fn output(&self, seam: &str, input: &Digest) -> Result<Option<(Position, Value)>> {
         self.then.output(seam, input)
+    }
+
+    fn matching(
+        &self,
+        filter: &FeedFilter,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<Matched> {
+        self.then.matching(filter, from, through, limit)
     }
 }
 

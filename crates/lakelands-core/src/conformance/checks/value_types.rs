@@ -11,65 +11,56 @@
 //! `scale` is neither. A migration that renames values is in
 //! `value_renames.rs`.
 
-use std::sync::Arc;
-
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind, ValueTypeDecl};
 use lakelands_api::write::{Declaration, ValueTypeReport};
-use lakelands_api::{Error, Grants, LakeStore, PrincipalKind, Refusal, WriteOpts};
+use lakelands_api::{Access, Error, Grants, LakeStore, PrincipalKind, Refusal, WriteOpts};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, events_after, field, head_unmoved, invalid_like, log_events, object_set_on,
-    principal, reason, refused_on, trigger_on, try_upsert, type_decl,
+    Lake, Must, events_after, field, field_access, head_unmoved, invalid_like, log_events,
+    object_set_on, principal, reason, refused_on, reviewer, trigger_on, try_upsert, type_decl,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// A loosening is declared.
     LOOSEN_BY_DECLARE = a_value_type_that_accepts_more_is_declared_and_no_record_changes,
     "027: a value type that accepts everything it did (a value added to `one_of`, a `constraint` removed) is declared at its next version, and no stored record changes"
 );
 
 check!(
-    /// `declare` refuses a tightening and a reshaping.
     DECLARE_REFUSES_TIGHTENING = declare_refuses_a_value_type_that_accepts_less_or_reshapes,
     "027: `declare` refuses a value type that would accept less, naming `migrate`, and one whose `kind` or `scale` changes; `migrate_value_type` refuses that change too, since no value-type migration makes it; nothing is appended"
 );
 
 check!(
-    /// The preflight counts every stored value.
     PREFLIGHT_COUNTS = the_preflight_counts_what_would_not_fit_over_every_use_and_history,
-    "027: the preflight of a value type checks every value stored under it, over every field of every type that uses it, retired and restricted records included, counts the records and the misfits per use, names the first, and appends nothing"
+    "027: the preflight of a value type checks every value stored under it, over every field of every type that uses it, retired and restricted records included, counts the records and the misfits per use, names the first of them of records its reader is answered, in a preview and in the refused apply, so that one held from the reader is counted and not named, and one in a field its reader does not read takes none of the ten places (lakelands#875), and appends nothing"
 );
 
 check!(
-    /// A tightening with misfits is refused.
     MISFITS_REFUSE = applying_a_tightening_some_value_does_not_fit_is_refused,
     "027: a value-type migration some stored value would not fit is refused as invalid, naming how many, and appends nothing"
 );
 
 check!(
-    /// A tightening every value fits is one declaration.
     FITS_DECLARES = a_tightening_every_value_fits_is_one_declared_version,
     "027 and log-format: a value-type migration every stored value fits appends one `declared` at the next version and changes no record; later writes are checked against it"
 );
 
 check!(
-    /// A stale report is refused.
     STALE_REPORT = a_value_type_report_from_before_the_lake_moved_is_refused,
     "027: a value-type migration is applied only against the report of the lake as it stands; after the lake moved it is refused as invalid"
 );
 
 check!(
-    /// Only `schema` migrates a value type.
     SCHEMA_GRANT = a_value_type_migration_needs_the_schema_grant,
     "027 and 006: both the preflight and the apply of a value-type migration refuse a principal without the `schema` grant; migrate_apply, migrate_value_type_apply, declare and apply ask for it before they judge what they are given (028 and 027, extended)"
 );
 
 check!(
-    /// A bundle that tightens is refused whole.
-    BUNDLE_REFUSED_WHOLE = an_apply_that_loosens_one_value_type_and_tightens_another_is_refused_whole,
+    BUNDLE_REFUSED_WHOLE =
+        an_apply_that_loosens_one_value_type_and_tightens_another_is_refused_whole,
     "028 and 027: `apply` of a set that loosens one value type and tightens another is refused whole, naming `migrate`, and appends nothing"
 );
 
@@ -161,9 +152,7 @@ fn is_refused_as(e: &Error, code: &str) -> bool {
     invalid_like(e, &json!({"code": code}))
 }
 
-async fn a_value_type_that_accepts_more_is_declared_and_no_record_changes(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_value_type_that_accepts_more_is_declared_and_no_record_changes(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     l.upsert("invoice", "i1", json!({"status": "late", "score": 3}))
@@ -173,13 +162,11 @@ async fn a_value_type_that_accepts_more_is_declared_and_no_record_changes(
         status(&["open", "paid", "late", "void", "held"]),
         status(&[]),
     ] {
-        cat.declare(own, Declaration::ValueType(loosened))
-            .await
-            .must("declaring a loosened `status_code`")?;
+        let fut = cat.declare(own, Declaration::ValueType(loosened));
+        fut.await.must("declaring a loosened `status_code`")?;
     }
-    cat.declare(own, Declaration::ValueType(score(None)))
-        .await
-        .must("declaring `score` again as it is")?;
+    let fut = cat.declare(own, Declaration::ValueType(score(None)));
+    fut.await.must("declaring `score` again as it is")?;
     let v = versions(store.as_ref(), "status_code").await?;
     ensure!(
         v == [1, 2, 3],
@@ -195,9 +182,7 @@ async fn a_value_type_that_accepts_more_is_declared_and_no_record_changes(
     Ok(())
 }
 
-async fn declare_refuses_a_value_type_that_accepts_less_or_reshapes(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn declare_refuses_a_value_type_that_accepts_less_or_reshapes(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     for d in [
@@ -308,9 +293,7 @@ async fn stored(store: &dyn LakeStore) -> Result<Lake, Failure> {
     Ok(l)
 }
 
-async fn the_preflight_counts_what_would_not_fit_over_every_use_and_history(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn the_preflight_counts_what_would_not_fit_over_every_use_and_history(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = stored(store.as_ref()).await?;
     let before = store.head().await.must("reading the head")?;
@@ -345,18 +328,64 @@ async fn the_preflight_counts_what_would_not_fit_over_every_use_and_history(
         named.contains(&"i3") && named.contains(&"i4") && named.contains(&"t1:i1"),
         "the report names {named:?} among the first misfits"
     );
+    // One without `restricted` is answered no read of `i4`: it is counted,
+    // and the misfits named are of the records that reader is answered.
+    let (architect, to) = (
+        reviewer(store.as_ref(), true),
+        status(&["open", "paid", "void"]),
+    );
+    let seen = l
+        .cat
+        .migrate_value_type(&architect, to.clone().into())
+        .await;
+    let seen = seen.must("the preview by one without `restricted`")?.data;
+    let applied = (l.cat).migrate_value_type_apply(&architect, to.into(), &seen.report_id);
+    let refused = format!("{:?}", applied.await);
+    let named: Vec<&str> = seen.first.iter().map(|m| m.key.as_str()).collect();
+    ensure!(
+        seen.misfits == 5 && named == ["i1", "i3", "t1:i1", "t1"] && !refused.contains("i4"),
+        "a misfit is named only of a record its reader is answered, the count whole: one \
+         without `restricted` is named {named:?} of {}, and its apply is refused as {refused}",
+        seen.misfits
+    );
     // A constraint the stored values are checked against, as a write is.
     let s = preflight(&l, score(Some("value >= 0"))).await?;
     ensure!(
         s.misfits == 1 && s.first.first().is_some_and(|m| m.key.as_str() == "i2"),
         "`i2`'s score of -1 fails `value >= 0`, and the report says {s:?}"
     );
-    head_unmoved(store.as_ref(), before, "a value type's preflight").await
+    head_unmoved(store.as_ref(), before, "a value type's preflight").await?;
+    // A misfit in a field its reader does not read takes no place: with
+    // nine tickets more, one kept from `invoice.status` is named ten.
+    for n in 2..=10 {
+        let late = json!({"state": "late"});
+        l.upsert("ticket", &format!("t{n}"), late).await?;
+    }
+    let mut kept = field_access(
+        store.as_ref(),
+        "kept",
+        "invoice",
+        &[("status", Access::None)],
+    );
+    kept.grants.schema = true;
+    let to = status(&["open", "paid", "void"]).into();
+    let seen = l.cat.migrate_value_type(&kept, to).await;
+    let seen = seen
+        .must("the preview by one kept from `invoice.status`")?
+        .data;
+    ensure!(
+        seen.misfits == 14
+            && seen.first.len() == 10
+            && seen.first.iter().all(|m| m.ty != "invoice"),
+        "of fourteen misfits, three in a field kept from their reader, it is named ten, none \
+         of them `invoice`'s; it is named {:?} of {}",
+        seen.first,
+        seen.misfits
+    );
+    Ok(())
 }
 
-async fn applying_a_tightening_some_value_does_not_fit_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn applying_a_tightening_some_value_does_not_fit_is_refused(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = stored(store.as_ref()).await?;
     let Lake { cat, own } = &l;
@@ -377,9 +406,7 @@ async fn applying_a_tightening_some_value_does_not_fit_is_refused(
     head_unmoved(store.as_ref(), before, "a tightening with misfits").await
 }
 
-async fn a_tightening_every_value_fits_is_one_declared_version(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_tightening_every_value_fits_is_one_declared_version(store: Store) -> Held {
     lake(store.as_ref()).await?;
     let l = stored(store.as_ref()).await?;
     let Lake { cat, own } = &l;
@@ -419,9 +446,8 @@ async fn a_tightening_every_value_fits_is_one_declared_version(
         "invoice",
         "i5",
         json!({"status": "void"}),
-    )
-    .await
-    .must_fail("writing `void` after it was taken out")?;
+    );
+    let e = e.await.must_fail("writing `void` after it was taken out")?;
     ensure!(
         matches!(refused_on(&e), Some(("status", Refusal::Constraint(..)))),
         "`void` was written after the tightening, or refused as {e:?}"
@@ -429,9 +455,7 @@ async fn a_tightening_every_value_fits_is_one_declared_version(
     Ok(())
 }
 
-async fn a_value_type_report_from_before_the_lake_moved_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_value_type_report_from_before_the_lake_moved_is_refused(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let to = status(&["open", "paid", "late"]);
@@ -449,9 +473,7 @@ async fn a_value_type_report_from_before_the_lake_moved_is_refused(
     head_unmoved(store.as_ref(), before, "a stale value-type report").await
 }
 
-async fn a_value_type_migration_needs_the_schema_grant(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_value_type_migration_needs_the_schema_grant(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, .. } = &l;
     let to = status(&["open", "paid", "late"]);
@@ -466,9 +488,8 @@ async fn a_value_type_migration_needs_the_schema_grant(
         },
     );
     let pre = cat.migrate_value_type(&clerk, to.clone().into()).await;
-    let apply = cat
-        .migrate_value_type_apply(&clerk, to.into(), &r.report_id)
-        .await;
+    let apply = cat.migrate_value_type_apply(&clerk, to.into(), &r.report_id);
+    let apply = apply.await;
     let refused = |r: &Result<_, Error>| matches!(reason(&r), Some(Refusal::NotGranted));
     ensure!(
         refused(&pre.map(|_| ())) && refused(&apply.map(|_| ())),
@@ -506,21 +527,19 @@ async fn a_value_type_migration_needs_the_schema_grant(
 }
 
 async fn an_apply_that_loosens_one_value_type_and_tightens_another_is_refused_whole(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
-    let e = cat
-        .apply(
-            own,
-            vec![
-                Declaration::ValueType(status(&["open", "paid", "late", "void", "held"])),
-                Declaration::ValueType(score(Some("value >= 0"))),
-            ],
-        )
-        .await
-        .must_fail("applying a set that tightens `score`")?;
+    let e = cat.apply(
+        own,
+        vec![
+            Declaration::ValueType(status(&["open", "paid", "late", "void", "held"])),
+            Declaration::ValueType(score(Some("value >= 0"))),
+        ],
+    );
+    let e = e.await.must_fail("applying a set that tightens `score`")?;
     ensure!(
         is_refused_as(&e, "value_type_tightens"),
         "the set was refused as {e:?}; invalid, naming `migrate`, was expected"
@@ -535,15 +554,14 @@ async fn an_apply_that_loosens_one_value_type_and_tightens_another_is_refused_wh
 }
 
 check!(
-    /// Removing a constraint or a format loosens; changing a constraint
-    /// tightens.
-    CONSTRAINT_AND_FORMAT = removing_a_constraint_or_a_format_is_declared_and_changing_a_constraint_is_refused,
+    CONSTRAINT_AND_FORMAT =
+        removing_a_constraint_or_a_format_is_declared_and_changing_a_constraint_is_refused,
     "027 extended and seams: `declare` takes a value type whose `constraint` or `format` is removed, since no stored value can stop fitting it; a `constraint` changed may reject a stored value, so `declare` refuses it, naming `migrate`"
 );
 
 async fn removing_a_constraint_or_a_format_is_declared_and_changing_a_constraint_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     for d in [
@@ -600,14 +618,11 @@ async fn removing_a_constraint_or_a_format_is_declared_and_changing_a_constraint
 }
 
 check!(
-    /// A condition on a value the type no longer admits never holds.
     CONDITION_NEVER_HOLDS = a_trigger_or_set_on_a_value_the_type_no_longer_admits_never_holds,
     "027 extended and seams: the preflight checks stored values, not the conditions that mention them; a trigger's `when` or an object set's `where` comparing with a value a tightening removed stays declared and simply never holds afterwards"
 );
 
-async fn a_trigger_or_set_on_a_value_the_type_no_longer_admits_never_holds(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_trigger_or_set_on_a_value_the_type_no_longer_admits_never_holds(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     for d in [

@@ -28,12 +28,15 @@
 //! records each vector on its own. A batch the backend refuses for what
 //! it carries is asked again in halves, so a text it refuses fails alone.
 //!
-//! **Failure.** A backing that fails is recorded as `{"error": "<why>"}`.
+//! **Failure.** A backing that fails is recorded as `{"error": "<why>"}`,
+//! and so is one whose output holds an integer beyond ±(2^53 − 1), which
+//! the log does not write.
 //! That output, or one that is not a value of the field's type, clears the
 //! field and puts the reason in its metadata's `error`. A cleared field
 //! without `error` and without metadata is one whose output is not
 //! recorded yet. A settle forced by a declaration calls again for an input
-//! whose recorded output is a failure; the later output holds.
+//! whose recorded output is a failure; the later output holds. One forced
+//! by a value type's rename does not: it makes the calls the rename moved.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -130,6 +133,8 @@ pub struct Outputs<'a> {
     /// Whether a field that a recorded output changes is handed out too:
     /// the drain reads a record so, and records that output for it.
     pub waiting: bool,
+    /// The plans the records are computed by.
+    pub plans: &'a crate::record::Plans,
 }
 
 /// The outputs one transaction recorded, by seam and input: every
@@ -137,6 +142,22 @@ pub struct Outputs<'a> {
 pub type Recorded = BTreeMap<(String, Digest), Vec<(Position, Value)>>;
 
 impl Outputs<'_> {
+    /// The outputs a plan reads: what `view` holds, and no call made due.
+    pub(crate) fn planning<'a>(
+        view: &'a dyn ProjectionView,
+        plans: &'a crate::record::Plans,
+    ) -> Outputs<'a> {
+        let (staged, before, due, waiting) = (None, None, None, false);
+        Outputs {
+            view,
+            staged,
+            before,
+            due,
+            waiting,
+            plans,
+        }
+    }
+
     /// What the lake recorded for a call, if anything: the transaction's
     /// last recording the reader may read, else the view's.
     fn recorded(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
@@ -146,7 +167,7 @@ impl Outputs<'_> {
         let read = |(at, _): &&(Position, Value)| self.before.is_none_or(|before| *at < before);
         match staged.and_then(|all| all.iter().rev().find(read)) {
             Some((_, v)) => Ok(Some(v.clone())),
-            None => self.view.output(seam, input),
+            None => Ok(self.view.output(seam, input)?.map(|(_, v)| v)),
         }
     }
 }
@@ -430,7 +451,8 @@ pub fn computed_order(
 /// `force` (what computes it was declared again), or when it holds
 /// neither a value nor an error (it was waiting). Settling fills it from a
 /// recorded output, or clears it and makes the call due. With `force`, a
-/// recorded failure does not fill it: the call is made due again.
+/// recorded failure does not fill it: the call is made due again, unless
+/// `event` is a value type's rename, which retries nothing.
 ///
 /// A backed field that reads, directly or through derived fields, one
 /// that is waiting for its output waits too: it is cleared and not
@@ -458,12 +480,17 @@ pub fn settle_fields(
     if backed.is_empty() {
         return Ok(changed);
     }
-    let order = computed_order(ontology, decl).map_err(|why| {
-        let (ty, cause) = (decl.name.clone(), Box::new(lakelands_core::invalid(why)));
+    let plan = outputs.plans.get(ontology, decl);
+    let order = plan.settled.as_ref().map_err(|why| {
+        let (ty, cause) = (
+            decl.name.clone(),
+            Box::new(lakelands_core::invalid(why.clone())),
+        );
         lakelands_core::damaged(Part::Projection, None, Flaw::CannotOrder { ty, cause })
     })?;
     let mut waiting: BTreeSet<FieldName> = BTreeSet::new();
     for (name, reads) in order {
+        let name = name.clone();
         let reads_waiting = reads.iter().any(|r| waiting.contains(r));
         let Some((field, computer)) = backed.get(&name).copied() else {
             if reads_waiting {
@@ -504,7 +531,10 @@ pub fn settle_fields(
         let seam = computer.seam();
         let input = digest(&call);
         let recorded = outputs.recorded(&seam, &input)?;
-        let retry = force && recorded.as_ref().is_some_and(is_failure);
+        // A value type's rename is forced so that a call it moved is
+        // seen, and calls no recorded failure again: that call is as it was.
+        let renames = matches!(event.body, EventBody::ValueTypeMigrated { .. });
+        let retry = force && !renames && recorded.as_ref().is_some_and(is_failure);
         if let (Some(output), false) = (recorded, retry) {
             let filled = put(
                 ontology, decl, field, computer, &output, event, fields, metas,
@@ -613,14 +643,15 @@ pub struct Owed {
 pub enum Of {
     /// The record at this key.
     Record(RecordKey),
-    /// Every record of the type, a page at a time in key order, settled as
-    /// a declaration settles it: a recorded failure is called again, once
-    /// in the sweep.
+    /// Every record of the type, a page at a time in key order. After a
+    /// declaration it is settled as the declaration settles it: a recorded
+    /// failure is called again, once in the sweep.
     Sweep {
         /// The last key whose calls are recorded; `None` before the first.
         after: Option<RecordKey>,
-        /// The calls whose failure it called again.
-        retried: BTreeSet<(String, Digest)>,
+        /// The calls whose failure it called again; `None` after a value
+        /// type's rename, whose sweep makes the waiting calls and no other.
+        retried: Option<BTreeSet<(String, Digest)>>,
     },
 }
 
@@ -706,8 +737,15 @@ pub fn page(lake: &Lake, o: &Owed) -> Result<(Vec<(RecordKey, Vec<(Due, Option<V
                 before: None,
                 due: Some(&mut due),
                 waiting: true,
+                plans: &w.plans,
             };
-            let sweep = matches!(o.of, Of::Sweep { .. });
+            let sweep = matches!(
+                o.of,
+                Of::Sweep {
+                    retried: Some(_),
+                    ..
+                }
+            );
             settle_fields(
                 &w.ontology,
                 &lake.id,
@@ -723,7 +761,7 @@ pub fn page(lake: &Lake, o: &Owed) -> Result<(Vec<(RecordKey, Vec<(Due, Option<V
         }
         let mut owes = Vec::new();
         for d in due {
-            let recorded = view.output(&d.seam, &d.input)?;
+            let recorded = view.output(&d.seam, &d.input)?.map(|(_, v)| v);
             owes.push((d, recorded));
         }
         out.push((r.key, owes));
@@ -928,7 +966,7 @@ async fn make(lake: &Arc<Lake>, batch: Batch) -> Result<()> {
             continue;
         }
         let retried = match &mut took[*t].left.of {
-            Of::Sweep { retried, .. } => Some(retried),
+            Of::Sweep { retried, .. } => retried.as_mut(),
             Of::Record(_) => None,
         };
         let again = retried.as_ref().is_some_and(|r| !r.contains(&k));
@@ -991,6 +1029,7 @@ async fn make(lake: &Arc<Lake>, batch: Batch) -> Result<()> {
             }
         }
     };
+    let asked: Vec<(Key, Value)> = asked.into_iter().map(|(k, v)| (k, written(v))).collect();
     lake.writer().held.extend(asked.iter().cloned());
     answers.extend(asked);
     for (_, d, _) in &calls {
@@ -1014,6 +1053,18 @@ async fn make(lake: &Arc<Lake>, batch: Batch) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// An output as it is recorded. It is written as the seam gave it, so one
+/// that holds an integer beyond ±(2^53 − 1), a function's value or an
+/// embedding's vector, is recorded as its call's failure
+/// (`docs/log-format.md` §1.2): no event holds a number a reader would
+/// read as another.
+fn written(output: Value) -> Value {
+    match lakelands_core::canonical::integer_too_large(&output) {
+        Some(n) => json!({ "error": Case::IntegerTooLarge { n: n.clone() }.to_string() }),
+        None => output,
+    }
 }
 
 async fn record_async(lake: &Arc<Lake>, d: &Due, output: Value, known: bool) -> Result<()> {
@@ -1083,11 +1134,18 @@ async fn embed_each(backend: &dyn EmbedBackend, texts: &[String]) -> Vec<Value> 
 ///
 /// An output the lake already holds (`known`) is recorded again only when
 /// it fills something: a due issued twice appends nothing the second time.
+/// Where it is the call's latest output, and no failure, the fill names it
+/// by `output_at` instead of carrying it again
+/// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`).
 fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Position>> {
     let mut w = lake.for_write()?;
     let now = lake.clock(&mut w);
     let view = lake.engine.view(None)?;
     let at = Position(w.tip.as_ref().map_or(0, |t| t.0.0 + 1));
+    let latest = view.output(&d.seam, &d.input)?;
+    let output_at = latest
+        .filter(|(_, v)| *v == output && !is_failure(v))
+        .map(|(p, _)| p);
     let context = d.context;
     let draft = Draft {
         cause: Some(d.cause),
@@ -1098,7 +1156,8 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
             EventBody::OutputRecorded {
                 seam: d.seam.clone(),
                 input: d.input.clone(),
-                output: output.clone(),
+                output: output_at.is_none().then(|| output.clone()),
+                output_at,
                 field: Some((d.ty.clone(), d.key.clone(), d.field.clone())),
             },
         )
@@ -1127,6 +1186,7 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
                 before: None,
                 due: None,
                 waiting: false,
+                plans: &w.plans,
             },
         )?;
         if let Some(after) = after {
@@ -1139,15 +1199,8 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
                 followed: None,
                 shown: None,
             };
-            drafts = call.reactions(
-                &w,
-                view.as_ref(),
-                &mut crate::writes::Pending::default(),
-                Some(&before),
-                &after,
-                at,
-                now,
-            )?;
+            let mut d = call.decide(&w, view.as_ref(), now, 0);
+            drafts = d.reactions(Some(&before), &after)?;
         }
     }
     drop(view);

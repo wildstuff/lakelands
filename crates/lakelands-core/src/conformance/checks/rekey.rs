@@ -8,8 +8,6 @@
 //! account's `owner` is a `person`, carried by link records keyed by both
 //! ends.
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::query::{Projection, QueryResult, Walk};
@@ -19,116 +17,93 @@ use lakelands_api::{
 };
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, all, events_after, field_access, get_at, head_unmoved, invalid_case, log_events,
     migration, patch, pattern, reason, restrict, step,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// The preflight counts everything a re-key moves.
     PREFLIGHT_COUNTS = a_rekeys_preflight_counts_what_moves_with_it_and_appends_nothing,
     "027: the preflight of a re-key counts the records it moves, retired and restricted included, the types keyed by a reference to them, their link records, and the reference values it rewrites, and appends nothing"
 );
 
 check!(
-    /// Colliding new keys refuse the re-key.
     COLLISION = two_records_that_would_take_one_new_key_refuse_the_rekey,
     "027: a re-key under which two records would take one key is not lossless, names the key, and is refused, appending nothing"
 );
 
 check!(
-    /// A missing key value refuses the re-key.
     MISSING = a_record_without_a_new_key_value_refuses_the_rekey,
     "027: a re-key under which a record has no value for a new key field is not lossless"
 );
 
 check!(
-    /// The records move with their values, versions and provenance.
     MOVES = a_rekey_moves_every_record_with_its_values_version_and_provenance,
     "027 and log-format §2.3: a re-key moves every record to its new key with its fields, version and per-field provenance; at the migration's position the new key is found and the old one not, and a read before it still finds the old key"
 );
 
 check!(
-    /// References follow.
     REFERENCES = a_reference_to_a_rekeyed_record_names_its_new_key,
     "027 and 032: a reference field in another type that named a moved key names the new one, and a walk over its relation reaches the record"
 );
 
 check!(
-    /// Links follow.
     LINKS = a_link_to_a_rekeyed_record_is_rekeyed_and_walked,
     "027 and 035: a link record keyed by a moved end is moved to its new pair key, and a walk over its relation reaches the re-keyed record"
 );
 
 check!(
-    /// A type keyed by a reference is re-keyed too.
     CLOSURE = a_type_keyed_by_a_reference_to_a_rekeyed_type_is_rekeyed_with_it,
     "027: a type whose key fields reference a re-keyed type is re-keyed in the same migration"
 );
 
 check!(
-    /// The old key is ended.
     OLD_KEY_ENDED = an_old_key_is_ended_and_a_new_write_follows_the_new_rule,
     "027 and log-format §2.3: after a re-key a write at an old key whose key fields make another key is refused as invalid, naming it; a write at a new key continues its version; and a write of the bare old key string, its key field filled from it, is a new record at version 1, by an event that says it made it (lakelands#572)"
 );
 
 check!(
-    /// A re-key is written at the lake's format.
-    FORMAT_TWO = a_rekey_is_written_at_the_lakes_format_and_the_log_verifies,
-    "log-format §6: the re-keying `migrated` event and every event after it carry the lake's `v`, 11 since the records it moves were made; the log verifies, and a rebuild answers every read as before"
+    REKEY_VERIFIES = a_log_that_holds_a_rekey_verifies_and_rebuilds_alike,
+    "027 and log-format §2.3: a log that holds a re-keying `migrated` event verifies, and a rebuild answers every read as before"
 );
 
 check!(
-    /// A lake is at version 1 until its first record is made.
-    FORMAT_ONE = a_lake_writes_format_version_1_until_its_first_record_is_made,
-    "log-format §6 (lakelands#572): a lake carries `v` 1 on every event before the first that says it made a record and 11 on it and every later one, a migration that keeps the key included"
-);
-
-check!(
-    /// A key cannot be taken away or made of what cannot key.
     NO_KEY = a_migration_that_takes_every_key_field_away_is_refused,
-    "027: a migration is refused as invalid when it takes every key field away, names a key field that is not required or of a kind a key cannot be made of, or would re-key a view"
+    "027: a migration is refused as invalid when it takes every key field away, names a key field that is not required or of a kind a key cannot be made of, or would re-key a view, one that leaves its `key` out too; that view declared again with its `key` written is the one in force and appends nothing (lakelands#788)"
 );
 
 check!(
-    /// A re-key report is of the lake as it stood.
     STALE = a_rekey_report_from_before_a_write_is_refused,
     "027: a re-key is applied only against the report of the lake as it stands; a write between the preflight and the apply, one that changes a move, makes it refused"
 );
 
 check!(
-    /// Set membership moves with the record.
     SETS = object_set_membership_moves_with_a_rekeyed_record,
     "027 and 004: a moved record keeps its object-set memberships at its new key: a write that keeps it in a set changes nothing, and retiring it leaves the set at the new key"
 );
 
 check!(
-    /// A re-keyed type migrates again.
     AGAIN = a_rekeyed_type_migrates_again,
     "027 and log-format §2.3: the ended keys a re-key leaves are no records: a later migration that keeps the key, a value-type tightening, and a second re-key over them all apply"
 );
 
 check!(
-    /// A re-key that retypes a link field moves and converts its links.
     LINK_RESHAPED = a_rekey_that_retypes_a_link_field_moves_and_converts_its_links,
     "027 and 035: a migration that re-keys a type and retypes a field of its relation appends the link type's migration after its own; a link is at its new pair key from the first on and holds the converted value from the second on"
 );
 
 check!(
-    /// A key is made after the keys it reads.
     KEY_ORDER = a_key_is_made_after_every_key_it_reads_has_moved,
     "027: a type keyed by references to two types a re-key moves, a link type among them, takes its new keys after both have theirs, whatever the order of their names: each key is what its fields make, a relation carried by links is walked out and in as before, and the report lists the types in the order their keys are made"
 );
 
 check!(
-    /// A ring of keys is refused.
     KEY_RING = a_rekey_of_keys_made_of_keys_it_moves_is_refused,
     "027: a re-key that would move a type keyed by a reference to itself, or types keyed by each other, is refused as invalid naming them, and appends nothing: no order makes such keys"
 );
 
 check!(
-    /// A renamed reference field is counted.
     RENAMED_REFERENCE = a_rekeys_report_counts_a_reference_field_the_migration_renames,
     "027, 013 and 024: the references a re-key rewrites are counted for a field the same migration renames, under its new name, and that entry is answered only to a reader who may know of the field in the shape the migration leaves"
 );
@@ -271,9 +246,8 @@ async fn walked(
     walk: Walk,
 ) -> Result<Vec<String>, Failure> {
     let p = pattern(ty, Some(key), vec![step(relation, walk)], Projection::Graph);
-    let reply = l
-        .cat
-        .query(&l.own, p)
+    let reply = l.cat.query(&l.own, p);
+    let reply = reply
         .await
         .must(&format!("walking `{relation}` from `{ty}` `{key}`"))?;
     let QueryResult::Graph { nodes, .. } = reply.data else {
@@ -286,9 +260,7 @@ async fn walked(
         .collect())
 }
 
-async fn a_rekeys_preflight_counts_what_moves_with_it_and_appends_nothing(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rekeys_preflight_counts_what_moves_with_it_and_appends_nothing(store: Store) -> Held {
     let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
@@ -321,9 +293,7 @@ async fn a_rekeys_preflight_counts_what_moves_with_it_and_appends_nothing(
     head_unmoved(store.as_ref(), before, "a re-key's preflight").await
 }
 
-async fn two_records_that_would_take_one_new_key_refuse_the_rekey(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn two_records_that_would_take_one_new_key_refuse_the_rekey(store: Store) -> Held {
     lake(
         store.as_ref(),
         [Some("DE1"), Some("DE1"), Some("DE3"), Some("DE4")],
@@ -346,10 +316,8 @@ async fn two_records_that_would_take_one_new_key_refuse_the_rekey(
         "accounts 1 and 2 would both be `DE1`; the report says {r:?}"
     );
     let before = store.head().await.must("reading the head")?;
-    let e = cat
-        .migrate_apply(own, to_iban(), &r.report_id)
-        .await
-        .must_fail("applying a re-key with a collision")?;
+    let e = cat.migrate_apply(own, to_iban(), &r.report_id);
+    let e = e.await.must_fail("applying a re-key with a collision")?;
     ensure!(
         matches!(reason(&e), Some(Refusal::Migration { .. })),
         "the apply was refused as {e:?}; a migration refusal with its report was expected"
@@ -357,9 +325,7 @@ async fn two_records_that_would_take_one_new_key_refuse_the_rekey(
     head_unmoved(store.as_ref(), before, "a re-key with a collision").await
 }
 
-async fn a_record_without_a_new_key_value_refuses_the_rekey(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_record_without_a_new_key_value_refuses_the_rekey(store: Store) -> Held {
     lake(
         store.as_ref(),
         [Some("DE1"), None, Some("DE3"), Some("DE4")],
@@ -380,9 +346,7 @@ async fn a_record_without_a_new_key_value_refuses_the_rekey(
     Ok(())
 }
 
-async fn a_rekey_moves_every_record_with_its_values_version_and_provenance(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rekey_moves_every_record_with_its_values_version_and_provenance(store: Store) -> Held {
     let l = lake(store.as_ref(), IBANS).await?;
     let old = found(&l, "account", "1", None)
         .await?
@@ -409,9 +373,7 @@ async fn a_rekey_moves_every_record_with_its_values_version_and_provenance(
     Ok(())
 }
 
-async fn a_reference_to_a_rekeyed_record_names_its_new_key(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_reference_to_a_rekeyed_record_names_its_new_key(store: Store) -> Held {
     let l = lake(store.as_ref(), IBANS).await?;
     apply(store.as_ref()).await?;
     let p1 = found(&l, "payment", "p1", None)
@@ -430,9 +392,7 @@ async fn a_reference_to_a_rekeyed_record_names_its_new_key(
     Ok(())
 }
 
-async fn a_link_to_a_rekeyed_record_is_rekeyed_and_walked(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_link_to_a_rekeyed_record_is_rekeyed_and_walked(store: Store) -> Held {
     let l = lake(store.as_ref(), IBANS).await?;
     apply(store.as_ref()).await?;
     let lt = "sys.link.account.owner";
@@ -449,9 +409,7 @@ async fn a_link_to_a_rekeyed_record_is_rekeyed_and_walked(
     Ok(())
 }
 
-async fn a_rekey_that_retypes_a_link_field_moves_and_converts_its_links(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rekey_that_retypes_a_link_field_moves_and_converts_its_links(store: Store) -> Held {
     let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
     // `owner` with a `rank`, of `kind`, on an account keyed by `key`.
@@ -494,9 +452,7 @@ async fn a_rekey_that_retypes_a_link_field_moves_and_converts_its_links(
     Ok(())
 }
 
-async fn a_type_keyed_by_a_reference_to_a_rekeyed_type_is_rekeyed_with_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_type_keyed_by_a_reference_to_a_rekeyed_type_is_rekeyed_with_it(store: Store) -> Held {
     let l = lake(store.as_ref(), IBANS).await?;
     apply(store.as_ref()).await?;
     let e = found(&l, "entry", "DE1:1", None).await?;
@@ -510,9 +466,7 @@ async fn a_type_keyed_by_a_reference_to_a_rekeyed_type_is_rekeyed_with_it(
     Ok(())
 }
 
-async fn an_old_key_is_ended_and_a_new_write_follows_the_new_rule(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn an_old_key_is_ended_and_a_new_write_follows_the_new_rule(store: Store) -> Held {
     let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
     let v = found(&l, "account", "1", None)
@@ -562,31 +516,20 @@ async fn an_old_key_is_ended_and_a_new_write_follows_the_new_rule(
     Ok(())
 }
 
-async fn a_rekey_is_written_at_the_lakes_format_and_the_log_verifies(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_log_that_holds_a_rekey_verifies_and_rebuilds_alike(store: Store) -> Held {
     let l = lake(store.as_ref(), IBANS).await?;
     let read = |ty: &'static str, key: &'static str| found(&l, ty, key, None);
     let at = apply(store.as_ref()).await?;
     l.upsert("account", "DE2", json!({"holder": "after"}))
         .await?;
     let all = log_events(store.as_ref()).await?;
-    let wrong: Vec<(u64, u32)> = all
-        .iter()
-        .filter(|e| e.position >= at && e.v != 11)
-        .map(|e| (e.position.0, e.v))
-        .collect();
     ensure!(
-        wrong.is_empty()
-            && all.iter().any(|e| e.position == at
-                && matches!(&e.body, EventBody::Migrated { rekeyed, .. } if !rekeyed.is_empty())),
-        "the re-key at {at} and every later event carry the lake's `v`, 11; these do not: \
-         {wrong:?}"
+        all.iter().any(|e| e.position == at
+            && matches!(&e.body, EventBody::Migrated { rekeyed, .. } if !rekeyed.is_empty())),
+        "the event at {at} is the re-keying `migrated` event, and it is not"
     );
-    store
-        .verify(None, None)
-        .await
-        .must("verifying a log that holds a re-key")?;
+    let fut = store.verify(None, None);
+    fut.await.must("verifying a log that holds a re-key")?;
     let before = (read("account", "DE1").await?, read("entry", "DE1:1").await?);
     store.rebuild().await.must("rebuilding")?;
     let after = (read("account", "DE1").await?, read("entry", "DE1:1").await?);
@@ -597,45 +540,7 @@ async fn a_rekey_is_written_at_the_lakes_format_and_the_log_verifies(
     Ok(())
 }
 
-async fn a_lake_writes_format_version_1_until_its_first_record_is_made(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
-    let l = lake(store.as_ref(), IBANS).await?;
-    // A migration that keeps the key.
-    let mut to: serde_json::Map<String, Value> = account("number", false)
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
-    to["fields"]
-        .as_array_mut()
-        .expect("fields")
-        .push(json!({"name": "note", "type": {"kind": "text"}}));
-    l.migrate(serde_json::from_value(Value::Object(to)).expect("a type"))
-        .await?;
-    let all = log_events(store.as_ref()).await?;
-    let made = |e: &&Event| {
-        use EventBody::{RecordIngested, RecordUpserted};
-        matches!(
-            e.body,
-            RecordUpserted { made: true, .. } | RecordIngested { made: true, .. }
-        )
-    };
-    let first = all.iter().find(made).map(|e| e.position);
-    let wrong: Vec<(u64, u32)> = (all.iter())
-        .filter(|e| e.v != if Some(e.position) < first { 1 } else { 11 })
-        .map(|e| (e.position.0, e.v))
-        .collect();
-    ensure!(
-        first.is_some() && wrong.is_empty(),
-        "a lake that never re-keyed writes format 1 before its first record made, at {first:?}, \
-         and 11 from it on; these events carry another: {wrong:?}"
-    );
-    Ok(())
-}
-
-async fn a_migration_that_takes_every_key_field_away_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_migration_that_takes_every_key_field_away_is_refused(store: Store) -> Held {
     let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
     let mut to: serde_json::Map<String, Value> = account("number", false)
@@ -645,10 +550,8 @@ async fn a_migration_that_takes_every_key_field_away_is_refused(
     to.insert("key".into(), json!([]));
     let m = migration(serde_json::from_value(Value::Object(to)).expect("a type"));
     let before = store.head().await.must("reading the head")?;
-    let e = cat
-        .migrate(own, m)
-        .await
-        .must_fail("migrating `account` to no key fields")?;
+    let e = cat.migrate(own, m);
+    let e = e.await.must_fail("migrating `account` to no key fields")?;
     ensure!(
         matches!(reason(&e), Some(Refusal::Invalid(..))),
         "taking every key field away was refused as {e:?}; invalid was expected"
@@ -668,16 +571,26 @@ async fn a_migration_that_takes_every_key_field_away_is_refused(
         );
     }
     head_unmoved(store.as_ref(), before, "refused key changes").await?;
-    // A view keyed by a reference to the type would be re-keyed with it.
-    l.declare_json(
-        json!({"declare": "type", "name": "per_account", "key": ["account"],
+    // A view keyed by a reference to the type would be re-keyed with it,
+    // whether its declaration writes its `key` or leaves it out: its
+    // records carry its `group_by` either way (lakelands#788).
+    let per_account = |key: &[&str]| {
+        json!({"declare": "type", "name": "per_account", "key": key,
         "fields": [{"name": "account", "type": {"kind": "reference", "target": "account"}},
                    {"name": "n", "type": {"kind": "number"}}],
         "view": {"source": "payment", "group_by": ["account"],
-                 "measures": [{"name": "n", "expr": "count()"}]}}),
-    )
-    .await?;
+                 "measures": [{"name": "n", "expr": "count()"}]}})
+    };
+    l.declare_json(per_account(&[])).await?;
     let before = store.head().await.must("reading the head")?;
+    // With its `key` written it is the view in force, and appends nothing.
+    l.declare_json(per_account(&["account"])).await?;
+    let after = store.head().await.must("reading the head")?;
+    ensure!(
+        after == before,
+        "a view declared again with its `key` written is the one in force and appends nothing; \
+         the head moved from {before} to {after}"
+    );
     let e = cat
         .migrate(own, to_iban())
         .await
@@ -690,9 +603,7 @@ async fn a_migration_that_takes_every_key_field_away_is_refused(
     head_unmoved(store.as_ref(), before, "refused migrations").await
 }
 
-async fn a_rekey_report_from_before_a_write_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rekey_report_from_before_a_write_is_refused(store: Store) -> Held {
     let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
     let r = preflight(cat.as_ref(), own).await?;
@@ -720,9 +631,7 @@ fn set_changes(events: &[Event]) -> Vec<(String, bool)> {
         .collect()
 }
 
-async fn object_set_membership_moves_with_a_rekeyed_record(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn object_set_membership_moves_with_a_rekeyed_record(store: Store) -> Held {
     let l = lake(store.as_ref(), IBANS).await?;
     l.declare_json(
         json!({"declare": "object_set", "name": "held", "of": "account",
@@ -753,7 +662,7 @@ async fn object_set_membership_moves_with_a_rekeyed_record(
     Ok(())
 }
 
-async fn a_rekeyed_type_migrates_again(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+async fn a_rekeyed_type_migrates_again(store: Store) -> Held {
     let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
     apply(store.as_ref()).await?;
@@ -762,11 +671,8 @@ async fn a_rekeyed_type_migrates_again(store: Arc<dyn LakeStore>) -> Result<(), 
     keep.to.fields.push(
         serde_json::from_value(json!({"name": "note", "type": {"kind": "text"}})).expect("a field"),
     );
-    let r = cat
-        .migrate(own, keep.clone())
-        .await
-        .must("a preflight")?
-        .data;
+    let r = cat.migrate(own, keep.clone());
+    let r = r.await.must("a preflight")?.data;
     ensure!(
         r.lossless && r.rekeyed.is_empty(),
         "a migration that keeps the key of a re-keyed type reports {r:?}"
@@ -779,32 +685,24 @@ async fn a_rekeyed_type_migrates_again(store: Arc<dyn LakeStore>) -> Result<(), 
         json!({"name": "account_kind", "kind": "text", "one_of": ["giro", "savings"]}),
     )
     .expect("a value type");
-    let v = cat
-        .migrate_value_type(own, kind.clone().into())
-        .await
-        .must("a value type's preflight")?
-        .data;
+    let v = cat.migrate_value_type(own, kind.clone().into());
+    let v = v.await.must("a value type's preflight")?.data;
     ensure!(
         v.fits && v.records_scanned == 4,
         "the four accounts, and no ended key, are scanned: {v:?}"
     );
-    cat.migrate_value_type_apply(own, kind.into(), &v.report_id)
-        .await
-        .must("tightening `account_kind` after a re-key")?;
+    let fut = cat.migrate_value_type_apply(own, kind.into(), &v.report_id);
+    fut.await.must("tightening `account_kind` after a re-key")?;
     // A second re-key, back to `number`, over the ended keys `1` to `4`.
     let mut back = account_to("number");
     back.to.fields.push(
         serde_json::from_value(json!({"name": "note", "type": {"kind": "text"}})).expect("a field"),
     );
-    let r = cat
-        .migrate(own, back.clone())
-        .await
-        .must("a preflight")?
-        .data;
+    let r = cat.migrate(own, back.clone());
+    let r = r.await.must("a preflight")?.data;
     ensure!(r.lossless, "a second re-key over ended keys reports {r:?}");
-    cat.migrate_apply(own, back, &r.report_id)
-        .await
-        .must("re-keying `account` back to `number`")?;
+    let fut = cat.migrate_apply(own, back, &r.report_id);
+    fut.await.must("re-keying `account` back to `number`")?;
     let one = found(&l, "account", "1", None).await?;
     ensure!(
         one.as_ref()
@@ -843,9 +741,7 @@ async fn report(l: &Lake, who: &Principal, m: &Migration) -> Result<MigrationRep
     Ok(answered.must("the preflight")?.data)
 }
 
-async fn a_key_is_made_after_every_key_it_reads_has_moved(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_key_is_made_after_every_key_it_reads_has_moved(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     // `zone` is keyed by an acct; `mid`, `zz` and the links of `zones` by an
@@ -856,9 +752,8 @@ async fn a_key_is_made_after_every_key_it_reads_has_moved(
     let bundle = [first]
         .into_iter()
         .chain(rest.map(|(n, to)| by_acct(n, to)));
-    cat.apply(own, bundle.collect())
-        .await
-        .must("declaring the lake")?;
+    let fut = cat.apply(own, bundle.collect());
+    fut.await.must("declaring the lake")?;
     for (ty, key, fields) in [
         ("acct", "a1", json!({"code": "a1", "tag": "T1"})),
         ("acct", "a2", json!({"code": "a2", "tag": "T2"})),
@@ -909,9 +804,7 @@ async fn a_key_is_made_after_every_key_it_reads_has_moved(
     Ok(())
 }
 
-async fn a_rekey_of_keys_made_of_keys_it_moves_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rekey_of_keys_made_of_keys_it_moves_is_refused(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     // `bush` references itself, and its root names itself; `p` and `q` are
@@ -955,9 +848,7 @@ async fn a_rekey_of_keys_made_of_keys_it_moves_is_refused(
     head_unmoved(store.as_ref(), before, "a re-key of a ring of keys").await
 }
 
-async fn a_rekeys_report_counts_a_reference_field_the_migration_renames(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rekeys_report_counts_a_reference_field_the_migration_renames(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let node = |key: &str, parent: &str| {

@@ -1,0 +1,24 @@
+[package]
+name = "lakelands-door-checks"
+description = "The door-facing behaviours of the contract, as checks any lake can be put through."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+futures-core.workspace = true
+lakelands-api.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+lakelands-engine-mem.workspace = true
+lakelands-engine-sqlite.workspace = true
+lakelands-store.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

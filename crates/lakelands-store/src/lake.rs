@@ -26,13 +26,13 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use lakelands_api::engine::{CanonicalEvent, LakeEngine, Lease, OpenMode, ProjectionView};
 use lakelands_api::error::{Detail, Flaw, Part, Seam, Situation};
-use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_BASE, SegmentDigest};
+use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_VERSION, SegmentDigest};
 use lakelands_api::location::{EngineConfig, Limits, Location};
-use lakelands_api::ontology::{StorageKind, TypeDecl};
+use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
 use lakelands_api::principal::Renamed;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{EmbedBackend, Seams};
@@ -41,6 +41,7 @@ use lakelands_api::{
     Error, FieldName, LakeId, Position, Principal, ProposalId, RecordKey, Refusal, Result,
     Timestamp, TypeName, Value, ValueTypeName, WriteContext,
 };
+use lakelands_core::sight::{InForce, Sight};
 use lakelands_core::{damaged, shape};
 
 use crate::backed::{Due, Of, Outputs, Owed, Recorded};
@@ -79,12 +80,12 @@ pub struct Writer {
     /// catches up hands out the calls of its events from there on, and
     /// forgets it once it has folded them.
     pub failed: Option<Position>,
-    /// The log format version the lake writes: the version of its last
-    /// event, raised by an append that needs a newer one, never lowered.
-    pub format: u32,
     /// The executors' answers whose append failed `unavailable`, oldest
     /// first: the next write appends them before it is decided (013).
     pub answers: Vec<Draft>,
+    /// The plans the fold, a step's walk and the write path compute
+    /// records by.
+    pub plans: record::Plans,
 }
 
 /// What the lake declares at one position, as a read needs it and before
@@ -93,12 +94,27 @@ pub struct Writer {
 pub struct Shape {
     /// The ontology.
     pub ontology: Ontology,
-    /// Every declaration, as [`Ontology::declared`] lists them.
+    /// Every declaration, as [`Ontology::declared`] lists them, each in
+    /// force since the position the engine holds it from.
     pub declared: Vec<lakelands_api::engine::Declared>,
     /// The settings.
     pub settings: BTreeMap<String, Value>,
     /// The lake's list of renames.
     pub renames: Vec<Renamed>,
+}
+
+impl InForce for Shape {
+    fn ty(&self, name: &TypeName) -> Option<&TypeDecl> {
+        self.ontology.ty(name).ok()
+    }
+
+    fn types(&self) -> Vec<&TypeDecl> {
+        self.ontology.types()
+    }
+
+    fn declared(&self) -> std::borrow::Cow<'_, [lakelands_api::engine::Declared]> {
+        (&self.declared[..]).into()
+    }
 }
 
 /// Whether folding `body` can change a [`Shape`]: it puts a declaration
@@ -181,9 +197,6 @@ pub struct Lake {
     /// change the writer made: read without the writer's lock, which an
     /// append holds across the engine's append and the whole fold.
     head: AtomicU64,
-    /// The renames an open found where no fold had recorded them, for a
-    /// handle that records nothing.
-    walked: OnceLock<Vec<Renamed>>,
     holds_lease: AtomicBool,
     /// The shapes reads were answered with, at most two, each with the
     /// positions it holds for: no event among them ends a range
@@ -217,6 +230,27 @@ pub(crate) fn opener(
                 name: name.to_owned(),
             })
         })
+}
+
+/// A log's last event: its position and its hash.
+type Tip = Option<(Position, Digest)>;
+
+/// The position the projection is folded through and the log's tip, read
+/// in that order: a writer appends an event before it folds it, so the
+/// tip is never behind the projection in a lake that is whole, beside a
+/// writer too. A projection folded past the tip stands for events the
+/// log does not hold: the lake lost its log, or the projection is
+/// another lake's, and nothing is answered from it or written behind it
+/// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+pub(crate) fn ends(engine: &dyn LakeEngine) -> Result<(Option<Position>, Tip)> {
+    let folded = engine.projection().folded_through()?;
+    let tip = engine.tip()?;
+    if let Some(position) = folded
+        && tip.as_ref().is_none_or(|(at, _)| *at < position)
+    {
+        return Err(damaged(Part::Log, None, Flaw::EndsBefore { position }));
+    }
+    Ok((folded, tip))
 }
 
 thread_local! {
@@ -290,15 +324,31 @@ impl Lake {
     /// Open a lake: find its engine among the openers the host passed,
     /// take the lease unless opening read-only, create the lake if asked
     /// and absent, and fold whatever the log holds beyond the projection.
+    /// Opened for a rebuild, the projection is cleared under the lease
+    /// first, so the whole log is folded: that open is the rebuild.
     pub fn open(location: &Location, seams: Seams, mode: OpenMode) -> Result<Lake> {
         let opener = opener(location, &seams)?;
+        // A lake of another release's format is not opened: its engine
+        // judges, makes and changes nothing of it, in any mode (054).
+        log::one_format(&location.lake, opener.log_ends(location)?.as_ref())?;
         let engine: Arc<dyn LakeEngine> = Arc::from(opener.open(location, mode)?);
+        // A writer is judged before it takes the lease: an engine may cut
+        // its log back to what is committed as it hands the lease out,
+        // and a lake that is refused is left as it was found. A rebuild
+        // is not judged: it makes the projection from the log as it
+        // stands.
+        if matches!(mode, OpenMode::Write | OpenMode::Create) {
+            ends(engine.as_ref())?;
+        }
         let lease = match mode {
             OpenMode::Read => None,
-            OpenMode::Write | OpenMode::Create => {
+            OpenMode::Write | OpenMode::Create | OpenMode::Rebuild => {
                 Some(engine.take_lease(&format!("lakelands process {}", std::process::id()))?)
             }
         };
+        if mode == OpenMode::Rebuild {
+            engine.projection().clear()?;
+        }
         let lake = Lake::assemble(location, seams, engine, lease.clone());
         lake.catch_up()?;
         if let Some(lease) = lease {
@@ -309,7 +359,7 @@ impl Lake {
                 drafts.push(Draft::system(
                     now,
                     EventBody::LakeCreated {
-                        format: LOG_FORMAT_BASE,
+                        format: LOG_FORMAT_VERSION,
                     },
                 ));
             }
@@ -340,6 +390,15 @@ impl Lake {
                 types.extend(held);
             }
             types.retain(|t| !w.ontology.types.contains_key(&t.name));
+            // No door leaves a lake with a problem among its tools' names,
+            // and this is one (027, extended): each type is judged beside
+            // the lake and the types before it, before anything is
+            // appended. A type the lake holds came through a door.
+            let mut with = w.ontology.clone();
+            for d in types.iter().cloned().map(Declaration::Type) {
+                crate::declare::tool_names(&with, &d)?;
+                crate::writes::put_as_appended(&mut with, &d, Some);
+            }
             for t in types {
                 let hash = shape::schema_hash(&t).map_err(|e| {
                     let _ = e;
@@ -395,11 +454,10 @@ impl Lake {
                 held: BTreeMap::new(),
                 behind: false,
                 failed: None,
-                format: LOG_FORMAT_BASE,
                 answers: Vec::new(),
+                plans: record::Plans::default(),
             }),
             head: AtomicU64::new(0),
-            walked: OnceLock::new(),
             holds_lease: AtomicBool::new(false),
             shapes: Mutex::new(Vec::new()),
             rebuilds: AtomicU64::new(0),
@@ -481,11 +539,11 @@ impl Lake {
         for mut d in std::mem::take(&mut w.answers).into_iter().chain(d) {
             d.known_at = self.clock(w);
             let stamped = self.stamp(w, vec![d.clone()]);
-            let held = stamped.and_then(|(lease, v, events, stored)| {
-                self.engine.append(&lease, &stored).map(|()| (v, events))
+            let held = stamped.and_then(|(lease, events, stored)| {
+                self.engine.append(&lease, &stored).map(|()| events)
             });
             answer = match held {
-                Ok((v, events)) => self.landed(w, v, events, Reads::default()),
+                Ok(events) => self.landed(w, events, Reads::default()),
                 Err(e) => {
                     w.answers
                         .extend(matches!(e, Error::Unavailable { .. }).then_some(d));
@@ -507,34 +565,18 @@ impl Lake {
     /// the head's ontology and settings.
     pub(crate) fn catch_up(&self) -> Result<()> {
         let mut w = self.writer();
-        w.tip = self.engine.tip()?;
-        let folded = self.engine.projection().folded_through()?;
+        let folded;
+        (folded, w.tip) = ends(self.engine.as_ref())?;
         {
             let view = self.engine.view(None)?;
             w.ontology = Ontology::at(view.as_ref())?;
             w.settings = settings_in(view.as_ref(), &w.ontology)?;
-            // A lake made before the fold recorded renames: its list is
-            // found once, and recorded by the handle that writes.
-            let recorded = view.output(RENAMES, &Digest::zero())?.is_some();
-            if let (false, Some(list), Some(at)) = (recorded, self.walk(view.as_ref())?, folded) {
-                let p = self.engine.projection();
-                if w.lease.is_none() {
-                    let _ = self.walked.set(list);
-                } else {
-                    p.begin()?;
-                    let put = p.put_output(RENAMES, &Digest::zero(), &serde_json::json!(list), at);
-                    put.and_then(|()| p.commit(at))
-                        .inspect_err(|_| p.rollback())?;
-                }
-            }
         }
-        // The last event's time and format: versions only go up, so the
-        // tip's is the log's newest.
+        // The last event's time.
         if let Some((pos, _)) = &w.tip
             && let Some(e) = self.read_events(*pos, 1)?.first()
         {
             w.last_known_at = e.known_at;
-            w.format = w.format.max(e.v);
         }
         // Only the writer folds; a handle opened read-only reads what the
         // writer folded, and writes nothing.
@@ -552,39 +594,6 @@ impl Lake {
         Ok(())
     }
 
-    /// The renames of a lake whose fold recorded none, from what the
-    /// projection keeps (006, extended): a rename happens only in a
-    /// `migrated` event, and a type's declaration is in force since the
-    /// event that put it. So for each type past its first version the event
-    /// at its `since` is read, then the type as of the position before it,
-    /// down to its first version. `None` where no type is past its first.
-    fn walk(&self, head: &dyn ProjectionView) -> Result<Option<Vec<Renamed>>> {
-        let key = lakelands_core::engines::declaration_key;
-        let mut list = Vec::new();
-        let later = |d: &lakelands_api::engine::Declared| d.version > 1;
-        let types = head.declarations()?.into_iter().filter(later);
-        let types: Vec<_> = types
-            .filter(|d| matches!(d.declaration, Declaration::Type(_)))
-            .collect();
-        for mut d in types.clone() {
-            while d.version > 1 && d.since > Position::GENESIS {
-                let event = self.read_events(d.since, 1)?.pop();
-                if let Some(EventBody::Migrated { migration, .. }) = event.map(|e| e.body) {
-                    list.extend(lakelands_core::links::renamed(&migration, d.since));
-                }
-                let before = self.engine.view(Some(Position(d.since.0 - 1)))?;
-                let was = before
-                    .declarations()?
-                    .into_iter()
-                    .find(|b| key(&b.declaration) == key(&d.declaration));
-                let Some(was) = was else { break };
-                d = was;
-            }
-        }
-        list.sort_by_key(|r| r.at);
-        Ok((!types.is_empty()).then_some(list))
-    }
-
     /// The shape at `view`'s position: the one known for a range that
     /// holds it, or one built from the view, kept in place of the known
     /// one that ends first. A built shape is kept only if no rebuild began
@@ -599,9 +608,17 @@ impl Lake {
         }
         drop(held);
         let rebuilds = self.rebuilds.load(Ordering::SeqCst);
-        let ontology = Ontology::at(view)?;
+        let stored = view.declarations()?;
+        let ontology = Ontology::from_declared(&stored);
+        let key = lakelands_core::engines::declaration_key;
+        let since = stored.iter().map(|d| (key(&d.declaration), d.since));
+        let since: BTreeMap<String, Position> = since.collect();
+        let mut declared = ontology.declared();
+        for d in &mut declared {
+            d.since = since.get(&key(&d.declaration)).map_or(d.since, |s| *s);
+        }
         let shape = Arc::new(Shape {
-            declared: ontology.declared(),
+            declared,
             settings: settings_in(view, &ontology)?,
             renames: self.renames(Some(view))?,
             ontology,
@@ -623,50 +640,37 @@ impl Lake {
     }
 
     /// The lake's list of renames: what the fold recorded, read from
-    /// `head` or from a view of the head, or what this handle's open found.
+    /// `head` or from a view of the head. No list is no rename: the fold
+    /// records it at every migration that renames, and every projection a
+    /// store reads was made by such a fold (006, extended).
     pub(crate) fn renames(&self, head: Option<&dyn ProjectionView>) -> Result<Vec<Renamed>> {
         let recorded = match head {
             Some(view) => view.output(RENAMES, &Digest::zero())?,
             None => self.engine.view(None)?.output(RENAMES, &Digest::zero())?,
-        };
-        match recorded {
-            None => Ok(self.walked.get().cloned().unwrap_or_default()),
-            recorded => renames_in(recorded),
         }
+        .map(|(_, list)| list);
+        renames_in(recorded)
     }
 
-    /// A principal with its grants held through the lake's renames
-    /// (`Grants::follow`), for a read at `at` or a write at the head, and
-    /// how many entries of the list it was followed through: `head`'s, the
-    /// list of a read's shape at the head, or the list read. The list is
-    /// asked only for one whose grants name a type: a grant that is only
-    /// a default follows a link type's rename too.
-    pub(crate) fn followed(
+    /// The sight of `who` over `force` (`Sight::new`), for a read at `at`
+    /// or a write at the head, its grants held through the lake's renames,
+    /// and how many entries of the list they were followed through:
+    /// `head`'s, the list of a read's shape at the head, or the list read.
+    /// The list is asked only for one whose grants name a type: a grant
+    /// that is only a default follows a link type's rename too.
+    pub(crate) fn sight<'o>(
         &self,
-        mut who: Principal,
+        who: Principal,
         at: Option<Position>,
         head: Option<&[Renamed]>,
-    ) -> Result<(Principal, Option<usize>)> {
+        force: &'o dyn InForce,
+    ) -> Result<(Sight<'o>, Option<usize>)> {
         if who.grants.types.is_empty() {
-            return Ok((who, None));
+            return Ok((Sight::new(who, &[], at, force), None));
         }
         let read = head.is_none().then(|| self.renames(None)).transpose()?;
         let list = head.or(read.as_deref()).unwrap_or_default();
-        who.grants.follow(list, at);
-        Ok((who, Some(list.len())))
-    }
-
-    /// `who` as the shape `o` shows it: each reference to a type it is not
-    /// shown held at `none` (`rights::hide_unshown_references`), with the
-    /// fields so hidden.
-    pub(crate) fn hidden(
-        mut who: Principal,
-        o: &Ontology,
-    ) -> (Principal, Vec<(TypeName, FieldName)>) {
-        let types: Vec<&TypeDecl> = o.types.values().map(|e| &e.decl).collect();
-        let find = |n: &TypeName| o.ty(n).ok();
-        let set = lakelands_core::rights::hide_unshown_references(&mut who, &types, &find);
-        (who, set)
+        Ok((Sight::new(who, list, at, force), Some(list.len())))
     }
 
     /// The log from a position, a page at a time, opened and checked: a
@@ -703,6 +707,38 @@ impl Lake {
         Ok(out)
     }
 
+    /// The events at `positions`, in order, opened and checked. A gap of
+    /// at most [`READ_THROUGH`] positions between two of them is read
+    /// through rather than sought again, and the events in it are dropped
+    /// unopened: nothing is answered from them.
+    pub fn read_these(&self, positions: &[Position]) -> Result<Vec<Event>> {
+        let mut out = Vec::with_capacity(positions.len());
+        let mut rest = positions;
+        while let Some(&first) = rest.first() {
+            let run = 1 + rest
+                .windows(2)
+                .take_while(|w| w[1].0 - w[0].0 <= READ_THROUGH)
+                .count();
+            let (these, after) = rest.split_at(run);
+            let end = these[these.len() - 1];
+            let mut at = first;
+            let mut wanted = these.iter().peekable();
+            while at <= end {
+                let span = (end.0 - at.0 + 1).min(u64::from(PAGE)) as u32;
+                let batch = self.engine.read(at, span)?;
+                let Some(last) = batch.last() else { break };
+                at = last.position.next();
+                for stored in &batch {
+                    if wanted.next_if(|p| **p == stored.position).is_some() {
+                        out.push(log::open(stored)?);
+                    }
+                }
+            }
+            rest = after;
+        }
+        Ok(out)
+    }
+
     /// Seal drafts after the tip, append them durably, fold them. Answers
     /// the sealed events.
     pub fn append(&self, w: &mut Writer, drafts: Vec<Draft>) -> Result<Vec<Event>> {
@@ -718,19 +754,27 @@ impl Lake {
         drafts: Vec<Draft>,
         reads: Reads,
     ) -> Result<Vec<Event>> {
-        let (lease, v, events, stored) = self.stamp(w, drafts)?;
+        let (lease, events, stored) = self.stamp(w, drafts)?;
         self.engine.append(&lease, &stored)?;
-        self.landed(w, v, events, reads)
+        self.landed(w, events, reads)
     }
 
-    /// The events `drafts` become after the tip, as the log's format `v`
-    /// writes them and as the engine stores them, under the writer's
-    /// lease: refused where an append of them would be. Nothing is changed.
+    /// The events `drafts` become after the tip, as the log writes them
+    /// and as the engine stores them, under the writer's lease: refused
+    /// where an append of them would be. Nothing is changed.
+    ///
+    /// The seal judges every event as the log's own reading will
+    /// (`docs/log-format.md` §1.2, §1.3): one that holds a number written
+    /// as an integer beyond ±(2^53 − 1), or a `known_at` or `seen_at` out
+    /// of the years 0000 to 9999, refuses the whole append, whatever door
+    /// its value came through. Every door refuses such a value itself and
+    /// names where it stands; a refusal from here names no place, and is a
+    /// defect of the door that let the value pass.
     fn stamp(
         &self,
         w: &Writer,
         drafts: Vec<Draft>,
-    ) -> Result<(Lease, u32, Vec<Event>, Vec<CanonicalEvent>)> {
+    ) -> Result<(Lease, Vec<Event>, Vec<CanonicalEvent>)> {
         let Some(lease) = w.lease.clone() else {
             return Err(no_lease());
         };
@@ -757,12 +801,6 @@ impl Lake {
         if let Some(d) = drafts.iter().find(|d| d.context.cause.is_some()) {
             self.check_trigger_ceiling(w, d.context)?;
         }
-        // An event that needs a newer format raises the lake to it, from
-        // this append on (`lakelands_core::versions`).
-        let v = drafts
-            .iter()
-            .map(|d| lakelands_core::versions::needed(&d.body, d.upstream.is_some()))
-            .fold(w.format, u32::max);
         let mut events = Vec::with_capacity(drafts.len());
         let mut stored: Vec<CanonicalEvent> = Vec::with_capacity(drafts.len());
         let mut prev_pos = head;
@@ -775,25 +813,21 @@ impl Lake {
             } else {
                 lease.fence
             };
-            let (event, canon) = log::seal_at(v, &self.id, position, &prev_hash, fence, d);
+            let (event, canon, fault) = log::seal_judged(&self.id, position, &prev_hash, fence, d);
+            if let Some(case) = fault {
+                return Err(lakelands_core::invalid(case));
+            }
             prev_pos = Some(position);
             prev_hash = event.hash.clone();
             events.push(event);
             stored.push(canon);
         }
-        Ok((lease, v, events, stored))
+        Ok((lease, events, stored))
     }
 
-    /// What follows once the engine holds `events`, stamped in format `v`:
-    /// the writer stands on them, and they are folded and published.
-    fn landed(
-        &self,
-        w: &mut Writer,
-        v: u32,
-        events: Vec<Event>,
-        reads: Reads,
-    ) -> Result<Vec<Event>> {
-        w.format = v;
+    /// What follows once the engine holds `events`: the writer stands on
+    /// them, and they are folded and published.
+    fn landed(&self, w: &mut Writer, events: Vec<Event>, reads: Reads) -> Result<Vec<Event>> {
         if let Some(last) = events.last() {
             w.tip = Some((last.position, last.hash.clone()));
             w.last_known_at = w.last_known_at.max(last.known_at);
@@ -980,6 +1014,18 @@ impl Lake {
         let mut put = |pre: &StoredRecord, post: &StoredRecord| -> Result<()> {
             if post.ty == *migrated || post != pre {
                 projection.put_record(post)?;
+            }
+            // A record of the migrated type, and every record whose key the
+            // step moves, a link of a re-keyed end among them, takes its
+            // vectors along; any other type's declaration is as it was.
+            let moved = post.key != pre.key;
+            let before = match pre.ty == *migrated {
+                true => Some(&step.before),
+                false => w.ontology.ty(&pre.ty).ok().filter(|_| moved),
+            };
+            if let Some(before) = before.filter(|_| post.ty == pre.ty) {
+                let left = moved && !step.arrives(&pre.ty, &pre.key);
+                self.reindex(&w.ontology, before, pre, post, left)?;
             }
             if post.ty != pre.ty {
                 // A link type's records moved to another: its keys end.
@@ -1199,11 +1245,13 @@ impl Lake {
             }
         }
         for (i, ty) in owing {
+            let event = &pending[i].event;
+            let renames = matches!(event.body, EventBody::ValueTypeMigrated { .. });
             let sweep = Of::Sweep {
                 after: None,
-                retried: BTreeSet::new(),
+                retried: (!renames).then(BTreeSet::new),
             };
-            w.owed.push(Owed::new(&pending[i].event, ty, sweep));
+            w.owed.push(Owed::new(event, ty, sweep));
         }
         let kept = put.contains(&true);
         let steps = pending.into_iter().zip(put);
@@ -1287,7 +1335,12 @@ impl Lake {
         if let Some(flaw) = foreign(&w.ontology, &e.body) {
             return Err(damaged(Part::Log, Some(e.position), flaw));
         }
-        projection.mark_applied(&e.id, e.position)?;
+        projection.mark_applied(&lakelands_api::engine::Applied {
+            id: e.id.clone(),
+            at: e.position,
+            kind: e.body.kind(),
+            about: lakelands_core::feed::about(&e.body),
+        })?;
         match &e.body {
             EventBody::LakeCreated { .. }
             | EventBody::LeaseTaken { .. }
@@ -1380,6 +1433,7 @@ impl Lake {
                         event: e.clone(),
                         entries: w.ontology.computing(&rederive),
                         settings,
+                        plans: record::Plans::default(),
                     });
                 }
             }
@@ -1402,7 +1456,7 @@ impl Lake {
                     let key = (RENAMES.to_owned(), Digest::zero());
                     let mut list = match staged.outputs.get(&key).and_then(|l| l.last()) {
                         Some((_, list)) => renames_in(Some(list.clone()))?,
-                        None => renames_in(view.output(RENAMES, &key.1)?)?,
+                        None => renames_in(view.output(RENAMES, &key.1)?.map(|(_, l)| l))?,
                     };
                     list.extend(renamed);
                     let list = serde_json::json!(list);
@@ -1458,6 +1512,7 @@ impl Lake {
                         event: e.clone(),
                         entries: w.ontology.computing(&rederive),
                         settings,
+                        plans: record::Plans::default(),
                     });
                 }
             }
@@ -1474,6 +1529,7 @@ impl Lake {
                     before: None,
                     due: owes.then_some(&mut due),
                     waiting: false,
+                    plans: &w.plans,
                 };
                 let after =
                     record::apply(&w.ontology, before.as_ref(), e, &w.settings, &mut outputs)?;
@@ -1542,11 +1598,19 @@ impl Lake {
                 seam,
                 input,
                 output,
+                output_at,
                 field,
             } => {
-                projection.put_output(seam, input, output, e.position)?;
-                let recorded = staged.outputs.entry((seam.clone(), input.clone()));
-                recorded.or_default().push((e.position, output.clone()));
+                let output = match (output, output_at) {
+                    (Some(output), None) => {
+                        projection.put_output(seam, input, output, e.position)?;
+                        let recorded = staged.outputs.entry((seam.clone(), input.clone()));
+                        recorded.or_default().push((e.position, output.clone()));
+                        output
+                    }
+                    (None, Some(at)) => &named(view, &staged.outputs, seam, input, *at, e)?,
+                    _ => return Err(damaged(Part::Log, Some(e.position), Flaw::OutputOnce)),
+                };
                 if let Some((ty, key, name)) = field
                     && let Some(r) = staged.record(view, ty, key)?
                 {
@@ -1557,6 +1621,7 @@ impl Lake {
                         before: None,
                         due: owes.then_some(&mut due),
                         waiting: false,
+                        plans: &w.plans,
                     };
                     let next = record::fill(
                         &w.ontology,
@@ -1592,6 +1657,48 @@ impl Lake {
         self.index_vectors_as(ontology, &r.ty, r)
     }
 
+    /// Keep the vector index in step with a record a migration's step
+    /// reaches, of the migrated type or of one whose keys a re-key moves,
+    /// its declaration `before` the migration: at its old key, the vectors of
+    /// each field the declaration now in force does not hold are taken out,
+    /// and every one where the key is `left` with no record moving to it;
+    /// then its vectors are indexed by that declaration, but for a field it
+    /// held as it holds it, under the same key, which is indexed already. A
+    /// field renamed is ranked under its new name, and one removed by no
+    /// name (lakelands#768).
+    fn reindex(
+        &self,
+        ontology: &Ontology,
+        before: &TypeDecl,
+        pre: &StoredRecord,
+        post: &StoredRecord,
+        left: bool,
+    ) -> Result<()> {
+        let Some(index) = self.engine.vectors() else {
+            return Ok(());
+        };
+        let now = ontology.ty(&post.ty).ok();
+        let vector = |f: &&FieldDecl| f.ty.kind == StorageKind::Vector;
+        for f in before.fields.iter().filter(vector) {
+            let kept =
+                now.is_some_and(|d| d.fields.iter().filter(vector).any(|g| g.name == f.name));
+            if !kept || left {
+                index.remove(&pre.ty, &pre.key, f.name.as_str())?;
+            }
+        }
+        let had = |f: &FieldDecl| {
+            before
+                .fields
+                .iter()
+                .filter(vector)
+                .any(|g| g.name == f.name)
+        };
+        let same = |f: &FieldDecl| {
+            pre.key == post.key && had(f) && pre.fields.get(&f.name) == post.fields.get(&f.name)
+        };
+        self.index_vectors_where(ontology, &post.ty, post, |f| !same(f))
+    }
+
     /// [`Self::index_vectors`] for a record whose vector fields are those
     /// `declared` declares: a link moved to a link type that is declared
     /// only by the next event has the fields of the one it came from.
@@ -1601,14 +1708,21 @@ impl Lake {
         declared: &TypeName,
         r: &StoredRecord,
     ) -> Result<()> {
+        self.index_vectors_where(ontology, declared, r, |_| true)
+    }
+
+    /// [`Self::index_vectors_as`] for the vector fields `due` takes.
+    fn index_vectors_where(
+        &self,
+        ontology: &Ontology,
+        declared: &TypeName,
+        r: &StoredRecord,
+        due: impl Fn(&FieldDecl) -> bool,
+    ) -> Result<()> {
         let (Some(index), Ok(decl)) = (self.engine.vectors(), ontology.ty(declared)) else {
             return Ok(());
         };
-        for f in decl
-            .fields
-            .iter()
-            .filter(|f| f.ty.kind == StorageKind::Vector)
-        {
+        for f in (decl.fields.iter()).filter(|f| f.ty.kind == StorageKind::Vector && due(f)) {
             let vector: Option<Vec<f32>> = r
                 .fields
                 .get(&f.name)
@@ -1658,8 +1772,10 @@ impl Lake {
     }
 
     /// Check the hash chain between two positions, every checkpoint in
-    /// that range against the segments the engine keeps, and that each
-    /// segment after the first begins with one.
+    /// that range against the segments the engine keeps, that each
+    /// segment after the first begins with one, and that no event holds a
+    /// number written as an integer beyond ±(2^53 − 1), which the seal
+    /// lets none write and another reader would hash differently.
     pub fn verify(
         &self,
         from: Option<Position>,
@@ -1677,23 +1793,20 @@ impl Lake {
         // Where a segment after the first begins: behind each sealed one.
         let begins: BTreeSet<Position> = segments.iter().map(|s| s.last.next()).collect();
         let mut last = None;
-        let mut last_v = 0;
         'pages: for page in self.pages(from) {
             for e in page? {
                 if through.is_some_and(|t| e.position > t) {
                     break 'pages;
                 }
                 log::check_link(before.as_ref().map(|(p, h)| (p, h)), &e)?;
-                // Versions go only upward (`docs/log-format.md` §6).
-                if e.v < last_v {
-                    let (v, before) = (e.v.into(), last_v.into());
-                    return Err(damaged(
-                        Part::Log,
-                        Some(e.position),
-                        Flaw::FormatBack { v, before },
-                    ));
+                // No number written as an integer beyond ±(2^53 − 1)
+                // (`docs/log-format.md` §1.2). The seal lets none in; a
+                // log that holds one was not written through it.
+                let written = serde_json::to_value(&e).expect("an event serialises to JSON");
+                if let Some(n) = lakelands_core::canonical::integer_too_large(&written) {
+                    let flaw = Flaw::IntegerTooLarge { n: n.clone() };
+                    return Err(damaged(Part::Log, Some(e.position), flaw));
                 }
-                last_v = e.v;
                 // `known_at` never goes back (`docs/log-format.md` §1.3).
                 if let Some(k) = known
                     && e.known_at < k
@@ -1838,14 +1951,14 @@ impl Lake {
                 hash: hash.clone(),
                 segments,
             };
-            let (_, v, events, stored) = self.stamp(&w, vec![Draft::system(now, body)])?;
-            stamped = Some((v, events));
+            let (_, events, stored) = self.stamp(&w, vec![Draft::system(now, body)])?;
+            stamped = Some(events);
             Ok(stored)
         })?;
-        let Some((v, events)) = stamped else {
+        let Some(events) = stamped else {
             return Ok(through);
         };
-        let events = self.landed(&mut w, v, events, Reads::default())?;
+        let events = self.landed(&mut w, events, Reads::default())?;
         Ok(events.last().map_or(through, |e| e.position))
     }
 
@@ -1964,6 +2077,11 @@ pub fn find_proposal(view: &dyn ProjectionView, id: &ProposalId) -> Result<Propo
 
 /// How many events a page of the log holds at most.
 const PAGE: u32 = 1024;
+
+/// The widest gap between two positions [`Lake::read_these`] reads
+/// through: reading 64 events from the engine costs about what seeking one
+/// does (lakelands#678).
+const READ_THROUGH: u64 = 64;
 
 /// What a write is answered on a handle that does not hold the lease.
 fn no_lease() -> Error {
@@ -2136,6 +2254,32 @@ pub(crate) fn walk(
     walk.failed()
 }
 
+/// The output an `output_recorded` names by `output_at`: the call's
+/// latest, recorded earlier in the fold or in the view. A name of any
+/// other position is a damaged log, never folded past
+/// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`).
+fn named(
+    view: &dyn ProjectionView,
+    staged: &Recorded,
+    seam: &str,
+    input: &Digest,
+    at: Position,
+    e: &Event,
+) -> Result<Value> {
+    let latest = match staged.get(&(seam.to_owned(), input.clone())) {
+        Some(all) => all.last().cloned(),
+        None => view.output(seam, input)?,
+    };
+    match latest {
+        Some((p, output)) if p == at => Ok(output),
+        _ => Err(damaged(
+            Part::Log,
+            Some(e.position),
+            Flaw::NotLatestOutput { at },
+        )),
+    }
+}
+
 /// What an event names that only the store's fold makes, said as the
 /// refusal says it: a type of the kept form, an output under a seam of
 /// the store's own, or a record of a view. `None` for every event a door
@@ -2276,6 +2420,9 @@ pub(crate) struct Recomputed {
     entries: Ontology,
     /// The settings at the event.
     settings: Arc<BTreeMap<String, Value>>,
+    /// The plans its records are computed by: its own, since a read
+    /// computes through it without the writer.
+    plans: record::Plans,
 }
 
 impl Recomputed {
@@ -2299,6 +2446,7 @@ impl Recomputed {
             before: Some(self.event.position),
             due,
             waiting: false,
+            plans: &self.plans,
         };
         record::rederive(&self.entries, r, &self.event, &self.settings, &mut outputs)
     }

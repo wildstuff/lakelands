@@ -1,6 +1,6 @@
 //! The `mcp_call` example, run as the walk runs it: a separate process
 //! that starts a stdio server and makes its requests in one session. The
-//! server here is the `mock_stdio` example, the fixture lake in memory.
+//! server here is the `memory_stdio` example, the fixture lake in memory.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -18,7 +18,7 @@ fn example(name: &str) -> PathBuf {
 
 #[test]
 fn mcp_call_lists_the_tools_and_calls_one_in_one_session() {
-    let server = example("mock_stdio");
+    let server = example("memory_stdio");
     assert!(
         server.exists(),
         "build the examples first: {}",
@@ -58,7 +58,7 @@ fn mcp_call_lists_the_tools_and_calls_one_in_one_session() {
 
 #[test]
 fn tools_list_with_schemas_prints_each_doors_schemas() {
-    let server = example("mock_stdio");
+    let server = example("memory_stdio");
     let run = |list: &[&str]| {
         let out = Command::new(example("mcp_call"))
             .args(["--server", &server.display().to_string()])
@@ -98,7 +98,7 @@ fn tools_list_with_schemas_prints_each_doors_schemas() {
 
 #[test]
 fn a_tool_error_is_shown_whole_and_the_session_goes_on_to_exit_1() {
-    let server = example("mock_stdio");
+    let server = example("memory_stdio");
     let out = Command::new(example("mcp_call"))
         .args(["--server", &server.display().to_string()])
         .args(["tools/call", "invoice_get", r#"{"key": "no-such-invoice"}"#])

@@ -12,7 +12,6 @@ use async_trait::async_trait;
 use lakelands_api::catalog::{CommitStream, SourceStream};
 use lakelands_api::describe::{LakeDescription, TypeDescription};
 use lakelands_api::engine::OpenMode;
-use lakelands_api::event::EventBody;
 use lakelands_api::location::Location;
 use lakelands_api::ontology::FieldDecl;
 use lakelands_api::principal::WriteContext;
@@ -31,13 +30,13 @@ use lakelands_api::{
     VerbName, Verification,
 };
 
-use lakelands_api::error::{Exchange, Remote, Seam, Situation};
-use lakelands_core::{invalid, rights};
+use lakelands_api::error::{Case, Exchange, Remote, Seam, Situation};
+use lakelands_core::{feed, invalid, rights};
 
 use crate::exec;
 use crate::ingest;
 use crate::lake::{Lake, owing};
-use crate::reads::Reader;
+use crate::reads::{Judged, Pulled, Reader};
 use crate::writes::{self, Call, External, MadeDue};
 
 /// Open a lake at a location. The host passes the engines it compiled in
@@ -77,6 +76,49 @@ pub struct Doors {
     context: WriteContext,
 }
 
+/// One read of `lake` by `who` at `at`, answered by `f`. One that ranks is
+/// given the head (025): as it stands, or at exactly the position `ranks`
+/// names.
+fn reading<T>(
+    lake: &Lake,
+    who: Principal,
+    at: ReadAt,
+    ranks: Option<Option<Position>>,
+    f: impl FnOnce(&Reader<'_>) -> Result<T>,
+) -> Result<Reply<T>> {
+    // The list comes from the view the read reads, so that a rename is in
+    // its shape and in its grants, or in neither. A search at the head is
+    // read at the position its rankings were read at.
+    let head = ranks.flatten();
+    let view = lake.engine.view(at.as_of.or(head))?;
+    let shape = lake.shape(view.as_ref())?;
+    let then = view.position().unwrap_or(Position::GENESIS);
+    // A search as of a position judges its rankings at the head, and a
+    // holder's its candidates too, its grants followed through the head's
+    // shape.
+    let to_head = at.as_of.is_some() && ranks.is_some();
+    let at_head = to_head.then(|| crate::reads::Head::new(lake, &who, then, head));
+    let at_head = at_head.transpose()?;
+    // A record held now is not there at any position to a reader without
+    // the grant, and one released since is (006, extended).
+    let held_now = at.as_of.is_some() && !who.grants.restricted;
+    let view = match held_now {
+        true => Box::new(crate::reads::HeldNow::new(lake, view, at_head.as_ref())?),
+        false => view,
+    };
+    let renames = at.as_of.is_none().then_some(&shape.renames[..]);
+    // A reference to a type it is not shown is a field it may not know of,
+    // by the types the read reads (024, extended).
+    let (sight, _) = lake.sight(who, at.as_of, renames, shape.as_ref())?;
+    let mut r = Reader::open(lake, &sight, at, view, shape.clone())?;
+    (r.head, r.held_now) = (at_head, held_now);
+    let data = f(&r)?;
+    Ok(Reply {
+        position: r.position,
+        data,
+    })
+}
+
 impl Doors {
     async fn read<T, F>(&self, who: &Principal, at: ReadAt, f: F) -> Result<Reply<T>>
     where
@@ -85,38 +127,44 @@ impl Doors {
     {
         same_lake(&self.lake, who)?;
         let (lake, who) = (self.lake.clone(), who.clone());
+        exec::run(move || reading(&lake, who, at, None, f)).await
+    }
+
+    /// [`Self::read`] for a read that may rank, given the head when
+    /// `ranks`. `f` answers it, or hands back a pull of its rankings that
+    /// was read at another position than that head: a write landed between
+    /// the two. The read is then made again with the head at exactly that
+    /// position and the pull to judge there, so that a search's candidates
+    /// and its judgement are of one state of the head (025). Nothing is
+    /// asked twice unless a declaration of the searched type changed in
+    /// between, and no read is refused for the writes beside it.
+    async fn read_to<T, F>(
+        &self,
+        who: &Principal,
+        at: ReadAt,
+        ranks: bool,
+        f: F,
+    ) -> Result<Reply<T>>
+    where
+        T: Send + 'static,
+        F: Fn(&Reader<'_>, Option<Pulled>) -> Result<Judged<T>> + Send + 'static,
+    {
+        same_lake(&self.lake, who)?;
+        let (lake, who) = (self.lake.clone(), who.clone());
         exec::run(move || {
-            // The list comes from the view the read reads, so that a rename
-            // is in its shape and in its grants, or in neither.
-            let view = lake.engine.view(at.as_of)?;
-            let shape = lake.shape(view.as_ref())?;
-            // A record held now is not there at any position to a reader
-            // without the grant, and one released since is (006, extended).
-            let held_now = at.as_of.is_some() && !who.grants.restricted;
-            let view = match held_now {
-                true => Box::new(crate::reads::HeldNow::new(&lake, view)?),
-                false => view,
-            };
-            let head = at.as_of.is_none().then_some(&shape.renames[..]);
-            // A holder's search as of a position judges at the head too,
-            // its grants followed through the head's shape.
-            let to_head = at.as_of.is_some() && rights::holds_only(&who);
-            let head_who = to_head.then(|| {
-                let head = lake.shape(lake.engine.view(None)?.as_ref())?;
-                let (who, _) = lake.followed(who.clone(), None, Some(&head.renames))?;
-                Ok::<_, Error>(Lake::hidden(who, &head.ontology).0)
-            });
-            // A reference to a type it is not shown is a field it may not
-            // know of, by the types the read reads (024, extended).
-            let (who, _) = lake.followed(who, at.as_of, head)?;
-            let who = Lake::hidden(who, &shape.ontology).0;
-            let mut r = Reader::open(&lake, &who, at, view, shape)?;
-            (r.head_who, r.held_now) = (head_who.transpose()?, held_now);
-            let data = f(&r)?;
-            Ok(Reply {
-                position: r.position,
-                data,
-            })
+            let mut pulled: Option<Pulled> = None;
+            loop {
+                let head = pulled.as_ref().and_then(Pulled::position);
+                let judge = |r: &Reader<'_>| f(r, pulled.take());
+                let read = reading(&lake, who.clone(), at, ranks.then_some(head), judge)?;
+                match read.data {
+                    Ok(data) => {
+                        let position = read.position;
+                        return Ok(Reply { position, data });
+                    }
+                    Err(moved) => pulled = Some(moved),
+                }
+            }
         })
         .await
     }
@@ -129,29 +177,27 @@ impl Doors {
         same_lake(&self.lake, who)?;
         let (lake, who, context) = (self.lake.clone(), who.clone(), self.context);
         exec::run(move || {
-            let (who, followed) = lake.followed(who, None, None)?;
             // A reference to a type it is not shown is a field it may not
             // know of, by the head's types; the writer judges it again
-            // under its lock (024, extended).
-            let (who, shown) = match rights::hides_some(&who) {
-                false => (who, None),
-                true => {
-                    let head = lake.shape(lake.engine.view(None)?.as_ref())?;
-                    let (hid, hidden) = Lake::hidden(who.clone(), &head.ontology);
-                    let versions = head.ontology.versions();
-                    (
-                        hid,
-                        Some(writes::Shown {
-                            asked: who,
-                            versions,
-                            hidden,
-                        }),
-                    )
-                }
-            };
+            // under its lock (024, extended). The head is read only for
+            // one whose grants hide something once they are followed:
+            // following may hide what the grants as given do not.
+            let none = Vec::<lakelands_api::engine::Declared>::new();
+            let (mut sight, mut followed) = lake.sight(who.clone(), None, None, &none)?;
+            let head = || lake.engine.view(None).and_then(|v| lake.shape(v.as_ref()));
+            let head = rights::hides_some(sight.who()).then(head).transpose()?;
+            if let Some(head) = &head {
+                let renames = Some(&head.renames[..]);
+                (sight, followed) = lake.sight(who.clone(), None, renames, head.as_ref())?;
+            }
+            let shown = head.as_ref().map(|head| writes::Shown {
+                asked: who,
+                versions: head.ontology.versions(),
+                hidden: sight.hidden().to_vec(),
+            });
             f(&Call {
                 lake: &lake,
-                who: &who,
+                who: sight.who(),
                 context,
                 followed,
                 shown,
@@ -278,6 +324,20 @@ impl Doors {
             Ok(v) => v,
             Err(e) => serde_json::json!({ "error": e.to_string() }),
         };
+        // An answer is recorded as the executor gave it, and the log writes
+        // no integer beyond ±(2^53 − 1) (the log format §1.2): one that
+        // holds such a number is not recorded. The executor ran, so its
+        // answer is lost but for this sentence, and a retry is unanswered.
+        if let Some(n) = lakelands_core::canonical::integer_too_large(&output) {
+            let cause = Box::new(lakelands_core::invalid(Case::IntegerTooLarge {
+                n: n.clone(),
+            }));
+            let answered = output.clone();
+            return Err(Error::unavailable(Situation::AnswerLost {
+                answered,
+                cause,
+            }));
+        }
         let lake = self.lake.clone();
         let recorded = output.clone();
         let at = exec::run(move || Ok(writes::record_output(&lake, &ext, &input, output))).await?;
@@ -406,7 +466,10 @@ impl Catalog for Doors {
 
     async fn query(&self, who: &Principal, pattern: Pattern) -> Result<Reply<QueryResult>> {
         let at = cursor_at(pattern.at, pattern.cursor.as_ref())?;
-        self.read(who, at, move |r| r.query(&pattern)).await
+        // A start by search ranks as `search` does (025).
+        let ranks = pattern.start.search.is_some();
+        self.read_to(who, at, ranks, move |r, pulled| r.query(&pattern, pulled))
+            .await
     }
 
     async fn search(&self, who: &Principal, mut search: Search) -> Result<Reply<Hits>> {
@@ -421,16 +484,14 @@ impl Catalog for Doors {
         if embed.is_some() {
             let s = search.clone();
             // The engines index the head's vectors only, so a search at any
-            // position embeds by the head's declaration (`Reader::indexed`).
-            let head = move |r: &Reader<'_>| {
-                r.searched(&s)?;
-                let shape = match r.at_head {
-                    true => r.shape.clone(),
-                    false => r.lake.shape(r.lake.engine.view(None)?.as_ref())?,
-                };
-                Ok(shape.ontology.ty(&s.ty).ok().cloned())
+            // position embeds by the head's declaration, as `searched`
+            // judged it there (025).
+            let head = move |r: &Reader<'_>, _| {
+                let (.., mut ranks) = r.searched(&s)?;
+                let field = s.mode.vectors().first().map(|v| v.0.clone());
+                Ok(Ok(field.and_then(|f| ranks.fields.remove(&f))))
             };
-            judged = Some(self.read(who, at, head).await?.data);
+            judged = Some(self.read_to(who, at, true, head).await?.data);
         }
         if let (
             SearchMode::Hybrid {
@@ -440,17 +501,13 @@ impl Catalog for Doors {
                 ..
             },
             Some(embed),
-            Some(decl),
+            Some(declared),
         ) = (&mut search.mode, embed, judged)
         {
             // A field declared as the embedding of a model is searched with
             // that model's vectors only: another bound model, or one making
             // vectors of other dimensions, is a configuration to fix, not
             // weather.
-            let declared = decl
-                .iter()
-                .flat_map(|t| &t.fields)
-                .find(|f| &f.name == field);
             let declared = declared.and_then(|f| {
                 let e = f.embed.as_ref()?;
                 Some((e.model.clone(), f.ty.dimensions.unwrap_or(0)))
@@ -498,7 +555,8 @@ impl Catalog for Doors {
             }
             *vector = vectors.pop();
         }
-        self.read(who, at, move |r| r.search(&search)).await
+        self.read_to(who, at, true, move |r, pulled| r.search(&search, pulled))
+            .await
     }
 
     async fn propose(&self, who: &Principal, write: ProposedWrite, why: String) -> Result<Outcome> {
@@ -506,8 +564,8 @@ impl Catalog for Doors {
     }
 
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome> {
-        let p = proposal.clone();
-        let accept = move |c: &Call<'_>| c.accept(&p);
+        let (p, asked) = (proposal.clone(), who.clone());
+        let accept = move |c: &Call<'_>| c.accept(&p, &asked);
         self.detached(who, MadeDue::Accepted, accept).await
     }
 
@@ -517,8 +575,8 @@ impl Catalog for Doors {
         proposal: &ProposalId,
         reason: String,
     ) -> Result<Outcome> {
-        let p = proposal.clone();
-        self.write(who, move |c| c.reject(&p, reason)).await
+        let (p, asked) = (proposal.clone(), who.clone());
+        self.write(who, move |c| c.reject(&p, &asked, reason)).await
     }
 
     async fn proposals(
@@ -788,44 +846,6 @@ pub struct Feed {
     lake: Arc<Lake>,
 }
 
-/// The type an event is about, and the record, by its key: both for the
-/// `record_*` events, `trigger_fired` and `object_set_changed`; the type
-/// for a type's `declared` and `migrated`; the record for `verb_called`.
-fn about(body: &EventBody) -> (Option<&TypeName>, Option<&RecordKey>) {
-    match body {
-        EventBody::RecordUpserted { ty, key, .. }
-        | EventBody::RecordIngested { ty, key, .. }
-        | EventBody::RecordRetired { ty, key, .. }
-        | EventBody::RecordRestricted { ty, key, .. }
-        | EventBody::RecordUnrestricted { ty, key, .. }
-        | EventBody::TriggerFired { ty, key, .. }
-        | EventBody::ObjectSetChanged { ty, key, .. } => (Some(ty), Some(key)),
-        EventBody::Declared {
-            declaration: Declaration::Type(t),
-            ..
-        } => (Some(&t.name), None),
-        EventBody::Migrated { migration, .. } => (Some(&migration.to.name), None),
-        EventBody::VerbCalled { key, .. } => (None, key.as_ref()),
-        _ => (None, None),
-    }
-}
-
-/// Whether a `migrated` event is also about one of `types`: the link
-/// types its renamed relations move records between, old and new, so a
-/// consumer that follows either hears of the move (035, extended). A
-/// `value_type_migrated` is about every type whose records it rewrites.
-fn moves(body: &EventBody, types: &[TypeName]) -> bool {
-    let migration = match body {
-        EventBody::Migrated { migration, .. } => migration,
-        EventBody::ValueTypeMigrated { types: of, .. } => {
-            return of.iter().any(|t| types.contains(t));
-        }
-        _ => return false,
-    };
-    let moved = lakelands_core::links::moved(migration);
-    (moved.iter()).any(|(old, new)| types.contains(old) || types.contains(new))
-}
-
 #[async_trait]
 impl ChangeFeed for Feed {
     async fn poll(&self, from: Position, filter: &FeedFilter, limit: u32) -> Result<FeedBatch> {
@@ -833,12 +853,44 @@ impl ChangeFeed for Feed {
         exec::run(move || {
             let head = lake.head();
             let want = limit.max(1) as usize;
-            let mut events = Vec::new();
-            let mut next = from;
-            // Read in batches to `limit` matches or to `last`, the head or the
-            // bound: nothing past the last position examined is read or verified.
-            let last = Position(from.0.saturating_add(u64::from(FEED_EXAMINED) - 1)).min(head);
-            'read: while next <= last && events.len() < want {
+            let (mut read, mut events, mut next) = (0, Vec::new(), from);
+            // Up to the view's position the projection's index names the
+            // events the filter admits, and only those are read and opened,
+            // in one ask: where the index stops short of the view, so does
+            // the poll. One that decides nothing, as while the projection
+            // is rebuilt, leaves the poll to the log. A filter that names
+            // nothing admits every event.
+            let view = feed::seek(&filter)
+                .map(|_| lake.engine.view(None))
+                .transpose()?;
+            let indexed = view
+                .as_ref()
+                .and_then(|v| v.position())
+                .map(|p| p.min(head));
+            let mut decided = false;
+            if let (Some(view), Some(p)) = (&view, indexed.filter(|p| next <= *p)) {
+                let room = want.min(FEED_EXAMINED as usize) as u32;
+                let m = view.matching(&filter, next, p, room)?;
+                read = m.positions.len();
+                for e in lake.read_these(&m.positions)? {
+                    if feed::admits(&filter, e.body.kind(), &feed::about(&e.body)) {
+                        events.push(e);
+                    }
+                }
+                if let Some(through) = m.through {
+                    (decided, next) = (true, through.next());
+                }
+            }
+            drop(view);
+            if decided && indexed.is_some_and(|p| next <= p) {
+                return Ok(FeedBatch { events, next, head });
+            }
+            // Past it, as while the projection is rebuilt, every event is
+            // read, to `limit` matches or to `last`, the head or the bound:
+            // nothing past the last position examined is read or verified.
+            let bound = (FEED_EXAMINED as usize - read) as u64;
+            let last = Position(next.0.saturating_add(bound).saturating_sub(1)).min(head);
+            'read: while bound > 0 && next <= last && events.len() < want {
                 let room = (last.0 - next.0 + 1).min(want.clamp(64, 1024) as u64);
                 let batch = lake.read_events(next, room as u32)?;
                 if batch.is_empty() {
@@ -849,15 +901,7 @@ impl ChangeFeed for Feed {
                         break 'read;
                     }
                     next = e.position.next();
-                    let kind_ok =
-                        filter.kinds.is_empty() || filter.kinds.iter().any(|k| k == e.body.kind());
-                    let (ty, key) = about(&e.body);
-                    let type_ok = filter.types.is_empty()
-                        || ty.is_some_and(|t| filter.types.contains(t))
-                        || moves(&e.body, &filter.types);
-                    let key_ok =
-                        filter.keys.is_empty() || key.is_some_and(|k| filter.keys.contains(k));
-                    if kind_ok && type_ok && key_ok {
+                    if feed::admits(&filter, e.body.kind(), &feed::about(&e.body)) {
                         events.push(e);
                         if events.len() >= want {
                             break 'read;

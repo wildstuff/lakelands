@@ -12,8 +12,8 @@
 //! (`\"`, `\\`, the short forms `\b \t \n \f \r`, and `\u00xx` in lower
 //! case for the other control characters); numbers in the ECMAScript
 //! shortest round-trip form. Integers stored exactly by `serde_json` are
-//! printed as their digits; Lakelands keeps every integer it hashes within
-//! 2^53 − 1, where the two forms agree.
+//! printed as their digits; through the store's doors Lakelands keeps
+//! every integer it hashes within 2^53 − 1, where the two forms agree.
 
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -38,6 +38,56 @@ pub fn to_vec(value: &Value) -> Vec<u8> {
 /// keys). No contract type does.
 pub fn of<T: serde::Serialize>(value: &T) -> Vec<u8> {
     to_vec(&serde_json::to_value(value).expect("contract types serialise to JSON"))
+}
+
+/// The first number anywhere in `value` that its canonical bytes write as
+/// an integer beyond ±(2^53 − 1) (`docs/log-format.md` §1.2). A number is
+/// judged as it is written, not as it arrived: a double of 2^53 or more is
+/// integer-valued, and below 10^21 the canonical form writes it as its
+/// plain digits, so `1e16` is the integer `10000000000000000`. From 10^21
+/// on a number is written with an exponent, which every reader reads as
+/// the same double.
+pub fn integer_too_large(value: &Value) -> Option<&serde_json::Number> {
+    const MAX: f64 = ((1u64 << 53) - 1) as f64;
+    match value {
+        Value::Number(n) => {
+            let size = n.as_f64().map_or(0.0, f64::abs);
+            (size > MAX && size < 1e21).then_some(n)
+        }
+        Value::Array(items) => items.iter().find_map(integer_too_large),
+        Value::Object(m) => m.values().find_map(integer_too_large),
+        _ => None,
+    }
+}
+
+/// [`integer_too_large`], with where the number stands in `value`: the
+/// path of its member (`config.limits[0]`), empty for `value` itself.
+pub fn integer_too_large_at(value: &Value) -> Option<(String, &serde_json::Number)> {
+    found_at(value, &|v| integer_too_large(v))
+}
+
+/// The first member of `value` that is no list and no object and that
+/// `leaf` answers for, with its path (`config.limits[0]`), empty for
+/// `value` itself.
+pub fn found_at<'v, T>(
+    value: &'v Value,
+    leaf: &dyn Fn(&'v Value) -> Option<T>,
+) -> Option<(String, T)> {
+    fn at<'v, T>(v: &'v Value, leaf: &dyn Fn(&'v Value) -> Option<T>) -> Option<(String, T)> {
+        match v {
+            Value::Array(items) => items.iter().enumerate().find_map(|(i, item)| {
+                let (rest, found) = at(item, leaf)?;
+                Some((format!("[{i}]{rest}"), found))
+            }),
+            Value::Object(m) => m.iter().find_map(|(name, member)| {
+                let (rest, found) = at(member, leaf)?;
+                Some((format!(".{name}{rest}"), found))
+            }),
+            _ => leaf(v).map(|found| (String::new(), found)),
+        }
+    }
+    let (path, found) = at(value, leaf)?;
+    Some((path.trim_start_matches('.').to_owned(), found))
 }
 
 /// SHA-256 of a value's canonical bytes, as 64 lower-case hex digits.

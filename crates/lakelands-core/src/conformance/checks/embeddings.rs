@@ -28,75 +28,236 @@ use crate::conformance::backing::{
 };
 use crate::conformance::fixture::{
     Caller, Lake, Must, derived, doors, embedding, field, field_access, get_at, head_unmoved,
-    join_all, migration, owner, principal, read, recorded_outputs, refused_on, source_record,
-    sourced, type_decl, value,
+    join_all, migration, outputs_from, owner, principal, read, recorded_outputs, refused_on,
+    source_record, sourced, type_decl, value,
 };
-use crate::conformance::{Failure, Reopen, backing};
+use crate::conformance::{Failure, Given, Held, Reopen, Store, backing};
 
 check!(
-    /// The host counts what is embedded and what is due.
     VECTOR_COVERAGE = vector_coverage_counts_embedded_and_due_records_at_the_head,
     "022, extended, and lakelands#147: vector_coverage answers, per embedding field at the head, the live records holding a vector and those whose text is not embedded (never embedded, failed or waiting for a retry), not counting a record without text; a redeclaration's retry and a retire move the counts; an unknown type is not found and a type without embeddings answers none",
     embedding
 );
 
 check!(
-    /// A write embeds its text and records the vector.
     EMBED_WRITE = a_write_embeds_its_text_and_records_the_vector,
     "022, extended, and the log format: the store embeds the joined `from` text after the write, records the vector as output_recorded under embed:<model> naming the field, and the field holds it",
     embedding
 );
 
 check!(
-    /// One text, one call.
     EMBED_ONCE = the_same_text_is_embedded_once_whichever_record_asks,
     "002 and 022, extended: a vector recorded for a text under a model is read back for every later record with that text, and after a record's text changed and came back; the log holds one output per distinct text",
     embedding
 );
 
 check!(
-    /// Rebuild reads vectors back.
     EMBED_REBUILD = a_rebuild_reads_the_vectors_back_without_embedding,
     "001 and 002: a rebuild folds the recorded vectors; the fields read as before and nothing is embedded",
     embedding
 );
 
 check!(
-    /// Another model is unbound.
     EMBED_OTHER_MODEL = an_embedding_whose_model_the_backend_does_not_make_is_refused_at_declare,
     "022, extended: an embedding is declared only where the bound backend names its model and makes vectors of its dimensions; otherwise the declaration is refused as unbound",
     embedding
 );
 
 check!(
-    /// No backend is unbound.
     EMBED_NO_BACKEND = an_embedding_without_a_backend_is_refused_at_declare,
     "022, extended: with no embedding backend bound, declaring an embedding is refused as unbound, naming the model"
 );
 
 check!(
-    /// A changed embedding is due everywhere.
-    EMBED_REDECLARED = a_changed_embedding_is_due_on_every_live_record_and_an_unchanged_one_embeds_nothing_new,
+    EMBED_REDECLARED =
+        a_changed_embedding_is_due_on_every_live_record_and_an_unchanged_one_embeds_nothing_new,
     "022, extended: a change of `from` or `model` is a redeclaration that makes the field due on every live record, one call per distinct text; declaring it again unchanged reads the recorded vectors back",
     embedding
 );
 
 check!(
-    /// Nothing to embed.
     EMBED_NO_TEXT = a_record_with_nothing_to_embed_holds_no_vector_and_embeds_nothing,
     "022, extended: with no `from` field holding text, the field holds no value and keeps metadata without an error, and nothing is called; the text written later makes it due",
     embedding
 );
 
 check!(
-    /// A failure clears, and a redeclaration retries it.
     EMBED_FAILURE_RETRIED = a_failed_embedding_clears_the_field_and_a_redeclaration_retries_it,
     "022, extended: a failure is recorded, clears the field and puts its reason in the metadata; `recompute` calls again for that text once, the later output holds and the vector fills every record holding it",
     embedding
 );
 
 check!(
-    /// A vector's fill reacts.
+    EMBED_NAMED = a_vector_the_log_holds_is_named_by_its_position_not_carried_again,
+    "053 and log-format §2.5: an embedding declared over ten records sharing two texts leaves two `output_recorded` that carry a vector and eight that name their call's by `output_at`, which the feed answers at that position, carrying the vector, for the same seam and input; every record holds the vector, after a rebuild, a reopen without a backend and an export's import too, and nothing is embedded again",
+    given,
+    embedding
+);
+
+check!(
+    EMBED_NAMES_LATEST = a_fill_after_a_retry_names_the_new_output_and_a_failure_is_carried,
+    "053, and 022, extended: a failure is carried, and so is the answer of the retry `recompute` makes; a second record's fill of the same call then names the new answer, not the failure, and holds its vector",
+    embedding
+);
+
+/// The `output_recorded` events from `from` on: those that carry their
+/// output, and those that name one by `output_at`.
+async fn carried_and_named(
+    store: &dyn LakeStore,
+    from: lakelands_api::Position,
+) -> Result<
+    (
+        Vec<lakelands_api::event::Event>,
+        Vec<lakelands_api::event::Event>,
+    ),
+    Failure,
+> {
+    let outputs = outputs_from(store, from).await?;
+    let named = |e: &lakelands_api::event::Event| {
+        matches!(
+            e.body,
+            EventBody::OutputRecorded {
+                output_at: Some(_),
+                ..
+            }
+        )
+    };
+    Ok(outputs.into_iter().partition(|e| !named(e)))
+}
+
+/// The seam, input and `output_at` of an `output_recorded`.
+fn call_of(
+    e: &lakelands_api::event::Event,
+) -> Option<(&str, &str, Option<lakelands_api::Position>)> {
+    match &e.body {
+        EventBody::OutputRecorded {
+            seam,
+            input,
+            output_at,
+            ..
+        } => Some((seam, &input.0, *output_at)),
+        _ => None,
+    }
+}
+
+async fn a_vector_the_log_holds_is_named_by_its_position_not_carried_again(
+    store: Store,
+    given: Given,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(notes_by(&["title"], EMBED_MODEL, 2)).await?;
+    let texts = ["Named harbour", "Named crane"];
+    let keys: Vec<String> = (0..10).map(|i| format!("n{i}")).collect();
+    for (i, key) in keys.iter().enumerate() {
+        l.upsert("note", key, json!({"body": texts[i % 2]})).await?;
+    }
+    let from = store.head().await.must("reading the head")?;
+    l.declare(notes_by(&["body"], EMBED_MODEL, 2)).await?;
+    let (carried, named) = carried_and_named(store.as_ref(), from).await?;
+    ensure!(
+        carried.len() == 2 && named.len() == 8,
+        "ten records share two texts: the log must hold two `output_recorded` carrying a \
+         vector and eight naming one by `output_at`; it holds {} and {}",
+        carried.len(),
+        named.len()
+    );
+    for e in &named {
+        let (seam, input, Some(at)) = call_of(e).expect("an output") else {
+            unreachable!("a named output")
+        };
+        let held = outputs_from(store.as_ref(), at).await?;
+        let first = held.first();
+        ensure!(
+            first.is_some_and(|h| h.position == at
+                && call_of(h) == Some((seam, input, None))
+                && matches!(&h.body, EventBody::OutputRecorded { output: Some(v), .. }
+                    if is_east(&Some(v.clone())))),
+            "the fill at {} names the output at {at}; the feed from there must answer first \
+             the event carrying that vector for the same seam and input; it answers {first:?}",
+            e.position
+        );
+    }
+    let all_east = async |store: &dyn LakeStore, what: &str| {
+        for key in &keys {
+            let r = read(doors(store).as_ref(), &owner(store), "note", key).await?;
+            let v = value(&r, "vec").cloned();
+            ensure!(
+                is_east(&v),
+                "{what}, `{key}` must hold (1, 0); it holds {v:?}"
+            );
+        }
+        Ok::<_, Failure>(())
+    };
+    let calls = texts.map(embedded);
+    all_east(store.as_ref(), "after the declaration").await?;
+    store.rebuild().await.must("rebuilding the lake")?;
+    all_east(store.as_ref(), "after a rebuild").await?;
+    let store = (given.reopen)(store, with_embedder(None))
+        .await
+        .map_err(|e| reopen_failed("without an embedding backend", e))?;
+    all_east(store.as_ref(), "opened again without a backend").await?;
+    let scratch = super::export::Scratch::new(given.scratch.clone());
+    let dir = scratch.dir("named");
+    crate::export::write(store.as_ref(), &dir)
+        .await
+        .must("exporting the lake")?;
+    let lake = store.lake().clone();
+    let imported = (given.import)(dir, lake, None, with_embedder(None))
+        .await
+        .map_err(|e| Failure::new(format!("importing the export into a fresh lake: {e}")))?;
+    all_east(imported.store.as_ref(), "imported from an export").await?;
+    ensure!(
+        texts.map(embedded) == calls && calls == [1, 1],
+        "each text is embedded once and never again by a rebuild, a reopen or an import; \
+         they were embedded {:?} times",
+        texts.map(embedded)
+    );
+    Ok(())
+}
+
+async fn a_fill_after_a_retry_names_the_new_output_and_a_failure_is_carried(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(notes_by(&["title"], EMBED_MODEL, 2)).await?;
+    let text = "Named retry";
+    unplug_text(text);
+    for key in ["n1", "n2"] {
+        l.upsert("note", key, json!({"body": text})).await?;
+    }
+    let from = store.head().await.must("reading the head")?;
+    l.declare(notes_by(&["body"], EMBED_MODEL, 2)).await?;
+    let (failed, named) = carried_and_named(store.as_ref(), from).await?;
+    ensure!(
+        failed.len() == 2 && named.is_empty(),
+        "the backend failed on {text:?} for both records: each failure is carried, so the \
+         log holds two carried outputs and none named; it holds {} and {}",
+        failed.len(),
+        named.len()
+    );
+    let head = store.head().await.must("reading the head")?;
+    let retried = lakelands_api::Position(head.0 + 1);
+    plug_text(text);
+    recomputed(&l).await?;
+    let (answered, named) = carried_and_named(store.as_ref(), retried).await?;
+    let new = answered.first().map(|e| e.position);
+    let names = named.first().and_then(call_of).and_then(|(_, _, at)| at);
+    let (n1, n2) = (
+        vec_of(store.as_ref(), "n1").await?,
+        vec_of(store.as_ref(), "n2").await?,
+    );
+    ensure!(
+        answered.len() == 1 && named.len() == 1 && names.is_some() && names == new,
+        "`recompute` retries the failure once: the new answer is carried and the second \
+         fill names it, the call's latest, not a failure; the log holds the carried \
+         {answered:?} and the named {named:?}"
+    );
+    ensure!(
+        is_east(&n1) && is_east(&n2),
+        "both records hold the new answer's vector; they hold {n1:?} and {n2:?}"
+    );
+    Ok(())
+}
+
+check!(
     EMBED_FILL_REACTS = an_embedded_vector_recomputes_the_derived_fields_that_read_it,
     "012 and 022, extended: the field a vector fills is changed through the fold's ordinary path, so a derived field reading it is recomputed",
     embedding
@@ -118,7 +279,7 @@ fn notes_by(from: &[&str], model: &str, dimensions: u32) -> lakelands_api::ontol
 }
 
 /// `note` computed again by the door: declared again it would settle nothing.
-async fn recomputed(l: &Lake) -> Result<(), Failure> {
+async fn recomputed(l: &Lake) -> Held {
     let what = lakelands_api::write::Recompute::Type("note".into());
     let done = l.cat.recompute(&l.own, what).await;
     done.must("computing `note` again").map(drop)
@@ -144,9 +305,7 @@ fn is_east(v: &Option<Value>) -> bool {
         .is_some_and(|a| a.iter().map(Value::as_f64).collect::<Vec<_>>() == [Some(1.0), Some(0.0)])
 }
 
-async fn a_write_embeds_its_text_and_records_the_vector(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_write_embeds_its_text_and_records_the_vector(store: Store) -> Held {
     let l = notes(store.as_ref()).await?;
     l.upsert(
         "note",
@@ -193,9 +352,7 @@ async fn a_write_embeds_its_text_and_records_the_vector(
     Ok(())
 }
 
-async fn the_same_text_is_embedded_once_whichever_record_asks(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn the_same_text_is_embedded_once_whichever_record_asks(store: Store) -> Held {
     let l = notes(store.as_ref()).await?;
     let text = "Once harbour";
     for key in ["n1", "n2"] {
@@ -225,9 +382,7 @@ async fn the_same_text_is_embedded_once_whichever_record_asks(
     Ok(())
 }
 
-async fn a_rebuild_reads_the_vectors_back_without_embedding(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rebuild_reads_the_vectors_back_without_embedding(store: Store) -> Held {
     let l = notes(store.as_ref()).await?;
     let text = "Rebuilt harbour";
     l.upsert("note", "n1", json!({"title": text})).await?;
@@ -256,12 +411,11 @@ fn answered<T>(r: &lakelands_api::Result<T>) -> String {
 }
 
 async fn an_embedding_whose_model_the_backend_does_not_make_is_refused_at_declare(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
-    let other_model = l
-        .try_declare(notes_by(&["title"], "another-model", 2))
-        .await;
+    let other_model = l.try_declare(notes_by(&["title"], "another-model", 2));
+    let other_model = other_model.await;
     let other_dimensions = l.try_declare(notes_by(&["title"], EMBED_MODEL, 3)).await;
     ensure!(
         is_unbound(&other_model) && is_unbound(&other_dimensions),
@@ -274,9 +428,7 @@ async fn an_embedding_whose_model_the_backend_does_not_make_is_refused_at_declar
     Ok(())
 }
 
-async fn an_embedding_without_a_backend_is_refused_at_declare(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn an_embedding_without_a_backend_is_refused_at_declare(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let got = l.try_declare(notes_by(&["title"], EMBED_MODEL, 2)).await;
     ensure!(
@@ -289,8 +441,8 @@ async fn an_embedding_without_a_backend_is_refused_at_declare(
 }
 
 async fn a_changed_embedding_is_due_on_every_live_record_and_an_unchanged_one_embeds_nothing_new(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = notes(store.as_ref()).await?;
     let records = [
         ("n1", "Redeclared north", "Redeclared shared body"),
@@ -328,9 +480,7 @@ async fn a_changed_embedding_is_due_on_every_live_record_and_an_unchanged_one_em
     Ok(())
 }
 
-async fn a_record_with_nothing_to_embed_holds_no_vector_and_embeds_nothing(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_record_with_nothing_to_embed_holds_no_vector_and_embeds_nothing(store: Store) -> Held {
     let l = notes(store.as_ref()).await?;
     l.upsert("note", "n1", json!({"title": ""})).await?;
     let r = l.read("note", "n1").await?;
@@ -355,9 +505,7 @@ async fn a_record_with_nothing_to_embed_holds_no_vector_and_embeds_nothing(
     Ok(())
 }
 
-async fn a_failed_embedding_clears_the_field_and_a_redeclaration_retries_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_failed_embedding_clears_the_field_and_a_redeclaration_retries_it(store: Store) -> Held {
     let l = notes(store.as_ref()).await?;
     let text = "Retried harbour";
     unplug_text(text);
@@ -394,9 +542,7 @@ async fn a_failed_embedding_clears_the_field_and_a_redeclaration_retries_it(
     Ok(())
 }
 
-async fn an_embedded_vector_recomputes_the_derived_fields_that_read_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn an_embedded_vector_recomputes_the_derived_fields_that_read_it(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let has = derived(
         "embedded",
@@ -422,21 +568,18 @@ async fn an_embedded_vector_recomputes_the_derived_fields_that_read_it(
 }
 
 check!(
-    /// A write beside a backlog waits for its own calls only.
     EMBED_BESIDE_BACKLOG = a_write_beside_a_backlog_waits_for_the_batch_in_flight_and_its_own,
     "022, extended, and 008: while the embeddings a declaration made due over a type are being made, a write that owes nothing answers at once, and one that owes a call answers after the batch in flight and its own, its field visible from its answer, while the rest is still being made; the declaration answers once all of it is made, each text once",
     embedding
 );
 
 check!(
-    /// An abandoned sweep advances a batch with each later write.
     EMBED_ORPHAN_SWEEP = an_abandoned_sweep_advances_one_batch_with_each_write_that_owes,
     "022, extended: the embeddings a declaration whose caller went away left due wait for no one; a later write that owes a call answers after its own batch and one batch of them, and each such write advances them by a batch",
     embedding
 );
 
 check!(
-    /// A re-key during a sweep embeds every record once.
     EMBED_SWEEP_REKEYED = a_rekey_while_a_type_is_embedded_leaves_every_record_embedded_once,
     "022, extended, and 027: a re-key that lands while the embeddings a declaration made due over its type are being made answers at once, and every record is then embedded under its new key, each text once",
     embedding
@@ -460,9 +603,8 @@ async fn backlog(l: &Lake, tag: &str, held: &[usize]) -> Result<Vec<String>, Fai
             json!({"code": format!("a{i:03}"), "body": t}),
         )
     };
-    l.ingest("feed", texts.iter().enumerate().map(record).collect())
-        .await
-        .must("feeding the records")?;
+    let fut = l.ingest("feed", texts.iter().enumerate().map(record).collect());
+    fut.await.must("feeding the records")?;
     Ok(texts)
 }
 
@@ -490,7 +632,7 @@ async fn came<F: std::future::Future<Output = bool>>(done: impl Fn() -> F) -> bo
 }
 
 /// The embedding of `body` added to `doc`, setting `done` once answered.
-fn embedded_over<'a>(l: &'a Lake, done: &'a AtomicBool) -> Caller<'a, Result<(), Failure>> {
+fn embedded_over<'a>(l: &'a Lake, done: &'a AtomicBool) -> Caller<'a, Held> {
     Box::pin(async move {
         let vec = embedding("vec", 2, &["body"], EMBED_MODEL);
         let added = l.cat.add_field(&l.own, &"doc".into(), vec).await;
@@ -500,7 +642,7 @@ fn embedded_over<'a>(l: &'a Lake, done: &'a AtomicBool) -> Caller<'a, Result<(),
 }
 
 /// Every record of `doc` holds a vector, and each text was sent once.
-async fn each_once(store: &dyn LakeStore, texts: &[String]) -> Result<(), Failure> {
+async fn each_once(store: &dyn LakeStore, texts: &[String]) -> Held {
     let c = store.vector_coverage(&"doc".into()).await;
     let c = c.must("asking vector_coverage of `doc`")?;
     let twice: Vec<&String> = texts.iter().filter(|t| embedded(t) != 1).collect();
@@ -513,9 +655,7 @@ async fn each_once(store: &dyn LakeStore, texts: &[String]) -> Result<(), Failur
     Ok(())
 }
 
-async fn a_write_beside_a_backlog_waits_for_the_batch_in_flight_and_its_own(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_write_beside_a_backlog_waits_for_the_batch_in_flight_and_its_own(store: Store) -> Held {
     let token = "beside_a_backlog";
     let l =
         super::backings::places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
@@ -523,7 +663,7 @@ async fn a_write_beside_a_backlog_waits_for_the_batch_in_flight_and_its_own(
         .await?;
     let texts = backlog(&l, "beside", &[0, 150]).await?;
     let done = AtomicBool::new(false);
-    let beside: Caller<'_, Result<(), Failure>> = Box::pin(async {
+    let beside: Caller<'_, Held> = Box::pin(async {
         ensure!(
             came(|| async { embedded(&texts[0]) == 1 }).await,
             "the first request of `vec`'s backlog never reached the backend"
@@ -573,9 +713,7 @@ async fn a_write_beside_a_backlog_waits_for_the_batch_in_flight_and_its_own(
     each_once(store.as_ref(), &texts).await
 }
 
-async fn an_abandoned_sweep_advances_one_batch_with_each_write_that_owes(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn an_abandoned_sweep_advances_one_batch_with_each_write_that_owes(store: Store) -> Held {
     let token = "abandoned_sweep";
     let config = json!({"token": token, "echo": "code"});
     let l = super::backings::places(store.as_ref(), config).await?;
@@ -606,13 +744,11 @@ async fn an_abandoned_sweep_advances_one_batch_with_each_write_that_owes(
     Ok(())
 }
 
-async fn a_rekey_while_a_type_is_embedded_leaves_every_record_embedded_once(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_rekey_while_a_type_is_embedded_leaves_every_record_embedded_once(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let texts = backlog(&l, "rekeyed", &[0]).await?;
     let done = AtomicBool::new(false);
-    let rekey: Caller<'_, Result<(), Failure>> = Box::pin(async {
+    let rekey: Caller<'_, Held> = Box::pin(async {
         ensure!(
             came(|| async { embedded(&texts[0]) == 1 }).await,
             "the first request of `vec`'s backlog never reached the backend"
@@ -647,16 +783,16 @@ pub(super) fn reopen_failed(what: &str, e: Error) -> Failure {
 }
 
 check!(
-    /// A hybrid search through a backend of another model is unbound.
-    EMBED_SEARCH_OTHER_BACKEND = a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_unbound,
-    "seams, EmbedBackend: a hybrid search over an embed field whose model or dimensions are not the bound backend's is refused as unbound when it is made, not ranked with vectors of another space; a search as of an earlier position is held to the head's declaration, whose vectors the engines index",
+    EMBED_SEARCH_OTHER_BACKEND =
+        a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_unbound,
+    "seams, EmbedBackend: a hybrid search over an embed field whose model or dimensions are not the bound backend's is refused as unbound when it is made, not ranked with vectors of another space; a search as of an earlier position is held to the head's declaration and its fields' names, whose vectors the engines index",
     reopens
 );
 
 async fn a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_unbound(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     reopen: Reopen,
-) -> Result<(), Failure> {
+) -> Held {
     let mut store = reopen(store, with_embedder(Some(backing::embedder())))
         .await
         .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
@@ -718,8 +854,8 @@ async fn a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_un
 }
 
 check!(
-    /// A hybrid search is judged before it embeds.
-    EMBED_SEARCH_JUDGED_FIRST = a_hybrid_search_is_judged_for_its_caller_before_its_model_or_its_text,
+    EMBED_SEARCH_JUDGED_FIRST =
+        a_hybrid_search_is_judged_for_its_caller_before_its_model_or_its_text,
     "024 and seams, EmbedBackend: a hybrid search without a vector is judged for its caller before its field's model is compared with the bound backend's and before its text is embedded: whatever backend is bound, a type not shown answers as one not declared, a field the caller may not know of, or one its vector is embedded from, as one not declared, and a masked one as not granted; a refused search calls nothing, the owner's over a type or field not declared or with a `where` on one included",
     reopens
 );
@@ -752,9 +888,9 @@ async fn judged(
 }
 
 async fn a_hybrid_search_is_judged_for_its_caller_before_its_model_or_its_text(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     reopen: Reopen,
-) -> Result<(), Failure> {
+) -> Held {
     let mut store = reopen(store, with_embedder(Some(backing::embedder())))
         .await
         .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
@@ -838,16 +974,12 @@ async fn a_hybrid_search_is_judged_for_its_caller_before_its_model_or_its_text(
 }
 
 check!(
-    /// A due embedding waits while no backend makes it.
     EMBED_WAITS = a_due_embedding_waits_while_no_backend_makes_it,
     "seams, EmbedBackend: a due embedding whose backend is gone or makes another model or other dimensions is not made; the field waits, with neither a value nor metadata, until its record is written again or `recompute` names its type, with the backend bound",
     reopens
 );
 
-async fn a_due_embedding_waits_while_no_backend_makes_it(
-    store: Arc<dyn LakeStore>,
-    reopen: Reopen,
-) -> Result<(), Failure> {
+async fn a_due_embedding_waits_while_no_backend_makes_it(store: Store, reopen: Reopen) -> Held {
     let mut store = reopen(store, with_embedder(Some(backing::embedder())))
         .await
         .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
@@ -918,14 +1050,12 @@ async fn a_due_embedding_waits_while_no_backend_makes_it(
 }
 
 check!(
-    /// A backend bound after open serves from then on.
     EMBED_BOUND_LATE = a_backend_bound_after_open_is_read_from_then_on,
     "lakelands#641 and seams, EmbedBackend: `bind_embed` on an open lake appends nothing, and from then on a declaration of its model is admitted, a write's embedding is made and a hybrid search embeds its text; a vector that fell due while none was bound waits until `recompute` names its type; a later bind replaces the backend, whatever its model",
     reopens
 );
 
 check!(
-    /// An embedding kept as it is needs no backend.
     EMBED_UNBOUND_KEPT = a_declaration_that_keeps_an_embedding_needs_no_backend,
     "022, extended, and lakelands#641: with no backend bound, a declaration that keeps a type's embedding as in force is admitted (restated, alone or in a set, with a relation whose link type embeds; a field added beside it; a migration), while one that adds an embedding or changes its model, dimensions or `from` is refused as unbound, naming the field, and so is `recompute` of the type",
     reopens
@@ -975,10 +1105,7 @@ fn berths() -> lakelands_api::ontology::TypeDecl {
 
 /// `note` and `berths` declared with the suite's backend, and the lake
 /// opened again with none bound.
-async fn unbound_notes(
-    store: Arc<dyn LakeStore>,
-    reopen: &Reopen,
-) -> Result<Arc<dyn LakeStore>, Failure> {
+async fn unbound_notes(store: Store, reopen: &Reopen) -> Result<Store, Failure> {
     let store = reopen(store, with_embedder(Some(backing::embedder())))
         .await
         .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
@@ -988,17 +1115,13 @@ async fn unbound_notes(
         .map_err(|e| reopen_failed("with no embedding backend", e))
 }
 
-async fn a_backend_bound_after_open_is_read_from_then_on(
-    store: Arc<dyn LakeStore>,
-    reopen: Reopen,
-) -> Result<(), Failure> {
+async fn a_backend_bound_after_open_is_read_from_then_on(store: Store, reopen: Reopen) -> Held {
     let store = unbound_notes(store, &reopen).await?;
     let l = Lake::of(store.as_ref());
     let early = "Bound late early quay";
     l.upsert("note", "early", json!({"title": early})).await?;
-    let before = quay(store.as_ref(), None)
-        .await
-        .must("a hybrid search with none bound")?;
+    let before = quay(store.as_ref(), None);
+    let before = before.await.must("a hybrid search with none bound")?;
     let head = store.head().await.must("reading the head")?;
     store
         .bind_embed(backing::embedder())
@@ -1010,9 +1133,8 @@ async fn a_backend_bound_after_open_is_read_from_then_on(
     );
     l.upsert("note", "late", json!({"title": "Bound late later quay"}))
         .await?;
-    let searched = quay(store.as_ref(), None)
-        .await
-        .must("a hybrid search once bound")?;
+    let searched = quay(store.as_ref(), None);
+    let searched = searched.await.must("a hybrid search once bound")?;
     let (late, waits) = (
         vec_of(store.as_ref(), "late").await?,
         vec_of(store.as_ref(), "early").await?,
@@ -1040,9 +1162,8 @@ async fn a_backend_bound_after_open_is_read_from_then_on(
         .bind_embed(backing::embedder_as("another-model", 2))
         .must("binding a backend of another model")?;
     let search = quay(store.as_ref(), None).await;
-    let other = l
-        .try_declare(notes_by(&["title", "body"], "another-model", 2))
-        .await;
+    let other = l.try_declare(notes_by(&["title", "body"], "another-model", 2));
+    let other = other.await;
     ensure!(
         other.is_ok() && is_unbound(&search),
         "a second bind replaces the first: a search over `note.vec`, of `{EMBED_MODEL}`, \
@@ -1055,19 +1176,17 @@ async fn a_backend_bound_after_open_is_read_from_then_on(
 }
 
 async fn a_declaration_that_keeps_an_embedding_needs_no_backend(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     reopen: Reopen,
-) -> Result<(), Failure> {
+) -> Held {
     let store = unbound_notes(store, &reopen).await?;
     let l = Lake::of(store.as_ref());
     let kept = notes_by(&["title", "body"], EMBED_MODEL, 2);
     l.declare(kept.clone()).await?;
     l.declare(berths()).await?;
     let set = vec![lakelands_api::write::Declaration::Type(kept.clone())];
-    l.cat
-        .apply(&l.own, set)
-        .await
-        .must("applying `note` as in force")?;
+    let fut = l.cat.apply(&l.own, set);
+    fut.await.must("applying `note` as in force")?;
     // Other dimensions reshape the field: a migration, checked the same way.
     let wider = migration(notes_by(&["title", "body"], EMBED_MODEL, 3));
     let report = l.cat.migrate(&l.own, wider.clone()).await;
@@ -1126,15 +1245,14 @@ async fn a_declaration_that_keeps_an_embedding_needs_no_backend(
 }
 
 check!(
-    /// An embedding is refused unless it is the one shape it can be.
     EMBED_RULES = an_embedding_that_is_not_a_derived_vector_of_its_own_text_fields_is_refused,
     "seams, EmbedBackend, and TypeDecl::embedding_problem: an embed field is a derived vector with dimensions, made from distinct text fields of its type other than itself, sensitive where a source is; anything else is refused as invalid, whatever backend is bound",
     embedding
 );
 
 async fn an_embedding_that_is_not_a_derived_vector_of_its_own_text_fields_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     let good = || embedding("vec", 2, &["title"], EMBED_MODEL);
     let number = field("pages", StorageKind::Number);
@@ -1242,16 +1360,12 @@ async fn an_embedding_that_is_not_a_derived_vector_of_its_own_text_fields_is_ref
 }
 
 check!(
-    /// At most 64 texts go in one request.
     EMBED_BATCH = no_request_carries_more_than_sixty_four_texts,
     "seams, EmbedBackend: the store sends the due texts of one model in batches of at most 64, however many records one declaration makes due, so its memory per drain stays bounded",
     reopens
 );
 
-async fn no_request_carries_more_than_sixty_four_texts(
-    store: Arc<dyn LakeStore>,
-    reopen: Reopen,
-) -> Result<(), Failure> {
+async fn no_request_carries_more_than_sixty_four_texts(store: Store, reopen: Reopen) -> Held {
     // A model of its own, so the sizes counted are this check's alone.
     let model = "conformance-batch";
     let store = reopen(store, with_embedder(Some(backing::embedder_as(model, 2))))
@@ -1272,9 +1386,8 @@ async fn no_request_carries_more_than_sixty_four_texts(
             )
         })
         .collect();
-    l.ingest("batches", records)
-        .await
-        .must("ingesting 150 batches")?;
+    let fut = l.ingest("batches", records);
+    fut.await.must("ingesting 150 batches")?;
     l.declare(type_decl(
         "batch",
         vec![title(), embedding("vec", 2, &["title"], model)],
@@ -1290,14 +1403,12 @@ async fn no_request_carries_more_than_sixty_four_texts(
 }
 
 check!(
-    /// A refused text fails alone.
     EMBED_REFUSED_ALONE = a_text_the_backend_refuses_fails_alone_in_its_batch,
     "lakelands#658 and seams, EmbedBackend: a request the backend refuses for what it carries is asked again in halves, so only the text refused alone records the refusal and the others in its batch are embedded; a later record with one of their texts reads its vector, and `recompute` sends the refused text alone",
     embedding
 );
 
 check!(
-    /// Weather is not narrowed.
     EMBED_WEATHER = weather_fails_every_text_its_request_had_not_answered,
     "lakelands#658 and seams, EmbedBackend: a failure that is not a refusal ends the asking and is recorded for every text not answered yet, while the texts answered before it keep their vectors and a text refused alone its refusal",
     embedding
@@ -1311,9 +1422,8 @@ async fn piers(l: &Lake, titles: &[String]) -> Result<usize, Failure> {
     let records = titles.iter().enumerate();
     let records =
         records.map(|(n, t)| source_record("pier", &format!("p{n}"), json!({"title": t})));
-    l.ingest("piers", records.collect())
-        .await
-        .must("ingesting piers")?;
+    let fut = l.ingest("piers", records.collect());
+    fut.await.must("ingesting piers")?;
     let before = backing::embed_calls();
     let vec = embedding("vec", 2, &["title"], EMBED_MODEL);
     l.declare(type_decl("pier", vec![title(), vec])).await?;
@@ -1337,9 +1447,7 @@ async fn pier_vecs(store: &dyn LakeStore, n: usize) -> Result<Vec<String>, Failu
     Ok(out)
 }
 
-async fn a_text_the_backend_refuses_fails_alone_in_its_batch(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_text_the_backend_refuses_fails_alone_in_its_batch(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let mut titles: Vec<String> = (0..8).map(|n| format!("Refusal pier {n}")).collect();
     titles[5] = format!("{UNREACHABLE} pier");
@@ -1354,16 +1462,13 @@ async fn a_text_the_backend_refuses_fails_alone_in_its_batch(
     );
     let before = backing::embed_calls();
     let again = source_record("pier", "p8", json!({"title": titles[0]}));
-    l.ingest("piers", vec![again])
-        .await
-        .must("ingesting `p8`")?;
+    let fut = l.ingest("piers", vec![again]);
+    fut.await.must("ingesting `p8`")?;
     let p8 = pier_vecs(store.as_ref(), 9).await?.pop();
     let sent = embedded(&titles[5]);
     let what = lakelands_api::write::Recompute::Type("pier".into());
-    l.cat
-        .recompute(&l.own, what)
-        .await
-        .must("computing `pier` again")?;
+    let fut = l.cat.recompute(&l.own, what);
+    fut.await.must("computing `pier` again")?;
     let calls = backing::embed_calls() - before;
     ensure!(
         p8.as_deref() == Some("east") && calls == 1 && embedded(&titles[5]) == sent + 1,
@@ -1373,9 +1478,7 @@ async fn a_text_the_backend_refuses_fails_alone_in_its_batch(
     Ok(())
 }
 
-async fn weather_fails_every_text_its_request_had_not_answered(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn weather_fails_every_text_its_request_had_not_answered(store: Store) -> Held {
     use crate::conformance::backing::WEATHER;
     let l = Lake::of(store.as_ref());
     let titles = ["Weather pier 0", UNREACHABLE, WEATHER, "Weather pier 3"];
@@ -1414,9 +1517,7 @@ async fn coverage(store: &dyn LakeStore, what: &str) -> Result<(u64, u64), Failu
     }
 }
 
-async fn vector_coverage_counts_embedded_and_due_records_at_the_head(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn vector_coverage_counts_embedded_and_due_records_at_the_head(store: Store) -> Held {
     let l = notes(store.as_ref()).await?;
     for (key, title) in [
         ("n1", "Coverage harbour one"),

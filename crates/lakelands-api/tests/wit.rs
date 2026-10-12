@@ -1,5 +1,5 @@
 //! The drift check between this crate and the WIT package in `wit/`
-//! (`lakelands:data@0.12.0`). The crate is the source; the WIT mirrors it,
+//! (`lakelands:data@0.13.0`). The crate is the source; the WIT mirrors it,
 //! and this test fails as soon as the two disagree.
 //!
 //! Three things are compared:
@@ -895,6 +895,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 filter: Some(cond()),
                 search: Some(search_mode()),
                 params: params(),
+                named: Some("start".into()),
             }),
         ),
         (
@@ -905,6 +906,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 ty: Some("partner".into()),
                 filter: Some(cond()),
                 depth: Depth { min: 1, max: 2 },
+                named: Some("by".into()),
             }),
         ),
         (
@@ -917,6 +919,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                         filter: None,
                         search: None,
                         params: Default::default(),
+                        named: None,
                     },
                     steps: vec![],
                     to: Some(("partner".into(), "k".into())),

@@ -3,8 +3,6 @@
 //! extended): what its expression reads, or its function's inputs, whether
 //! or not its declaration lists them in `depends_on`.
 
-use std::sync::Arc;
-
 use lakelands_api::describe::FieldDescription;
 use lakelands_api::event::EventBody;
 use lakelands_api::principal::Grants;
@@ -20,10 +18,9 @@ use crate::conformance::fixture::{
     Lake, Must, agg, aggregate, events_after, field_access, find_where, get_at, log_events, order,
     pattern, read_at,
 };
-use crate::conformance::{Failure, Reopen};
+use crate::conformance::{Failure, Held, Reopen, Store};
 
 check!(
-    /// A computed field is read as what it is computed from, listed or not.
     COMPUTED_AS_ITS_INPUTS = a_computed_field_is_read_no_further_than_what_it_is_computed_from,
     "024, extended (lakelands#540, lakelands#652): a field computed by an expression (one that uses `previous` or `changed` as well), by a function with an expression or by one with a backing, and a field computed from such a field, is not answered to a reader who may not know of a field it is computed from, whether or not `depends_on` lists it: not by `get`, a `where`, an `order_by`, an aggregate, a view's measure, a pattern's projection or a search; a masked input masks it; `describe` shows the completed list, the log holds the declaration as it was sent, and a lake that holds such a field is closed when it is opened again; a function declared again with fewer inputs restricts by those alone, a reader and an author alike; a proposed shape and a relation's link field are held to the same, and a listed proposal's `more` says what was left out of its shape, not what was completed",
     reopens
@@ -149,9 +146,9 @@ async fn leaks(store: &dyn LakeStore) -> String {
 }
 
 async fn a_computed_field_is_read_no_further_than_what_it_is_computed_from(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     reopen: Reopen,
-) -> Result<(), Failure> {
+) -> Held {
     let l = Lake::of(store.as_ref());
     let function = |name: &str, inputs: &[&str], backing: Value| {
         let inputs: Vec<Value> = inputs.iter().map(|n| text(n)).collect();
@@ -247,16 +244,10 @@ async fn a_computed_field_is_read_no_further_than_what_it_is_computed_from(
         migration,
         report: Default::default(),
     };
-    l.cat
-        .propose(&l.own, write, "adding z".into())
-        .await
-        .must("proposing `z`")?;
-    let listed = l
-        .cat
-        .proposals(&reviewer, Default::default())
-        .await
-        .must("listing")?
-        .data;
+    let fut = l.cat.propose(&l.own, write, "adding z".into());
+    fut.await.must("proposing `z`")?;
+    let listed = l.cat.proposals(&reviewer, Default::default());
+    let listed = listed.await.must("listing")?.data;
     let shown: Vec<_> = listed
         .iter()
         .map(|p| (json!(p.write).to_string(), p.more))

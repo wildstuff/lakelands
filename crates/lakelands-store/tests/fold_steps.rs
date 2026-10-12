@@ -9,6 +9,10 @@
 //! already holds records, on the memory engine, and states the fold's
 //! result literally: read by a later event of the transaction, from the
 //! committed head, and as of a step's position.
+//!
+//! The same harness holds the fold of a fill that names its output by
+//! `output_at` (`docs/decisions/053-a-recorded-output-is-recorded-once.md`),
+//! which no door writes wrong.
 
 mod probed;
 
@@ -573,7 +577,8 @@ fn an_output_fills_the_record_at_its_moved_key() {
         EventBody::OutputRecorded {
             seam: due.seam,
             input: due.input,
-            output: json!("S"),
+            output: Some(json!("S")),
+            output_at: None,
             field: Some(("doc".into(), "b".into(), "sum".into())),
         },
     ]);
@@ -581,6 +586,83 @@ fn an_output_fills_the_record_at_its_moved_key() {
         l.state(None, "doc", "b"),
         json!([{"title": "A", "sum": "S"}, 1, q[1].0])
     );
+}
+
+/// The fill of `doc` `key`'s `sum` with `output` or by `output_at`.
+type Fill = Box<dyn Fn(&str, Option<Value>, Option<Position>) -> EventBody>;
+
+/// A lake holding `doc` `a`, `b` and `c`, whose `sum` is one call of
+/// `f`, and `a`'s output "S": the lake, the call's fill, and the
+/// output's position.
+fn one_call(name: &str) -> (Folded, Fill, Position) {
+    let l = Folded::new(name);
+    let mut load = vec![function(1), declared(summed())];
+    load.extend(["a", "b", "c"].map(|k| wrote("doc", k, 1, json!({"title": "A"}))));
+    l.append(load);
+    let due = calls(&l.0).pop().expect("the call the records make is due");
+    let fill: Fill = Box::new(move |key, output, output_at| EventBody::OutputRecorded {
+        seam: due.seam.clone(),
+        input: due.input.clone(),
+        output,
+        output_at,
+        field: Some(("doc".into(), key.into(), "sum".into())),
+    });
+    let s = l.append(vec![fill("a", Some(json!("S")), None)])[0];
+    (l, fill, s)
+}
+
+#[test]
+fn a_fill_names_its_calls_latest_output_and_a_name_of_any_other_is_refused() {
+    let (l, fill, s) = one_call("fold-named");
+    // A fill names the output, in a later append and in the same one as a
+    // second output, which it then names.
+    let q = l.append(vec![fill("b", None, Some(s))]);
+    let t = Position(q[0].0 + 1);
+    let r = l.append(vec![
+        fill("a", Some(json!("T")), None),
+        fill("c", None, Some(t)),
+    ]);
+    assert_eq!(
+        l.state(None, "doc", "b"),
+        json!([{"title": "A", "sum": "S"}, 1, q[0].0])
+    );
+    assert_eq!(
+        l.state(None, "doc", "c"),
+        json!([{"title": "A", "sum": "T"}, 1, r[1].0])
+    );
+    // Any other position, a superseded output, both members and neither.
+    let refused = |name: &str, member: &dyn Fn(Position) -> (Option<Value>, Option<Position>)| {
+        let (l, fill, s) = one_call(name);
+        l.append(vec![fill("a", Some(json!("T")), None)]);
+        let (output, output_at) = member(s);
+        let refused = l.try_append(vec![fill("b", output, output_at)]);
+        refused.expect_err("the fold refuses it").to_string()
+    };
+    for (name, member, said) in [
+        (
+            "fold-named-other",
+            &(|s: Position| (None, Some(Position(s.0 - 1)))) as &dyn Fn(_) -> _,
+            "which is not its call's latest output",
+        ),
+        (
+            "fold-named-stale",
+            &|s| (None, Some(s)),
+            "which is not its call's latest output",
+        ),
+        (
+            "fold-named-both",
+            &|s| (Some(json!("T")), Some(s)),
+            "carries both `output` and `output_at`",
+        ),
+        (
+            "fold-named-neither",
+            &|_| (None, None),
+            "carries both `output` and `output_at`, or neither",
+        ),
+    ] {
+        let message = refused(name, member);
+        assert!(message.contains(said), "{name}: {message}");
+    }
 }
 
 #[test]

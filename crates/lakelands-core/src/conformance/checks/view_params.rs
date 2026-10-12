@@ -6,8 +6,6 @@
 //! account's payments in the seven days up to its `anchor` and counts
 //! those on the anchor's last day.
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::ontology::{Derived, MatchPair, RelationDecl, StorageKind, TypeDecl, ViewDecl};
 use lakelands_api::query::{Pattern, Projection, QueryResult, Walk};
@@ -15,56 +13,43 @@ use lakelands_api::read::{Find, Found, Get};
 use lakelands_api::{LakeStore, Params, Value};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, bound, field, find_where, invalid_case, invalid_like, log_events, param, pattern,
-    step, type_decl, view_of,
+    Lake, Must, bound, field, find_where, invalid_case, invalid_like, param, pattern, step,
+    type_decl, view_of,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// Two anchors, two windows.
     TWO_ANCHORS = the_same_view_read_at_two_anchors_answers_two_windows,
     "018: a view's parameters are bound by the read, so the same view read with two anchors answers two windows, by `find` and by `get`, each byte for byte the same on every engine; a date alone is midnight UTC"
 );
 
 check!(
-    /// A parameter missing, unknown or of the wrong kind is refused.
     BINDING_REFUSED = a_missing_unknown_or_wrongly_kinded_parameter_is_refused_naming_it,
     "018 and 015: a read of a view that leaves a parameter out, names one the view does not declare, or gives a value not of its kind is refused as invalid, naming the parameter; a type that is not a view takes none"
 );
 
 check!(
-    /// `param()` lives only in a view.
     PARAM_ONLY_IN_A_VIEW = param_outside_a_views_where_and_measures_is_refused,
     "017 and 018: `param()` is read only in a view's `where` and `measures`; in a read's `where`, a pattern's `where` or a derived field it is refused as invalid, naming the function"
 );
 
 check!(
-    /// A view's parameters are declared strictly.
     PARAMS_DECLARED_STRICTLY = a_view_declaring_its_parameters_badly_is_refused,
     "028 and 018: `declare` refuses a view whose `param()` names no declared parameter, which declares a parameter nothing reads, one twice, or one of a kind other than text, number, decimal, boolean, date_time or date, naming it"
 );
 
 check!(
-    /// A pattern binds the view it starts on.
     PATTERN_START_BINDS = a_pattern_started_on_a_view_binds_its_parameters,
     "018 and 026: a pattern that starts on a view binds its parameters with the start, by key and by `where`, and its nodes are the window `find` answers; a `degree` started on it by key answers that key's row of the whole view's; a start that leaves one out is refused, naming it"
 );
 
 check!(
-    /// A view's parameters are written in format 8.
-    FORMAT_8 = a_view_with_parameters_is_written_in_log_format_8,
-    "log format §6 and 018: the event that declares a view with parameters is written in format 8, as is every event after it; a view without them leaves the lake's format where it was"
-);
-
-check!(
-    /// A cursor keeps its parameters.
     CURSOR_KEEPS_PARAMS = a_cursor_continues_only_with_the_parameters_it_was_handed_out_for,
     "018 and 029: a page of a view continues only with the parameters its first page was read with; with others it is refused, since it would continue a different answer"
 );
 
 check!(
-    /// A step reaching a view binds nothing.
     STEP_TO_UNBOUND_VIEW = a_step_arriving_at_a_view_with_parameters_is_refused_before_reading,
     "018 and 029: a view's parameters are bound only by a read that names it, so a pattern (rows or a measure) whose step arrives at a view with parameters other than its start is refused as invalid before any record is read, naming the view and the relation, the same with no records and with some; a pattern started on that view with its parameters, stepping out, is answered"
 );
@@ -142,9 +127,7 @@ fn of_param(code: &str, name: &str) -> Value {
     json!({"code": code, "name": name})
 }
 
-async fn the_same_view_read_at_two_anchors_answers_two_windows(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn the_same_view_read_at_two_anchors_answers_two_windows(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     for (date, want) in [
         (
@@ -185,9 +168,7 @@ async fn the_same_view_read_at_two_anchors_answers_two_windows(
     Ok(())
 }
 
-async fn a_missing_unknown_or_wrongly_kinded_parameter_is_refused_naming_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_missing_unknown_or_wrongly_kinded_parameter_is_refused_naming_it(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     for (what, ty, params, case) in [
         (
@@ -240,9 +221,7 @@ async fn a_missing_unknown_or_wrongly_kinded_parameter_is_refused_naming_it(
     Ok(())
 }
 
-async fn param_outside_a_views_where_and_measures_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn param_outside_a_views_where_and_measures_is_refused(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let filter = "date <= param('anchor')";
     let find = find_where(filter);
@@ -273,9 +252,7 @@ async fn param_outside_a_views_where_and_measures_is_refused(
     Ok(())
 }
 
-async fn a_view_declaring_its_parameters_badly_is_refused(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_view_declaring_its_parameters_badly_is_refused(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(payment()).await?;
 
@@ -313,9 +290,7 @@ async fn a_view_declaring_its_parameters_badly_is_refused(
     Ok(())
 }
 
-async fn a_cursor_continues_only_with_the_parameters_it_was_handed_out_for(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_cursor_continues_only_with_the_parameters_it_was_handed_out_for(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     let page = |date: &str, cursor| Find {
         limit: Some(1),
@@ -368,9 +343,7 @@ fn start_on(view: &str, key: Option<&str>, filter: Option<&str>, params: Params)
     p
 }
 
-async fn a_pattern_started_on_a_view_binds_its_parameters(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_pattern_started_on_a_view_binds_its_parameters(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     for (key, filter, date, want) in [
         (
@@ -440,9 +413,7 @@ async fn a_pattern_started_on_a_view_binds_its_parameters(
     Ok(())
 }
 
-async fn a_step_arriving_at_a_view_with_parameters_is_refused_before_reading(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_step_arriving_at_a_view_with_parameters_is_refused_before_reading(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(payment()).await?;
     l.declare(account_window()).await?;
@@ -476,49 +447,8 @@ async fn a_step_arriving_at_a_view_with_parameters_is_refused_before_reading(
         project: Projection::Rows { fields: Vec::new() },
         ..start_on("account_window", Some("a"), None, anchor("2026-06-12"))
     };
-    l.cat
-        .query(&l.own, out)
-        .await
+    let fut = l.cat.query(&l.own, out);
+    fut.await
         .must("a pattern started on `account_window` with its anchor, stepping over `window`")?;
-    Ok(())
-}
-
-async fn a_view_with_parameters_is_written_in_log_format_8(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
-    let l = Lake::of(store.as_ref());
-    l.declare(payment()).await?;
-    let mut plain = account_window();
-    plain.name = "account_totals".into();
-    if let Some(v) = plain.view.as_mut() {
-        v.params.clear();
-        v.r#where = None;
-        v.measures.truncate(1);
-    }
-    plain.fields.truncate(2);
-    l.declare(plain).await?;
-    let before = log_events(store.as_ref()).await?;
-    let highest = before.iter().map(|e| e.v).max().unwrap_or(0);
-    ensure!(
-        highest < 8,
-        "a view without parameters needs no format 8, yet the lake writes {highest}"
-    );
-    let declared = l.declare(account_window()).await?.position();
-    let p1 = json!({"account": "a", "date": "2026-06-30", "amount": "1.00"});
-    l.upsert("payment", "p1", p1).await?;
-    for e in log_events(store.as_ref()).await? {
-        let want = match e.position.cmp(&declared) {
-            std::cmp::Ordering::Less => e.v.min(7),
-            std::cmp::Ordering::Equal => 8,
-            std::cmp::Ordering::Greater => 11,
-        };
-        ensure!(
-            e.v == want,
-            "the event at {} is written in format {}; the one declaring a view with \
-             parameters must be 8 and none before it, and the record made after it 11",
-            e.position,
-            e.v
-        );
-    }
     Ok(())
 }

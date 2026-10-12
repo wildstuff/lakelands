@@ -7,7 +7,6 @@
 //! where two engines drift apart silently, each consistent with itself.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::StorageKind;
@@ -23,31 +22,32 @@ use crate::conformance::fixture::{
     Lake, Must, agg, all_found, count_view, is_invalid, limits, order, pattern, principal,
     refused_on, type_of, value,
 };
-use crate::conformance::{Failure, Given};
+use crate::conformance::{Failure, Given, Held, Store};
 
 check!(
-    /// Walking the cursor visits each record once.
     EVERY_RECORD_ONCE = paging_through_find_visits_every_record_exactly_once,
     "the read contract: a cursor continues where its page ended, so a page set is a total order with no repeat and no gap"
 );
 
 check!(
-    /// A page answers its total and jumps by offset.
     TOTAL_AND_OFFSET = a_page_answers_its_total_and_an_offset_jumps_to_the_walks_slice,
     "045 and 029: `total` answers as many records as a full walk finds, for a filter the engine applies and one only the store evaluates, a view and a reader without `restricted`, the same on every page of a cursor walk while another writer writes; `offset` answers the full walk's slice from it, by key, by a field and by a field with an order index, a view too, and its cursor continues the walk; `offset` beside `cursor`, `after` or `aggregate`, and `total` beside `aggregate`, are refused as invalid, and an offset past `max_offset` as too_large naming it"
 );
 
 check!(
-    /// Records without the sort value come last, both ways.
     MISSING_SORT_VALUES_LAST = records_without_the_sort_field_are_listed_last_in_either_direction,
     "the read contract: records without a value for a sort key sort last in either direction; ordering never drops them"
 );
 
 check!(
-    /// A read that names no limit is not refused for it (lakelands#679).
     UNNAMED_LIMIT = a_read_that_names_no_limit_takes_the_smaller_bound,
     "the location's limits: a read that names no `limit` takes `default_limit`, or `max_limit` where that is smaller, so it is never refused for a bound it did not ask for; a `limit` the caller names above `max_limit` is still refused as invalid",
     given
+);
+
+check!(
+    EACH_HOLDER_ONCE = a_walk_under_an_exact_text_in_an_indexed_order_visits_each_holder_once,
+    "041, extended (lakelands#695): a `find` by an exact text in the order of a field with an order index, either way, paged to the end by three and by five, fewer than the rows a page passes over, answers each record holding the text once and in the field's order, ties by key; the retired holders are passed over, and the restricted ones for a reader without `restricted`; so does a walk by three and by five most of whose pages pass over more rows than their first batches hold, where an engine may go on reading another way, with a retired and a restricted record among the rows it passes over before and after, and the last row it read before going on one the page answers, so it is answered once"
 );
 
 async fn counter(store: &dyn LakeStore) -> Result<Lake, Failure> {
@@ -64,9 +64,7 @@ fn keys(rows: &[Record]) -> Vec<String> {
     rows.iter().map(|r| r.key.as_str().to_owned()).collect()
 }
 
-async fn paging_through_find_visits_every_record_exactly_once(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn paging_through_find_visits_every_record_exactly_once(store: Store) -> Held {
     const TOTAL: usize = 25;
     let l = counter(store.as_ref()).await?;
     for i in 0..TOTAL {
@@ -100,9 +98,7 @@ async fn paging_through_find_visits_every_record_exactly_once(
     Ok(())
 }
 
-async fn records_without_the_sort_field_are_listed_last_in_either_direction(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn records_without_the_sort_field_are_listed_last_in_either_direction(store: Store) -> Held {
     let l = counter(store.as_ref()).await?;
     // Interleaved by key, so a tail that only happened to be in key order
     // cannot pass by accident.
@@ -173,9 +169,7 @@ async fn one_page(
     }
 }
 
-async fn a_page_answers_its_total_and_an_offset_jumps_to_the_walks_slice(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_page_answers_its_total_and_an_offset_jumps_to_the_walks_slice(store: Store) -> Held {
     let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let cat = cat.as_ref();
@@ -350,10 +344,116 @@ async fn a_page_answers_its_total_and_an_offset_jumps_to_the_walks_slice(
     Ok(())
 }
 
-async fn a_read_that_names_no_limit_takes_the_smaller_bound(
-    store: Arc<dyn LakeStore>,
-    given: Given,
-) -> Result<(), Failure> {
+async fn a_walk_under_an_exact_text_in_an_indexed_order_visits_each_holder_once(
+    store: Store,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    let fields = [
+        ("n", StorageKind::Number),
+        ("tag", StorageKind::Text),
+        ("m", StorageKind::Number),
+    ];
+    l.declare(type_of("counter", &fields)).await?;
+    let Lake { cat, own } = &l;
+    l.set("sort_index.counter", json!(["n"])).await?;
+    // Two records in three hold `a`, and each `n` is held twice. Of the
+    // holders one in five is retired and one in seven restricted, so a
+    // page of three passes over rows and asks its engine for more than
+    // one batch of them.
+    let mut holders = Vec::new();
+    for i in (0..60u32).filter(|i| i % 3 != 0) {
+        holders.push((format!("c{i:02}"), (i * 7) % 30, i % 5 == 1, i % 7 == 2));
+    }
+    for i in 0..60u32 {
+        let tag = if i % 3 == 0 { "b" } else { "a" };
+        let fields = json!({"n": (i * 7) % 30, "tag": tag});
+        l.upsert("counter", &format!("c{i:02}"), fields).await?;
+    }
+    // 72 hold `c`, each `n` twice. Of every sixteen of them in `n`'s
+    // order three hold `m = 1`: one as it is, one retired and one
+    // restricted. A page under `m = 1` passes over eight rows and more
+    // for each record it answers, so most pages of a walk ask their
+    // engine for more batches than an engine reads one by one (041,
+    // extended: three), and what the engine reads before and after holds
+    // a retired and a restricted record that the page would answer
+    // otherwise. Pages of three and of five put an answered record first
+    // after the hand-over, and after a later batch. In the second
+    // sixteen the last record holds `m = 1` too, as it is: a page whose
+    // three batches end on it has read, as its last row before the
+    // hand-over, one it answers, and an engine that went on from that
+    // row, not after it, would answer it twice.
+    let key_of = |j: u32| format!("d{:02}", (j * 29) % 72);
+    let mut rare = Vec::new();
+    for j in 0..72u32 {
+        let key = key_of(j);
+        // Of the two that share the second sixteen's last `n`, the later
+        // in key order.
+        let sixteenth = j / 16 == 1 && matches!(j % 16, 14 | 15) && key > key_of(j ^ 1);
+        let m = u32::from(matches!(j % 16, 0 | 1 | 5) || sixteenth);
+        l.upsert("counter", &key, json!({"n": j / 2, "tag": "c", "m": m}))
+            .await?;
+        if m == 1 {
+            rare.push((key, j / 2, j % 16 == 1, j % 16 == 5));
+        }
+    }
+    for (key, _, retired, restricted) in holders.iter().chain(&rare) {
+        if *retired {
+            l.retire("counter", key).await?;
+        } else if *restricted {
+            let (ty, key) = ("counter".into(), key.as_str().into());
+            let held = store.restrict(&ty, &key, "hold".into()).await;
+            held.must("restricting a holder")?;
+        }
+    }
+    let reader = Grants {
+        default: Access::Read,
+        ..Grants::default()
+    };
+    let reader = principal(store.as_ref(), PrincipalKind::Agent, "reader", reader);
+    // A page of three asks its engine for a power of two, one of five
+    // does not: an engine that fetches in powers of two then holds rows
+    // past a batch for the next.
+    let (all, few) = (("tag = 'a'", &holders), ("tag = 'c' and m = 1", &rare));
+    let walks = [
+        (all, own, true, 3),
+        (all, own, true, 5),
+        (all, &reader, false, 3),
+        (few, own, true, 3),
+        (few, own, true, 5),
+        (few, &reader, false, 3),
+        (few, &reader, false, 5),
+    ];
+    for ((filter, holders), who, sees_restricted, limit) in walks {
+        for dir in [Direction::Asc, Direction::Desc] {
+            let mut expected: Vec<(u32, &String)> = (holders.iter())
+                .filter(|h| !h.2 && (sees_restricted || !h.3))
+                .map(|h| (h.1, &h.0))
+                .collect();
+            expected.sort_by(|a, b| match dir {
+                Direction::Asc => a.cmp(b),
+                Direction::Desc => b.0.cmp(&a.0).then(a.1.cmp(b.1)),
+            });
+            let expected: Vec<&String> = expected.into_iter().map(|(_, key)| key).collect();
+            let find = Find {
+                filter: Some(filter.into()),
+                order_by: vec![order("n", OrderBy::Value, dir)],
+                limit: Some(limit),
+                ..Find::default()
+            };
+            let walked = keys(&all_found(cat.as_ref(), who, "counter", find).await?);
+            ensure!(
+                walked.iter().eq(expected.iter().copied()),
+                "paged by {limit} under `{filter}` in the indexed `n`'s order {dir:?}, a reader \
+                 who sees restricted records ({sees_restricted}) is answered each record holding \
+                 the text once, in order, the retired ones passed over: {expected:?}; the walk \
+                 answered {walked:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn a_read_that_names_no_limit_takes_the_smaller_bound(store: Store, given: Given) -> Held {
     let l = counter(store.as_ref()).await?;
     for i in 0..7 {
         l.upsert("counter", &format!("k{i}"), json!({"n": i}))

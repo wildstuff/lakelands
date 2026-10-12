@@ -39,7 +39,7 @@ use lakelands_api::engine::{After, CanonicalEvent, Scan};
 use lakelands_api::error::{Case, Detail, Error, Flaw, Part, Place as At, Refusal, Result, Said};
 use lakelands_api::event::SegmentDigest;
 use lakelands_api::expr::Expr;
-use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
+use lakelands_api::id::{FieldName, LakeId, Position, RecordKey, RelationName, TypeName, VerbName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::Edge;
 use lakelands_api::read::{Direction, Order, OrderBy};
@@ -107,7 +107,7 @@ pub fn exact_text_term(filter: &Expr) -> Option<(FieldName, String)> {
                 Expr::Path { path },
             ) if path.len() == 1
                 && t.parse::<rust_decimal::Decimal>().is_err()
-                && Timestamp::parse(t).is_err() =>
+                && Timestamp::denoted(t).is_err() =>
             {
                 Some((path[0].clone(), t.clone()))
             }
@@ -208,6 +208,7 @@ pub fn admits(decl: Option<&TypeDecl>, record: &StoredRecord, scan: &Scan) -> bo
     let fields = &record.fields;
     let scope = RecordScope {
         fields,
+        meta: None,
         settings: None,
         now: NO_CLOCK,
     };
@@ -489,14 +490,42 @@ thread_local! {
     static ROWS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static LINKS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static BATCHES_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static HOLDER_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// The batches of index rows [`scan_in_field_order`] asked for on this
-/// thread. An engine may read more than a batch to answer one (the text's
-/// every holder, sorted), so the engine checks count by it that a page
-/// whose filter rejects rows asks for few batches, not one per row.
+/// thread. An engine may read more than a batch to answer one (a text's
+/// few holders, read whole and sorted: [`holder_reads`]), so the engine
+/// checks count by it that a page whose filter rejects rows asks for few
+/// batches, not one per row.
 pub fn batches_read() -> u64 {
     BATCHES_READ.with(|n| n.get())
+}
+
+/// The batches a page read text first ([`Holders::Few`]) reads each by a
+/// statement of its own, cut at the batch, before its engine reads the
+/// holders left once and keeps them in order. The store asks for one row
+/// more than a page, so a page that passes over a retired or a restricted
+/// record or two asks for a second and a third batch, and costs what a
+/// small batch costs; a page that asks for a fourth is rejecting rows, and
+/// its batches grow
+/// (`docs/decisions/041-a-sorted-page-reads-its-page.md`, extended).
+pub const BATCHES_BEFORE_HELD: u32 = 3;
+
+/// The times an engine on this thread read a text's holders whole and
+/// kept them in order for the batches a page read text first still asks
+/// for: one for a page that asks for more than [`BATCHES_BEFORE_HELD`]
+/// batches, however many, and none for a shorter one. The engine checks
+/// count by it that a page whose filter rejects rows reads its holders
+/// once, not once a batch.
+pub fn holder_reads() -> u64 {
+    HOLDER_READS.with(|n| n.get())
+}
+
+/// Counts one read of a text's holders for [`holder_reads`]; an engine
+/// calls it where it reads them to keep.
+pub fn count_holder_read() {
+    HOLDER_READS.with(|n| n.set(n.get() + 1));
 }
 
 /// The rows the scans and counts on this thread were handed: the whole
@@ -1071,20 +1100,21 @@ fn field_tokens(
         .collect()
 }
 
-/// Full-text hits, as `docs/seams.md` §`lexical` defines them: the
+/// Full-text hits, as `docs/seams.md` §`ranked` defines them: the
 /// records of one type as they stand at the head, `decl` the type's
-/// declaration there, are hits when their searchable text holds a query
-/// token — the text of the searchable fields `fields` names, when it
-/// names any; each comes with whether it is live at the view's own
-/// position, and only those are kept. A hit scores the distinct query
-/// tokens its head text holds; best first, ties by key, at most `k`.
+/// declaration there, are hits when they are live and their searchable
+/// text holds a query token — the text of the searchable fields `fields`
+/// names, when it names any. A restricted record is a candidate like any
+/// other; whether a principal may see it is the store's, as for `find`
+/// and `get`. A hit scores the distinct query tokens its text holds;
+/// best first, ties by key, at most `k`.
 ///
 /// An engine may hand in any superset of the hits as `head`: a record
 /// whose named fields hold no query token scores nothing and is dropped
 /// here, before the ranking is cut at `k`.
 pub fn lexical<'a>(
     decl: &TypeDecl,
-    head: impl IntoIterator<Item = (&'a StoredRecord, bool)>,
+    head: impl IntoIterator<Item = &'a StoredRecord>,
     text: &str,
     fields: Option<&[FieldName]>,
     k: u32,
@@ -1092,20 +1122,13 @@ pub fn lexical<'a>(
     let query = tokens(text, decl.language.as_deref().unwrap_or(""));
     let mut hits: Vec<(RecordKey, f64)> = head
         .into_iter()
-        .filter_map(|(r, live)| {
+        .filter_map(|r| {
             let score = query.intersection(&field_tokens(decl, r, fields)).count();
-            (score > 0 && live).then(|| (r.key.clone(), score as f64))
+            (score > 0 && !r.retired).then(|| (r.key.clone(), score as f64))
         })
         .collect();
     rank(&mut hits, k);
     hits
-}
-
-/// Whether a record's state is live: what `lexical` keeps at a view's
-/// position. A restricted record is a candidate like any other; whether a
-/// principal may see it is the store's, as for `find` and `get`.
-pub fn searchable(state: Option<&StoredRecord>) -> bool {
-    state.is_some_and(|r| !r.retired)
 }
 
 /// Why an event may not be added to a log, as far as its fence goes
@@ -1193,6 +1216,23 @@ pub fn first_of_next(
 pub fn lease_held(holder: &str, fence: u64) -> Error {
     let holder = holder.to_owned();
     Error::unavailable(lakelands_api::error::Situation::LeaseHeld { holder, fence })
+}
+
+/// Refuses a projection of `lake` laid out by another build: `found`,
+/// where the engine's layout is `wanted`. Such a projection is never
+/// read, since a table it lacks or holds otherwise would answer wrongly
+/// without failing; it is rebuilt from the log.
+pub fn layout(lake: &LakeId, found: Option<u64>, wanted: u64) -> Result<()> {
+    if found == Some(wanted) {
+        return Ok(());
+    }
+    let lake = lake.to_string();
+    let situation = lakelands_api::error::Situation::ProjectionLayout {
+        lake,
+        found,
+        wanted,
+    };
+    Err(Error::unavailable(situation))
 }
 
 /// The refusal of a query vector of `query` dimensions where `ty.field`

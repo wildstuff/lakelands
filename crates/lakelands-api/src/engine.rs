@@ -83,6 +83,12 @@ pub enum OpenMode {
     Write,
     /// As `Write`, creating the lake if it does not exist.
     Create,
+    /// As `Write`, for a rebuild: the lake must exist, and its projection
+    /// is opened whatever layout made it, since `clear` makes it anew at
+    /// the engine's own before anything reads it. The store's open in this
+    /// mode clears the projection under the lease and folds the whole log
+    /// (`docs/decisions/004-the-change-feed-is-the-log.md`).
+    Rebuild,
 }
 
 /// One lake's storage, as an engine keeps it.
@@ -159,6 +165,17 @@ pub trait LakeEngine: Send + Sync {
     /// as `OutOfRange` for a position the projection has not folded.
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>>;
 
+    /// The rankings of one pull of a search over `ty`, each cut at `k`,
+    /// all read from one state of the head's indexes, with the position
+    /// the projection was folded through in that state. The indexes
+    /// describe the head only, so the candidates are the records live
+    /// there, restricted ones included; what a read at any position may
+    /// see of them is the store's, which judges them at the position
+    /// answered (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`). An
+    /// engine that keeps no vector index refuses a vector's ranking as
+    /// unbound.
+    fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked>;
+
     /// The engine's vector index, if it keeps one.
     fn vectors(&self) -> Option<&dyn VectorIndex>;
 }
@@ -223,12 +240,16 @@ pub trait ProjectionStore: Send + Sync {
     /// that recorded it at `at`.
     fn put_output(&self, seam: &str, input: &Digest, output: &Value, at: Position) -> Result<()>;
 
-    /// Remember that the event with this id was applied at `at`, so that
-    /// a redelivery is recognised.
-    fn mark_applied(&self, id: &EventId, at: Position) -> Result<()>;
+    /// Remember that the event `applied` names was applied at its
+    /// position, so that a redelivery is recognised, and keep what the
+    /// feed's index holds of it: its kind and what it is about, which
+    /// [`ProjectionView::matching`] answers from.
+    fn mark_applied(&self, applied: &Applied) -> Result<()>;
 
     /// Delete everything, kept history included, for a rebuild from the
-    /// log.
+    /// log: a disk engine drops the projection's tables and makes them
+    /// again at its own layout, so a projection opened
+    /// [`OpenMode::Rebuild`] whatever layout made it is read from here on.
     fn clear(&self) -> Result<()>;
 
     /// Give the storage the projection no longer uses back, and change
@@ -255,6 +276,45 @@ impl Reclaimed {
     pub fn nothing() -> Reclaimed {
         Reclaimed::default()
     }
+}
+
+/// An event the fold applied, as the projection remembers it: its id,
+/// and the kind and the types and keys the change feed's filter reads it
+/// by (`docs/seams.md` §`ChangeFeed`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Applied {
+    /// The event's identifier.
+    pub id: EventId,
+    /// Its position.
+    pub at: Position,
+    /// Its kind, as [`crate::event::EventBody::kind`] names it.
+    pub kind: &'static str,
+    /// What it is about, one entry a type it concerns; never empty, so an
+    /// event about nothing is one entry with neither.
+    pub about: Vec<About>,
+}
+
+/// A type and a key an event is about, as a feed filter reads them: the
+/// key is of that type, or of none for an event that names no type.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct About {
+    /// The type.
+    pub ty: Option<TypeName>,
+    /// The record's key.
+    pub key: Option<RecordKey>,
+}
+
+/// The positions a feed filter admits in a range, as the projection's
+/// index answers them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Matched {
+    /// The positions admitted, in order.
+    pub positions: Vec<Position>,
+    /// The last position decided: every position up to it that the filter
+    /// admits is in `positions`. None where nothing is decided, as from a
+    /// position a projection a rebuild cleared has not refolded: the store
+    /// then reads the log.
+    pub through: Option<Position>,
 }
 
 /// One declaration in force, as a view returns it.
@@ -304,6 +364,29 @@ pub struct Scan {
     pub equal: Vec<(FieldName, Value)>,
 }
 
+/// The rankings one pull of a search asks an engine for.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Rankings {
+    /// A text, matched in the type's searchable fields, or in those of
+    /// them it names.
+    pub text: Option<(String, Option<Vec<FieldName>>)>,
+    /// Each vector field asked, with its query vector.
+    pub vectors: Vec<(String, Vec<f32>)>,
+}
+
+/// What [`LakeEngine::ranked`] answers.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Ranked {
+    /// The position the projection was folded through in the state the
+    /// lists were read from; `None` for an empty one.
+    pub position: Option<Position>,
+    /// One list for each ranking asked, the text's first, then each
+    /// vector's: keys and scores, best first, equal scores by key. A
+    /// text scores as `docs/seams.md` §`ranked` says, a vector by the
+    /// cosine (higher is closer).
+    pub lists: Vec<Vec<(RecordKey, f64)>>,
+}
+
 /// A read view of the projection at one position. Records come back
 /// whole and unmasked; masking is the store's.
 pub trait ProjectionView {
@@ -340,16 +423,6 @@ pub trait ProjectionView {
         walk: Walk,
     ) -> Result<Vec<Vec<Edge>>>;
 
-    /// Full-text search over a type's searchable fields, or those of them
-    /// `fields` names: keys and scores, best first.
-    fn lexical(
-        &self,
-        ty: &TypeName,
-        text: &str,
-        fields: Option<&[FieldName]>,
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>>;
-
     /// Proposals.
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>>;
 
@@ -363,29 +436,41 @@ pub trait ProjectionView {
     /// The position an event id was applied at, if it was.
     fn applied(&self, id: &EventId) -> Result<Option<Position>>;
 
-    /// A seam's recorded output for this input, if recorded.
-    fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>>;
+    /// A seam's recorded output for this input, if recorded, with the
+    /// position it was recorded at.
+    fn output(&self, seam: &str, input: &Digest) -> Result<Option<(Position, Value)>>;
+
+    /// The positions from `from` through `through` whose events `filter`
+    /// admits, by what [`ProjectionStore::mark_applied`] kept of them, in
+    /// order and at most `limit` (0 is read as 1). Nothing past the view's
+    /// position is answered, and the store asks for no range past it. Its
+    /// `through` is the last position answered when `limit` is reached,
+    /// else `through` or the view's position, whichever is first, or an
+    /// earlier one where the engine bounds its work
+    /// (`lakelands_core::feed::WINDOW`), and never past what the projection
+    /// had folded where the index is read, in the same snapshot: a view
+    /// taken before a rebuild's `clear` decides only what the refold has
+    /// reached. It is at least `from`, or none where nothing from `from` on
+    /// is folded yet, and the store then reads the log. A filter that names nothing admits every event, and the store
+    /// does not ask the index for it.
+    fn matching(
+        &self,
+        filter: &crate::seam::FeedFilter,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<Matched>;
 }
 
-/// The engine's vector index, beside the projection. Vectors are indexed
-/// at the head; a read at an earlier position filters the candidates by
-/// what was visible there.
+/// The engine's vector index, beside the projection: its write side and
+/// its size. Vectors are indexed at the head, in the fold's transaction,
+/// and read by [`LakeEngine::ranked`].
 pub trait VectorIndex: Send + Sync {
     /// Index a record's vector for one field.
     fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()>;
 
     /// Remove a record's vector for one field.
     fn remove(&self, ty: &TypeName, key: &RecordKey, field: &str) -> Result<()>;
-
-    /// The nearest records to `query`, best first, with similarity scores
-    /// (higher is closer).
-    fn nearest(
-        &self,
-        ty: &TypeName,
-        field: &str,
-        query: &[f32],
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>>;
 
     /// How many vectors one field holds.
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64>;
@@ -395,6 +480,23 @@ pub trait VectorIndex: Send + Sync {
 pub trait EngineOpener: Send + Sync {
     /// The name the engine answers to in [`crate::location::EngineConfig`].
     fn name(&self) -> &str;
+
+    /// The first and the last event of the lake's log at `location`, read
+    /// without opening the lake: nothing is made or changed, in the log's
+    /// files or tables or in the projection, nothing of a lake is judged,
+    /// and a place with no lake stays with nothing. `None` where there is
+    /// no lake or its log is empty. An engine may refuse a place that
+    /// holds something other than a lake, as its [`open`] does, and
+    /// refuses as damaged what it can tell to be part of a lake without
+    /// its events, which is not a place with no lake. The store
+    /// asks this before every [`open`] and before an import, and opens
+    /// only a lake written in the format it reads
+    /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+    /// A tip that moves between the two calls is harmless: its writer
+    /// passed the same judgement, so it wrote the same format.
+    ///
+    /// [`open`]: EngineOpener::open
+    fn log_ends(&self, location: &Location) -> Result<Option<(CanonicalEvent, CanonicalEvent)>>;
 
     /// Open the lake at `location`. Opening never takes the lease: a
     /// writer takes it afterwards with `take_lease`, and a reader opened

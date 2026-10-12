@@ -8,53 +8,47 @@
 //! only source fields, an author only authored ones, and a record or
 //! patch that crosses the line is refused whole.
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::{StorageKind, TypeDecl};
-use lakelands_api::{Error, LakeStore, Refusal, TypeName, Version};
+use lakelands_api::{Error, Refusal, TypeName, Version};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, committed, delivered, events_from, field, get_at, head_unmoved, log_events,
     refused_on, refused_unmoved, source_record, sourced, try_upsert, type_decl, value,
     windows_reach_head,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// The same content ingested twice is written once.
     SAME_CONTENT_TWICE = the_same_content_ingested_twice_appends_nothing_the_second_time,
     "016 and the log format: ingest is content-addressed, so a redelivery of the same values appends nothing, within one delivery or across two; a record with no field counts as a duplicate for a live key, and is invalid for a new one (016, extended)"
 );
 
 check!(
-    /// The same key twice with new values advances the version.
     SAME_KEY_TWICE = the_same_key_twice_in_one_ingest_with_new_values_advances_the_version,
     "the log format: every event that changes a record moves its version by one, including two in one delivery"
 );
 
 check!(
-    /// A source record carrying an authored field is refused.
-    FOREIGN_FIELD_REFUSED = an_ingested_record_carrying_a_field_the_source_does_not_write_is_refused_whole,
+    FOREIGN_FIELD_REFUSED =
+        an_ingested_record_carrying_a_field_the_source_does_not_write_is_refused_whole,
     "016 and the log format: ingest writes only source and shared fields; a record carrying any other is refused whole, never trimmed, and a record whose key is empty is refused as invalid before its fields are judged, as `upsert` orders it, after the ingest grant and the type; a field another authority writes is refused before any value is judged (016, extended)"
 );
 
 check!(
-    /// An upsert carrying a source field is refused.
-    UPSERT_REFUSES_SOURCE_FIELD = an_upsert_carrying_a_field_only_a_source_writes_is_refused_as_the_wrong_door,
+    UPSERT_REFUSES_SOURCE_FIELD =
+        an_upsert_carrying_a_field_only_a_source_writes_is_refused_as_the_wrong_door,
     "016 and 015: an author never overwrites a figure the source is the authority on; the patch is refused as the wrong door"
 );
 
 check!(
-    /// A revert is a change; a redelivery and an unchanged record are not.
     REVERT_IS_A_CHANGE = ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert,
     "016 and the log format: an ingest that changes nothing appends nothing, and a record set back to an earlier value is a new change, not a redelivery"
 );
 
 check!(
-    /// An ingested value carries the lake and position it was read from.
     UPSTREAM_PER_FIELD = an_ingested_record_carries_its_upstream_per_field,
-    "010, 016 and log-format §1.1 and §6: a record ingested with `upstream` names that lake and position on every field it sets, the event is written in format version 3, and the member is not in the event's id; a later write of a field without it leaves that field without it"
+    "010, 016 and log-format §1.1: a record ingested with `upstream` names that lake and position on every field it sets, the event carries the member, and the member is not in the event's id; a later write of a field without it leaves that field without it"
 );
 
 /// `feed`: a source's `body` and an author's `verdict`.
@@ -63,9 +57,7 @@ fn feed() -> TypeDecl {
     type_decl("feed", vec![body, field("verdict", StorageKind::Text)])
 }
 
-async fn the_same_content_ingested_twice_appends_nothing_the_second_time(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn the_same_content_ingested_twice_appends_nothing_the_second_time(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(feed()).await?;
 
@@ -132,8 +124,8 @@ async fn the_same_content_ingested_twice_appends_nothing_the_second_time(
 }
 
 async fn the_same_key_twice_in_one_ingest_with_new_values_advances_the_version(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(feed()).await?;
 
@@ -160,8 +152,8 @@ async fn the_same_key_twice_in_one_ingest_with_new_values_advances_the_version(
 }
 
 async fn an_ingested_record_carrying_a_field_the_source_does_not_write_is_refused_whole(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(feed()).await?;
@@ -222,16 +214,15 @@ async fn an_ingested_record_carrying_a_field_the_source_does_not_write_is_refuse
     let ungranted =
         crate::conformance::fixture::ingest(cat.as_ref(), &no_ingest, "bank", nowhere()).await;
     let untyped = l.ingest("bank", nowhere()).await;
-    let door = l
-        .ingest(
-            "bank",
-            vec![source_record(
-                "feed",
-                "k2",
-                json!({"body": 5, "verdict": "x"}),
-            )],
-        )
-        .await;
+    let door = l.ingest(
+        "bank",
+        vec![source_record(
+            "feed",
+            "k2",
+            json!({"body": 5, "verdict": "x"}),
+        )],
+    );
+    let door = door.await;
     ensure!(
         matches!(&ungranted, Err(e) if matches!(e, Error::Refused { reason: Refusal::NotGranted, .. }))
             && matches!(untyped, Err(Error::NotFound { .. }))
@@ -248,8 +239,8 @@ async fn an_ingested_record_carrying_a_field_the_source_does_not_write_is_refuse
 }
 
 async fn an_upsert_carrying_a_field_only_a_source_writes_is_refused_as_the_wrong_door(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(feed()).await?;
@@ -274,9 +265,7 @@ async fn an_upsert_carrying_a_field_only_a_source_writes_is_refused_as_the_wrong
     Ok(())
 }
 
-async fn ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(feed()).await?;
     let body = |b: &str| vec![source_record("feed", "f", json!({ "body": b }))];
@@ -288,10 +277,8 @@ async fn ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert(
         ("a revert to `one`", "one", (1, 0)),
         ("`one` again, unchanged", "one", (0, 1)),
     ] {
-        let windows = l
-            .ingest("wire", body(b))
-            .await
-            .must(&format!("ingesting {step}"))?;
+        let windows = l.ingest("wire", body(b));
+        let windows = windows.await.must(&format!("ingesting {step}"))?;
         windows_reach_head(store.as_ref(), &windows, step).await?;
         let got = committed(&windows);
         ensure!(
@@ -316,14 +303,11 @@ async fn ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert(
 }
 
 check!(
-    /// A redelivery in a later window is still a redelivery.
     DUPLICATE_ACROSS_WINDOWS = a_record_delivered_twice_in_two_windows_is_written_once,
     "016 and the log format: ingest is content-addressed across windows too, so a record delivered again in a later window of the same ingest appends nothing and the feed holds one event"
 );
 
-async fn a_record_delivered_twice_in_two_windows_is_written_once(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_record_delivered_twice_in_two_windows_is_written_once(store: Store) -> Held {
     use crate::conformance::fixture::limits;
     use lakelands_api::event::EventBody;
     let l = Lake::of(store.as_ref());
@@ -366,9 +350,7 @@ async fn a_record_delivered_twice_in_two_windows_is_written_once(
     Ok(())
 }
 
-async fn an_ingested_record_carries_its_upstream_per_field(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn an_ingested_record_carries_its_upstream_per_field(store: Store) -> Held {
     use lakelands_api::{Position, Upstream};
     let l = Lake::of(store.as_ref());
     let mut reading = feed();
@@ -382,9 +364,8 @@ async fn an_ingested_record_carries_its_upstream_per_field(
     let mut first = source_record("feed", "r1", json!({"body": "warm", "unit": "C"}));
     first.upstream = Some(from.clone());
     let patch_first = first.fields.clone();
-    l.ingest("mirror", vec![first])
-        .await
-        .must("ingesting `r1` with an upstream")?;
+    let fut = l.ingest("mirror", vec![first]);
+    fut.await.must("ingesting `r1` with an upstream")?;
     let rec = l.read("feed", "r1").await?;
     for f in ["body", "unit"] {
         let got = rec.meta.get(f).and_then(|m| m.upstream.clone());
@@ -413,12 +394,10 @@ async fn an_ingested_record_carries_its_upstream_per_field(
         &patch_first,
     );
     ensure!(
-        ingested.v >= 3 && ingested.upstream.as_ref() == Some(&from) && ingested.id == id,
-        "the ingest with an upstream must be an event of format 3 or newer carrying it, with \
-         the id its source, type, key, version and patch make, which leaves `upstream` out; it \
-         is format \
-         {} carrying {:?} with id {}, and the id without the member is {}",
-        ingested.v,
+        ingested.upstream.as_ref() == Some(&from) && ingested.id == id,
+        "the ingest with an upstream must be an event carrying it, with the id its source, \
+         type, key, version and patch make, which leaves `upstream` out; it carries {:?} with \
+         id {}, and the id without the member is {}",
         ingested.upstream,
         ingested.id.0,
         id.0
@@ -443,9 +422,8 @@ async fn an_ingested_record_carries_its_upstream_per_field(
     // An authored write over a field leaves it without one.
     let mut stamped = source_record("feed", "r2", json!({"body": "cold"}));
     stamped.upstream = Some(from.clone());
-    l.ingest("mirror", vec![stamped])
-        .await
-        .must("ingesting `r2` with an upstream")?;
+    let fut = l.ingest("mirror", vec![stamped]);
+    fut.await.must("ingesting `r2` with an upstream")?;
     l.upsert("feed", "r2", json!({"verdict": "ok"})).await?;
     let rec = l.read("feed", "r2").await?;
     let (body, verdict) = (

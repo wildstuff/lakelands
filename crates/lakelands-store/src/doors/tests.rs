@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use lakelands_api::event::EventBody;
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::{Access, Grants, PrincipalKind, Refusal};
 use lakelands_engine_mem::MemoryOpener;
@@ -305,7 +306,7 @@ async fn the_executor_reads_the_record_as_its_call_was_judged() {
 /// refers to came with grants that still let it write the reference: it is
 /// refused to be sent again, and sent again the reference is a field it
 /// may not know of (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
-/// extended).
+/// extended). One the types moved under without hiding more is applied.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_write_that_waited_while_the_types_moved_is_sent_again() {
     let seams = Seams {
@@ -348,6 +349,18 @@ async fn a_write_that_waited_while_the_types_moved_is_sent_again() {
     };
     grants.types.insert("payroll".into(), held);
     let narrow = principal("narrow", grants);
+    // `wide` is kept from a type the lake does not hold: the migration
+    // hides nothing more from it, so its write that waited is applied.
+    let mut grants = Grants {
+        default: Access::Write,
+        ..Grants::default()
+    };
+    let none = TypeGrants {
+        default: Some(Access::None),
+        ..Default::default()
+    };
+    grants.types.insert("ghost".into(), none);
+    let wide = principal("wide", grants);
     let (ty, key) = (
         TypeName::from("ticket"),
         lakelands_api::RecordKey::from("t1"),
@@ -391,7 +404,19 @@ async fn a_write_that_waited_while_the_types_moved_is_sent_again() {
             async move { (cat.upsert(&narrow, &ty, &key, patch(), Default::default())).await },
         )
     };
+    let passing = {
+        let (cat, ty) = (cat.clone(), ty.clone());
+        let no = serde_json::from_value(json!({"no": "7"})).expect("a patch");
+        tokio::spawn(
+            async move { (cat.upsert(&wide, &ty, &"t2".into(), no, Default::default())).await },
+        )
+    };
     keyed.await.expect("the migration ends");
+    let passed = passing.await.expect("the upsert ends");
+    assert!(
+        passed.is_ok(),
+        "a write that waited while types moved that hide nothing from it is applied: {passed:?}"
+    );
     let answer = waiting.await.expect("the upsert ends");
     assert!(
         matches!(&answer, Err(Error::Unavailable { situation })

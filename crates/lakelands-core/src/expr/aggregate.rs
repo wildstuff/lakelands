@@ -264,9 +264,10 @@ impl Folds {
         out
     }
 
-    fn add(&mut self, row: &Row, settings: Option<&BTreeMap<String, Value>>, now: Timestamp) {
+    fn add(&mut self, (row, meta): Member<'_>, settings: Settings<'_>, now: Timestamp) {
         let scope = RecordScope {
             fields: row,
+            meta,
             settings,
             now,
         };
@@ -310,13 +311,14 @@ impl Grouping {
     /// Fold in one record, into its group: a key is a field's value, or
     /// an expression's. A value the expression cannot compute for the
     /// record is null, the missing group.
-    pub fn add(&mut self, row: &Row, settings: Option<&BTreeMap<String, Value>>) {
+    pub fn add(&mut self, (row, meta): Member<'_>, settings: Settings<'_>) {
         let value = |(name, expr): &(FieldName, Option<Expr>)| {
             let v = match expr {
                 None => row.get(name).cloned().unwrap_or(Value::Null),
                 Some(e) => {
                     let scope = RecordScope {
                         fields: row,
+                        meta,
                         settings,
                         now: self.now,
                     };
@@ -328,7 +330,7 @@ impl Grouping {
         let key: Row = self.keys.iter().map(value).collect();
         let group = (self.groups.entry(crate::canonical::of(&key)))
             .or_insert_with(|| (key, self.folds.clone()));
-        group.1.add(row, settings, self.now);
+        group.1.add((row, meta), settings, self.now);
     }
 
     /// The groups, in canonical key order.
@@ -355,6 +357,16 @@ pub fn to_value(v: &Val) -> Value {
 
 /// One record's fields.
 pub type Row = BTreeMap<FieldName, Value>;
+
+/// What an aggregate folds in: a record's fields and, where a record
+/// stands, its provenance; a row of a pattern or of a view has none.
+pub type Member<'a> = (
+    &'a Row,
+    Option<&'a BTreeMap<FieldName, lakelands_api::FieldMeta>>,
+);
+
+/// The lake's settings by key, which an argument may read.
+pub type Settings<'a> = Option<&'a BTreeMap<String, Value>>;
 
 /// An aggregate's answer, or the case of why it has none, said where it
 /// is.
@@ -393,13 +405,26 @@ pub fn group_keys(keys: &[GroupKey]) -> Answer<Vec<(FieldName, Option<Expr>)>> {
     Ok(out)
 }
 
+/// A path a pattern's rows hold, named whole, as an order, a projected
+/// field, a field key or a measure's field names one: the longest name
+/// `bound` that starts it, then one field of its record or `key`. A path
+/// no bound name starts, or one that goes on past the field, is refused.
+/// Answers the name and the field.
+pub fn row_path(name: &str, bound: &dyn Fn(&str) -> bool) -> Answer<(String, FieldName)> {
+    let path: Vec<&str> = name.split('.').collect();
+    match (1..path.len()).rev().find(|&k| bound(&path[..k].join("."))) {
+        Some(k) if k + 1 == path.len() => Ok((path[..k].join("."), FieldName::from(path[k]))),
+        _ => Err(Case::PatternNoPath { path: name.into() }.into()),
+    }
+}
+
 /// A pattern's aggregate read over its rows, which hold each value under
-/// its path, `<type>.<field>` or `<type>.key`, for each type `bound`
+/// its path, `<name>.<field>` or `<name>.key`, for each name `bound`
 /// (018, extended). A measure's field and a field key name a path whole.
-/// Each path of a named key reads the longest type bound, a field of it,
-/// then members, and is rewritten to the row's one key. A name no bound
-/// type starts is refused. Answers the aggregate so read and each type
-/// and field it reads.
+/// Each path of a named key reads the longest name bound, a field of its
+/// record, then members, and is rewritten to the row's one key. A path no
+/// bound name starts is refused. Answers the aggregate so read and each
+/// name and field it reads.
 pub fn over_rows(
     agg: &Aggregate,
     bound: &dyn Fn(&str) -> bool,
@@ -412,7 +437,7 @@ pub fn over_rows(
             .join(".")
     };
     let unbound = |path: String| Said::from(Case::PatternNoPath { path });
-    // Where a path's field stands: after the longest type `bound`.
+    // Where a path's field stands: after the longest name `bound`.
     let at = |path: &[FieldName]| {
         let k = (1..path.len()).rev().find(|&k| bound(&joined(&path[..k])));
         let k = k.ok_or_else(|| unbound(joined(path)))?;
@@ -421,11 +446,8 @@ pub fn over_rows(
         Ok(k)
     };
     let whole = |name: &FieldName| {
-        let path: Vec<FieldName> = name.as_str().split('.').map(FieldName::from).collect();
-        match at(&path)? {
-            k if k + 1 == path.len() => Ok(()),
-            _ => Err(unbound(name.to_string())),
-        }
+        read.borrow_mut().push(row_path(name.as_str(), bound)?);
+        Ok::<_, Said>(())
     };
     agg.measures
         .iter()
@@ -467,7 +489,8 @@ pub fn aggregate(
     now: Timestamp,
 ) -> Answer<Vec<Group>> {
     let mut grouping = grouping(agg, now)?;
-    rows.iter().for_each(|r| grouping.add(r, Some(settings)));
+    rows.iter()
+        .for_each(|r| grouping.add((r, None), Some(settings)));
     answer(grouping, agg)
 }
 

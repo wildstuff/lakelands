@@ -1,17 +1,18 @@
 //! A declaration a log already holds is folded as it was written: the
-//! fold does not judge it (`docs/decisions/028-authoring-is-strict-and-whole.md`,
-//! extended, lakelands#549).
+//! fold does not judge it, and authoring judges it when it is next
+//! declared (`docs/decisions/028-authoring-is-strict-and-whole.md`,
+//! extended, lakelands#549). A build that tightens authoring and keeps
+//! the log format opens lakes that hold what it now refuses.
 //!
-//! A derived `number` field whose expression is a duration was taken by a
-//! store before the check and never filled. The store refuses to declare
-//! one now, so the test writes the log through the engine seam as such a
-//! store left it. The type is judged when it is next declared. It runs on the memory engine, the store's one engine
-//! among its test dependencies.
+//! The witness is a derived `number` field whose expression is a
+//! duration, which is never filled. The store refuses to declare one, so
+//! the test writes the log through the engine seam. It runs on the memory
+//! engine, the store's one engine among its test dependencies.
 
 use std::sync::Arc;
 
 use lakelands_api::engine::{EngineOpener, OpenMode};
-use lakelands_api::event::{Digest, EventBody, LOG_FORMAT_BASE};
+use lakelands_api::event::{Digest, EventBody, LOG_FORMAT_VERSION};
 use lakelands_api::ontology::{FieldDecl, TypeDecl};
 use lakelands_api::seam::{Seams, setting_type};
 use lakelands_api::write::Declaration;
@@ -51,7 +52,7 @@ async fn a_declaration_the_log_holds_is_folded_as_before_and_judged_when_declare
         let now = Timestamp(1_790_000_000_000_000);
         let bodies = vec![
             EventBody::LakeCreated {
-                format: LOG_FORMAT_BASE,
+                format: LOG_FORMAT_VERSION,
             },
             EventBody::LeaseTaken {
                 fence: lease.fence,

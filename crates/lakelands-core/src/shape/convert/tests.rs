@@ -246,6 +246,31 @@ fn samples() -> Vec<Value> {
     ]
 }
 
+/// A number written as an integer beyond ±(2^53 − 1) fits no field,
+/// computed or converted, as no door takes it written.
+#[test]
+fn a_number_written_as_too_large_an_integer_fits_no_field() {
+    use StorageKind::{Json, Number, Text};
+    let max = 9_007_199_254_740_991_i64;
+    for v in [json!(max), json!(-max), json!(1e21), json!(0.5)] {
+        assert!(fits(&kind(Number), &v), "{v}");
+    }
+    for v in [json!(max + 1), json!(-max - 1), json!(1e16), json!(1e20)] {
+        assert!(!fits(&kind(Number), &v), "{v}");
+    }
+    assert!(!fits(&kind(Json), &json!({"a": [1e17]})));
+    let to_number = |digits: &str| convert(&json!(digits), &kind(Text), &kind(Number));
+    assert_eq!(to_number("9007199254740991"), Conversion::Exact(json!(max)));
+    assert_eq!(to_number("9007199254740992"), Conversion::Lossy);
+    // The conversions' own bound is the same integer: beyond it a numeral
+    // is no integer, and a float has no integral digits.
+    let beyond = numeral_to_number("9007199254740992");
+    assert!(beyond.is_some_and(|v| v.is_f64()));
+    let digits = |f: f64| serde_json::Number::from_f64(f).and_then(|n| integral_digits(&n));
+    assert_eq!(digits(max as f64), Some(max.to_string()));
+    assert_eq!(digits(max as f64 + 1.0), None);
+}
+
 #[test]
 fn every_exact_result_fits_its_target_and_converts_to_itself_again() {
     for from in StorageKind::ALL {
@@ -323,7 +348,7 @@ fn a_preflight_counts_what_converts_and_samples_what_does_not() {
         records.push(record(&format!("x{i}"), json!(0.5)));
     }
     let before = invoice(StorageKind::Number);
-    let report = preflight(&before, &retype(), records).unwrap();
+    let report = preflight(&before, &retype(), records, &|_| true).unwrap();
     assert_eq!(report.ty.as_str(), "invoice");
     assert_eq!(report.records_scanned, 9);
     assert_eq!(report.from_schema_hash, schema_hash(&before).unwrap());
@@ -347,15 +372,15 @@ fn a_report_does_not_depend_on_scan_order() {
     let records: Vec<_> = (0..9)
         .map(|i| record(&format!("k{i}"), json!(i as f64 + 0.5)))
         .collect();
-    let forward = preflight(&before, &retype(), records.clone()).unwrap();
-    let backward = preflight(&before, &retype(), records.into_iter().rev()).unwrap();
+    let forward = preflight(&before, &retype(), records.clone(), &|_| true).unwrap();
+    let backward = preflight(&before, &retype(), records.into_iter().rev(), &|_| true).unwrap();
     assert_eq!(forward, backward);
 }
 
 #[test]
 fn the_report_id_covers_the_whole_report() {
     let before = invoice(StorageKind::Number);
-    let one = preflight(&before, &retype(), vec![record("a", json!(1))]).unwrap();
+    let one = preflight(&before, &retype(), vec![record("a", json!(1))], &|_| true).unwrap();
     let mut blank = one.clone();
     blank.report_id = String::new();
     assert_eq!(
@@ -367,6 +392,7 @@ fn the_report_id_covers_the_whole_report() {
         &before,
         &retype(),
         vec![record("a", json!(1)), record("b", Value::Null)],
+        &|_| true,
     )
     .unwrap();
     assert!(one.lossless && two.lossless);
@@ -377,7 +403,7 @@ fn the_report_id_covers_the_whole_report() {
 fn a_lossless_preflight_and_its_migration_agree() {
     let before = invoice(StorageKind::Number);
     let records = vec![record("a", json!(12)), record("b", Value::Null)];
-    let report = preflight(&before, &retype(), records.clone()).unwrap();
+    let report = preflight(&before, &retype(), records.clone(), &|_| true).unwrap();
     assert!(report.lossless);
     let (_, fields) = &records[0];
     let out = migrate_record(&before, &retype(), fields).unwrap().unwrap();
@@ -401,7 +427,7 @@ fn renames_move_values_to_the_new_name() {
         relation_renames: Vec::new(),
     };
     let records = vec![record("a", json!("42")), record("b", json!("x"))];
-    let report = preflight(&before, &migration, records.clone()).unwrap();
+    let report = preflight(&before, &migration, records.clone(), &|_| true).unwrap();
     let [total] = &report.fields[..] else {
         panic!("{:?}", report.fields);
     };
@@ -426,7 +452,10 @@ fn a_rename_without_a_retype_is_not_reported_but_still_moves() {
         renames: vec![("note".into(), "remark".into())],
         relation_renames: Vec::new(),
     };
-    let report = preflight(&before, &migration, vec![record("a", json!("1"))]).unwrap();
+    let report = preflight(&before, &migration, vec![record("a", json!("1"))], &|_| {
+        true
+    })
+    .unwrap();
     assert!(report.fields.is_empty());
     assert!(report.lossless);
     let out = migrate_record(&before, &migration, &record("a", json!("1")).1)
@@ -464,7 +493,7 @@ fn a_field_that_becomes_required_counts_records_without_it() {
         relation_renames: Vec::new(),
     };
     let records = vec![record("a", json!(1)), record("b", Value::Null)];
-    let report = preflight(&before, &migration, records).unwrap();
+    let report = preflight(&before, &migration, records, &|_| true).unwrap();
     let [amount] = &report.fields[..] else {
         panic!("{:?}", report.fields);
     };
@@ -501,7 +530,7 @@ fn a_malformed_migration_is_refused() {
             relation_renames: Vec::new(),
         }
     };
-    let err = |m: Migration| preflight(&before, &m, vec![]).unwrap_err().case;
+    let err = |m: Migration| preflight(&before, &m, vec![], &|_| true).unwrap_err().case;
     assert!(matches!(
         err(renamed("ghost", "total", "total")),
         Case::RenameFromUnknown { .. }

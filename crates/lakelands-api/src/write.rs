@@ -84,7 +84,9 @@ pub enum Outcome {
 
 /// A member that is there, `null` included: an executor's answer of `null`
 /// is an answer, and only an absent `output` is none.
-fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<serde_json::Value>, D::Error> {
+pub(crate) fn present<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<serde_json::Value>, D::Error> {
     serde::Deserialize::deserialize(d).map(Some)
 }
 
@@ -165,7 +167,7 @@ pub enum ProposedWrite {
         /// The verb.
         verb: VerbName,
         /// The record it is called on; absent for a verb called on its
-        /// type (log format 8).
+        /// type.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<RecordKey>,
         /// Its payload.
@@ -174,14 +176,13 @@ pub enum ProposedWrite {
         #[serde(default)]
         opts: WriteOpts,
     },
-    /// Declarations, applied together as `apply` applies them (log format
-    /// version 4).
+    /// Declarations, applied together as `apply` applies them.
     Declare {
         /// The declarations.
         declarations: Vec<Declaration>,
     },
     /// A type's migration, as `migrate_apply` applies it, with the report
-    /// its preflight answered when it was proposed (log format version 4).
+    /// its preflight answered when it was proposed.
     Migrate {
         /// The migration.
         migration: Box<Migration>,
@@ -191,12 +192,11 @@ pub enum ProposedWrite {
         report: Box<MigrationReport>,
     },
     /// A value type's migration, as `migrate_value_type_apply` applies it,
-    /// with the report its preflight answered when it was proposed (log
-    /// format version 10).
+    /// with the report its preflight answered when it was proposed.
     MigrateValueType {
         /// The new declaration.
         to: Box<ValueTypeDecl>,
-        /// The values it renames (log format version 12).
+        /// The values it renames.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         renames: Vec<(String, String)>,
         /// The preflight's report at the proposal, for the reviewer. The
@@ -502,8 +502,8 @@ impl Declaration {
                 if value.is_null() {
                     return invalid(Case::AnnotationNull);
                 }
-                if let Some(n) = too_large(value) {
-                    return invalid(Case::IntegerTooLarge { n });
+                if let Some(n) = crate::canonical::integer_too_large(value) {
+                    return invalid(Case::IntegerTooLarge { n: n.clone() });
                 }
             }
             bytes += crate::canonical::of(map).len();
@@ -512,6 +512,79 @@ impl Declaration {
         (bytes > max).then(|| AnnotationFault::Invalid {
             said: Said::from(Case::AnnotationsTooLarge { bytes, max }).within(self.place()),
         })
+    }
+
+    /// A declaration is written into the log as it was declared, so it
+    /// is judged as a written value is (`docs/log-format.md` §1.2): a
+    /// number anywhere in it written as an integer beyond ±(2^53 − 1) is
+    /// said at the declaration and the member that holds it, by its path
+    /// in the declaration as it is written: a function's `config.limits[0]`,
+    /// the duration literal of an expression in typed form at
+    /// `where.rhs.value.value`. An expression in text form is judged by
+    /// the typed form it parses to, which is the form a schema hash is
+    /// taken over, and said at the member that holds the text (`where`).
+    pub fn integer_fault(&self) -> Option<Said> {
+        use crate::canonical::{integer_too_large, integer_too_large_at};
+        let written = serde_json::to_value(self).ok()?;
+        let typed = integer_too_large_at(&written).map(|(path, n)| (path, n.clone()));
+        let (path, n) = typed.or_else(|| {
+            self.conditions().into_iter().find_map(|(path, c)| {
+                let Condition::Text(text) = c else {
+                    return None;
+                };
+                let typed = serde_json::to_value(crate::expr::parse(text).ok()?).ok()?;
+                Some((path, integer_too_large(&typed)?.clone()))
+            })
+        })?;
+        let said = Said::from(Case::IntegerTooLarge { n });
+        Some(said.within(Place::Member { path }).within(self.place()))
+    }
+
+    /// Every expression the declaration holds, in either form, each with
+    /// the path of the member that holds it in the declaration as it is
+    /// written (`view.merge[0].where`).
+    pub fn conditions(&self) -> Vec<(String, &Condition)> {
+        let mut all: Vec<(String, Option<&Condition>)> = Vec::new();
+        match self {
+            Declaration::Type(t) => {
+                for (i, f) in t.fields.iter().enumerate() {
+                    all.push((format!("fields[{i}].derived"), f.derived.as_ref()));
+                }
+                for (i, r) in t.relations.iter().enumerate() {
+                    for (j, f) in r.fields.iter().enumerate() {
+                        let path = format!("relations[{i}].fields[{j}].derived");
+                        all.push((path, f.derived.as_ref()));
+                    }
+                }
+                let merged = t.view.iter().flat_map(|v| v.merge.iter().enumerate());
+                let merged =
+                    merged.map(|(i, m)| (format!("view.merge[{i}]"), &m.r#where, &m.measures));
+                let own = t
+                    .view
+                    .iter()
+                    .map(|v| ("view".to_owned(), &v.r#where, &v.measures));
+                for (source, filter, measures) in own.chain(merged) {
+                    all.push((format!("{source}.where"), filter.as_ref()));
+                    for (i, m) in measures.iter().enumerate() {
+                        all.push((format!("{source}.measures[{i}].expr"), Some(&m.expr)));
+                    }
+                }
+            }
+            Declaration::ValueType(v) => all.push(("constraint".into(), v.constraint.as_ref())),
+            Declaration::Verb(v) => {
+                all.push(("requires".into(), v.requires.as_ref()));
+                if let crate::ontology::VerbEffect::Write { set } = &v.effect {
+                    for (i, a) in set.iter().enumerate() {
+                        all.push((format!("set[{i}].value"), Some(&a.value)));
+                    }
+                }
+            }
+            Declaration::Trigger(t) => all.push(("when".into(), t.when.as_ref())),
+            Declaration::ObjectSet(s) => all.push(("where".into(), Some(&s.filter))),
+            Declaration::Function(f) => all.push(("expr".into(), f.expr.as_ref())),
+        }
+        let held = all.into_iter().filter_map(|(path, c)| Some((path, c?)));
+        held.collect()
     }
 }
 
@@ -534,19 +607,6 @@ fn is_identifier(s: &str) -> bool {
         .next()
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-/// An integer anywhere in a value beyond ±(2^53 − 1), if there is one.
-fn too_large(value: &serde_json::Value) -> Option<serde_json::Number> {
-    const MAX: u64 = (1 << 53) - 1;
-    match value {
-        serde_json::Value::Number(n) => (n.as_u64().is_some_and(|u| u > MAX)
-            || n.as_i64().is_some_and(|i| i.unsigned_abs() > MAX))
-        .then(|| n.clone()),
-        serde_json::Value::Array(items) => items.iter().find_map(too_large),
-        serde_json::Value::Object(m) => m.values().find_map(too_large),
-        _ => None,
-    }
 }
 
 const DECLARATION_KINDS: &[&str] = &[
@@ -654,7 +714,7 @@ pub struct Migration {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub renames: Vec<(FieldName, FieldName)>,
     /// Relations renamed: old name to new name. A renamed relation keeps
-    /// its edges, however it is carried (log format version 11).
+    /// its edges, however it is carried.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relation_renames: Vec<(RelationName, RelationName)>,
 }
@@ -665,7 +725,7 @@ impl Migration {
     /// once, and no new name is a field `before` keeps. Otherwise the case
     /// that says why. Judged against an author's view of the type, a field
     /// it may not know of is no field to it (lakelands#750). It lives in
-    /// the contract so that the mock refuses the same.
+    /// the contract; the store and the core's conversion call it.
     pub fn renamed_fields(&self, before: &TypeDecl) -> Result<Vec<(&FieldName, &FieldName)>, Case> {
         let has = |t: &TypeDecl, n: &FieldName| t.fields.iter().any(|f| &f.name == n);
         let mut out: Vec<(&FieldName, &FieldName)> = Vec::new();
@@ -700,7 +760,7 @@ impl Migration {
     /// and changes none: the carrier, the target, the cardinality and, for
     /// a relation carried by link records, its fields and who writes them
     /// stay. Otherwise the case that says why, said at the rename. It
-    /// lives in the contract so that the mock refuses the same.
+    /// lives in the contract; the store is its one caller.
     pub fn renamed_relations<'a>(
         &'a self,
         before: &'a TypeDecl,
@@ -740,8 +800,8 @@ impl Migration {
     /// for [`MigrationReport::restated`]: the two compared member by member
     /// as they serialise, a field with the one it takes its values from, a
     /// relation with the one it is renamed from, a link field as
-    /// `relation.field`. It lives in the contract so that the mock reports
-    /// the same.
+    /// `relation.field`. It lives in the contract; the store is its one
+    /// caller.
     pub fn restated(&self, before: &TypeDecl) -> Vec<Restated> {
         let mut out = Vec::new();
         let own = ["name", "fields", "relations"];
@@ -876,7 +936,7 @@ pub struct Restated {
 }
 
 /// A value type's migration: its new declaration, and the values it
-/// renames in every stored record that holds them (log format version 12).
+/// renames in every stored record that holds them.
 /// With no rename it changes no record, and is the tightening it was
 /// before.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -905,7 +965,7 @@ impl ValueTypeMigration {
     /// `before` does not accept, a new one `to` does not, a value renamed
     /// to itself or twice. A merge, a chain and a swap are allowed, unlike
     /// a type's relation renames: each pair maps a value as it stood before.
-    /// Here so that the mock refuses the same; `accepts` is the caller's
+    /// The store is its one caller; `accepts` is the caller's
     /// check of a value.
     pub fn check_renames(
         &self,
@@ -1002,7 +1062,9 @@ pub struct MigrationReport {
     /// Per reference field, in any type, the values the re-key rewrites.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<ReferenceRewrite>,
-    /// The first new keys more than one record would take, at most ten.
+    /// The first new keys more than one record would take, in the order
+    /// of the new key and at most ten, among those of which the reader is
+    /// answered two takers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sample_collisions: Vec<RecordRef>,
     /// What `to` states otherwise than the declaration in force, beside
@@ -1022,8 +1084,10 @@ pub struct MigrationReport {
     /// at: the SHA-256 of `{"report": …, "head": …}` in canonical form,
     /// the report with this member empty.
     pub report_id: String,
-    /// Whether the report holds more than this reader is shown: an answer
-    /// says so, without a name. A logged and a stored report hold `false`.
+    /// Whether the report holds more than this reader is shown, or counts
+    /// more than it names: an entry left out, a `not_convertible` larger
+    /// than its `sample_keys`, `collisions` beyond `sample_collisions`. A
+    /// logged and a stored report hold `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub more: bool,
 }
@@ -1202,7 +1266,8 @@ pub struct ValueTypeReport {
     /// Values the new declaration would refuse, as the renames leave them,
     /// over every field, shown to the reader or not.
     pub misfits: u64,
-    /// The first misfits, at most ten. Never values.
+    /// The first misfits of records the reader is answered, at most ten.
+    /// Never values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub first: Vec<Misfit>,
     /// True when every stored value fits the new declaration, in every

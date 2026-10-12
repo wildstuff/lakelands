@@ -32,6 +32,7 @@ What a declared name names.
 | `backing` | — | backing | A function's backing. |
 | `aging_rule` | — | aging rule | An aging rule. |
 | `group` | — | group | An aggregate's group key. |
+| `binding` | — | binding | A name a pattern binds a record under. |
 
 ## `Shape`
 
@@ -70,20 +71,6 @@ The form a REST query parameter's value takes.
 | `json` | — | JSON | JSON. |
 | `order` | — | fields separated by commas, `-field` for descending | Sort keys. |
 | `given` | — | a value that is not empty | A value given, not empty. |
-
-## `Unmocked`
-
-What the in-memory mock of a lake does not do, which the store does.
-
-| code | parameters | sentence | about |
-|---|---|---|---|
-| `rekey` | — | re-key a type, which keeps its key fields here | A migration that changes the key. |
-| `aggregate` | — | aggregate | A `find`'s aggregate. |
-| `pattern_start` | — | start a pattern but from a key or a filter | A pattern's start of another kind. |
-| `pattern_to` | — | walk a pattern to a record it names | A pattern walked to a record it names. |
-| `pattern_projection` | — | project a pattern but as rows | A pattern's projection of another kind. |
-| `hops` | — | walk a step but one hop in one direction | A step's depth or a walk both ways. |
-| `proposer` | — | know who made this proposal | The proposer of a proposal it did not log. |
 
 ## `Segment`
 
@@ -198,40 +185,6 @@ A TLS setup that failed, on the side of the lake's own connection.
 | `cert_empty` | — | the location's `tls.client_cert` holds no certificate | The client certificate file holds no certificate. |
 | `cert_unusable` | — | the client certificate cannot be used | The client certificate cannot be used. |
 
-## `Added`
-
-What a format version added that an event carries, written in an older format.
-
-| code | parameters | sentence | about |
-|---|---|---|---|
-| `rekeyed` | — | carries `rekeyed` | It carries `rekeyed`. |
-| `date_bucket` | — | declares a call of `date_bucket` | It declares a call of `date_bucket`. |
-| `upstream` | — | carries `upstream` | It carries `upstream`. |
-| `proposes_schema` | — | proposes a declaration or a migration | It proposes a declaration or a migration. |
-| `annotations` | — | carries `annotations` in a declaration | It carries `annotations` in a declaration. |
-| `derived_relation` | — | declares a derived relation | It declares a derived relation. |
-| `trigger_depth` | — | declares a trigger's `max_depth` | It declares a trigger's `max_depth`. |
-| `retired` | — | declares a call of `retired` | It declares a call of `retired`. |
-| `view_params` | — | declares a view's parameters | It declares a view's parameters. |
-| `no_key` | — | calls a verb with no key | It calls a verb with no key. |
-| `verb_on_type` | — | declares a verb on its type | It declares a verb on its type. |
-| `merged_sources` | — | declares a view that merges sources | It declares a view that merges sources. |
-| `tightening` | — | proposes a value type's tightening | It proposes a value type's tightening. |
-| `floor` | — | declares a call of `floor` | It declares a call of `floor`. |
-| `date_bucket_by_width` | — | declares a call of `date_bucket` by a width | It declares a call of `date_bucket` by a width. |
-| `in_set` | — | declares a call of `in_set` | It declares a call of `in_set`. |
-| `relation_rename` | — | renames a relation | It renames a relation. |
-| `kept_setting` | — | writes a `view_kept.` setting | It writes a `view_kept.` setting. |
-| `made` | — | carries `made` | It carries `made`. |
-| `restated` | — | proposes a migration whose report holds `restated` | It proposes a migration whose report holds `restated`. |
-| `initial` | — | declares an `initial` value | It declares an `initial` value. |
-| `with_the_set` | — | declares `with_the_set` | It declares `with_the_set`. |
-| `computed_at` | — | declares when a field is computed | It declares when a field is computed. |
-| `value_renames` | — | renames a value type's values | It renames a value type's values. |
-| `proposes_value_renames` | — | proposes a value type's migration that renames values | It proposes a value type's migration that renames values. |
-| `pinned` | — | proposes a write pinned to its record | It proposes a write pinned to its record. |
-| `date` | — | declares the kind `date` | It declares the kind `date`. |
-
 ## `Place`
 
 Where in a declaration or a request a case is said.
@@ -293,6 +246,7 @@ What a refusal is about.
 | `annotation_reserved` | `namespace` (String) | the namespace `{namespace}.` is reserved | An annotation key in a reserved namespace. |
 | `annotations_too_large` | `bytes` (usize), `max` (usize) | it holds {bytes} bytes of annotations, over the {max} a declaration may hold | A declaration's annotations over the bytes it may hold. |
 | `at_read_authority` | — | computed at the read, it has the authority `derived`: no door writes it | A field computed at the read that a door would write. |
+| `reference_unjudged` | — | a reference is computed at the write by an expression, where its writer is judged for the record it names; computed at the read, by a function's backing or an embedding, or from a field so computed, nothing judges it | A reference computed at the read, by a function's backing or an embedding, or from a field so computed. |
 | `at_read_backed` | — | computed at the read, an expression computes it; a function's backing is called at a write | A field computed at the read by a function a backing computes. |
 | `at_read_cleared` | — | computed at the read, no value of it is kept to clear | A field computed at the read that a change of its inputs clears. |
 | `link_field_at_read` | — | a link's field is computed at the write; a walk reads links as stored | A link's field computed at the read. |
@@ -342,6 +296,7 @@ What a refusal is about.
 | `initial_not_authored` | — | only a field its authors alone write takes one, not one a source writes or the fold computes | An `initial` value on a field its authors do not write alone. |
 | `initial_not_of_type` | — | only a field of a type declares one | An `initial` value on a field of no type. |
 | `initial_reference` | — | a field that names a record is checked against that record by the door that writes it | An `initial` value on a field that names a record. |
+| `inverse_twice` | `inverse` (RelationName), `target` (TypeName) | `{inverse}` is already the inverse of a relation onto `{target}`; an inverse names one relation | An inverse two relations name onto one target. |
 | `json_named_as_type` | — | a json field may not carry the name of a type | A `json` field named as a type. |
 | `key_unkeyable` | `field` (FieldName) | it is keyed by `{field}`, whose kind has no string form for a key; a key field is text, a reference, a decimal, a number, a boolean, a date-time or a date | A type keyed by a field no key may be. |
 | `link_authority` | `authority` (Authority) | its links are written by `authored` or `source`, not `{authority}` | Links of an authority no door writes them by. |
@@ -389,6 +344,7 @@ What a refusal is about.
 | `via_with_fields` | — | a relation carried by `via` has no fields of its own; fields belong to a relation carried by link records, declared without `via` | A relation carried by `via` with fields. |
 | `view_cycle` | `chain` (Names) | its view closes a cycle, reading {chain} in turn; a view may not read itself, through other views or directly | A view that reads itself. |
 | `view_field_unfilled` | `field` (FieldName) | its field `{field}` is neither a `group_by` field nor a measure of its view, so nothing would fill it | A view's field nothing fills. |
+| `view_key` | `group_by` (Names, optional) | a view's records are keyed by its `group_by`[ ({group_by})\|, and it has none]; its `key` names the same fields in that order, or is left out | A view's `key` that names other fields than its `group_by`. |
 | `view_relation` | `type` (TypeName), `carrier` (Carrier) | `{type}` is a view, whose records are computed and never written, so a relation carried by {carrier} could never hold an edge; a relation on a view is derived from matching values | A stored relation on a view. |
 | `view_searched` | `searchable` (bool), `embedded` (bool) | it [{?searchable}is searchable\|[{?embedded}carries an embedding\|is a vector]], and a view is not searched; its records are computed on read and no index holds them | A view's field that a search would read. |
 | `view_value_no_field` | `field` (FieldName) | its view computes `{field}`, which has no declared field to land in; a view declares a field for each value it computes, of the kind it holds | A value a view computes that no field holds. |
@@ -411,6 +367,7 @@ What a refusal is about.
 | `kind_sides` | `expr` (String), `left` (Kind), `right` (Kind) | `{expr}` has no meaning: its sides are {left} and {right} | Arithmetic over kinds that do not combine. |
 | `kind_takes_number` | `expr` (String), `kind` (Kind) | `{expr}` has no meaning: it takes a number, not {kind} | A number's function over what is no number. |
 | `minus_no_meaning` | `left` (Operand), `right` (Operand) | {left} minus {right} has no meaning | A difference of what are not two instants. |
+| `no_records_provenance` | — | known_at() and seen_at() read a record's provenance, and no record stands here: a view's records, a query's rows, a value type's constraint and a function's expression carry none | A provenance function where no record stands. |
 | `not_a_number` | `value` (Operand) | {value} is not a number | A number that is not a number. |
 | `not_aggregate` | `name` (String) | {name}() is not an aggregate | A function's call that is no aggregate where one is folded. |
 | `not_exact` | `number` (String) | `{number}` is not a number this evaluator can hold exactly | A number written that the evaluator cannot hold exactly. |
@@ -451,6 +408,7 @@ What a refusal is about.
 | `steps_into_reference` | `expr` (String), `field` (FieldName) | `{expr}` steps into `{field}`, which is a reference: a condition reads the record's own fields. Compare the reference's key, or walk to the record it names in a pattern | A path into a reference's members. |
 | `steps_into_scalar` | `expr` (String), `field` (FieldName) | `{expr}` steps into `{field}`, which is no `json` field, and has no members | A path into the members of what has none. |
 | `sum_not_number` | `value` (Operand) | sum() met {value}, which is not a number | A sum of what is no number. |
+| `measure_unfit` | `group` (RecordKey), `why` (Case), `decimal` (bool) | its value for the group `{group}` does not fit its field: {why}[{?decimal}; a field of kind `decimal` takes it] | A measure's value for a group that its field would not take written. |
 | `kept_adds_kind` | `call` (String), `kind` (Kind) | `{call}` adds {kind}; it is kept where its argument is certainly a number | A sum or an average of a kind that is no number. |
 | `kept_adds_uncertain` | `call` (String) | `{call}` adds what is of no certain kind: it is kept where its argument is certainly a number | A sum or an average of what is of no certain kind. |
 | `kept_at_read` | `field` (FieldName), `source` (TypeName) | it reads `{field}` of `{source}`, which is computed at the read, and a kept record is computed when its source is written | A measure reading a field computed at the read. |
@@ -484,6 +442,7 @@ What a refusal is about.
 | `measure_no_order` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no `order_by`: its rows come in the measure's own order | A measure with an order. |
 | `measure_no_steps` | `measure` (String) | `{measure}` walks the relations its steps name; name at least one | A measure with no step. |
 | `measure_no_to` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no `to` | A measure with a `to`. |
+| `measure_no_type` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `type`: it reads every link of a relation, whatever it reaches | A measure's step with a `type`. |
 | `measure_no_where` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `where` | A measure's step with a `where`. |
 | `no_relation_to_walk` | `type` (TypeName), `relation` (RelationName), `walk` (Walk) | `{type}` has no relation `{relation}` to walk {walk} | A step over a relation that its type does not walk that way. |
 | `not_searchable` | `field` (FieldName), `type` (TypeName) | `{field}` of `{type}` is not searchable | A field a search names that is not searchable. |
@@ -495,7 +454,10 @@ What a refusal is about.
 | `param_unknown` | `type` (TypeName), `name` (ParamName), `declared` (Names, optional) | `{type}` declares no parameter `{name}`, so it binds nothing[; its parameters are {declared}] | A parameter given that the type does not declare. |
 | `param_value` | `name` (ParamName), `type` (TypeName), `kind` (StorageKind), `value` (Value) | parameter `{name}` of view `{type}` is {kind}, and {value} is not one | A parameter's value not of its kind. |
 | `path_starts` | `count` (usize) | a path has one start, and this pattern's start names {count} records | A path with several starts. |
-| `pattern_no_path` | `path` (String) | `{path}` is no path the pattern's rows hold; a row holds `<type>.<field>` for each type the pattern binds | A name a pattern's aggregate reads that no row holds. |
+| `pattern_as_not_rows` | — | `as` names what a row binds, and only rows and an aggregate bind by name | A pattern naming a binding where no row binds by name. |
+| `pattern_binds_twice` | `name` (String) | the pattern binds `{name}` already; give this step another name with `as` | A pattern that binds two records under one name. |
+| `pattern_no_path` | `path` (String) | `{path}` is no path the pattern's rows hold; a row holds `<name>.<field>` for each name the pattern binds, its type's or the one `as` gives | A path a pattern orders, projects or aggregates by that no row holds. |
+| `pattern_order_not_rows` | — | `order_by` orders rows; a graph and a path come by depth, type and key, and an aggregate's groups by their key | A pattern with an `order_by` that answers no rows. |
 | `pattern_to_chain` | — | a pattern with `to` walks its steps as one walk from its start; every step's depth starts at 0 | A pattern with `to` whose steps are a chain. |
 | `pattern_to_not_graph` | — | a pattern with `to` answers the walk to it as a graph; ask `project` `graph` | A pattern with `to` not projected as a graph. |
 | `position_not_integer` | — | a position is a non-negative integer | A position of an `after` that is no whole number. |
@@ -504,8 +466,8 @@ What a refusal is about.
 | `search_fields_empty` | — | `fields` names no field; leave it out to search every searchable field | A search's `fields` that names none. |
 | `search_needs_vector` | `field` (FieldName) | `{field}` holds vectors its writers make, in a space the lake does not know; a hybrid search over it brings its own query vector | A hybrid search without a vector over a vector field no model fills: its writers chose the space, so no bound model may stand in for one. |
 | `search_not_vector` | `field` (FieldName), `kind` (StorageKind) | `{field}` is a {kind} field; a vector ranking reads a vector field | A vector ranking over a field that holds no vectors. |
-| `step_reaches` | `reached` (TypeName), `type` (TypeName) | it reaches `{reached}`, not `{type}` | A step that reaches another type than it names. |
-| `step_several_types` | — | it reaches several types and reads a `where`; name the step's `type` | A step reaching several types that reads a `where`. |
+| `step_reaches` | `reached` (TypeName), `type` (TypeName), `also` (Names, optional) | it reaches `{reached}`[, {also}], not `{type}` | A step that reaches another type than it names. |
+| `step_several_types` | — | it reaches several types, and a `where`, a row or the step after it reads one; name the step's `type` | A step reaching several types where a `where`, a row or the next step reads one. |
 | `step_too_deep` | `max` (u32), `asked` (u32) | a step may walk at most {max} hops; this one asks for {asked} | A step deeper than the lake walks. |
 | `text_weight_range` | — | `text_weight` must be above 0 and at most 1000000 | A `text_weight` out of range. |
 | `total_with_aggregate` | — | `total` counts the records a page lists; an `aggregate` answers groups, so give one | A `total` beside an aggregate. |
@@ -524,7 +486,7 @@ What a refusal is about.
 | `key_components` | `type` (TypeName), `fields` (usize), `key` (RecordKey), `parts` (usize) | `{type}` is keyed by {fields} field(s), and the key `{key}` has {parts} component(s) | A key with another number of components than the type's key fields. |
 | `key_disagrees` | `key` (RecordKey), `type` (TypeName), `derived` (RecordKey) | the key `{key}` and the key fields of `{type}` (which make `{derived}`) disagree | A key its key fields would make otherwise. |
 | `key_empty` | — | a record key is not empty and holds no NUL character | A key that is empty or holds a NUL. |
-| `link_end_as_field` | `end` (FieldName) | a link's `{end}` is given as `key` and `to`, not among its fields | A link's end given among its fields. |
+| `link_end_as_field` | `end` (FieldName) | a link's `{end}` is one of its ends, which `link` takes as `key` and `to`; no write sets it among the link's fields | A link's end given among its fields. |
 | `linked_already_from` | `from` (RecordKey), `relation` (RelationName), `to` (RecordKey, optional), `cardinality` (Cardinality) | `{from}` already links over `{relation}`[ to `{to}`], and it allows one ({cardinality}); unlink it first | A link from a record that links already where one is allowed, to a record named when the caller is shown it. |
 | `linked_already_to` | `to` (RecordKey), `relation` (RelationName), `from` (RecordKey, optional), `cardinality` (Cardinality) | `{to}` is already linked over `{relation}`[ from `{from}`], and it allows one ({cardinality}); unlink it first | A link to a record that is linked already where one is allowed, from a record named when the caller is shown it. |
 | `no_link_relation` | `type` (TypeName), `relation` (RelationName) | `{type}` has no relation `{relation}` carried by link records | A relation a link door names that link records do not carry. |
@@ -581,6 +543,7 @@ What a refusal is about.
 | `migration_other_type` | `from` (TypeName), `to` (TypeName) | a migration of `{from}` declares the type `{to}` | A migration that declares another type. |
 | `migration_stale` | — | the lake moved since that preflight report; run the preflight again | A migration applied against a report of another head. |
 | `migration_takes_key` | `type` (TypeName) | the migration takes every key field of `{type}` away, and leaves no rule to make its records' keys | A migration that takes every key field away. |
+| `migration_takes_link_type` | `unnamed` (bool), `relation` (RelationName), `type` (TypeName) | [{?unnamed}a declaration\|it] is declared on `{type}`, the link type of the relation `{relation}`, which the migration removes; declare it on another type first | A migration that removes a relation a verb is declared on the link type of. |
 | `migration_takes_read` | `unnamed` (bool), `field` (FieldName), `type` (TypeName), `renamed` (FieldName, optional) | [{?unnamed}a declaration\|it] reads `{field}` of `{type}`, which the migration [renames to `{renamed}`\|drops] | A migration that takes away a field a declaration reads. |
 | `migration_to_view` | `type` (TypeName) | the migration would turn the stored type `{type}` into a view; declare the view under another name, and the type keeps its name and its records | A migration that would make a stored type a view. |
 | `migration_view_to_stored` | `type` (TypeName) | `{type}` is a view, and it becomes a stored type by being declared as one, never by a migration | A migration that would make a view a stored type. |
@@ -704,8 +667,6 @@ What a refusal is about.
 | `segment_empty` | `part` (Segment) | {part} is empty; over REST it is a path segment, and an empty one names another route | An empty path segment. |
 | `value_type_no_relations` | — | a value type has no relations to rename; `relation_renames` belongs to `to` | A value type's migration naming relations to rename. |
 | `verb_type_header` | `header` (String), `verb` (VerbName) | `POST …/verbs/<verb>` takes no `{header}`: verb `{verb}` is called on its type, which has no record version | A compare-and-set header on a verb called on its type. |
-| `mock_cannot` | `what` (Unmocked) | the in-memory mock does not {what} | What the in-memory mock does not do, which the store does. |
-| `mock_unevaluated` | `name` (String) | the in-memory mock does not evaluate {name}() here | A function the in-memory mock does not evaluate where it is called. |
 
 ## `Operand`
 
@@ -845,9 +806,8 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `not_an_event` | `detail` (Detail) | a line is not an event: {detail} | A line is not an event. |
 | `not_canonical` | — | the bytes are not canonical | The bytes are not canonical. |
 | `not_one_form` | — | a member is not in its one written form | A member is not in its one written form. |
-| `format_outside` | `v` (u64), `lowest` (u64), `highest` (u64) | written in log format {v}, and the formats read are {lowest} to {highest} | It is written in a format outside the formats read. |
-| `format_back` | `v` (u64), `before` (u64) | written in format {v} after an event in format {before} | It is written in a format before that of the event before it. |
-| `format_below` | `v` (u64), `carries` (Added), `need` (u64) | a format {v} event {carries}, which format {need} added | It carries what a later format added. |
+| `format_other` | `v` (u64), `reads` (u64) | written in log format {v}, and this release reads and writes format {reads} alone | It is written in a log format this release does not read. |
+| `created_in_another` | `format` (u64), `reads` (u64) | its `lake_created` says log format {format}, and this release reads and writes format {reads} alone | Its `lake_created` says another log format than the release's. |
 | `cause_in_context` | — | `context` carries `cause`, which the envelope carries | `context` carries `cause`, which the envelope carries. |
 | `initial_origin` | — | the envelope carries the origin `initial`, a field's alone | The envelope carries the origin `initial`, a field's alone. |
 | `upstream_on` | `kind` (String) | a `{kind}` event carries `upstream`, which only a `record_ingested` event carries | An event other than `record_ingested` carries `upstream`. |
@@ -856,12 +816,15 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `position` | `expected` (Position), `found` (Position, optional) | [position {found} stands where \|expected ]position {expected}[{?found} belongs] | Another position stands where one belongs, or none does. |
 | `prev_hash` | — | it does not name the hash of the event before it | It does not name the hash of the event before it. |
 | `known_at_back` | `known_at` (Timestamp), `before` (Timestamp) | its known_at {known_at} is before the {before} of the event before it | Its `known_at` is before that of the event before it. |
+| `integer_too_large` | `n` (Number) | the integer {n} in it is beyond ±(2^53 − 1), which not every reader reads exactly | It holds a number written as an integer beyond ±(2^53 − 1). |
 | `no_checkpoint` | — | a segment begins there, and its first event is no checkpoint | A segment begins there, and its first event is no checkpoint. |
 | `ends_before` | `position` (Position) | it ends before position {position} | It ends before a position it should hold. |
 | `ends_inside_set` | — | it ends inside a set of declarations: the set's last declaration is missing | It ends inside a set of declarations. |
 | `no_event` | `position` (Position) | it holds no event at position {position} | It holds no event at the position. |
 | `moves_unheld` | `type` (TypeName), `key` (RecordKey) | a migration moves `{type}` `{key}`, which the lake does not hold | A migration moves a key the lake does not hold. |
 | `renames_other_types` | `value_type` (String) | it renames values of `{value_type}` in other types than those that use it | A value type's renames reach other types than those that use it. |
+| `output_once` | — | an `output_recorded` event carries both `output` and `output_at`, or neither | An `output_recorded` event carries both `output` and `output_at`, or neither. |
+| `not_latest_output` | `at` (Position) | it names the output at position {at}, which is not its call's latest output | It names an output that is not its call's latest. |
 | `own_seam` | `seam` (String) | it records under `{seam}`: a seam that begins `sys:` is the store's own | It records under a seam that is the store's own. |
 | `own_type` | `type` (TypeName) | it declares or writes the type `{type}`: a name that begins `sys:` is the store's own, for what it keeps of a view | It declares or writes a type whose name is the store's own. |
 | `view_record` | `type` (TypeName) | it writes a record of `{type}`, a view, whose records are computed | It writes a record of a view. |
@@ -890,6 +853,7 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `no_line_feed` | `name` (String) | the file {name} does not end in a line feed | A file does not end in a line feed. |
 | `no_event_in` | `name` (String) | the file {name} holds no event | A file holds no event. |
 | `no_segment_file` | — | there is no segment file under log/ | There is no segment file. |
+| `index_missing` | `name` (String) | the segment {name} has no index file | A segment has no index file beside it. |
 | `fence_mismatch` | `carried` (u64), `lease` (u64) | an event carries fence {carried}, and its writer's lease had fence {lease} | An event carries another fence than its writer's lease had. |
 | `digest_differs` | `engine` (String), `file` (String) | the engine digests the segment before it as `{engine}`, and the file's is `{file}` | The engine and the file digest a segment differently. |
 | `nothing_to_seal` | — | the engine holds no event of the segment before it to seal | The engine holds no event of the segment before to seal. |
@@ -910,6 +874,8 @@ Why the lake cannot answer now. Retrying may help; the sentence says what the op
 | `not_served` | `lake` (String) | this server serves no lake `{lake}` | This server serves no lake of the name. |
 | `unmade` | `part` (Part) | this engine did not create what is there: {part} is missing | A part every lake of this engine has is missing: something else made what is there. |
 | `no_projection` | `lake` (String) | lake `{lake}` has no projection yet; open it for writing first | The lake has no projection yet. |
+| `projection_layout` | `lake` (String), `found` (u64, optional), `wanted` (u64) | lake `{lake}`'s projection [has layout {found}\|has no layout number], and this build reads layout {wanted}; nothing was read from it: rebuild it from the log with `lakelands rebuild` | The lake's projection was laid out by another build: nothing reads it, and a rebuild makes it anew from the log. |
+| `log_format` | `lake` (String), `found` (u64), `reads` (u64) | lake `{lake}` is written in log format {found}, and this release reads and writes format {reads} alone; nothing was read from it and nothing appended | The lake's log is written in the format of another release: nothing reads it and nothing is appended. |
 | `busy` | `lake` (String) | lake `{lake}` could not be compacted: a reader holds a snapshot of its projection; nothing a read answers has changed, so compact again when the reader is done | The lake could not be compacted while a reader holds a snapshot. |
 | `behind` | `cause` (Error, optional) | the lake's projection is behind its log and could not catch up; nothing was appended[ ({cause})] | The projection is behind the log and could not catch up; nothing was appended. |
 | `decided_behind` | — | this write was decided while the lake's projection was behind its log; nothing was appended | The write was decided while the projection was behind the log; nothing was appended. |
@@ -954,6 +920,54 @@ Why a lake's declarations cannot all become tools. The store refuses a declarati
 | `collision` | `name` (String), `from` (list of NameSource) | the tool name `{name}` would come from {from} | Two declarations produce the same tool name. |
 | `too_long` | `name` (String) | the tool name `{name}` is longer than 64 characters | A tool name would be longer than [`MAX_TOOL_NAME`]. |
 | `empty` | `from` (NameSource) | {from} gives an empty tool name | A declaration's name has nothing left once made a tool name. |
+
+## Withdrawn
+
+Codes a release shipped that the product no longer says. No later
+release uses one again; a host may still meet one from an older server,
+whose own page says its sentence.
+
+| code | shipped in | left in | why |
+|---|---|---|---|
+| `Added::rekeyed` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::date_bucket` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::upstream` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::proposes_schema` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::annotations` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::derived_relation` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::trigger_depth` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::retired` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::view_params` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::no_key` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::verb_on_type` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::merged_sources` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::tightening` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::floor` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::date_bucket_by_width` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::in_set` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::relation_rename` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::kept_setting` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::made` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::restated` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::initial` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::with_the_set` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::computed_at` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::value_renames` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::proposes_value_renames` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::pinned` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Added::date` | v0.12.0 | 0.13.0 | it was said only inside `Flaw::format_below` |
+| `Flaw::format_outside` | v0.12.0 | 0.13.0 | a release reads one log format, not a range of them |
+| `Flaw::format_back` | v0.12.0 | 0.13.0 | every event of a lake is in one log format, so none goes down |
+| `Flaw::format_below` | v0.12.0 | 0.13.0 | no format is read but the release's one, so no event is below what it needs |
+| `Case::mock_cannot` | v0.12.0 | 0.13.0 | only the in-memory mock said it, and the mock is retired (lakelands#800) |
+| `Case::mock_unevaluated` | v0.12.0 | 0.13.0 | only the in-memory mock said it, and the mock is retired (lakelands#800) |
+| `Unmocked::rekey` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
+| `Unmocked::aggregate` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
+| `Unmocked::pattern_start` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
+| `Unmocked::pattern_to` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
+| `Unmocked::pattern_projection` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
+| `Unmocked::hops` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
+| `Unmocked::proposer` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
 
 ## Parameter types
 

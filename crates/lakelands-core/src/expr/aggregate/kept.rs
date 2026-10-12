@@ -25,15 +25,14 @@
 //!   members whatever the order they arrived in. When the holder leaves,
 //!   the next one is the first entry of an order the store keeps.
 
-use std::collections::BTreeMap;
 use std::ops::Not;
 
 use lakelands_api::expr::{Expr, Func};
-use lakelands_api::{FieldName, RecordKey, Timestamp, Value};
+use lakelands_api::{FieldName, RecordKey, Timestamp};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
-use super::{Fold, Folds, Row, Scales};
+use super::{Fold, Folds, Member, Row, Scales, Settings};
 use crate::expr::eval::{RecordScope, Result, Val, as_number, as_time, eval};
 use crate::expr::order::val_key;
 
@@ -266,11 +265,8 @@ pub type Standing = (Vec<u8>, RecordKey);
 /// key), and the entry.
 pub type Placed = (usize, Vec<u8>, Entry);
 
-/// A member: its key and its fields.
-type Member<'a> = (&'a RecordKey, &'a Row);
-
-/// The lake's settings by key, which an argument may read.
-type Settings<'a> = Option<&'a BTreeMap<String, Value>>;
+/// A member under its key.
+type Keyed<'a> = (&'a RecordKey, Member<'a>);
 
 /// The aggregate calls a source's measures make, each once, in their
 /// order: what folds a member into a group's kept state. A state is used
@@ -296,22 +292,17 @@ impl Keeping {
     }
 
     /// A member arrives. An aggregate's argument is evaluated over its
-    /// fields without provenance and without a clock, as the computation
+    /// fields and their provenance, without a clock, as the computation
     /// evaluates it; a view that reads the clock is not kept.
-    pub fn put(&self, folds: &mut KeptFolds, key: &RecordKey, row: &Row, settings: Settings<'_>) {
-        self.moved(folds, None, Some((key, row)), settings);
+    pub fn put(&self, folds: &mut KeptFolds, is: Keyed<'_>, settings: Settings<'_>) {
+        self.moved(folds, None, Some(is), settings);
     }
 
-    /// A member leaves, with the key and the fields it was put with, under
-    /// the settings it was put under. Answers [`KeptFolds::waits`].
-    pub fn take(
-        &self,
-        folds: &mut KeptFolds,
-        key: &RecordKey,
-        row: &Row,
-        with: Settings<'_>,
-    ) -> bool {
-        self.moved(folds, Some((key, row)), None, with)
+    /// A member leaves, with the key, the fields and the provenance it was
+    /// put with, under the settings it was put under. Answers
+    /// [`KeptFolds::waits`].
+    pub fn take(&self, folds: &mut KeptFolds, was: Keyed<'_>, with: Settings<'_>) -> bool {
+        self.moved(folds, Some(was), None, with)
     }
 
     /// A member stays in its group and changes: its key, its fields, or
@@ -320,8 +311,8 @@ impl Keeping {
     pub fn change(
         &self,
         folds: &mut KeptFolds,
-        was: Member<'_>,
-        is: Member<'_>,
+        was: Keyed<'_>,
+        is: Keyed<'_>,
         settings: Settings<'_>,
     ) -> bool {
         self.moved(folds, Some(was), Some(is), settings)
@@ -330,8 +321,8 @@ impl Keeping {
     fn moved(
         &self,
         folds: &mut KeptFolds,
-        was: Option<Member<'_>>,
-        is: Option<Member<'_>>,
+        was: Option<Keyed<'_>>,
+        is: Option<Keyed<'_>>,
         settings: Settings<'_>,
     ) -> bool {
         let members = match (was, is) {
@@ -342,10 +333,11 @@ impl Keeping {
         folds.lost |= members.is_none() || folds.folds.len() != self.0.len();
         folds.members = members.unwrap_or(folds.members);
         for ((func, arg), fold) in self.0.iter().zip(&mut folds.folds) {
-            let read = |fields: &Row| {
+            let read = |(fields, meta): Member<'_>| {
                 let now = Timestamp(0);
                 let scope = RecordScope {
                     fields,
+                    meta,
                     settings,
                     now,
                 };
@@ -362,10 +354,11 @@ impl Keeping {
     /// The member's entries, one for each extreme it holds a value for: a
     /// member with a null argument, or one an extreme does not fold, has
     /// none, as it has no part in the extreme.
-    pub fn entries(&self, key: &RecordKey, row: &Row, settings: Settings<'_>) -> Vec<Placed> {
-        let (fields, now) = (row, Timestamp(0));
+    pub fn entries(&self, (key, is): Keyed<'_>, settings: Settings<'_>) -> Vec<Placed> {
+        let ((fields, meta), now) = (is, Timestamp(0));
         let scope = RecordScope {
             fields,
+            meta,
             settings,
             now,
         };

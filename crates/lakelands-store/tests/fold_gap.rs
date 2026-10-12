@@ -17,9 +17,9 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use lakelands_api::engine::{
     CanonicalEvent, EngineOpener, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
-    VectorIndex,
+    Ranked, Rankings, VectorIndex,
 };
-use lakelands_api::event::{Digest, EventBody, EventId, SegmentDigest};
+use lakelands_api::event::{Digest, EventBody, SegmentDigest};
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::{FeedFilter, Seams};
@@ -102,6 +102,9 @@ impl LakeEngine for Failing {
     }
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
         self.inner.view(as_of)
+    }
+    fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked> {
+        self.inner.ranked(ty, asked, k)
     }
     fn vectors(&self) -> Option<&dyn VectorIndex> {
         self.inner.vectors()
@@ -188,8 +191,8 @@ impl ProjectionStore for Failing {
     fn put_output(&self, seam: &str, input: &Digest, output: &Value, at: Position) -> Result<()> {
         self.inner.projection().put_output(seam, input, output, at)
     }
-    fn mark_applied(&self, id: &EventId, at: Position) -> Result<()> {
-        self.inner.projection().mark_applied(id, at)
+    fn mark_applied(&self, applied: &lakelands_api::engine::Applied) -> Result<()> {
+        self.inner.projection().mark_applied(applied)
     }
     fn clear(&self) -> Result<()> {
         self.inner.projection().clear()
@@ -211,6 +214,9 @@ struct FailingOpener {
 impl EngineOpener for FailingOpener {
     fn name(&self) -> &str {
         self.inner.name()
+    }
+    fn log_ends(&self, location: &Location) -> Result<Option<(CanonicalEvent, CanonicalEvent)>> {
+        self.inner.log_ends(location)
     }
     fn open(&self, location: &Location, mode: OpenMode) -> Result<Box<dyn LakeEngine>> {
         Ok(Box::new(Failing {

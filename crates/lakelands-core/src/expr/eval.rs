@@ -90,7 +90,8 @@ pub(crate) fn err<T>(case: Case) -> Result<T> {
 /// evaluation.
 pub trait Scope {
     /// The value at a path: a field of the record in scope, or
-    /// `<type>.<field>` of an earlier pattern step. `None` when absent.
+    /// `<name>.<field>` of a record a pattern's row binds. `None` when
+    /// absent.
     fn value(&self, path: &[FieldName]) -> Option<Value>;
 
     /// In a guard: the field's value before the write. `None` outside a
@@ -136,12 +137,14 @@ pub trait Scope {
     }
 }
 
-/// The plainest scope: one record's fields, the lake's settings as of the
-/// position read, and a clock.
+/// The plainest scope: one record's fields and their provenance, the
+/// lake's settings as of the position read, and a clock.
 #[derive(Clone, Copy, Debug)]
 pub struct RecordScope<'a> {
     /// The record's fields.
     pub fields: &'a BTreeMap<FieldName, Value>,
+    /// Per-field provenance; none where no record stands.
+    pub meta: Option<&'a BTreeMap<FieldName, FieldMeta>>,
     /// The lake's settings by key, as of the position read.
     pub settings: Option<&'a BTreeMap<String, Value>>,
     /// The clock.
@@ -151,6 +154,10 @@ pub struct RecordScope<'a> {
 impl Scope for RecordScope<'_> {
     fn value(&self, path: &[FieldName]) -> Option<Value> {
         lookup(self.fields, path)
+    }
+
+    fn meta(&self, field: &FieldName) -> Option<FieldMeta> {
+        self.meta.and_then(|m| m.get(field)).cloned()
     }
 
     fn setting(&self, key: &str) -> Option<Value> {
@@ -490,11 +497,15 @@ fn number(v: &Val) -> Result<Decimal> {
     as_number(v).ok_or_else(|| Case::NotANumber { value: operand(v) })
 }
 
-/// A value as an instant, if it reads as one.
+/// A value as the instant it denotes, if it reads as one. A text is read
+/// without the bound of the years 0000 to 9999: here it is compared or
+/// computed with, and `'9999-12-31T23:30:00-01:00'` is after every
+/// instant a field holds, not a text to compare letter by letter. What
+/// is written is judged where it lands.
 pub(crate) fn as_time(v: &Val) -> Option<Timestamp> {
     match v {
         Val::Time(t) => Some(*t),
-        Val::Text(s) => Timestamp::parse(s).ok(),
+        Val::Text(s) => Timestamp::denoted(s).ok(),
         _ => None,
     }
 }
@@ -528,8 +539,8 @@ fn order(l: &Val, r: &Val) -> Option<Ordering> {
     match (l, r) {
         (Val::Duration(a), Val::Duration(b)) => Some(a.cmp(b)),
         (Val::Time(_), _) | (_, Val::Time(_)) => Some(as_time(l)?.cmp(&as_time(r)?)),
-        (Val::Text(a), Val::Text(b)) => Some(match (Timestamp::parse(a), Timestamp::parse(b)) {
-            (Ok(x), Ok(y)) => x.cmp(&y),
+        (Val::Text(a), Val::Text(b)) => Some(match (as_time(l), as_time(r)) {
+            (Some(x), Some(y)) => x.cmp(&y),
             _ => a.cmp(b),
         }),
         _ => None,
@@ -890,13 +901,13 @@ pub fn to_json(
         (v, K::Decimal) => as_number(v).map(|d| Value::String(rounded(d).to_string())),
         (v, K::Number) => as_number(v).and_then(|d| {
             let d = rounded(d);
-            if d.fract().is_zero() {
-                d.to_i64().map(Value::from)
-            } else {
-                d.to_f64()
-                    .and_then(serde_json::Number::from_f64)
-                    .map(Value::Number)
-            }
+            // A whole number past 64 bits lands as its double, for the
+            // judgement of what is written to refuse by its size.
+            let whole = d.fract().is_zero().then(|| d.to_i64()).flatten();
+            let double = || d.to_f64().and_then(serde_json::Number::from_f64);
+            whole
+                .map(Value::from)
+                .or_else(|| double().map(Value::Number))
         }),
         (Val::Bool(b), K::Boolean) => Some(Value::Bool(*b)),
         (v, K::DateTime) => as_time(v).map(|t| Value::String(t.to_string())),

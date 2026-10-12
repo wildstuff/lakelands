@@ -2,32 +2,26 @@
 //! `lakelands_api::describe::TypeRights`), and what a read before the
 //! retirement still sees.
 
-use std::sync::Arc;
-
 use lakelands_api::ontology::StorageKind::{self, Decimal, Text};
-use lakelands_api::{Access, Error, LakeStore, ReadAt, Refusal, TypeName, WriteOpts};
+use lakelands_api::{Access, Error, ReadAt, Refusal, TypeName, WriteOpts};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, field_writer, get_at, head_unmoved, reason, refused_on, sourced, type_decl, type_of,
 };
+use crate::conformance::{Held, Store};
 
 check!(
-    /// Retiring takes a write grant on every field.
     RETIRE_NEEDS_EVERY_FIELD = a_principal_who_may_write_only_some_fields_cannot_retire,
-    "006 and TypeRights::retire: retiring removes every field of a record, so it needs a write grant on every field of the type, checked before the record is looked up, and the record before the expected version (016, extended)"
+    "006 and TypeRights::retire: retiring removes every field of a record, so it needs a write grant on every field of the type, checked before the record is looked up, and the record before the expected version (016, extended); a retirement that is proposed answers in the same order"
 );
 
 check!(
-    /// A type whose fields all come from a source has no `upsert`.
     SOURCE_ONLY_HAS_NO_UPSERT = a_type_whose_fields_all_come_from_a_source_has_no_upsert,
     "016 and TypeRights::upsert: upsert writes authored fields; a type with none has no upsert for anyone, the owner included: describe says so, and the door refuses it as the wrong door, naming the field"
 );
 
-async fn a_type_whose_fields_all_come_from_a_source_has_no_upsert(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_type_whose_fields_all_come_from_a_source_has_no_upsert(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl(
@@ -71,14 +65,11 @@ async fn a_type_whose_fields_all_come_from_a_source_has_no_upsert(
 }
 
 check!(
-    /// A retired record is readable just before its retirement.
     READABLE_BEFORE_RETIREMENT = a_record_retired_at_a_position_is_readable_just_before_it,
     "009 and 001: a read at the position before a retirement sees the record as it was, to a principal who could read it then; a session told of the retirement reads it there"
 );
 
-async fn a_principal_who_may_write_only_some_fields_cannot_retire(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_principal_who_may_write_only_some_fields_cannot_retire(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, .. } = &l;
     l.declare(type_of("invoice", &[("status", Text), ("amount", Decimal)]))
@@ -88,11 +79,8 @@ async fn a_principal_who_may_write_only_some_fields_cannot_retire(
     let clerk = field_writer(store.as_ref(), "clerk", "invoice", &["status"]);
     let invoice = TypeName::from("invoice");
 
-    let d = cat
-        .describe_type(&clerk, &invoice, ReadAt::default())
-        .await
-        .must("describing `invoice` as the clerk")?
-        .data;
+    let d = cat.describe_type(&clerk, &invoice, ReadAt::default());
+    let d = d.await.must("describing `invoice` as the clerk")?.data;
     ensure!(
         d.may.upsert && !d.may.retire,
         "a clerk who may write only `status` may upsert but not retire; describe says \
@@ -129,19 +117,31 @@ async fn a_principal_who_may_write_only_some_fields_cannot_retire(
     // In retire's order, the grant before the record, the record before
     // the version (016, extended).
     let gone = lakelands_api::RecordKey::from("gone");
-    let ungranted = cat
-        .retire(&clerk, &invoice, &gone, WriteOpts::default())
-        .await;
+    let ungranted = cat.retire(&clerk, &invoice, &gone, WriteOpts::default());
+    let ungranted = ungranted.await;
     let at = WriteOpts {
         expected_version: Some(lakelands_api::Version(3)),
         ..WriteOpts::default()
     };
-    let missing = cat.retire(&all, &invoice, &gone, at).await;
+    let missing = cat.retire(&all, &invoice, &gone, at.clone()).await;
     ensure!(
         matches!(reason(&ungranted), Some(Refusal::NotGranted))
             && matches!(missing, Err(lakelands_api::Error::NotFound { .. })),
         "retiring a key never written is refused for the grant first, then as not found \
          before a version is compared; it answered {ungranted:?} and {missing:?}"
+    );
+    let proposed = async |who, opts| {
+        let (ty, key) = (invoice.clone(), gone.clone());
+        let write = lakelands_api::write::ProposedWrite::Retire { ty, key, opts };
+        cat.propose(who, write, "gone".into()).await
+    };
+    let ungranted = proposed(&clerk, WriteOpts::default()).await;
+    let missing = proposed(&all, at).await;
+    ensure!(
+        matches!(reason(&ungranted), Some(Refusal::NotGranted))
+            && matches!(missing, Err(lakelands_api::Error::NotFound { .. })),
+        "a retirement that is proposed answers in `retire`'s order, the grant, then the \
+         record, then the version; it answered {ungranted:?} and {missing:?}"
     );
     cat.retire(&all, &invoice, &"i".into(), WriteOpts::default())
         .await
@@ -149,9 +149,7 @@ async fn a_principal_who_may_write_only_some_fields_cannot_retire(
     Ok(())
 }
 
-async fn a_record_retired_at_a_position_is_readable_just_before_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_record_retired_at_a_position_is_readable_just_before_it(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, .. } = &l;
     l.declare(type_of("invoice", &[("status", Text)])).await?;
@@ -173,9 +171,8 @@ async fn a_record_retired_at_a_position_is_readable_just_before_it(
          `status` \"open\"; it read {:?}",
         then.fields
     );
-    let now = cat
-        .get(&reader, &invoice, get_at("i1", Some(retired)))
-        .await;
+    let now = cat.get(&reader, &invoice, get_at("i1", Some(retired)));
+    let now = now.await;
     ensure!(
         matches!(now, Err(Error::NotFound { .. })),
         "at {retired}, the position of its retirement, `i1` is gone; the read answered {:?}",

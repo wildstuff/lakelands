@@ -18,16 +18,17 @@ pub mod describe;
 pub mod engines;
 pub mod export;
 pub mod expr;
+pub mod feed;
 pub mod graph;
 pub mod links;
 pub mod log;
 pub mod names;
 pub mod rights;
 pub mod shape;
+pub mod sight;
 pub mod stem;
 pub mod valid_time;
 pub mod value;
-pub mod versions;
 
 use lakelands_api::error::{Detail, Doing, Flaw, Part, Said, Situation};
 use lakelands_api::{Error, Position};

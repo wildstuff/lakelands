@@ -69,15 +69,6 @@ impl ProjectionView for View {
         self.asked.borrow_mut().push(relation.cloned());
         Ok(vec![Vec::new(); keys.len()])
     }
-    fn lexical(
-        &self,
-        _: &TypeName,
-        _: &str,
-        _: Option<&[lakelands_api::id::FieldName]>,
-        _: u32,
-    ) -> Result<Vec<(RecordKey, f64)>> {
-        unreachable!()
-    }
     fn proposals(&self, _: &ProposalFilter) -> Result<Vec<Proposal>> {
         unreachable!()
     }
@@ -90,7 +81,17 @@ impl ProjectionView for View {
     fn applied(&self, _: &EventId) -> Result<Option<Position>> {
         unreachable!()
     }
-    fn output(&self, _: &str, _: &Digest) -> Result<Option<Value>> {
+    fn output(&self, _: &str, _: &Digest) -> Result<Option<(Position, Value)>> {
+        unreachable!()
+    }
+
+    fn matching(
+        &self,
+        _: &lakelands_api::seam::FeedFilter,
+        _: Position,
+        _: Position,
+        _: u32,
+    ) -> Result<lakelands_api::engine::Matched> {
         unreachable!()
     }
 }

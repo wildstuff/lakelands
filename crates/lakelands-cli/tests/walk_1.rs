@@ -1,24 +1,19 @@
 //! Walk 1's materials, kept from rotting: the liquidity bundle in
 //! `examples/liquidity/` loads, and the commands `docs/walks/walk-1.md`
 //! types — `init`, `lake new`, `apply`, and the three `ingest --map` runs
-//! — succeed in the script's order, on the mock and on the binary's own
-//! `open_store`, the real store over SQLite, with the same counts.
+//! — succeed in the script's order on the binary's own `open_store`, the
+//! real store over SQLite and in memory, with the same counts.
 //!
-//! The answers the walk expects are checked on the real store, in
-//! `lakelands-store`'s `walk_1` test; the mock computes no derived fields
-//! and does not aggregate.
+//! The answers the walk expects are checked in `lakelands-store`'s
+//! `walk_1` test.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
-use lakelands_api::LakeStore;
 use lakelands_api::location::Location;
 use lakelands_api::write::Declaration;
 use lakelands_cli::Opening;
-use lakelands_mock::MockLake;
 
 fn block_on<F: Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_multi_thread()
@@ -65,12 +60,10 @@ fn the_liquidity_bundle_loads_with_every_lane_the_walk_needs() {
     );
 }
 
-/// A root in a fresh directory whose lakes are mocks, or opened as the
-/// binary opens them.
+/// A root in a fresh directory whose lakes are opened as the binary opens
+/// them.
 struct Shell {
     root: PathBuf,
-    mock: bool,
-    lakes: Mutex<BTreeMap<String, MockLake>>,
 }
 
 impl Shell {
@@ -80,15 +73,7 @@ impl Shell {
         mode: lakelands_api::engine::OpenMode,
         host: lakelands_api::seam::Seams,
     ) -> Opening {
-        if !self.mock {
-            return lakelands_cli::open_store(l, mode, host);
-        }
-        let mut lakes = self.lakes.lock().unwrap();
-        let lake = lakes
-            .entry(l.lake.to_string())
-            .or_insert_with(|| MockLake::open(&l))
-            .clone();
-        Box::pin(async move { Ok(Arc::new(lake) as Arc<dyn LakeStore>) })
+        lakelands_cli::open_store(l, mode, host)
     }
 
     /// `lakelands <args>`, answering the exit status and what it printed.
@@ -116,33 +101,21 @@ impl Shell {
 }
 
 #[test]
-fn the_walks_commands_run_in_order_on_the_mock() {
-    walk(true, "sqlite");
-}
-
-#[test]
 fn the_walks_commands_run_in_order_on_the_real_store_over_sqlite() {
-    walk(false, "sqlite");
+    walk("sqlite");
 }
 
 /// A lake in memory lives as long as its process; this test's commands
 /// all run in one, as a host that embeds the CLI's library runs them.
 #[test]
 fn the_walks_commands_run_in_order_on_the_real_store_in_memory() {
-    walk(false, "memory");
+    walk("memory");
 }
 
-fn walk(mock: bool, engine: &str) {
-    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
-        "walk-1-{}-{engine}",
-        if mock { "mock" } else { "store" }
-    ));
+fn walk(engine: &str) {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("walk-1-store-{engine}"));
     let _ = fs::remove_dir_all(&root);
-    let sh = Shell {
-        root,
-        mock,
-        lakes: Mutex::new(BTreeMap::new()),
-    };
+    let sh = Shell { root };
     let root = sh.root.display().to_string();
     let data = example().join("data");
     let path = |name: &str| data.join(name).display().to_string();

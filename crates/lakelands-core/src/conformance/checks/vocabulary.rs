@@ -8,28 +8,40 @@
 //! names the store keeps for its own readers, is refused at the writer's
 //! open, naming the type, and nothing is appended.
 
-use std::sync::Arc;
-
 use lakelands_api::error::Case;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::seam::Seams;
-use lakelands_api::{LakeStore, ReadAt, TypeName};
+use lakelands_api::{Access, LakeStore, ReadAt, TypeName};
 use serde_json::json;
 
-use crate::conformance::fixture::{Lake, Must, doors, field, invalid_case, owner, type_decl};
-use crate::conformance::{Failure, Reopen, backing};
+use crate::conformance::fixture::{
+    Lake, Must, declare, describe_type, doors, field, field_access, get_at, invalid_case,
+    invalid_like, owner, type_decl, write_verb,
+};
+use crate::conformance::{Failure, Held, Reopen, Store, backing};
 
 check!(
-    /// A host type is declared when a writer opens the lake.
     HOST_TYPES_AT_OPEN = a_host_type_is_declared_when_a_writer_opens_the_lake,
     "003 and seams, SystemVocabulary: each writer open declares the host's sys. types the lake may hold and does not hold yet; a type added later reaches the existing lake, and a withheld one never does",
     reopens
 );
 
 check!(
-    /// A vocabulary under a reserved name refuses the writer's open.
     RESERVED_NAME_REFUSES_OPEN = a_vocabulary_naming_a_reserved_type_refuses_the_writers_open,
     "003, 035 and seams, SystemVocabulary: a host vocabulary naming a type under sys.link. or one of the store's own four (sys.source, sys.provenance, sys.setting, sys.aging_rule) is refused at the writer's open as invalid, naming the type as reserved; nothing is appended, and the lake never holds it",
+    reopens
+);
+
+check!(
+    HOST_VIEW_KEY = a_host_view_with_a_key_its_records_do_not_carry_is_judged_by_what_they_do,
+    "006 and 018, extended (lakelands#788): a host's vocabulary type passes no `declare`, so its view may hold a `key` that is not its `group_by`, and it is keyed by what its records carry all the same: an ungrouped `sys.` view with `key: [n]` is shown to a reader held from `n` as the same view without `key` is, `get` answers its one record, and each is described with no key; a `sys.` view grouped by `name` with `key: [n]` is shown to that reader too and described keyed by `name`, and is hidden from a reader held from `name`",
+    reopens
+);
+
+check!(
+    TOOL_NAME_REFUSES_OPEN =
+        a_vocabulary_whose_tools_would_bear_anothers_names_refuses_the_writers_open,
+    "027, extended (lakelands#893), and seams, SystemVocabulary: no door leaves a lake with a problem among its tools' names, a writer's open among them: a host vocabulary with a type whose tools would bear the names of a declared type's, with one whose tool a verb is named as, and with two of its own that would share their tools' names, is refused at the writer's open as `tool_names`, naming both sides; nothing is appended and the lake holds no type of that vocabulary; it then takes a plain type from its owner and from one kept from the declared type, its tools are generated, and it opens with the same vocabulary once the type is withheld from it",
     reopens
 );
 
@@ -47,9 +59,9 @@ async fn holds(store: &dyn LakeStore, ty: &str) -> bool {
 }
 
 async fn a_host_type_is_declared_when_a_writer_opens_the_lake(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     reopen: Reopen,
-) -> Result<(), Failure> {
+) -> Held {
     let note = || type_decl("sys.host_note", vec![field("text", StorageKind::Text)]);
     let tag = || type_decl("sys.host_tag", vec![field("label", StorageKind::Text)]);
     let hidden = || type_decl("sys.host_hidden", vec![field("x", StorageKind::Text)]);
@@ -115,9 +127,9 @@ async fn a_host_type_is_declared_when_a_writer_opens_the_lake(
 }
 
 async fn a_vocabulary_naming_a_reserved_type_refuses_the_writers_open(
-    store: Arc<dyn LakeStore>,
+    store: Store,
     reopen: Reopen,
-) -> Result<(), Failure> {
+) -> Held {
     let with = |vocabulary| Seams {
         backings: backing::backings(),
         vocabulary,
@@ -163,5 +175,149 @@ async fn a_vocabulary_naming_a_reserved_type_refuses_the_writers_open(
             "a vocabulary naming `{name}` was refused; the lake holds `{name}` all the same"
         );
     }
+    Ok(())
+}
+
+async fn a_host_view_with_a_key_its_records_do_not_carry_is_judged_by_what_they_do(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl("item", vec![field("name", StorageKind::Text)]))
+        .await?;
+    l.upsert("item", "i1", json!({"name": "a"})).await?;
+    let host = |name: &str, key: &[&str], by: &[&str]| {
+        let text = |n: &&str| json!({"name": n, "type": {"kind": "text"}});
+        let mut fields: Vec<_> = by.iter().map(text).collect();
+        fields.push(json!({"name": "n", "type": {"kind": "decimal"}}));
+        let n = json!([{"name": "n", "expr": "count()"}]);
+        let view = json!({"source": "item", "group_by": by, "measures": n});
+        let v = json!({"name": name, "key": key, "fields": fields, "view": view});
+        serde_json::from_value(v).expect("a type reads")
+    };
+    let views = vec![
+        host("sys.keyed", &["n"], &[]),
+        host("sys.plain", &[], &[]),
+        host("sys.grouped", &["n"], &["name"]),
+    ];
+    let seams = Seams {
+        backings: backing::backings(),
+        vocabulary: Some(backing::vocabulary(views, &[])),
+        ..Seams::default()
+    };
+    let store = reopen(store, seams)
+        .await
+        .map_err(|e| reopened("of three views", e))?;
+    let cat = doors(store.as_ref());
+    let all = lakelands_api::key::UNGROUPED;
+    // The field its reader is held from, a record's key, and the key the
+    // view is described with where it is shown.
+    for (ty, held, key, shown) in [
+        ("sys.keyed", "n", all, Some(vec![])),
+        ("sys.plain", "n", all, Some(vec![])),
+        ("sys.grouped", "n", "a", Some(vec!["name"])),
+        ("sys.grouped", "name", "a", None),
+    ] {
+        let who = field_access(store.as_ref(), "held", ty, &[(held, Access::None)]);
+        let told = describe_type(cat.as_ref(), &who, ty).await;
+        let one = cat.get(&who, &ty.into(), get_at(key, None)).await;
+        let keyed = told.as_ref().ok().map(|t| &t.access.key);
+        let keyed = keyed.map(|k| k.iter().map(|f| f.as_str()).collect::<Vec<_>>());
+        ensure!(
+            keyed == shown && one.is_ok() == shown.is_some(),
+            "`{ty}`, a view of the host's, is judged by the key its records carry: to a reader \
+             held from `{held}` it is described keyed {shown:?} where it is shown; it is \
+             described {told:?}, and `get` answered {one:?}"
+        );
+    }
+    Ok(())
+}
+
+async fn a_vocabulary_whose_tools_would_bear_anothers_names_refuses_the_writers_open(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    use lakelands_api::tools::{tool_base, tools};
+    let with = |vocabulary| Seams {
+        backings: backing::backings(),
+        vocabulary,
+        ..Seams::default()
+    };
+    let plain = |name: &str| type_decl(name, vec![field("x", StorageKind::Text)]);
+    let l = Lake::of(store.as_ref());
+    // `sys_audit` names its tools as `sys.audit` would, and a verb on
+    // `vault` is named as a tool of `sys.memo` would be.
+    for name in ["vault", &tool_base("sys.audit")] {
+        l.declare(plain(name)).await?;
+    }
+    let made = tools(&l.describe().await?).unwrap_or_default();
+    let mut doors = made.iter().map(|t| t.name.as_str());
+    let door = doors.find(|n| n.starts_with("vault_")).unwrap_or_default();
+    let verb = door.replacen("vault", &tool_base("sys.memo"), 1);
+    l.declare_as(write_verb(&verb, "vault", "x", "'x'"), "a verb")
+        .await?;
+    let mut store = store;
+    for (types, sides) in [
+        (["sys.host_note", "sys.audit"], ["sys.audit", "sys_audit"]),
+        (["sys.host_note", "sys.memo"], ["sys.memo", verb.as_str()]),
+        (["sys.a.b", "sys.a_b"], ["sys.a.b", "sys.a_b"]),
+    ] {
+        let before = store.head().await.must("reading the head")?;
+        let vocabulary = backing::vocabulary(types.map(plain).to_vec(), &[]);
+        let answer = reopen(store.clone(), with(Some(vocabulary))).await.err();
+        let told = format!("{answer:?}");
+        let named = sides
+            .iter()
+            .all(|side| told.contains(&format!("\"{side}\"")));
+        ensure!(
+            answer
+                .as_ref()
+                .is_some_and(|e| invalid_like(e, &json!({"code": "tool_names"})))
+                && named,
+            "a vocabulary of {types:?} is refused at the writer's open as `tool_names`, naming \
+             {sides:?}; it answered {told}"
+        );
+        store = reopen(store.clone(), with(None))
+            .await
+            .map_err(|e| reopened("left out", e))?;
+        let after = store.head().await.must("reading the head")?;
+        let mut held = Vec::new();
+        for ty in types {
+            held.push(holds(store.as_ref(), ty).await);
+        }
+        ensure!(
+            after == before.next() && held == [false, false],
+            "a refused open appends nothing and declares no type of its vocabulary: the head \
+             was {before} and is {after} after the next open, which takes the lease, and of \
+             {types:?} the lake holds {held:?}"
+        );
+    }
+    // The lake has no problem among its names: it takes a declaration,
+    // naming nothing, and opens once the host withholds the type.
+    let (l, twin) = (Lake::of(store.as_ref()), tool_base("sys.audit"));
+    let grants = json!({"default": "read", "schema": true, "types": {twin: {"default": "none"}}});
+    let kept = super::only::holder(store.as_ref(), "author", grants);
+    let free = [
+        declare(l.cat.as_ref(), &l.own, plain("crate")).await.err(),
+        declare(l.cat.as_ref(), &kept, plain("box")).await.err(),
+    ];
+    let made = tools(&l.describe().await?);
+    ensure!(
+        free == [None, None] && made.is_ok(),
+        "after the refused opens a plain type is declared by the owner and by one kept from \
+         `sys_audit` ({free:?}), and the lake's tools are generated ({:?})",
+        made.as_ref().err()
+    );
+    let withheld = backing::vocabulary(
+        ["sys.host_note", "sys.audit"].map(plain).to_vec(),
+        &["sys.audit"],
+    );
+    let store = reopen(store, with(Some(withheld)))
+        .await
+        .map_err(|e| reopened("that withholds `sys.audit`", e))?;
+    ensure!(
+        holds(store.as_ref(), "sys.host_note").await && !holds(store.as_ref(), "sys.audit").await,
+        "opened with `sys.audit` withheld, the lake holds `sys.host_note` and not `sys.audit`"
+    );
     Ok(())
 }

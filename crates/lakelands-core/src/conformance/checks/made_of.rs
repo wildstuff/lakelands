@@ -1,8 +1,6 @@
 //! A type made of another, a link type or a view, is shown only with it
 //! (`docs/decisions/006-grants-not-roles.md`, extended, lakelands#595).
 
-use std::sync::Arc;
-
 use lakelands_api::key::{UNGROUPED, link_key};
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::principal::TypeGrants;
@@ -10,51 +8,48 @@ use lakelands_api::query::{Projection, Search, SearchMode, Walk};
 use lakelands_api::read::{AggFunc, Aggregate, Get, GroupKey, OrderBy};
 use lakelands_api::write::{ProposalFilter, ProposedWrite, WriteOpts};
 use lakelands_api::{
-    Access, Catalog, FieldName, Find, Grants, LakeStore, Principal, PrincipalKind, TypeName,
+    Access, Catalog, Error, FieldName, Find, Grants, LakeStore, Missing, Principal, PrincipalKind,
+    TypeName, ingest_all,
 };
 use serde_json::json;
 
 use super::links::{SEPT, lake, link_ok};
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, agg, aggregate, alike_renamed, field, field_access, get_at, object_set_on, order,
-    patch, pattern, principal, step, trigger_on, view_of,
+    patch, pattern, principal, source_record, step, trigger_on, view_of,
 };
+use crate::conformance::{Failure, Held, Store};
 
 const LINKS: &str = "sys.link.invoice.approved_by";
 
 check!(
-    /// A reference to a type not shown is a field not known of.
-    REFERENCE_TO_UNSHOWN = a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_know_of,
+    REFERENCE_TO_UNSHOWN =
+        a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_know_of,
     "024 and 051, extended (lakelands#718): a reference to a type its reader is not shown is a field it may not know of, read, masked or by default alike: `describe_type`, `get` and `find` leave it out, a filter, an order, a grouping and an upsert on it answer word for word as on a field the type does not have; a type keyed by it, a view grouped by it and a type keyed by a reference to either answer every door as types that are not there, and a verb on such a type is neither described nor made a tool (lakelands#770); proposals are listed to a reviewer kept from the target without it, an upsert, a bundle and a migration alike, and a source is refused it; a value type's rename writing a use in a type keyed by it is not granted to that reviewer's preflight, naming nothing, and listed without the use or the set over it; a principal that may write every other field is not granted `retire`, and `may.retire` is false; a reference the reader's own `only` names stays, a reader shown the target by its type-level grant alone keeps it all, and a read as of a position judges the types as they stood"
 );
 
 check!(
-    /// A type made of another is shown only with it.
     SHOWN_WITH_WHAT_IT_IS_MADE_OF = a_type_made_of_another_is_shown_only_with_it,
     "006, extended (lakelands#595): a link type is shown to a principal only where the type that declares its relation is, and a view only where its source is, whatever a grant on its own name says: to one kept from a type, `describe` names neither a link type of it, nor a set or a trigger on that, nor a view over either, a proposed trigger on the link type is not listed, and `describe_type`, `find`, `get` and `search` of the link type, a read of the view, a walk over the relation from the type, `link` and `unlink`, over a relation the type has or one it has not, answer as for a type that is not there; a link type is made of its relation's target too (lakelands#662), so to one kept from the target the walk over the relation, `link` and `unlink` answer as for a relation that is not there, and a link sent again answers the first; a step from the target by the inverse of a relation of that type, carried by links or by a reference field, answers as a relation that is not there; a principal who reads one field of the owner is shown them all, and one kept from the link type by its own grant is kept from the view over it and walks the edge"
 );
 
 check!(
-    /// A type kept from its reader is kept at every door, with what is made of it.
     KEPT_AT_EVERY_DOOR = a_type_kept_from_its_reader_is_kept_at_every_door,
-    "006, extended (lakelands#636, lakelands#635): to one whose grants give it nothing of a type that declares a sensitive field, the type, the link type of its relation and each view made of it (a count that reads no field, a grouping and a sum that read its fields, a view over that view, and a view that merges it beside a type the reader is shown) answer `describe_type`, `get` of a key that is there and of one that is not, `find`, with a total and with an aggregate, `search` and a pattern, and the type `upsert`, `retire` and `link`, value for value as a name that is not declared, and `describe` and the tools name none of them; so to one with no grant, to one granted to read each view and the link type by name, and to one who reads the whole lake but that type"
+    "006, extended (lakelands#636, lakelands#635): to one whose grants give it nothing of a type that declares a sensitive field, the type, the link type of its relation and each view made of it (a count that reads no field, a grouping and a sum that read its fields, a view over that view, and a view that merges it beside a type the reader is shown) answer `describe_type`, `get` of a key that is there and of one that is not, `find`, with a total and with an aggregate, `search` and a pattern, and the type `upsert`, `retire`, `link`, `unlink`, an ingest and a migration's preflight, and a verb of each risk on the type `call` and `propose`, value for value as a name that is not declared, and `describe` and the tools name none of them; so to one with no grant, to one granted to read each view and the link type by name, and to one who reads the whole lake but that type; and the doors answer by what `describe` shows (lakelands#798): a type it names to a reader, and a verb on it, is at none of them a name that is not declared"
 );
 
 check!(
-    /// A pattern names no type its reader is not shown.
     NAMES_NO_TYPE_NOT_SHOWN = a_pattern_names_no_type_its_reader_is_not_shown,
     "006, extended, and 024 (lakelands#653, lakelands#654): to one who reads the whole lake but a type, a pattern's order, sum and grouping over a path on that type answer value for value as over a type that is not declared, and a step from a type it is shown, in, either way or measured, over a relation the kept type derives under the name of one the reader is shown answers as before the kept type was declared, as does a step out of a type over its own relation, or either way (lakelands#662), where a type the reader is shown derives one of that name into it from a field the reader may not read"
 );
 
 check!(
-    /// A view is keyed by its groups, judged where their values come from.
-    VIEW_KEY_AT_SOURCES = a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_not_shown,
-    "006 and 024, extended (lakelands#782): a grouped view's key is its `group_by`, which its records carry whatever its `key` says, an ungrouped one's its `key`, and each key field is judged on the view and where its values come from, its source's field and each merge source's by position: a view grouped by a reference to a type its reader is not shown, by a field its source holds at `none` for it, with `key` declared or not, one whose second source's group field it holds at `none`, one whose own group field it holds at `none`, one keyed by another field but grouped by such a field, and one keyed by part of its groups whose other it holds at `none`, answer `describe_type`, `get`, `find`, `search` and a pattern value for value as a name that is not declared, and `describe` names none of them; a view grouped by a field it reads is shown, so is one grouped so whose declared `key` names a field it holds at `none`, since its records carry its groups, and such a view, or one grouped without `key`, is described, listed in a proposal and its get tool's key told by its groups, its definition naming no measure of a field it holds at `none`, and a measure that reads such a measure, its own or a merged one, answers in `describe`, `get`, `find`, a filter on it and the listing as a view declared without both, to a reader and to one who may write, who is offered no write to a view"
+    VIEW_KEY_AT_SOURCES =
+        a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_not_shown,
+    "006 and 024, extended (lakelands#782): a grouped view's key is its `group_by`, an ungrouped one has none, and a `key` that says otherwise is refused at declare (lakelands#788): one naming a measure, part of the groups or the groups in another order, and any `key` of an ungrouped view; each key field is judged on the view and where its values come from, its source's field and each merge source's by position: a view grouped by a reference to a type its reader is not shown, by a field its source holds at `none` for it, with `key` declared or not, one whose second source's group field it holds at `none`, one whose own group field it holds at `none`, and one grouped by two fields of which it holds one at `none`, answer `describe_type`, `get`, `find`, `search` and a pattern value for value as a name that is not declared, and `describe` names none of them; a view grouped by a field it reads is shown, so is one grouped so whose measure it holds at `none`, and an ungrouped view to a reader held from its measure, since no record of it is keyed by a field, and each of them, a grouped view with `key` or without and one shown without its definition too, hashes as its description does (lakelands#788), and such a grouped view is described, listed in a proposal and its get tool's key told by its groups, its definition naming no measure of a field it holds at `none`, and a measure that reads such a measure, its own or a merged one, answers in `describe`, `get`, `find`, a filter on it and the listing as a view declared without both, to a reader and to one who may write, who is offered no write to a view"
 );
 
 check!(
-    /// A type keyed by a field its reader may not know of is not shown.
     KEYED_BY_HIDDEN = a_type_keyed_by_a_field_its_reader_may_not_know_of_is_not_shown,
     "006 and 024, extended (lakelands#715): a type whose key names a field its principal may not know of is not shown to it, since every record key would hand out that field's value: to one who reads the whole lake but a key field held at `none`, the type, the link type of its relation and a view over it answer `describe_type`, `get`, `find`, `search`, a pattern, `upsert`, `retire` and `link`, and a verb on the type `call` and `propose` (lakelands#770), value for value as a name that is not declared, `describe` names none of them, nor any verb on the type, in its verbs or its tools, though the reader writes every field the verb sets, and nothing is written; one who reads the key field masked is shown them all, the verbs too"
 );
@@ -88,9 +83,7 @@ fn short<T>(answer: lakelands_api::Result<T>) -> &'static str {
     }
 }
 
-async fn a_type_made_of_another_is_shown_only_with_it(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_type_made_of_another_is_shown_only_with_it(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
     l.declare_as(object_set_on("dated", LINKS, "since = since"), "the set")
@@ -335,6 +328,18 @@ async fn doors(
         said_to.push(said(c.retire(who, &t, k, opts()).await));
         let linked = c.link(who, &t, k, by, to, Default::default(), opts());
         said_to.push(said(linked.await));
+        said_to.push(said(c.unlink(who, &t, k, by, to, opts()).await));
+        // An ingest of a record of it, and the preflight of its migration.
+        let record = vec![source_record(ty, key, json!({"cat": "c"}))];
+        said_to.push(said(ingest_all(c, who, &"feed".into(), record).await));
+        let to = lakelands_api::ontology::TypeDecl::named(ty);
+        said_to.push(said(
+            c.migrate(
+                who,
+                serde_json::from_value(json!({"to": to})).expect("a migration"),
+            )
+            .await,
+        ));
         // A verb on the type, called and proposed: `<type>_ok` is low risk.
         for verb in [format!("{ty}_ok"), format!("{ty}_hold")] {
             let verb = verb.as_str().into();
@@ -354,24 +359,23 @@ async fn doors(
 }
 
 /// `there`, to `what`, must be answered as `none`, at the same door of
-/// the type named `ghost` for `ledger`: an error alike in every member.
+/// the type named `ghost` for `name`: an error alike in every member.
 fn answered_alike(
     what: &str,
     there: &lakelands_api::Result<()>,
     none: &lakelands_api::Result<()>,
-) -> Result<(), Failure> {
+    name: &str,
+) -> Held {
     match (there, none) {
         (Ok(()), Ok(())) => Ok(()),
-        (Err(a), Err(b)) => alike_renamed(what, a, b, ("ghost", "ledger")),
+        (Err(a), Err(b)) => alike_renamed(what, a, b, ("ghost", name)),
         _ => Err(Failure::new(format!(
             "{what}: {there:?}; under the name `ghost`: {none:?}"
         ))),
     }
 }
 
-async fn a_type_kept_from_its_reader_is_kept_at_every_door(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_type_kept_from_its_reader_is_kept_at_every_door(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let f = |name: &str, kind: &str| json!({"name": name, "type": {"kind": kind}});
     let (cat, n, amount, cap) = (
@@ -390,7 +394,10 @@ async fn a_type_kept_from_its_reader_is_kept_at_every_door(
     for mut d in [
         json!({"name": "ledger", "fields": [cat, amount, secret],
             "relations": [{"name": "cites", "target": "ledger"}]}),
-        json!({"name": "budget", "fields": [cat, cap]}),
+        json!({"name": "budget", "fields": [cat, cap],
+            "relations": [{"name": "cites", "target": "budget"}]}),
+        json!({"name": "budget_count", "fields": [n],
+            "view": {"source": "budget", "measures": count}}),
         json!({"name": "ledger_count", "fields": [n],
             "view": {"source": "ledger", "measures": count}}),
         json!({"name": "ledger_by_cat", "key": ["cat"], "fields": [cat, amount],
@@ -404,6 +411,17 @@ async fn a_type_kept_from_its_reader_is_kept_at_every_door(
         d["declare"] = json!("type");
         l.declare_json(d).await?;
     }
+    // A verb of each risk on the kept type and on the shown one.
+    for (on, verb, risk) in [("ledger", "ok", "low"), ("ledger", "hold", "high")] {
+        for on in [on, "budget"] {
+            let name = format!("{on}_{verb}");
+            l.declare_json(
+                json!({"declare": "verb", "name": name, "on": on, "risk": risk,
+                "effect": "write", "set": [{"field": "cat", "value": "'b'"}]}),
+            )
+            .await?;
+        }
+    }
     for (ty, k, fields) in [
         (
             "ledger",
@@ -412,6 +430,7 @@ async fn a_type_kept_from_its_reader_is_kept_at_every_door(
         ),
         ("ledger", "l2", json!({"cat": "b", "amount": "2"})),
         ("budget", "b1", json!({"cat": "a", "cap": "9"})),
+        ("budget", "b2", json!({"cat": "b", "cap": "8"})),
     ] {
         l.upsert(ty, k, fields).await?;
     }
@@ -421,7 +440,21 @@ async fn a_type_kept_from_its_reader_is_kept_at_every_door(
         .cat
         .link(&l.own, ledger, l1, cites, l2, Default::default(), opts);
     linked.await.must("linking two ledger records")?;
-    let link = link_key(l1, l2);
+    let (budget, b1, b2, opts) = (
+        &"budget".into(),
+        &"b1".into(),
+        &"b2".into(),
+        WriteOpts::default(),
+    );
+    let linked = (l.cat).link(&l.own, budget, b1, cites, b2, Default::default(), opts);
+    linked.await.must("linking two budget records")?;
+    let (link, budgets) = (link_key(l1, l2), link_key(b1, b2));
+    // A type its readers are shown, its link type and a view over it.
+    let shown = [
+        ("budget", "b1"),
+        ("sys.link.budget.cites", budgets.as_str()),
+        ("budget_count", UNGROUPED),
+    ];
     let kept = [
         ("ledger", "l1"),
         ("sys.link.ledger.cites", link.as_str()),
@@ -439,15 +472,18 @@ async fn a_type_kept_from_its_reader_is_kept_at_every_door(
             ..Default::default()
         };
         let types = types.iter().map(|t| ((*t).into(), held.clone())).collect();
+        // Each ingests and holds `schema`, so that those doors judge the type.
         let grants = Grants {
             default,
             types,
+            ingest: true,
+            schema: true,
             ..Grants::default()
         };
         principal(store.as_ref(), PrincipalKind::Human, id, grants)
     };
     let mut given: Vec<&str> = kept[1..].iter().map(|k| k.0).collect();
-    given.push("budget");
+    given.extend(shown.iter().map(|k| k.0));
     let cast = [
         who("nothing", Access::None, &[], Access::None),
         who("given", Access::None, &given, Access::Read),
@@ -455,37 +491,45 @@ async fn a_type_kept_from_its_reader_is_kept_at_every_door(
     ];
     let (head, mut apart) = (store.head().await.must("the head")?, Vec::new());
     for who in &cast {
-        for (ty, key) in kept {
-            let ghost = ty.replace("ledger", "ghost");
-            let there = doors(l.cat.as_ref(), who, ty, key).await;
-            let none = doors(l.cat.as_ref(), who, &ghost, key).await;
-            for (n, (a, b)) in there.iter().zip(&none).enumerate() {
-                let what = format!("{} on `{ty}`, door {n}", who.id);
-                if let Err(f) = answered_alike(&what, a, b) {
-                    apart.push(f.message);
-                }
-            }
-        }
         let d = l.cat.describe(who, Default::default()).await;
         let d = d.must("describing the lake")?.data;
-        let names: Vec<_> = d.types.iter().map(|t| &t.name).collect();
+        let names: Vec<_> = d.types.iter().map(|t| t.name.as_str()).collect();
         let said = format!("{names:?} {:?}", lakelands_api::tools::tools(&d));
         if said.contains("ledger") || (who.id != "nothing") != said.contains("budget") {
             apart.push(format!("{} is described {said}", who.id));
+        }
+        // The grid: at every door a type `describe` does not name is a
+        // name that is not declared, and one it names is at none.
+        for (ty, key) in kept.into_iter().chain(shown) {
+            let of = if ty.contains("ledger") {
+                "ledger"
+            } else {
+                "budget"
+            };
+            let there = doors(l.cat.as_ref(), who, ty, key).await;
+            let none = doors(l.cat.as_ref(), who, &ty.replace(of, "ghost"), key).await;
+            for (n, (a, b)) in there.iter().zip(&none).enumerate() {
+                let what = format!("{} on `{ty}`, door {n}", who.id);
+                let absent = matches!(a, Err(Error::NotFound { missing }) if matches!(missing, Missing::Type { .. } | Missing::Verb { .. }));
+                match (names.contains(&ty), answered_alike(&what, a, b, of)) {
+                    (false, Err(f)) => apart.push(f.message),
+                    (true, _) if absent => apart.push(format!("{what}, described: {a:?}")),
+                    _ => {}
+                }
+            }
         }
     }
     ensure!(
         apart.is_empty() && store.head().await.must("the head")? == head,
         "a type kept from its reader, its link type and each view made of it answer as a name \
-         that is not declared, and nothing is written; apart:\n{}",
+         that is not declared, one `describe` names answers at no door so, and nothing is \
+         written; apart:\n{}",
         apart.join("\n")
     );
     Ok(())
 }
 
-async fn a_pattern_names_no_type_its_reader_is_not_shown(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_pattern_names_no_type_its_reader_is_not_shown(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let x = json!([{"name": "x", "type": {"kind": "text"}}]);
     let to_box = json!({"name": "to_box", "target": "box"});
@@ -588,8 +632,10 @@ async fn a_pattern_names_no_type_its_reader_is_not_shown(
 }
 
 async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_not_shown(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
+    use crate::conformance::fixture::invalid_said;
+    use lakelands_api::error::{Case, Place, Said};
     let l = Lake::of(store.as_ref());
     let f = |name: &str, kind: &str| json!({"name": name, "type": {"kind": kind}});
     let zref = json!({"name": "zref", "type": {"kind": "reference", "target": "zsecret"}});
@@ -602,20 +648,30 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
         }
         v
     };
-    // Grouped by `name`, keyed by `n`: its records carry `name` all the same.
-    let keyed = |name: &str| {
+    // A view's `key` is its `group_by` or left out (lakelands#788): one
+    // keyed by its measure, by part of its groups, by its groups in another
+    // order, and an ungrouped one keyed at all, are refused at the type.
+    let keyed = |name: &str, key: &[&str], by: &[&str]| {
         let mut v = view(name, "pub", "name", &f("name", "text"), false);
-        v["key"] = json!(["n"]);
+        let fields = by.iter().map(|g| f(g, "text")).chain([f("n", "decimal")]);
+        v["fields"] = json!(fields.collect::<Vec<_>>());
+        (v["key"], v["view"]["group_by"]) = (json!(key), json!(by));
         v
     };
+    let total = keyed("u_view", &[], &[]);
+    // Its measure reads `hid`, so eve is shown it without its definition.
+    let mut unread = view("dh_view", "pub", "name", &f("name", "text"), false);
+    unread["view"]["measures"] = json!([{"name": "n", "expr": "count(hid)"}]);
+    let mut keyed_total = total.clone();
+    keyed_total["key"] = json!(["n"]);
     let mut merged = view("m_view", "pub", "name", &f("name", "text"), false);
     merged["fields"] = json!([f("name", "text"), f("n", "decimal"), f("n2", "decimal")]);
     let n2 = json!([{"name": "n2", "expr": "count()"}]);
     merged["view"]["merge"] = json!([{"source": "aux", "group_by": ["hid2"], "measures": n2}]);
-    // Grouped by `[name, hid]`, keyed by `name`, over a source whose `hid` it reads.
+    // Grouped by `[name, hid]`, over a source whose `hid` it reads.
     let mut pair = view("knr_view", "pub2", "name", &f("name", "text"), false);
     pair["fields"] = json!([f("name", "text"), f("hid", "text"), f("n", "decimal")]);
-    (pair["key"], pair["view"]["group_by"]) = (json!(["name"]), json!(["name", "hid"]));
+    pair["view"]["group_by"] = json!(["name", "hid"]);
     // Measured from a measure: `m` reads `n`; `open`, and `due` merged
     // beside it, read the merged `paid`;
     // `m0_view` and `p0_view` are the same views without those measures.
@@ -660,9 +716,10 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
         view("h_viewk", "pub", "hid", &f("hid", "text"), true),
         merged,
         view("g_view", "pub", "name", &f("name", "text"), false),
-        keyed("kk_view"),
-        keyed("kn_view"),
+        view("kn_view", "pub", "name", &f("name", "text"), false),
         pair,
+        total,
+        unread,
         view("n_view", "pub", "name", &f("name", "text"), false),
         view("nh_view", "pub", "name", &f("name", "text"), true),
     ]
@@ -679,7 +736,7 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
     l.upsert("aux", "x1", json!({"hid2": "a"})).await?;
     let grants = json!({"default": "read", "review": true, "types": {"zsecret": {"default": "none"},
         "pub": {"fields": {"hid": "none"}}, "aux": {"fields": {"hid2": "none"}}, "g_view": {"fields": {"name": "none"}},
-        "kk_view": {"fields": {"name": "none"}}, "kn_view": {"fields": {"n": "none"}},
+        "kn_view": {"fields": {"n": "none"}}, "u_view": {"fields": {"n": "none"}},
         "knr_view": {"fields": {"hid": "none"}}, "nh_view": {"fields": {"n": "none"}},
         "mm_view": {"fields": {"n": "none"}}, "pm_view": {"fields": {"paid": "none"}}}});
     let eve = principal(
@@ -695,7 +752,6 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
         ("h_viewk", "a"),
         ("m_view", "a"),
         ("g_view", "a"),
-        ("kk_view", "a"),
         ("knr_view", "a:a"),
     ] {
         let there = doors(l.cat.as_ref(), &eve, ty, key).await;
@@ -708,12 +764,8 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
             apart.push(format!("`{ty}`: {there:?}"));
         }
     }
-    let d = l
-        .cat
-        .describe(&eve, Default::default())
-        .await
-        .must("describing the lake")?
-        .data;
+    let d = l.cat.describe(&eve, Default::default());
+    let d = d.await.must("describing the lake")?.data;
     let measured_views = ["mm_view", "m0_view", "pm_view", "p0_view"];
     let names: Vec<&str> = d
         .types
@@ -721,12 +773,44 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
         .map(|t| t.name.as_str())
         .filter(|n| n.contains("_view") && !measured_views.contains(n))
         .collect();
-    if names != ["kn_view", "n_view", "nh_view"] {
+    if names != ["dh_view", "kn_view", "n_view", "nh_view", "u_view"] {
         apart.push(format!("eve is described {names:?}"));
+    }
+    // An ungrouped view is shown by what its one record carries, its key
+    // under no field: eve, held from the `n` a `key` could once name, reads
+    // it, described with no key.
+    let total = doors(l.cat.as_ref(), &eve, "u_view", UNGROUPED).await;
+    let keyless = d.types.iter().find(|t| t.name.as_str() == "u_view");
+    let read = [0, 1, 3, 4, 5, 7].iter().all(|&door| total[door].is_ok());
+    if !read || keyless.is_none_or(|t| !t.access.key.is_empty()) {
+        apart.push(format!(
+            "`u_view` answers eve {total:?}, described {keyless:?}"
+        ));
+    }
+    for (bad, group_by) in [
+        (keyed("bad_view", &["n"], &["name"]), Some(vec!["name"])),
+        (
+            keyed("bad_view", &["name"], &["name", "hid"]),
+            Some(vec!["name", "hid"]),
+        ),
+        (
+            keyed("bad_view", &["hid", "name"], &["name", "hid"]),
+            Some(vec!["name", "hid"]),
+        ),
+        (keyed_total, None),
+    ] {
+        let name = TypeName::from(bad["name"].as_str().unwrap_or_default());
+        let d = serde_json::from_value(bad.clone()).expect("a declaration reads");
+        let refused = l.cat.declare(&l.own, d).await;
+        let group_by = group_by.map(|g| g.into_iter().collect());
+        let want = Said::from(Case::ViewKey { group_by }).within(Place::Type { name });
+        if invalid_said(&refused) != Some(&want) {
+            apart.push(format!("declaring {bad}: {refused:?}"));
+        }
     }
     // Described, and in its tools, by the key its records carry.
     let tools = lakelands_api::tools::tools(&d).expect("eve's tools");
-    for ty in ["kn_view", "n_view"] {
+    for ty in ["kn_view", "n_view", "nh_view"] {
         let door = lakelands_api::tools::Door::Get { ty: ty.into() };
         let get = tools.iter().find(|t| t.door == door);
         let key = get.map(|t| &t.input_schema["properties"]["key"]["description"]);
@@ -753,7 +837,7 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
         let t = d.types.iter().find(|t| t.name.as_str() == ty);
         said.extend(t.map(|t| shape(&t.access.key, t.view.as_ref())));
     }
-    let mut again = keyed("kn_view");
+    let mut again = view("kn_view", "pub", "name", &f("name", "text"), false);
     again["description"] = json!("again");
     let declarations = vec![serde_json::from_value(again).expect("a declaration reads")];
     let bundle = ProposedWrite::Declare { declarations };
@@ -772,15 +856,21 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
     }
     // And it is answered the hash of the definition it is shown.
     let field = |f: &lakelands_api::describe::FieldDescription| json!({"name": f.name, "type": f.ty, "required": f.required});
-    for t in d.types.iter().filter(|t| t.name.as_str() == "nh_view") {
+    // The hash is taken over the key the records carry, so a view with its
+    // `key` left out hashes as its description, which names it: shown
+    // whole (`n_view`), without a measure (`kn_view`), and without its
+    // definition (`dh_view`); so does the ungrouped view, under no key.
+    let hashed = ["nh_view", "n_view", "kn_view", "dh_view", "u_view"];
+    for t in (d.types.iter()).filter(|t| hashed.contains(&t.name.as_str())) {
         let fields: Vec<_> = t.fields.iter().map(field).collect();
         let shown = json!({"name": t.name, "key": t.access.key, "fields": fields, "view": t.view});
         let shown = serde_json::from_value(shown).expect("a description reads as a declaration");
         let rebuilt = lakelands_api::shape::schema_hash(&shown).expect("a described view parses");
-        if rebuilt != t.lifecycle.schema_hash {
+        let bare = t.name.as_str() == "dh_view";
+        if rebuilt != t.lifecycle.schema_hash || bare != t.view.is_none() {
             apart.push(format!(
-                "`nh_view` is described {:?}, hashed {}",
-                t.view, t.lifecycle.schema_hash
+                "`{}` is described {:?}, hashed {}",
+                t.name, t.view, t.lifecycle.schema_hash
             ));
         }
     }
@@ -886,9 +976,7 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
     Ok(())
 }
 
-async fn a_type_keyed_by_a_field_its_reader_may_not_know_of_is_not_shown(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_type_keyed_by_a_field_its_reader_may_not_know_of_is_not_shown(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let f = |name: &str, kind: &str| json!({"name": name, "type": {"kind": kind}});
     let count = json!([{"name": "n", "expr": "count()"}]);
@@ -938,7 +1026,7 @@ async fn a_type_keyed_by_a_field_its_reader_may_not_know_of_is_not_shown(
         let there = doors(l.cat.as_ref(), &hidden, ty, key).await;
         let none = doors(l.cat.as_ref(), &hidden, &ghost, key).await;
         for (n, (a, b)) in there.iter().zip(&none).enumerate() {
-            if let Err(f) = answered_alike(&format!("on `{ty}`, door {n}"), a, b) {
+            if let Err(f) = answered_alike(&format!("on `{ty}`, door {n}"), a, b, "ledger") {
                 apart.push(f.message);
             }
         }
@@ -970,8 +1058,8 @@ async fn a_type_keyed_by_a_field_its_reader_may_not_know_of_is_not_shown(
 }
 
 async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_know_of(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     let f = |name: &str, kind: &str| json!({"name": name, "type": {"kind": kind}});
     let to = |name: &str, target: &str| json!({"name": name, "type": {"kind": "reference", "target": target}});
@@ -1040,25 +1128,18 @@ async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_kno
     for who in [&kept, &reader("masked", none.clone(), masked)] {
         let c = l.cat.as_ref();
         let t = TypeName::from("ticket");
-        let described = c
-            .describe_type(who, &t, Default::default())
-            .await
-            .must("describing `ticket`")?;
+        let described = c.describe_type(who, &t, Default::default());
+        let described = described.await.must("describing `ticket`")?;
         let fields: Vec<String> = described
             .data
             .fields
             .iter()
             .map(|f| f.name.to_string())
             .collect();
-        let got = c
-            .get(who, &t, get_at("t1", None))
-            .await
-            .must("getting `t1`")?
-            .data;
-        let rows = c
-            .find(who, &t, Find::default())
-            .await
-            .must("finding `ticket`")?;
+        let got = c.get(who, &t, get_at("t1", None));
+        let got = got.await.must("getting `t1`")?.data;
+        let rows = c.find(who, &t, Find::default());
+        let rows = rows.await.must("finding `ticket`")?;
         let found = format!("{:?}", rows.data);
         if fields != ["no", "cat"] || got.fields.contains_key("payee") || found.contains("payee") {
             apart.push(format!(
@@ -1206,10 +1287,8 @@ async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_kno
         renames: m.renames.clone(),
         report: Default::default(),
     };
-    l.cat
-        .propose(&l.own, rename, "a rename".into())
-        .await
-        .must("proposing the rename")?;
+    let fut = l.cat.propose(&l.own, rename, "a rename".into());
+    fut.await.must("proposing the rename")?;
     let listed = l.cat.proposals(&reviewer, ProposalFilter::default()).await;
     let listed: Vec<_> = (listed.must("listing the proposals")?.data.into_iter())
         .filter_map(|p| match p.write {

@@ -17,14 +17,16 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use lakelands_api::engine::{Declared, ProjectionView, Scan};
+use lakelands_api::engine::{Declared, Matched, ProjectionView, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::{StoredRecord, Value};
+use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{Proposal, ProposalFilter};
 use lakelands_core::engines;
+use lakelands_core::feed::{self, Seek};
 
 use crate::projection::{History, Projection};
 use crate::{Lake, lock};
@@ -262,31 +264,6 @@ impl ProjectionView for MemView {
         }))
     }
 
-    fn lexical(
-        &self,
-        ty: &TypeName,
-        text: &str,
-        fields: Option<&[FieldName]>,
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>> {
-        Ok(self.read(|p, at| {
-            // Ranked by the text at the head; kept when live and
-            // live at the view's position (`docs/seams.md`).
-            let Some(decl) = p.type_at(ty, p.folded) else {
-                return Vec::new();
-            };
-            let visible = |key: &RecordKey| {
-                engines::searchable(
-                    p.records
-                        .get(&(ty.clone(), key.clone()))
-                        .and_then(|h| h.at(at)),
-                )
-            };
-            let head = p.records_at(ty, p.folded).map(|r| (r, visible(&r.key)));
-            engines::lexical(decl, head, text, fields, k)
-        }))
-    }
-
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
         Ok(self.read(|p, at| {
             engines::proposals(p.proposals.values().filter_map(|h| h.at(at)), filter, |v| {
@@ -326,12 +303,64 @@ impl ProjectionView for MemView {
         }))
     }
 
-    fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
+    fn output(&self, seam: &str, input: &Digest) -> Result<Option<(Position, Value)>> {
         Ok(self.read(|p, at| {
             p.outputs
                 .get(&(seam.to_owned(), input.clone()))
-                .and_then(|h| h.at(at))
-                .cloned()
+                .and_then(|h| h.since(at))
+                .map(|(since, v)| (since, v.clone()))
+        }))
+    }
+
+    fn matching(
+        &self,
+        filter: &FeedFilter,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<Matched> {
+        Ok(self.read(|p, at| {
+            let r = &p.routes;
+            let to = feed::decides_through(filter, from, through);
+            let Some(last) = at.and_then(|at| feed::last_decided(from, at.min(to), p.folded))
+            else {
+                return feed::undecided();
+            };
+            let n = limit.max(1) as usize;
+            let admitted = |set: Option<&BTreeSet<Position>>| -> Vec<Position> {
+                let Some(set) = set else {
+                    return Vec::new();
+                };
+                let admits = |p: &&Position| {
+                    let (kind, about) = &r.events[*p];
+                    feed::admits(filter, kind, about)
+                };
+                set.range(from..=last)
+                    .filter(admits)
+                    .take(n)
+                    .copied()
+                    .collect()
+            };
+            let lists: Vec<Vec<Position>> = match feed::seek(filter) {
+                Some(Seek::Keys(keys)) => keys.iter().map(|k| admitted(r.keys.get(k))).collect(),
+                Some(Seek::Types(types)) => {
+                    types.iter().map(|t| admitted(r.types.get(t))).collect()
+                }
+                Some(Seek::Kinds(kinds)) => kinds
+                    .iter()
+                    .map(|k| admitted(r.kinds.get(k.as_str())))
+                    .collect(),
+                None => {
+                    vec![
+                        r.events
+                            .range(from..=last)
+                            .map(|(p, _)| *p)
+                            .take(n)
+                            .collect(),
+                    ]
+                }
+            };
+            feed::merged(lists, limit, last)
         }))
     }
 }

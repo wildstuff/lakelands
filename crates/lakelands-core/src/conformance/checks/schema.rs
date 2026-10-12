@@ -5,63 +5,55 @@
 //! `docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 //! `docs/decisions/028-authoring-is-strict-and-whole.md`).
 
-use std::sync::Arc;
-
+use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl};
-use lakelands_api::tools::{Door, GENERIC_TOOLS, tools};
+use lakelands_api::tools::{Door, GENERIC_TOOLS, MAX_TOOL_NAME, ToolSpec, tools};
 use lakelands_api::write::{Declaration, Outcome, ProposedWrite, Recompute};
 use lakelands_api::{Error, Grants, LakeStore, PrincipalKind, ReadAt, Refusal, TypeName};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, computed_by, dec, decimal, events_after, field, head_unmoved, is_invalid,
-    migration, object_set_on, principal, reason, refused_unmoved, reviewer, trigger_on, type_decl,
-    value, value_type, view_of, write_verb,
+    Lake, Must, computed_by, dec, decimal, events_after, field, head_unmoved, invalid_case,
+    is_invalid, migration, object_set_on, principal, reason, refused_unmoved, reviewer, trigger_on,
+    type_decl, value, value_type, view_of, write_verb,
 };
+use crate::conformance::{Failure, Held, Store};
 
 check!(
-    /// add_field asks for the schema grant before it looks.
-    ADD_FIELD_GRANT_FIRST = add_field_without_the_schema_grant_is_refused_before_it_looks_at_the_type,
+    ADD_FIELD_GRANT_FIRST =
+        add_field_without_the_schema_grant_is_refused_before_it_looks_at_the_type,
     "006 and 024, extended: add_field without the schema grant is refused not_granted whether the type is undeclared or already has the field, so the refusal tells nothing about the ontology"
 );
 
 check!(
-    /// The schema hash is the log format's, byte for byte.
     SCHEMA_HASH_VECTOR = the_schema_hash_of_the_log_formats_vector_is_the_one_it_pins,
     "007 and the log format's vectors: a type's schema hash is SHA-256 over its canonical shape, the same on every engine"
 );
 
 check!(
-    /// Meaning does not move the schema hash.
     SCHEMA_HASH_IGNORES_MEANING = describing_and_relabelling_a_type_leaves_its_schema_hash,
     "007: descriptions, labels and field order in a revision are meaning, not shape, and leave the schema hash as it was"
 );
 
 check!(
-    /// A revision that reshapes records is not a declaration.
     RESHAPING_DECLARE_REFUSED = declare_refuses_a_revision_that_reshapes_stored_records,
     "027: retyping, removing or requiring a field goes through `migrate`; `declare` refuses it and appends nothing"
 );
 
 check!(
-    /// `declare` refuses what cannot become part of the map.
     DECLARE_REFUSALS = declare_refuses_bad_names_unknown_references_and_tool_name_collisions,
     "028 and 014: a name that is not an ASCII identifier, a reference to an undeclared type, or a name that collides with a tool is refused whole"
 );
 
 check!(
-    /// `sys.` belongs to the system.
     SYS_RESERVED = an_ordinary_principal_cannot_declare_a_sys_type,
     "003: every type name starting `sys.` is reserved; an ordinary principal, even the owner, is refused declaring one and nothing is appended"
 );
 
 const VECTOR: &str = include_str!("../../../../../docs/log-format/vectors/schema-hash.json");
 
-async fn the_schema_hash_of_the_log_formats_vector_is_the_one_it_pins(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn the_schema_hash_of_the_log_formats_vector_is_the_one_it_pins(store: Store) -> Held {
     let vector: Value = serde_json::from_str(VECTOR)
         .map_err(|e| Failure::new(format!("the schema-hash vector does not parse: {e}")))?;
     let decl: TypeDecl = serde_json::from_value(vector["declaration"].clone())
@@ -98,9 +90,7 @@ async fn hash_of(store: &dyn LakeStore, ty: &str) -> Result<(String, u32), Failu
     Ok((d.lifecycle.schema_hash, d.lifecycle.version))
 }
 
-async fn describing_and_relabelling_a_type_leaves_its_schema_hash(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn describing_and_relabelling_a_type_leaves_its_schema_hash(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let first = type_decl(
         "memo",
@@ -132,9 +122,7 @@ async fn describing_and_relabelling_a_type_leaves_its_schema_hash(
     Ok(())
 }
 
-async fn declare_refuses_a_revision_that_reshapes_stored_records(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn declare_refuses_a_revision_that_reshapes_stored_records(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let first = type_decl(
@@ -170,8 +158,8 @@ async fn declare_refuses_a_revision_that_reshapes_stored_records(
 }
 
 async fn declare_refuses_bad_names_unknown_references_and_tool_name_collisions(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let reference = FieldDecl {
@@ -207,11 +195,8 @@ async fn declare_refuses_bad_names_unknown_references_and_tool_name_collisions(
     };
     // The colliding names come from the one generator, never spelled here.
     let generic = GENERIC_TOOLS[0];
-    let described = cat
-        .describe(own, ReadAt::default())
-        .await
-        .must("describing the lake")?
-        .data;
+    let described = cat.describe(own, ReadAt::default());
+    let described = described.await.must("describing the lake")?.data;
     let find_tool = tools(&described)
         .map_err(|p| Failure::new(format!("the lake's names cannot become tools: {p:?}")))?
         .into_iter()
@@ -239,9 +224,97 @@ async fn declare_refuses_bad_names_unknown_references_and_tool_name_collisions(
     Ok(())
 }
 
-async fn an_ordinary_principal_cannot_declare_a_sys_type(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+check!(
+    DERIVED_NO_TOOL_NAME = a_derived_relation_takes_no_tool_name,
+    "014 and 044 (lakelands#902): a derived relation has no link door, so it takes no tool name: a type whose derived relation would make a link door's name too long is declared where the same relation carried by link records is refused, a verb named as the link door or the unlink door of a derived relation would be is declared, after its type or before it, and the lake's catalog is answered each time, with the verb and no link door"
+);
+
+async fn a_derived_relation_takes_no_tool_name(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl("payroll", vec![field("code", StorageKind::Text)]))
+        .await?;
+    let ty_of = |name: &str, relation: &str, derived: bool| -> Result<TypeDecl, Failure> {
+        let mut r = json!({"name": relation, "target": "payroll"});
+        if derived {
+            r["derived"] = json!({"match": [{"from": "ref", "to": "code"}]});
+        }
+        let fields = json!([{"name": "ref", "type": {"kind": "text"}}]);
+        serde_json::from_value(json!({"name": name, "fields": fields, "relations": [r]}))
+            .map_err(|e| Failure::new(format!("the check's type does not read: {e}")))
+    };
+    let link_door = |t: &ToolSpec| matches!(t.door, Door::Link { .. } | Door::Unlink { .. });
+    // Three characters, the relation and the unlink door's suffix: one
+    // character more than a tool name may have.
+    let long = "m".repeat(MAX_TOOL_NAME - 10);
+    let before = store.head().await.must("reading the head")?;
+    let answer = l.try_declare(ty_of("inl", &long, false)?).await;
+    let what = "declaring a relation carried by links whose unlink door's name is too long";
+    let err = refused_unmoved(store.as_ref(), before, what, answer).await?;
+    ensure!(
+        matches!(invalid_case(&err), Some(Case::ToolNames { .. })),
+        "{what} must be refused for its tool names; it failed with {err:?}"
+    );
+    l.declare(ty_of("inw", &long, true)?).await?;
+    l.declare(ty_of("inv", "matched", true)?).await?;
+    let described = l.describe().await?;
+    let offered = tools(&described).map_err(|p| {
+        Failure::new(format!(
+            "a lake with a derived relation of a long name must have its catalog; it has {p:?}"
+        ))
+    })?;
+    ensure!(
+        !offered.iter().any(link_door),
+        "a derived relation must have no link door; the catalog offers {:?}",
+        offered.iter().filter(|t| link_door(t)).collect::<Vec<_>>()
+    );
+    // The name a link door of a derived relation would have, from the one
+    // generator: `inv` described as if `matched` were carried by links, and
+    // the same type under the name `iny`, which is not declared yet.
+    let mut linked = described.clone();
+    linked.types.retain(|t| t.name.as_str() == "inv");
+    linked.types[0].relations[0].derived = None;
+    linked.types[0].may.link = vec!["matched".into()];
+    linked.types.push(linked.types[0].clone());
+    linked.types[1].name = "iny".into();
+    let doors = tools(&linked).unwrap_or_default();
+    // The link door's name after its type, the unlink door's before it.
+    for (ty, first) in [("inv", false), ("iny", true)] {
+        let (ty_, relation) = (ty.into(), "matched".into());
+        let door = match first {
+            true => Door::Unlink { ty: ty_, relation },
+            false => Door::Link { ty: ty_, relation },
+        };
+        let name = doors
+            .iter()
+            .find(|t| t.door == door)
+            .map(|t| t.name.clone());
+        let name = name.ok_or_else(|| Failure::new("no link door to name"))?;
+        let verb = json!({"declare": "verb", "name": name, "on": "payroll", "risk": "low",
+                          "effect": "write", "set": [{"field": "code", "value": "'x'"}]});
+        l.declare_json(verb).await?;
+        if first {
+            l.declare(ty_of(ty, "matched", true)?).await?;
+        }
+        let offered = tools(&l.describe().await?).map_err(|p| {
+            Failure::new(format!(
+                "a verb named as a link door of `{ty}.matched`, a derived relation, would be \
+                 is declared, so the lake must have its catalog; it has {p:?}"
+            ))
+        })?;
+        let call = Door::Call {
+            verb: name.as_str().into(),
+        };
+        ensure!(
+            offered.iter().any(|t| t.name == name && t.door == call)
+                && !offered.iter().any(link_door),
+            "the catalog must offer the verb `{name}` and no link door; it offers {:?}",
+            offered.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
+    }
+    Ok(())
+}
+
+async fn an_ordinary_principal_cannot_declare_a_sys_type(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
@@ -258,14 +331,11 @@ async fn an_ordinary_principal_cannot_declare_a_sys_type(
 }
 
 check!(
-    /// Field order is not shape.
     REORDERED_FIELDS = redeclaring_a_type_with_its_fields_reordered_keeps_its_schema_hash,
     "007: field order is not shape, so a type declared again with its fields in another order keeps its schema hash; the log keeps the declaration as written, so it is one revision"
 );
 
-async fn redeclaring_a_type_with_its_fields_reordered_keeps_its_schema_hash(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn redeclaring_a_type_with_its_fields_reordered_keeps_its_schema_hash(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let first = type_decl(
         "memo",
@@ -298,14 +368,11 @@ async fn redeclaring_a_type_with_its_fields_reordered_keeps_its_schema_hash(
 }
 
 check!(
-    /// The declaration in force appends nothing.
     IN_FORCE_APPENDS_NOTHING = a_declaration_that_is_the_one_in_force_appends_nothing,
     "027, extended (lakelands#565): a declaration that is the one in force (a value type, a function, a type, a verb, a trigger, a set, and a type whose computed field is stated with its completed `depends_on` or without) is answered `applied` at the head and appends nothing, by `declare` and by `apply`, and its version stays; a refusal still comes first; of a set what differs is appended alone, and what it sets off happens; an accepted proposal of declarations in force appends its acceptance alone"
 );
 
-async fn a_declaration_that_is_the_one_in_force_appends_nothing(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_declaration_that_is_the_one_in_force_appends_nothing(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let scaled = |by: u8| -> Declaration {
         serde_json::from_value(json!({"declare": "function", "name": "scaled", "backing": "expr",
@@ -381,14 +448,11 @@ async fn a_declaration_that_is_the_one_in_force_appends_nothing(
 }
 
 check!(
-    /// A migration to what is in force appends nothing.
     MIGRATION_IN_FORCE = a_migration_to_what_is_in_force_appends_nothing,
     "027, extended (lakelands#577): a migration whose `to` is the type in force and that renames nothing is answered `applied` at the head and appends nothing; a stale report is refused first; an accepted proposal of it appends its acceptance alone; a value type's migration to itself is refused as before, there being nothing to migrate"
 );
 
-async fn a_migration_to_what_is_in_force_appends_nothing(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn a_migration_to_what_is_in_force_appends_nothing(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let (bill, state) = (
         type_decl("bill", vec![field("net", StorageKind::Decimal)]),
@@ -439,14 +503,11 @@ async fn a_migration_to_what_is_in_force_appends_nothing(
 }
 
 check!(
-    /// The door computes again what a declaration in force computes.
     RECOMPUTED = the_door_computes_again_what_a_declaration_in_force_computes,
     "022, extended (lakelands#565): `recompute` appends the declaration in force again as it was declared, at its next version; a function that reads a setting is computed again with the setting as it stands, where declaring it again changes nothing; called again it changes no record and still appends; without the `schema` grant it is not granted before the name is looked at, a name no function or type has and a type its caller is not shown are not found, a view and a type with no field computed outside the lake are invalid, and nothing is appended"
 );
 
-async fn the_door_computes_again_what_a_declaration_in_force_computes(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+async fn the_door_computes_again_what_a_declaration_in_force_computes(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let rated: Declaration = serde_json::from_value(json!({"declare": "function", "name": "rated",
         "backing": "expr", "inputs": [{"name": "net", "type": {"kind": "decimal"}}],
@@ -550,8 +611,8 @@ async fn the_door_computes_again_what_a_declaration_in_force_computes(
 }
 
 async fn add_field_without_the_schema_grant_is_refused_before_it_looks_at_the_type(
-    store: Arc<dyn LakeStore>,
-) -> Result<(), Failure> {
+    store: Store,
+) -> Held {
     let l = Lake::of(store.as_ref());
     l.declare(type_decl("note", vec![field("text", StorageKind::Text)]))
         .await?;
