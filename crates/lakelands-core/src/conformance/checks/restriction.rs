@@ -38,12 +38,12 @@ check!(
 
 check!(
     HOLD_AT_EVERY_POSITION = a_record_held_now_is_not_there_at_any_position,
-    "006, extended (lakelands#790): the hold as it stands now governs every position: to a reader without the `restricted` grant a record held at the head is not there as of an earlier position at `get` (compared whole with a key no record holds), `find` (rows and `total`), aggregates, a computed and a kept view, a walk, a pattern from it (compared whole with one from an absent record) and a link with an end held now (`get` compared whole, and the listing), a search, lexical and by vector, whose answers, scores and pages are those of a type that never held it; a link held under the name its relation was renamed to since is not there either; `describe` says a view so read is computed; a record held then and released since is answered there as any record is"
+    "006, extended (lakelands#790): the hold as it stands now governs every position: to a reader without the `restricted` grant a record held at the head is not there as of an earlier position at `find` (rows and `total`), aggregates, a computed and a kept view, a walk, a pattern from it (compared whole with one from an absent record) and a link with an end held now (the listing), a search, lexical and by vector, whose answers, scores and pages are those of a type that never held it; a link held under the name its relation was renamed to since is not there either; `describe` says a view so read is computed; a record held then and released since is answered there as any record is; `get` as of then, of the record and of its link, the rights grid compares whole with a key no record holds (lakelands#962)"
 );
 
 check!(
     HOLD_NOT_THERE_TO_A_WRITE = a_restricted_record_is_not_there_to_a_writer_without_the_grant,
-    "006, extended (lakelands#772): to a writer without the `restricted` grant a restricted record is not there at any write door, its refusal compared whole with that of a key no record holds: a reference to it and either end of a `link` are `not_live`, `retire`, `unlink` of a link to it and a verb called on it, of low risk or high, are not found, and so is the proposal of each; a link to it ingested again is `not_live`; an upsert onto its key, made or proposed, and onto a held key retired since, made, proposed or ingested, an ingest onto a live held key and a link onto a link whose own record is held are not granted and name no field, as is a well-formed setting onto a held one's key; that refusal comes last of the record checks (016), so under a version, without a required field, with a key field that disagrees and with a `view_kept` setting that is no boolean the upsert onto a held key answers as onto a free one, a conflict, a constraint and twice invalid; nothing is written; a proposed write onto it is not there to a reviewer without the grant, its accept and its reject answered as an id never made, to the byte (lakelands#1008); the accept of a proposal is judged as its write as the records stand then, so one naming a record restricted since is refused, and one that reached a record restricted when proposed, as only a holder of the grant could, is applied"
+    "006, extended (lakelands#772): to a writer without the `restricted` grant a restricted record is not there at any write door, its refusal compared whole with that of a key no record holds: a link to it is `not_live`, `unlink` of a link to it and a high-risk verb called on it are not found, and so is the proposal of a call on it and of a reference to it (a reference to it, a link from it, `retire`, a low-risk verb and a proposed retirement the rights grid compares, lakelands#962); a link to it ingested again is `not_live`; an upsert onto its key, made or proposed, and onto a held key retired since, made, proposed or ingested, an ingest onto a live held key and a link onto a link whose own record is held are not granted and name no field, as is a well-formed setting onto a held one's key; that refusal comes last of the record checks (016), so under a version, without a required field, with a key field that disagrees and with a `view_kept` setting that is no boolean the upsert onto a held key answers as onto a free one, a conflict, a constraint and twice invalid; nothing is written; a proposed write onto it is not there to a reviewer without the grant, its accept and its reject answered as an id never made, to the byte (lakelands#1008); the accept of a proposal is judged as its write as the records stand then, so one naming a record restricted since is refused, and one that reached a record restricted when proposed, as only a holder of the grant could, is applied"
 );
 
 async fn a_restricted_record_is_withheld_but_kept(store: Store) -> Held {
@@ -170,21 +170,9 @@ async fn a_record_held_now_is_not_there_at_any_position(store: Store) -> Held {
             .await
             .must("releasing")?;
     }
+    // `get` as of before of `c1`, held now, and of its link, is the grid's
+    // (`checks/grid.rs`, `AsOf` of a pair of existence).
     let w = holder(s, "w", json!({"default": "read"}));
-    let at = Some(then);
-    let got = |key: &'static str| get(&l, &w, "claim", key, at);
-    let (held, absent) = (got("c1").await, got("c9").await);
-    let link = |key| get(&l, &w, "sys.link.claim.on_trip", key, at);
-    let (to_held, to_none) = (link("c1:t1").await, link("c9:t1").await);
-    let said = |a: &lakelands_api::Result<_>| json!(a.as_ref().err()).to_string();
-    ensure!(
-        held.is_err()
-            && said(&held) == said(&absent).replace("c9", "c1")
-            && to_held.is_err()
-            && said(&to_held) == said(&to_none).replace("c9", "c1"),
-        "`c1`, held now, and its link must be as of before what a key no record holds is: \
-         {held:?}, not {absent:?}; {to_held:?}, not {to_none:?}"
-    );
     finds(&l, &w, HELD_NOW, then).await?;
     let walk = |(ty, key): (&str, &str), steps: Value, project: &str| {
         let start = json!({"type": ty, "key": key});
@@ -389,68 +377,38 @@ check!(
     "006 and 051, extended (lakelands#781): to a reader without the `restricted` grant a link with a held end is not there: `get` of it answers as of a link no record holds, compared whole, `find` on the link type does not list it, count it in a total or an aggregate, or find it by its hidden end, a kept view over the link type, and over a view over it, answers as its computed twin, a search as of before the hold judged at the head leaves it out, and a reference to it is `not_live` as one to a link no record holds; a cardinality refusal over such a link still refuses and names no end; to a reviewer without the grant a proposed write that references a held record or a link with a held end is not there, its accept and its reject answered as an id no proposal holds (lakelands#929), a decision judged as the write it decides either way, an upsert's or a call's in whatever form its assignment computes it (a payload member, a literal, `coalesce`, another field), which the owner applies; a high-risk call through the `call` door is judged as its caller's write, refused as not live to one without the grant and logging nothing, and proposed to a holder; and what a write reaches is computed as at its proposal, by the declarations, its record, the settings in force and its time, so one that reaches a held record only through a field retyped, a record, a setting or a time changed since is judged at the accept as its proposer's write; a holder's proposed call on a link with a held end is not there to a reviewer without the grant, not listed and its accept and its reject answered as an id never made (lakelands#1008), and is accepted by one who holds it; and the host places and lifts a hold on a retired record"
 );
 
-/// Each write door that names the record `k`, as `who`: a reference to a
-/// `partner`, a link to and from it, its retirement, a verb on it, the
-/// unlink of a link to it, the proposals of three of them, and a link to
-/// it ingested again.
+/// Each write door that names the record `k`, as `who`, the rights grid
+/// does not ask (lakelands#962): a link to it, a high-risk verb on it, the
+/// unlink of a link to it, the proposals of a call on it and of a
+/// reference to it, and a link to it ingested again.
 async fn write_doors(c: &dyn Catalog, who: &Principal, k: &str) -> Vec<lakelands_api::Result<()>> {
     fn said<T>(r: lakelands_api::Result<T>) -> lakelands_api::Result<()> {
         r.map(drop)
     }
-    let (partner, deal, with, opts) = (
-        &"partner".into(),
-        &"deal".into(),
-        &"with".into(),
-        WriteOpts::default,
-    );
+    let (deal, with, opts) = (&"deal".into(), &"with".into(), WriteOpts::default);
     let (key, d1) = (&k.into(), &"d1".into());
-    let refers = patch(json!({ "partner": k }));
     let call = |key| ProposedWrite::Call {
         verb: "rename".into(),
         key,
         payload: Default::default(),
         opts: opts(),
     };
-    let retire = ProposedWrite::Retire {
-        ty: "partner".into(),
-        key: k.into(),
-        opts: opts(),
-    };
     let refer = ProposedWrite::Upsert {
         ty: "deal".into(),
         key: "n1".into(),
-        patch: refers.clone(),
+        patch: patch(json!({ "partner": k })),
         opts: opts(),
     };
     vec![
-        said(c.upsert(who, deal, &"n1".into(), refers, opts()).await),
         said(
             c.link(who, deal, d1, with, key, Default::default(), opts())
                 .await,
         ),
         said(
-            c.link(
-                who,
-                deal,
-                key,
-                with,
-                &"open".into(),
-                Default::default(),
-                opts(),
-            )
-            .await,
-        ),
-        said(c.retire(who, partner, key, opts()).await),
-        said(
             c.call(who, &"rename".into(), Some(key), Default::default(), opts())
                 .await,
         ),
-        said(
-            c.call(who, &"touch".into(), Some(key), Default::default(), opts())
-                .await,
-        ),
         said(c.unlink(who, deal, d1, with, key, opts()).await),
-        said(c.propose(who, retire, "why".into()).await),
         said(c.propose(who, call(Some(k.into())), "why".into()).await),
         said(c.propose(who, refer, "why".into()).await),
         said(
@@ -480,8 +438,6 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(store: S
             {"name": "fed", "target": "partner", "cardinality": "many_to_many", "authority": "source"}]}),
         json!({"declare": "verb", "name": "rename", "on": "partner", "risk": "high",
             "effect": "write", "set": [{"field": "n", "value": "'q'"}]}),
-        json!({"declare": "verb", "name": "touch", "on": "partner", "risk": "low",
-            "effect": "write", "set": [{"field": "n", "value": "'t'"}]}),
     ] {
         l.declare_json(d).await?;
     }
