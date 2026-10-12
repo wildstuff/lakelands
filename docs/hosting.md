@@ -407,7 +407,10 @@ release with real installations, to it (`docs/log-format.md` §6;
   (`log_upgrade_owed` in `docs/refusals.md`); so is a mirror of such a
   source, whose open is a reader's.
 - **An export of an older release imports**, and the import upgrades
-  the new lake the same way.
+  the new lake the same way, by a writer's open after the events are in.
+  Should that open fail, the events stay and a second import is refused
+  as `import_not_empty`: the lake is whole, and the next writer's open,
+  or `lakelands upgrade`, finishes the upgrade.
 - **A format this release does not read**, older than 14 or newer than
   the release, is refused at the open in every mode, naming the lake,
   the formats read and the one written (`log_format`). The store reads

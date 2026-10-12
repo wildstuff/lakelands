@@ -845,9 +845,11 @@ the first release with real installations
   the verification of an export refuse any other change at its position,
   and a rise its marker does not follow where the log ends
   (`format_step`); a read refuses an event in a format below the one
-  before it where it reads them in order. `verify` and the verification
-  of an export refuse a fence below the one before it as well
-  (`fence_below`, §4).
+  before it where it reads them in order. A `verify` of a range judges
+  the step only from where it begins: a `verify` of the whole log judges
+  every one. A fence below the one before it is refused by both engines
+  at append and at import, and found by `verify` and by the verification
+  of an export where it was written below them (`fence_below`, §4).
 
 **A lake in a format the release does not read is refused, older or
 newer, and never read in part.** A reader reads an event's `v` before
@@ -873,6 +875,12 @@ bytes, and `v` next.)
 
 **There is no downgrade.** A lake a release upgraded is not opened by
 the release before; a backup taken before the upgrade is the way back.
+
+**A lake the release before wrote is kept and read.**
+`docs/log-format/lakes/<N>/` holds a small lake a release of format N
+made through its doors, exported, and what that release answered of it;
+every later release imports it on every engine, upgrades it and answers
+the same.
 
 A lake written before format 14, when one log held versions 1 to 14 in
 rising order, is not read.

@@ -371,3 +371,40 @@ async fn an_export_through_a_feed_that_skips_an_event_is_refused() {
     );
     assert!(!dir.exists(), "nothing is left behind");
 }
+
+/// A lake v0.13.1 made in format 14 (`docs/log-format/lakes/14/`),
+/// imported and so upgraded, is exported in both formats: its events as
+/// they were written, then a writer's `lease_taken` and `lake_upgraded`
+/// and the rest in 15. `verify.py`, which shares no code with Lakelands,
+/// verifies that export through its last position, as the store does.
+#[tokio::test(flavor = "multi_thread")]
+async fn verify_py_verifies_the_export_of_an_upgraded_lake() {
+    let lakes = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/lakes/14");
+    let seams = Seams {
+        engines: vec![Arc::new(MemoryOpener::new())],
+        ..Seams::default()
+    };
+    let at = lakelands_api::Location::memory("kept14");
+    lakelands_store::import(at.clone(), seams.clone(), lakes)
+        .await
+        .unwrap();
+    let store = lakelands_store::open(at, seams, OpenMode::Read)
+        .await
+        .unwrap();
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("export-upgraded-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    lakelands_core::export::write(store.as_ref(), &dir)
+        .await
+        .unwrap();
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/log-format/vectors/15/verify.py");
+    let said = python(&script, &dir);
+    let lake_says = store.verify(None, None).await.unwrap();
+    let last = format!(
+        "verified through position {}, hash {}",
+        lake_says.through, lake_says.hash.0
+    );
+    assert!(said.trim_end().ends_with(&last), "verify.py said:\n{said}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

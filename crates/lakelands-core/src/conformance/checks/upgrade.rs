@@ -87,3 +87,97 @@ async fn a_lake_of_format_14_is_upgraded_and_read(store: Store, given: Given) ->
     );
     Ok(())
 }
+
+check!(
+    LAKE_14_READ = a_lake_the_release_before_made_is_read_as_it_answered,
+    "054 (lakelands#962): the lake v0.13.1 made through its doors (`docs/log-format/lakes/14/`), in format 14, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; and the walk over its relation with the link's fields; the upgraded lake verifies",
+    given
+);
+
+async fn a_lake_the_release_before_made_is_read_as_it_answered(store: Store, given: Given) -> Held {
+    use crate::conformance::fixture::{find_where, pattern, step};
+    use lakelands_api::query::{Projection, QueryResult, Walk};
+    store.head().await.must("reading the head")?;
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/lakes/14");
+    let said = std::fs::read(dir.join("answers.json"))
+        .map_err(|e| Failure::new(format!("reading the answers v0.13.1 gave: {e}")))?;
+    let answers: serde_json::Value = serde_json::from_slice(&said)
+        .map_err(|e| Failure::new(format!("the answers are no JSON: {e}")))?;
+    let lake = lakelands_api::LakeId::from("kept14");
+    let imported = (given.import)(dir, lake, None, Seams::default()).await;
+    let imported = imported.map_err(|e| Failure::new(format!("importing the lake: {e}")))?;
+    let copy = imported.store;
+    let log = log_events(copy.as_ref()).await?;
+    let made = answers["head"].as_u64().unwrap_or(0);
+    let tail: Vec<_> = log
+        .iter()
+        .skip(made as usize + 1)
+        .map(|e| e.body.kind())
+        .collect();
+    ensure!(
+        log.iter()
+            .take(made as usize + 1)
+            .all(|e| e.v == OLDEST_LOG_FORMAT)
+            && tail.starts_with(&["lease_taken", "lake_upgraded"])
+            && log
+                .iter()
+                .skip(made as usize + 1)
+                .all(|e| e.v == LOG_FORMAT_VERSION),
+        "the lake's {} events stay in format {OLDEST_LOG_FORMAT}, then a writer's \
+         `lease_taken` and `lake_upgraded`, and every later event in {LOG_FORMAT_VERSION}; \
+         after them come {tail:?}",
+        made + 1
+    );
+    copy.verify(None, None)
+        .await
+        .must("verifying the upgraded lake")?;
+    let (own, cat) = (
+        owner(copy.as_ref()),
+        crate::conformance::fixture::doors(copy.as_ref()),
+    );
+    let mut records = Vec::new();
+    for ty in [
+        "partner",
+        "invoice",
+        "sys.link.invoice.approved_by",
+        "by_state",
+    ] {
+        for r in all(cat.as_ref(), &own, ty).await? {
+            records.push(serde_json::json!({"type": ty, "key": r.key, "fields": r.fields}));
+        }
+    }
+    let members = cat
+        .find(&own, &"invoice".into(), find_where("in_set('open')"))
+        .await;
+    let members = serde_json::to_value(members.must("finding the set's members")?.data)
+        .map_err(|e| Failure::new(format!("the members as JSON: {e}")))?;
+    let walk = pattern(
+        "invoice",
+        Some("i1"),
+        vec![step("approved_by", Walk::Out)],
+        Projection::Graph,
+    );
+    let walked: Vec<serde_json::Value> =
+        match cat.query(&own, walk).await.must("walking from `i1`")?.data {
+            QueryResult::Graph { edges, .. } => (edges.iter())
+                .map(|e| serde_json::json!({"from": e.from.1, "to": e.to.1, "fields": e.fields}))
+                .collect(),
+            other => return Err(Failure::new(format!("a graph walk answered {other:?}"))),
+        };
+    let now = serde_json::json!({"records": records, "open": members, "walk_from_i1": walked});
+    let mut red = Vec::new();
+    for part in ["records", "open", "walk_from_i1"] {
+        if now[part] != answers[part] {
+            red.push(format!(
+                "{part}: v0.13.1 answered {} and this release {}",
+                answers[part], now[part]
+            ));
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "the lake v0.13.1 made answers as it did: {}",
+        red.join("; ")
+    );
+    Ok(())
+}

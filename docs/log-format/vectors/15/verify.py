@@ -147,6 +147,9 @@ def canon(event, refuse):
 
 # The one format version; `--stamp N` rewrites this line.
 FORMAT = 15
+# The oldest format a lake directory may hold events in: a lake the
+# release before wrote and this one upgraded (log-format §6).
+OLDEST = 14
 ZEROS = "0" * 64
 ONE_FORM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
 
@@ -300,6 +303,9 @@ def verify_dir(root):
     check(bool(files), f"{root}/log holds segment files")
     position, prev, known_at = 0, ZEROS, ""
     sealed = []
+    # The format of the event before, the step a new writer's lease began
+    # and its marker must close, and the fence before (log-format §4, §6).
+    before, owed, fence = None, None, 0
 
     def need(ok, why):
         if not ok:
@@ -321,9 +327,29 @@ def verify_dir(root):
             need(canon(event, lambda why: need(False, why)) == line, "the line is canonical")
             need(event.get("position") == position, f"the line is position {event.get('position')}")
             v = event.get("v")
-            need(type(v) is int and v == FORMAT, f"format {v} is the one format, {FORMAT}")
-            made = event["body"].get("format") if event["body"].get("kind") == "lake_created" else FORMAT
-            need(made == FORMAT, f"`lake_created` says format {made}, and its lake is written in format {FORMAT}")
+            need(type(v) is int and OLDEST <= v <= FORMAT, f"format {v} is one from {OLDEST} to {FORMAT}")
+            kind = event["body"].get("kind")
+            made = event["body"].get("format") if kind == "lake_created" else v
+            need(made == v, f"`lake_created` says format {made}, and its line is in format {v}")
+            # A format changes only where a new writer upgrades the lake: it
+            # rises at that writer's `lease_taken`, whose next event is the
+            # `lake_upgraded` from the one to the other; it never falls.
+            marks = kind == "lake_upgraded"
+            if owed is not None:
+                need(marks and v == owed[1] and event["body"].get("from") == owed[0]
+                     and event["body"].get("to") == owed[1],
+                     f"the `lease_taken` before it raised the format from {owed[0]} to {owed[1]}, and this is not its `lake_upgraded`")
+                owed = None
+            elif before is not None:
+                need(v >= before, f"format {v} falls below the {before} before it")
+                need(not marks, "a `lake_upgraded` marks a step a new writer's `lease_taken` begins")
+                if v > before:
+                    need(kind == "lease_taken", f"format {v} rises from {before} at a new writer's `lease_taken`")
+                    owed = (before, v)
+            before = v
+            f = event.get("fence")
+            need(type(f) is int and f >= fence, f"fence {f} is not below the fence {fence} before it")
+            fence = f
             need("cause" not in event.get("context", {}),
                  "`context` carries `cause`, which the envelope carries")
             need("upstream" not in event or event["body"].get("kind") == "record_ingested",
@@ -351,6 +377,7 @@ def verify_dir(root):
             position += 1
         sealed.append({"first": first, "last": position - 1, "digest": sha(raw)})
         print(f"ok   {path.name}: positions {first}..{position - 1}")
+    need(owed is None, f"the log ends after a `lease_taken` that raised the format to {owed and owed[1]} with no `lake_upgraded`")
     print(f"ok   {root}: verified through position {position - 1}, hash {prev}")
 
 
