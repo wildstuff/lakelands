@@ -1,0 +1,19 @@
+name: partner
+label: Business partner
+description: >-
+  A counterparty. A debtor owes us money (we send it outbound invoices); a
+  creditor is owed money by us (it sends us inbound invoices).
+key: partner_id
+fields:
+  partner_id: { type: text, required: true, authority: source, searchable: true }
+  name: { type: text, required: true, authority: source, searchable: true }
+  role: { type: partner_role, required: true, authority: source }
+  iban: { type: text, authority: source, sensitive: true }
+  payment_terms_days: { type: number, authority: source }
+  city: { type: text, authority: source }
+  credit_limit:
+    type: money
+    authority: shared
+    sensitive: true
+    description: The most the business will leave open with this partner; its own decision, set by set_credit_limit.
+  notes: { type: text, sensitive: true, searchable: true, description: Whatever the business needs to remember about this partner. }

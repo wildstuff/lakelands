@@ -1,0 +1,20 @@
+name: transaction
+label: Bank transaction
+description: A posted movement on a bank account, as the bank's export states it.
+key: [account, value_on, amount, reference]
+valid_from: value_on
+fields:
+  account: { type: reference(bank_account), required: true, authority: source }
+  value_on: { type: date, required: true, authority: source }
+  amount: { type: money, required: true, authority: source, description: Always positive; direction carries the sign. }
+  direction: { type: movement, required: true, authority: source }
+  counterparty: { type: text, authority: source, searchable: true }
+  counterparty_iban: { type: text, authority: source, sensitive: true }
+  text: { type: text, authority: source, searchable: true }
+  reference: { type: text, required: true, authority: source }
+relations:
+  booked_on:
+    target: bank_account
+    cardinality: many_to_one
+    via: account
+    inverse: movements

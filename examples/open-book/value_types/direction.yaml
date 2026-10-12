@@ -1,0 +1,4 @@
+name: direction
+kind: text
+one_of: [outbound, inbound]
+description: An outbound invoice is a receivable (someone owes us); an inbound one a payable (we owe).

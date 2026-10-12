@@ -1,0 +1,4 @@
+name: movement
+kind: text
+one_of: [credit, debit]
+description: A credit is money in, a debit money out.

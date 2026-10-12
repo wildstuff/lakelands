@@ -1,0 +1,4 @@
+name: money
+kind: decimal
+scale: 2
+description: An amount of money in euros, kept to the cent.

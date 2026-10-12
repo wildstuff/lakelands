@@ -1,0 +1,15 @@
+name: cash_position
+label: Cash position
+description: The cash available in euros, from the last known balance of each account.
+key: currency
+fields:
+  currency: text
+  total_balance: money
+  accounts: number
+view:
+  source: bank_account
+  where: "currency = 'EUR'"
+  group_by: currency
+  measures:
+    total_balance: "sum(balance)"
+    accounts: "count()"
