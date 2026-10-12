@@ -213,6 +213,12 @@ type Source = (aggregate::Grouping, Vec<(FieldName, Expr)>);
 /// A row's sort values and its tiebreak.
 type SortKey = (Vec<Value>, RecordKey);
 
+/// A page of a pattern's starts, each with its position.
+type Starts = [(SortKey, StoredRecord)];
+
+/// What a page of rows does with each binding of a start at its position.
+type EachBinding<'a> = dyn FnMut(&SortKey, &graph::Node, &[graph::Reached]) -> Result<bool> + 'a;
+
 /// One ranked list of a search: the candidates best first, with their
 /// scores.
 type Ranking = Vec<(RecordKey, f64)>;
@@ -262,12 +268,13 @@ fn encode(c: &CursorState) -> Cursor {
     Cursor(canonical::hex(&canonical::of(c)))
 }
 
-/// The offset a `query` page continues at: none without a cursor.
-fn offset(c: Option<&Cursor>, p: &Pattern, params: &Params) -> Result<usize> {
-    let Some(c) = c else { return Ok(0) };
+/// Where a `query` page continues: past the start a cursor names, where
+/// it names one, and past as many rows as its offset says.
+fn offset(c: Option<&Cursor>, p: &Pattern, params: &Params) -> Result<(usize, Option<SortKey>)> {
+    let Some(c) = c else { return Ok((0, None)) };
     let state = resume(c, "query", Some(&p.start.ty), params)?;
     same_read(&state, &pattern_read(p))?;
-    Ok(state.offset as usize)
+    Ok((state.offset as usize, state.after))
 }
 
 /// The digest of what decides a read's rows and their order: a cursor
@@ -3040,7 +3047,14 @@ impl<'a> Reader<'a> {
             graph::check_depth(s.depth, max_depth)?;
         }
         let (reader, reach) = (self, &reach[..]);
-        let hidden = Visible { reader, reach };
+        // Only rows hold what the walk reads: a measure and a graph walk
+        // more records than they answer.
+        let records = binds.then(RefCell::default);
+        let hidden = Visible {
+            reader,
+            reach,
+            records,
+        };
         if measure {
             return self.measure(p, limit, carried, &hidden);
         }
@@ -3049,28 +3063,30 @@ impl<'a> Reader<'a> {
         }
         // A cursor is checked before any arm answers: a path and an
         // aggregate hand out none, so every cursor is another read's there.
-        let offset = offset(p.cursor.as_ref(), p, &params)?;
+        let (offset, after) = offset(p.cursor.as_ref(), p, &params)?;
         // Whether a record reached over step `i` is kept and walked from:
         // it is of the step's `type`, and its `where`, read against the type
         // the step reaches, holds of it.
-        let keep = |i: usize, node: &lakelands_core::graph::Node| -> Result<bool> {
-            if p.steps[i].ty.as_ref().is_some_and(|t| *t != node.0) {
-                return Ok(false);
-            }
-            let Some(f) = &filters[i] else {
-                return Ok(true);
+        let keep =
+            |i: usize, node: &lakelands_core::graph::Node| -> Result<bool> {
+                if p.steps[i].ty.as_ref().is_some_and(|t| *t != node.0) {
+                    return Ok(false);
+                }
+                let Some(f) = &filters[i] else {
+                    return Ok(true);
+                };
+                let r = hidden.record(node)?;
+                Ok(node.0 == types[i + 1]
+                    && r.is_some_and(|r| self.holds(f, &r.fields, Some(&r.meta))))
             };
-            Ok(node.0 == types[i + 1]
-                && self
-                    .get_one(&node.0, &node.1)?
-                    .is_some_and(|r| self.holds(f, &r.fields, Some(&r.meta))))
-        };
-        // The start.
-        let starts: Vec<StoredRecord> = if let Some(key) = &p.start.key {
+        // The start: the one record a key names, what a search finds, or
+        // the records of the start's type a filter (or none) selects, which
+        // rows read a page at a time.
+        let few: Option<Vec<StoredRecord>> = if let Some(key) = &p.start.key {
             if self.start_found(p, key)? {
-                self.get_one(&p.start.ty, key)?.into_iter().collect()
+                Some(self.get_one(&p.start.ty, key)?.into_iter().collect())
             } else {
-                Vec::new()
+                Some(Vec::new())
             }
         } else if let Some(mode) = &p.start.search {
             let keys = match self.start_hits(p, mode, carried)? {
@@ -3080,14 +3096,21 @@ impl<'a> Reader<'a> {
             let held = keys
                 .iter()
                 .filter_map(|k| self.view.get(&p.start.ty, k).ok().flatten());
-            self.at_read(&p.start.ty, held.collect())
+            Some(self.at_read(&p.start.ty, held.collect()))
         } else {
-            let at = [Place::Start, Place::Where];
-            let f = self.record_filter(&start_decl, p.start.filter.as_ref(), &at)?;
-            self.records(&start_decl, f.as_ref())?
+            None
         };
-        let from: Vec<lakelands_core::graph::Node> = starts
-            .iter()
+        let at = [Place::Start, Place::Where];
+        let filter = self.record_filter(&start_decl, p.start.filter.as_ref(), &at)?;
+        // A graph and a path read every start, and so do rows of a view,
+        // whose records are computed whole.
+        let few = match few {
+            None if !binds || start_decl.view.is_some() => {
+                Some(self.records(&start_decl, filter.as_ref())?)
+            }
+            few => few,
+        };
+        let from: Vec<lakelands_core::graph::Node> = (few.iter().flatten())
             .map(|s| (s.ty.clone(), s.key.clone()))
             .collect();
         // A path, from its one start.
@@ -3118,7 +3141,7 @@ impl<'a> Reader<'a> {
             let g = walk(&hidden, &from, &p.steps, max_depth, offset, limit, keep)?;
             let next = g
                 .truncated
-                .then(|| self.page_cursor(p, offset + limit, params));
+                .then(|| self.page_cursor(p, (offset + limit, None), params));
             let nodes = g.nodes.into_iter().map(|r| r.node).collect();
             return self.graph_result(nodes, g.edges, next).map(Ok);
         }
@@ -3166,19 +3189,154 @@ impl<'a> Reader<'a> {
                 }
             }
         }
-        // Rows: one per match.
-        let mut rows: Vec<BTreeMap<String, Value>> = Vec::new();
-        for from in &from {
-            let t = graph::traverse(&hidden, from, &p.steps, max_depth, usize::MAX, keep)?;
-            for binding in t.bindings {
-                let mut row = BTreeMap::new();
-                self.bind(&mut row, &names[0], from)?;
-                for (r, name) in binding.iter().zip(&names[1..]) {
-                    self.bind(&mut row, name, &r.node)?;
-                }
-                rows.push(row);
+        // Rows: one per match, walked a page of starts at a time
+        // (lakelands#940), each page one frontier and each record read
+        // once for the walk, its `where` and its row. The starts come in
+        // key order, or in an order the engine gives them (041): each of
+        // its paths a stored field of the start's own, as `page` reads.
+        let mut keep = keep;
+        let ordered = few.is_none().then(|| {
+            let own = |o: &Order| {
+                let (n, f) = o.field.as_str().split_once('.')?;
+                let field = FieldName::from(f);
+                let stored = start_decl
+                    .fields
+                    .iter()
+                    .any(|x| x.name == field && !x.at_read());
+                let own = n == names[0] && stored && !self.keyed(&start_decl, &field);
+                own.then(|| Order { field, ..o.clone() })
+            };
+            p.order_by.iter().map(own).collect::<Option<Vec<Order>>>()
+        });
+        let row = |start: &graph::Node, binding: &[graph::Reached]| -> Result<_> {
+            let mut row = BTreeMap::new();
+            self.bind(&mut row, &names[0], start, hidden.record(start)?)?;
+            for (r, name) in binding.iter().zip(&names[1..]) {
+                self.bind(&mut row, name, &r.node, hidden.record(&r.node)?)?;
             }
+            if let Projection::Rows { fields } = &p.project
+                && !fields.is_empty()
+            {
+                row.retain(|k, _| fields.iter().any(|f| f == k));
+            }
+            Ok(row)
+        };
+        let walk = |starts: &Starts,
+                    each: &mut EachBinding,
+                    keep: &mut dyn FnMut(usize, &graph::Node) -> Result<bool>| {
+            let nodes: Vec<graph::Node> = starts
+                .iter()
+                .map(|(_, r)| (r.ty.clone(), r.key.clone()))
+                .collect();
+            hidden.remember(starts.iter().map(|(_, r)| r.clone()));
+            let at: BTreeMap<&graph::Node, &SortKey> =
+                nodes.iter().zip(starts.iter().map(|(k, _)| k)).collect();
+            let walked =
+                graph::traverse_each(&hidden, &nodes, &p.steps, max_depth, keep, |start, b| {
+                    each(at[start], start, b)
+                });
+            hidden.forget(&nodes);
+            walked
+        };
+        let streamed = match p.order_by.is_empty() {
+            true => Some(Vec::new()),
+            false => ordered.flatten(),
+        };
+        let streamed = streamed.filter(|_| over_rows.is_none());
+        // A cursor's start is a position in the order the starts are read
+        // in, one of the starts at hand where they are few, and none where
+        // every row is read: any other is not one this lake handed out.
+        let fits = |(v, k): &SortKey| match (&streamed, &few) {
+            (None, _) => false,
+            (Some(o), Some(few)) => v.len() == o.len() && few.iter().any(|r| r.key == *k),
+            (Some(o), None) => v.len() == o.len(),
+        };
+        if after.as_ref().is_some_and(|a| !fits(a)) {
+            return Err(invalid(Case::CursorForeign));
         }
+        if let Some(order) = streamed {
+            // The page and one row more, in the starts' order; a cursor
+            // names the last start whose rows are all answered, and how
+            // many of the next one's are.
+            let (mut rows, mut skipped, mut more) = (Vec::new(), 0, None);
+            let (mut done, mut at, mut of_at) = (after.clone(), None::<SortKey>, 0);
+            self.start_pages(
+                few,
+                (&start_decl, filter.as_ref(), &order),
+                after,
+                &mut |starts| {
+                    walk(
+                        starts,
+                        &mut |here, start, binding| {
+                            if at.as_ref() != Some(here) {
+                                if of_at > 0 {
+                                    done = at.take();
+                                }
+                                (at, of_at) = (Some(here.clone()), 0);
+                            }
+                            of_at += 1;
+                            if skipped < offset {
+                                skipped += 1;
+                                return Ok(true);
+                            }
+                            if rows.len() == limit {
+                                more = Some((done.clone(), of_at - 1));
+                                return Ok(false);
+                            }
+                            rows.push(row(start, binding)?);
+                            Ok(true)
+                        },
+                        &mut keep,
+                    )?;
+                    Ok(more.is_none())
+                },
+            )?;
+            let next_cursor = more.map(|(after, n)| self.page_cursor(p, (n, after), params));
+            return Ok(Ok(QueryResult::Rows { rows, next_cursor }));
+        }
+        // Every row: an aggregate's whole, an order's as their sort values
+        // and records until the page is cut. An order over a record a step
+        // reaches, and an aggregate, hold at most the lake's
+        // `max_graph_nodes` rows, past which the read is refused, never
+        // cut, as a whole-graph measure is (026); a start's own order over
+        // starts at hand (a key, a search, a view's records) as before.
+        let own = |o: &Order| {
+            o.field
+                .as_str()
+                .split_once('.')
+                .is_some_and(|(n, _)| n == names[0])
+        };
+        let bounded = over_rows.is_some() || !p.order_by.iter().all(own);
+        let max = self.lake.limits.max_graph_nodes;
+        let member = ["order_by", "project"][usize::from(over_rows.is_some())];
+        let (mut rows, mut held) = (Vec::new(), Vec::new());
+        self.start_pages(
+            few,
+            (&start_decl, filter.as_ref(), &[]),
+            None,
+            &mut |starts| {
+                walk(
+                    starts,
+                    &mut |_, start, binding| {
+                        if bounded && rows.len() + held.len() >= max as usize {
+                            let (field, reason) = (Some(member.into()), Refusal::TooLarge { max });
+                            return Err(Error::Refused { field, reason });
+                        }
+                        let r = row(start, binding)?;
+                        let value = |o: &Order| r.get(o.field.as_str()).cloned();
+                        let vals = p.order_by.iter().map(|o| value(o).unwrap_or(Value::Null));
+                        let vals: Vec<_> = vals.collect();
+                        match over_rows {
+                            Some(_) => rows.push(r),
+                            None => held.push((vals, start.clone(), binding.to_vec())),
+                        }
+                        Ok(true)
+                    },
+                    &mut keep,
+                )?;
+                Ok(true)
+            },
+        )?;
         if let Some(a) = &over_rows {
             let as_fields: Vec<BTreeMap<FieldName, Value>> = rows
                 .iter()
@@ -3194,28 +3352,57 @@ impl<'a> Reader<'a> {
             return Ok(Ok(QueryResult::Groups { rows: groups }));
         }
         let order: Vec<Order> = p.order_by.clone();
-        let mut keyed: Vec<(SortKey, BTreeMap<String, Value>)> = rows
-            .into_iter()
-            .enumerate()
-            .map(|(i, r)| {
-                let vals = order
-                    .iter()
-                    .map(|o| r.get(o.field.as_str()).cloned().unwrap_or(Value::Null))
-                    .collect();
-                ((vals, RecordKey::from(format!("{i:020}"))), r)
-            })
+        let mut keyed: Vec<_> = (held.into_iter().enumerate())
+            .map(|(i, (vals, start, b))| ((vals, RecordKey::from(format!("{i:020}"))), (start, b)))
             .collect();
         keyed.sort_by(|a, b| Self::compare(&order, &a.0, &b.0));
-        // Sorted first: an order may read a path `fields` leaves out.
-        let mut rows: Vec<_> = keyed.into_iter().map(|(_, r)| r).collect();
-        if let Projection::Rows { fields } = &p.project
-            && !fields.is_empty()
-        {
-            for row in &mut rows {
-                row.retain(|k, _| fields.iter().any(|f| f == k));
+        // Sorted first: an order may read a path `fields` leaves out. The
+        // page's rows alone are bound again.
+        let next_cursor = (keyed.len() > offset + limit)
+            .then(|| self.page_cursor(p, (offset + limit, None), params));
+        let page = keyed.into_iter().skip(offset).take(limit);
+        let rows = page.map(|(_, (s, b))| row(&s, &b)).collect::<Result<_>>()?;
+        Ok(Ok(QueryResult::Rows { rows, next_cursor }))
+    }
+
+    /// Hands `each` the starts of a pattern's rows a page at a time, each
+    /// with its position (its sort values and key), after `after`: the
+    /// records of `few` in their order, or those of the stored type a
+    /// filter selects in `order`, read by `page`, until `each` answers
+    /// that it has what it needs.
+    fn start_pages(
+        &self,
+        few: Option<Vec<StoredRecord>>,
+        (decl, filter, order): (&TypeDecl, Option<&Expr>, &[Order]),
+        mut after: Option<SortKey>,
+        each: &mut dyn FnMut(&Starts) -> Result<bool>,
+    ) -> Result<()> {
+        let at = |r: &StoredRecord| (Self::sort_values(order, r), r.key.clone());
+        if let Some(few) = few {
+            let from = after
+                .and_then(|(_, k)| few.iter().position(|r| r.key == k))
+                .map_or(0, |i| i + 1);
+            let few: Vec<_> = few.into_iter().skip(from).map(|r| (at(&r), r)).collect();
+            for page in few.chunks(graph::PAGE) {
+                if !each(page)? {
+                    break;
+                }
             }
+            return Ok(());
         }
-        Ok(Ok(self.rows_page(p, rows, offset, limit, params)))
+        // An engine page in a field's order sorts the type again, so an
+        // ordered read asks for twice as many starts each time, as `page`
+        // does within a call.
+        let mut want = graph::PAGE;
+        loop {
+            let page = self.page(decl, filter, order, after.take(), want)?;
+            let page: Vec<_> = page.into_iter().map(|r| (at(&r), r)).collect();
+            after = page.last().map(|(k, _)| k.clone());
+            if page.is_empty() || !each(&page)? || page.len() < want {
+                return Ok(());
+            }
+            want *= 1 + usize::from(!order.is_empty());
+        }
     }
 
     /// Whether `get` answers the record a pattern's start names by key,
@@ -3553,8 +3740,10 @@ impl<'a> Reader<'a> {
         row: &mut BTreeMap<String, Value>,
         name: &str,
         node: &graph::Node,
+        rec: Option<StoredRecord>,
     ) -> Result<()> {
-        if let Some(rec) = self.shown(node)? {
+        let decl = self.shape.ontology.ty(&node.0)?;
+        if let Some(rec) = rec.and_then(|r| rights::visible(self.sight, decl, &r, false)) {
             let decl = self.shape.ontology.ty(&node.0)?;
             let key = match self.keyed(decl, &FieldName::from("key")) {
                 true => Value::String(node.1.to_string()),
@@ -3784,6 +3973,40 @@ struct Visible<'r, 'a> {
     reader: &'r Reader<'a>,
     /// What each of the pattern's steps walks, by the step's index.
     reach: &'r [Reach],
+    /// For rows, the records the walk has read, each read once for the
+    /// walk, a step's `where` and a row (lakelands#940).
+    records: Option<RefCell<BTreeMap<graph::Node, StoredRecord>>>,
+}
+
+impl Visible<'_, '_> {
+    /// The record at `node` as this read answers it, read once.
+    fn record(&self, node: &graph::Node) -> Result<Option<StoredRecord>> {
+        if let Some(r) = self
+            .records
+            .as_ref()
+            .and_then(|h| h.borrow().get(node).cloned())
+        {
+            return Ok(Some(r));
+        }
+        let r = self.reader.get_one(&node.0, &node.1)?;
+        self.remember(r.clone());
+        Ok(r)
+    }
+
+    fn remember(&self, rows: impl IntoIterator<Item = StoredRecord>) {
+        if let Some(held) = &self.records {
+            let rows = rows.into_iter().map(|r| ((r.ty.clone(), r.key.clone()), r));
+            held.borrow_mut().extend(rows);
+        }
+    }
+
+    /// Lets the records of a page of starts go: no other page reads them.
+    fn forget(&self, nodes: &[graph::Node]) {
+        if let Some(held) = &self.records {
+            let mut held = held.borrow_mut();
+            nodes.iter().for_each(|n| _ = held.remove(n));
+        }
+    }
 }
 
 /// What a step walks of the relations that bear its relation's name
@@ -3912,6 +4135,7 @@ impl EdgeSource for Visible<'_, '_> {
                 continue;
             };
             let rows = r.get_many(ty, &keys)?;
+            self.remember(rows.iter().cloned());
             let (ends, admit) = (r.admitted_ends(decl, &rows)?, r.sight.admit(ty));
             for (rec, _) in rows.into_iter().zip(ends).filter(|(_, ends)| *ends) {
                 if r.live_by(decl, &admit, &rec) {

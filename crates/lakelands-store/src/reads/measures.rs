@@ -76,7 +76,7 @@ impl Reader<'_> {
         hidden: &Visible<'_, '_>,
     ) -> Result<Judged<QueryResult>> {
         let params = self.bound_params(&p.start.ty);
-        let offset = super::offset(p.cursor.as_ref(), p, &params)?;
+        let offset = super::offset(p.cursor.as_ref(), p, &params)?.0;
         let all = match p.project {
             Projection::Degree => {
                 let steps: Vec<(RelationName, Walk)> = p
@@ -160,17 +160,23 @@ impl Reader<'_> {
         limit: usize,
         params: Params,
     ) -> QueryResult {
-        let next_cursor =
-            (all.len() > offset + limit).then(|| self.page_cursor(p, offset + limit, params));
+        let next_cursor = (all.len() > offset + limit)
+            .then(|| self.page_cursor(p, (offset + limit, None), params));
         let rows = all.into_iter().skip(offset).take(limit).collect();
         QueryResult::Rows { rows, next_cursor }
     }
 
-    /// The cursor that continues a pattern's answer at `offset`.
-    pub(super) fn page_cursor(&self, p: &Pattern, offset: usize, params: Params) -> Cursor {
+    /// The cursor that continues a pattern's answer past the start `after`
+    /// names, where it names one, and `offset` rows.
+    pub(super) fn page_cursor(
+        &self,
+        p: &Pattern,
+        (offset, after): (usize, Option<super::SortKey>),
+        params: Params,
+    ) -> Cursor {
         encode(&CursorState {
             at: self.position,
-            after: None,
+            after,
             offset: offset as u64,
             params,
             door: "query".into(),

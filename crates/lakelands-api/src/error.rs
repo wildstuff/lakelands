@@ -277,7 +277,9 @@ pub enum Refusal {
     },
     /// A whole-graph measure would reach more records than the lake
     /// allows, a `find` would skip more rows than it allows (the refusal
-    /// then names `offset`), or a set's declaration or a migration would
+    /// then names `offset`), a pattern's rows read whole for an order over
+    /// a record a step reaches or for an aggregate would be more than it
+    /// allows (`order_by`, `project`), or a set's declaration or a migration would
     /// change more memberships than it allows (the refusal names the set);
     /// nothing partial is answered or appended.
     TooLarge {
@@ -458,6 +460,20 @@ impl fmt::Display for Error {
                 match reason {
                     Refusal::TooLarge { max } if field.as_ref().is_some_and(|f| f == "offset") => {
                         write!(f, ": a page may skip {max} rows, no more")
+                    }
+                    Refusal::TooLarge { max }
+                        if field.as_ref().is_some_and(|f| f == "order_by") =>
+                    {
+                        write!(
+                            f,
+                            ": rows ordered by a record a step reaches are read whole, and there may be {max}, no more; order by the start's own fields, or start from that record's type and walk back"
+                        )
+                    }
+                    Refusal::TooLarge { max } if field.as_ref().is_some_and(|f| f == "project") => {
+                        write!(
+                            f,
+                            ": an aggregate over rows reads them whole, and there may be {max}, no more; narrow the start, or start from a step's type and walk back"
+                        )
                     }
                     Refusal::TooLarge { max } if field.is_some() => {
                         write!(f, ": more than {max} of the set's memberships would change")

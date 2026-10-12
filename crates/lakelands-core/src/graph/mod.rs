@@ -51,7 +51,7 @@ mod subgraph;
 
 pub use measures::{Component, Components, degrees};
 pub use path::{Path, shortest_path};
-pub use step::{Reached, Traversal, neighbors, spanned, step, traverse};
+pub use step::{Reached, Traversal, neighbors, spanned, step, traverse, traverse_each};
 pub use subgraph::{Subgraph, subgraph};
 
 use std::collections::{BTreeMap, BTreeSet};
