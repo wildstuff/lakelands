@@ -11,10 +11,15 @@ use lakelands_api::{Access, Catalog, Cursor, Find, LakeStore, Principal};
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, agg, field, field_access, is_invalid, patch, pattern, reads_all, reason, reference,
-    restrict, type_decl,
+    Lake, Must, agg, field, field_access, invalid_case, is_invalid, patch, pattern, reads_all,
+    reason, reference, restrict, type_decl,
 };
 use crate::conformance::{Failure, Held, Store};
+
+check!(
+    ROW_DEPTH = a_row_says_the_hops_each_step_took_and_a_graph_each_nodes_depth,
+    "018 and 026, extended (lakelands#989): a row binds `<name>._depth` beside `<name>.key`, the hops its step took to reach the record and 0 for the start, which an order, a group key and `fields` read as any path and which nothing probes; a start a cycle reaches again is answered at the hop it comes back; a graph answers each node's depth in the order of its nodes, a start at 0 however a cycle comes back to it; a depth is counted over the records its reader is shown; and a new field whose name begins with `_` is refused, at `declare` and at `add_field`"
+);
 
 check!(
     GRAPH_PAGES = a_graph_cut_by_its_limit_pages_on_with_its_cursor,
@@ -108,7 +113,8 @@ fn graph_of(ty: &str, key: Option<&str>, steps: Vec<Step>) -> Pattern {
 }
 
 /// A graph's record keys in order, its links as `from relation to`, and
-/// its cursor; `truncated` must say whether a cursor came.
+/// its cursor; `truncated` must say whether a cursor came, and each node
+/// has its depth, in the graph's order (018, extended).
 async fn graph(
     cat: &dyn Catalog,
     who: &Principal,
@@ -117,6 +123,7 @@ async fn graph(
 ) -> Result<(Vec<String>, Vec<String>, Option<Cursor>), Failure> {
     let QueryResult::Graph {
         nodes,
+        depths,
         edges,
         truncated,
         next_cursor,
@@ -128,6 +135,11 @@ async fn graph(
         truncated == next_cursor.is_some(),
         "{what}: `truncated` is {truncated} but the cursor is {next_cursor:?}; a cursor comes \
          exactly when the graph is cut"
+    );
+    ensure!(
+        depths.len() == nodes.len() && depths.is_sorted(),
+        "{what}: {} nodes have the depths {depths:?}; each has one, in the graph's order",
+        nodes.len()
     );
     let edges = edges
         .iter()
@@ -406,6 +418,150 @@ async fn a_graph_shows_a_reader_no_more_than_its_rows(store: Store) -> Held {
         nodes == ["p3"] && all == ["p3", "p0", "p1", "s1"],
         "a chain is not walked through p0, which eve is not shown: she must see [p3], the \
          owner [p3, p0, p1, s1]; they saw {nodes:?} and {all:?}"
+    );
+    Ok(())
+}
+
+async fn a_row_says_the_hops_each_step_took_and_a_graph_each_nodes_depth(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let mut node = type_decl("node", vec![field("name", StorageKind::Text)]);
+    node.fields.push(reference("parent", "node"));
+    node.relations = vec![RelationDecl {
+        via: Some("parent".into()),
+        ..RelationDecl::to("parent", "node")
+    }];
+    l.declare(node).await?;
+    for (k, parent) in [
+        ("a", None),
+        ("b", Some("a")),
+        ("c", Some("b")),
+        ("d", Some("c")),
+    ] {
+        l.upsert("node", k, json!({"name": k, "parent": parent}))
+            .await?;
+    }
+    // The ancestors of `d`, each with its hops; a row as `name key depth`.
+    let ask = |who: Principal, max: u32, extra: serde_json::Value| {
+        let mut p = json!({"start": {"type": "node", "key": "d", "as": "start"},
+            "steps": [{"relation": "parent", "walk": "out", "depth": {"min": 1, "max": max}, "as": "up"}]});
+        p.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().cloned().unwrap_or_default());
+        // A graph binds no name.
+        if p["project"]["as"] == "graph" {
+            p["start"].as_object_mut().unwrap().remove("as");
+            p["steps"][0].as_object_mut().unwrap().remove("as");
+        }
+        let (cat, p) = (l.cat.clone(), serde_json::from_value::<Pattern>(p));
+        async move {
+            Ok::<_, Failure>(
+                cat.query(&who, p.map_err(|e| Failure::new(e.to_string()))?)
+                    .await
+                    .must("the ancestors")?
+                    .data,
+            )
+        }
+    };
+    let text = |v: Option<&serde_json::Value>| {
+        v.map_or("-".into(), |v| v.as_str().map_or(v.to_string(), Into::into))
+    };
+    let rows = |r: QueryResult, cols: &[&str]| match r {
+        QueryResult::Rows { rows, .. } => rows
+            .iter()
+            .map(|r| {
+                cols.iter()
+                    .map(|c| text(r.get(*c)))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect::<Vec<_>>(),
+        QueryResult::Groups { rows } => rows
+            .iter()
+            .map(|g| {
+                format!(
+                    "{}={}",
+                    text(g.by.values().next()),
+                    text(g.values.values().next())
+                )
+            })
+            .collect(),
+        QueryResult::Graph { nodes, depths, .. } => (nodes.iter().zip(depths))
+            .map(|(n, d)| format!("{} {d}", n.key))
+            .collect(),
+    };
+    let own = l.own.clone();
+    let cols = ["start._depth", "up.key", "up._depth"];
+    let mut said = Vec::new();
+    said.push(rows(ask(own.clone(), 3, json!({})).await?, &cols).join(", "));
+    let desc = json!({"order_by": [{"field": "up._depth", "dir": "desc"}], "project": {"as": "rows", "fields": ["up.key", "up._depth"]}});
+    said.push(rows(ask(own.clone(), 3, desc).await?, &cols).join(", "));
+    let counted = json!({"project": {"as": "aggregate", "measures": [{"name": "n", "func": "count"}], "group_by": ["up._depth"]}});
+    said.push(rows(ask(own.clone(), 3, counted).await?, &[]).join(", "));
+    let far = json!({"project": {"as": "aggregate", "measures": [{"name": "n", "func": "count"}],
+        "group_by": [{"name": "far", "expr": "up._depth > 1"}]}});
+    said.push(rows(ask(own.clone(), 3, far).await?, &[]).join(", "));
+    said.push(
+        rows(
+            ask(own.clone(), 3, json!({"project": {"as": "graph"}})).await?,
+            &[],
+        )
+        .join(", "),
+    );
+    // A cycle: `a` points back at `d`, which rows answer at the hop it
+    // comes back and a graph keeps at 0.
+    l.upsert("node", "a", json!({"name": "a", "parent": "d"}))
+        .await?;
+    said.push(rows(ask(own.clone(), 4, json!({})).await?, &cols).join(", "));
+    said.push(
+        rows(
+            ask(own.clone(), 4, json!({"project": {"as": "graph"}})).await?,
+            &[],
+        )
+        .join(", "),
+    );
+    // `b` restricted: a reader without `restricted` reaches `c` alone.
+    restrict(store.as_ref(), "node", "b", "held").await?;
+    said.push(
+        rows(
+            ask(reads_all(store.as_ref(), "plain"), 4, json!({})).await?,
+            &cols,
+        )
+        .join(", "),
+    );
+    let want = [
+        "0 c 1, 0 b 2, 0 a 3",
+        "- a 3, - b 2, - c 1",
+        "1=1, 2=1, 3=1",
+        "false=1, true=2",
+        "d 0, c 1, b 2, a 3",
+        "0 c 1, 0 b 2, 0 a 3, 0 d 4",
+        "d 0, c 1, b 2, a 3",
+        "0 c 1",
+    ];
+    ensure!(
+        said == want,
+        "the ancestors of `d` with their depths answered {said:?}; want {want:?}"
+    );
+    // A new field that begins with `_` is the lake's name.
+    let kept = |r: Result<lakelands_api::write::Outcome, lakelands_api::Error>| {
+        matches!(
+            invalid_case(&r),
+            Some(lakelands_api::error::Case::FieldNameKept { .. })
+        )
+    };
+    let mut bad = type_decl("bad", vec![field("_x", StorageKind::Text)]);
+    bad.key = Vec::new();
+    let declared = l
+        .cat
+        .declare(&own, lakelands_api::write::Declaration::Type(bad))
+        .await;
+    let added = l
+        .cat
+        .add_field(&own, &"node".into(), field("_y", StorageKind::Text))
+        .await;
+    ensure!(
+        kept(declared.clone()) && kept(added.clone()),
+        "a new field `_x` and an added field `_y` must be refused as names the lake keeps: {declared:?}, {added:?}"
     );
     Ok(())
 }

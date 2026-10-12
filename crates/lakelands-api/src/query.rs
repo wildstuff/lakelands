@@ -299,6 +299,10 @@ pub enum QueryResult {
     Graph {
         /// The records reached.
         nodes: Vec<Record>,
+        /// Each node's depth, in the order of `nodes`: the fewest hops that
+        /// reach it from a start, 0 for a start; along a path, its hop.
+        #[serde(default)]
+        depths: Vec<u32>,
         /// The links walked.
         edges: Vec<Edge>,
         /// Whether the limit cut the graph short.

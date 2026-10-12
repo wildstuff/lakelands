@@ -1225,6 +1225,27 @@ pub(crate) fn unless_a_migration(e: Error) -> Result<()> {
     }
 }
 
+/// A new field may not begin with `_`: under a pattern's bound name the
+/// lake keeps such names for its own columns, `<name>._depth` (018,
+/// extended). A field the type already holds keeps its name, as a lake
+/// written before the rule holds it.
+fn kept_names(o: &Ontology, t: &TypeDecl) -> Result<()> {
+    let held = o.types.get(&t.name).map(|e| &e.decl.fields);
+    let new = |f: &&FieldDecl| held.is_none_or(|h| !h.iter().any(|g| g.name == f.name));
+    let kept = t
+        .fields
+        .iter()
+        .filter(new)
+        .find(|f| f.name.as_str().starts_with('_'));
+    match kept {
+        Some(f) => {
+            let (ty, field) = (t.name.clone(), f.name.clone());
+            Err(invalid_field(&f.name, Case::FieldNameKept { ty, field }))
+        }
+        None => Ok(()),
+    }
+}
+
 /// Check one declaration against the ontology it would join. `who_is_system`
 /// is true only for the store's own declarations.
 pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> Result<()> {
@@ -1240,6 +1261,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 return Err(crate::writes::refused(Refusal::Reserved));
             }
             type_decl(o, t)?;
+            kept_names(o, t)?;
             read_as_stored(o, t)?;
             if let Some(current) = o.types.get(&t.name)
                 && let Change::Migrate { reasons } = shape::classify(&current.decl, t)
@@ -1624,3 +1646,6 @@ pub fn value_type_change(current: &ValueTypeDecl, new: &ValueTypeDecl) -> ValueT
         ValueTypeChange::Tightening
     }
 }
+
+#[cfg(test)]
+mod tests;
