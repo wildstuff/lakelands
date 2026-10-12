@@ -29,7 +29,7 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     ONLY_READS = a_grant_admits_only_its_records_at_every_read,
-    "051: a principal whose grant holds `only` on a type is answered only the records whose fields hold its values: `get` of another's record is not found, `find` with a filter, an order, `total`, a count, a sum and a group count and sum its own alone, a read as of a position judges the records as they stood then, and a count of a kept view under its pairs, at the head and as of earlier, counts its own group"
+    "051: a principal whose grant holds `only` on a type is answered only the records whose fields hold its values: `find` with a filter, an order, `total`, a count, a sum and a group count and sum its own alone, a read as of a position judges the records as they stood then, and a count of a kept view under its pairs, at the head and as of earlier, counts its own group; `get` of another's record the rights grid compares with one no record holds (lakelands#962)"
 );
 
 check!(
@@ -44,12 +44,12 @@ check!(
 
 check!(
     ONLY_LINKS = a_link_is_answered_where_its_ends_are_admitted,
-    "051: a walk by a holder of `only` reaches only admitted records; a link type whose end type holds `only` answers `get`, `find`, `total` and a count over the links whose ends are admitted, a reference to any other answers as one to a link no record holds, and a call proposed on one, of a verb that writes it or reaches outside the lake, is listed without its write and is not its reviewer's to accept or to reject (lakelands#871); `only` on a link type admits its links by their fields in a walk too"
+    "051: a walk by a holder of `only` reaches only admitted records; a link type whose end type holds `only` answers `find`, `total` and a count over the links whose ends are admitted (`get` of another's the rights grid compares with one no record holds, lakelands#962), a reference to any other answers as one to a link no record holds, and a call proposed on one, of a verb that writes it or reaches outside the lake, is listed without its write and is not its reviewer's to accept or to reject (lakelands#871); `only` on a link type admits its links by their fields in a walk too"
 );
 
 check!(
     ONLY_WRITES = a_holder_of_only_writes_its_own_records_alone,
-    "051: a holder of `only` changes, makes, retires and makes again under its version, links, unlinks, ingests and calls a low-risk verb on its own records; another's record is to its write a key that is free, so a probe under a version, a missing required field, a disagreeing key field and a link ingested from it answer as on a free key, and another's retired key is made again, its version continued, `retire`, `unlink` and a verb answer not found, and a write that would pass, a handover and a re-delivery onto another's key are not granted, appending nothing; a link's cardinality names the other end only where its writer is answered it, restricted or not, and the link that holds, which `only` on the link type itself keeps from it at either end and a hold on the link record keeps from one without `restricted`, and holds, over the lake and the window, for a link that `only` on its link type admits by a field its source sends; an aging rule stays refused; a proposal on another's record, retired or not, is listed without its write, and one on a record held from the holder is not listed (lakelands#1008); a retry under a key used before the grant held answers as before; a reference into the type from another type, through `upsert`, `propose` or `ingest`, must name an admitted record"
+    "051: a holder of `only` changes, makes, retires and makes again under its version, links, unlinks, ingests and calls a low-risk verb on its own records; another's record is to its write a key that is free, so a probe under a version, a missing required field, a disagreeing key field and a link ingested from it answer as on a free key, and another's retired key is made again, its version continued (`retire`, `unlink`, a low verb and a `link` from another's record the rights grid compares with a key no record holds, lakelands#962), and a write that would pass, a handover and a re-delivery onto another's key are not granted, appending nothing; a link's cardinality names the other end only where its writer is answered it, restricted or not, and the link that holds, which `only` on the link type itself keeps from it at either end and a hold on the link record keeps from one without `restricted`, and holds, over the lake and the window, for a link that `only` on its link type admits by a field its source sends; an aging rule stays refused; a proposal on another's record, retired or not, is listed without its write, and one on a record held from the holder is not listed (lakelands#1008); a retry under a key used before the grant held answers as before; a reference into the type from another type, through `upsert`, `propose` or `ingest`, must name an admitted record"
 );
 
 check!(
@@ -282,7 +282,6 @@ async fn a_grant_admits_only_its_records_at_every_read(store: Store) -> Held {
     claims(&l, true).await?;
     let alice = alice(store.as_ref(), json!({}));
     let get = |key: &'static str, at: Option<Position>| get(&l, &alice, "claim", key, at);
-    not_found("alice's `get` of bob's `c2`", get("c2", None).await)?;
     get("c1", None).await.must("alice's `get` of her `c1`")?;
     finds(&l, &alice, READS, Position::GENESIS).await?;
     // The owner hands `c3` to bob: it is alice's as of before, not after.
@@ -468,8 +467,6 @@ async fn a_link_is_answered_where_its_ends_are_admitted(store: Store) -> Held {
     let alice = alice(store.as_ref(), json!({}));
     walked(alice.clone(), "c1 c3").await?;
     finds(&l, &alice, LINKS, Position::GENESIS).await?;
-    let link = get(&l, &alice, "sys.link.claim.on_trip", "c2:t1", None).await;
-    not_found("the link from bob's `c2` to alice", link)?;
     // A reference to it answers her as one to a link that is not there
     // (lakelands#871).
     let memo = crate::conformance::fixture::reference("l", "sys.link.claim.on_trip");
@@ -660,7 +657,7 @@ async fn a_holder_of_only_writes_its_own_records_alone(store: Store) -> Held {
     not_granted("an aging rule on the type", ruled)?;
     // Another's record is, to her write, a key that is free: every probe
     // answers as there, and a write that would pass is not granted.
-    let (field, reason, gone) = (None, Refusal::NotGranted, "not found");
+    let (field, reason) = (None, Refusal::NotGranted);
     let ng = Error::Refused { field, reason }.to_string();
     let (expected, actual) = (lakelands_api::Version(7), lakelands_api::Version(0));
     let conflict = Error::Conflict { expected, actual }.to_string();
@@ -686,25 +683,12 @@ async fn a_holder_of_only_writes_its_own_records_alone(store: Store) -> Held {
         let probe = up(key, json!({"owner": "alice"}), at7()).await;
         row(&format!("`{key}` under version 7"), said(probe), &conflict);
     }
-    let retired = cat.retire(&alice, &ty, &c2, opts()).await;
-    row("`retire` of bob's `c2`", said(retired), gone);
-    let called = cat.call(&alice, &verb, Some(&c2), none(), opts()).await;
-    row("a verb on bob's `c2`", said(called), gone);
-    let unlinked = cat.unlink(&alice, &ty, &c2, &on, &t1, opts()).await;
-    row("`unlink` of bob's `c2`", said(unlinked), gone);
     let (relation, trip) = (&on, &t1);
     let linked = move |key: &'static str| async move {
         let from = k(key);
         cat.link(by, claim, &from, relation, trip, none(), opts())
             .await
     };
-    let (bobs, missing) = (said(linked("c2").await), said(linked("c9").await));
-    let missing = missing.contains("not a live record").then_some(missing);
-    row(
-        "`link` from bob's `c2`",
-        bobs.replace("c2", "c9"),
-        missing.as_deref().unwrap_or("names no live record"),
-    );
     let slips = TypeName::from("slip");
     let slips = &slips;
     let slip = move |key: &'static str, patch: Value| async move {
