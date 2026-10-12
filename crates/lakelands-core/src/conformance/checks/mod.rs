@@ -102,6 +102,7 @@ mod view_kept;
 mod view_merge;
 mod view_params;
 mod view_rights;
+mod view_stack;
 mod views;
 mod vocabulary;
 mod walks;
@@ -160,6 +161,7 @@ pub const ALL: &[Check] = &[
     backings::RECORDED_FILL_REACTS,
     backings::CHAIN_WAITS,
     views::GROUPS_AND_SUMS,
+    view_stack::VIEW_STACK,
     views::FAILING_MEASURE_REFUSES,
     views::REFUSED_ALIKE,
     views::UNGROUPED_HOLDS_ONE,

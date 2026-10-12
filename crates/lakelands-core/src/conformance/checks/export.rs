@@ -97,7 +97,7 @@ check!(
 
 check!(
     IMPORTED_VIEW_CYCLE = a_cycle_of_views_from_an_imported_log_is_refused_on_read,
-    "018 and 030: a log can bring in a cycle of views over `source` that `declare` would have refused; a read of a view on it is refused as invalid, naming the chain, the process goes on, and a view off the cycle reads as before",
+    "018 and 030: a log can bring in a cycle of views over `source` that `declare` would have refused; a read of a view on it is refused as invalid, naming the chain, the process goes on, and a view off the cycle reads as before, while one that reads into the cycle is refused naming it too, alike for the owner, a holder of `only` and a reader without `restricted`, each of whom is described the lake (lakelands#942)",
     given
 );
 
@@ -1391,6 +1391,17 @@ async fn a_cycle_of_views_from_an_imported_log_is_refused_on_read(
     l.declare(tally_view("view_a", "tally")).await?;
     l.declare(tally_view("view_b", "view_a")).await?;
     l.declare(tally_view("view_c", "tally")).await?;
+    // Off the cycle, a view that reads into it, both of its views.
+    let mut into = tally_view("view_d", "view_a");
+    into.fields
+        .push(crate::conformance::fixture::field("m", Number));
+    if let Some(v) = into.view.as_mut() {
+        let merge = json!({"source": "view_b", "group_by": ["k"],
+                           "measures": [{"name": "m", "expr": "count()"}]});
+        v.merge
+            .push(serde_json::from_value(merge).expect("a merged source"));
+    }
+    l.declare(into).await?;
     // The last event declares `view_a` again; the export's copy of it is
     // made to read `view_b`, closing a cycle no door would declare.
     let mut again = tally_view("view_a", "tally");
@@ -1457,5 +1468,39 @@ async fn a_cycle_of_views_from_an_imported_log_is_refused_on_read(
         "`view_c` is off the cycle and counts the one tally; it answered {:?}",
         off.data
     );
+    // So for a holder of `only` and a reader without `restricted`, and
+    // each is described the lake (lakelands#942).
+    let only = json!({"default": "read", "restricted": true,
+                      "types": {"tally": {"only": {"k": "x"}}}});
+    let readers = [
+        own.clone(),
+        super::only::holder(imported.as_ref(), "only", only),
+        super::only::holder(imported.as_ref(), "plain", json!({"default": "read"})),
+    ];
+    for who in &readers {
+        for view in ["view_a", "view_b", "view_d"] {
+            let r = cat
+                .find(who, &view.into(), lakelands_api::read::Find::default())
+                .await;
+            ensure!(
+                matches!(invalid_case(&r), Some(Case::ViewReadsItself { chain, .. })
+                    if ["view_a", "view_b"].iter().all(|v| chain.0.iter().any(|c| c == v))),
+                "`{view}` read by `{}` is refused as reading itself; it answered {r:?}",
+                who.id
+            );
+        }
+        let off = cat
+            .find(who, &"view_c".into(), lakelands_api::read::Find::default())
+            .await;
+        let off = off.must("reading `view_c`")?;
+        ensure!(
+            matches!(&off.data, lakelands_api::Found::Records { rows, .. } if rows.len() == 1),
+            "`view_c` read by `{}` counts the one tally; it answered {:?}",
+            who.id,
+            off.data
+        );
+        let d = cat.describe(who, Default::default()).await;
+        d.must(&format!("describing the lake to `{}`", who.id))?;
+    }
     Ok(())
 }
