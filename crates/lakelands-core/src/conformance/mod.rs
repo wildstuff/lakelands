@@ -202,6 +202,19 @@ pub trait Harness: Send + Sync {
         })
     }
 
+    /// How this harness opens a twin of a lake it handed out: a brand-new
+    /// lake of its engine under the same id, in a place of its own
+    /// ([`Twin`]). A harness without one answers `unbound`.
+    fn twinner(&self) -> Twin {
+        Arc::new(|_, _| {
+            Box::pin(async {
+                let op = "twin".to_owned();
+                let seam = lakelands_api::error::Seam::Operation { op };
+                Err(lakelands_api::Error::unbound(seam))
+            })
+        })
+    }
+
     /// How many records the suite's large lake holds at its first size;
     /// it grows to four times this. [`LARGE_LAKE`] unless the engine's
     /// test asks for more, as a long run does.
@@ -250,6 +263,8 @@ pub struct Given {
     /// How the harness writes to a lake's log below the store and opens
     /// the lake again.
     pub continued: Continue,
+    /// How the harness opens a twin of the check's lake.
+    pub twin: Twin,
 }
 
 /// Closes a lake the harness opened and opens it again for writing with
@@ -264,6 +279,13 @@ pub type Relimit = Arc<
         + Send
         + Sync,
 >;
+
+/// Open a brand-new lake of the harness's engine under the id named, in a
+/// place of its own beside every lake that bears it: the twin a check of
+/// the rights grid builds as it builds its own lake, so that the two
+/// answer alike everything that does not differ between them
+/// (lakelands#962). It is a seam of the suite, not of the store.
+pub type Twin = Arc<dyn Fn(lakelands_api::LakeId, Seams) -> FreshLake<'static> + Send + Sync>;
 
 /// Import the export in a directory as the lake named, of the harness's
 /// engine: into a brand-new lake, or, given a store, into the lake that
@@ -609,6 +631,7 @@ async fn run_check(harness: &dyn Harness, check: &Check) -> Result<(), Failure> 
         harness: harness.name().to_owned(),
         import: harness.importer(),
         continued: harness.continuer(),
+        twin: harness.twinner(),
     };
     match caught((check.run)(store, given)).await {
         Ok(outcome) => outcome,

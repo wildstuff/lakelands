@@ -15,8 +15,8 @@ use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::checks::ALL;
 use lakelands_core::conformance::{
-    Continue, Continued, FreshLake, Harness, Import, ImportedLake, Meter, Relimit, Reopen, below,
-    continue_below, run_all, run_one,
+    Continue, Continued, FreshLake, Harness, Import, ImportedLake, Meter, Relimit, Reopen, Twin,
+    below, continue_below, run_all, run_one,
 };
 use lakelands_engine_pg::PgOpener;
 use peak_alloc::PeakAlloc;
@@ -126,6 +126,23 @@ impl Harness for Pg {
     fn scratch(&self) -> PathBuf {
         PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
             .join(format!("pg-conformance-{}", std::process::id()))
+    }
+
+    fn twinner(&self) -> Twin {
+        let url = self.url.clone();
+        Arc::new(move |lake, host| {
+            // In a schema of its own, apart from the lake's, which is named
+            // after it: the lake is named by the location, the schema is
+            // where the engine keeps it.
+            let location = common::location(&url, lake.as_str(), &common::fresh_schema());
+            Box::pin(async move {
+                let seams = Seams {
+                    engines: vec![Arc::new(PgOpener)],
+                    ..host
+                };
+                lakelands_store::open(location, seams, OpenMode::Create).await
+            })
+        })
     }
 
     fn importer(&self) -> Import {

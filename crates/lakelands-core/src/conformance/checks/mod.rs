@@ -36,6 +36,7 @@ mod filters;
 mod fusion;
 mod graph_measures;
 mod graph_steps;
+mod grid;
 mod host_cause;
 mod ingest;
 mod initial;
@@ -647,4 +648,5 @@ pub const ALL: &[Check] = &[
     sealed::OUTPUT_EXACT,
     sealed::ANSWER_EXACT,
     export::INTEGER_DAMAGE,
+    grid::GRID_PLAIN,
 ];
