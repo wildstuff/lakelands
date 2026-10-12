@@ -64,7 +64,7 @@ check!(
 
 check!(
     TOLD_AS_LISTED = an_accepts_refusal_names_what_its_reviewers_listing_shows,
-    "006 and 013, extended (lakelands#780): a refusal of the proposer's write at its accept is judged by the reviewer's view, as its listing is: whole to a reviewer shown each field, type, key and value it names, and to one kept from any of them as a write changed since it was proposed, naming only the type and key written: a reference to a record retired since, to its proposer too once its grants keep it from the field (lakelands#791), a value its field no longer takes, a field required since that it leaves out, which names that field alone; a call whose `requires` no longer holds is whole to a reviewer who reads what it reads, and not there to one kept from it (lakelands#779); a conflict names versions only and is whole to each, and so is a retirement's refusal, of a record gone or changed since, which names its type and key alone; nothing is appended and the proposal stays pending"
+    "006 and 013, extended (lakelands#780): a refusal of the proposer's write at its accept is judged by the reviewer's view, as its listing is: whole to a reviewer shown each field, type, key and value it names: a reference to a record retired since, a value its field no longer takes, a field required since that it leaves out, which names that field alone; a reviewer listed the write in part, by a field or a type it is kept from, is refused the accept as not granted before the write is judged (lakelands#867), its proposer too once its grants keep it from the field (lakelands#791); one listed it whole and kept from a field required since that the write leaves out is told the write changed since it was proposed, naming only the type and key written; a call whose `requires` no longer holds is whole to a reviewer who reads what it reads, and not there to one kept from it (lakelands#779); a conflict names versions only and is whole to each, and so is a retirement's refusal, of a record gone or changed since, which names its type and key alone; nothing is appended and the proposal stays pending"
 );
 
 check!(
@@ -1505,13 +1505,15 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
         json!(Error::invalid(Case::WriteChangedSinceProposed { ty, key }))
     };
     let head = s.head().await.must("reading the head")?;
-    // The proposal, its key, the reviewers answered it as stale and those
-    // answered as `all`, which is shown everything, and what `all` is told.
+    // The proposal, its key, the reviewers listed it in part, those
+    // answered it as stale and those answered as `all`, which is shown
+    // everything, and what `all` is told.
     let rows = [
         (
             &retired,
             "i1",
             vec![&field, &typed],
+            vec![],
             vec![&shown],
             "not_live",
         ),
@@ -1519,6 +1521,7 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
             &narrowed,
             "i5",
             vec![&field, &typed],
+            vec![],
             vec![&shown],
             "not_live",
         ),
@@ -1526,6 +1529,7 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
             &retyped,
             "i4",
             vec![&field],
+            vec![],
             vec![&typed, &shown],
             "not_one_of",
         ),
@@ -1533,12 +1537,14 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
             &moved,
             "i2",
             vec![],
+            vec![],
             vec![&field, &typed, &shown],
             "conflict",
         ),
         (
             &lacking,
             "i7",
+            vec![],
             vec![&field],
             vec![&typed, &shown],
             "required",
@@ -1547,12 +1553,14 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
             &refiled,
             "i2",
             vec![&field, &typed],
+            vec![],
             vec![&shown],
             "not_live",
         ),
         (
             &closed,
             "i6",
+            vec![],
             vec![],
             vec![&typed, &shown],
             "requires_unmet",
@@ -1561,6 +1569,7 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
             &gone,
             "i3",
             vec![],
+            vec![],
             vec![&field, &typed, &shown],
             "not_found",
         ),
@@ -1568,18 +1577,24 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
             &outrun,
             "i2",
             vec![],
+            vec![],
             vec![&field, &typed, &shown],
             "conflict",
         ),
     ];
+    let not_granted = json!(Error::Refused {
+        field: None,
+        reason: Refusal::NotGranted,
+    });
     let told = async |who: &Principal, id| json!(l.cat.accept(who, id).await.err());
     let mut wrong = Vec::new();
-    for (id, key, hidden, whole, said) in rows {
+    for (id, key, partial, hidden, whole, said) in rows {
         let to_all = told(&all, id).await;
         if !to_all.to_string().contains(&format!("\"{said}\"")) {
             wrong.push(format!("`{key}` to `all`: {to_all}, not {said}"));
         }
-        for (who, expected) in (hidden.iter().map(|w| (w, stale(key))))
+        for (who, expected) in (partial.iter().map(|w| (w, not_granted.clone())))
+            .chain(hidden.iter().map(|w| (w, stale(key))))
             .chain(whole.iter().map(|w| (w, to_all.clone())))
         {
             let got = told(who, id).await;
@@ -1604,9 +1619,10 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
     let pending = listed.iter().all(|p| p.state == ProposalState::Pending);
     ensure!(
         wrong.is_empty() && !moved_head && pending,
-        "an accept's refusal must name to its reviewer only what its listing shows it, \
-         else answer a write changed since it was proposed, append nothing (the head \
-         moved: {moved_head}) and leave each pending ({pending}): {wrong:#?}"
+        "an accept's refusal must name to its reviewer only what its listing shows it, be \
+         not granted to one listed the write in part, else answer a write changed since it \
+         was proposed, append nothing (the head moved: {moved_head}) and leave each pending \
+         ({pending}): {wrong:#?}"
     );
     Ok(())
 }

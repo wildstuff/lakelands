@@ -411,7 +411,12 @@ A declaration or a migration may also be proposed, and it reaches the
 ontology only through its acceptance, under the same rule: a change that
 reshapes stored records is a migration there too, preflighted when it is
 proposed and again when it is accepted
-(`docs/decisions/013-verbs-run-by-declared-risk.md`).
+(`docs/decisions/013-verbs-run-by-declared-risk.md`). Its accept is a
+reviewer's only where the reviewer is listed it whole: one kept from a
+field of the type, listed `to` without it, may migrate the type itself
+through the direct door and may not accept the same migration from
+another (lakelands#867,
+`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
 
 A value type's tightening may be proposed the same way:
 its preflight runs at the proposal and again at the acceptance, and it

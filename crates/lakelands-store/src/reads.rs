@@ -2175,7 +2175,17 @@ impl<'a> Reader<'a> {
         let mut shown = logged.clone();
         let known = self.known_shape(asked, &mut shown, lake, at, (left, then));
         let shown = known.then_some(shown);
-        let more = shown.as_ref() != Some(&logged);
+        // A value type's report is made again for its reader, its conditions
+        // judged and its id made over what it is shown: the logged one is
+        // its proposer's, so the reader's is compared with the whole one,
+        // as a reader shown everything is shown it.
+        let mut whole = logged.clone();
+        if matches!(whole, ProposedWrite::MigrateValueType { .. }) {
+            let mut all = asked.clone();
+            all.grants = lakelands_api::Grants::owner();
+            self.value_type_shown(&all, &|_, _| true, &mut whole, at);
+        }
+        let more = shown.as_ref() != Some(&whole);
         Some((shown, more))
     }
 
@@ -2291,44 +2301,59 @@ impl<'a> Reader<'a> {
                 }
                 !declarations.is_empty()
             }
-            // A use says something of a field's values, so it is shown only
-            // in a field the reader may read, of a type it may see (024),
-            // with its renames' counts. The totals and `fits` stay whole, as
-            // the preflight's do (`Call::shown_value_type`); a logged report
-            // fits, so its `first` names no misfit. Its conditions are
-            // judged again for the reader with its grants at the proposal,
-            // as the lake stood before it, where its id is made again; a
-            // failed read of that lake tells each only as one there may be.
-            ProposedWrite::MigrateValueType {
-                to,
-                renames,
-                report,
-            } => {
-                report.fields.retain(|u| read(&u.ty, &u.field));
-                let before = Position(at.0.saturating_sub(1));
-                if !renames.is_empty() {
-                    let old = renames
-                        .iter()
-                        .map(|(o, n)| (o.as_str(), n.as_str()))
-                        .collect();
-                    let view = self.lake.engine.view(Some(before));
-                    // Its references held as that lake shows them (024,
-                    // extended).
-                    let judged = view.and_then(|v| {
-                        let o = Ontology::at(v.as_ref())?;
-                        let then = Sight::new(asked.clone(), &self.shape.renames, Some(at), &o);
-                        crate::writes::conditions(&o, v.as_ref(), then.who(), report, &old)
-                    });
-                    if judged.is_err() {
-                        report.conditions.clear();
-                        report.conditions_unshown = true;
-                    }
-                }
-                report.report_id = String::new();
-                report.report_id = crate::writes::value_report_id(report, to, renames, before.0);
+            // Its uses and conditions as the reader may know them.
+            ProposedWrite::MigrateValueType { .. } => {
+                self.value_type_shown(asked, &read, write, at);
                 true
             }
         }
+    }
+
+    /// A value type's migration as `asked` may know it, where `read` says
+    /// which fields it reads: a use says something of a field's values, so
+    /// it is shown only in a field the reader may read, of a type it may see
+    /// (024), with its renames' counts. The totals and `fits` stay whole, as
+    /// the preflight's do (`Call::shown_value_type`); a logged report fits,
+    /// so its `first` names no misfit. Its conditions are judged again for
+    /// the reader with its grants at the proposal, as the lake stood before
+    /// it, where its id is made again; a failed read of that lake tells each
+    /// only as one there may be.
+    fn value_type_shown(
+        &self,
+        asked: &Principal,
+        read: &dyn Fn(&TypeName, &FieldName) -> bool,
+        write: &mut ProposedWrite,
+        at: Position,
+    ) {
+        let ProposedWrite::MigrateValueType {
+            to,
+            renames,
+            report,
+        } = write
+        else {
+            return;
+        };
+        report.fields.retain(|u| read(&u.ty, &u.field));
+        let before = Position(at.0.saturating_sub(1));
+        if !renames.is_empty() {
+            let old = renames
+                .iter()
+                .map(|(o, n)| (o.as_str(), n.as_str()))
+                .collect();
+            let view = self.lake.engine.view(Some(before));
+            // Its references held as that lake shows them (024, extended).
+            let judged = view.and_then(|v| {
+                let o = Ontology::at(v.as_ref())?;
+                let then = Sight::new(asked.clone(), &self.shape.renames, Some(at), &o);
+                crate::writes::conditions(&o, v.as_ref(), then.who(), report, &old)
+            });
+            if judged.is_err() {
+                report.conditions.clear();
+                report.conditions_unshown = true;
+            }
+        }
+        report.report_id = String::new();
+        report.report_id = crate::writes::value_report_id(report, to, renames, before.0);
     }
 
     /// What `search` refuses before it ranks: the type its principal is

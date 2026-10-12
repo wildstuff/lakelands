@@ -2526,6 +2526,10 @@ impl Call<'_> {
         // Before a retry is answered: an accept sent again would hand a
         // holder of `only` what an earlier accepter was answered (051).
         self.decides(&w, &p, &listed)?;
+        // It accepts only what it is listed whole, as a reviewer without
+        // the grant would be answered; listed in part, it may reject
+        // (051, lakelands#867).
+        granted(listed.0.is_some() && !listed.1)?;
         if p.state != ProposalState::Pending {
             let again = self.accepted_again(&w, view.as_ref(), proposal)?;
             return Ok((again, None));

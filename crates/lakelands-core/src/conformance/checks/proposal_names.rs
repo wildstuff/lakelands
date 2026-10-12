@@ -6,7 +6,6 @@
 //! write out where its reader may see nothing of it, and answers its
 //! filters on what it shows.
 
-use lakelands_api::error::Case;
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::write::{Declaration, Migration, Proposal, ProposalFilter, ProposedWrite};
 use lakelands_api::{Access, LakeStore, Principal, WriteOpts};
@@ -14,8 +13,7 @@ use serde_json::{Value, json};
 
 use super::rekey::{IBANS, lake, to_iban};
 use crate::conformance::fixture::{
-    Lake, Must, field_access, invalid_case, object_set_on, patch, refused_like, reviewer,
-    trigger_on,
+    Lake, Must, field_access, object_set_on, patch, refused_like, reviewer, trigger_on,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -26,7 +24,7 @@ check!(
 
 check!(
     LISTED_AS_SHOWN = a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_field,
-    "013 and 024, extended (lakelands#499): a proposal on a restricted record without the grant is listed without its write and says `more`, and one on a type its reader may not see is not listed (lakelands#762); `type` and `kind` are answered on the entry as shown, so a hidden type answers what an undeclared one answers and an entry without a write is of no kind, while the unfiltered listing and `state` hold it; an accept refused because a declaration reads a field the migration takes away names neither to an accepter who may not know of the field"
+    "013 and 024, extended (lakelands#499): a proposal on a restricted record without the grant is listed without its write and says `more`, and one on a type its reader may not see is not listed (lakelands#762); `type` and `kind` are answered on the entry as shown, so a hidden type answers what an undeclared one answers and an entry without a write is of no kind, while the unfiltered listing and `state` hold it; an accepter who may not know of a field the migration takes away, which a declaration reads, is listed it in part and refused its accept as not granted, naming neither (lakelands#867)"
 );
 
 /// The lake of the re-key checks with a type `doc`, and the proposals of
@@ -335,10 +333,14 @@ async fn a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_fi
     let wire = told.as_ref().err().map(|e| json!(e).to_string());
     let wire = wire.unwrap_or_default();
     let names = wire.contains("secret") || wire.contains("watch");
+    let not_granted = lakelands_api::Error::Refused {
+        field: None,
+        reason: lakelands_api::Refusal::NotGranted,
+    };
     ensure!(
-        matches!(invalid_case(&told), Some(Case::ReadsTakenAway)) && !names,
-        "an accepter who may not know of `secret` is told that a declaration reads a field \
-         the migration takes away, and neither name; it answered {told:?}"
+        told.as_ref().err() == Some(&not_granted) && !names,
+        "an accepter who may not know of `secret`, listed the migration in part, must be \
+         refused its accept as not granted, naming neither; it answered {told:?}"
     );
     let told = l.cat.accept(&l.own, &drop).await;
     let case = json!({"code": "migration_takes_read", "unnamed": false, "field": "secret",
