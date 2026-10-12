@@ -33,7 +33,7 @@ check!(
 
 check!(
     STEP_BINDS_ONE_TYPE = a_step_whose_records_a_row_binds_reaches_one_type,
-    "018, extended (lakelands#680): a step whose records rows or an aggregate bind reaches one type over its whole range or names its `type`: over a relation two types declare it is refused at the first step and at a later one, in a chain and from depth 0, as is one whose second hop reaches other types and one from depth 0 that reaches another type than it stands on, each at its step under the relation as its caller wrote it; a `where` over such a step is refused alike for rows and a graph, and a chain's graph is judged over its range as its rows are, a second hop's type named and a step from depth 0 with a `where` naming one, and its step that another follows names its `type` while a last one keeps every type it reaches; a `type` the step does not reach is refused naming every type it does, at depth 0 as in a chain, and degree and components take no step `type` at all; with its `type` it binds that type alone, as a step by an inverse binds its owner's, a range that reaches nothing is judged by its first hop, and the step after it is read from that type, by an order, `fields`, a group key, a `where` and a `type` of its own; a reader masked from the field that carries the first hop is answered that before the step is judged, in rows, an aggregate and a graph, and a relation a neighbourhood meets around another type when it is walked and not before; a path asked as rows or an aggregate is refused as that, and rows from depth 0 over a relation their type does not declare as a chain's are; a reader not shown one of the two types is answered as on a lake without it, by a measure too"
+    "018, extended (lakelands#680): a step whose records rows or an aggregate bind reaches one type over its whole range or names its `type`: over a relation two types declare it is refused at the first step and at a later one, in a chain and from depth 0, as is one whose second hop reaches other types and one from depth 0 that reaches another type than it stands on, each at its step under the relation as its caller wrote it; a `where` over such a step is refused alike for rows, a graph and a path, and with the `type` of either declarer it is read against that type's records (lakelands#753), and a chain's graph is judged over its range as its rows are, a second hop's type named and a step from depth 0 with a `where` naming one, and its step that another follows names its `type` while a last one keeps every type it reaches; a `type` the step does not reach is refused naming every type it does, at depth 0 as in a chain, and degree and components take no step `type` at all; with its `type` it binds that type alone, as a step by an inverse binds its owner's, a range that reaches nothing is judged by its first hop, and the step after it is read from that type, by an order, `fields`, a group key, a `where` and a `type` of its own; a reader masked from the field that carries the first hop is answered that before the step is judged, in rows, an aggregate and a graph, and a relation a neighbourhood meets around another type when it is walked and not before; a path asked as rows or an aggregate is refused as that, and rows from depth 0 over a relation their type does not declare as a chain's are; a reader not shown one of the two types is answered as on a lake without it, by a measure too"
 );
 
 check!(
@@ -563,6 +563,30 @@ async fn a_step_whose_records_a_row_binds_reaches_one_type(store: Store) -> Held
                 "from depth {min} as {project:?}: a `where` {got}, a `type` not reached {far}"
             ));
         }
+    }
+    // The second type that declares the relation, named, reads the step's
+    // `where` against its own records (lakelands#753); a path whose step
+    // reads a `where` names its `type` as a graph's does.
+    for (project, want) in [(all(), r#""qa""#), (Graph, "2 nodes")] {
+        let s = typed("quote", kept("x = 'qa'", of(Walk::In, 1, 1)));
+        let p = pattern("customer", Some("c1"), vec![s], project.clone());
+        let got = answer(own, p, &["quote.x"]).await;
+        if got != want {
+            wrong.push(format!(
+                "`type: quote` with a `where` as {project:?}: {got}"
+            ));
+        }
+    }
+    let s = kept("x = 'qa'", of(Walk::In, 0, 1));
+    let mut path = pattern("customer", Some("c1"), vec![s], Graph);
+    path.to = Some(("quote".into(), "q1".into()));
+    let untyped = answer(own, path.clone(), &[]).await;
+    path.steps[0].ty = Some("quote".into());
+    let named = answer(own, path, &[]).await;
+    if untyped != several(1, "of") || named != "2 nodes" {
+        wrong.push(format!(
+            "a path to `q1` with a `where`: untyped {untyped}, typed `quote` {named}"
+        ));
     }
     // A chain's graph is judged over its range as its rows are: it may name
     // a type its second hop reaches, and a `where` over the range names one.
