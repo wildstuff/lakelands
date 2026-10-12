@@ -5,7 +5,7 @@
 //! The store asks the opener for the ends of the log before it opens the
 //! lake. Here that question reads the log's table and leaves the schema
 //! as it was, and makes no schema where there is no lake; and a lake as
-//! the release before left it, its tip in that release's format and its
+//! a later release would leave it, its tip in that release's format and its
 //! projection without a layout mark, is refused for its format in every
 //! mode and not for its layout, with no table made and no row changed.
 //! An import onto either lake is answered from the same question, and
@@ -117,25 +117,25 @@ fn the_ends_of_a_log_are_read_and_its_schema_is_left_as_it_was() {
 }
 
 #[test]
-fn a_lake_the_release_before_left_is_refused_for_its_format_and_not_touched() {
-    let Some(url) = common::url_or_skip("a lake of the release before") else {
+fn a_lake_a_later_release_left_is_refused_for_its_format_and_not_touched() {
+    let Some(url) = common::url_or_skip("a lake of a later release") else {
         return;
     };
     let reads = LOG_FORMAT_VERSION;
     let on = tokio::runtime::Runtime::new().unwrap();
     let (location, schema, export) = made(&url, &on);
-    // Its writer's last event, in the format before this release's.
+    // Its writer's last event, in the format after this release's.
     let engine = PgOpener.open(&location, OpenMode::Write).unwrap();
-    let lease = engine.take_lease("the release before").unwrap();
+    let lease = engine.take_lease("a later release").unwrap();
     let (at, prev) = engine.tip().unwrap().unwrap();
-    let (fence, holder) = (lease.fence, "the release before".into());
+    let (fence, holder) = (lease.fence, "a later release".into());
     let taken = Draft::system(
         Timestamp(i64::MAX / 2),
         EventBody::LeaseTaken { fence, holder },
     );
     let (_, stored) = seal(&location.lake, at.next(), &prev, fence, taken);
     let mut event: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
-    event["v"] = json!(reads - 1);
+    event["v"] = json!(reads + 1);
     event.as_object_mut().unwrap().remove("hash");
     let hash = canonical::sha256_hex(&event);
     event["hash"] = json!(hash);
@@ -154,8 +154,8 @@ fn a_lake_the_release_before_left_is_refused_for_its_format_and_not_touched() {
     drop(db);
     let before = held(&url, &schema);
     let another = |e: &lakelands_api::Error| {
-        matches!(e.situation(), Some(Situation::LogFormat { lake, found, reads: r })
-            if *lake == schema && *found == u64::from(reads - 1) && *r == u64::from(reads))
+        matches!(e.situation(), Some(Situation::LogFormat { lake, found, reads: r, .. })
+            if *lake == schema && *found == u64::from(reads + 1) && *r == u64::from(reads))
     };
     for mode in [
         OpenMode::Read,
@@ -165,7 +165,7 @@ fn a_lake_the_release_before_left_is_refused_for_its_format_and_not_touched() {
     ] {
         let opened = on.block_on(lakelands_store::open(location.clone(), seams(), mode));
         let Err(e) = opened else {
-            panic!("a lake of the release before opened for {mode:?}");
+            panic!("a lake of a later release opened for {mode:?}");
         };
         assert!(another(&e), "{mode:?}: {e:?}");
         assert_eq!(held(&url, &schema), before, "{mode:?} changed the schema");
@@ -175,7 +175,7 @@ fn a_lake_the_release_before_left_is_refused_for_its_format_and_not_touched() {
         seams(),
         export.clone(),
     ));
-    let e = e.expect_err("an import onto a lake of the release before was taken");
+    let e = e.expect_err("an import onto a lake of a later release was taken");
     assert!(another(&e), "an import: {e:?}");
     assert_eq!(held(&url, &schema), before, "an import changed the schema");
     common::drop_schema(&url, &schema);

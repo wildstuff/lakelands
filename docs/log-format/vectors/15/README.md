@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 39, each
+- `further.json`: the lake's next events, positions 8 to 40, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -62,7 +62,10 @@ The files:
     of the kind `date`, a value type over it, and a record holding a
     date (34 to 37);
   - an `output_recorded` that carries its output, and a fill of the same
-    call that names it by `output_at` (38, 39).
+    call that names it by `output_at` (38, 39);
+  - a `lake_upgraded` from format 14 to 15 (40), its members alone: in a
+    whole lake it follows a writer's `lease_taken` after events of the
+    format before, which this lake does not hold.
 
   Its `misplaced` holds three lines that are not of the lake. Each
   stands at its position after the event before it, in the release's

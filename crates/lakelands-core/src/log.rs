@@ -8,7 +8,7 @@
 //! lives in `lakelands_api::key`, where a host reaches it too.
 
 use lakelands_api::error::Flaw;
-use lakelands_api::event::{Event, EventBody, EventId, LOG_FORMAT_VERSION};
+use lakelands_api::event::{Event, EventBody, EventId, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT};
 use lakelands_api::{
     IdempotencyKey, LakeId, Patch, Position, ProposalId, RecordKey, SourceId, TypeName,
 };
@@ -104,16 +104,114 @@ pub fn positional_id(lake: &LakeId, position: Position) -> EventId {
     ])
 }
 
-/// The flaw of a `lake_created` that says another log format than the
-/// release's one, at whatever position it stands: its lake was made by
-/// another release
+/// Whether this release reads an event written in log format `v`: from
+/// [`OLDEST_LOG_FORMAT`], the first a release with real installations
+/// wrote, to the one it writes
+/// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+pub fn reads_format(v: u64) -> bool {
+    (u64::from(OLDEST_LOG_FORMAT)..=u64::from(LOG_FORMAT_VERSION)).contains(&v)
+}
+
+/// An event as log format `v` wrote it, its members as the format this
+/// release writes says them, for the release's own structs to read. Its
+/// `v` stays the one it was written in, and its bytes and hash are the
+/// stored ones: a converter changes what an event is read as, never the
+/// log. Each step of the format is one function here, from 14 on.
+///
+/// - **14 → 15:** none. Format 15 lets a verb's path read across a
+///   reference or a relation's link (055); a log of format 14 holds no
+///   such declaration, and nothing else of an event changed.
+pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
+    debug_assert!(reads_format(v), "format {v} is not one this release reads");
+    event
+}
+
+/// A walk along a log's formats: a lake's format changes only where a
+/// new writer upgrades it, and never falls. The format rises at the new
+/// writer's `lease_taken`, the first event it appends, and that writer's
+/// next event is the `lake_upgraded` from the format before to the new
+/// one; a `lake_upgraded` anywhere else, and any other change, is a flaw
+/// at its position (`docs/log-format.md` §6).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FormatSteps {
+    /// The format of the event before, if one was read.
+    before: Option<u32>,
+    /// The step a `lease_taken` began, which the next event must mark.
+    owed: Option<(u32, u32)>,
+    /// Whether the walk began right after a `lease_taken`, whose step, if
+    /// it began one, it could not see.
+    leased: bool,
+}
+
+impl FormatSteps {
+    /// A walk that begins after `prev`, if any: a range that starts
+    /// inside the log, `verify` from a position.
+    pub fn after(prev: Option<&Event>) -> FormatSteps {
+        FormatSteps {
+            before: prev.map(|e| e.v),
+            owed: None,
+            leased: prev.is_some_and(|e| matches!(e.body, EventBody::LeaseTaken { .. })),
+        }
+    }
+
+    /// Judge the next event of the log.
+    pub fn next(&mut self, event: &Event) -> Option<Flaw> {
+        let (before, owed, v) = (self.before, self.owed.take(), event.v);
+        let leased = std::mem::take(&mut self.leased);
+        self.before = Some(v);
+        let upgraded = |from: u32, to: u32| matches!(event.body, EventBody::LakeUpgraded { from: f, to: t } if f == from && t == to);
+        let flaw = |before: u32| {
+            Some(Flaw::FormatStep {
+                v: v.into(),
+                before: before.into(),
+            })
+        };
+        if let Some((from, to)) = owed {
+            return (!(v == to && upgraded(from, to)))
+                .then(|| flaw(from))
+                .flatten();
+        }
+        let before = before?;
+        // Right after a lease the walk did not see rise: its marker.
+        let unseen = matches!(event.body,
+            EventBody::LakeUpgraded { from, to } if from < to && to == v && v == before);
+        if leased && unseen {
+            return None;
+        }
+        let marker = matches!(event.body, EventBody::LakeUpgraded { .. });
+        let leased = matches!(event.body, EventBody::LeaseTaken { .. });
+        if v == before && !marker {
+            return None;
+        }
+        if v > before && leased {
+            self.owed = Some((before, v));
+            return None;
+        }
+        flaw(before)
+    }
+
+    /// The step a `lease_taken` began and no `lake_upgraded` marked yet,
+    /// at the end of what was read: a flaw where the log ends there.
+    pub fn unmarked(&self) -> Option<Flaw> {
+        let (from, to) = self.owed?;
+        Some(Flaw::FormatStep {
+            v: to.into(),
+            before: from.into(),
+        })
+    }
+}
+
+/// The flaw of a `lake_created` that says another log format than its
+/// own line, or one this release does not read, at whatever position it
+/// stands: its lake was made by another release
 /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 /// A caller asks this of an event whose own `v` it has judged.
 pub fn created_in_another(event: &Event) -> Option<Flaw> {
-    let reads = u64::from(LOG_FORMAT_VERSION);
     match event.body {
-        EventBody::LakeCreated { format } if u64::from(format) != reads => {
-            let format = format.into();
+        EventBody::LakeCreated { format }
+            if u64::from(format) != u64::from(event.v) || !reads_format(format.into()) =>
+        {
+            let (format, reads) = (format.into(), u64::from(LOG_FORMAT_VERSION));
             Some(Flaw::CreatedInAnother { format, reads })
         }
         _ => None,

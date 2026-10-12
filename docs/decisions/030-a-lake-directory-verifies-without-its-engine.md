@@ -87,9 +87,13 @@ Every lake, whatever its engine, exports these files through its store:
 `log/<first position>.jsonl` exactly as above, one file per sealed
 segment and one for the active run after the last checkpoint (a lake
 never checkpointed exports the one file `00000000000000000000.jsonl`).
-Every event is in the release's one format version
-(`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`), as
-the lake holds it; nothing is rewritten.
+Every event is as the lake holds it, in the format version it was
+written in; nothing is rewritten. A lake a release upgraded holds the
+older format's events before its `lake_upgraded` and the release's after
+it, and a verifier reads every format from 14 on, each through its
+converter (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+An export of an older format imports, and the import upgrades the new
+lake as a writer's open would.
 
 - An export is the log as the host reads it: every event, every
   principal's writes, retired records' and restricted records' history
@@ -106,7 +110,8 @@ the lake holds it; nothing is rewritten.
   and a verifier reads a line at a time, so neither holds the log in
   memory.
 - Beside `log/` it writes `export.json`, a manifest of the lake, the
-  position and hash it read through, its one format version, and each
+  position and hash it read through, the format version this release
+  writes, and each
   file with its range and digest. It is a convenience for a reader and
   is never trusted: a verifier recomputes everything from `log/`.
 - An export verifies without Lakelands' engines:
@@ -203,3 +208,6 @@ file's contents; the operating system's lock does not.
   no lake to any open but one to create; before, an open to read
   answered `no_projection` there and an open to write made a
   projection in it (lakelands#865).
+- An export of an upgraded lake holds its events in the formats they
+  were written in, and a verifier and an import read every format from
+  14 on; before, one format a release (lakelands#962).

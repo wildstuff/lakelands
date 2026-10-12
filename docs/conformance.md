@@ -915,6 +915,10 @@ belongs in the suite, not beside one engine:
 - `a_fused_axis_is_counted_to_its_window_on_every_page` — 046, extended (lakelands#560): a fused list is read to the lake's `max_limit` of what its reader may see, or to its end, before a page is answered, so an axis's count is the same on every page, also where hidden candidates leave a list short of its window when the first page could already be ranked
 - `a_types_setting_weighs_what_a_search_does_not` — 046, extended (lakelands#561): the setting `search_weights.<type>` weighs each ranking a fused search gives no weight, a vector field's by `fields` and the text's by `text_weight`, the search's own weight winning, and the axes name the weight that ranked; a read as of a position before the setting ranks without it; a field the setting names that a migration removed weighs nothing and is no error, and declared again it takes its weight again; the setting is refused as invalid for a field the type does not declare, one that is no vector, a weight a search could not give, a member it does not know, and an object or `fields` that names nothing; a reader not shown a weighted field is answered a search naming it as before the setting, and a writer of the setting not shown a field it names is refused as for a field the type does not declare (024)
 
+**upgrade**
+
+- `a_lake_of_format_14_is_upgraded_and_read` — 054 and log-format §6 (lakelands#962): the vectors of format 14, a lake as the release that wrote that format left it, imported on this engine, keep every event as it was written, `v` 14 included, and are followed by a writer's `lease_taken` and one `lake_upgraded` from 14 to 15, and every later event in format 15; the lake then opens read-only, verifies whole, `describe` shows its two types and `find` answers its records; and a writer's open appends its own `lease_taken` and no second `lake_upgraded`
+
 **vocabulary**
 
 - `a_host_type_is_declared_when_a_writer_opens_the_lake` — 003 and seams, SystemVocabulary: each writer open declares the host's sys. types the lake may hold and does not hold yet; a type added later reaches the existing lake, and a withheld one never does

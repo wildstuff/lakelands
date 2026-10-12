@@ -226,7 +226,8 @@ the writer chose.
 
 | Kind | Payload | Fold |
 |---|---|---|
-| `lake_created` | `format` (integer) | Always at position 0, with `origin: system`, `fence: 0`, and `format` equal to the event's `v`: the one format version the lake is written in (§6). |
+| `lake_created` | `format` (integer) | Always at position 0, with `origin: system`, `fence: 0`, and `format` equal to the event's `v`: the format version the lake was made in (§6). |
+| `lake_upgraded` | `from` (integer), `to` (integer) | A writer's open, or an import, upgraded a lake written in the older format `from`: written in `to`, which is the event's own `v`, with `origin: system`, right after the writer's `lease_taken`. The events before it stay as they were written; every event after it is in `to` (§6). |
 | `lease_taken` | `fence` (integer), `holder` (string) | A writer took the lease with a fencing token greater than every earlier one. The event is the first the new writer appends: its envelope `fence` already equals its payload `fence`, and every later event carries that fence until the next `lease_taken`. `holder` is free text for the operator. |
 
 ### 2.2 Ontology
@@ -788,59 +789,93 @@ float, and so is a vector of zeros.
 
 ## 6. Versioning
 
-**A release reads and writes one format version.** Every event of a
-lake carries it as `v`, from position 0, and `lake_created.format` says
-the same number. Within the version the format is fixed and described
-here whole: nothing in this document holds for one event of a lake and
-not for another.
+**A release writes one format version, and reads every one from 14 to
+it.** Every event carries the version it was written in as `v`, and
+`lake_created.format` says the version the lake was made in, the same
+as its own line's. Within a version the format is fixed and described
+whole: this document describes the version the release writes, and
+each earlier one is read through its converter (below).
 
 **The version rises by one in a release that changes the format, and
 only there.** A new kind, a new member or a changed encoding is a change
 of the format, specified here first; a release that makes several takes
-one step for all of them, and a release that makes none keeps the number
-and reads the lakes of the release before it. Between two releases the
-format is open: the first change raises the number, and later ones
-change the format under it, so a lake written by a build between two
-releases may not open in the next.
+one step for all of them, and a release that makes none keeps the number.
+Between two releases the format is open: the first change raises the
+number, and later ones change the format under it, so a lake written by
+a build between two releases may not open in the next.
 
-**A lake in another format is refused, older or newer, and never read
-in part.** A reader reads an event's `v` before any other member of it;
-a line with no `v` is in format 0. (A verification of an export checks
-first that the line is its canonical bytes, and `v` next.)
+**Every step from 14 on carries its upgrade path.** 14 is the format of
+the first release with real installations
+(`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 
-- An open of a lake that was not created in the release's format, or
-  whose newest event is in another, is refused before the lake is
-  opened: the store reads the log's first and last event and judges
-  three numbers, the first event's `v`, the format its `lake_created`
-  says and the last event's `v`. It names the lake, the first of the
-  three that is another, and the one format read (`log_format` in
-  `docs/refusals.md`). Nothing of the lake is judged, made, folded or
-  appended to. The lake is not damaged, and restoring it would not
+- **A converter a step.** Each step ships a function that takes an
+  event's members as the earlier format wrote them and gives them as the
+  later one says them. A reader takes an event's `v` first and runs the
+  converters from it up to the release's format, then reads the event.
+  The event keeps its `v`, its bytes and its hash: the log is never
+  rewritten, and a hash is taken over the bytes as they were written
+  (§1.2), which no step changes.
+- **The steps so far.** 14 → 15: none of an event's members change.
+  Format 15 lets a verb's path read across a reference or a relation's
+  link (`docs/decisions/055-a-path-steps-through-a-reference.md`), and a
+  log of format 14 holds no declaration that does. The step changes no
+  fold, so the projection stays. A step that changes how an event folds
+  says so here, and a writer's open then rebuilds the projection.
+- **A writer's open upgrades.** Where the newest event, read under the
+  writer's lease, is in an older format the release reads, the open
+  appends, right after its `lease_taken`, one `lake_upgraded` from that
+  format to the release's, in the release's; from there the lake is
+  written in the new format. Another writer that upgraded the lake
+  between this open's look at the log's ends and its lease leaves it
+  nothing to mark. `lakelands upgrade` is that open as a command, and
+  `--check` says what it would do and opens nothing. An import of an
+  export of an older format imports its events as they are, and a
+  writer's open then upgrades the new lake, under a lease above every
+  fence the export holds.
+- **A reader is refused.** A read-only open of a lake whose newest event
+  is in an older format the release reads is refused before anything is
+  read, naming the lake, both numbers and the way: a writer's open, or
+  `lakelands upgrade` (`log_upgrade_owed` in `docs/refusals.md`). A
+  reader appends nothing, and an older projection is not read with newer
+  code.
+- **A format changes only where a new writer upgrades it.** Along a log
+  `v` never falls. It rises only at a new writer's `lease_taken`, the
+  first event that writer appends, and that writer's next event is the
+  `lake_upgraded` from the format before to the new one; `verify` and
+  the verification of an export refuse any other change at its position,
+  and a rise its marker does not follow where the log ends
+  (`format_step`); a read refuses an event in a format below the one
+  before it where it reads them in order. `verify` and the verification
+  of an export refuse a fence below the one before it as well
+  (`fence_below`, §4).
+
+**A lake in a format the release does not read is refused, older or
+newer, and never read in part.** A reader reads an event's `v` before
+any other member of it; a line with no `v` is in format 0. (A
+verification of an export checks first that the line is its canonical
+bytes, and `v` next.)
+
+- An open of a lake whose first event, its `lake_created` or its newest
+  event is in a format the release does not read is refused before the
+  lake is opened, naming the lake, that format, the formats read and the
+  one written (`log_format`). So is a lake whose newest event is in a
+  format below its first's. Nothing of the lake is judged, made, folded
+  or appended to. The lake is not damaged, and restoring it would not
   help: it is another release's.
 - Wherever else an event is read (a verification of the lake or of an
-  export, the feed, a rebuild, an import), one in another format is
-  refused at its position, naming both numbers (`format_other`). So an
-  export of another release is not imported, and a lake that mixes
-  formats is refused at the first event of another. An open looks at
-  the two ends alone: an event of another format between them is found
-  where it is read, by `verify`, by a writer's fold and by a rebuild.
-- A `lake_created` that says another format than the release's is
-  refused where it is read by a flaw of its own (`created_in_another`),
-  at whatever position the event stands; a store writes it at position
-  0 alone. A line whose own `v` is another is refused for that first
+  export, the feed, a rebuild, an import), one in a format the release
+  does not read is refused at its position, naming both numbers
   (`format_other`).
+- A `lake_created` that says another format than its own line, or one
+  the release does not read, is refused where it is read by a flaw of
+  its own (`created_in_another`), at whatever position it stands; a
+  store writes it at position 0 alone.
 
-This holds until the first release with real installations, which the
-operator names. From that release on a change of the format carries its
-upgrade path: how a lake the release before wrote becomes one this
-release reads, proved on such a lake
-(`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
-`v` on every event, `lake_created.format` and a refusal that names both
-numbers are what that path starts from.
+**There is no downgrade.** A lake a release upgraded is not opened by
+the release before; a backup taken before the upgrade is the way back.
 
-Before this rule a lake wrote the lowest version each append needed, so
-one log held versions 1 to 14 in rising order. No release reads such a
-log any more.
+A lake written before format 14, when one log held versions 1 to 14 in
+rising order, is not read.
 
 ## Appendix A. Encodings
 

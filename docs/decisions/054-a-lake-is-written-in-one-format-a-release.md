@@ -78,9 +78,37 @@ that restated it.
 How a lake the release before wrote becomes one the new release reads is
 then part of the change, and the suite proves it on a lake the release
 before wrote. Upgrading is then a commitment of the first rank, not an
-option a release may leave out.
+option a release may leave out. The operator named 0.14.0 that release,
+and its format 15 the first step: 0.14.0 reads 14 and 15 and writes 15.
 
-**What is kept now so that the path is cheap then:**
+**How a lake is upgraded** (`docs/log-format.md` §6):
+
+- **The log is never rewritten.** Each format step from 14 on ships a
+  converter, a function over an event's members as the earlier format
+  wrote them. A reader runs the converters from an event's `v` up to the
+  release's, and the event keeps its `v`, its bytes and its hash. Every
+  hash, checkpoint and export a host already holds stays true; a log
+  that replaced the events with new ones would be a second truth (001).
+- **A writer's open upgrades.** It appends, after its `lease_taken`, one
+  `lake_upgraded` from the older format to the release's, and the lake
+  is written in the new one from there; a step that changes a fold also
+  has the open rebuild the projection. `lakelands upgrade` is that open
+  as a command, with `--check` to say what it would do. A read-only open
+  of such a lake is refused, naming the way. An import of an older
+  export upgrades the new lake the same way.
+- **A format changes only where a new writer upgrades it**, at its
+  `lease_taken` followed by the `lake_upgraded`, and never falls; both
+  verifiers refuse any other change.
+- **There is no downgrade.** A backup taken before the upgrade is the
+  way back.
+
+At 100 000 events a step that changes no fold costs one append, and
+about 5 µs an event at each later read of an older event; one that
+changes a fold costs a rebuild, about 7 s on SQLite and 35 s on
+PostgreSQL. Rewriting the log would cost an export, the conversion and
+an import, about 14 s and 44 s, and would move every hash.
+
+**What was kept so that the path is cheap:**
 
 - `v` on every event and `lake_created.format`, so a lake says what
   wrote it without being read further;
@@ -96,9 +124,12 @@ option a release may leave out.
   byte for byte (`scripts/gates/vectors-kept.sh`), and every later
   release runs it.
 
-### An import, a mirror and a moved pin stop at a format step
+### An import, a mirror and a moved pin stop at a format this release does not read
 
-Each of these is refused in the words above and never done in part:
+Each of these is refused in the words above and never done in part,
+where the other format is one the release does not read; one from 14 on
+that is older is upgraded instead, and a mirror's source is opened as a
+reader, so it is upgraded first:
 
 - **An import of an export another release wrote.** The export's lines
   are in that release's format; the import verifies the whole export
@@ -137,9 +168,10 @@ them.
 
 ## What it is not
 
-- **The second half is not built early.** An upgrade path written
-  before a format it must upgrade from is real would be written against
-  a guess. It is written with the first change that needs it.
+- **The second half was not built early.** An upgrade path written
+  before a format it must upgrade from was real would have been written
+  against a guess. It was written with the first change that needed it,
+  the step from 14 to 15.
 - **A refusal, not a repair.** A release that read an older format in
   part would answer from a log it does not fully understand. Refusing
   the lake whole, by name and with both numbers, is the one answer that
@@ -151,3 +183,9 @@ them.
   of their own, as its tag holds them, and run by every later release;
   before, one directory was stamped again in place at each step, and
   nothing of an older format was kept (lakelands#962).
+- The second half is built: a release reads every format from 14 on,
+  each older event through its format's converter, and a writer's open
+  upgrades a lake with `lake_upgraded`; a reader of such a lake is
+  refused with the way, and a lake's format changes only where it is
+  marked. Before, a lake of format 14 was refused under 0.14.0's format
+  15 (lakelands#962).

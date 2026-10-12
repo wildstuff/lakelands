@@ -88,6 +88,7 @@ mod settings;
 mod shown_hash;
 mod streaming;
 mod triggers;
+mod upgrade;
 mod value_renames;
 mod value_types;
 mod values;
@@ -578,6 +579,7 @@ pub const ALL: &[Check] = &[
     search_axes::AXES_READER,
     search_axes::AXES_WINDOW,
     search_axes::WEIGHTS_SET,
+    upgrade::FORMAT_14_UPGRADED,
     vocabulary::HOST_TYPES_AT_OPEN,
     vocabulary::RESERVED_NAME_REFUSES_OPEN,
     vocabulary::TOOL_NAME_REFUSES_OPEN,

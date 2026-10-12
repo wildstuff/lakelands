@@ -1056,7 +1056,9 @@ async fn a_lake_is_written_in_one_format_and_another_is_refused_whole(
         reads: reads.into(),
     };
     let mut cases: Vec<(String, bool, Change, Flaw)> = Vec::new();
-    for v in [reads - 1, reads + 1] {
+    // Older than the oldest format this release reads, and newer.
+    let older = lakelands_api::event::OLDEST_LOG_FORMAT - 1;
+    for v in [older, reads + 1] {
         for last in [false, true] {
             let what = format!("in format {v}");
             cases.push((what, last, Box::new(move |e| e["v"] = json!(v)), other(v)));
@@ -1158,7 +1160,8 @@ async fn a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_whe
     let nothing = || -> Lines { Box::new(|_, _| (Vec::new(), 0)) };
     let mut held = Some(store);
     let mut first_other = None;
-    for other in [reads - 1, reads + 1] {
+    let older = lakelands_api::event::OLDEST_LOG_FORMAT - 1;
+    for other in [older, reads + 1] {
         let modes = [OpenMode::Read, OpenMode::Write, OpenMode::Rebuild];
         for (n, mode) in modes.into_iter().enumerate() {
             let lines = if n == 0 { line(other) } else { nothing() };
@@ -1169,7 +1172,7 @@ async fn a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_whe
             let e = c.opened.err();
             ensure!(
                 matches!(e.as_ref().and_then(Error::situation),
-                    Some(Situation::LogFormat { lake: l, found, reads: r })
+                    Some(Situation::LogFormat { lake: l, found, reads: r, .. })
                         if l == lake.as_str() && *found == u64::from(other) && *r == u64::from(reads)),
                 "a lake whose newest event is in format {other} is refused at an open for \
                  {mode:?} as `log_format`, naming the lake, that format and the one this \
@@ -1207,14 +1210,14 @@ async fn a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_whe
             position: Some(p),
             flaw: Flaw::FormatOther { v, reads: r },
             ..
-        }) if *p == at && *v == u64::from(reads - 1) && *r == u64::from(reads))
+        }) if *p == at && *v == u64::from(older) && *r == u64::from(reads))
     };
     let verified = reader.verify(None, None).await;
     ensure!(
         refused(verified.as_ref().err()),
         "`verify` of a log that holds an event in format {} at {at} is refused as \
          `format_other` at that position, naming both formats; it answered {verified:?}",
-        reads - 1
+        older
     );
     let tip = c.before.tip;
     held = Some(reader);

@@ -623,6 +623,58 @@ pub async fn rebuild(out: Out<'_>, store: &Arc<dyn LakeStore>) -> Result<(), Fai
     )
 }
 
+/// `upgrade`: say which log format the lake is written in, as a
+/// read-only open finds it, and, where it is older than the one this
+/// release writes, open it for writing once: that open appends
+/// `lake_upgraded` and writes the new format from there; the events
+/// before stay as they were written. `check` stops before that open.
+pub async fn upgrade(
+    out: Out<'_>,
+    location: lakelands_api::Location,
+    seams: lakelands_api::seam::Seams,
+    check: bool,
+    open: &crate::Opener<'_>,
+) -> Result<(), Failure> {
+    use lakelands_api::engine::OpenMode;
+    use lakelands_api::error::Situation;
+    use lakelands_api::event::LOG_FORMAT_VERSION as TO;
+    let lake = location.lake.clone();
+    // A lake already in this release's format opens to read; an older one
+    // is refused by its format, which the refusal names.
+    let from = match open(location.clone(), OpenMode::Read, seams.clone()).await {
+        Ok(_) => {
+            return put(
+                out,
+                format!("{lake} is written in log format {TO}: nothing to upgrade"),
+            );
+        }
+        Err(e) => match e.situation() {
+            Some(Situation::LogUpgradeOwed { found, .. }) => *found,
+            _ => return Err(e.into()),
+        },
+    };
+    if check {
+        return put(
+            out,
+            format!(
+                "{lake} is written in log format {from}: an open for writing appends \
+                 `lake_upgraded` from {from} to {TO} and keeps the projection; nothing was \
+                 opened for writing"
+            ),
+        );
+    }
+    let started = std::time::Instant::now();
+    let store = open(location, OpenMode::Write, seams).await?;
+    let head = store.head().await?;
+    let secs = started.elapsed().as_secs_f64();
+    put(
+        out,
+        format!(
+            "upgraded {lake} from log format {from} to {TO} through position {head} in {secs:.1} s"
+        ),
+    )
+}
+
 /// `compact`: give back the storage the projection no longer uses, and
 /// print what the engine measured of it before and after. An engine that
 /// measures nothing, the memory engine's, has nothing to reclaim.

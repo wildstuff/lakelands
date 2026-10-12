@@ -658,9 +658,13 @@ catalog! {
         /// A member is not in its one written form.
         NotOneForm => "a member is not in its one written form",
         /// It is written in a log format this release does not read.
-        FormatOther { v: u64, reads: u64 } => "written in log format {v}, and this release reads and writes format {reads} alone",
-        /// Its `lake_created` says another log format than the release's.
-        CreatedInAnother { format: u64, reads: u64 } => "its `lake_created` says log format {format}, and this release reads and writes format {reads} alone",
+        FormatOther { v: u64, reads: u64 } => "written in log format {v}, which this release does not read; it writes format {reads}",
+        /// Its `lake_created` says another log format than its own line, or one the release does not read.
+        CreatedInAnother { format: u64, reads: u64 } => "its `lake_created` says log format {format}, another than its own line's or one this release does not read; it writes format {reads}",
+        /// Its fence is below the fence of the event before it.
+        FenceBelow { fence: u64, floor: u64 } => "it carries fence {fence}, below the fence {floor} of the event before it: fences never fall",
+        /// Its log format differs from the event's before it where no new writer upgraded the lake.
+        FormatStep { v: u64, before: u64 } => "written in log format {v} after an event in format {before}: a lake's format rises only at a new writer's `lease_taken`, whose next event is the `lake_upgraded` from the one to the other",
         /// `context` carries `cause`, which the envelope carries.
         CauseInContext => "`context` carries `cause`, which the envelope carries",
         /// The envelope carries the origin `initial`, a field's alone.
@@ -857,7 +861,9 @@ catalog! {
             wanted: u64,
         } => "lake `{lake}`'s projection [has layout {found}|has no layout number], and this build reads layout {wanted}; nothing was read from it: rebuild it from the log with `lakelands rebuild`",
         /// The lake's log is written in the format of another release: nothing reads it and nothing is appended.
-        LogFormat { lake: String, found: u64, reads: u64 } => "lake `{lake}` is written in log format {found}, and this release reads and writes format {reads} alone; nothing was read from it and nothing appended",
+        LogFormat { lake: String, found: u64, reads: u64, oldest: Option<u64> } => "lake `{lake}` is written in log format {found}, and this release reads log format[s {oldest} to] {reads} and writes {reads}; nothing was read from it and nothing appended",
+        /// The lake's log is written in an older format this release reads, and only a writer's open upgrades it.
+        LogUpgradeOwed { lake: String, found: u64, reads: u64 } => "lake `{lake}` is written in log format {found}, and this release writes format {reads}: a writer's open upgrades it, so open it once for writing or run `lakelands upgrade {lake}`, and it is read; nothing was read from it",
         /// The lake could not be compacted while a reader holds a snapshot.
         Busy { lake: String } => "lake `{lake}` could not be compacted: a reader holds a snapshot of its projection; nothing a read answers has changed, so compact again when the reader is done",
         /// The projection is behind the log and could not catch up; nothing was appended.

@@ -48,6 +48,20 @@ pub async fn open(location: Location, seams: Seams, mode: OpenMode) -> Result<Ar
     }))
 }
 
+/// The log format the newest event of the lake at `location` is written
+/// in, read from the log's ends alone, nothing opened or folded; `None`
+/// where there is no lake. A lake of a format this release does not read
+/// is refused as an open refuses it. Below the format the release writes,
+/// a writer's open upgrades it (`docs/log-format.md` §6).
+pub async fn written_in(location: Location, seams: Seams) -> Result<Option<u32>> {
+    exec::run(move || {
+        let ends = crate::lake::opener(&location, &seams)?.log_ends(&location)?;
+        let Some(ends) = ends else { return Ok(None) };
+        crate::log::one_format(&location.lake, Some(&ends)).map(Some)
+    })
+    .await
+}
+
 /// Import the export in `dir` as a new lake at `location`, on any engine
 /// (`crate::import`): the lake holds the exported log, event for event,
 /// with its projection folded, and is closed again; the host opens it as

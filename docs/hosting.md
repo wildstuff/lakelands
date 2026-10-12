@@ -382,25 +382,42 @@ projection under the lease, makes it anew and folds the whole log; the
 open is the rebuild. `LakeStore::rebuild` on an open lake does the same
 for a lake that opened.
 
-**A lake is read only by a release of its log format.** A release reads
-and writes one log format, and a lake that was created in another or
-whose newest event is in another, older or newer, is refused at its
-open in every mode, naming the lake and both numbers (`log_format` in
-`docs/refusals.md`;
-`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`). The
-store reads the two ends of the log before it opens the lake's engine,
-so such a lake is left as it stands: its projection is not judged, and
-nothing of it is made, folded or changed. An import asks the same
-before it opens its target: onto such a lake it is refused the same
-way, and onto a lake of the release's format as `import_not_empty`,
-with no lease taken and nothing changed. The
-number steps only in a release that changes the format, and the
-release's notes say so. There is no upgrade path yet: a host that moves
-its pin across such a step starts the new release on fresh lakes. An
-export the older release wrote is not imported, and a connection whose
-source lake is in another format does not start. From the first release
-with real installations on, a change of the format carries its upgrade
-path.
+**A lake outlives a release from log format 14 on.** A release writes
+one log format and reads every one from 14, the format of the first
+release with real installations, to it (`docs/log-format.md` §6;
+`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+- **An older lake is upgraded by its first writer's open.** The open
+  appends one `lake_upgraded` after its `lease_taken` and writes the new
+  format from there; the events before stay as they were written, so
+  every export and checkpoint the host holds stays true. Where the step
+  changes how events fold, the same open rebuilds the projection, and
+  holds the writer that long: at 100 000 events about 7 s on SQLite and
+  35 s on PostgreSQL; a step that changes no fold, as 14 to 15, costs
+  one append. `lakelands upgrade` runs that open by itself at a moment
+  the operator picks, and `lakelands upgrade --check` says what it would
+  do and opens nothing.
+- **Take a backup before, and stop every older process first.** There is
+  no downgrade: a lake a release upgraded is not opened by the release
+  before. A writer of the release before that still holds the lake is
+  refused at its next append once the upgrade's lease is taken (its
+  fence is below it), so stop every older process before the first
+  writer of the new release opens the lake.
+- **A reader waits for the writer.** A read-only open of a lake not yet
+  upgraded is refused before anything is read, naming the way
+  (`log_upgrade_owed` in `docs/refusals.md`); so is a mirror of such a
+  source, whose open is a reader's.
+- **An export of an older release imports**, and the import upgrades
+  the new lake the same way.
+- **A format this release does not read**, older than 14 or newer than
+  the release, is refused at the open in every mode, naming the lake,
+  the formats read and the one written (`log_format`). The store reads
+  the two ends of the log before it opens the lake's engine, so such a
+  lake is left as it stands: its projection is not judged, and nothing
+  of it is made, folded or changed. An import asks the same before it
+  opens its target: onto such a lake it is refused the same way, and
+  onto a lake it reads as `import_not_empty`, with no lease taken and
+  nothing changed. The number steps only in a release that changes the
+  format, and the release's notes say so.
 
 **Configuration is not a seam.** Engine configuration, tuning, limits
 and an optional key handle reach a lake through `Location`, and a

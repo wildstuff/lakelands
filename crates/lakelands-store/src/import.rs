@@ -55,7 +55,7 @@ use std::sync::Arc;
 
 use lakelands_api::engine::{CanonicalEvent, Lease, OpenMode};
 use lakelands_api::error::{Case, Detail, Doing, Flaw, Part, Said, Situation};
-use lakelands_api::event::Digest;
+use lakelands_api::event::{Digest, LOG_FORMAT_VERSION};
 use lakelands_api::location::Location;
 use lakelands_api::seam::Seams;
 use lakelands_api::{Error, LakeId, Position, Result};
@@ -211,7 +211,7 @@ pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported>
             return Err(precondition(Case::ImportNotEmpty { lake, head }));
         }
         carry(engine.as_ref(), &lease, &files, &digests, location)?;
-        let lake = Lake::assemble(location, seams, engine.clone(), Some(lease.clone()));
+        let lake = Lake::assemble(location, seams.clone(), engine.clone(), Some(lease.clone()));
         lake.catch_up().map_err(|e| {
             let cause = Box::new(e);
             Error::unavailable(Situation::ImportNotFolded { cause })
@@ -220,6 +220,14 @@ pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported>
     let released = engine.release_lease(&lease);
     written?;
     released?;
+    drop(engine);
+    // An export of an older format is upgraded as any lake is: by a
+    // writer's open, whose lease is above every fence the export holds
+    // (`docs/log-format.md` §6). Its events stay as they were written.
+    let ends = crate::lake::opener(location, &seams)?.log_ends(location)?;
+    if crate::log::one_format(&location.lake, ends.as_ref())? < LOG_FORMAT_VERSION {
+        Lake::open(location, seams, OpenMode::Write)?.close()?;
+    }
     Ok(Imported {
         lake: location.lake.clone(),
         through: verified.through,

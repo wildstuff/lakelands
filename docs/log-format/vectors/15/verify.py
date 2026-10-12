@@ -279,6 +279,8 @@ SHOWS = {
         lambda e: e["body"]["kind"] == "output_recorded" and "output" in e["body"] and "output_at" not in e["body"]),
     "output_named": shows("a recorded output that names its output by `output_at`")(
         lambda e: e["body"]["kind"] == "output_recorded" and "output_at" in e["body"] and "output" not in e["body"]),
+    "lake_upgraded": shows("a `lake_upgraded` from format 14 to the one this lake is written in")(
+        lambda e: e["body"]["kind"] == "lake_upgraded" and e["body"]["from"] == 14 and e["body"]["to"] == e["v"]),
 }
 # The one misplaced member each line of `misplaced` carries.
 MISPLACED = {
