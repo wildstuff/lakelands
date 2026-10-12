@@ -1,6 +1,6 @@
 # Contributing to Lakelands
 
-Thank you for considering a contribution. The code is here: 0.13.0 is
+Thank you for considering a contribution. The code is here: 0.13.1 is
 tagged, and 0.14.0 is being built on `develop`. A contribution is a pull
 request against `develop`, every commit signed off (below). The pages
 under `docs/` are the specification, and the conformance suite holds the
