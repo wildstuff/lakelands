@@ -157,7 +157,8 @@ fn folded_kind(e: &Expr, field: &dyn Fn(&FieldName) -> Option<StorageKind>) -> O
             _ => None,
         }
     }
-    kind::of(&rewrite(e, &filtered), field).ok().flatten()
+    let first = |p: &[FieldName]| field(p.first()?).map(|k| (k, 1));
+    kind::of(&rewrite(e, &filtered), &first).ok().flatten()
 }
 
 #[cfg(test)]

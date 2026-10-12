@@ -1,8 +1,9 @@
 //! A reference a record computes is judged as one its writer sends
 //! (`docs/decisions/032-a-reference-names-a-live-record.md`).
 
+use lakelands_api::error::Missing;
 use lakelands_api::write::{Declaration, Outcome, ProposedWrite, WriteOpts};
-use lakelands_api::{Error, Principal, Refusal};
+use lakelands_api::{Error, Principal, ProposalId, Refusal};
 use serde_json::{Value, json};
 
 use super::only::holder;
@@ -14,7 +15,7 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     COMPUTED_REFERENCE = a_reference_a_record_computes_is_judged_as_one_its_writer_sends,
-    "032 (lakelands#795): a reference field computed at the write, by an expression or an `expr` function, names a live record its writer is answered, as a written one does: for a record that is absent, retired, held or not admitted by the writer's `only`, a writer of everything, one without `restricted` and a holder of `only` are each answered what the same key written into a reference field answers, applied or refused as `not_live`, by an upsert; a verb's call, an ingest and a link to an absent key are refused as their written twins are; a writer who may not read the reference, masked or not shown it, is refused as not granted, a held key as one never there, and the key the record holds, guessed, as any other; a reference its write neither moves nor sends a field of is not judged again, and one whose field is sent again with the value it had, read directly or through another computed field, is judged as a key sent again, as is one of a record retired and written again, which has held nothing; a written reference is computed from nothing, whatever it lists; a proposal is judged at its accept by the function as declared then, while a function declared again computes every record's reference again unjudged, and a write that sends none of its fields is applied; a reviewer without `restricted` does not decide a proposed write or call whose computed reference, from an initial value too or from a field sent again, reaches a held record; a reference computed at the read, by a function's backing or from a field a backing computes or, through another computed field, one an embedding computes, is refused by `declare`, `apply` and `propose`, and a function declared again with a backing is refused while a reference calls it or reads a field that does, or a field computed at the read calls it, whatever else its type's fields say"
+    "032 (lakelands#795): a reference field computed at the write, by an expression or an `expr` function, names a live record its writer is answered, as a written one does: for a record that is absent, retired, held or not admitted by the writer's `only`, a writer of everything, one without `restricted` and a holder of `only` are each answered what the same key written into a reference field answers, applied or refused as `not_live`, by an upsert; a verb's call, an ingest and a link to an absent key are refused as their written twins are; a writer who may not read the reference, masked or not shown it, is refused as not granted, a held key as one never there, and the key the record holds, guessed, as any other; a reference its write neither moves nor sends a field of is not judged again, and one whose field is sent again with the value it had, read directly or through another computed field, is judged as a key sent again, as is one of a record retired and written again, which has held nothing; a written reference is computed from nothing, whatever it lists; a proposal is judged at its accept by the function as declared then, while a function declared again computes every record's reference again unjudged, and a write that sends none of its fields is applied; to a reviewer without `restricted` a proposed write or call whose computed reference, from an initial value too or from a field sent again, reaches a held record is not there, its accept answered as an id no proposal holds; a reference computed at the read, by a function's backing or from a field a backing computes or, through another computed field, one an embedding computes, is refused by `declare`, `apply` and `propose`, and a function declared again with a backing is refused while a reference calls it or reads a field that does, or a field computed at the read calls it, whatever else its type's fields say"
 );
 
 /// A record of `p` in each state a reference may find it in, and whether
@@ -282,8 +283,9 @@ async fn a_reference_a_record_computes_is_judged_as_one_its_writer_sends(store: 
             }
         }
     }
-    // A reviewer without `restricted` does not decide a proposal whose
-    // computed reference reaches a held record, as with a written one.
+    // To a reviewer without `restricted` a proposal whose computed
+    // reference reaches a held record is not there, as with a written one:
+    // its accept is answered as an id no proposal holds.
     let rv = holder(s, "rv", json!({"default": "write", "review": true}));
     let onto = |ty: &str, key: &str, fields: Value| ProposedWrite::Upsert {
         ty: ty.into(),
@@ -304,7 +306,13 @@ async fn a_reference_a_record_computes_is_judged_as_one_its_writer_sends(store: 
     let live = c.accept(&rv, &live).await;
     live.must("the reviewer accepting `dr` to a live record")?;
     let written = proposed(&l.own, onto("dw", "y1", json!({"r": "held"}))).await?;
-    let written = c.accept(&rv, &written).await;
+    let written = (c.accept(&rv, &written).await, written);
+    let gone = |a: &lakelands_api::Result<Outcome>, id: &ProposalId| matches!(a, Err(Error::NotFound { missing: Missing::Proposal { id: i } }) if i == id);
+    ensure!(
+        gone(&written.0, &written.1),
+        "a proposal writing a reference to `held` is not there to `rv`; {:?}",
+        written.0
+    );
     let held = json!({"s": "held"});
     for (ty, fields) in [
         ("dr", held.clone()),
@@ -312,11 +320,11 @@ async fn a_reference_a_record_computes_is_judged_as_one_its_writer_sends(store: 
         ("ir", json!({"note": "n"})),
     ] {
         let id = proposed(&l.own, onto(ty, "y1", fields)).await?;
-        let what = format!("a reviewer without `restricted` accepting `{ty}` to `held`");
-        match (c.accept(&rv, &id).await, &written) {
-            (Err(a), Err(b)) => alike_renamed(&what, &a, b, ("", ""))?,
-            (a, b) => return Err(Failure::new(format!("{what}: {a:?}; written: {b:?}"))),
-        }
+        let a = c.accept(&rv, &id).await;
+        ensure!(
+            gone(&a, &id),
+            "a reviewer without `restricted` accepting `{ty}` to `held`: {a:?}"
+        );
     }
     // A written reference is computed from nothing, whatever it lists.
     let listed = try_upsert(c, w, "kr", "z1", json!({"x": "b"})).await;
@@ -357,16 +365,11 @@ async fn a_reference_a_record_computes_is_judged_as_one_its_writer_sends(store: 
         opts: WriteOpts::default(),
     };
     let id = proposed(&l.own, call).await?;
-    match (c.accept(&rv, &id).await, &written) {
-        (Err(a), Err(b)) => {
-            alike_renamed("the reviewer accepting a call to `held`", &a, b, ("", ""))?
-        }
-        (a, b) => {
-            return Err(Failure::new(format!(
-                "a call to `held`: {a:?}; written: {b:?}"
-            )));
-        }
-    }
+    let a = c.accept(&rv, &id).await;
+    ensure!(
+        gone(&a, &id),
+        "the reviewer accepting a call to `held`: {a:?}"
+    );
     let call = ProposedWrite::Call {
         verb: "keep".into(),
         key: Some("y0".into()),
@@ -378,23 +381,15 @@ async fn a_reference_a_record_computes_is_judged_as_one_its_writer_sends(store: 
         .await
         .must("the reviewer accepting a call to `live`")?;
     // A proposal that sends again the field of a reference to a held record
-    // reaches it: not the reviewer's without `restricted`, and applied for
+    // reaches it: not there to the reviewer without `restricted`, and applied for
     // one who holds it.
     l.upsert("dr", "h1", json!({"s": "held"})).await?;
     let id = proposed(&l.own, onto("dr", "h1", json!({"s": "held"}))).await?;
-    match (c.accept(&rv, &id).await, &written) {
-        (Err(a), Err(b)) => alike_renamed(
-            "the reviewer accepting `dr` `h1`, sent `held` again",
-            &a,
-            b,
-            ("", ""),
-        )?,
-        (a, b) => {
-            return Err(Failure::new(format!(
-                "`dr` `h1`, sent `held` again: {a:?}; written: {b:?}"
-            )));
-        }
-    }
+    let a = c.accept(&rv, &id).await;
+    ensure!(
+        gone(&a, &id),
+        "the reviewer accepting `dr` `h1`, sent `held` again: {a:?}"
+    );
     let all = json!({"default": "write", "review": true, "restricted": true});
     let accepted = c.accept(&holder(s, "ra", all), &id).await;
     accepted.must("a reviewer with `restricted` accepting `dr` `h1`, sent `held` again")?;

@@ -214,15 +214,17 @@ a set declared with it would have no member, a trigger would never fire
 and a read would answer nothing, each with nothing said.
 
 A path of more than one name is a walk into a `json` or `geo` value's
-members. Into a field of any other kind it is refused as `invalid`,
-where what can never be evaluated is refused: at the declaration of a
-set, a trigger, a verb and a derived field, and at a read, once the
-reader is known to read the field. The refusal of a step through a
-reference says what to write: a condition reads the record's own fields;
-compare the reference's key, or walk to the record it names in a
-pattern. Reading through a reference in a condition is not built
-(lakelands#567). A declaration in force that holds such a path stays in
-force until it is declared again.
+members, and in a verb's `requires` and set values also a step through
+a reference to the record it names
+(`docs/decisions/055-a-path-steps-through-a-reference.md`). Into a
+field of any other kind it is refused as `invalid`, where what can never
+be evaluated is refused: at the declaration of a set, a trigger, a verb
+and a derived field, and at a read, once the reader is known to read the
+field. Elsewhere the refusal of a step through a reference says what to
+write: a condition reads the record's own fields; compare the
+reference's key, or walk to the record it names in a pattern. A
+declaration in force that holds such a path stays in force until it is
+declared again.
 
 ### A valid time is a `date_time` or a `date` field
 
@@ -343,3 +345,6 @@ rather than one error at a time.
   the order of the value, over a view's records and a stored type's
   alike. They are refused, as an order of them by `latest` is
   (lakelands#901).
+- A verb's `requires` and set values step through a reference to the
+  record it names, where a step through a reference was refused at
+  every declaration (lakelands#567).

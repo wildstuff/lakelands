@@ -51,6 +51,7 @@ mod migrate;
 mod only;
 mod only_proposals;
 mod paging;
+mod paths;
 mod positions;
 mod proposal_names;
 mod proposals;
@@ -124,6 +125,11 @@ pub const ALL: &[Check] = &[
     paging::UNNAMED_LIMIT,
     paging::EACH_HOLDER_ONCE,
     landing::MEASURE_LANDS,
+    paths::PATH_STEPS,
+    paths::PATH_NOT_REACHED,
+    paths::PATH_READ_AS_A_FILTER,
+    paths::PATH_LINK_ENDS,
+    paths::PATH_PROPOSED,
     latest::LATEST_ORDER,
     decimals::AS_WRITTEN,
     decimals::EXACT_SUM,

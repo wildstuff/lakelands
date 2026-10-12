@@ -104,8 +104,11 @@ that pushes filters down into its own query language, complete.
 
 ## What it is not
 
-- It is not a query language. It has no joins, no subqueries and no
-  statements; walking relations is the pattern query's job (018).
+- It is not a query language. It has no subqueries and no statements,
+  and no join: where a path steps through a reference it reads the one
+  record the reference names
+  (`docs/decisions/055-a-path-steps-through-a-reference.md`); walking
+  relations is the pattern query's job (018).
 - It is not extensible by a bundle. A new function is a contract change.
 - The text form is not a second language beside the typed form. Both
   are the same expressions.
@@ -131,3 +134,6 @@ that pushes filters down into its own query language, complete.
 - Corrected at the rewrite (lakelands#817): "`now()` and `today()` are
   the fold's clock in a derived field" was said of every derived field;
   052 computes one at the read, with the read's clock.
+- A path may step through a reference to the one record it names, in a
+  verb's `requires` and set values; "no joins" became "no join", the
+  step reading one record (lakelands#567).

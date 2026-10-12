@@ -1988,7 +1988,8 @@ impl<'a> Reader<'a> {
                 continue;
             }
             if let Some(logged) = p.write.take() {
-                let Some(shown) = self.entry(asked, &logged, p.position, &lake) else {
+                let Some(shown) = self.entry(asked, &logged, (p.position, p.proposed_at), &lake)
+                else {
                     continue;
                 };
                 (p.write, p.more) = shown;
@@ -2033,7 +2034,7 @@ impl<'a> Reader<'a> {
         &self,
         asked: &Principal,
         logged: &ProposedWrite,
-        at: Position,
+        (at, proposed_at): (Position, Timestamp),
         lake: &OnceCell<LakeDescription>,
     ) -> Option<(Option<ProposedWrite>, bool)> {
         let (o, mut logged) = (&self.shape.ontology, logged.clone());
@@ -2123,7 +2124,8 @@ impl<'a> Reader<'a> {
             for (sees, o) in [force, then].into_iter().flatten() {
                 let Ok(v) = o.verb(verb) else { continue };
                 let on = o.ty(&v.on);
-                if on.is_ok_and(|on| !rights::reads_what_verb_reads(sees.who(), on, v)) {
+                let far = |n: &TypeName| o.ty(n).ok();
+                if on.is_ok_and(|on| !rights::reads_what_verb_reads(sees.who(), on, v, &far)) {
                     return None;
                 }
                 named.push(v.on.clone());
@@ -2135,6 +2137,32 @@ impl<'a> Reader<'a> {
         };
         if [force, left, then].into_iter().flatten().any(hides) {
             return None;
+        }
+        // Nor is one that names a record its reader is not answered beside
+        // its own, by a reference or read across by a call, as it names it
+        // now or named it when proposed: a condition or a reference a
+        // setting, the clock or the record decide may come to a record at
+        // one and not at the other. It would tell of that record, and its
+        // accept is not granted (006).
+        let (g, view) = (&self.who.grants, self.view.as_ref());
+        if !g.restricted || rights::holds_only(self.who) {
+            let settings = crate::lake::settings_in(view, o).ok()?;
+            let now = (view, &settings, crate::lake::wall_clock());
+            let mut named = crate::writes::reached(self.lake, o, now, &logged, false).ok()?;
+            let since = self.shape.declared.iter().any(|d| d.since > at);
+            if since || crate::writes::reaches_by_state(o, &logged) {
+                let then = self.lake.engine.view(Some(at)).ok()?;
+                let lake = self.lake;
+                let was =
+                    crate::writes::reached_then(lake, then.as_ref(), proposed_at, &logged, false);
+                named.extend(was.ok()?);
+            }
+            let held = |(t, k): &(TypeName, RecordKey)| {
+                view.get(t, k).ok().flatten().is_some() && !answered(view, self.sight, t, k)
+            };
+            if named.iter().any(held) {
+                return None;
+            }
         }
         // `more` is what the trim left out, not what the completion added.
         let mut shown = logged.clone();

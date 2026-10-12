@@ -964,7 +964,12 @@ verb that requires `secret = 'x'` runs on one record and is refused
 `requires_unmet` on another, and a verb that sets `copy := secret`
 copies the value to a field its caller reads. So a verb is callable, and
 described, only to a caller who may read every field its `requires` and
-its set values read, each judged as a filter on that field is.
+its set values read, each judged as a filter on that field is. A field
+read across a reference counts with every reference on the way and the
+types they name: a verb whose path reads `customer.discount_days` is its
+caller's only where the caller may read `customer`, is shown the
+customer's type and may read `discount_days` there
+(`docs/decisions/055-a-path-steps-through-a-reference.md`).
 `payload.<name>` reads the call's payload, which is the caller's own. To
 any other caller the verb answers `not_granted`, as one whose fields it
 may not write does, before the record is read, and `describe` names it
@@ -1813,7 +1818,8 @@ record that does not exist.
   of a pinned proposal is refused as invalid, the proposal left pending,
   once the record at its key has an event after the proposal's position,
   live or retired, or, for a link, either end record has one (a link is
-  its holder's by its ends, and a change to an end moves no link), or
+  its holder's by its ends, and a change to an end moves no link), or,
+  for a call, a record it reads across a reference has one (055), or
   the type was declared or migrated since, a re-key included: a rederive
   and a backed output move the record without a write, and a record made
   again at the key starts its versions anew, so the position, not the
@@ -2078,12 +2084,20 @@ hidden.
 What a proposed write reaches is the record it writes, a link's two end
 records, and the records its references name: an upsert's, those its
 record computes (032), and a call's as its assignments compute them for
-the record at the accept, whatever form they take; and the two end
-records of each link among them. A reviewer without `restricted` is
-refused, as not granted, the accept of a write that reaches a held
-record, and its reject as its accept: where a write reaches a held
-record a reject that passed beside a refused accept would tell its
-reviewer that it does. The
+the record at the accept, whatever form they take, with the records its
+`requires` and set values read across a reference (055), as when it was
+proposed and as at the accept; and the two end records of each link
+among them. A reviewer without `restricted` is refused, as not granted,
+the accept of a write whose own record or ends are held, and its reject
+as its accept: a reject that passed beside a refused accept would tell
+its reviewer that the write reaches a held record. A proposal that names
+a record its reviewer is not answered beside its own (a reference its
+upsert sends or computes, a record its call reads across, and their ends
+where one is a link) is not there to that reviewer, held when it was
+proposed or since: not listed, its accept and reject answered as an id
+no proposal holds, as one whose verb reads a field its reviewer may not
+read is. This is asked of a reviewer without `restricted` and of one
+holding `only`, by the one function that computes the reach. The
 accept judges a proposer as a holder where its write reached one when
 proposed, computed wholly as it stood then (the declarations, its
 record, the settings in force and the proposal's time): a record held, a
@@ -2567,3 +2581,9 @@ Of `only`:
   fields listing each other, one masked and one its reader writes, the
   first was shown masked and is hidden now; no answer is wider
   (lakelands#926).
+- A verb is its caller's only where it reads every field its paths read
+  across a reference; what a proposed call reaches and pins gains the
+  records it reads across; and a proposal that names a record its
+  reviewer is not answered beside its own is not there to that
+  reviewer, where it was listed and its accept refused as not granted
+  (lakelands#567, lakelands#929).

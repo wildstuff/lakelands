@@ -322,6 +322,14 @@ pub fn children(e: &Expr) -> impl Iterator<Item = &Expr> {
     pair.into_iter().flatten().chain(list)
 }
 
+/// Every path in `e`, left to right.
+pub fn paths<'e>(e: &'e Expr, out: &mut Vec<&'e [FieldName]>) {
+    if let Expr::Path { path } = e {
+        out.push(path);
+    }
+    children(e).for_each(|c| paths(c, out));
+}
+
 impl Expr {
     /// Whether it calls one of `funcs`, anywhere in it.
     pub fn calls(&self, funcs: &[Func]) -> bool {
@@ -342,20 +350,6 @@ impl Expr {
         };
         (here.into_iter())
             .chain(children(self).flat_map(Expr::fields_read))
-            .collect()
-    }
-
-    /// The record's fields a verb's value reads: as [`Expr::fields_read`],
-    /// but for `payload.<name>`, which reads the call's payload.
-    pub fn record_fields_read(&self) -> std::collections::BTreeSet<&FieldName> {
-        let here = match self {
-            Expr::Path { path } if !matches!(&path[..], [p, _] if p.as_str() == "payload") => {
-                path.first()
-            }
-            _ => None,
-        };
-        (here.into_iter())
-            .chain(children(self).flat_map(Expr::record_fields_read))
             .collect()
     }
 

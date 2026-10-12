@@ -34,6 +34,7 @@
 //! refused whole on that field. Retiring a record that others refer to
 //! stays allowed.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -43,8 +44,8 @@ use lakelands_api::error::{
 };
 use lakelands_api::event::{Digest, Event, EventBody, EventId, Procedure};
 use lakelands_api::ontology::{
-    Authority, FieldDecl, RelationDecl, Risk, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl,
-    VerbEffect,
+    Assignment, Authority, FieldDecl, RelationDecl, Risk, TriggerDecl, TypeDecl, ValueTypeDecl,
+    VerbDecl, VerbEffect,
 };
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::{Origin, StoredRecord};
@@ -795,20 +796,7 @@ fn check_references(
         if target == ty && to == *key {
             continue;
         }
-        // A record a holder of `only` is not admitted, or one restricted, is
-        // to it not there; under an `only` that cannot be applied, none is
-        // (lakelands#771).
-        let held = ontology.ty(target).ok();
-        let found = pending.record(view, target, &to)?;
-        let sees = Sight::held(who, ontology);
-        let mut exists = (found.as_ref())
-            .is_some_and(|r| !r.retired && held.is_some() && sees.answers(target, r));
-        // A link record is there only with its ends, as a read of it
-        // answers (006, 051; lakelands#871).
-        if let (true, Some(d), Some(r)) = (exists, held, &found) {
-            exists = ends(view, pending, &sees, d, &r.fields)?;
-        }
-        if !exists {
+        if live_for(view, pending, ontology, target, &to, who)?.is_none() {
             let (field, ty, key) = (name.clone(), target.clone(), to);
             return Err(constraint(
                 Some(name.clone()),
@@ -817,6 +805,32 @@ fn check_references(
         }
     }
     Ok(())
+}
+
+/// The live record of `target` at `to` that `who` is answered, as the
+/// drafts so far leave it: what a reference may name (032).
+fn live_for(
+    view: &dyn ProjectionView,
+    pending: &Pending,
+    ontology: &Ontology,
+    target: &TypeName,
+    to: &RecordKey,
+    who: &Principal,
+) -> Result<Option<StoredRecord>> {
+    // A record a holder of `only` is not admitted, or one restricted, is
+    // to it not there; under an `only` that cannot be applied, none is
+    // (lakelands#771).
+    let held = ontology.ty(target).ok();
+    let found = pending.record(view, target, to)?;
+    let sees = Sight::held(who, ontology);
+    let mut exists =
+        (found.as_ref()).is_some_and(|r| !r.retired && held.is_some() && sees.answers(target, r));
+    // A link record is there only with its ends, as a read of it
+    // answers (006, 051; lakelands#871).
+    if let (true, Some(d), Some(r)) = (exists, held, &found) {
+        exists = ends(view, pending, &sees, d, &r.fields)?;
+    }
+    Ok(found.filter(|_| exists))
 }
 
 /// The references a record as planned is judged for: each field with a
@@ -984,19 +998,85 @@ fn held_then(
     // time. A record held, a field retyped, a setting changed since is no
     // proof of the grant.
     let then = lake.engine.view(Some(p.position))?;
-    let ontology = Ontology::at(then.as_ref())?;
-    let settings = crate::lake::settings_in(then.as_ref(), &ontology)?;
-    for (ty, key) in reached(
-        lake,
-        &ontology,
-        (then.as_ref(), &settings, p.proposed_at),
-        write,
-    )? {
+    for (ty, key) in reached_then(lake, then.as_ref(), p.proposed_at, write, true)? {
         if then.get(&ty, &key)?.is_some_and(|r| r.restricted) {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+/// Whether a type computes a reference field, at the write or by a
+/// function.
+fn computes_a_reference(t: &TypeDecl) -> bool {
+    let computes = |f: &FieldDecl| f.derived.is_some() || f.function.is_some();
+    t.fields
+        .iter()
+        .any(|f| f.ty.target.is_some() && computes(f))
+}
+
+/// Whether what `write` reaches beside its own record ([`reached`]) can
+/// turn on more than the declarations in `o`: on its record, the settings
+/// or the clock, through a reference its type computes or, of a call, a
+/// path across a reference or a reference it assigns. Where it cannot, and
+/// no declaration moved since, it reached when proposed what it reaches now.
+pub(crate) fn reaches_by_state(o: &Ontology, write: &ProposedWrite) -> bool {
+    let call = |verb: &VerbName| {
+        let (Ok(v), Ok(t)) = (o.verb(verb), o.verb(verb).and_then(|v| o.ty(&v.on))) else {
+            return true;
+        };
+        let across = v.reads_across(t, &|n| o.ty(n).ok());
+        let reference = |a: &Assignment| {
+            t.fields
+                .iter()
+                .any(|f| f.name == a.field && f.ty.target.is_some())
+        };
+        let sets = match &v.effect {
+            VerbEffect::Write { set } => set.iter().any(reference),
+            VerbEffect::External { .. } => false,
+        };
+        computes_a_reference(t) || across.is_none_or(|a| !a.is_empty()) || sets
+    };
+    match write {
+        ProposedWrite::Upsert { ty, .. } => o.ty(ty).map_or(true, computes_a_reference),
+        ProposedWrite::Call { verb, .. } => call(verb),
+        _ => false,
+    }
+}
+
+/// What a proposed write reached when it was proposed at `proposed_at`
+/// ([`reached`]), `then` being the lake at the proposal: computed wholly
+/// as it stood then, the declarations, the settings in force and the time.
+pub(crate) fn reached_then(
+    lake: &Lake,
+    then: &dyn ProjectionView,
+    proposed_at: Timestamp,
+    write: &ProposedWrite,
+    own: bool,
+) -> Result<Vec<(TypeName, RecordKey)>> {
+    let ontology = Ontology::at(then)?;
+    let settings = crate::lake::settings_in(then, &ontology)?;
+    reached(lake, &ontology, (then, &settings, proposed_at), write, own)
+}
+
+/// The records the call of `verb` proposed by `logged` read across a
+/// reference when it was proposed, computed wholly as it stood then, as
+/// [`held_then`] computes its reach.
+fn read_then(
+    lake: &Lake,
+    logged: &Event,
+    verb: &VerbName,
+    key: Option<&RecordKey>,
+    payload: &Patch,
+) -> Result<Vec<(TypeName, RecordKey)>> {
+    let then = lake.engine.view(Some(logged.position))?;
+    let ontology = Ontology::at(then.as_ref())?;
+    let Ok(v) = ontology.verb(verb) else {
+        return Ok(Vec::new());
+    };
+    let settings = crate::lake::settings_in(then.as_ref(), &ontology)?;
+    let at = (then.as_ref(), &settings, logged.known_at);
+    Ok(call_reads(&ontology, at, v, key, payload)?.1)
 }
 
 /// The record of `ty` at `key` and, where it is a link, its end records,
@@ -1024,14 +1104,18 @@ fn with_ends(o: &Ontology, ty: &TypeName, key: &RecordKey) -> Vec<(TypeName, Rec
 /// The records a proposed write reaches: the record it writes, those its
 /// references name, an upsert's or what a call's assignments compute for
 /// the record in `view` with these settings at `now`, those the record
-/// as planned computes anew or from a field the write sends, and the end
-/// records of each link among them ([`with_ends`]).
-fn reached(
+/// as planned computes anew or from a field the write sends, those a call
+/// reads across a reference ([`call_reads`]), and the end records of each
+/// link among them ([`with_ends`]); without the record it writes and its
+/// ends where `own` is false.
+pub(crate) fn reached(
     lake: &Lake,
     o: &Ontology,
     (view, settings, now): (&dyn ProjectionView, &BTreeMap<String, Value>, Timestamp),
     write: &ProposedWrite,
+    own: bool,
 ) -> Result<Vec<(TypeName, RecordKey)>> {
+    let mut across = Vec::new();
     let (ty, key, mut refs) = match write {
         ProposedWrite::Upsert { ty, key, patch, .. } => (ty, Some(key), patch.clone()),
         ProposedWrite::Retire { ty, key, .. } => (ty, Some(key), Patch::new()),
@@ -1041,22 +1125,14 @@ fn reached(
             let Ok(v) = o.verb(verb) else {
                 return Ok(Vec::new());
             };
-            // What it would write, whatever form an assignment takes; one
-            // that cannot be computed refuses the accept by itself.
-            let record = key
-                .as_ref()
-                .map(|k| view.get(&v.on, k))
-                .transpose()?
-                .flatten();
-            let set = record.and_then(|r| assigned(o, settings, v, &r, payload, now).ok());
-            (&v.on, key.as_ref(), set.unwrap_or_default())
+            let (set, far) = call_reads(o, (view, settings, now), v, key.as_ref(), payload)?;
+            across = far;
+            (&v.on, key.as_ref(), set)
         }
         _ => return Ok(Vec::new()),
     };
     let decl = o.ty(ty)?;
-    let computes =
-        |f: &FieldDecl| f.ty.target.is_some() && (f.derived.is_some() || f.function.is_some());
-    if let (false, Some(key), true) = (refs.is_empty(), key, decl.fields.iter().any(computes)) {
+    if let (false, Some(key), true) = (refs.is_empty(), key, computes_a_reference(decl)) {
         // The record as planned is the fold's: what it would make of this
         // write, an initial value and a field waiting for its backing too.
         let before = view.get(ty, key)?;
@@ -1079,12 +1155,42 @@ fn reached(
             refs.extend(computed_references(decl, was, &after.fields, &sent));
         }
     }
-    let mut out: Vec<_> = key.map(|k| (ty.clone(), k.clone())).into_iter().collect();
+    let mut out: Vec<_> = key
+        .filter(|_| own)
+        .map(|k| (ty.clone(), k.clone()))
+        .into_iter()
+        .collect();
     out.extend(refs.iter().filter_map(|(n, v)| {
         let f = decl.fields.iter().find(|f| &f.name == n)?;
         Some((f.ty.target.clone()?, RecordKey::from(v.as_str()?)))
     }));
+    out.extend(across);
     Ok(out.iter().flat_map(|(t, k)| with_ends(o, t, k)).collect())
+}
+
+/// What a call of the verb `v` with `payload` would write to the record at
+/// `key` in `view`, with these settings at `now`, whatever form an
+/// assignment takes (one that cannot be computed refuses the accept by
+/// itself); and the records its `requires` and its values read across a
+/// reference there, whoever holds them.
+fn call_reads(
+    o: &Ontology,
+    (view, settings, now): (&dyn ProjectionView, &BTreeMap<String, Value>, Timestamp),
+    v: &VerbDecl,
+    key: Option<&RecordKey>,
+    payload: &Patch,
+) -> Result<(Patch, Vec<(TypeName, RecordKey)>)> {
+    let far = |ty: &TypeName, k: &RecordKey| view.get(ty, k);
+    let across = Across::new(o, o.ty(&v.on)?, &far, u32::MAX);
+    let mut set = None;
+    if let Some(k) = key
+        && let Some(r) = view.get(&v.on, k)?
+    {
+        let _ = requires(settings, v, k, &r, now, &across);
+        set = assigned(o, settings, v, &r, payload, (now, &across)).ok();
+    }
+    let read = across.read.borrow().keys().cloned().collect();
+    Ok((set.unwrap_or_default(), read))
 }
 
 /// Whether a migration changes nothing: its `to` is the type in force and
@@ -1119,13 +1225,16 @@ pub(crate) fn position_after(w: &Writer, n: usize) -> Position {
     Position(first.0 + n as u64)
 }
 
-/// Refuse a verb whose `requires` does not hold on `record`.
+/// Refuse a verb whose `requires` does not hold on `record`, and before
+/// that one whose `requires` reads across a reference that reaches no
+/// record (`across`).
 fn requires(
-    w: &Writer,
+    settings: &BTreeMap<String, Value>,
     verb: &VerbDecl,
     key: &RecordKey,
     record: &StoredRecord,
     now: Timestamp,
+    across: &Across<'_>,
 ) -> Result<()> {
     let Some(r) = &verb.requires else {
         return Ok(());
@@ -1137,13 +1246,21 @@ fn requires(
         Place::Requires,
     ];
     let e = declare::condition(r, Eval::Record, &at)?;
-    let scope = RecordScope {
+    let record = RecordScope {
         fields: &record.fields,
         meta: Some(&record.meta),
-        settings: Some(&w.settings),
+        settings: Some(settings),
         now,
     };
-    if expr::holds(&e, &scope).unwrap_or(false) {
+    let payload = None;
+    let scope = VerbScope {
+        record,
+        payload,
+        across,
+    };
+    let holds = expr::holds(&e, &scope).unwrap_or(false);
+    across.reached()?;
+    if holds {
         return Ok(());
     }
     let (verb, ty, key) = (verb.name.clone(), verb.on.clone(), key.clone());
@@ -1152,14 +1269,15 @@ fn requires(
 }
 
 /// The values a write verb's assignments give `record` for a call with
-/// `payload`, as the call computes them.
+/// `payload`, as the call computes them; one that reads across a
+/// reference that reaches no record is refused as `across` says.
 fn assigned(
     o: &Ontology,
     settings: &BTreeMap<String, Value>,
     verb: &VerbDecl,
     record: &StoredRecord,
     payload: &Patch,
-    now: Timestamp,
+    (now, across): (Timestamp, &Across<'_>),
 ) -> Result<Patch> {
     let VerbEffect::Write { set } = &verb.effect else {
         return Ok(Patch::new());
@@ -1171,6 +1289,12 @@ fn assigned(
         settings: Some(settings),
         now,
     };
+    let payload = Some(payload);
+    let scope = VerbScope {
+        record,
+        payload,
+        across,
+    };
     for a in set {
         let at = [
             Place::Verb {
@@ -1181,7 +1305,9 @@ fn assigned(
             },
         ];
         let e = declare::condition(&a.value, Eval::Record, &at)?;
-        let v = expr::eval(&e, &VerbScope { record, payload }).map_err(|why| {
+        let v = expr::eval(&e, &scope);
+        across.reached()?;
+        let v = v.map_err(|why| {
             let (verb, field, why) = (verb.name.clone(), a.field.clone(), Box::new(why));
             invalid(Case::VerbCannotCompute { verb, field, why })
         })?;
@@ -1202,18 +1328,97 @@ fn assigned(
     Ok(patch)
 }
 
-/// The scope a verb's assignments see: the record's fields and their
-/// provenance, and `payload.<name>` for the call's payload.
+/// The record a reference names, as one reader of it reaches it.
+type Far<'a> = &'a dyn Fn(&TypeName, &RecordKey) -> Result<Option<StoredRecord>>;
+
+/// What a verb's `requires` and values read across a reference: a path
+/// steps through a reference field to the one record it names and reads a
+/// field there ([`TypeDecl::stepped`]), each record read once a call, as
+/// `far` reaches it, and only where the evaluation comes to the path.
+struct Across<'a> {
+    o: &'a Ontology,
+    on: &'a TypeDecl,
+    far: Far<'a>,
+    /// The most steps a path may take: the lake's `max_depth` at a call.
+    max: u32,
+    /// The records read, none where the reference reached none.
+    read: RefCell<BTreeMap<(TypeName, RecordKey), Option<StoredRecord>>>,
+    /// The refusal of the first path that reached no record.
+    refusal: RefCell<Option<Error>>,
+}
+
+impl<'a> Across<'a> {
+    fn new(o: &'a Ontology, on: &'a TypeDecl, far: Far<'a>, max: u32) -> Self {
+        let (read, refusal) = (RefCell::default(), RefCell::default());
+        Across {
+            o,
+            on,
+            far,
+            max,
+            read,
+            refusal,
+        }
+    }
+
+    /// The value at `path` from a record of the verb's type holding
+    /// `fields`. A reference that is null reaches nothing and the path is
+    /// null; one that names a record not reached is noted
+    /// ([`Self::reached`]).
+    fn value(&self, fields: &BTreeMap<FieldName, Value>, path: &[FieldName]) -> Option<Value> {
+        let steps = self.on.stepped(path, &|n| self.o.ty(n).ok());
+        let (max, asked) = (self.max, steps.len().saturating_sub(1) as u32);
+        let refuse = |e: Error| {
+            self.refusal.borrow_mut().get_or_insert(e);
+        };
+        if asked > max {
+            refuse(invalid(Case::StepTooDeep { max, asked }));
+            return None;
+        }
+        let mut at: Option<StoredRecord> = None;
+        for step in steps.windows(2) {
+            let (via, to) = (&step[0].1.name, &step[1].0.name);
+            let held = at.as_ref().map_or(fields, |r| &r.fields);
+            let named = (to.clone(), RecordKey::from(held.get(via)?.as_str()?));
+            let known = self.read.borrow().get(&named).cloned();
+            let far = || (self.far)(to, &named.1).map_err(refuse).ok().flatten();
+            let found = known.unwrap_or_else(far);
+            if found.is_none() {
+                let (field, ty, key) = (via.clone(), to.clone(), named.1.clone());
+                refuse(constraint(
+                    Some(via.clone()),
+                    Case::NotLive { field, ty, key },
+                ));
+            }
+            self.read.borrow_mut().insert(named, found.clone());
+            at = Some(found?);
+        }
+        let rest = &path[steps.len().saturating_sub(1)..];
+        expr::eval::lookup(at.as_ref().map_or(fields, |r| &r.fields), rest)
+    }
+
+    /// Refuse a call that read across a reference to no record: as a
+    /// write that sends that reference is refused (032), whatever else
+    /// the condition would answer.
+    fn reached(&self) -> Result<()> {
+        self.refusal.borrow_mut().take().map_or(Ok(()), Err)
+    }
+}
+
+/// The scope a verb's `requires` and assignments see: the record's fields
+/// and their provenance, what a path reads across a reference, and in an
+/// assignment `payload.<name>` for the call's payload.
 struct VerbScope<'a> {
     record: RecordScope<'a>,
-    payload: &'a Patch,
+    payload: Option<&'a Patch>,
+    across: &'a Across<'a>,
 }
 
 impl Scope for VerbScope<'_> {
     fn value(&self, path: &[FieldName]) -> Option<Value> {
-        match lakelands_core::derive::payload_member(path) {
-            Some(name) => self.payload.get(name).filter(|v| !v.is_null()).cloned(),
-            None => self.record.value(path),
+        let member = lakelands_core::derive::payload_member(path);
+        match self.payload.zip(member) {
+            Some((payload, name)) => payload.get(name).filter(|v| !v.is_null()).cloned(),
+            None => self.across.value(self.record.fields, path),
         }
     }
 
@@ -1730,12 +1935,18 @@ impl Decide<'_> {
         let Some(key) = key else {
             return Ok(plan);
         };
-        let record = self.reached(w.ontology.ty(&verb.on)?, key, expected)?;
-        requires(w, verb, key, &record, now)?;
+        let (o, on) = (&w.ontology, w.ontology.ty(&verb.on)?);
+        let record = self.reached(on, key, expected)?;
+        // A record read across a reference is reached where a write that
+        // sends the reference would be accepted, and by nothing else.
+        let (view, pending, who) = (self.view, &self.pending, self.who);
+        let far = |ty: &TypeName, k: &RecordKey| live_for(view, pending, o, ty, k, who);
+        let across = Across::new(o, on, &far, self.call.lake.limits.max_depth);
+        requires(&w.settings, verb, key, &record, now, &across)?;
+        let patch = assigned(o, &w.settings, verb, &record, payload, (now, &across))?;
         let called_at = self.next;
         self.next = called_at.next();
         if let VerbEffect::Write { .. } = &verb.effect {
-            let patch = assigned(&w.ontology, &w.settings, verb, &record, payload, now)?;
             let version = w.ontology.verbs.get(&verb.name).map_or(1, |e| e.version);
             let procedure = Some(Procedure {
                 name: verb.name.to_string(),
@@ -1909,7 +2120,13 @@ impl Call<'_> {
         scoped(&decl, key, expected)?;
         let on = w.ontology.ty(&decl.on)?;
         granted(Sight::held(self.who, &w.ontology).callable(on, &decl))?;
-        let pinned = (proposed || decl.risk != Risk::Low) && self.pin(w, on, Some(&decl))?;
+        // A call is pinned to the records it reads across a reference too,
+        // where its caller holds `only` on their type.
+        let far = decl.reads_across(on, &|n| w.ontology.ty(n).ok());
+        let mut far = far.iter().flatten();
+        let pinned = (proposed || decl.risk != Risk::Low)
+            && (self.pin(w, on, Some(&decl))?
+                || far.any(|r| rights::only_holder(self.who, r.0, &w.ontology)));
         if let VerbEffect::External { executor } = &decl.effect {
             bound_executor(self.lake, executor)?;
         }
@@ -2130,7 +2347,12 @@ impl Call<'_> {
         let (sight, at) = (Sight::held(self.who, shape.as_ref()), Default::default());
         let read = crate::reads::Reader::open(self.lake, &sight, at, view, shape.clone())?;
         let missing = Missing::Proposal { id: p.id.clone() };
-        let listed = read.entry(asked, write, p.position, &Default::default());
+        let listed = read.entry(
+            asked,
+            write,
+            (p.position, p.proposed_at),
+            &Default::default(),
+        );
         listed.ok_or(Error::NotFound { missing })
     }
 
@@ -2151,7 +2373,8 @@ impl Call<'_> {
         if let Some(write) = p.write.as_ref().filter(|_| !self.who.grants.restricted) {
             let view = self.lake.engine.view(None)?;
             let now = crate::lake::wall_clock().max(w.last_known_at);
-            for (ty, key) in reached(self.lake, o, (view.as_ref(), &w.settings, now), write)? {
+            let at = (view.as_ref(), &w.settings, now);
+            for (ty, key) in reached(self.lake, o, at, write, true)? {
                 granted(!view.get(&ty, &key)?.is_some_and(|r| sees.withheld(&r)))?;
             }
         }
@@ -2174,9 +2397,11 @@ impl Call<'_> {
 
     /// Refuse the accept of a pinned proposal, the one logged at `at`,
     /// once the record it writes or its type changed after it, or, for a
-    /// link, an end record, as deep as its ends go: its proposer was
-    /// judged on them as they stood (051).
-    fn unmoved(&self, o: &Ontology, view: &dyn ProjectionView, at: Position) -> Result<()> {
+    /// link, an end record, as deep as its ends go, or a record its call
+    /// reads across a reference: its proposer was judged on them as they
+    /// stood (051).
+    fn unmoved(&self, w: &Writer, view: &dyn ProjectionView, at: Position) -> Result<()> {
+        let o = &w.ontology;
         let logged = self.lake.read_events(at, 1)?;
         let Some(EventBody::WriteProposed {
             write,
@@ -2186,11 +2411,31 @@ impl Call<'_> {
         else {
             return Ok(());
         };
+        let mut far = Vec::new();
         let (ty, key) = match write {
             ProposedWrite::Upsert { ty, key, .. } | ProposedWrite::Retire { ty, key, .. } => {
                 (ty, Some(key))
             }
-            ProposedWrite::Call { verb, key, .. } => (&o.verb(verb)?.on, key.as_ref()),
+            ProposedWrite::Call {
+                verb, key, payload, ..
+            } => {
+                // The records it read across then and those it reads now: a
+                // condition a setting or the clock decides may come to a
+                // record at one and not at the other.
+                let (v, now) = (
+                    o.verb(verb)?,
+                    crate::lake::wall_clock().max(w.last_known_at),
+                );
+                far = call_reads(o, (view, &w.settings, now), v, key.as_ref(), payload)?.1;
+                far.extend(read_then(
+                    self.lake,
+                    &logged[0],
+                    verb,
+                    key.as_ref(),
+                    payload,
+                )?);
+                (&v.on, key.as_ref())
+            }
             _ => return Ok(()),
         };
         let declared = self.lake.engine.view(Some(at))?.declarations()?;
@@ -2204,7 +2449,8 @@ impl Call<'_> {
         // A link is its holder's by its end records too, and a change to
         // an end moves no link.
         let mut moved = false;
-        for (t, k) in key.iter().flat_map(|k| with_ends(o, ty, k)) {
+        let own = key.iter().map(|k| (ty.clone(), (*k).clone()));
+        for (t, k) in own.chain(far).flat_map(|(t, k)| with_ends(o, &t, &k)) {
             moved = moved || moved_at(&t, &k)?;
         }
         if !moved && then == o.types.get(ty).map(|e| e.version) {
@@ -2244,7 +2490,7 @@ impl Call<'_> {
             return Err(lakelands_core::damaged(Part::Projection, None, flaw));
         };
         granted(!write.is_schema() || self.who.grants.schema)?;
-        self.unmoved(&w.ontology, view.as_ref(), p.position)?;
+        self.unmoved(&w, view.as_ref(), p.position)?;
         let now = self.lake.clock(&mut w);
         // The write was checked under the proposer's grants when it was
         // proposed; it is applied as the proposer, with what was checked.
@@ -3300,7 +3546,7 @@ impl Call<'_> {
         let kept = links.iter().map(|(was, is)| (was, is));
         for (was, is) in std::iter::once((&before, &m.to)).chain(kept) {
             for d in after.declared() {
-                let reads = describe::declaration_reads(&d.declaration, &was.name, &|_| None);
+                let reads = declare::reads_of(&w.ontology, &d.declaration, &was.name);
                 let Some(named) = gone(Some(d.declaration.place()), &reads, was, is) else {
                     continue;
                 };
@@ -3360,6 +3606,36 @@ impl Call<'_> {
         // And the type it migrates to reads only fields it has: `declare`'s
         // check above ends at the reshaping, before it comes to the reads.
         declare::reads_its_type(&after, &Declaration::Type(m.to.clone()))?;
+        // So does every verb on it or on a link type its relations carry, or
+        // reading across into one of them: a path it reads across, a kind
+        // its condition computes with, are judged over the types it leaves
+        // (028, 055). A verb is named to an author `describe` shows it to;
+        // another is told one could not be declared.
+        let o = &w.ontology;
+        let mut moved = vec![m.to.name.clone()];
+        for t in [&before, &m.to] {
+            moved.extend(links::link_types_of(t).into_iter().map(|l| l.name));
+        }
+        let into = |v: &VerbDecl| {
+            let far = o.ty(&v.on).ok();
+            let far = far.and_then(|on| v.reads_across(on, &|n| o.ty(n).ok()));
+            far.is_some_and(|far| far.iter().any(|(t, _)| moved.contains(&t.name)))
+        };
+        // Over the lake as the migration leaves it, its link types with it.
+        let mut linked = after.clone();
+        put_as_appended(&mut linked, &Declaration::Type(m.to.clone()), Some);
+        let judged = (after.verbs.values()).filter(|e| moved.contains(&e.decl.on) || into(&e.decl));
+        for v in judged {
+            let verb = Declaration::Verb(v.decl.clone());
+            let Err(e) = declare::reads_its_type(&linked, &verb) else {
+                continue;
+            };
+            let said = e.case().filter(|_| sees.shows(&verb)).cloned();
+            let ty = m.to.name.clone();
+            return Err(after_it(
+                said.unwrap_or(Case::NoLongerDeclarable { ty }.into()),
+            ));
+        }
         // A record that does not convert is already not lossless; its
         // stored fields still tell whether it has a new key.
         let convert = |decl: &TypeDecl, m: &Migration, r: &StoredRecord| {

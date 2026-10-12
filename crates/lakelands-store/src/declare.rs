@@ -38,8 +38,8 @@ use lakelands_api::error::{Case, Names, Naming, Place, Said};
 use lakelands_api::expr::kind::{self, Kind};
 use lakelands_api::expr::{Condition, Expr, Func};
 use lakelands_api::ontology::{
-    Authority, Derived, FieldDecl, OnInputChange, RelationDecl, StorageKind, TriggerDecl, TypeDecl,
-    ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, lands_in_the_fold,
+    Authority, Derived, FieldDecl, OnInputChange, RelationDecl, StorageKind, TypeDecl,
+    ValueTypeDecl, VerbEffect, VerbScope, ViewDecl, lands_in_the_fold,
 };
 use lakelands_api::tools::{NameProblem, name_problems};
 use lakelands_api::write::{Carrier, Declaration, ObjectSetDecl};
@@ -402,7 +402,21 @@ pub fn filter<'s>(
 /// A failure that depends on one record's value is not known here, and
 /// stays that record's: it does not match, or its value is null.
 pub fn evaluates(e: &Expr, decl: &TypeDecl, on: &[Place]) -> Result<Option<Kind>> {
-    let field = |n: &FieldName| decl.fields.iter().find(|f| &f.name == n).map(|f| f.ty.kind);
+    evaluates_across(&|_| None, e, decl, on)
+}
+
+/// As [`evaluates`], where a path steps through a reference to a type
+/// `far` answers, as a verb's `requires` and values read.
+fn evaluates_across<'d>(
+    far: &dyn Fn(&TypeName) -> Option<&'d TypeDecl>,
+    e: &Expr,
+    decl: &'d TypeDecl,
+    on: &[Place],
+) -> Result<Option<Kind>> {
+    let field = |p: &[FieldName]| {
+        let read = decl.stepped(p, far);
+        read.last().map(|(_, f)| (f.ty.kind, read.len()))
+    };
     kind::of(e, &field).map_err(|why| invalid(at(on, why)))
 }
 
@@ -819,7 +833,8 @@ fn view_kinds(o: &Ontology, owner: &[Place], t: &TypeDecl, v: &ViewDecl) -> Resu
         });
         for (name, on, e) in by.chain(measures) {
             if let Some(f) = field(name) {
-                lands(f, kind::of(&e?, &read).ok().flatten(), &on)?;
+                let first = |p: &[FieldName]| read(p.first()?).map(|k| (k, 1));
+                lands(f, kind::of(&e?, &first).ok().flatten(), &on)?;
             }
         }
     }
@@ -947,6 +962,24 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
         let (field, ty) = (n.clone(), on.name.clone());
         return Err(invalid(at(&[d.place()], Case::ReadsAtRead { field, ty })));
     }
+    // What a verb reads across a reference, the record it reaches has, as
+    // stored; a verb alone reads so.
+    let far = |n: &TypeName| o.ty(n).ok().filter(|_| matches!(d, Declaration::Verb(_)));
+    if let (Some(on), Declaration::Verb(v)) = (on, d) {
+        let wrong = |c| Err(invalid(at(&[d.place()], c)));
+        for path in v.record_paths().unwrap_or_default() {
+            let read = on.stepped(&path, &far);
+            let target = read.last().and_then(|l| l.1.ty.target.as_ref());
+            if let Some((t, field)) = target.and_then(far).zip(path.get(read.len())) {
+                let (ty, field) = (t.name.clone(), field.clone());
+                return wrong(Case::UnknownField { ty, field });
+            }
+            if let Some((t, f)) = read.iter().skip(1).find(|r| r.1.at_read()) {
+                let (field, ty) = (f.name.clone(), t.name.clone());
+                return wrong(Case::ReadsAtRead { field, ty });
+            }
+        }
+    }
     // And each of its conditions can be evaluated over that type's records.
     let conditions: Vec<&Condition> = match d {
         Declaration::Trigger(t) => t.when.iter().collect(),
@@ -965,10 +998,25 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
             Condition::Text(t) => parse(t).ok(),
         };
         if let (Some(on), Some(e)) = (on, typed) {
-            evaluates(&e, on, &[d.place()])?;
+            evaluates_across(&far, &e, on, &[d.place()])?;
         }
     }
     Ok(())
+}
+
+/// The fields of `ty` a declaration reads
+/// ([`lakelands_core::describe::declaration_reads`]), with those a verb
+/// reads of it across a reference.
+pub fn reads_of(o: &Ontology, d: &Declaration, ty: &TypeName) -> BTreeSet<FieldName> {
+    let mut reads = lakelands_core::describe::declaration_reads(d, ty, &|_| None);
+    if let Declaration::Verb(v) = d
+        && let Ok(on) = o.ty(&v.on)
+    {
+        let far = v.reads_across(on, &|n| o.ty(n).ok());
+        let of_ty = far.iter().flatten().filter(|r| &r.0.name == ty);
+        reads.extend(of_ty.map(|r| r.1.name.clone()));
+    }
+    reads
 }
 
 /// Refuse taking to the read a field that a trigger, a verb, an object set
@@ -981,14 +1029,8 @@ fn read_as_stored(o: &Ontology, t: &TypeDecl) -> Result<()> {
     }
     let mut read = BTreeSet::new();
     for d in o.declared().iter().map(|d| &d.declaration) {
-        if let Declaration::Verb(VerbDecl { on, .. })
-        | Declaration::Trigger(TriggerDecl { on, .. })
-        | Declaration::ObjectSet(ObjectSetDecl { of: on, .. }) = d
-            && on == &t.name
-        {
-            read.extend(lakelands_core::describe::declaration_reads(d, on, &|_| {
-                None
-            }));
+        if let Declaration::Verb(_) | Declaration::Trigger(_) | Declaration::ObjectSet(_) = d {
+            read.extend(reads_of(o, d, &t.name));
         }
     }
     let others = o.types.values().filter(|e| e.decl.name != t.name);

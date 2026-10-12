@@ -146,7 +146,7 @@ def canon(event, refuse):
 
 
 # The one format version; `--stamp N` rewrites this line.
-FORMAT = 14
+FORMAT = 15
 ZEROS = "0" * 64
 ONE_FORM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
 
