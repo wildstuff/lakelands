@@ -315,13 +315,14 @@ async fn link(l: &Lake, relation: &str, from: &str, to: &str) -> lakelands_api::
 
 check!(
     RENAME_REFUSED = a_rename_that_would_change_or_lose_edges_is_refused,
-    "035, extended (lakelands#429): a rename is refused as invalid, naming the relation, and nothing is appended, when its first name is no relation of the type or its second none of the new shape, when it changes the relation's link fields, when the same migration re-keys records, when the link type of the new name still holds the links of an earlier relation, and when a reference field or a relation of another type names the link type that would move: that type is named to one `describe` shows it to, and to another only that a declaration refers to it"
+    "035, extended (lakelands#429): a rename is refused as invalid, naming the relation, and nothing is appended, when its first name is no relation of the type or its second none of the new shape, when it changes the relation's link fields, when the same migration re-keys records, when the link type of the new name holds the retired links of an earlier relation, and when a reference field or a relation of another type names the link type that would move: that type is named to one `describe` shows it to, and to another only that a declaration refers to it"
 );
 
 async fn a_rename_that_would_change_or_lose_edges_is_refused(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
-    // An earlier relation `signed_by`, linked, then dropped: its links stay.
+    // An earlier relation `signed_by`, linked, then dropped: its links are
+    // retired and stay as history.
     let mut earlier = dated();
     (earlier.name, earlier.inverse) = ("signed_by".into(), None);
     l.declare(invoice(vec![dated(), earlier])).await?;
@@ -364,7 +365,7 @@ async fn a_rename_that_would_change_or_lose_edges_is_refused(store: Store) -> He
             "rename_while_rekeying",
         ),
         (
-            "a name whose link type holds an earlier relation's links",
+            "a name whose link type holds an earlier relation's retired links",
             renaming().to,
             pair("approved_by", "signed_by"),
             "rename_name_held",
@@ -952,7 +953,7 @@ async fn a_name_two_chains_bear_is_held_by_the_one_that_took_it_last(store: Stor
 
 check!(
     RENAME_ONTO_A_STANDING_TYPE = a_rename_onto_a_standing_link_type_keeps_the_link_fields,
-    "035, extended (lakelands#429): a removed relation's link type stays declared; a relation renamed onto that name, or back onto a name it bore before a link field was added, keeps every link field of its links, a required one too: the standing link type is declared again in the renamed relation's shape, and a rebuilt projection answers the same; a rename onto a name whose standing link type a set reads a field of, which the renamed relation lacks, is refused, naming the set"
+    "035, extended (lakelands#429): a removed relation's link type stays declared, with no live link; a relation renamed onto that name, or back onto a name it bore before a link field was added, keeps every link field of its links, a required one too: the standing link type is declared again in the renamed relation's shape, and a rebuilt projection answers the same; a rename onto a name whose standing link type a set reads a field of, which the renamed relation lacks, is refused, naming the set"
 );
 
 async fn a_rename_onto_a_standing_link_type_keeps_the_link_fields(store: Store) -> Held {

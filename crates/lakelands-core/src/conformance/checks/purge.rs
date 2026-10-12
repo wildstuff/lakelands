@@ -1056,7 +1056,7 @@ async fn a_purge_from_a_type_it_cannot_take_from_is_refused(store: Store) -> Hel
 
 check!(
     CARRIED_LINKS_NAMED = a_purge_from_a_type_names_the_link_types_its_relations_carry,
-    "039 and 044: a purge of a source from one type reads that type and the link types of the relations of it that link records carry; a relation a migration removed and another declared again as derived has no link type, so the link records that stand under its name from before are taken by the preflight and by the purge of the type no more than before it was declared again"
+    "039, 044 and 035: a purge of a source from one type reads that type and the link types of the relations of it that link records carry; the migration that removes such a relation retires its links itself, so the preflight and the purge of the type take none after it, and none once the relation is declared again as derived, which has no link type"
 );
 
 async fn a_purge_from_a_type_names_the_link_types_its_relations_carry(store: Store) -> Held {
@@ -1103,12 +1103,13 @@ async fn a_purge_from_a_type_names_the_link_types_its_relations_carry(store: Sto
     }
     let done = purge_from(store.as_ref(), "bridge", "route").await;
     taken.push(done.must("the purge of `bridge` from `route`")?.retired);
-    let stand = live(&l, lt.as_str(), "r1:p1").await? && live(&l, lt.as_str(), "r2:p2").await?;
+    let stand = live(&l, lt.as_str(), "r1:p1").await? || live(&l, lt.as_str(), "r2:p2").await?;
     ensure!(
-        taken == [2, 0, 0, 0] && stand,
+        taken == [2, 0, 0, 0] && !stand,
         "a purge of `bridge` from `route` must take its two links while `calls_at` is carried \
-         by links, and none once the relation is removed, declared again as derived, and at \
-         the purge; it took {taken:?}, and the links are live: {stand}"
+         by links, and none once the migration that removes the relation has retired them, \
+         once it is declared again as derived, and at the purge; it took {taken:?}, and a \
+         link is live: {stand}"
     );
     Ok(())
 }

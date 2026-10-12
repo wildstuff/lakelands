@@ -494,8 +494,9 @@ A host that already has a store of its own moves in four steps.
   record a re-key moves takes a key of its own; it says nothing of what
   the migration removes); what goes (`dropped`: each removed field with
   the records that hold a value, each removed relation with its live
-  links; the apply discards them, so a host that asks "is anything
-  lost?" sums the counts, `MigrationReport::discards()` in Rust); what
+  links; the apply discards the values and retires the links, each by
+  an event of its own, so a host that asks "is anything lost?" sums
+  the counts, `MigrationReport::discards()` in Rust); what
   moves (`rekeyed`, `references`, `sample_collisions`); a relation's
   rename (`relations`, `carried`, the entry below); and every other
   member `to` states otherwise (`restated`, the entry after it). A
@@ -596,7 +597,9 @@ A host that already has a store of its own moves in four steps.
   fields the old and the new key of every record; for a re-key its moves,
   in the report's id, the event and the fold, and one membership for each
   moved record and set; the ends of the live links of a relation it
-  narrows; a set's members and its changes up to `max_set_changes`.
+  narrows; the live links of a relation it removes, whole, as a purge
+  holds what it retires; a set's members and its changes up to
+  `max_set_changes`.
   PostgreSQL writes a transaction's puts a page of 1 024 at a time inside
   its transaction, so its engine holds a page of them too. At 100 000 records of four small fields, measured under some
   load from other processes (`tests/set_migrated.rs` in the SQLite and
@@ -613,7 +616,12 @@ A host that already has a store of its own moves in four steps.
   and 40 to 55 MB. Before that single read (lakelands#477) each set added a lookup
   for each record: 41 s with one set and 74 to 79 s with three on
   PostgreSQL, 9 to 15 s on SQLite. Bringing the migration's own cost
-  down further is lakelands#480.
+  down further is lakelands#480. A migration that removes a relation
+  retires its live links in the same append, one event each, as a purge
+  retires what it takes, and no limit bounds either: at 100 000 links,
+  measured the same way, the apply holds the writer about 11 s on SQLite
+  and 36 s on PostgreSQL, where the same migration with no link takes 3
+  s and 5.5 s, and a purge of those links 10 s and 39 s.
 - **A value is renamed by its value type's migration (lakelands#553).**
   `migrate_value_type` takes a `ValueTypeMigration`: the new declaration
   and `renames`, old and new text values (a bare declaration converts with

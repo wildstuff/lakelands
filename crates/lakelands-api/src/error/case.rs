@@ -1369,6 +1369,8 @@ catalog! {
         MigrationTakesKey { #[serde(rename = "type")] ty: TypeName } => "the migration takes every key field of `{ty}` away, and leaves no rule to make its records' keys",
         /// A migration that removes a relation a verb is declared on the link type of.
         MigrationTakesLinkType { unnamed: bool, relation: RelationName, #[serde(rename = "type")] ty: TypeName } => "[{?unnamed}a declaration|it] is declared on `{ty}`, the link type of the relation `{relation}`, which the migration removes; declare it on another type first",
+        /// A migration that removes a relation whose link type another relation or a reference field refers to.
+        MigrationTakesTarget { unnamed: bool, relation: RelationName, #[serde(rename = "type")] ty: TypeName } => "[{?unnamed}a declaration|it] refers to `{ty}`, the link type of the relation `{relation}`, which the migration removes; retarget or remove it first",
         /// A migration that takes away a field a declaration reads.
         MigrationTakesRead { unnamed: bool, field: FieldName, #[serde(rename = "type")] ty: TypeName, renamed: Option<FieldName> } => "[{?unnamed}a declaration|it] reads `{field}` of `{ty}`, which the migration [renames to `{renamed}`|drops]",
         /// A migration that would make a stored type a view.
@@ -1407,6 +1409,8 @@ catalog! {
         RenameToUnknown { to: FieldName } => "rename to `{to}`: no such field after the migration",
         /// A relation rename in a migration that re-keys.
         RenameWhileRekeying => "the same migration re-keys records; rename in one migration and re-key in another",
+        /// A relation carried by link records removed by a migration that re-keys records.
+        RemoveWhileRekeying => "the same migration re-keys records; remove the relation in one migration and re-key in another",
         /// A declaration that reshapes stored records.
         Reshapes { #[serde(rename = "type")] ty: TypeName, #[serde(with = "closed::list")] reasons: Vec<Revision> } => "`{ty}` would reshape stored records ({reasons}); that is a migration",
         /// A declaration that reshapes stored links.
