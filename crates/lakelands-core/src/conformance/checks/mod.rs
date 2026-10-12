@@ -72,6 +72,7 @@ mod report_names;
 mod restated;
 mod restriction;
 mod retire;
+mod row_pages;
 mod schema;
 mod schema_proposals;
 mod sealed;
@@ -267,6 +268,8 @@ pub const ALL: &[Check] = &[
     walks::UNDECLARED_RELATION,
     walks::TOO_DEEP,
     walks::WALK_ORDER,
+    row_pages::ROW_PAGES,
+    row_pages::ROWS_READ_WHOLE_BOUNDED,
     walks::INVERSE_STEP,
     walks::PATTERN_SAYS,
     walks::ROW_NAMES,

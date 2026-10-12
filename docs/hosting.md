@@ -576,6 +576,18 @@ A host that already has a store of its own moves in four steps.
   measure's `limit` may go up to the lake's `max_graph_nodes` (100 000
   unless the location sets it), where every other read stops at
   `max_limit`. See `docs/decisions/026-the-store-walks-the-graph.md`.
+- **A pattern's rows cost the starts they walk, not the type.** Rows in
+  the starts' order, or ordered by the start's own stored fields, are
+  walked a page of 256 starts at a time and stop at the page and one row
+  more, and a cursor goes on from the start the page ended in, so a
+  first page, a middle page and an ordered page each cost about a page
+  of starts. A step `where` that keeps few records of the far type is
+  walked from the starts until the page is full, and its last page walks
+  to the end of them to know that nothing follows: a host that filters
+  by the far record starts from the far type, filters there, and walks
+  back (a relation's inverse). Rows ordered by a record a step reaches,
+  and an aggregate over rows, are read whole, at most `max_graph_nodes`
+  rows, and past it refused `too_large`.
 - **A migration of a large type is a step for a quiet moment.** Applying
   one reads, converts and writes again every record of the type under
   the writer; other writes wait. The check before the append and the fold

@@ -50,6 +50,25 @@ always fits that page. An absent `limit` stays the lake's default, so an
 agent that names none is not handed the whole answer. Small pages are
 still answered, at their price; the `query` tool says so.
 
+**A page of rows walks a page of starts** (lakelands#940). Rows are walked
+from a page of 256 starts at a time, each step's hops asked for the
+page together, and a record read once for the walk, a step's `where` and
+its row. With no `order_by`, or one whose every path is a stored field of
+the start's own, the engine hands the starts in that order (041) and the
+rows come in the starts' order, each start's in the walk's (029); the
+walk stops at the page and one row more, so `more` is exact: a cursor
+follows exactly where a row does. The cursor names the last start whose
+rows are all answered, which its reader was answered rows of, and how
+many of the next start's rows are, and the next page reads the starts
+after that one. Any other order, and an aggregate, needs every row: the
+rows are read whole, held as their sort values and records until the
+page is cut, and at most the lake's `max_graph_nodes` of them; past it
+the read is refused `too_large`, naming `order_by` or `project` and the
+way out, never cut, as a measure is. What a reader without `restricted`
+or with `only` is answered does not move: the starts are the records a
+page answers it, and a far record is kept by the walk as before, so a
+page boundary, `more` and a cursor tell nothing of a held start or end.
+
 ## Why
 
 A walk implemented by each engine is a walk that can differ between
@@ -85,3 +104,8 @@ answers identical.
   row that holds its start only where a step arrives at that record.
   Every row binds its start, whatever the `min` of its steps; a start
   is left out only where no match begins at it.
+- A page of rows walks a page of starts and stops (lakelands#940): every
+  page walked every start, bound every row and sorted them before it
+  was cut, about four questions of the engine a start, 19 s for a first
+  page of 50 over 10 000 starts on PostgreSQL. Rows read whole for an
+  order over a far record or an aggregate gained the bound of a measure.
