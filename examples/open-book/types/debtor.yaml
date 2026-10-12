@@ -1,0 +1,15 @@
+name: debtor
+label: Debtor
+description: Open receivables by partner, summed from its open outbound invoices in euros.
+key: partner
+fields:
+  partner: text
+  open_receivables: money
+  open_invoices: number
+view:
+  source: invoice
+  where: "direction = 'outbound' and status = 'open' and coalesce(currency, 'EUR') = 'EUR'"
+  group_by: partner
+  measures:
+    open_receivables: "sum(amount)"
+    open_invoices: "count()"

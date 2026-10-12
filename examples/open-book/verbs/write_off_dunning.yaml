@@ -1,0 +1,7 @@
+name: write_off_dunning
+on: dunning
+risk: high
+description: "Stop chasing. The claim stays in the book; this records that the business gave up on it."
+requires: "status = 'open' or status = 'sent'"
+set:
+  status: "'written_off'"

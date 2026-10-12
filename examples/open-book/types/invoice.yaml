@@ -1,0 +1,29 @@
+name: invoice
+label: Invoice
+description: >-
+  A receivable (outbound: a debtor owes it to us) or a payable (inbound: we
+  owe it to a creditor), as the accounting export states it.
+key: invoice_id
+valid_from: issued_on
+fields:
+  invoice_id: { type: text, required: true, authority: source, searchable: true }
+  direction: { type: direction, required: true, authority: source }
+  partner: { type: reference(partner), required: true, authority: source }
+  issued_on: { type: date, required: true, authority: source }
+  due_on: { type: date, required: true, authority: source }
+  paid_on: { type: date, authority: source }
+  amount: { type: money, required: true, authority: source }
+  currency: { type: text, authority: source }
+  status: { type: invoice_status, required: true, authority: source }
+  days_overdue:
+    type: number
+    authority: derived
+    derived: "floor((today() - due_on) / 1d)"
+    computed_at: read
+    description: Days past the due date at the read (negative while it is not due yet).
+relations:
+  billed_to:
+    target: partner
+    cardinality: many_to_one
+    via: partner
+    inverse: invoices

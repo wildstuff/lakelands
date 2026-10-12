@@ -1,0 +1,33 @@
+name: dunning
+label: Dunning notice
+description: >-
+  One reminder chasing one overdue outbound invoice. Each level (1 a
+  friendly reminder, 2 a formal notice, 3 a final demand) is its own
+  record, so the chase reads as a history. Written by the business: no
+  export holds it. Raised by an upsert whose key the host mints.
+key: id
+fields:
+  id: { type: text, required: true }
+  invoice: { type: reference(invoice), required: true }
+  partner: reference(partner)
+  level: { type: number, required: true }
+  sent_on: date
+  amount: money
+  status: { type: dunning_status, required: true }
+  heading:
+    type: text
+    authority: derived
+    derived: "concat(if(level = 1, 'Friendly reminder', if(level = 2, 'Formal notice', 'Final demand')), ': invoice ', invoice)"
+    depends_on: [level, invoice]
+    description: The notice's heading, written from its level.
+relations:
+  chases:
+    target: invoice
+    cardinality: many_to_one
+    via: invoice
+    inverse: reminders
+  reminds:
+    target: partner
+    cardinality: many_to_one
+    via: partner
+    inverse: dunnings

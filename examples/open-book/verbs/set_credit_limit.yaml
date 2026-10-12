@@ -1,0 +1,8 @@
+name: set_credit_limit
+on: partner
+risk: low
+description: "Set the most the business will leave open with this partner."
+payload:
+  credit_limit: { type: money, required: true }
+set:
+  credit_limit: payload.credit_limit

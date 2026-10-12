@@ -1,0 +1,7 @@
+name: dunning_status
+kind: text
+one_of: [open, sent, escalated, resolved, written_off]
+description: >-
+  open: the notice is written and nobody was told yet; sent: it went out;
+  escalated: a higher level took over; resolved: the invoice was settled;
+  written_off: the business stopped chasing.

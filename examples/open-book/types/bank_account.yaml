@@ -1,0 +1,13 @@
+name: bank_account
+label: Bank account
+description: A cash account the business holds at a bank.
+key: iban
+fields:
+  iban: { type: text, required: true, authority: source }
+  account_name: { type: text, authority: source }
+  bank: { type: text, authority: source }
+  currency: { type: text, authority: source }
+  opening_balance: { type: money, authority: source }
+  opening_on: { type: date, authority: source }
+  balance: { type: money, authority: source }
+  balance_on: { type: date, authority: source }

@@ -1,0 +1,7 @@
+name: resolve_dunning
+on: dunning
+risk: low
+description: "Close the chase: the invoice was settled."
+requires: "status = 'open' or status = 'sent'"
+set:
+  status: "'resolved'"
