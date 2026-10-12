@@ -568,7 +568,10 @@ async fn every_carrier_keeps_its_edges_through_renames_and_a_rebuild(store: Stor
         };
         let by_values = RelationDecl {
             cardinality: Cardinality::ManyToOne,
-            derived: Some(Derived { pairs }),
+            derived: Some(Derived {
+                pairs,
+                filter: None,
+            }),
             ..RelationDecl::to(names[2], "partner")
         };
         t.relations = vec![by_links, by_via, by_values];

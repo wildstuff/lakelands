@@ -246,6 +246,7 @@ fn reading() -> TypeDecl {
                 from: "note".into(),
                 to: "note".into(),
             }],
+            filter: None,
         }),
         ..RelationDecl::to(SAME_NOTE, TY)
     });

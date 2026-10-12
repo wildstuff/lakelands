@@ -161,7 +161,10 @@ async fn hiding(l: &Lake, store: &dyn LakeStore) -> Result<Principal, Failure> {
         to: "code".into(),
     }];
     let matched = RelationDecl {
-        derived: Some(Derived { pairs }),
+        derived: Some(Derived {
+            pairs,
+            filter: None,
+        }),
         ..RelationDecl::to("matched", "payroll")
     };
     let paid = RelationDecl::to("paid", "payroll");

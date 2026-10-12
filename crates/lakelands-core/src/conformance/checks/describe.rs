@@ -395,7 +395,10 @@ async fn a_description_says_only_what_its_reader_is_shown(store: Store) -> Held 
     invoice.relations = vec![
         RelationDecl::to("paid", "salary"),
         RelationDecl {
-            derived: Some(Derived { pairs }),
+            derived: Some(Derived {
+                pairs,
+                filter: None,
+            }),
             ..RelationDecl::to("same", "salary")
         },
     ];

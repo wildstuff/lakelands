@@ -532,10 +532,9 @@ impl TypeDecl {
                 }
             }
         }
-        let pairs = self
-            .relations
-            .iter()
-            .flat_map(|r| r.derived.iter().flat_map(|d| &d.pairs));
+        let own: Vec<FieldName> = (self.relations.iter())
+            .flat_map(|r| r.derived.iter().flat_map(|d| d.reads()[0].clone()))
+            .collect();
         let named = (self.key.iter().map(|n| (n, Case::AtReadKey)))
             .chain(self.valid_from.iter().map(|n| (n, Case::AtReadValidFrom)))
             .chain(self.valid_to.iter().map(|n| (n, Case::AtReadValidTo)))
@@ -544,7 +543,7 @@ impl TypeDecl {
                     .iter()
                     .filter_map(|r| Some((r.via.as_ref()?, Case::AtReadVia))),
             )
-            .chain(pairs.map(|p| (&p.from, Case::AtReadMatch)));
+            .chain(own.iter().map(|n| (n, Case::AtReadMatch)));
         for (n, case) in named {
             if let Some(f) = self.fields.iter().find(|f| &f.name == n && f.at_read()) {
                 return said(&[ty()], f, case);
@@ -752,13 +751,44 @@ pub struct RelationDecl {
 }
 
 /// What connects the records of a derived relation: every pair of fields
-/// holds the same non-null value on both sides.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// holds the same non-null value on both sides, and the condition, where
+/// one is given, holds over the two records.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Derived {
     /// The pairs, one or more.
     #[serde(rename = "match")]
     pub pairs: Vec<MatchPair>,
+    /// What the two records hold besides the match: a condition over
+    /// `from.<field>`, the owner's record, and `to.<field>`, the target's,
+    /// whichever way the edge is walked, with the clock of the read.
+    #[serde(default, rename = "where", skip_serializing_if = "Option::is_none")]
+    pub filter: Option<Condition>,
+}
+
+impl Derived {
+    /// The fields an edge reads of the owner's record and of the target's:
+    /// each pair's sides, then the condition's `from.<field>` and
+    /// `to.<field>`, a condition that does not parse reading none.
+    pub fn reads(&self) -> [Vec<FieldName>; 2] {
+        let mut sides = [Vec::new(), Vec::new()];
+        for p in &self.pairs {
+            sides[0].push(p.from.clone());
+            sides[1].push(p.to.clone());
+        }
+        let typed = self.filter.as_ref().and_then(|c| c.typed().ok());
+        let mut paths = Vec::new();
+        typed.iter().for_each(|e| crate::expr::paths(e, &mut paths));
+        for p in paths {
+            let side = [crate::key::FROM, crate::key::TO]
+                .iter()
+                .position(|s| p.first().is_some_and(|f| f.as_str() == *s));
+            if let (Some(i), Some(field)) = (side, p.get(1)) {
+                sides[i].push(field.clone());
+            }
+        }
+        sides
+    }
 }
 
 /// One pair of a derived relation's match.

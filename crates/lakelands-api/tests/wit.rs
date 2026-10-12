@@ -272,6 +272,7 @@ fn relation_decl() -> RelationDecl {
                 from: "f".into(),
                 to: "g".into(),
             }],
+            filter: Some(cond()),
         }),
         annotations: [("acme.icon".to_owned(), serde_json::json!("x"))].into(),
         name: "r".into(),

@@ -125,6 +125,10 @@
    "field": "f"
   },
   {
+   "code": "derived_where_path",
+   "path": "s"
+  },
+  {
    "code": "derived_stores_edge"
   },
   {

@@ -19,6 +19,7 @@ mod computed_at;
 mod computed_inputs;
 mod computed_reference;
 mod concurrency;
+mod conditional_edges;
 mod cursors;
 mod date_bucket;
 mod dates;
@@ -427,6 +428,9 @@ pub const ALL: &[Check] = &[
     derived_relations::MEASURES_AS_LINKS,
     derived_relations::DECLARED_NOT_MIGRATED,
     derived_relations::PAIR_OF_TWO_KINDS,
+    conditional_edges::CONDITIONAL_WALK,
+    conditional_edges::CONDITION_PROBED,
+    conditional_edges::CONDITION_DECLARED,
     graph_measures::DEGREE_COUNTS,
     graph_measures::COMPONENTS_PARTITION,
     graph_measures::MEASURES_AT_THEIR_POSITION,

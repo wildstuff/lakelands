@@ -2872,9 +2872,10 @@ impl<'a> Reader<'a> {
             }
             rights::check_probe(self.who, t, r.via.iter())?;
             let Some(d) = &r.derived else { continue };
-            rights::check_probe(self.who, t, d.pairs.iter().map(|p| &p.from))?;
+            let [from, to] = d.reads();
+            rights::check_probe(self.who, t, from.iter())?;
             let target = self.shape.ontology.ty(&r.target)?;
-            rights::check_probe(self.who, target, d.pairs.iter().map(|p| &p.to))?;
+            rights::check_probe(self.who, target, to.iter())?;
         }
         Ok(())
     }
@@ -3677,6 +3678,19 @@ fn derived_edges(
         .into_iter()
         .map(|near| (near.key.clone(), near))
         .collect();
+    // An owned relation leaves `near` for its target; a targeted one
+    // reaches it. Each with its condition, read once for the hop: one that
+    // cannot be read connects nothing.
+    let filter = |x: &RelationDecl| {
+        let c = x.derived.as_ref().and_then(|d| d.filter.as_ref());
+        c.map(|c| condition(c, Eval::Record, &[]).ok())
+    };
+    let leaving = owned.iter().map(|x| (&x.target, *x, true));
+    let reaching = targeted.iter().map(|&(owner, x)| (owner, x, false));
+    let walked: Vec<_> = (leaving.chain(reaching))
+        .map(|(other, x, out)| (other, x, out, filter(x)))
+        .filter(|w| !matches!(w.3, Some(None)))
+        .collect();
     for (key, list) in keys.iter().zip(all.iter_mut()) {
         let Some(near) = nears.get(key) else {
             continue;
@@ -3700,13 +3714,25 @@ fn derived_edges(
                 })
                 .collect()
         };
-        // An owned relation leaves `near` for its target; a targeted one reaches it.
-        let leaving = owned.iter().map(|x| (&x.target, *x, true));
-        let reaching = targeted.iter().map(|&(owner, x)| (owner, x, false));
-        for (other, x, out) in leaving.chain(reaching) {
+        for (other, x, out, filter) in &walked {
+            let (other, x, out) = (*other, *x, *out);
             let pairs = &x.derived.as_ref().expect("derived").pairs;
             if let Some(equal) = equal(pairs, out) {
                 for m in r.matching(other, equal)? {
+                    let ends = match out {
+                        true => [&near.fields, &m.fields],
+                        false => [&m.fields, &near.fields],
+                    };
+                    let scope = Ends {
+                        ends,
+                        settings: &r.shape.settings,
+                        now: r.now,
+                    };
+                    if let Some(Some(e)) = filter
+                        && !expr::holds(e, &scope).unwrap_or(false)
+                    {
+                        continue;
+                    }
                     let (this, that) = ((ty.clone(), key.clone()), (other.clone(), m.key));
                     let (from, to) = if out { (this, that) } else { (that, this) };
                     list.push(Edge {
@@ -3720,6 +3746,33 @@ fn derived_edges(
         }
     }
     Ok(all)
+}
+
+/// The two records of a derived relation's edge, as its `where` reads
+/// them: `from.<field>` the owner's, `to.<field>` the target's, with the
+/// lake's settings and the read's clock (044, extended).
+struct Ends<'a> {
+    ends: [&'a BTreeMap<FieldName, Value>; 2],
+    settings: &'a BTreeMap<String, Value>,
+    now: Timestamp,
+}
+
+impl expr::Scope for Ends<'_> {
+    fn value(&self, path: &[FieldName]) -> Option<Value> {
+        let (end, rest) = path.split_first()?;
+        let i = [lakelands_api::key::FROM, lakelands_api::key::TO]
+            .iter()
+            .position(|e| end.as_str() == *e)?;
+        expr::eval::lookup(self.ends[i], rest)
+    }
+
+    fn setting(&self, key: &str) -> Option<Value> {
+        self.settings.get(key).cloned()
+    }
+
+    fn now(&self) -> Timestamp {
+        self.now
+    }
 }
 
 /// Whether the key `key` of `ty` may be named to the principal of `sees`:

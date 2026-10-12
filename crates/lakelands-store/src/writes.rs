@@ -4594,10 +4594,11 @@ fn as_author(
     put_back(&before.relations, unshown, &mut to.relations);
     // What a relation it is not shown reads: its `via`, its match's own side.
     let hid = before.relations.iter().filter(|r| unshown(r));
-    let matched = hid.flat_map(|r| {
-        let pairs = r.derived.iter().flat_map(|d| &d.pairs);
-        r.via.iter().chain(pairs.map(|p| &p.from))
-    });
+    let owner_reads: Vec<FieldName> = hid
+        .clone()
+        .flat_map(|r| r.derived.iter().flat_map(|d| d.reads()[0].clone()))
+        .collect();
+    let matched = hid.flat_map(|r| r.via.iter()).chain(&owner_reads);
     let mut reads = (unknown.iter().copied())
         .flat_map(|f| (f.depends_on.iter()).chain(f.embed.iter().flat_map(|e| &e.from)))
         .chain(matched);
