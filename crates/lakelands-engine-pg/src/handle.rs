@@ -162,6 +162,58 @@ impl PgLake {
         })
     }
 
+    /// Run `f` on the reader. A connection the server or the network
+    /// closed is opened again, once, and `f` runs on the new one: a second
+    /// failure is answered as it is (lakelands#979).
+    pub(crate) fn reading<R>(&self, mut f: impl FnMut(&mut Db) -> Result<R>) -> Result<R> {
+        let mut db = lock(&self.reader);
+        if db.is_closed() {
+            *db = connect::connect(&self.target)?;
+        }
+        match f(&mut db) {
+            Err(_) if db.is_closed() => {
+                *db = connect::connect(&self.target)?;
+                f(&mut db)
+            }
+            answer => answer,
+        }
+    }
+
+    /// The writer's connection `db` closed under it: the session the
+    /// lease's lock lived in is gone, so this handle holds the lease no
+    /// more, whatever it was doing (lakelands#979). `take_lease` opens the
+    /// writer's connections again. `undone` is said only where no `COMMIT`
+    /// was sent: the server rolls back the transaction of a session that
+    /// ends, while a `COMMIT` sent may have landed, and that write's
+    /// outcome is read back from the log. `fence` is the lease asked with,
+    /// so `held` is not locked here: it is locked before the connections
+    /// ([`LakeEngine::take_lease`]).
+    fn lost<R>(
+        &self,
+        db: &Db,
+        fence: Option<u64>,
+        answer: Result<R>,
+        undone: Option<Act>,
+    ) -> Result<R> {
+        match answer {
+            Err(_) if db.is_closed() => {
+                let undone = undone.filter(|_| !db.committing());
+                Err(Error::unavailable(Situation::LeaseNotHeld {
+                    fence,
+                    undone,
+                }))
+            }
+            answer => answer,
+        }
+    }
+
+    /// The writer's projection connection, or the lease not held where
+    /// it closed ([`Self::lost`]).
+    fn projecting<'w>(&self, writing: &'w Writing) -> Result<MutexGuard<'w, Db>> {
+        let db = lock(&writing.projection);
+        self.lost(&db, None, Ok(()), None).map(|()| db)
+    }
+
     fn writing(&self) -> Result<&Writing> {
         self.writing.as_ref().ok_or_else(|| {
             let (lake, leased_elsewhere) = (Some(self.lake.to_string()), false);
@@ -183,7 +235,9 @@ impl PgLake {
                 undone,
             }));
         }
-        Ok(lock(&writing.lease))
+        let db = lock(&writing.lease);
+        self.lost(&db, Some(lease.fence), Ok(()), Some(undone))
+            .map(|()| db)
     }
 
     /// Take a put into the open transaction: `f` holds it in the buffer,
@@ -200,7 +254,7 @@ impl PgLake {
         if t.buffer.len() < projection::PAGE {
             return Ok(());
         }
-        let (page, mut db) = (std::mem::take(&mut t.buffer), lock(&writing.projection));
+        let (page, mut db) = (std::mem::take(&mut t.buffer), self.projecting(writing)?);
         t.put += page.write(&mut db, &self.names, &mut t.types, &mut t.asked)?;
         Ok(())
     }
@@ -334,7 +388,23 @@ impl LakeEngine for PgLake {
 
     fn take_lease(&self, holder: &str) -> Result<Lease> {
         let writing = self.writing()?;
+        // The locks go in one order: `held`, the transaction, the lease's
+        // connection, the projection's.
         let mut held = lock(&self.held);
+        // A writer whose connection closed holds nothing: its lock went
+        // with the session (lakelands#979). Both connections are opened
+        // again, and the lease is taken as an open takes it.
+        let mut transaction = lock(&self.transaction);
+        let (mut lease, mut projection) = (lock(&writing.lease), lock(&writing.projection));
+        if lease.is_closed() || projection.is_closed() {
+            if let Some(old) = held.take().filter(|_| !lease.is_closed()) {
+                let _ = lease::release(&mut lease, &self.names, &self.target.schema, &old);
+            }
+            *lease = connect::session_keeping_state(&self.target)?;
+            *projection = connect::connect(&self.target)?;
+            *transaction = None;
+        }
+        drop((transaction, lease, projection));
         if let Some(h) = held.as_ref() {
             return Err(engines::lease_held(&h.holder, h.fence));
         }
@@ -364,21 +434,23 @@ impl LakeEngine for PgLake {
     }
 
     fn tip(&self) -> Result<Option<(Position, Digest)>> {
-        log::tip(&mut lock(&self.reader), &self.names)
+        self.reading(|db| log::tip(db, &self.names))
     }
 
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
         let mut db = self.holding(lease, Act::Appended)?;
-        log::append(&mut db, &self.names, lease, events, false)
+        let appended = log::append(&mut db, &self.names, lease, events, false);
+        self.lost(&db, Some(lease.fence), appended, Some(Act::Appended))
     }
 
     fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
         let mut db = self.holding(lease, Act::Appended)?;
-        log::append(&mut db, &self.names, lease, events, true)
+        let imported = log::append(&mut db, &self.names, lease, events, true);
+        self.lost(&db, Some(lease.fence), imported, Some(Act::Imported))
     }
 
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
-        log::read(&mut lock(&self.reader), &self.names, from, limit)
+        self.reading(|db| log::read(db, &self.names, from, limit))
     }
 
     fn seal_segment(
@@ -388,11 +460,12 @@ impl LakeEngine for PgLake {
         first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
     ) -> Result<Option<SegmentDigest>> {
         let mut db = self.holding(lease, Act::Sealed)?;
-        log::seal(&mut db, &self.names, lease, imported, first)
+        let sealed = log::seal(&mut db, &self.names, lease, imported, first);
+        self.lost(&db, Some(lease.fence), sealed, Some(Act::Sealed))
     }
 
     fn segments(&self) -> Result<Vec<SegmentDigest>> {
-        log::segments(&mut lock(&self.reader), &self.names)
+        self.reading(|db| log::segments(db, &self.names))
     }
 
     fn projection(&self) -> &dyn ProjectionStore {
@@ -400,7 +473,7 @@ impl LakeEngine for PgLake {
     }
 
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
-        let folded = projection::folded(&mut lock(&self.reader), &self.names)?;
+        let folded = self.reading(|db| projection::folded(db, &self.names))?;
         let at = engines::view_at(as_of, folded)?;
         Ok(Box::new(PgView { lake: self, at }))
     }
@@ -412,7 +485,17 @@ impl LakeEngine for PgLake {
     /// drops them, so a list is never an emptied table's under the
     /// position read before it (`crate::view`).
     fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked> {
-        let mut db = lock(&self.reader);
+        self.reading(|db| self.ranked_on(db, ty, asked, k))
+    }
+
+    fn vectors(&self) -> Option<&dyn VectorIndex> {
+        Some(self)
+    }
+}
+
+impl PgLake {
+    /// [`LakeEngine::ranked`] on the reader `db`.
+    fn ranked_on(&self, db: &mut Db, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked> {
         let read = |t: &&&str| match **t {
             "vectors" => !asked.vectors.is_empty(),
             "declarations" | "declarations_head" | "records" | "records_head" | "full_text" => {
@@ -440,25 +523,14 @@ impl LakeEngine for PgLake {
             let mut lists = Vec::new();
             if let Some((text, fields)) = &asked.text {
                 let fields = fields.as_deref();
-                lists.push(crate::view::lexical(
-                    &mut db,
-                    &self.names,
-                    ty,
-                    text,
-                    fields,
-                    k,
-                )?);
+                lists.push(crate::view::lexical(db, &self.names, ty, text, fields, k)?);
             }
             for (field, query) in &asked.vectors {
-                lists.push(self.nearest(&mut db, ty, field, query, k)?);
+                lists.push(self.nearest(db, ty, field, query, k)?);
             }
             Ok(Ranked { position, lists })
         });
         db.end(ranked)
-    }
-
-    fn vectors(&self) -> Option<&dyn VectorIndex> {
-        Some(self)
     }
 }
 
@@ -468,11 +540,12 @@ impl ProjectionStore for PgLake {
     fn begin(&self) -> Result<()> {
         let writing = self.writing()?;
         let mut transaction = lock(&self.transaction);
-        let mut db = lock(&writing.projection);
+        let mut db = self.projecting(writing)?;
         if transaction.take().is_some() {
             db.batch("ROLLBACK")?;
         }
-        db.batch("BEGIN ISOLATION LEVEL READ COMMITTED")?;
+        let begun = db.batch("BEGIN ISOLATION LEVEL READ COMMITTED");
+        self.lost(&db, None, begun, None)?;
         *transaction = Some(Transaction::default());
         Ok(())
     }
@@ -483,10 +556,11 @@ impl ProjectionStore for PgLake {
         let t = transaction
             .take()
             .ok_or_else(|| invalid(Case::CommitUnbegun))?;
-        let mut db = lock(&writing.projection);
+        let mut db = self.projecting(writing)?;
         // After a page the server refused, this read fails too: the
         // transaction is taken by now, so its session is rolled back here.
-        let folded = projection::folded(&mut db, &self.names).or_else(|e| db.end(Err(e)))?;
+        let folded = projection::folded(&mut db, &self.names).or_else(|e| db.end(Err(e)));
+        let folded = self.lost(&db, None, folded, None)?;
         if let Some(refused) = engines::commit_refusal(folded, t.latest, through) {
             return db.end(Err(refused));
         }
@@ -514,7 +588,8 @@ impl ProjectionStore for PgLake {
                 projection::set_folded(&mut db, &self.names, through)?;
                 Ok(put + rebuilt)
             });
-        let put = db.end(written)?;
+        let ended = db.end(written);
+        let put = self.lost(&db, None, ended, None)?;
         // Once enough records went in since the last analysis, or order
         // index rows a setting rebuilt, the planner learns of them, after
         // the commit and outside it (module doc).
@@ -533,7 +608,7 @@ impl ProjectionStore for PgLake {
     }
 
     fn folded_through(&self) -> Result<Option<Position>> {
-        projection::folded(&mut lock(&self.reader), &self.names)
+        self.reading(|db| projection::folded(db, &self.names))
     }
 
     fn put_declaration(
@@ -553,7 +628,7 @@ impl ProjectionStore for PgLake {
         let mut transaction = lock(&self.transaction);
         let t = transaction.as_mut().ok_or_else(engines::unstaged)?;
         t.latest = t.latest.max(Some(at));
-        let mut db = lock(&writing.projection);
+        let mut db = self.projecting(writing)?;
         if let Some(ty) = projection::put_declaration(&mut db, &self.names, &mut t.types, &d)? {
             t.redeclared.insert(ty, at);
         }
@@ -612,7 +687,7 @@ impl ProjectionStore for PgLake {
         *lock(&self.transaction) = None;
         // The tables start empty again, and so does the count (module doc).
         writing.unanalysed.store(0, Ordering::Relaxed);
-        let mut db = lock(&writing.projection);
+        let mut db = self.projecting(writing)?;
         let _ = db.batch("ROLLBACK");
         let dropped: String = PROJECTION_TABLES
             .iter()
@@ -645,7 +720,7 @@ impl ProjectionStore for PgLake {
             return Err(invalid(Case::CompactInTransaction));
         }
         let tables: Vec<&str> = PROJECTION_TABLES.iter().copied().chain(["meta"]).collect();
-        let mut db = lock(&writing.projection);
+        let mut db = self.projecting(writing)?;
         // A transaction a failed commit left open is abandoned, as `clear`
         // abandons it: `VACUUM` cannot run inside one.
         let _ = db.batch("ROLLBACK");
@@ -769,7 +844,7 @@ impl PgLake {
 impl VectorIndex for PgLake {
     fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()> {
         let writing = self.writing()?;
-        let mut db = lock(&writing.projection);
+        let mut db = self.projecting(writing)?;
         match &self.pgvector {
             // The unit vector goes in with the vector when the lake asks
             // for the field's index (`crate::vector_index`).
@@ -797,7 +872,7 @@ impl VectorIndex for PgLake {
 
     fn remove(&self, ty: &TypeName, key: &RecordKey, field: &str) -> Result<()> {
         let writing = self.writing()?;
-        lock(&writing.projection).execute(
+        self.projecting(writing)?.execute(
             &format!(
                 "DELETE FROM {} WHERE ty = $1 AND field = $2 AND key = $3",
                 self.names.t("vectors")
@@ -807,15 +882,12 @@ impl VectorIndex for PgLake {
     }
 
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64> {
-        let n: i64 = lock(&self.reader)
-            .query_one(
-                &format!(
-                    "SELECT count(*) FROM {} WHERE ty = $1 AND field = $2",
-                    self.names.t("vectors")
-                ),
-                &[&ty.as_str(), &field],
-            )?
-            .get(0);
+        let statement = format!(
+            "SELECT count(*) FROM {} WHERE ty = $1 AND field = $2",
+            self.names.t("vectors")
+        );
+        let row = self.reading(|db| db.query_one(&statement, &[&ty.as_str(), &field]))?;
+        let n: i64 = row.get(0);
         Ok(n as u64)
     }
 }

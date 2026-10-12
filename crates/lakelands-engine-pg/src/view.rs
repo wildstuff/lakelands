@@ -362,7 +362,7 @@ pub(crate) fn lexical(
 impl PgView<'_> {
     /// Run `f` in one read transaction at the view's position; an empty
     /// projection answers `empty`.
-    fn read<R>(&self, empty: R, f: impl FnOnce(&mut Read<'_>) -> Result<R>) -> Result<R> {
+    fn read<R>(&self, empty: R, f: impl FnMut(&mut Read<'_>) -> Result<R>) -> Result<R> {
         self.read_locked(None, empty, f)
     }
 
@@ -372,49 +372,52 @@ impl PgView<'_> {
         &self,
         lock: Option<&str>,
         empty: R,
-        f: impl FnOnce(&mut Read<'_>) -> Result<R>,
+        mut f: impl FnMut(&mut Read<'_>) -> Result<R>,
     ) -> Result<R> {
         let Some(at) = self.at else {
             return Ok(empty);
         };
-        let mut db = crate::lock(&self.lake.reader);
-        let names = &self.lake.names;
-        let lock = lock.map_or_else(String::new, |t| {
-            format!("LOCK TABLE {} IN ACCESS SHARE MODE; ", names.t(t))
-        });
-        // The transaction opens and reads the folded marker in one round
-        // trip, so the head flag is of the state every query in it sees.
-        let folded = db.simple(&format!(
-            "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; {lock}\
+        self.lake.reading(|db| {
+            let names = &self.lake.names;
+            let lock = lock.map_or_else(String::new, |t| {
+                format!("LOCK TABLE {} IN ACCESS SHARE MODE; ", names.t(t))
+            });
+            // The transaction opens and reads the folded marker in one round
+            // trip, so the head flag is of the state every query in it sees.
+            let folded = db.simple(&format!(
+                "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; {lock}\
              SELECT n FROM {} WHERE k = 'folded'",
-            names.t("meta")
-        ));
-        let answer = folded.and_then(|folded| {
-            let folded = folded.into_iter().flatten().next();
-            f(&mut Read {
-                db: &mut db,
-                names,
-                at: at.0 as i64,
-                folded: folded.as_deref().and_then(|f| f.parse().ok()),
-                head: folded == Some(at.0.to_string()),
-            })
-        });
-        db.end(answer)
+                names.t("meta")
+            ));
+            let answer = folded.and_then(|folded| {
+                let folded = folded.into_iter().flatten().next();
+                f(&mut Read {
+                    db,
+                    names,
+                    at: at.0 as i64,
+                    folded: folded.as_deref().and_then(|f| f.parse().ok()),
+                    head: folded == Some(at.0.to_string()),
+                })
+            });
+            db.end(answer)
+        })
     }
 
     /// Run `f`, which runs exactly one statement and never asks whether
     /// the view is at the head, outside a transaction: one statement reads
     /// one committed state, so it needs none, and costs one round trip.
-    fn single<R>(&self, empty: R, f: impl FnOnce(&mut Read<'_>) -> Result<R>) -> Result<R> {
+    fn single<R>(&self, empty: R, mut f: impl FnMut(&mut Read<'_>) -> Result<R>) -> Result<R> {
         let Some(at) = self.at else {
             return Ok(empty);
         };
-        f(&mut Read {
-            db: &mut crate::lock(&self.lake.reader),
-            names: &self.lake.names,
-            at: at.0 as i64,
-            folded: None,
-            head: false,
+        self.lake.reading(|db| {
+            f(&mut Read {
+                db,
+                names: &self.lake.names,
+                at: at.0 as i64,
+                folded: None,
+                head: false,
+            })
         })
     }
 }

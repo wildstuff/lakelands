@@ -804,10 +804,26 @@ A host that already has a store of its own moves in four steps.
   writer which cannot catch up cannot append, is held by the handle that
   ran it and recorded by its next write; the call's answer says so, and
   the retry under its key answers it. It is lost when the handle is
-  closed or dropped before a write records it (the server ends so), and
-  on PostgreSQL when a lost connection loses the lease: a retry is then
-  `unanswered`, and the first answer carried the output. A host that
-  needs more gives the executor its own record of what it did, keyed by
+  closed or dropped before a write records it (the server ends so): a
+  retry is then `unanswered`, and the first answer carried the output.
+  **A dropped connection on PostgreSQL** (a restart of the server, a
+  failover, a pooler's or a firewall's cut, an operator's
+  `pg_terminate_backend`) costs a read one reconnect: the read opens its
+  connection again, once, and runs again (about 15 ms on a local
+  server). The writer's lease lived in the session that ended, so the
+  first write that finds it gone is answered `unavailable`, the lease not
+  held, nothing appended, and a host sends it again once. A write
+  answered `unavailable` without "nothing appended" lost its connection
+  after its `COMMIT` was sent: it may have landed, and the host reads it
+  back from the log (or sends it again under its idempotency key) before
+  writing it anew. The next write takes the lease again as an open does:
+  a greater fence, what another writer appended meanwhile folded, then a
+  `lease_taken` in the log. An executor's answer the handle held
+  survives this and is recorded by that write. While another writer
+  holds the lease, every write, rebuild and compaction is refused with
+  the lease's situation and appends nothing, and the handle reads on.
+  The lake's connections carry `application_name` `lakelands <schema>`
+  in `pg_stat_activity`. A host that needs more gives the executor its own record of what it did, keyed by
   the call's position (`VerbInvocation.position`). See
   `docs/decisions/013-verbs-run-by-declared-risk.md`, extended.
 - **An outage and a missing seam are cases, not sentences
