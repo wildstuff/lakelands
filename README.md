@@ -76,15 +76,15 @@ of changes without polling, `propose`, `proposals`, `accept` and
 (stdio and HTTP) and REST from one catalog. Agents never write a query
 language.
 
-> **Status: `0.13.0`.** Lakelands `0.13.0` is the `lakelands` CLI, its
+> **Status: `0.13.1`.** Lakelands `0.13.1` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the
-> whole conformance suite (532 checks through the doors and 67 through
+> whole conformance suite (533 checks through the doors and 67 through
 > the engine seam), with 54 decision records and the event log at
 > format version 14, installable from the release. Its budgets: the
 > store facade and engine traits hold 59 of 110 methods, the core
-> crates' product code 52 918 of 53 000 lines and their specification
-> 74 589 of 75 000, and 2 of 20 `cfg(feature)` sites. A ceiling rises
+> crates' product code 52 930 of 53 000 lines and their specification
+> 74 753 of 75 000, and 2 of 20 `cfg(feature)` sites. A ceiling rises
 > only by a recorded rule (decision 047): for this round the operator
 > set both as a reserve, to 52 500 and 69 000, and the round's rights
 > and integrity fixes raised the specification's ten times, to 75 000,
@@ -109,7 +109,8 @@ language.
 > and a walk or a view at a valid time probes every type it can meet.
 > A search as of a position ranks by the head's declaration, and a
 > migration keeps the vector index under the head's names and keys. A
-> verb names no system type but a link type, a view's key is its
+> verb names no system type but a link type, or with an external
+> effect a type of the host's vocabulary, a view's key is its
 > `group_by`, and a derived relation has no link door. A filtered poll
 > reads only what it answers, and a client reads an ingest's answer as
 > it uploads. The in-memory mock is retired and the door crates test
