@@ -9,12 +9,14 @@
 //! the same bytes with an implementation that shares no code with this
 //! one.
 //!
-//! The vectors are one lake's log in the one format version this release
-//! reads and writes, `LOG_FORMAT_VERSION`
+//! The vectors are one lake's log in the format version this release
+//! writes, `LOG_FORMAT_VERSION`, kept in `vectors/<N>/`
 //! (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`):
 //! the two segments, then the events of `further.json`, each following the
-//! one before it and each named for what it shows. `verify.py --stamp N`
-//! writes them in another.
+//! one before it and each named for what it shows. A format step copies
+//! the directory to the next number and stamps the copy
+//! (`verify.py --stamp N`); the directory of every format a release
+//! shipped stays as its tag holds it, and its own `verify.py` is run here.
 
 use std::collections::HashMap;
 use std::fs;
@@ -29,8 +31,13 @@ use lakelands_core::{canonical, log, shape};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-fn vectors() -> PathBuf {
+/// The vector directories, one a format, by number.
+fn every_format() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors")
+}
+
+fn vectors() -> PathBuf {
+    every_format().join(LOG_FORMAT_VERSION.to_string())
 }
 
 fn read_json(name: &str) -> Value {
@@ -128,7 +135,7 @@ fn every_line_of_the_lake_is_in_the_one_format_this_release_writes() {
 /// with `**Format version N.**`, and N is `LOG_FORMAT_VERSION`.
 #[test]
 fn the_page_names_the_format_this_release_writes() {
-    let page = fs::read_to_string(vectors().join("../../log-format.md")).unwrap();
+    let page = fs::read_to_string(vectors().join("../../../log-format.md")).unwrap();
     let named = page
         .lines()
         .find_map(|l| l.strip_prefix("**Format version "))
@@ -728,5 +735,37 @@ fn the_negative_vector_in_another_format_is_refused_at_its_position() {
         other => {
             panic!("an event in another format is refused at position 6, and it answered {other:?}")
         }
+    }
+}
+
+/// The vectors are kept for every format from 14, the first a release
+/// with real installations wrote, to the one this release writes, with no
+/// gap; and each directory's own `verify.py`, which reads that format
+/// alone, passes over its own log. `scripts/gates/vectors-kept.sh` holds
+/// that a shipped one is as its tag holds it.
+#[test]
+fn the_vectors_of_every_format_a_release_reads_are_kept_and_verify() {
+    let mut formats: Vec<u32> = fs::read_dir(every_format())
+        .unwrap()
+        .filter_map(|e| e.unwrap().file_name().to_str()?.parse().ok())
+        .collect();
+    formats.sort_unstable();
+    let want: Vec<u32> = (14..=LOG_FORMAT_VERSION).collect();
+    assert_eq!(formats, want, "the vector directories by format");
+    for n in formats {
+        let dir = every_format().join(n.to_string());
+        let run = std::process::Command::new("python3")
+            .arg("verify.py")
+            .current_dir(&dir)
+            .output()
+            .unwrap_or_else(|e| {
+                panic!("this test runs `python3 verify.py` and needs python3: {e}")
+            });
+        assert!(
+            run.status.success(),
+            "format {n}'s verify.py over its own vectors: {}{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
     }
 }

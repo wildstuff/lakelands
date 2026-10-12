@@ -88,9 +88,13 @@ option a release may leave out.
   it: that is where the upgrade's instruction will stand;
 - one check on every read of the log, so no reader takes an event of
   another format for one of its own;
-- the vectors as one lake's log in the one format, stamped by one
-  command (`docs/log-format/vectors/verify.py --stamp N`), so a format
-  step is that command and the store's agreement with it.
+- the vectors as one lake's log, in a directory a format
+  (`docs/log-format/vectors/<N>/`): a format step copies the newest to
+  the next number and stamps the copy by one command (`verify.py --stamp
+  N`), so a step is that command and the store's agreement with it; the
+  directory of every format a release shipped stays as its tag holds it,
+  byte for byte (`scripts/gates/vectors-kept.sh`), and every later
+  release runs it.
 
 ### An import, a mirror and a moved pin stop at a format step
 
@@ -140,3 +144,10 @@ them.
   part would answer from a log it does not fully understand. Refusing
   the lake whole, by name and with both numbers, is the one answer that
   cannot be wrong.
+
+## How it came to be
+
+- The vectors of each format a release shipped are kept in a directory
+  of their own, as its tag holds them, and run by every later release;
+  before, one directory was stamped again in place at each step, and
+  nothing of an older format was kept (lakelands#962).
