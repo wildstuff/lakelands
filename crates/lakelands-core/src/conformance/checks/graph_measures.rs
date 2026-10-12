@@ -19,8 +19,8 @@ use lakelands_api::{Catalog, Cursor, LakeStore, Position, Principal, Refusal, Va
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, invalid_case, order, owner, patch, pattern, reads_all, reason,
-    reference, restrict, searchable, source_record, sourced, step, type_decl,
+    Lake, Must, alike_renamed, doors, field, invalid_case, order, owner, patch, pattern, reads_all,
+    reason, reference, restrict, searchable, source_record, sourced, step, type_decl,
 };
 use crate::conformance::{Failure, Given, Held, Store};
 
@@ -37,6 +37,12 @@ check!(
 check!(
     COMPONENTS_ANY_PAGE = components_are_one_partition_however_their_seeds_fall_into_pages,
     "026 and 029: `components` over a lake of 1 200 people and 400 companies, many unlinked, whose seeds reach each other within a page of seeds and across pages and where a retired company parts what it joined, answers from either start type exactly the partition the live links make, numbered largest first, then by the least (type, key), over pages of 1 000 (lakelands#1004)"
+);
+
+check!(
+    COMPONENTS_NO_START = components_with_no_start_type_grow_from_every_linked_record,
+    "018 and 024: `components` with no start type grows from every record that holds a link it may see over the steps' relations, in every type it is shown, carried by a reference field or a link record alike: no component of one but a record linked to itself, nothing for a record whose links reach only a retired or hidden record, two components where only a restricted link joins them, the typed answer unchanged beside it, `max_graph_nodes` counting linked records only, and a step naming an inverse walking every relation that bears it; any other projection, and a start `key`, `where`, `search` or `params`, refused `start_no_type`, and a relation no type it is shown declares `no_relation_anywhere`, a hidden one byte for byte as an absent one. At a valid time every type a step meets is probed before a record is read, as a typed walk probes it, so a type met only as a target with its valid time masked is refused alike and never told by a join (lakelands#992)",
+    given
 );
 
 check!(
@@ -334,6 +340,304 @@ async fn components_are_one_partition_however_their_seeds_fall_into_pages(store:
             first.and_then(|i| got.get(i)),
             first.and_then(|i| want.get(i))
         );
+    }
+    Ok(())
+}
+
+/// Companies co1..co8, people p1..p8 and a note n1; `works_at`, `owns`
+/// and `tagged` by reference fields, `knows` by link records, and `staff`
+/// the inverse of both `works_at` and `knows`:
+///
+/// - p1 works at co1; co3 names co2 its `owner`; n1 and nobody else is
+///   tagged co4; p5 works at co5, retired; p7 at co7; p8 at co8,
+///   restricted;
+/// - p3 knows p2, p6 knows itself, and p7 knows p2 by a restricted link;
+/// - p4 is linked to nothing;
+/// - slot s1 is `posted` to o1, a `post` valid from its `opens`.
+async fn unstarted_lake(store: &dyn LakeStore) -> Held {
+    let l = Lake::of(store);
+    let to = |name: &str, target: &str, via: Option<&str>| RelationDecl {
+        name: name.into(),
+        target: target.into(),
+        cardinality: Cardinality::ManyToOne,
+        via: via.map(Into::into),
+        ..Default::default()
+    };
+    let name = || field("name", StorageKind::Text);
+    let mut company = type_decl("company", vec![name(), reference("owner", "company")]);
+    company.relations = vec![to("owns", "company", Some("owner"))];
+    l.declare(company).await?;
+    let refs = ["employer", "tag"].map(|f| reference(f, "company"));
+    let mut person = type_decl("person", vec![name()]);
+    person.fields.extend(refs);
+    let staff = Some("staff".into());
+    let knows = RelationDecl {
+        cardinality: Cardinality::ManyToMany,
+        inverse: staff.clone(),
+        ..to("knows", "person", None)
+    };
+    let tagged = to("tagged", "company", Some("tag"));
+    person.relations = vec![
+        RelationDecl {
+            inverse: staff,
+            ..to("works_at", "company", Some("employer"))
+        },
+        knows,
+        tagged.clone(),
+    ];
+    l.declare(person).await?;
+    let mut note = type_decl("note", vec![reference("tag", "company")]);
+    note.relations = vec![RelationDecl {
+        inverse: Some("notes".into()),
+        ..tagged
+    }];
+    l.declare(note).await?;
+    for (c, owner) in [("co1", None), ("co2", None), ("co3", Some("co2"))]
+        .into_iter()
+        .chain(["co4", "co5", "co6", "co7", "co8"].map(|c| (c, None)))
+    {
+        l.upsert(
+            "company",
+            c,
+            owner.map_or(json!({"name": c}), |o| json!({"owner": o})),
+        )
+        .await?;
+    }
+    for (p, employer) in [("p1", "co1"), ("p5", "co5"), ("p7", "co7"), ("p8", "co8")] {
+        l.upsert("person", p, json!({"employer": employer})).await?;
+    }
+    for p in ["p2", "p3", "p4", "p6"] {
+        l.upsert("person", p, json!({"name": p})).await?;
+    }
+    l.upsert("note", "n1", json!({"tag": "co4"})).await?;
+    let mut post = type_decl("post", vec![field("opens", StorageKind::DateTime)]);
+    post.valid_from = Some("opens".into());
+    l.declare(post).await?;
+    // `bot` holds `works_at` too, valid from its `since`, but not `staff`.
+    let mut bot = type_decl("bot", vec![field("since", StorageKind::DateTime)]);
+    bot.fields.push(reference("employer", "company"));
+    bot.valid_from = Some("since".into());
+    bot.relations = vec![to("works_at", "company", Some("employer"))];
+    l.declare(bot).await?;
+    let mut slot = type_decl("slot", vec![reference("post", "post")]);
+    slot.relations = vec![to("posted", "post", Some("post"))];
+    l.declare(slot).await?;
+    l.upsert("post", "o1", json!({"opens": "2026-03-01T00:00:00Z"}))
+        .await?;
+    l.upsert("slot", "s1", json!({"post": "o1"})).await?;
+    l.retire("company", "co5").await?;
+    restrict(store, "company", "co8", "hold").await?;
+    for (from, to) in [("p3", "p2"), ("p6", "p6"), ("p7", "p2")] {
+        let (cat, who) = (l.cat.as_ref(), &l.own);
+        let (ty, rel) = (&"person".into(), &"knows".into());
+        cat.link(
+            who,
+            ty,
+            &from.into(),
+            rel,
+            &to.into(),
+            patch(json!({})),
+            WriteOpts::default(),
+        )
+        .await
+        .must(&format!("linking {from} to {to}"))?;
+    }
+    let link_key = lakelands_api::key::link_key(&"p7".into(), &"p2".into());
+    restrict(store, "sys.link.person.knows", link_key, "hold").await?;
+    Ok(())
+}
+
+async fn components_with_no_start_type_grow_from_every_linked_record(
+    store: Store,
+    given: Given,
+) -> Held {
+    unstarted_lake(store.as_ref()).await?;
+    let unstarted = |extra: serde_json::Value| -> Result<Pattern, Failure> {
+        let walk = |r: &str| json!({"relation": r, "walk": "both"});
+        let steps = ["works_at", "owns", "knows", "tagged"].map(walk);
+        let mut p = json!({"start": {}, "project": {"as": "components"}, "steps": steps});
+        p.as_object_mut()
+            .expect("an object")
+            .extend(extra.as_object().cloned().unwrap_or_default());
+        serde_json::from_value(p)
+            .map_err(|e| Failure::new(format!("`start: {{}}` is a pattern: {e}")))
+    };
+    let (cat, own) = (doors(store.as_ref()), owner(store.as_ref()));
+    let (got, _) = rows(
+        cat.as_ref(),
+        &own,
+        unstarted(json!({}))?,
+        "unstarted components",
+    )
+    .await?;
+    let want = [
+        "0/4 company:co7",
+        "0/4 person:p2",
+        "0/4 person:p3",
+        "0/4 person:p7",
+        "1/2 company:co1",
+        "1/2 person:p1",
+        "2/2 company:co2",
+        "2/2 company:co3",
+        "3/2 company:co4",
+        "3/2 note:n1",
+        "4/2 company:co8",
+        "4/2 person:p8",
+        "5/1 person:p6",
+    ];
+    ensure!(
+        got == want,
+        "with no start type the owner's components are every linked record's, across types and \
+         carriers: p4 links nothing, p5 only a retired company, and p6 knows itself; it answered \
+         {got:?}"
+    );
+    let mut staff = unstarted(json!({}))?;
+    staff.steps = ["staff", "owns", "tagged"]
+        .map(|r| step(r, Walk::Both))
+        .to_vec();
+    let (got, _) = rows(cat.as_ref(), &own, staff, "over `staff`").await?;
+    ensure!(
+        got == want,
+        "`staff`, the inverse of `works_at` and of `knows`, walks both; it answered {got:?}"
+    );
+    // Without `restricted` and without `note`: p7 is parted from p2, p8's
+    // one link reaches a restricted record, and n1 is neither seeded nor
+    // walked to, so co4 holds no link either.
+    let mut reader = reads_all(store.as_ref(), "reader");
+    let none = lakelands_api::principal::TypeGrants {
+        default: Some(lakelands_api::Access::None),
+        ..Default::default()
+    };
+    reader.grants.types.insert("note".into(), none);
+    let (got, _) = rows(cat.as_ref(), &reader, unstarted(json!({}))?, "a reader's").await?;
+    let want = [
+        "0/2 company:co1",
+        "0/2 person:p1",
+        "1/2 company:co2",
+        "1/2 company:co3",
+        "2/2 company:co7",
+        "2/2 person:p7",
+        "3/2 person:p2",
+        "3/2 person:p3",
+        "4/1 person:p6",
+    ];
+    ensure!(
+        got == want,
+        "a reader without `restricted` and not shown `note` is answered p7 apart from p2 and \
+         nothing of p8, co8, n1 or co4; it answered {got:?}"
+    );
+    let mut typed = unstarted(json!({}))?;
+    typed.start.ty = Some("person".into());
+    let (got, _) = rows(cat.as_ref(), &own, typed, "components from every person").await?;
+    let alone = ["3/1 person:p4", "4/1 person:p5", "5/1 person:p6"];
+    ensure!(
+        got.len() == 11 && got[8..] == alone,
+        "from every person, each person is a start and stands alone where it links nothing it \
+         may see, as before; it answered {got:?}"
+    );
+    for (extra, asks) in [
+        (json!({"project": {"as": "rows"}}), "rows"),
+        (json!({"project": {"as": "graph"}}), "graph"),
+        (json!({"project": {"as": "degree"}}), "degree"),
+        (json!({"start": {"key": "p1"}}), "key"),
+        (json!({"start": {"where": "name = 'p2'"}}), "where"),
+        (
+            json!({"start": {"search": SearchMode::lexical("p")}}),
+            "search",
+        ),
+        (json!({"start": {"params": {"x": 1}}}), "params"),
+    ] {
+        let what = format!("no start type with {extra}");
+        let answer = cat.query(&own, unstarted(extra)?).await;
+        refused_as!(&what, answer, Case::StartNoType { asks: a } if a == asks)?;
+    }
+    // `tagged` declared only by types the reader is not shown, and `notes`
+    // the inverse only of one, are answered as the absent `nope` is, byte
+    // for byte but the name.
+    let mut answers = Vec::new();
+    for relation in ["nope", "tagged", "notes"] {
+        let mut p = unstarted(json!({}))?;
+        p.steps = vec![step(relation, Walk::Both)];
+        let mut who = reader.clone();
+        who.grants
+            .types
+            .insert("person".into(), who.grants.types["note"].clone());
+        let what =
+            format!("no start type over `{relation}`, `tagged` declared only where not shown");
+        let answer = cat.query(&who, p).await.map(|_| ());
+        answers.extend(answer.clone().err());
+        refused_as!(&what, answer, Case::NoRelationAnywhere { relation: r } if r.as_str() == relation)?;
+    }
+    for (hidden, name) in [(&answers[1], "tagged"), (&answers[2], "notes")] {
+        let what = format!("`{name}`, hidden, beside the absent `nope`");
+        alike_renamed(&what, hidden, &answers[0], ("nope", name))?;
+    }
+    // At a valid time a type met only as a target is probed as a typed
+    // walk from `slot` probes it: `opens` masked is refused alike.
+    let mut timed = reads_all(store.as_ref(), "timed");
+    let masked = lakelands_api::principal::TypeGrants {
+        fields: [("opens".into(), lakelands_api::Access::Masked)].into(),
+        ..Default::default()
+    };
+    timed.grants.types.insert("post".into(), masked.clone());
+    let since = [("since".into(), lakelands_api::Access::Masked)].into();
+    timed.grants.types.insert(
+        "bot".into(),
+        lakelands_api::principal::TypeGrants {
+            fields: since,
+            ..masked
+        },
+    );
+    let at = json!({"valid_at": "2026-06-01T00:00:00Z"});
+    let mut posted = unstarted(at)?;
+    posted.steps = vec![step("posted", Walk::Both)];
+    let mut from_slot = posted.clone();
+    from_slot.start.ty = Some("slot".into());
+    let (untyped, typed) = (
+        cat.query(&timed, posted).await,
+        cat.query(&timed, from_slot).await,
+    );
+    ensure!(
+        typed.is_err() && reason(&untyped) == reason(&typed),
+        "at a valid time over `posted`, with `opens` masked, no start type is refused as a start \
+         on `slot` is; they answered {untyped:?} and {typed:?}"
+    );
+    // `staff` walks only its two relations' owner, `person`: `bot`, which
+    // holds a `works_at` of its own, is neither seeded nor probed.
+    let mut staff = unstarted(json!({"valid_at": "2026-06-01T00:00:00Z"}))?;
+    staff.steps = vec![step("staff", Walk::Both)];
+    let mut untimed = staff.clone();
+    untimed.at = Default::default();
+    let (at, now) = (
+        cat.query(&timed, staff).await,
+        cat.query(&timed, untimed).await,
+    );
+    ensure!(
+        at.as_ref().ok().map(|r| &r.data) == now.as_ref().ok().map(|r| &r.data) && at.is_ok(),
+        "`staff` at a valid time is answered as without one, `bot.since` masked; they \
+         answered {at:?} and {now:?}"
+    );
+    // Thirteen linked records, under a ceiling of thirteen and of twelve.
+    for (max, fits) in [(13, true), (12, false)] {
+        let limits = Limits {
+            max_graph_nodes: max,
+            ..crate::conformance::fixture::limits()
+        };
+        let reopened = (given.relimit)(store.clone(), Seams::default(), limits).await;
+        let reopened = reopened.map_err(|e| Failure::new(format!("reopening the lake: {e}")))?;
+        let (cat, own) = (doors(reopened.as_ref()), owner(reopened.as_ref()));
+        let answer = cat.query(&own, unstarted(json!({}))?).await;
+        let what = format!("unstarted components under a ceiling of {max}");
+        if fits {
+            answer.must(&what)?;
+        } else {
+            let too_large =
+                reason(&answer).is_some_and(|r| matches!(r, Refusal::TooLarge { max: 12 }));
+            ensure!(
+                too_large,
+                "{what} reach thirteen linked records and are refused too_large; got {answer:?}"
+            );
+        }
     }
     Ok(())
 }

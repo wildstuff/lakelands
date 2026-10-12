@@ -1023,8 +1023,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                     "where": {"type": "string"}, "search": {"type": "object"},
                     "params": {"type": "object",
                                "description": "The parameters of a view the pattern starts on, by name."},
-                    "as": {"type": "string", "description": BINDING}},
-                    "required": ["type"]}),
+                    "as": {"type": "string", "description": BINDING}}}),
             ),
             (
                 "steps",
@@ -1047,7 +1046,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 "project",
                 json!({"type": "object", "properties": {
                 "as": {"enum": ["rows", "graph", "aggregate", "degree", "components"],
-                       "description": "`degree` answers rows of `type`, `key` and `degree` (links over the steps' relations), highest first; `components` answers rows of `component`, `size`, `type` and `key`, largest component first. Both take steps without `depth`, `where` or `type`; `components` walks each step `both`."},
+                       "description": "`degree` answers rows of `type`, `key` and `degree` (links over the steps' relations), highest first; `components` answers rows of `component`, `size`, `type` and `key`, largest component first; with no start `type` it grows from every linked record, in every type. Both take steps without `depth`, `where` or `type`; `components` walks each step `both`."},
                 "fields": {"type": "array", "items": {"type": "string"}}}}),
             ),
             (

@@ -1137,6 +1137,9 @@ catalog! {
         MeasureNoType { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `type`: it reads every link of a relation, whatever it reaches",
         /// A measure's step with a `where`.
         MeasureNoWhere { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `where`",
+        /// A step over a relation no type declares, where the start names
+        /// no type.
+        NoRelationAnywhere { relation: RelationName } => "no type has a relation `{relation}` to walk",
         /// A step over a relation that its type does not walk that way.
         NoRelationToWalk { #[serde(rename = "type")] ty: TypeName, relation: RelationName, walk: Walk } => "`{ty}` has no relation `{relation}` to walk {walk}",
         /// A field a search names that is not searchable.
@@ -1190,6 +1193,8 @@ catalog! {
         SearchNeedsVector { field: FieldName } => "`{field}` holds vectors its writers make, in a space the lake does not know; a hybrid search over it brings its own query vector",
         /// A vector ranking over a field that holds no vectors.
         SearchNotVector { field: FieldName, kind: StorageKind } => "`{field}` is a {kind} field; a vector ranking reads a vector field",
+        /// A start with no type where a type is needed.
+        StartNoType { asks: String } => "`{asks}` needs the start's `type`; only `components` may leave it out, and then names no `key`, `where`, `search` or `params`",
         /// A step that reaches another type than it names.
         StepReaches { reached: TypeName, #[serde(rename = "type")] ty: TypeName, also: Option<Names> } => "it reaches `{reached}`[, {also}], not `{ty}`",
         /// A step reaching several types where a `where`, a row or the next step reads one.

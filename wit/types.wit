@@ -762,7 +762,9 @@ interface types {
     }
 
     record start {
-        %type: type-name,
+        /// Left out only by `components`, which then grows from every
+        /// linked record.
+        %type: option<type-name>,
         key: option<record-key>,
         where: option<condition>,
         search: option<search-mode>,

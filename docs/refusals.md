@@ -449,6 +449,7 @@ What a refusal is about.
 | `measure_no_to` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no `to` | A measure with a `to`. |
 | `measure_no_type` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `type`: it reads every link of a relation, whatever it reaches | A measure's step with a `type`. |
 | `measure_no_where` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `where` | A measure's step with a `where`. |
+| `no_relation_anywhere` | `relation` (RelationName) | no type has a relation `{relation}` to walk | A step over a relation no type declares, where the start names no type. |
 | `no_relation_to_walk` | `type` (TypeName), `relation` (RelationName), `walk` (Walk) | `{type}` has no relation `{relation}` to walk {walk} | A step over a relation that its type does not walk that way. |
 | `not_searchable` | `field` (FieldName), `type` (TypeName) | `{field}` of `{type}` is not searchable | A field a search names that is not searchable. |
 | `offset_beside` | `other` (String) | `offset` and `{other}` both say where the answer starts; give one | An `offset` beside another start of the answer. |
@@ -471,6 +472,7 @@ What a refusal is about.
 | `search_fields_empty` | — | `fields` names no field; leave it out to search every searchable field | A search's `fields` that names none. |
 | `search_needs_vector` | `field` (FieldName) | `{field}` holds vectors its writers make, in a space the lake does not know; a hybrid search over it brings its own query vector | A hybrid search without a vector over a vector field no model fills: its writers chose the space, so no bound model may stand in for one. |
 | `search_not_vector` | `field` (FieldName), `kind` (StorageKind) | `{field}` is a {kind} field; a vector ranking reads a vector field | A vector ranking over a field that holds no vectors. |
+| `start_no_type` | `asks` (String) | `{asks}` needs the start's `type`; only `components` may leave it out, and then names no `key`, `where`, `search` or `params` | A start with no type where a type is needed. |
 | `step_reaches` | `reached` (TypeName), `type` (TypeName), `also` (Names, optional) | it reaches `{reached}`[, {also}], not `{type}` | A step that reaches another type than it names. |
 | `step_several_types` | — | it reaches several types, and a `where`, a row or the step after it reads one; name the step's `type` | A step reaching several types where a `where`, a row or the next step reads one. |
 | `step_too_deep` | `max` (u32), `asked` (u32) | a step may walk at most {max} hops; this one asks for {asked} | A step deeper than the lake walks. |

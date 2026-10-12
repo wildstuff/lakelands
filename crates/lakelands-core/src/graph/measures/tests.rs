@@ -44,7 +44,7 @@ fn each_record_is_asked_about_once_and_held_once() {
         }
     }
     let g = Graph::new(links).retire("k11");
-    let mut c = Components::new(&g, vec![rel("r")], 11);
+    let mut c = Components::new(&g, vec![rel("r")], 11, true);
     c.add(&[n("k00")]).unwrap();
     assert_eq!(
         g.visibility_asked.get(),
@@ -85,7 +85,7 @@ fn components_read_a_page_of_the_frontier_at_a_time() {
             .map(|i| e("hub", "r", &format!("t{i:03}")))
             .collect(),
     );
-    let mut c = Components::new(&g, vec![rel("r")], 1_000);
+    let mut c = Components::new(&g, vec![rel("r")], 1_000, true);
     c.add(&[n("hub")]).unwrap();
     assert_eq!(c.finish()[0].len(), 301);
     assert_eq!(g.edges_asked.get(), 3, "the hub, then two pages of 256");
@@ -112,7 +112,7 @@ fn components_grow_a_page_of_seeds_at_a_time() {
     );
     let g = Graph::new(links);
     let seeds: Vec<Node> = (0..256).map(|i| n(&format!("k{i:03}"))).collect();
-    let mut c = Components::new(&g, vec![rel("r")], 1_000);
+    let mut c = Components::new(&g, vec![rel("r")], 1_000, true);
     c.add(&seeds).unwrap();
     let all = c.finish();
     assert_eq!(g.edges_asked.get(), 2, "the seeds, then their far ends");
@@ -131,5 +131,26 @@ fn components_grow_a_page_of_seeds_at_a_time() {
         all[0],
         ["k000", "k001", "t000", "t001"].map(n),
         "joined, by (type, key)"
+    );
+}
+
+/// With no start type, a seed that reaches nothing it may see is no
+/// component and counts nothing against the cap: a seed linked only to a
+/// retired record is none either. Seeds that reach each other read their
+/// links once, as seeds.
+#[test]
+fn a_seed_that_reaches_nothing_is_no_component_where_none_stands_alone() {
+    let g = Graph::new(vec![e("a", "r", "b"), e("c", "r", "gone")]).retire("gone");
+    let seeds = ["a", "b", "c", "d"].map(n);
+    let mut c = Components::new(&g, vec![rel("r")], 2, false);
+    c.add(&seeds).unwrap();
+    assert_eq!(g.edges_asked.get(), 1, "b's links were read as a seed's");
+    assert_eq!(c.finish(), vec![vec![n("a"), n("b")]]);
+    let mut alone = Components::new(&g, vec![rel("r")], 4, true);
+    alone.add(&seeds).unwrap();
+    assert_eq!(
+        alone.finish().len(),
+        3,
+        "a and b, c, and d with a start type"
     );
 }

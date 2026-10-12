@@ -10,13 +10,14 @@
 //! (`docs/decisions/026-the-store-walks-the-graph.md`).
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use lakelands_api::error::{Case, Place};
-use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Walk};
+use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Step, Walk};
 use lakelands_api::record::StoredRecord;
-use lakelands_api::{Cursor, Params, RecordKey, RelationName, Result, Value};
+use lakelands_api::{Cursor, Params, RecordKey, RelationName, Result, TypeName, Value};
 use lakelands_core::graph::{self, Components, Node};
+use lakelands_core::rights;
 
 use super::{CursorState, Judged, Pulled, Reader, Visible, encode, invalid};
 
@@ -65,6 +66,83 @@ pub(super) fn check(p: &Pattern) -> Result<()> {
 }
 
 impl Reader<'_> {
+    /// `components` with no start type: every record that holds a link it
+    /// may see over the steps' relations, in every type, is a start (018).
+    /// Any other projection, and a start member that picks records of one
+    /// type, is refused naming what needs the type; a step's relation is
+    /// one some type it is shown declares, or that relation's inverse.
+    pub(super) fn untyped(&self, p: &mut Pattern) -> Result<Judged<QueryResult>> {
+        let asks = |asks: &str| {
+            invalid(Case::StartNoType {
+                asks: asks.to_owned(),
+            })
+        };
+        if p.project != Projection::Components {
+            return Err(asks(&super::projection_name(&p.project)));
+        }
+        let s = &p.start;
+        let picks = [
+            ("key", s.key.is_some()),
+            ("where", s.filter.is_some()),
+            ("search", s.search.is_some()),
+            ("params", !s.params.is_empty()),
+        ];
+        if let Some((member, _)) = picks.iter().find(|(_, given)| *given) {
+            return Err(asks(member));
+        }
+        let limit = self.limit(p.limit, true)?;
+        if s.named.is_some() || p.steps.iter().any(|s| s.named.is_some()) {
+            return Err(invalid(Case::PatternAsNotRows));
+        }
+        check(p)?;
+        // An inverse names every relation that bears it, each walked as
+        // its own step: components take the steps' relations as one set.
+        let (mut steps, mut reach) = (Vec::new(), Vec::new());
+        for step in std::mem::take(&mut p.steps) {
+            let inverses = self.inverses_anywhere(&step.relation);
+            if inverses.is_empty() && !self.out_any(&step.relation) {
+                let relation = step.relation.clone();
+                return Err(invalid(Case::NoRelationAnywhere { relation }));
+            }
+            if inverses.is_empty() {
+                reach.push(super::Reach {
+                    owner: None,
+                    far: None,
+                });
+                steps.push(step);
+                continue;
+            }
+            for (relation, owner) in inverses {
+                let far = None;
+                reach.push(super::Reach {
+                    owner: Some(owner),
+                    far,
+                });
+                steps.push(Step {
+                    relation,
+                    ..step.clone()
+                });
+            }
+        }
+        p.steps = steps;
+        // At a valid time every type a step meets is probed before a record
+        // is read, as a typed walk probes it (024): a type met only as a
+        // target is never seeded, so nothing else would probe it.
+        for (step, reach) in p.steps.iter().zip(&reach) {
+            for t in self.met(step, None, reach) {
+                if self.valid_at.is_some() {
+                    self.visible_type(&t)?;
+                }
+            }
+        }
+        let hidden = Visible {
+            reader: self,
+            reach: &reach,
+            records: None,
+        };
+        self.measure(p, limit, None, &hidden)
+    }
+
     /// A measure's answer; the pattern has passed [`check`] and its steps
     /// have been checked against the declarations. A start by search
     /// judges `carried`, or hands a pull back, as `search` does.
@@ -75,7 +153,7 @@ impl Reader<'_> {
         carried: Option<Pulled>,
         hidden: &Visible<'_, '_>,
     ) -> Result<Judged<QueryResult>> {
-        let params = self.bound_params(&p.start.ty);
+        let params = (p.start.ty.as_ref()).map_or_else(Params::default, |t| self.bound_params(t));
         let offset = super::offset(p.cursor.as_ref(), p, &params)?.0;
         let all = match p.project {
             Projection::Degree => {
@@ -101,7 +179,7 @@ impl Reader<'_> {
                     }
                     Ok(())
                 };
-                let moved = self.seeds(p, carried, |node| {
+                let moved = self.seeds((p, hidden.reach), carried, |node| {
                     seeds.push(node);
                     if seeds.len() == graph::PAGE {
                         rank(&mut seeds)?;
@@ -112,7 +190,7 @@ impl Reader<'_> {
                     return Ok(Err(moved));
                 }
                 rank(&mut seeds)?;
-                let ty = &p.start.ty;
+                let ty = super::start_type(p)?;
                 best.into_sorted_vec()
                     .into_iter()
                     .map(|(Reverse(d), key)| {
@@ -128,10 +206,12 @@ impl Reader<'_> {
                 let relations: Vec<RelationName> =
                     p.steps.iter().map(|s| s.relation.clone()).collect();
                 let max = self.lake.limits.max_graph_nodes;
-                let mut found = Components::new(hidden, relations, max);
+                // With no start type, no record stands alone (018).
+                let alone = p.start.ty.is_some();
+                let mut found = Components::new(hidden, relations, max, alone);
                 // The seeds come a page at a time, and grow a page at a time.
                 let mut seeds: Vec<Node> = Vec::with_capacity(graph::PAGE);
-                let moved = self.seeds(p, carried, |node| {
+                let moved = self.seeds((p, hidden.reach), carried, |node| {
                     seeds.push(node);
                     if seeds.len() == graph::PAGE {
                         found.add(&seeds)?;
@@ -191,7 +271,7 @@ impl Reader<'_> {
             offset: offset as u64,
             params,
             door: "query".into(),
-            ty: Some(p.start.ty.clone()),
+            ty: p.start.ty.clone(),
             of: super::pattern_read(p),
         })
     }
@@ -200,13 +280,37 @@ impl Reader<'_> {
     /// one record a key names, what a search finds, or the records a filter
     /// (or none) selects, read a page at a time. A search's pull read at
     /// another position than the read's head is handed back, and no seed.
+    /// With no start type, the records of every type the reader is shown
+    /// that declares one of the steps' relations it is shown, an inverse's
+    /// owner alone: a link's owning end is always there, whatever carries
+    /// it.
     fn seeds(
         &self,
-        p: &Pattern,
+        (p, reach): (&Pattern, &[super::Reach]),
         carried: Option<Pulled>,
         mut each: impl FnMut(Node) -> Result<()>,
     ) -> Result<Option<Pulled>> {
-        let decl = self.named_type(&p.start.ty)?.clone();
+        let Some(ty) = &p.start.ty else {
+            // Each step's own relations: an inverse's, its owner's alone.
+            let mut owners: BTreeSet<TypeName> = BTreeSet::new();
+            for (step, reach) in p.steps.iter().zip(reach) {
+                let named = self.named(None, &step.relation, reach.owner.as_ref());
+                owners.extend(named.into_iter().map(|(t, _)| t.name.clone()));
+            }
+            for ty in owners {
+                // A type whose `only` cannot be applied admits nothing to
+                // a walk, so it seeds nothing either.
+                let decl = self.visible_type(&ty)?.clone();
+                if rights::check_only(self.who, &decl).is_err() {
+                    continue;
+                }
+                let filter = self.record_filter(&decl, None, &[Place::Start])?;
+                let seed = |r: &StoredRecord| each((r.ty.clone(), r.key.clone()));
+                self.each_member(&decl, filter.as_ref(), PAGE, seed)?;
+            }
+            return Ok(None);
+        };
+        let decl = self.named_type(ty)?.clone();
         let ty = decl.name.clone();
         if let Some(key) = &p.start.key {
             if self.start_found(p, key)? {

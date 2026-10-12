@@ -932,6 +932,10 @@
    "measure": "s"
   },
   {
+   "code": "no_relation_anywhere",
+   "relation": "r"
+  },
+  {
    "code": "no_relation_to_walk",
    "relation": "r",
    "type": "t",
@@ -1031,6 +1035,10 @@
    "code": "search_not_vector",
    "field": "f",
    "kind": "text"
+  },
+  {
+   "asks": "s",
+   "code": "start_no_type"
   },
   {
    "also": [

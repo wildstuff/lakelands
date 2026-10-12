@@ -276,6 +276,24 @@ Components hold every record they reach, so the lake bounds them by its
 ceiling, for the reason a step too deep is refused: a partition of part
 of the graph would look like the whole of it.
 
+`components` alone may leave its start's `type` out. A host that asks
+for the components of the graph a set of relations spans, across every
+type that holds such a link, would otherwise ask once per type and merge
+partitions it cannot number by the lake's rule without computing them
+again; only the lake can number the merged partition. With no type, every
+record that holds a link the caller may see over a step's relation is a
+start, in every type it is shown that declares one; a link's owning end
+is always in such a type, whatever carries it. A record with no such
+link is no component and counts nothing against `max_graph_nodes`, and
+neither is a record whose links reach only a record the caller may not
+see, which answered alone would tell of that link; a record linked to
+itself is a component of one. Any other projection needs the start's
+type, and so do a `key`, a `where`, a `search` and `params`, each of
+which picks records of one type: each is refused `start_no_type`, naming
+what needs it. A step's relation is one that a type the caller is shown
+declares, or that relation's `inverse`; another is refused
+`no_relation_anywhere`, whether it is absent or hidden.
+
 ### A view's records are computed when they are read
 
 A view type's records are computed when they are read: the source's
@@ -471,6 +489,8 @@ used.
   are one walk, not a chain.
 - A view's records are computed when they are read.
 - `degree` and `components` joined the projections (lakelands#149).
+- `components` may leave the start's `type` out and grow from every
+  linked record (lakelands#992).
 - A pattern that starts on a view, or a walk that reaches one, reads its
   computed records (lakelands#281); a view is not searched
   (lakelands#290); a view declares exactly the fields it computes

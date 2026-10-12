@@ -55,9 +55,11 @@ impl Default for Depth {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Start {
-    /// The start's type.
-    #[serde(rename = "type")]
-    pub ty: TypeName,
+    /// The start's type. Only `components` may leave it out, and then
+    /// grows from every record that holds a link over the steps'
+    /// relations, in every type (`docs/decisions/018-one-pattern-query.md`).
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub ty: Option<TypeName>,
     /// One record by key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<RecordKey>,
@@ -129,7 +131,9 @@ pub enum Projection {
     /// over the steps' relations taken both ways. Components are ordered
     /// by size, largest first, then by their least `(type, key)`, and
     /// numbered from 0 in that order; a component's records by
-    /// `(type, key)`. A walk that would reach more than the lake's
+    /// `(type, key)`. With no start type, every record that holds a link it
+    /// may see over the steps' relations is a start, and no record stands
+    /// alone. A walk that would reach more than the lake's
     /// `max_graph_nodes` is refused `too_large`, never cut
     /// (`docs/decisions/026-the-store-walks-the-graph.md`).
     Components,
@@ -204,7 +208,7 @@ impl Pattern {
     fn from(ty: TypeName, key: RecordKey, steps: Vec<Step>, project: Projection) -> Pattern {
         Pattern {
             start: Start {
-                ty,
+                ty: Some(ty),
                 key: Some(key),
                 filter: None,
                 search: None,
