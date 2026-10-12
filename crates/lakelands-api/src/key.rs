@@ -17,13 +17,21 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::canonical;
-use crate::id::{FieldName, RecordKey};
+use crate::id::{FieldName, RecordKey, RelationName, TypeName};
 use crate::ontology::{StorageKind, TypeDecl};
 
 /// The link records' own key fields.
 pub const FROM: &str = "from";
 /// See [`FROM`].
 pub const TO: &str = "to";
+
+/// The prefix of every link type's name.
+pub const LINK_PREFIX: &str = "sys.link.";
+
+/// The name of the link type of relation `r` on type `t`.
+pub fn link_type_name(t: &TypeName, r: &RelationName) -> TypeName {
+    TypeName::from(format!("{LINK_PREFIX}{t}.{r}"))
+}
 
 /// The key of the one record a view without `group_by` holds. The rule
 /// over no key fields would make the empty string, which is no key, so

@@ -8,15 +8,27 @@ fn ty(name: &str, fields: serde_json::Value) -> TypeDecl {
 fn lake() -> Vec<TypeDecl> {
     let reference = |name: &str, to: &str| json!({ "name": name, "type": { "kind": "reference", "target": to } });
     let text = |name: &str| json!({ "name": name, "type": { "kind": "text" } });
+    let mut invoice = ty(
+        "invoice",
+        json!([
+            text("number"),
+            reference("customer", "customer"),
+            text("note")
+        ]),
+    );
+    invoice.relations = serde_json::from_value(json!([
+        { "name": "with", "target": "customer" },
+        { "name": "by", "target": "customer", "via": "customer" }
+    ]))
+    .unwrap();
+    let link = json!([
+        reference("from", "invoice"),
+        reference("to", "customer"),
+        text("note")
+    ]);
     vec![
-        ty(
-            "invoice",
-            json!([
-                text("number"),
-                reference("customer", "customer"),
-                text("note")
-            ]),
-        ),
+        invoice,
+        ty("sys.link.invoice.with", link),
         ty(
             "customer",
             json!([
@@ -62,4 +74,15 @@ fn a_path_stops_where_there_is_no_record_to_step_to() {
         read("customer.lost.name"),
         ["invoice.customer", "customer.lost"]
     );
+}
+
+#[test]
+fn a_path_steps_from_a_relation_carried_by_links_to_its_link() {
+    let (from, note) = ("sys.link.invoice.with.from", "sys.link.invoice.with.note");
+    assert_eq!(read("with.note"), [from, note]);
+    let far = [from, "sys.link.invoice.with.to", "customer.name"];
+    assert_eq!(read("with.to.name"), far);
+    // Its name alone, and a relation carried by a field, step nowhere.
+    assert_eq!(read("with"), Vec::<String>::new());
+    assert_eq!(read("by.name"), Vec::<String>::new());
 }

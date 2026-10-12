@@ -967,10 +967,13 @@ A path's first identifier names a field of the record the expression is
 evaluated on, or `payload` in a verb's values. Each later one reads the
 member of that name of the value the path has come to; in a verb's
 `requires` and set values, where that value is a reference, it reads the
-field of that name on the record the reference names
-(`docs/decisions/055-a-path-steps-through-a-reference.md`). The second
-reading came with format 15: a log of an earlier format holds no
-declaration that reads across a reference.
+field of that name on the record the reference names; and there a
+first identifier that names no field but a relation carried by link
+records reads the one link the record holds under it, the next
+identifier a field of that link
+(`docs/decisions/055-a-path-steps-through-a-reference.md`). Both
+readings came with format 15: a log of an earlier format holds no
+declaration that reads across a reference or a relation.
 
 **The typed form.** Every node is an object with `op`:
 

@@ -43,6 +43,7 @@ mod judged;
 mod keys;
 mod landing;
 mod latest;
+mod link_paths;
 mod link_triggers;
 mod links;
 mod made_of;
@@ -130,6 +131,9 @@ pub const ALL: &[Check] = &[
     paths::PATH_READ_AS_A_FILTER,
     paths::PATH_LINK_ENDS,
     paths::PATH_PROPOSED,
+    link_paths::LINK_PATH_READS,
+    link_paths::LINK_PATH_HELD,
+    link_paths::LINK_PATH_PROPOSED,
     latest::LATEST_ORDER,
     decimals::AS_WRITTEN,
     decimals::EXACT_SUM,

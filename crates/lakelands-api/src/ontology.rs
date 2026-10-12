@@ -345,14 +345,27 @@ impl TypeDecl {
     /// first segment here, and while the field so read is a reference and
     /// the path goes on, the next segment on the reference's target as `ty`
     /// answers it. A path steps through a reference to the one record it
-    /// names; what is left of it digs into the last field's value.
+    /// names; what is left of it digs into the last field's value. A first
+    /// segment that names no field but a relation carried by link records
+    /// steps to the link its record holds under it: it reads the link
+    /// type's `from`, and the next segment is the link's.
     pub fn stepped<'d>(
         &'d self,
         path: &[FieldName],
         ty: &dyn Fn(&TypeName) -> Option<&'d TypeDecl>,
     ) -> Vec<(&'d TypeDecl, &'d FieldDecl)> {
         let (mut on, mut read) = (Some(self), Vec::new());
-        for (i, name) in path.iter().enumerate() {
+        let named = |r: &&RelationDecl| r.carried_by_links() && r.name.as_str() == path[0].as_str();
+        let first = path.len() > 1 && !self.fields.iter().any(|f| f.name == path[0]);
+        let link = (first.then(|| self.relations.iter().find(named)).flatten())
+            .and_then(|r| ty(&crate::key::link_type_name(&self.name, &r.name)));
+        let from = |lt: &'d TypeDecl| {
+            (lt.fields.iter().find(|f| f.name == crate::key::FROM)).map(|f| (lt, f))
+        };
+        if let Some(step) = link.and_then(from) {
+            (on, read) = (Some(step.0), vec![step]);
+        }
+        for (i, name) in path.iter().enumerate().skip(read.len()) {
             let field = on.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == name)?)));
             let Some((t, f)) = field else { break };
             read.push((t, f));
@@ -1034,14 +1047,19 @@ impl VerbDecl {
     }
 
     /// The fields of other records the verb reads: each field one of its
-    /// paths reads past its first, across a reference
-    /// ([`TypeDecl::stepped`]), with the type it is a field of.
+    /// paths reads past its first, across a reference, and each of a link
+    /// read from a relation, its `from` with them ([`TypeDecl::stepped`]),
+    /// with the type it is a field of.
     pub fn reads_across<'d>(
         &self,
         on: &'d TypeDecl,
         ty: &dyn Fn(&TypeName) -> Option<&'d TypeDecl>,
     ) -> Option<Vec<(&'d TypeDecl, &'d FieldDecl)>> {
-        let far = |p: Vec<FieldName>| on.stepped(&p, ty).into_iter().skip(1);
+        let far = |p: Vec<FieldName>| {
+            let read = on.stepped(&p, ty);
+            let own = read.first().is_some_and(|r| r.0.name == on.name);
+            read.into_iter().skip(usize::from(own))
+        };
         Some(self.record_paths()?.into_iter().flat_map(far).collect())
     }
 }

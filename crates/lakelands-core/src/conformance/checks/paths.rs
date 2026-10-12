@@ -301,7 +301,7 @@ async fn vetted(l: &Lake, who: &Principal, key: &str) -> Result<ProposalId, Fail
 }
 
 /// `who` calling the high-risk `verb` on the invoice `key`: its proposal.
-async fn proposal_of(
+pub(super) async fn proposal_of(
     l: &Lake,
     who: &Principal,
     verb: &str,
@@ -319,13 +319,17 @@ async fn proposal_of(
 }
 
 /// The accept of `p` by `who`: what it did, or its error whole.
-async fn accept(l: &Lake, who: &Principal, p: &ProposalId) -> Result<&'static str, Error> {
+pub(super) async fn accept(
+    l: &Lake,
+    who: &Principal,
+    p: &ProposalId,
+) -> Result<&'static str, Error> {
     l.cat.accept(who, p).await.map(|_| "applied")
 }
 
 /// Fails unless `p` is not there to `who`: not listed, its accept and
 /// reject answered as an id no proposal holds, appending nothing.
-async fn unlisted(s: &dyn LakeStore, l: &Lake, who: &Principal, p: &ProposalId) -> Held {
+pub(super) async fn unlisted(s: &dyn LakeStore, l: &Lake, who: &Principal, p: &ProposalId) -> Held {
     let before = s.head().await.must("reading the head")?;
     let listed = l.cat.proposals(who, ProposalFilter::default()).await;
     let listed = listed.must("listing the proposals")?.data;

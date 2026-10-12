@@ -87,7 +87,22 @@ impl Sight<'_> {
 
     /// Whether its principal reads every one of `names` on type `ty`.
     fn reads_all<'a>(&self, names: impl IntoIterator<Item = &'a FieldName>, ty: &TypeName) -> bool {
-        self.force.ty(ty).is_some() && names.into_iter().all(|n| self.reads(ty, n))
+        self.force.ty(ty).is_some() && names.into_iter().all(|n| self.reads_from(ty, n))
+    }
+
+    /// Whether its principal reads where a verb's path begins at `n` on
+    /// `ty`: the field, or, where `ty` has none of that name, the relation,
+    /// which it is shown (055, extended).
+    pub fn reads_from(&self, ty: &TypeName, n: &FieldName) -> bool {
+        let t = self
+            .force
+            .ty(ty)
+            .filter(|t| !t.fields.iter().any(|f| &f.name == n));
+        let mut named = t
+            .into_iter()
+            .flat_map(|t| t.relations.iter().map(move |r| (t, r)));
+        self.reads(ty, n)
+            || named.any(|(t, r)| r.name.as_str() == n.as_str() && self.relation(t, r))
     }
 }
 
@@ -217,6 +232,19 @@ impl Sight<'_> {
             Declaration::ObjectSet(s) => described(&s.of) && holds(Some(&s.filter), &s.of),
             // It names the fields it sets and says something of those it reads.
             Declaration::Verb(v) => {
+                // And what its paths read of other records, from a relation
+                // it is shown, of a holder of `schema` too, as `describe`
+                // asks it of a verb in force (055).
+                let on = self.force.ty(&v.on);
+                let far = on.and_then(|on| v.reads_across(on, &|n| self.force.ty(n)));
+                let far =
+                    far.is_some_and(|f| f.iter().all(|(t, f)| field_access(who, t, f).reads()));
+                let field =
+                    |n: &FieldName| on.is_some_and(|t| t.fields.iter().any(|f| &f.name == n));
+                let from = |p: &Vec<FieldName>| field(&p[0]) || self.reads_from(&v.on, &p[0]);
+                if !far || !v.record_paths().is_some_and(|p| p.iter().all(from)) {
+                    return false;
+                }
                 let VerbEffect::Write { set } = &v.effect else {
                     return described(&v.on) && holds(v.requires.as_ref(), &v.on);
                 };
