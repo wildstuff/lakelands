@@ -525,12 +525,16 @@ impl Server {
     }
 
     /// `SIGKILL` at `at`, from a task of its own, so that the kill lands
-    /// whatever the server is doing then.
+    /// whatever the server is doing then. The kill is sent without an
+    /// `await` once the sleep is over, so a task aborted ([`paused`]) has
+    /// either sent it or never will.
     fn kill_at(&self, at: Instant) -> tokio::task::JoinHandle<()> {
         let pid = self.pid.to_string();
         tokio::spawn(async move {
             tokio::time::sleep_until(at.into()).await;
-            let _ = Command::new("kill").args(["-KILL", &pid]).status().await;
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &pid])
+                .status();
         })
     }
 
@@ -553,6 +557,18 @@ impl Server {
         let status = std::fs::read_to_string(format!("/proc/{}/status", self.pid)).ok()?;
         let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
         line.split_whitespace().nth(1)?.parse().ok()
+    }
+}
+
+/// Stops the killer before a check, so that no kill lands on the check's
+/// own reads: a check judges the lake, and a read a kill cuts off is no
+/// finding. Whether the server still runs; where the killer had fired,
+/// it waits for the process to end and answers `false`.
+async fn paused(killer: &mut tokio::task::JoinHandle<()>, server: &mut Server) -> bool {
+    killer.abort();
+    match killer.await {
+        Ok(()) => !server.ended().await,
+        Err(_) => server.alive(),
     }
 }
 
@@ -1313,15 +1329,25 @@ async fn drive(plan: &Plan, dir: &Path, report: &mut Report) -> Result<(), Strin
                     * (rng.below(1000) as f64 / 1000.0),
             )
     };
-    let mut killer = server.kill_at(Instant::now() + wait(&mut rng));
+    // Once the run's time is up no kill is armed: the loop goes on until
+    // nothing is owed and the server runs, and the last checks read it.
+    let arm = |server: &Server, rng: &mut Rng| match t0.elapsed() < plan.length {
+        true => server.kill_at(Instant::now() + wait(rng)),
+        false => tokio::spawn(std::future::pending()),
+    };
+    let mut killer = arm(&server, &mut rng);
     let (mut last_clean, mut last_drop, mut last_deep) =
         (Instant::now(), Instant::now(), Instant::now());
     let (mut kills, mut stops, mut drops, mut deeps) = (0u64, 0u64, 0u64, 0u64);
     let mut feed_next = Position(0);
     let mut next_day = Instant::now();
-    while t0.elapsed() < plan.length {
+    while t0.elapsed() < plan.length || !desk.owed.is_empty() || !server.alive() {
+        let ending = t0.elapsed() >= plan.length;
+        if ending && !killer.is_finished() {
+            paused(&mut killer, &mut server).await;
+        }
         // A day's writes, each sent until a kill takes one.
-        if Instant::now() >= next_day {
+        if !ending && Instant::now() >= next_day {
             next_day += plan.day;
             let writes = the_day(&mut book);
             let mut gone = false;
@@ -1341,8 +1367,8 @@ async fn drive(plan: &Plan, dir: &Path, report: &mut Report) -> Result<(), Strin
         // once an hour, and the killer's `SIGKILL` at its moment.
         let hourly = Duration::from_secs(3600).min(plan.length / 2);
         let dead = !server.alive();
-        let clean = !dead && last_clean.elapsed() >= hourly;
-        if let (Engine::Postgres { url, .. }, false) = (&plan.engine, dead)
+        let clean = !dead && !ending && last_clean.elapsed() >= hourly;
+        if let (Engine::Postgres { url, .. }, false, false) = (&plan.engine, dead, ending)
             && last_drop.elapsed() >= hourly
         {
             last_drop = Instant::now();
@@ -1390,7 +1416,7 @@ async fn drive(plan: &Plan, dir: &Path, report: &mut Report) -> Result<(), Strin
             }
             let ms = t.elapsed().as_millis();
             report.line("recovered", json!({"after_ms": ms}));
-            killer = server.kill_at(Instant::now() + wait(&mut rng));
+            killer = arm(&server, &mut rng);
             continue;
         }
         if dead || clean {
@@ -1431,7 +1457,7 @@ async fn drive(plan: &Plan, dir: &Path, report: &mut Report) -> Result<(), Strin
                 }
             }
             server = Server::start(plan, &root).await?;
-            killer = server.kill_at(Instant::now() + wait(&mut rng));
+            killer = arm(&server, &mut rng);
             desk.reconnect(&server)?;
             for owed in std::mem::take(&mut desk.owed) {
                 desk.resent += 1;
@@ -1442,13 +1468,14 @@ async fn drive(plan: &Plan, dir: &Path, report: &mut Report) -> Result<(), Strin
                     Err(Miss::Red(e)) => return Err(format!("sent again after a stop: {e}")),
                 }
             }
-            if desk.owed.is_empty() {
+            if desk.owed.is_empty() && paused(&mut killer, &mut server).await {
                 ledger_holds(&desk).await?;
                 doubter_holds(&desk, &book).await?;
                 feed_follows(&desk.store, &mut feed_next).await?;
+                killer = arm(&server, &mut rng);
             }
         }
-        if last_deep.elapsed() >= plan.deep_every {
+        if last_deep.elapsed() >= plan.deep_every && paused(&mut killer, &mut server).await {
             last_deep = Instant::now();
             deeps += 1;
             sums_hold(&desk, &book).await?;
@@ -1458,6 +1485,7 @@ async fn drive(plan: &Plan, dir: &Path, report: &mut Report) -> Result<(), Strin
                 json!({"elapsed_s": t0.elapsed().as_secs(), "day": book.day, "kills": kills, "stops": stops, "drops": drops,
                     "records": desk.ledger.len(), "resent": desk.resent, "restricted": book.restricted.len(), "rss_kib": server.rss(), "deep": deep, "timings": desk.timings.take()}),
             );
+            killer = arm(&server, &mut rng);
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
