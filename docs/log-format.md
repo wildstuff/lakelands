@@ -974,9 +974,12 @@ member of that name of the value the path has come to; in a verb's
 field of that name on the record the reference names; and there a
 first identifier that names no field but a relation carried by link
 records reads the one link the record holds under it, the next
-identifier a field of that link
-(`docs/decisions/055-a-path-steps-through-a-reference.md`). Both
-readings came with format 15: a log of an earlier format holds no
+identifier a field of that link, and a first identifier that names a
+derived relation onto its target's key reads the one record it matches
+(`docs/decisions/055-a-path-steps-through-a-reference.md`). `exists`,
+with one argument, a relation's name: whether the path that begins
+there reaches a record, in a verb's `requires` and set values only.
+These readings came with format 15: a log of an earlier format holds no
 declaration that reads across a reference or a relation.
 
 **The typed form.** Every node is an object with `op`:
@@ -1000,7 +1003,7 @@ A literal is `{ "type": "null" }`, `{ "type": "bool", "value": true }`,
 `{ "type": "duration", "value": <integer microseconds> }`.
 
 `func` is one of `now`, `today`, `known_at`, `seen_at`, `previous`,
-`setting`, `changed`, `coalesce`, `if`, `lower`, `upper`, `trim`, `len`,
+`setting`, `changed`, `exists`, `coalesce`, `if`, `lower`, `upper`, `trim`, `len`,
 `concat`, `substr`, `contains`, `replace`, `starts_with`, `matches`,
 `abs`, `round`, `count`, `sum`, `min`, `max`, `avg`, spelled in the text
 form exactly as here; and `date_bucket`, whose two

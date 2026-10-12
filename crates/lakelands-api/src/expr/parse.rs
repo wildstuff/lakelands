@@ -71,6 +71,7 @@ pub fn func_name(f: Func) -> &'static str {
         Func::Setting => "setting",
         Func::Param => "param",
         Func::InSet => "in_set",
+        Func::Exists => "exists",
         Func::Changed => "changed",
         Func::Retired => "retired",
         Func::Coalesce => "coalesce",
@@ -114,6 +115,7 @@ pub fn arity(f: Func) -> (usize, Option<usize>) {
         | Func::Setting
         | Func::Param
         | Func::InSet
+        | Func::Exists
         | Func::Changed
         | Func::Lower
         | Func::Upper

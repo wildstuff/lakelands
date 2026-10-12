@@ -460,7 +460,11 @@ pub fn pinnable(who: &Principal, decl: &TypeDecl, verb: Option<&VerbDecl>) -> bo
 /// A path that steps through a relation's link is `who`'s only where
 /// nothing of the link type and its end types is held from it: it holds
 /// `restricted` and no `only` there, and is shown the relation (055,
-/// extended), so no link it reads can be one it is not answered.
+/// extended), so no link it reads can be one it is not answered. So is
+/// one that begins at a derived relation, of its target and, where the
+/// target is a link type, of its ends: no record it
+/// matches can be one the caller is not answered, and none is read as no
+/// match for a caller a record is held from.
 pub fn reads_what_verb_reads<'d>(
     who: &Principal,
     decl: &'d TypeDecl,
@@ -478,6 +482,19 @@ pub fn reads_what_verb_reads<'d>(
             .relations
             .iter()
             .find(|r| !field && r.name.as_str() == p[0].as_str());
+        // A derived relation's far side is its target: nothing of the
+        // target or the verb's own type is held from the caller (044 and
+        // 055, extended).
+        if let Some(r) = r.filter(|r| r.derived.is_some()) {
+            // A target that is a link type is held by its ends too (035).
+            let ends = ty(&r.target).is_some_and(|t| !held_ends(who, t, ty).is_empty());
+            let held = ends
+                || !own_only(who, &r.target).is_empty()
+                || !own_only(who, &decl.name).is_empty();
+            return who.grants.restricted
+                && !held
+                && crate::describe::relation_shown(decl, r, ty, who);
+        }
         let lt = r.and_then(|r| ty(&crate::links::link_type_name(&decl.name, &r.name)));
         r.zip(lt).is_none_or(|(r, lt)| {
             let held = !own_only(who, &lt.name).is_empty() || !held_ends(who, lt, ty).is_empty();

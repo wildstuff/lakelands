@@ -86,7 +86,9 @@ the condition holds over the two of them:
   aggregates, each where a record's own condition refuses it.
 - **No edge where it does not hold.** A condition that answers false or
   null, or cannot be evaluated over the pair, connects nothing, as a
-  read's `where` matches nothing there.
+  read's `where` matches nothing there. A condition need not be boolean
+  to be declared: one that answers no boolean (`where: "from.status"`)
+  is accepted and connects nothing.
 - **The read's clock.** A walk evaluates the condition with the clock of
   the read, also in a read as of a position: the values are those the
   position holds, the clock is the one every other `now()` of that read

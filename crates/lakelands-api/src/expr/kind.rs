@@ -154,7 +154,7 @@ pub fn of(e: &Expr, field: Reads<'_>) -> Result<Option<Kind>, Case> {
                     Some(Instant)
                 }
                 Func::Changed | Func::Retired | Func::Contains | Func::StartsWith => Some(Boolean),
-                Func::InSet => Some(Boolean),
+                Func::InSet | Func::Exists => Some(Boolean),
                 Func::Matches => Some(Boolean),
                 Func::Lower | Func::Upper | Func::Trim | Func::Concat | Func::Substr => Some(Text),
                 Func::Replace => Some(Text),

@@ -837,6 +837,9 @@ catalog! {
         LinkFieldAuthority { field: FieldName, authority: Authority } => "its links arrive from a source, so its field `{field}` is `source` (or derived); an `{authority}` field of a link no door could write",
         /// A link field named as a link's end.
         LinkFieldIsEnd { field: FieldName } => "a link's `{field}` is its end; the relation cannot name a field of its own so",
+        /// A verb reading a derived relation whose match is not its
+        /// target's key.
+        MatchNotKey { relation: RelationName, target: TypeName } => "`{relation}` matches fields of `{target}` other than its key, so it may reach several records; a verb reads a derived relation whose match names every key field of its target",
         /// A measure named twice in a view.
         MeasureTwice { name: FieldName } => "its view names the measure `{name}` twice; a view's measures and its merged sources' share one set of names",
         /// A merged measure that calls no aggregate.
@@ -960,6 +963,8 @@ catalog! {
         DivisionByZero => "division by zero",
         /// An `in` with an empty list.
         InEmpty => "an `in` lists one value at least",
+        /// An `exists` outside a verb's `requires` and set values.
+        ExistsHere => "exists() has meaning in a verb's `requires` and set values, over a relation a path may begin at",
         /// An `in_set` left where no set's filter stands.
         InSetHere => "in_set() has meaning in an object set's `where`, a trigger's `when` and a read's `where`",
         /// A negation of what has no negative.
@@ -1038,8 +1043,6 @@ catalog! {
         RegexUnmatchable { pattern: String, limit: Option<usize> } => "`{pattern}` cannot be matched[: its compiled form is over {limit} bytes]",
         /// A path through a relation that may hold several links from a record.
         RelationHoldsMany { relation: RelationName, cardinality: Cardinality } => "`{relation}` may hold several links from a record ({cardinality}): a path reads a relation that holds at most one, `many_to_one` or `one_to_one`; walk it in a pattern",
-        /// A path through a relation derived from matching values.
-        RelationIsDerived { relation: RelationName } => "`{relation}` is derived from matching values and holds no link record for a path to read",
         /// A path through a relation carried by a reference field.
         RelationViaField { relation: RelationName, field: FieldName } => "`{relation}` is carried by the field `{field}`: a path steps through `{field}`",
         /// A `retired` outside a trigger's guard.

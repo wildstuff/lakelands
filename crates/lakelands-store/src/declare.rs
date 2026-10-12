@@ -414,8 +414,13 @@ fn evaluates_across<'d>(
     on: &[Place],
 ) -> Result<Option<Kind>> {
     let field = |p: &[FieldName]| {
-        let read = decl.stepped(p, far);
-        read.last().map(|(_, f)| (f.ty.kind, read.len()))
+        let derived = decl.derived_step(&p[0]).and_then(|r| far(&r.target));
+        let read = match derived {
+            Some(t) => t.stepped(&p[1..], far),
+            None => decl.stepped(p, far),
+        };
+        let steps = read.len() + usize::from(derived.is_some());
+        read.last().map(|(_, f)| (f.ty.kind, steps))
     };
     kind::of(e, &field).map_err(|why| invalid(at(on, why)))
 }
@@ -1003,14 +1008,42 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
         let lt = o.ty(&links::link_type_name(&on.name, &r.name));
         !r.carried_by_links() || lt.is_ok_and(|lt| lt.fields.iter().any(|f| f.name == links::FROM))
     };
+    // `exists(r)` reads the relation alone.
+    let exists = match d {
+        Declaration::Verb(v) => v.exists_relations(),
+        _ => Vec::new(),
+    };
+    // A relation's name alone, beside the `exists` that names it, stays
+    // a field the type does not have.
+    let bare = |v: &lakelands_api::ontology::VerbDecl, n: &FieldName| {
+        let paths = v.record_paths().unwrap_or_default();
+        let alone = paths.iter().filter(|p| p.len() == 1 && &p[0] == n).count();
+        alone > exists.iter().filter(|e| *e == n).count()
+    };
     let begins_at_relation = |n: &FieldName| match (d, on) {
         (Declaration::Verb(v), Some(on)) => {
             (v.record_paths().unwrap_or_default().iter()).any(|p| {
-                p.len() > 1 && &p[0] == n && related(on, n).is_some_and(|r| link_known(on, r))
-            })
+                let long = p.len() > 1 || exists.contains(n);
+                long && &p[0] == n && related(on, n).is_some_and(|r| link_known(on, r))
+            }) && !bare(v, n)
         }
         _ => false,
     };
+    // `exists` over a field is no question of a relation; over a name the
+    // type has neither as a field nor as a relation it is the unknown
+    // field a path through it would be.
+    if let Some(on) = on
+        && let Some(n) = exists.iter().find(|n| related(on, n).is_none())
+    {
+        let case = match on.fields.iter().any(|f| &f.name == n) {
+            true => Case::ExistsHere,
+            false => Case::UnknownField {
+                ty: on.name.clone(),
+                field: n.clone(),
+            },
+        };
+        return Err(invalid(at(&[d.place()], case)));
+    }
     if let Some(on) = on
         && let reads = lakelands_core::describe::declaration_reads(d, &on.name, &|_| None)
         && let Some(n) = (reads.iter())
@@ -1036,14 +1069,44 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
         for path in v.record_paths().unwrap_or_default() {
             // A relation reads the one link a record holds under it, so one
             // whose records each hold one link record at most.
-            if let (Some(r), true) = (related(on, &path[0]), path.len() > 1) {
+            let long = path.len() > 1 || exists.contains(&path[0]);
+            if let (Some(r), true) = (related(on, &path[0]), long) {
                 let (relation, cardinality) = (r.name.clone(), r.cardinality);
                 let many = matches!(
                     cardinality,
                     Cardinality::OneToMany | Cardinality::ManyToMany
                 );
+                // A derived relation reaches one record at most where its
+                // match names every key field of its target, whatever its
+                // cardinality says (044 enforces none).
+                if let Some(d) = &r.derived {
+                    let target = o.ty(&r.target).ok().filter(|t| t.view.is_none());
+                    let to: Vec<&FieldName> = d.pairs.iter().map(|p| &p.to).collect();
+                    let Some(target) = target
+                        .filter(|t| !t.key.is_empty() && t.key.iter().all(|k| to.contains(&k)))
+                    else {
+                        let target = r.target.clone();
+                        return wrong(Case::MatchNotKey { relation, target });
+                    };
+                    let read = target.stepped(&path[1..], &far);
+                    let next = read.last().and_then(|l| l.1.ty.target.as_ref());
+                    let next = if read.is_empty() {
+                        Some(target)
+                    } else {
+                        next.and_then(far)
+                    };
+                    if let Some((t, field)) = next.zip(path.get(1 + read.len())) {
+                        let (ty, field) = (t.name.clone(), field.clone());
+                        return wrong(Case::UnknownField { ty, field });
+                    }
+                    if let Some((t, f)) = read.iter().find(|r| r.1.at_read()) {
+                        let (field, ty) = (f.name.clone(), t.name.clone());
+                        return wrong(Case::ReadsAtRead { field, ty });
+                    }
+                    continue;
+                }
                 let case = match (&r.derived, &r.via) {
-                    (Some(_), _) => Some(Case::RelationIsDerived { relation }),
+                    (Some(_), _) => None,
                     (_, Some(field)) => Some(Case::RelationViaField {
                         relation,
                         field: field.clone(),
@@ -1280,7 +1343,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 computed_here(&payload, f)?;
             }
             if let Some(r) = &v.requires {
-                condition(r, Eval::Record, &[on[0].clone(), Place::Requires])?;
+                condition(r, Eval::Verb, &[on[0].clone(), Place::Requires])?;
             }
             match &v.effect {
                 VerbEffect::Write { set } => {
@@ -1302,7 +1365,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                             let end = a.field.clone();
                             return Err(invalid(at(&on, Case::LinkEndAsField { end })));
                         }
-                        let value = condition(&a.value, Eval::Record, &on)?;
+                        let value = condition(&a.value, Eval::Verb, &on)?;
                         // A member the verb's payload does not have is never
                         // given: the value would read null at every call.
                         let (_, members) = lakelands_core::derive::verb_reads(&value);

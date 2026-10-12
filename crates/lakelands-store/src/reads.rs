@@ -3940,10 +3940,10 @@ fn derived_edges(
 /// The two records of a derived relation's edge, as its `where` reads
 /// them: `from.<field>` the owner's, `to.<field>` the target's, with the
 /// lake's settings and the read's clock (044, extended).
-struct Ends<'a> {
-    ends: [&'a BTreeMap<FieldName, Value>; 2],
-    settings: &'a BTreeMap<String, Value>,
-    now: Timestamp,
+pub(crate) struct Ends<'a> {
+    pub ends: [&'a BTreeMap<FieldName, Value>; 2],
+    pub settings: &'a BTreeMap<String, Value>,
+    pub now: Timestamp,
 }
 
 impl expr::Scope for Ends<'_> {

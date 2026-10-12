@@ -375,6 +375,14 @@ impl TypeDecl {
         read
     }
 
+    /// The derived relation a path's first segment `n` names, where the
+    /// type has no field of that name.
+    pub fn derived_step(&self, n: &FieldName) -> Option<&RelationDecl> {
+        let field = self.fields.iter().any(|f| &f.name == n);
+        let named = |r: &&RelationDecl| r.derived.is_some() && r.name.as_str() == n.as_str();
+        self.relations.iter().find(named).filter(|_| !field)
+    }
+
     /// The fields a record of the type is keyed by: its `key`, or, of a
     /// view, its `group_by`, none where it groups by nothing. A view's
     /// `key` names the same or is left out; one that came in past
@@ -1079,19 +1087,80 @@ impl VerbDecl {
     /// The fields of other records the verb reads: each field one of its
     /// paths reads past its first, across a reference, and each of a link
     /// read from a relation, its `from` with them ([`TypeDecl::stepped`]),
-    /// with the type it is a field of.
+    /// with the type it is a field of. A path that begins at a derived
+    /// relation reads what an edge of it reads on both records
+    /// ([`Derived::reads`]) and goes on from its target.
     pub fn reads_across<'d>(
         &self,
         on: &'d TypeDecl,
         ty: &dyn Fn(&TypeName) -> Option<&'d TypeDecl>,
     ) -> Option<Vec<(&'d TypeDecl, &'d FieldDecl)>> {
-        let far = |p: Vec<FieldName>| {
+        let far = |p: Vec<FieldName>| -> Vec<(&'d TypeDecl, &'d FieldDecl)> {
+            if let Some(r) = on.derived_step(&p[0])
+                && let Some(target) = ty(&r.target)
+            {
+                let [from, to] = r.derived.as_ref().map(Derived::reads).unwrap_or_default();
+                let field = |t: &'d TypeDecl, n: &FieldName| t.fields.iter().find(|f| &f.name == n);
+                let own = from.iter().filter_map(|n| Some((on, field(on, n)?)));
+                let there = to.iter().filter_map(|n| Some((target, field(target, n)?)));
+                let rest = target.stepped(&p[1..], ty);
+                return own.chain(there).chain(rest).collect();
+            }
+            // `exists` over a relation carried by links reads its link's
+            // `from`, as a path through the link does.
+            if let [n] = p.as_slice() {
+                let field = on.fields.iter().any(|f| &f.name == n);
+                let named = |r: &&RelationDecl| {
+                    !field && r.carried_by_links() && r.name.as_str() == n.as_str()
+                };
+                let lt = on.relations.iter().find(named);
+                let lt = lt.and_then(|r| ty(&crate::key::link_type_name(&on.name, &r.name)));
+                let from = |lt: &'d TypeDecl| {
+                    let f = lt.fields.iter().find(|f| f.name == crate::key::FROM);
+                    f.map(|f| (lt, f))
+                };
+                return lt.and_then(from).into_iter().collect();
+            }
             let read = on.stepped(&p, ty);
             let own = read.first().is_some_and(|r| r.0.name == on.name);
-            read.into_iter().skip(usize::from(own))
+            read.into_iter().skip(usize::from(own)).collect()
         };
         Some(self.record_paths()?.into_iter().flat_map(far).collect())
     }
+
+    /// The relations an `exists(…)` of the verb's `requires` and set values
+    /// names.
+    pub fn exists_relations(&self) -> Vec<FieldName> {
+        let set = match &self.effect {
+            VerbEffect::Write { set } => set.as_slice(),
+            VerbEffect::External { .. } => &[],
+        };
+        let mut out = Vec::new();
+        let values = set.iter().map(|a| &a.value);
+        for e in self
+            .requires
+            .iter()
+            .chain(values)
+            .filter_map(|c| c.typed().ok())
+        {
+            exists_args(&e, &mut out);
+        }
+        out
+    }
+}
+
+/// The relation each `exists(…)` in `e` names, added to `out`.
+fn exists_args(e: &crate::expr::Expr, out: &mut Vec<FieldName>) {
+    use crate::expr::Expr;
+    if let Expr::Call {
+        func: Func::Exists,
+        args,
+    } = e
+        && let Some(Expr::Path { path }) = args.first()
+    {
+        out.extend(path.first().cloned());
+    }
+    crate::expr::children(e).for_each(|c| exists_args(c, out));
 }
 
 /// A verb as it is read: the effect's members beside the verb's own, each

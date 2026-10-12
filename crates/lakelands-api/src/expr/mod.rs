@@ -247,6 +247,12 @@ pub enum Func {
     /// `param('name')`: the value a read binds to the view's parameter of
     /// that name. Only a view's `where` and `measures` may call it.
     Param,
+    /// `exists(relation)`: in a verb's `requires` and set values, whether
+    /// the path that begins at the relation reaches a record: the one link
+    /// a to-one relation carried by links holds from the record, or the
+    /// one record a derived relation onto its target's key matches and
+    /// whose `where` holds.
+    Exists,
     /// `in_set('name')`: whether the named object set's filter holds for
     /// the record: the filter in the call's place, bound when the
     /// condition is read, never stored membership. In an object set's
