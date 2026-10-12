@@ -141,6 +141,22 @@ fn holding_after_sql(after: bool) -> String {
     )
 }
 
+/// The keys of the head records whose field holds one of a list of texts,
+/// in key order, after `?4` where it is bound: driven from the list, each
+/// text a seek into the index's primary key `(ty, field, value, key)`, so
+/// the type is never walked (`CROSS JOIN` keeps the list outside).
+fn holding_any_sql(after: bool) -> String {
+    format!(
+        "SELECT t.key FROM json_each(?3) j CROSS JOIN text_index t \
+         ON t.ty = ?1 AND t.field = ?2 AND t.value = j.value {} ORDER BY t.key",
+        key_from("t.key", after.then_some(4))
+    )
+}
+
+/// The head records of a list of keys, in the list's order.
+const HEADS_OF: &str = "SELECT r.state FROM json_each(?2) k CROSS JOIN records r \
+     ON r.ty = ?1 AND r.key = k.value AND r.until IS NULL ORDER BY k.id";
+
 /// The statement of [`Read::unsorted_after`].
 fn unsorted_after_sql(after: bool) -> String {
     format!(
@@ -440,24 +456,48 @@ impl Read<'_> {
 
     /// What a key-ordered scan or count reads from, at most `n` records
     /// in key order after `after`: with a `lookup`, the head records whose
-    /// field holds exactly its text, a seek into the exact-text index's
-    /// primary key `(ty, field, value, key)`; else the type's records. The
-    /// index names candidates; the rulebook admits each.
+    /// field holds exactly one of its texts; else the type's records. One
+    /// text is a seek into the exact-text index's primary key `(ty, field,
+    /// value, key)` a batch. Several are looked up once for the whole scan
+    /// (`held`), the keys in key order, and each batch reads its records by
+    /// key: a batch never sorts what is left, so the read grows with the
+    /// matches, not their square. The index names candidates; the rulebook
+    /// admits each.
     fn in_key_order(
         &self,
         ty: &TypeName,
-        lookup: &Option<(FieldName, String)>,
+        lookup: &Option<(FieldName, Vec<String>)>,
+        held: &mut Option<Vec<String>>,
         after: Option<&str>,
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
-        let Some((field, text)) = lookup else {
+        let Some((field, texts)) = lookup else {
             return self.records_after(ty, after, n);
         };
-        self.page(
-            &holding_after_sql(after.is_some()),
-            &[&ty.as_str(), &field.as_str(), &n, text],
-            after,
-        )
+        if let [text] = texts.as_slice() {
+            return self.page(
+                &holding_after_sql(after.is_some()),
+                &[&ty.as_str(), &field.as_str(), &n, text],
+                after,
+            );
+        }
+        let keys = match held {
+            Some(keys) => keys,
+            None => {
+                let texts = serde_json::to_string(texts).expect("texts serialise");
+                let (ty, field) = (ty.as_str(), field.as_str());
+                let mut args: Vec<&dyn ToSql> = vec![&ty, &field, &texts];
+                args.extend(after.as_ref().map(|a| a as &dyn ToSql));
+                let sql = holding_any_sql(after.is_some());
+                let mut keys: Vec<String> = column(self.conn, &sql, args.as_slice(), Ok)?;
+                keys.dedup();
+                held.insert(keys)
+            }
+        };
+        let from = after.map_or(0, |a| keys.partition_point(|k| k.as_str() <= a));
+        let page: Vec<&String> = keys[from..].iter().take(n as usize).collect();
+        let page = serde_json::to_string(&page).expect("keys serialise");
+        self.page(HEADS_OF, &[&ty.as_str(), &page], None)
     }
 
     /// How many records of a type are in force at the view's position, the
@@ -759,16 +799,20 @@ impl ProjectionView for SqliteView<'_> {
             // selects by the flags alone is the projection's `COUNT(*)`; any
             // other is counted batch by batch.
             let counted = r.head || is_kept_name(ty);
-            if counted && scan.filter.is_none() && scan.equal.is_empty() && scan.valid_at.is_none()
+            if counted
+                && scan.filter.is_none()
+                && scan.equal.is_empty()
+                && scan.equal_any.is_empty()
+                && scan.valid_at.is_none()
             {
                 return r.count_in_force(ty, scan.retired, scan.restricted);
             }
             // At the head, a count that must hold a text reads the records
             // holding it, not the type.
             let decl = r.type_decl(ty)?;
-            let lookup = engines::text_lookup(scan).filter(|_| r.head);
+            let (lookup, mut held) = (engines::text_lookups(scan).filter(|_| r.head), None);
             engines::count_in_key_order(decl.as_ref(), scan, |after, n| {
-                r.in_key_order(ty, &lookup, after, n)
+                r.in_key_order(ty, &lookup, &mut held, after, n)
             })
         })
     }
@@ -781,8 +825,9 @@ impl ProjectionView for SqliteView<'_> {
             // key order and stops when it is full: at the head, with a text
             // the scan must hold, from the records holding it.
             if scan.order_by.is_empty() {
+                let (lookup, mut held) = (engines::text_lookups(scan).filter(|_| r.head), None);
                 return engines::scan_in_key_order(decl.as_ref(), scan, |after, n| {
-                    r.in_key_order(ty, &lookup, after, n)
+                    r.in_key_order(ty, &lookup, &mut held, after, n)
                 });
             }
             let sorted = r.sorted_fields(ty, decl.as_ref())?;

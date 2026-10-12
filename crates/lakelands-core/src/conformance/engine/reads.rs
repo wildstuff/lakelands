@@ -70,6 +70,11 @@ engine_check!(
 );
 
 engine_check!(
+    EQUAL_ANY_IS_EACH = a_scan_with_equal_any_answers_what_one_equal_a_tuple_answers,
+    "044, seams §scan and lakelands#971: a scan's `equal_any` selects the records that hold one of its tuples exactly, what one scan with `equal` a tuple selects, together and in key order: one field and two, text and a number, `'010'` beside `'10'`, a null that selects nothing, at the head and at an earlier position, read whole and walked one record at a time from `after`"
+);
+
+engine_check!(
     FILTER_AS_EVALUATOR = scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors,
     "seams §scan: an engine selects exactly the records the one evaluator selects, comparisons across kinds included, and a filter that errors for a record does not select it"
 );
@@ -2480,6 +2485,91 @@ fn a_scan_with_equal_answers_exactly_the_identical_values(engine: &dyn LakeEngin
                 got == expected,
                 "a scan for exactly {value} at {at:?} selected {got:?}; identity selects \
                  {expected:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn a_scan_with_equal_any_answers_what_one_equal_a_tuple_answers(engine: &dyn LakeEngine) -> Held {
+    fold(engine, 1, |p| {
+        for (key, v, w) in [
+            ("a", json!("10"), json!("x")),
+            ("b", json!("010"), json!("x")),
+            ("c", json!(10), json!("y")),
+            ("d", json!("10.0"), json!("y")),
+            ("e", json!("20"), json!("x")),
+            ("f", json!("20"), json!("y")),
+            ("g", json!("10"), json!("y")),
+        ] {
+            p.put_record(&record("t", key, json!({"v": v, "w": w}), 1))?;
+        }
+        // More holders of two texts than one batch of a key-ordered read.
+        for i in 0..1100 {
+            let v = if i % 2 == 0 { "30" } else { "31" };
+            p.put_record(&record("t", &format!("m{i:04}"), json!({"v": v}), 1))?;
+        }
+        p.put_record(&record("t", "h", json!({"w": "x"}), 1))
+    })?;
+    // Later, `g` moves away: the head and position 1 differ.
+    fold_one(engine, 2, record("t", "g", json!({"v": "11", "w": "y"}), 2))?;
+    let ty = TypeName::from("t");
+    let one = |pairs: &[(&str, Value)]| -> Vec<(FieldName, Value)> {
+        pairs
+            .iter()
+            .map(|(f, v)| (FieldName::from(*f), v.clone()))
+            .collect()
+    };
+    let asks: Vec<Vec<Vec<(FieldName, Value)>>> = vec![
+        vec![one(&[("v", json!("10"))]), one(&[("v", json!("010"))])],
+        vec![one(&[("v", json!(10))]), one(&[("v", json!("20"))])],
+        vec![
+            one(&[("v", json!("10")), ("w", json!("x"))]),
+            one(&[("v", json!("20")), ("w", json!("y"))]),
+        ],
+        vec![one(&[("v", json!(null))]), one(&[("v", json!("11"))])],
+        vec![one(&[("v", json!("10"))])],
+        vec![one(&[("v", json!("10"))]), one(&[("v", json!(10))])],
+        vec![one(&[("v", json!("30"))]), one(&[("v", json!("31"))])],
+    ];
+    for at in [None, Some(Position(1))] {
+        let v = view(engine, at)?;
+        for any in &asks {
+            let mut each = Vec::new();
+            for t in any {
+                let scan = scan_with(|s| s.equal = t.clone());
+                each.extend(keys(&v.scan(&ty, &scan).must("scanning for one tuple")?));
+            }
+            each.sort();
+            each.dedup();
+            let whole = keys(
+                &v.scan(&ty, &scan_with(|s| s.equal_any = any.clone()))
+                    .must("scanning for any")?,
+            );
+            let counted = v.count(&ty, &scan_with(|s| s.equal_any = any.clone()));
+            let counted = counted.must("counting any")?;
+            let mut walked: Vec<String> = Vec::new();
+            loop {
+                let after = walked.last().map(|k| After {
+                    values: Vec::new(),
+                    key: RecordKey::from(k.as_str()),
+                });
+                let page = scan_with(|s| {
+                    (s.equal_any, s.after, s.limit) = (any.clone(), after.clone(), 1)
+                });
+                let got = keys(&v.scan(&ty, &page).must("walking any")?);
+                if got.is_empty() {
+                    break;
+                }
+                walked.extend(got.into_iter().map(|k| k.to_string()));
+            }
+            ensure!(
+                whole == each && walked == each && counted == each.len() as u64,
+                "at {at:?} a scan for any of {any:?} selected {} whole, {} walked and counted \
+                 {counted}; one scan a tuple selects {}",
+                whole.len(),
+                walked.len(),
+                each.len()
             );
         }
     }

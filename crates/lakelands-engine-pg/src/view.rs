@@ -477,20 +477,52 @@ impl Read<'_> {
 
     /// What a key-ordered scan or count reads from, at most `n` records
     /// in key order, bytewise, after `after`: with a `lookup`, the head
-    /// records whose field holds exactly its text, a walk of the exact-text
-    /// index's unique index `text_index_value`, `(ty, field, value, key
-    /// COLLATE "C")`; else the type's records. The index names candidates;
-    /// the rulebook admits each.
+    /// records whose field holds exactly one of its texts; else the type's
+    /// records. One text is a walk of the exact-text index's unique index
+    /// `text_index_value`, `(ty, field, value, key COLLATE "C")`, a batch.
+    /// Several are looked up once for the whole scan (`held`), the keys in
+    /// key order, and each batch reads its records by key: a batch never
+    /// sorts what is left, so the read grows with the matches, not their
+    /// square. The index names candidates; the rulebook admits each.
     fn in_key_order(
         &mut self,
         ty: &TypeName,
-        lookup: &Option<(FieldName, String)>,
+        lookup: &Option<(FieldName, Vec<String>)>,
+        held: &mut Option<Vec<String>>,
         after: Option<&str>,
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
-        let Some((field, text)) = lookup else {
+        let Some((field, texts)) = lookup else {
             return self.records_after(ty, after, Some(n));
         };
+        if texts.len() > 1 {
+            let keys = match held {
+                Some(keys) => keys,
+                None => {
+                    // After the scan's first key where it starts after one.
+                    let query = format!(
+                        "SELECT t.key FROM unnest($3::text[]) v(value) JOIN {} t \
+                         ON t.ty = $1 AND t.field = $2 AND t.value = v.value {} \
+                         ORDER BY t.key COLLATE \"C\"",
+                        self.names.t("text_index"),
+                        after.map_or("", |_| "AND t.key COLLATE \"C\" > $4")
+                    );
+                    let args: [&(dyn ToSql + Sync); 4] =
+                        [&ty.as_str(), &field.as_str(), texts, &after];
+                    let args = &args[..3 + usize::from(after.is_some())];
+                    let mut keys: Vec<String> = self.db.column(&query, args)?;
+                    keys.dedup();
+                    held.insert(keys)
+                }
+            };
+            let from = after.map_or(0, |a| keys.partition_point(|k| k.as_str() <= a));
+            let page: Vec<String> = keys[from..].iter().take(n as usize).cloned().collect();
+            let query = format!(
+                "SELECT r.state FROM unnest($2::text[]) WITH ORDINALITY k(key, n) {} ORDER BY k.n",
+                head_of_sql(&self.names.t("records"), "k.key")
+            );
+            return self.db.records(&query, &[&ty.as_str(), &page]);
+        }
         let limit = i64::from(n);
         let from = after.map_or("", |_| "AND t.key COLLATE \"C\" > $5");
         // The index's rows first, in key order and cut at the limit, then
@@ -509,7 +541,8 @@ impl Read<'_> {
             text = self.names.t("text_index"),
             head = head_of_sql(&self.names.t("records"), "t.key"),
         );
-        let args: [&(dyn ToSql + Sync); 5] = [&ty.as_str(), &field.as_str(), text, &limit, &after];
+        let args: [&(dyn ToSql + Sync); 5] =
+            [&ty.as_str(), &field.as_str(), &texts[0], &limit, &after];
         self.db
             .records(&query, &args[..4 + usize::from(after.is_some())])
     }
@@ -825,16 +858,20 @@ impl ProjectionView for PgView<'_> {
             // selects by the flags alone is the projection's `COUNT(*)`; any
             // other is counted batch by batch.
             let counted = r.head || is_kept_name(ty);
-            if counted && scan.filter.is_none() && scan.equal.is_empty() && scan.valid_at.is_none()
+            if counted
+                && scan.filter.is_none()
+                && scan.equal.is_empty()
+                && scan.equal_any.is_empty()
+                && scan.valid_at.is_none()
             {
                 return r.count_in_force(ty, scan.retired, scan.restricted);
             }
             // At the head, a count that must hold a text reads the records
             // holding it, not the type.
             let decl = r.type_decl(ty)?;
-            let lookup = engines::text_lookup(scan).filter(|_| r.head);
+            let (lookup, mut held) = (engines::text_lookups(scan).filter(|_| r.head), None);
             engines::count_in_key_order(decl.as_ref(), scan, |after, n| {
-                r.in_key_order(ty, &lookup, after, n)
+                r.in_key_order(ty, &lookup, &mut held, after, n)
             })
         })
     }
@@ -847,8 +884,9 @@ impl ProjectionView for PgView<'_> {
             // key order and stops when it is full: at the head, with a text
             // the scan must hold, from the records holding it.
             if scan.order_by.is_empty() {
+                let (lookup, mut held) = (engines::text_lookups(scan).filter(|_| r.head), None);
                 return engines::scan_in_key_order(decl.as_ref(), scan, |after, n| {
-                    r.in_key_order(ty, &lookup, after, n)
+                    r.in_key_order(ty, &lookup, &mut held, after, n)
                 });
             }
             let sorted = r.sorted_fields(ty, decl.as_ref())?;

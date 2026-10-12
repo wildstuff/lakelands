@@ -217,6 +217,7 @@ pub fn admits(decl: Option<&TypeDecl>, record: &StoredRecord, scan: &Scan) -> bo
         && (decl.zip(scan.valid_at))
             .is_none_or(|(d, t)| crate::valid_time::record_holds(d, fields, t))
         && holds_exactly(record, &scan.equal)
+        && (scan.equal_any.is_empty() || scan.equal_any.iter().any(|t| holds_exactly(record, t)))
         && (scan.filter.as_ref()).is_none_or(|f| holds(f, &scope).unwrap_or(false))
 }
 
@@ -236,6 +237,29 @@ pub fn text_lookup(scan: &Scan) -> Option<(FieldName, String)> {
         .iter()
         .find_map(|(f, v)| v.as_str().map(|t| (f.clone(), t.to_owned())))
         .or_else(|| scan.filter.as_ref().and_then(exact_text_term))
+}
+
+/// The one field and the texts an engine may look candidates up by in its
+/// text index at the head, in one ask: those of `equal_any` where each of
+/// its tuples holds a string for the same field, else [`text_lookup`]'s
+/// one. The engine still admits each candidate.
+pub fn text_lookups(scan: &Scan) -> Option<(FieldName, Vec<String>)> {
+    let first = |t: &[(FieldName, Value)]| {
+        t.first()
+            .and_then(|(f, v)| Some((f.clone(), v.as_str()?.to_owned())))
+    };
+    let Some((field, _)) = scan.equal_any.first().and_then(|t| first(t)) else {
+        return text_lookup(scan).map(|(f, t)| (f, vec![t]));
+    };
+    let texts = scan
+        .equal_any
+        .iter()
+        .map(|t| first(t).filter(|(f, _)| *f == field).map(|(_, v)| v));
+    // A tuple that holds no text there: the one lookup `equal` gives.
+    texts
+        .collect::<Option<Vec<String>>>()
+        .map(|texts| (field, texts))
+        .or_else(|| text_lookup(scan).map(|(f, t)| (f, vec![t])))
 }
 
 /// How many rows a key-ordered scan asks its storage for at a time: the
