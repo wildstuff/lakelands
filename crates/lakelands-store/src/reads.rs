@@ -2225,7 +2225,10 @@ impl<'a> Reader<'a> {
         // now or named it when proposed: a condition or a reference a
         // setting, the clock or the record decide may come to a record at
         // one and not at the other. It would tell of that record, and its
-        // accept is not granted (006).
+        // accept is not granted (006). Nor, to one without `restricted`, is
+        // one whose own record or a link's end is held: an `only` lists
+        // another's in part (lakelands#867), a hold not at all
+        // (lakelands#1008).
         let (g, view) = (&self.who.grants, self.view.as_ref());
         if !g.restricted || rights::holds_only(self.who) {
             let settings = crate::lake::settings_in(view, o).ok()?;
@@ -2242,7 +2245,17 @@ impl<'a> Reader<'a> {
             let held = |(t, k): &(TypeName, RecordKey)| {
                 view.get(t, k).ok().flatten().is_some() && !answered(view, self.sight, t, k)
             };
-            if named.iter().any(held) {
+            let own = match g.restricted {
+                false => crate::writes::reached(self.lake, o, now, &logged, true).ok()?,
+                true => Vec::new(),
+            };
+            let withheld = |(t, k): &(TypeName, RecordKey)| {
+                view.get(t, k)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|r| self.sight.withheld(&r))
+            };
+            if named.iter().any(held) || own.iter().any(withheld) {
                 return None;
             }
         }

@@ -43,7 +43,7 @@ check!(
 
 check!(
     HOLD_NOT_THERE_TO_A_WRITE = a_restricted_record_is_not_there_to_a_writer_without_the_grant,
-    "006, extended (lakelands#772): to a writer without the `restricted` grant a restricted record is not there at any write door, its refusal compared whole with that of a key no record holds: a reference to it and either end of a `link` are `not_live`, `retire`, `unlink` of a link to it and a verb called on it, of low risk or high, are not found, and so is the proposal of each; a link to it ingested again is `not_live`; an upsert onto its key, made or proposed, and onto a held key retired since, made, proposed or ingested, an ingest onto a live held key and a link onto a link whose own record is held are not granted and name no field, as is a well-formed setting onto a held one's key; that refusal comes last of the record checks (016), so under a version, without a required field, with a key field that disagrees and with a `view_kept` setting that is no boolean the upsert onto a held key answers as onto a free one, a conflict, a constraint and twice invalid; nothing is written; a reviewer without the grant is refused the accept of a write onto it, as not granted; the accept of a proposal is judged as its write as the records stand then, so one naming a record restricted since is refused, and one that reached a record restricted when proposed, as only a holder of the grant could, is applied"
+    "006, extended (lakelands#772): to a writer without the `restricted` grant a restricted record is not there at any write door, its refusal compared whole with that of a key no record holds: a reference to it and either end of a `link` are `not_live`, `retire`, `unlink` of a link to it and a verb called on it, of low risk or high, are not found, and so is the proposal of each; a link to it ingested again is `not_live`; an upsert onto its key, made or proposed, and onto a held key retired since, made, proposed or ingested, an ingest onto a live held key and a link onto a link whose own record is held are not granted and name no field, as is a well-formed setting onto a held one's key; that refusal comes last of the record checks (016), so under a version, without a required field, with a key field that disagrees and with a `view_kept` setting that is no boolean the upsert onto a held key answers as onto a free one, a conflict, a constraint and twice invalid; nothing is written; a proposed write onto it is not there to a reviewer without the grant, its accept and its reject answered as an id never made, to the byte (lakelands#1008); the accept of a proposal is judged as its write as the records stand then, so one naming a record restricted since is refused, and one that reached a record restricted when proposed, as only a holder of the grant could, is applied"
 );
 
 async fn a_restricted_record_is_withheld_but_kept(store: Store) -> Held {
@@ -386,7 +386,7 @@ async fn a_record_held_across_a_rekey_is_not_there_as_of_before(store: Store) ->
 check!(
     HOLD_REACHES_LINKS_AND_REVIEWS =
         a_link_with_a_held_end_is_not_there_and_an_accept_is_judged_by_what_it_reaches,
-    "006 and 051, extended (lakelands#781): to a reader without the `restricted` grant a link with a held end is not there: `get` of it answers as of a link no record holds, compared whole, `find` on the link type does not list it, count it in a total or an aggregate, or find it by its hidden end, a kept view over the link type, and over a view over it, answers as its computed twin, a search as of before the hold judged at the head leaves it out, and a reference to it is `not_live` as one to a link no record holds; a cardinality refusal over such a link still refuses and names no end; to a reviewer without the grant a proposed write that references a held record or a link with a held end is not there, its accept and its reject answered as an id no proposal holds (lakelands#929), a decision judged as the write it decides either way, an upsert's or a call's in whatever form its assignment computes it (a payload member, a literal, `coalesce`, another field), which the owner applies; a high-risk call through the `call` door is judged as its caller's write, refused as not live to one without the grant and logging nothing, and proposed to a holder; and what a write reaches is computed as at its proposal, by the declarations, its record, the settings in force and its time, so one that reaches a held record only through a field retyped, a record, a setting or a time changed since is judged at the accept as its proposer's write; a holder's proposed call on a link with a held end is listed to a reviewer without the grant without its write, is not that reviewer's to accept or to reject, and is accepted by one who holds it; and the host places and lifts a hold on a retired record"
+    "006 and 051, extended (lakelands#781): to a reader without the `restricted` grant a link with a held end is not there: `get` of it answers as of a link no record holds, compared whole, `find` on the link type does not list it, count it in a total or an aggregate, or find it by its hidden end, a kept view over the link type, and over a view over it, answers as its computed twin, a search as of before the hold judged at the head leaves it out, and a reference to it is `not_live` as one to a link no record holds; a cardinality refusal over such a link still refuses and names no end; to a reviewer without the grant a proposed write that references a held record or a link with a held end is not there, its accept and its reject answered as an id no proposal holds (lakelands#929), a decision judged as the write it decides either way, an upsert's or a call's in whatever form its assignment computes it (a payload member, a literal, `coalesce`, another field), which the owner applies; a high-risk call through the `call` door is judged as its caller's write, refused as not live to one without the grant and logging nothing, and proposed to a holder; and what a write reaches is computed as at its proposal, by the declarations, its record, the settings in force and its time, so one that reaches a held record only through a field retyped, a record, a setting or a time changed since is judged at the accept as its proposer's write; a holder's proposed call on a link with a held end is not there to a reviewer without the grant, not listed and its accept and its reject answered as an id never made (lakelands#1008), and is accepted by one who holds it; and the host places and lifts a hold on a retired record"
 );
 
 /// Each write door that names the record `k`, as `who`: a reference to a
@@ -733,13 +733,26 @@ async fn a_restricted_record_is_not_there_to_a_writer_without_the_grant(store: S
     let Outcome::Proposed { proposal, .. } = said.must("the holder's proposal")? else {
         return Err(Failure::new("the holder's write onto `held` is proposed"));
     };
+    // It is not there to it: its accept and its reject answer as an id
+    // never made, to the byte (lakelands#1008).
     let mut reviewer = writer("reviewer", false);
     reviewer.grants.review = true;
-    let decided = c.accept(&reviewer, &proposal).await.map(drop);
-    if !refused(&decided) {
-        apart.push(format!(
-            "a reviewer without the grant accepts onto `held`: {decided:?}"
-        ));
+    let none = ProposalId::from("none");
+    for reject in [false, true] {
+        let decide = async |id: &ProposalId| match reject {
+            false => c.accept(&reviewer, id).await,
+            true => c.reject(&reviewer, id, "why".into()).await,
+        };
+        let (held, never) = (decide(&proposal).await, decide(&none).await);
+        let renamed = ("none", proposal.as_str());
+        let what = "a reviewer deciding onto `held`";
+        if !matches!((&held, &never), (Err(a), Err(b)) if alike_renamed(what, a, b, renamed).is_ok())
+        {
+            apart.push(format!(
+                "a reviewer without the grant deciding onto `held` (reject: {reject}): \
+                 {held:?}; an id never made: {never:?}"
+            ));
+        }
     }
     ensure!(
         apart.is_empty(),
@@ -1196,20 +1209,18 @@ async fn a_link_with_a_held_end_is_not_there_and_an_accept_is_judged_by_what_it_
     let Outcome::Proposed { proposal: id, .. } = called.must("the holder's call")? else {
         return Err(Failure::new("the holder's call is proposed"));
     };
-    // The reviewer without the grant is listed it without its write, as
-    // it is not answered the link, and decides it not.
+    // It is not there to the reviewer without the grant, as it is not
+    // answered the link: not listed, and decided as an id never made
+    // (lakelands#1008).
     let listed = c.proposals(&reviewer, Default::default()).await;
     let listed = listed.must("the reviewer's listing")?.data;
-    let bare = |p: &lakelands_api::write::Proposal| p.id == id && p.write.is_none() && p.more;
-    let no = [
-        c.accept(&reviewer, &id).await.map(drop),
-        c.reject(&reviewer, &id, "no".into()).await.map(drop),
-    ];
-    let refused = Err(Error::Refused {
-        field: None,
-        reason: Refusal::NotGranted,
-    });
-    if !listed.iter().any(bare) || no != [refused.clone(), refused] {
+    let decide = async |id: &ProposalId| {
+        let accept = c.accept(&reviewer, id).await.map(drop);
+        [accept, c.reject(&reviewer, id, "no".into()).await.map(drop)]
+    };
+    let (no, never) = (decide(&id).await, decide(&ProposalId::from("none")).await);
+    let as_never = |(a, b): (&Result<(), Error>, &Result<(), Error>)| matches!((a, b), (Err(a), Err(b)) if alike_renamed("", a, b, ("none", id.as_str())).is_ok());
+    if listed.iter().any(|p| p.id == id) || !no.iter().zip(&never).all(as_never) {
         apart.push(format!(
             "the holder's call on `d1:held`, to a reviewer without the grant: {no:?}, listed {listed:?}"
         ));

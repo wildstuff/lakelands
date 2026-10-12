@@ -1964,9 +1964,9 @@ no record holds is. A proposed call on such a link is listed without its
 write to a reviewer who is not answered the link, and is no more that
 reviewer's to decide than any proposal it is not listed whole; its
 accept is refused for a verb that writes the link and for one that
-reaches outside the lake. The hold has the same side: a proposed call on
-a link with a held end is listed without its write to a reviewer without
-`restricted`. A migration's report names, among its sample keys, neither
+reaches outside the lake. A hold goes further: a proposed call on a link
+with a held end is not there to a reviewer without `restricted`
+(lakelands#1008). A migration's report names, among its sample keys, neither
 a link with an end held from its reader nor the links of a link type its
 reader is not shown, and its counts stay whole (above).
 
@@ -2115,17 +2115,15 @@ record computes (032), and a call's as its assignments compute them for
 the record at the accept, whatever form they take, with the records its
 `requires` and set values read across a reference (055), as when it was
 proposed and as at the accept; and the two end records of each link
-among them. A reviewer without `restricted` is refused, as not granted,
-the accept of a write whose own record or ends are held, and its reject
-as its accept: a reject that passed beside a refused accept would tell
-its reviewer that the write reaches a held record. A proposal that names
-a record its reviewer is not answered beside its own (a reference its
-upsert sends or computes, a record its call reads across, and their ends
-where one is a link) is not there to that reviewer, held when it was
-proposed or since: not listed, its accept and reject answered as an id
-no proposal holds, as one whose verb reads a field its reviewer may not
-read is. This is asked of a reviewer without `restricted` and of one
-holding `only`, by the one function that computes the reach. The
+among them. A proposal whose own record or ends are held from a
+reviewer without `restricted` is not there to it, and nor is one that
+names a record its reviewer is not answered beside its own (a reference
+its upsert sends or computes, a record its call reads across, and their
+ends where one is a link), held when it was proposed or since: not
+listed, its accept and reject answered as an id no proposal holds, to
+the byte, as one whose verb reads a field its reviewer may not read is
+(lakelands#1008). This is asked of a reviewer without `restricted` and
+of one holding `only`, by the one function that computes the reach. The
 accept judges a proposer as a holder where its write reached one when
 proposed, computed wholly as it stood then (the declarations, its
 record, the settings in force and the proposal's time): a record held, a
@@ -2632,3 +2630,7 @@ Of `only`:
 - 027 added: what a caller not shown a relation or a reference field
   that refers to a removed relation's link type is told of it, among
   what is told on purpose (lakelands#920).
+- A proposal whose own record or a link's end is held from a reviewer
+  without `restricted` is not there to it, where it was listed without
+  its write and its accept and reject refused as not granted
+  (lakelands#1008).
