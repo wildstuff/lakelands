@@ -15,7 +15,7 @@ use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::checks::ALL;
 use lakelands_core::conformance::{
     Continue, Continued, FreshLake, Harness, Import, ImportedLake, LARGE_LAKE, Meter, Relimit,
-    Reopen, below, continue_below, run_all, run_one,
+    Reopen, Twin, below, continue_below, run_all, run_one,
 };
 use lakelands_engine_sqlite::SqliteOpener;
 use peak_alloc::PeakAlloc;
@@ -126,6 +126,23 @@ impl Harness for Sqlite {
 
     fn scratch(&self) -> PathBuf {
         self.root.join("scratch")
+    }
+
+    fn twinner(&self) -> Twin {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = self.root.clone();
+        Arc::new(move |lake, host| {
+            // In a directory of its own: the lake's is the harness's.
+            let dir = root.join(format!("twin-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
+            Box::pin(async move {
+                let seams = Seams {
+                    engines: vec![Arc::new(SqliteOpener)],
+                    ..host
+                };
+                let location = Location::sqlite(lake.to_string(), dir);
+                lakelands_store::open(location, seams, OpenMode::Create).await
+            })
+        })
     }
 
     fn importer(&self) -> Import {
