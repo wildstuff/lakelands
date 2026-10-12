@@ -68,6 +68,9 @@ type Fields = BTreeMap<String, Value>;
 const LAKE: &str = "soak";
 /// The longest a call or a start may take before it is a red: a hang.
 const WAIT: Duration = Duration::from_secs(120);
+/// How long a call cut off by a kill waits for the server's process to
+/// end before the cut is judged a red.
+const EXITING: Duration = Duration::from_secs(10);
 /// The partner the reader that is not trusted is limited to, and the one
 /// whose records are restricted.
 const OWN: &str = "p0001";
@@ -535,6 +538,16 @@ impl Server {
         matches!(self.child.try_wait(), Ok(None))
     }
 
+    /// Whether the server's process ended, waiting up to [`EXITING`] for
+    /// it. A `SIGKILL` closes the process's sockets before the process can
+    /// be waited on, so a call the kill cut off may find it still running
+    /// for a moment.
+    async fn ended(&mut self) -> bool {
+        tokio::time::timeout(EXITING, self.child.wait())
+            .await
+            .is_ok()
+    }
+
     /// The server's resident memory, in KiB.
     fn rss(&self) -> Option<u64> {
         let status = std::fs::read_to_string(format!("/proc/{}/status", self.pid)).ok()?;
@@ -760,7 +773,10 @@ impl Desk {
                 Ok(())
             }
             Err(e) => {
-                let alive = server.alive();
+                let alive = match e {
+                    Error::Unavailable { .. } => !server.ended().await,
+                    _ => server.alive(),
+                };
                 let miss = Desk::miss(e, alive, kind);
                 if matches!(miss, Miss::Gone) {
                     self.owed.push(owed);
