@@ -7,15 +7,18 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::engine::{ProjectionStore, ProjectionView};
+use std::ops::Bound::{Excluded, Included, Unbounded};
+
+use lakelands_api::canonical::hex;
+use lakelands_api::engine::{After, ProjectionStore, ProjectionView, Scan};
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::expr::{Condition, Expr, Func, Literal};
 use lakelands_api::ontology::{Measure, TypeDecl, ViewDecl};
 use lakelands_api::record::{StoredRecord, Value};
-use lakelands_api::seam::{VIEW_KEPT_SETTING as SETTING, kept_name};
+use lakelands_api::seam::{VIEW_KEPT_SETTING as SETTING, kept_name, order_name};
 use lakelands_api::write::Declaration;
 use lakelands_api::{FieldName, Position, RecordKey, Result, Timestamp, TypeName};
-use lakelands_core::expr::aggregate::{Keeping, KeptFolds, Row};
+use lakelands_core::expr::aggregate::{Entry, Keeping, KeptFolds, Row};
 use lakelands_core::expr::{self, Place};
 use serde::{Deserialize, Serialize};
 
@@ -44,6 +47,37 @@ pub(crate) const WHOLE: &str = "whole";
 /// The member of [`FOLDS`] that says the group is on the open face alone.
 pub(crate) const ALONE: &str = "alone";
 
+/// The field of an entry of an extreme's order that holds it ([`Entry`]):
+/// an object, so the engines keep no text row for it.
+const ENTRY: &str = "sys:entry";
+
+/// The entries of one view's orders as a transaction leaves them, by key:
+/// an entry's JSON text, none for one ended. Each extreme of each source
+/// has an order for each group, whose entries begin [`within`]; after
+/// that, a member's place in it and its key. On the open face every
+/// member has an entry under `o`. On the whole face a member has one under
+/// `w`, unless its `o` entry is the same: a source's record is the same
+/// member on both faces but where it is restricted, and a view's record
+/// may read otherwise on its whole face, so it has both. Where the
+/// transaction ended the name as a whole, the engine's entries are not
+/// read, and these are all it holds.
+#[derive(Default)]
+pub(crate) struct Orders {
+    ended: bool,
+    entries: Entries,
+}
+
+/// Entries by key: an entry's JSON text, none for one ended.
+type Entries = BTreeMap<Box<str>, Option<Box<str>>>;
+
+/// Where the entries of the `j`th call of the source `i` begin, for the
+/// group at `group` and one face's letter: its key's digest, so that an
+/// entry's key is short whatever the group's is.
+fn within(i: usize, j: usize, group: &RecordKey, letter: char) -> String {
+    let digest = crate::backed::digest(&Value::from(group.as_str())).0;
+    format!("{i}.{j}.{}.{letter}.", &digest[..32])
+}
+
 /// What the store records of a kept view at a position: counters, and
 /// nothing that grows with the view.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,7 +87,7 @@ pub(crate) struct State {
     pub whole: bool,
     /// The groups that are not exact, on the open face and on the whole
     /// one: a measure that fails, a sum outside what is exact, a member
-    /// that does not fold, an extreme given up ([`MEMBERS`]).
+    /// that does not fold.
     pub not_exact: [u64; 2],
     /// The groups whose whole face reads otherwise than their open one.
     pub differ: u64,
@@ -119,11 +153,10 @@ impl Kept {
         let mut settings = BTreeSet::new();
         let mut source =
             |ty: &TypeName, filter: Option<&Condition>, by: &[FieldName], m: &[Measure]| {
-                let filter = filter.map(|w| condition(w, Place::View, "view"));
+                let filter = filter.map(|w| condition(w, Place::View, &[]));
                 let filter = filter.transpose().ok()?;
-                let measured = |m: &Measure| {
-                    Ok((m.name.clone(), condition(&m.expr, Place::Group, "measure")?))
-                };
+                let measured =
+                    |m: &Measure| Ok((m.name.clone(), condition(&m.expr, Place::Group, &[])?));
                 let measures: Result<Vec<(FieldName, Expr)>> = m.iter().map(measured).collect();
                 let measures = measures.ok()?;
                 let read = filter.iter().chain(measures.iter().map(|(_, e)| e));
@@ -228,6 +261,8 @@ struct Group {
 /// One kept view while a transaction works on it.
 struct Work {
     kept: Kept,
+    /// The entries the event's notes ended or put, written at its flush.
+    entries: Entries,
     state: State,
     groups: BTreeMap<RecordKey, Group>,
     touched: BTreeSet<RecordKey>,
@@ -388,12 +423,35 @@ impl Work {
             kept,
             groups,
             touched,
+            entries,
             ..
         } = self;
         let (src, settings, cx) = (&kept.sources[i], Some(at.settings), (at, staged));
         for face in 0..2 {
             let was = before.and_then(|r| at.member(kept, src, r, face));
             let is = after.and_then(|r| at.member(kept, src, r, face));
+            let placed = |m: &Option<Member>, r: Option<&StoredRecord>| {
+                let letter = match face {
+                    0 => Some('o'),
+                    _ => r.filter(|r| src.view || r.restricted).map(|_| 'w'),
+                };
+                let (Some(m), Some(letter)) = (m, letter) else {
+                    return Vec::new();
+                };
+                let of = src.keeping.entries(&m.key, &m.fields, settings).into_iter();
+                let key = |j, place: &[u8]| {
+                    format!("{}{}.{}", within(i, j, &m.group, letter), hex(place), m.key)
+                };
+                let entry = |e: Entry| serde_json::to_string(&e).expect("an entry serialises");
+                of.map(|(j, place, e)| (key(j, &place), entry(e))).collect()
+            };
+            let (gone, put) = (placed(&was, before), placed(&is, after));
+            for (key, _) in gone.iter().filter(|e| !put.contains(e)) {
+                entries.insert(key.as_str().into(), None);
+            }
+            for (key, e) in put.into_iter().filter(|e| !gone.contains(e)) {
+                entries.insert(key.into(), Some(e.into()));
+            }
             match (was, is) {
                 (None, None) => {}
                 (Some(w), Some(n)) if w.group == n.group => {
@@ -555,6 +613,7 @@ impl Views {
         self.looked.insert(kept.decl.name.clone());
         let work = Work {
             kept,
+            entries: Entries::new(),
             state,
             groups: BTreeMap::new(),
             touched: BTreeSet::new(),
@@ -620,16 +679,24 @@ impl Views {
             let work = self.views.get_mut(&view).expect("a touched view is kept");
             let before = work.state.clone();
             let mut changed = Vec::new();
-            for key in std::mem::take(&mut work.touched) {
-                // An extreme whose holder the event took is read again
-                // before its group is put: nothing waits past its event.
-                // A group given up is read no more: it is given up again.
-                let folds = || work.groups[&key].folds.iter().flatten();
-                match (folds().any(KeptFolds::waits), folds().any(KeptFolds::lost)) {
-                    (true, false) => work.again(at, staged, &key)?,
-                    (true, true) => given_up(work.groups.get_mut(&key).expect("a touched group")),
-                    _ => {}
+            // The event's entries first: the seeks read them.
+            let (name, orders) = (order_name(&view), staged.orders.entry(order_name(&view)));
+            let orders = orders.or_default();
+            for (key, entry) in std::mem::take(&mut work.entries) {
+                let mut r = StoredRecord::ended(name.clone(), RecordKey::from(&*key), position);
+                if let Some(e) = &entry {
+                    (r.version, r.retired) = (lakelands_api::Version(1), false);
+                    r.fields
+                        .insert(ENTRY.into(), serde_json::from_str(e).expect("an entry"));
                 }
+                at.projection.put_record(&r)?;
+                orders.entries.insert(key, entry);
+            }
+            for key in std::mem::take(&mut work.touched) {
+                // An extreme whose holder the event took is read from its
+                // order before its group is put: nothing waits past its
+                // event.
+                work.seat(at.view, staged.orders.get(&name), &key)?;
                 let was = work.groups[&key].stored.clone();
                 let is = work.record(&key, at.settings, position);
                 let same = |a: &StoredRecord, b: &StoredRecord| {
@@ -691,6 +758,15 @@ impl Views {
             at.projection.put_record(&ended)?;
             staged.put(ended);
         }
+        // The entries end as a whole, whatever their number: a seek in the
+        // transaction reads only those put after.
+        let name = order_name(view);
+        at.projection.end_head_only(&name, position)?;
+        let ended = Orders {
+            ended: true,
+            ..Orders::default()
+        };
+        staged.orders.insert(name, ended);
         at.put_state(staged, view, &State::default(), position)
     }
 
@@ -797,8 +873,8 @@ pub(crate) fn note(
 pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event) -> Result<()> {
     // What the event may move: a setting, or the types whose declaration
     // or records it changes under a view: a declared type, and every type
-    // a migration's step reached.
-    use EventBody::{Declared, Migrated};
+    // a migration's step, or a value type's, reached.
+    use EventBody::{Declared, Migrated, ValueTypeMigrated};
     let (mut setting, mut declared) = (None, BTreeSet::new());
     match &e.body {
         EventBody::RecordUpserted { ty, key, .. }
@@ -814,7 +890,9 @@ pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event) -> Result<()> 
             declaration: Declaration::Type(t),
             ..
         } => declared.extend([t.name.clone()]),
-        EventBody::Migrated { .. } => declared = staged.stepped_types(),
+        EventBody::Migrated { .. } | EventBody::ValueTypeMigrated { .. } => {
+            declared = staged.stepped_types();
+        }
         _ => {}
     }
     let asked = (setting.as_deref())
@@ -827,7 +905,11 @@ pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event) -> Result<()> 
     // A setting's write and a declaration may move any view: all are
     // read in. A record's write moves the views that read its type, which
     // its notes have read in.
-    let any = setting.is_some() || matches!(e.body, Declared { .. } | Migrated { .. });
+    let any = setting.is_some()
+        || matches!(
+            e.body,
+            Declared { .. } | Migrated { .. } | ValueTypeMigrated { .. }
+        );
     let mut views = std::mem::take(&mut staged.kept);
     let settled = (|| {
         if any {
@@ -876,76 +958,137 @@ pub(crate) fn made(at: &At<'_>, staged: &mut Staged, position: Position) -> Resu
     made
 }
 
-/// How many records one group is read again over, at most: past them it
-/// is given up.
-const MEMBERS: usize = 8 * 1024;
-
 impl Work {
-    /// Read the group at `key` again, in the fold of the event that took
-    /// an extreme's holder from it: each source's live records with the
-    /// group's values, by the engine's lookup, folded from nothing. A walk
-    /// past [`MEMBERS`], over all sources and both lookups, ends there,
-    /// but after a kept step of the transaction, whose walk of the type
-    /// goes on to its end handing nothing more ([`Staged::matching`]), and
-    /// gives the group up: what waited is not the computation's own until
-    /// the view is made or the group ends, and nothing reads it again.
-    /// Decided by the event, so on every path that folds it alike.
-    fn again(&mut self, at: &At<'_>, staged: &Staged, key: &RecordKey) -> Result<()> {
+    /// Each extreme of the group at `key` whose holder left is held by the
+    /// first entry of its order from the holder it kept on: that is where
+    /// it stands if it stayed, and the next if it left. A face that reads
+    /// from both `o` and `w` takes the lesser of the two. A source's whole
+    /// face whose state is the open one's has no restricted member, and is
+    /// seated as the open one is.
+    fn seat(
+        &mut self,
+        view: &dyn ProjectionView,
+        orders: Option<&Orders>,
+        key: &RecordKey,
+    ) -> Result<()> {
         let Work { kept, groups, .. } = self;
         let g = groups.get_mut(key).expect("a touched group");
-        let own = &kept.view().group_by;
-        let mut fresh = [Vec::new(), Vec::new()];
-        let (mut left, mut whole) = (MEMBERS, true);
-        for src in &kept.sources {
-            let mut folds = [src.keeping.none(), src.keeping.none()];
-            let equal: Vec<(FieldName, Value)> = (src.group_by.iter().zip(own))
-                .map(|(f, from)| (f.clone(), g.by[from].clone()))
-                .collect();
-            let ty = match src.view {
-                true => kept_name(&src.ty),
-                false => src.ty.clone(),
-            };
-            // A member that is a view's record is found by its own fields
-            // for the open face, and for the whole one too unless that
-            // reads otherwise: those are found by their mark, whatever
-            // their own fields say.
-            let differs = [(FieldName::from(DIFFERS), Value::from("1"))];
-            let mut put = |member: &StoredRecord, faces: std::ops::Range<usize>| {
-                let Some(less) = left.checked_sub(1) else {
-                    return false;
-                };
-                left = less;
-                for face in faces {
-                    let m = at.member(kept, src, member, face);
-                    if let Some(m) = m.filter(|m| &m.group == key) {
-                        (src.keeping).put(&mut folds[face], &m.key, &m.fields, Some(at.settings));
+        let name = order_name(&kept.decl.name);
+        for (i, src) in kept.sources.iter().enumerate() {
+            let same = !src.view && g.folds[0][i] == g.folds[1][i];
+            for face in 0..2 - usize::from(same) {
+                let folds = &mut g.folds[face][i];
+                let letters = [('o', face == 0 || !src.view), ('w', face == 1)];
+                let mut first = Vec::new();
+                for (j, from) in src.keeping.waiting(folds) {
+                    let from = from.map(|(place, m)| format!("{}.{m}", hex(&place)));
+                    let mut held: Option<(String, Entry)> = None;
+                    for letter in letters.iter().filter_map(|(l, on)| on.then_some(*l)) {
+                        let within = within(i, j, key, letter);
+                        let start = format!("{within}{}", from.as_deref().unwrap_or_default());
+                        let Some((at, e)) = seek(view, orders, &name, &within, start)? else {
+                            continue;
+                        };
+                        let place = at[within.len()..].to_owned();
+                        if held.as_ref().is_none_or(|(p, _)| place < *p) {
+                            held = Some((place, e));
+                        }
                     }
+                    first.push((j, held.map(|(_, e)| e)));
                 }
-                true
-            };
-            let own = |m: &StoredRecord| 0..2 - usize::from(m.fields.contains_key(DIFFERS));
-            whole = staged.matching(at.view, &ty, &equal, |m| put(m, own(m)))?;
-            if src.view && whole {
-                whole = staged.matching(at.view, &ty, &differs, |m| put(m, 1..2))?;
+                if !first.is_empty() {
+                    src.keeping.seated(folds, first);
+                }
             }
-            if !whole {
-                break;
+            if same {
+                g.folds[1][i] = g.folds[0][i].clone();
             }
-            let [open, all] = folds;
-            fresh[0].push(open);
-            fresh[1].push(all);
-        }
-        match whole {
-            true => g.folds = fresh,
-            false => given_up(g),
         }
         Ok(())
     }
 }
 
-/// Give a group up: whatever of it waits is not exact from here on.
-fn given_up(g: &mut Group) {
-    g.folds.iter_mut().flatten().for_each(KeptFolds::give_up);
+/// At most `n` records of the order `name` after the key `after`, in key
+/// order: the page every engine reads by a seek.
+fn page(
+    view: &dyn ProjectionView,
+    name: &TypeName,
+    after: &str,
+    n: u32,
+) -> Result<Vec<StoredRecord>> {
+    let after = Some(After {
+        values: Vec::new(),
+        key: after.into(),
+    });
+    view.scan(
+        name,
+        &Scan {
+            after,
+            limit: n,
+            ..Scan::default()
+        },
+    )
+}
+
+/// The first live entry of the order `name` from `start` on whose key
+/// begins `within`, none past them: the transaction's own entries over
+/// the engine's, which are read in batches that double, so that a seek
+/// past entries the transaction ended reads as many batches as it doubles.
+/// Where the transaction ended the name, its own are all there is.
+fn seek(
+    view: &dyn ProjectionView,
+    orders: Option<&Orders>,
+    name: &TypeName,
+    within: &str,
+    start: String,
+) -> Result<Option<(String, Entry)>> {
+    let read = |r: &StoredRecord| serde_json::from_value(r.fields.get(ENTRY)?.clone()).ok();
+    let parse = |e: &str| serde_json::from_str(e).ok();
+    let mine = |key: &str| orders.and_then(|o| o.entries.get(key));
+    let ended = orders.is_some_and(|o| o.ended);
+    match mine(&start) {
+        Some(Some(e)) => return Ok(parse(e).map(|e| (start, e))),
+        Some(None) => {}
+        None if ended => {}
+        None => {
+            let held = view
+                .get(name, &start.as_str().into())?
+                .filter(|r| !r.is_ended());
+            if let Some(e) = held.as_ref().and_then(read) {
+                return Ok(Some((start, e)));
+            }
+        }
+    }
+    let (mut after, mut n) = (start, 1);
+    loop {
+        let batch = match ended {
+            true => Vec::new(),
+            false => page(view, name, &after, n)?,
+        };
+        let end = batch
+            .last()
+            .filter(|_| batch.len() == n as usize)
+            .map(|r| r.key.to_string());
+        let theirs = batch.iter().filter(|r| mine(r.key.as_str()).is_none());
+        let mut merged: BTreeMap<String, Option<Entry>> =
+            theirs.map(|r| (r.key.to_string(), read(r))).collect();
+        let to = end.as_deref().map_or(Unbounded, Included);
+        let range = orders
+            .into_iter()
+            .flat_map(|o| o.entries.range::<str, _>((Excluded(after.as_str()), to)));
+        merged.extend(range.map(|(k, e)| (k.to_string(), e.as_deref().and_then(parse))));
+        for (key, e) in merged {
+            match e {
+                _ if !key.starts_with(within) => return Ok(None),
+                Some(e) => return Ok(Some((key, e))),
+                None => {}
+            }
+        }
+        match end {
+            Some(end) => (after, n) = (end, (n * 2).min(1024)),
+            None => return Ok(None),
+        }
+    }
 }
 
 #[cfg(test)]

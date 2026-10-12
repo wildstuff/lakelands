@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl, ValueTypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, SourceRecord, Upstream};
@@ -13,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, committed, field, field_access, log_events, migration, principal, reason,
+    Lake, Must, committed, field, field_access, invalid_case, log_events, migration, principal,
     refused_on, reviewer, source_record, trigger_on, value_type, write_verb,
 };
 
@@ -280,8 +281,8 @@ async fn an_initial_value_is_declared_on_an_authored_field_of_a_types_own(
             .map_err(|e| Failure::new(format!("the declaration of {what} does not read: {e}")))?;
         let answer = l.cat.declare(&l.own, d).await;
         let got = match refused_on(&answer) {
-            Some(("f", Refusal::Invalid { .. })) => 'i',
-            Some(("f", Refusal::Constraint { .. })) => 'c',
+            Some(("f", Refusal::Invalid(..))) => 'i',
+            Some(("f", Refusal::Constraint(..))) => 'c',
             _ => '-',
         };
         if got != want {
@@ -329,7 +330,7 @@ async fn an_initial_value_is_declared_on_an_authored_field_of_a_types_own(
         .await?;
     let accepted = l.cat.accept(&reviewer(store.as_ref(), true), &id).await;
     ensure!(
-        matches!(reason(&accepted), Some(Refusal::Invalid { message }) if message.contains("changed since")),
+        matches!(invalid_case(&accepted), Some(Case::ChangedSinceProposed { ty }) if ty == "t"),
         "a migration proposed before `initial` changed is refused at its accept; {accepted:?}"
     );
     // A tightening a declared `initial` no longer fits is a misfit of its
@@ -340,7 +341,10 @@ async fn an_initial_value_is_declared_on_an_authored_field_of_a_types_own(
         "one_of": ["paid"]}))
     .expect("the check's value type reads");
     let to = || Box::new(narrower.clone());
-    let shown = l.cat.migrate_value_type(&l.own, narrower.clone()).await;
+    let shown = l
+        .cat
+        .migrate_value_type(&l.own, narrower.clone().into())
+        .await;
     let shown = shown.must("the owner's preflight of the tightening")?.data;
     let uses = json!(shown.fields);
     ensure!(
@@ -355,17 +359,16 @@ async fn an_initial_value_is_declared_on_an_authored_field_of_a_types_own(
     for who in [&hidden, &masked] {
         let write = ProposedWrite::MigrateValueType {
             to: to(),
+            renames: Vec::new(),
             report: Default::default(),
         };
         let said = l.cat.propose(who, write, "fewer states".into()).await;
-        let told = format!("{said:?}");
         ensure!(
-            matches!(reason(&said), Some(Refusal::Invalid { .. }))
-                && refused_on(&said).is_none()
-                && !told.contains("`f`")
-                && !told.contains("new"),
+            matches!(invalid_case(&said), Some(Case::ValueTypeNotTightened { misfits: 1, first, .. })
+                if first.is_empty())
+                && refused_on(&said).is_none(),
             "a tightening a declared `initial` no longer fits is refused to `{}` by its count \
-             alone; it answered {told}",
+             alone; it answered {said:?}",
             who.id
         );
     }

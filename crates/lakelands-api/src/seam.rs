@@ -12,13 +12,14 @@
 //! grants, provenance, the `sys.` guard, idempotency — are never a seam's
 //! to keep. `docs/seams.md` specifies each one.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::engine::EngineOpener;
-use crate::error::Result;
+use crate::error::{Case, Place, Refusal, Result, Said};
 use crate::event::Event;
 use crate::id::{LakeId, Position, TypeName, VerbName};
 use crate::ontology::TypeDecl;
@@ -87,10 +88,13 @@ pub trait EmbedBackend: Send + Sync {
     /// The length of the vectors it makes.
     fn dimensions(&self) -> u32;
 
-    /// One vector per text, in order. Any failure reaches the caller of
-    /// the search that asked as `Unavailable`, whatever error the
-    /// backend answered: the store never falls back to lexical ranking
-    /// for a backend that is bound.
+    /// One vector per text, in order. `Invalid` refuses the request for
+    /// what it carries, and the store asks again in halves to find the
+    /// text; any other error is weather, recorded for every text of the
+    /// batch not answered yet. Any failure reaches the caller of the search that
+    /// asked as `Unavailable`, whatever error the backend answered: the
+    /// store never falls back to lexical ranking for a backend that is
+    /// bound.
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
 }
 
@@ -101,10 +105,12 @@ pub struct VerbInvocation {
     pub lake: LakeId,
     /// The verb.
     pub verb: VerbName,
-    /// The record it was called on, whole and unmasked: the executor is
-    /// the host's own code, not a caller, and receives the record as the
-    /// store holds it by design. What it may release is the host's to
-    /// decide. `None` for a verb called on its type, which has no record.
+    /// The record it was called on, as it stood at `position`, where its
+    /// call was judged: a later write, a retirement included, does not
+    /// reach it. Whole and unmasked: the executor is the host's own code,
+    /// not a caller, and receives the record as the store holds it by
+    /// design. What it may release is the host's to decide. `None` for a
+    /// verb called on its type, which has no record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<Record>,
     /// The payload.
@@ -128,6 +134,7 @@ pub trait VerbExecutor: Send + Sync {
 
 /// Which events a feed reader wants.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FeedFilter {
     /// Only these kinds (as [`crate::event::EventBody::kind`] names them);
     /// all when empty.
@@ -156,6 +163,10 @@ pub struct FeedBatch {
     pub head: Position,
 }
 
+/// The most events one feed poll examines, matched or not, whatever its
+/// `limit`; a consumer is caught up when a batch's `next` passes `head`.
+pub const FEED_EXAMINED: u32 = 4096;
+
 /// The change feed: the log filtered by kind, read from a position
 /// (`docs/decisions/004-the-change-feed-is-the-log.md`). The consumer
 /// keeps the position it has read up to; the dedup key of a change is its
@@ -163,9 +174,9 @@ pub struct FeedBatch {
 /// list-shaped read; see `docs/glossary.md`.)
 #[async_trait]
 pub trait ChangeFeed: Send + Sync {
-    /// Events from `from` on that match `filter`, at most `limit`.
-    /// Answers at once, possibly empty; a consumer that wants to wait
-    /// polls again.
+    /// Events from `from` on that match `filter`, at most `limit`, of at
+    /// most [`FEED_EXAMINED`] examined. Answers at once, possibly empty; a
+    /// consumer that wants to wait polls again.
     async fn poll(&self, from: Position, filter: &FeedFilter, limit: u32) -> Result<FeedBatch>;
 
     /// Tell the feed a consumer has handled everything before `through`.
@@ -209,6 +220,24 @@ pub fn is_kept_name(ty: &TypeName) -> bool {
     ty.as_str().starts_with(KEPT_PREFIX)
 }
 
+/// The prefix of the name under which the fold keeps, for a view it keeps,
+/// the order of each extreme's members, `sys:order.<view>`: an entry for
+/// each member, keyed so that the first entry after a key is the next
+/// holder. Such a name is read at the head only, and an engine keeps one
+/// state for each of its keys (`docs/seams.md` §`ProjectionStore`).
+pub const ORDER_PREFIX: &str = "sys:order.";
+
+/// The name the extremes' orders of the view `view` are kept under.
+pub fn order_name(view: &TypeName) -> TypeName {
+    format!("{ORDER_PREFIX}{view}").into()
+}
+
+/// Whether an engine keeps one state for each key of this name, with no
+/// row beside it: a put replaces the key's state, and an end deletes it.
+pub fn is_head_only(ty: &TypeName) -> bool {
+    ty.as_str().starts_with(ORDER_PREFIX)
+}
+
 /// The declaration of [`SETTING_TYPE`], which every lake holds from its
 /// creation (`docs/seams.md` §`SystemVocabulary`). One definition, so every
 /// implementation of the contract creates a lake the same way.
@@ -244,7 +273,7 @@ pub fn sortable(kind: &crate::ontology::StorageKind) -> bool {
     use crate::ontology::StorageKind as K;
     matches!(
         kind,
-        K::Text | K::Number | K::Decimal | K::Boolean | K::DateTime | K::Reference
+        K::Text | K::Number | K::Decimal | K::Boolean | K::DateTime | K::Date | K::Reference
     )
 }
 
@@ -257,6 +286,27 @@ pub const VECTOR_INDEX_SETTING: &str = "vector_index.";
 /// Whether a vector index can keep a field of this kind: vectors only.
 pub fn indexable(kind: &crate::ontology::StorageKind) -> bool {
     matches!(kind, crate::ontology::StorageKind::Vector)
+}
+
+/// The key prefix of the setting that weighs a type's searches: the
+/// setting `search_weights.<type>`, whose value is an object of
+/// `fields`, vector fields of the type with their weights, and
+/// `text_weight`, each optional and one at least. A search that gives a
+/// ranking no weight takes the setting's (lakelands#561).
+pub const SEARCH_WEIGHTS_SETTING: &str = "search_weights.";
+
+/// The weights a `search_weights.<type>` setting of this value gives: a
+/// vector field's, then the text's. A member that does not read gives
+/// none, since the setting is checked when it is written.
+pub fn search_weights(value: Option<&Value>) -> (BTreeMap<String, f64>, Option<f64>) {
+    let member = |m: &str| value.and_then(|v| v.get(m));
+    let fields = member("fields").and_then(Value::as_object);
+    let weights =
+        (fields.into_iter().flatten()).filter_map(|(f, w)| Some((f.clone(), w.as_f64()?)));
+    (
+        weights.collect(),
+        member("text_weight").and_then(Value::as_f64),
+    )
 }
 
 /// The key prefix of the setting that asks for a view's records to be
@@ -275,12 +325,18 @@ pub fn view_kept(value: Option<&Value>) -> bool {
 /// `describe_type` answers it to the writer: the judge tells a writer
 /// nothing its description does not, so a type or a field it is not shown
 /// is answered as one that is not declared. A refusal names the member it
-/// is about (a named field, else `key` or `value`) and why.
+/// is about (a named field, else `key` or `value`) as its field, and why,
+/// said at the setting.
 ///
 /// - `sort_index.<type>` and `vector_index.<type>` name a declared stored
 ///   type and hold an array of the names of fields it declares with a
-///   kind that index keeps ([`sortable`], [`indexable`]); `None` or `null`
-///   asks for no index.
+///   kind that index keeps ([`sortable`], [`indexable`]) and not computed
+///   at the read; `None` or `null` asks for no index. `sort_index` may
+///   name a declared view too: the index is kept of its kept records.
+/// - `search_weights.<type>` names a declared stored type and holds an
+///   object of `fields` (each a vector field it declares, with a weight)
+///   and `text_weight`, one at least, every weight one a search may give
+///   ([`crate::query::weight_fits`]); `None` or `null` weighs nothing.
 /// - `view_kept.<type>` names a declared view and holds `true` or
 ///   `false`; under `true` the view must be one that can be kept
 ///   ([`crate::expr::keepable`]), and the refusal says why it is not to a
@@ -293,82 +349,119 @@ pub fn check_setting<'a>(
     value: Option<&Value>,
     declared: &dyn Fn(&crate::TypeName) -> Option<&'a TypeDecl>,
     shown: &dyn Fn(&crate::TypeName) -> Option<crate::describe::TypeDescription>,
-) -> std::result::Result<(), (crate::id::FieldName, String)> {
+) -> Result<()> {
+    let at = || Place::Setting {
+        key: key.to_owned(),
+    };
+    let refused = |member: &str, said: Said| {
+        let reason = Refusal::Invalid(Box::new(said.within(at())));
+        let field = Some(member.into());
+        Err(crate::Error::Refused { field, reason })
+    };
     let known = |ty: &str| Some((shown(&ty.into())?, declared(&ty.into())?));
     if let Some(ty) = key.strip_prefix(VIEW_KEPT_SETTING) {
-        let asks = format!("`{key}` asks for the view `{ty}` to be kept");
         let Some((seen, view)) = known(ty).and_then(|(s, d)| Some((s, d.view.as_deref()?))) else {
-            return Err((
-                "key".into(),
-                format!("{asks}, and `{ty}` is no declared view"),
-            ));
+            return refused("key", Case::NoView { ty: ty.into() }.into());
         };
         return match value {
-            Some(Value::Bool(true)) => crate::expr::keepable(view, declared).map_err(|why| {
-                let why = seen.view.map_or_else(String::new, |_| format!(": {why}"));
-                ("key".into(), format!("{asks}, and it cannot be{why}"))
-            }),
+            Some(Value::Bool(true)) => match crate::expr::keepable(view, declared) {
+                Ok(()) => Ok(()),
+                Err(why) if seen.view.is_some() => refused("key", why),
+                Err(_) => refused("key", Case::ViewNotKeepable { ty: ty.into() }.into()),
+            },
             None | Some(Value::Null | Value::Bool(false)) => Ok(()),
-            Some(_) => Err((
-                "value".into(),
-                format!("`{key}` holds `true` for a view that is kept, or `false`"),
-            )),
+            Some(_) => refused("value", Case::SettingKeptHolds.into()),
         };
     }
-    let (ty, index, keeps, kinds): (_, _, fn(&crate::ontology::StorageKind) -> bool, _) =
+    if let Some(ty) = key.strip_prefix(SEARCH_WEIGHTS_SETTING) {
+        let Some((seen, _)) = known(ty).filter(|(_, d)| d.view.is_none()) else {
+            return refused("key", Case::NoStoredType { ty: ty.into() }.into());
+        };
+        let shape = || refused("value", Case::SettingWeightsShape.into());
+        let weighs = |member: &str, w: &Value, case: Case| match w.as_f64() {
+            Some(w) if crate::query::weight_fits(w) => Ok(()),
+            _ => refused(member, case.into()),
+        };
+        let members = match value {
+            None | Some(Value::Null) => return Ok(()),
+            Some(Value::Object(o)) if !o.is_empty() => o,
+            Some(_) => return shape(),
+        };
+        for (member, w) in members {
+            match (member.as_str(), w.as_object()) {
+                ("text_weight", _) => weighs(member, w, Case::TextWeightRange)?,
+                ("fields", Some(fields)) if !fields.is_empty() => {
+                    for (name, w) in fields {
+                        let field = crate::id::FieldName::from(name.as_str());
+                        let fault = match seen.fields.iter().find(|f| f.name == field) {
+                            None => Case::UnknownField {
+                                ty: ty.into(),
+                                field,
+                            },
+                            Some(f) if !indexable(&f.ty.kind) => Case::NotVectorField { field },
+                            Some(_) => {
+                                weighs(name, w, Case::WeightRange { field })?;
+                                continue;
+                            }
+                        };
+                        return refused(name, fault.into());
+                    }
+                }
+                _ => return shape(),
+            }
+        }
+        return Ok(());
+    }
+    let (ty, order, keeps): (_, _, fn(&crate::ontology::StorageKind) -> bool) =
         if let Some(ty) = key.strip_prefix(SORT_INDEX_SETTING) {
-            (
-                ty,
-                "an order index",
-                sortable,
-                "text, number, decimal, boolean, date-time and reference fields",
-            )
+            (ty, true, sortable)
         } else if let Some(ty) = key.strip_prefix(VECTOR_INDEX_SETTING) {
-            (ty, "a vector index", indexable, "vector fields")
+            (ty, false, indexable)
         } else {
             return Ok(());
         };
-    let Some((seen, _)) = known(ty).filter(|(_, d)| d.view.is_none()) else {
-        return Err((
-            "key".into(),
-            format!("`{key}` asks for {index} of `{ty}`, which is no declared stored type"),
-        ));
+    // An order index keeps a view's rows too; a vector index only a stored
+    // type's.
+    let Some((seen, _)) = known(ty).filter(|(_, d)| order || d.view.is_none()) else {
+        let ty = ty.into();
+        let case = match order {
+            true => Case::NoStoredTypeOrView { ty },
+            false => Case::NoStoredType { ty },
+        };
+        return refused("key", case.into());
     };
     let names = match value {
         None | Some(Value::Null) => return Ok(()),
         Some(Value::Array(names)) => names,
-        Some(_) => {
-            return Err((
-                "value".into(),
-                format!("`{key}` holds an array of field names of `{ty}`, or null for no index"),
-            ));
-        }
+        Some(_) => return refused("value", Case::SettingIndexShape { ty: ty.into() }.into()),
     };
     for name in names {
         let Some(name) = name.as_str() else {
-            return Err((
-                "value".into(),
-                format!("`{key}` holds field names, and {name} is not one"),
-            ));
+            let value = name.clone();
+            return refused("value", Case::SettingFieldNames { value }.into());
         };
-        match seen.fields.iter().find(|f| f.name.as_str() == name) {
-            None => {
-                return Err((
-                    name.into(),
-                    format!("`{key}` names `{name}`, which `{ty}` does not declare"),
-                ));
-            }
+        let field = crate::id::FieldName::from(name);
+        let fault = match seen.fields.iter().find(|f| f.name == field) {
+            None => Case::UnknownField {
+                ty: ty.into(),
+                field,
+            },
             Some(f) if !keeps(&f.ty.kind) => {
-                return Err((
-                    name.into(),
-                    format!(
-                        "`{key}` names `{name}`, of kind {}; {index} keeps {kinds}",
-                        serde_json::to_value(f.ty.kind).unwrap_or_default()
-                    ),
-                ));
+                let kind = f.ty.kind;
+                match order {
+                    true => Case::OrderIndexKind { field, kind },
+                    false => Case::VectorIndexKind { field, kind },
+                }
             }
-            Some(_) => {}
-        }
+            // As it is shown: one told nothing of how a field is computed
+            // is not told so here either.
+            Some(f) if f.computed_at == Some(crate::ontology::ComputedAt::Read) => match order {
+                true => Case::OrderIndexAtRead { field },
+                false => Case::VectorIndexAtRead { field },
+            },
+            Some(_) => continue,
+        };
+        return refused(name, fault.into());
     }
     Ok(())
 }

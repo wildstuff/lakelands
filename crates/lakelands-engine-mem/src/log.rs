@@ -4,8 +4,8 @@
 //! bytes included, and gives the same value back. An append is checked
 //! before anything changes and then made whole: the lease must be the
 //! current one and every event must carry its fence, the positions must
-//! continue the tip with no gap and no overlap, and each `prev` must be
-//! the hash before it. The engine does not recompute hashes; verifying
+//! continue the tip with no gap and no overlap, each `prev` must be
+//! the hash before it, and no event's bytes may hold a line feed. The engine does not recompute hashes; verifying
 //! them is the store's, over the bytes it reads back.
 //!
 //! The lease is a fencing token and a holder. Taking it while it is held
@@ -19,12 +19,12 @@
 //! next with its first events, in one change.
 
 use lakelands_api::engine::{CanonicalEvent, Lease};
-use lakelands_api::error::Result;
+use lakelands_api::error::{Case, Error, Result, Situation};
 use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::Position;
 use sha2::{Digest as _, Sha256};
 
-use crate::{invalid, unavailable};
+use crate::invalid;
 
 /// One lake's log, lease and segments.
 #[derive(Debug, Default)]
@@ -46,11 +46,10 @@ impl Log {
     /// Takes the lease for `holder`, or says who holds it.
     pub(crate) fn take_lease(&mut self, holder: &str) -> Result<Lease> {
         if let Some(held) = &self.lease {
-            return Err(unavailable(format!(
-                "the lake's writer lease is held by `{}` (fence {}); it must be released \
-                 before another writer can take it",
-                held.holder, held.fence
-            )));
+            return Err(lakelands_core::engines::lease_held(
+                &held.holder,
+                held.fence,
+            ));
         }
         self.last_fence += 1;
         let lease = Lease {
@@ -74,15 +73,12 @@ impl Log {
     fn check_lease(&self, lease: &Lease) -> Result<()> {
         match &self.lease {
             Some(current) if current == lease => Ok(()),
-            Some(current) => Err(unavailable(format!(
-                "the lease with fence {} is stale: `{}` holds the lake's writer lease with \
-                 fence {}",
-                lease.fence, current.holder, current.fence
-            ))),
-            None => Err(unavailable(format!(
-                "the lease with fence {} is stale: no one holds the lake's writer lease",
-                lease.fence
-            ))),
+            current => Err(Error::unavailable(Situation::LeaseStale {
+                fence: lease.fence,
+                holder: current.as_ref().map(|c| c.holder.clone()),
+                current: current.as_ref().map(|c| c.fence),
+                undone: None,
+            })),
         }
     }
 
@@ -106,11 +102,7 @@ impl Log {
         if let Some((tip, _)) = self.tip()
             && self.imported != Some(tip)
         {
-            return Err(invalid(format!(
-                "the lake's log holds events up to position {tip} that were not imported; an \
-                 import goes only into a lake that holds nothing else, and nothing was \
-                 appended"
-            )));
+            return Err(invalid(Case::ImportIntoHeld { tip }));
         }
         self.add(None, events)?;
         if let Some(last) = events.last() {
@@ -124,31 +116,10 @@ impl Log {
     /// with none, a fence no lower than the event's before it; the event at
     /// position 0 carries fence 0.
     fn add(&mut self, fence: Option<u64>, events: &[CanonicalEvent]) -> Result<()> {
-        let mut expected = Position(self.events.len() as u64);
-        let mut prev = self.tip().map_or_else(Digest::zero, |(_, hash)| hash);
-        let mut floor = self.events.last().map_or(0, |e| e.fence);
-        for event in events {
-            if let Some(why) = lakelands_core::engines::fence_fault(event, fence, floor) {
-                return Err(invalid(why));
-            }
-            floor = event.fence;
-            if event.position != expected {
-                return Err(invalid(format!(
-                    "the event at position {} does not continue the log, whose next position \
-                     is {expected}; nothing was appended",
-                    event.position
-                )));
-            }
-            if event.prev != prev {
-                return Err(invalid(format!(
-                    "the event at position {} names `{}` as the hash before it, but that hash \
-                     is `{}`; nothing was appended",
-                    event.position, event.prev.0, prev.0
-                )));
-            }
-            expected = expected.next();
-            prev = event.hash.clone();
-        }
+        let first = self.events.len() as u64;
+        let prev = self.tip().map_or_else(Digest::zero, |(_, hash)| hash);
+        let floor = self.events.last().map_or(0, |e| e.fence);
+        lakelands_core::engines::append_fault(events, first, prev, fence, floor)?;
         self.events.extend_from_slice(events);
         Ok(())
     }
@@ -211,30 +182,28 @@ impl Log {
 mod tests {
     use super::*;
     use crate::tests::chain;
-    use lakelands_api::Error;
 
     fn is_unavailable(r: &Result<impl std::fmt::Debug>) -> bool {
         matches!(r, Err(Error::Unavailable { .. }))
     }
 
-    fn is_invalid(r: &Result<impl std::fmt::Debug>) -> bool {
-        matches!(
-            r,
-            Err(Error::Refused {
-                reason: lakelands_api::Refusal::Invalid { .. },
-                ..
-            })
-        )
+    /// The case an append was refused for as invalid.
+    fn refused(r: &Result<impl std::fmt::Debug>) -> Option<Case> {
+        match r {
+            Err(e @ Error::Refused { .. }) => e.case().map(|said| said.case.clone()),
+            _ => None,
+        }
     }
 
     #[test]
     fn a_held_lease_is_refused_naming_its_holder() {
         let mut log = Log::default();
         log.take_lease("writer one").unwrap();
-        let Err(Error::Unavailable { message }) = log.take_lease("writer two") else {
-            panic!("a second take succeeded");
+        let e = log.take_lease("writer two").unwrap_err();
+        let Some(Situation::LeaseHeld { holder, .. }) = e.situation() else {
+            panic!("a second take was refused for another reason: {e:?}");
         };
-        assert!(message.contains("writer one"), "{message}");
+        assert_eq!(holder, "writer one");
     }
 
     #[test]
@@ -282,14 +251,20 @@ mod tests {
         let mut first = chain(0, 1, a.fence, Digest::zero());
         first[0].fence = a.fence;
         assert!(
-            is_invalid(&log.append(&a, &first)),
+            matches!(
+                refused(&log.append(&a, &first)),
+                Some(Case::FenceWrong { wanted: 0, .. })
+            ),
             "position 0 carries fence 0"
         );
         assert!(log.tip().is_none());
         let created = chain(0, 1, a.fence, Digest::zero());
         log.append(&a, &created).unwrap();
         let wrong = chain(1, 1, a.fence + 1, created[0].hash.clone());
-        assert!(is_invalid(&log.append(&a, &wrong)));
+        assert!(matches!(
+            refused(&log.append(&a, &wrong)),
+            Some(Case::FenceWrong { .. })
+        ));
         assert_eq!(log.tip().map(|t| t.0), Some(Position(0)));
     }
 
@@ -302,12 +277,26 @@ mod tests {
         let tip = log.tip().unwrap().1;
 
         let gap = chain(3, 1, l.fence, tip.clone());
-        assert!(is_invalid(&log.append(&l, &gap)));
+        let next = Some(Case::AppendNotNext {
+            position: Position(3),
+            next: 2,
+        });
+        assert_eq!(refused(&log.append(&l, &gap)), next);
         let overlap = chain(1, 2, l.fence, tip.clone());
-        assert!(is_invalid(&log.append(&l, &overlap)));
+        let next = Some(Case::AppendNotNext {
+            position: Position(1),
+            next: 2,
+        });
+        assert_eq!(refused(&log.append(&l, &overlap)), next);
         let mut wrong_prev = chain(2, 3, l.fence, tip.clone());
         wrong_prev[2].prev = Digest::zero();
-        assert!(is_invalid(&log.append(&l, &wrong_prev)));
+        assert!(matches!(
+            refused(&log.append(&l, &wrong_prev)),
+            Some(Case::AppendPrev {
+                position: Position(4),
+                ..
+            })
+        ));
         assert_eq!(log.read(Position(0), 100), first, "nothing was appended");
     }
 

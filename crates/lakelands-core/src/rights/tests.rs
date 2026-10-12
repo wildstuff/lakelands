@@ -37,6 +37,7 @@ fn principal(default: Access, fields: &[(&str, Access)]) -> Principal {
         TypeGrants {
             default: None,
             fields: fields.collect(),
+            ..Default::default()
         },
     );
     Principal {
@@ -111,14 +112,15 @@ fn probing_an_unreadable_field_is_refused_not_masked() {
 }
 
 #[test]
-fn a_search_probes_every_searchable_field_and_the_vector_it_names() {
+fn a_search_probes_every_searchable_field_it_reads_and_the_vector_it_names() {
     let mut decl = invoice();
     decl.fields[2].searchable = true; // iban, sensitive
     let reader = principal(Access::Read, &[("iban", Access::Masked)]);
-    assert_eq!(
-        check_search(&reader, &decl, None, &[]),
-        refused_on("iban", Refusal::NotGranted)
+    assert!(
+        check_search(&reader, &decl, None, &[]).is_ok(),
+        "`iban` is not searched"
     );
+    assert_eq!(searched_fields(&reader, &decl).count(), 0);
     let granted = principal(Access::Read, &[]);
     assert!(check_search(&granted, &decl, None, &[]).is_ok());
     assert!(check_search(&granted, &decl, None, &[&"nope".into()]).is_err());
@@ -131,34 +133,23 @@ fn a_search_limited_to_named_fields_probes_those_and_judges_reading_first() {
     decl.fields[3].searchable = true; // note
     let reader = principal(Access::Read, &[("iban", Access::Masked)]);
     let not_granted = |field: &str| refused_on(field, Refusal::NotGranted);
-    let invalid = |field: &str| {
-        let message = String::new();
-        refused_on(field, Refusal::Invalid { message })
-    };
+    let invalid =
+        |field: &str, case: Case| refused_on(field, Refusal::Invalid(Box::new(case.into())));
     let search = |decl: &TypeDecl, named: &[&str]| {
         let named: Vec<FieldName> = named.iter().map(|&n| n.into()).collect();
-        check_search(&reader, decl, Some(&named), &[]).map_err(|mut e| {
-            if let Error::Refused {
-                reason: Refusal::Invalid { message },
-                ..
-            } = &mut e
-            {
-                message.clear();
-            }
-            e
-        })
+        check_search(&reader, decl, Some(&named), &[])
     };
+    let ty = || decl.name.clone();
     assert!(search(&decl, &["note"]).is_ok(), "`iban` is not named");
     assert_eq!(search(&decl, &["note", "iban"]), not_granted("iban"));
-    assert_eq!(search(&decl, &["verdict"]), invalid("verdict"));
-    assert_eq!(search(&decl, &["nope"]), invalid("nope"));
-    assert!(matches!(
-        search(&decl, &[]),
-        Err(Error::Refused {
-            field: None,
-            reason: Refusal::Invalid { .. }
-        })
-    ));
+    let (ty, field) = (ty(), "verdict".into());
+    let unsearchable = invalid("verdict", Case::NotSearchable { field, ty });
+    assert_eq!(search(&decl, &["verdict"]), unsearchable);
+    let (ty, field) = (decl.name.clone(), "nope".into());
+    let unknown = invalid("nope", Case::UnknownField { ty, field });
+    assert_eq!(search(&decl, &["nope"]), unknown);
+    let empty = Err(crate::invalid(Case::SearchFieldsEmpty));
+    assert_eq!(search(&decl, &[]), empty);
     decl.fields[2].searchable = false;
     assert_eq!(
         search(&decl, &["iban"]),
@@ -245,4 +236,56 @@ fn system_types_are_recognised_by_prefix_alone() {
     assert!(is_system(&"sys.anything_new".into()));
     assert!(!is_system(&"system_note".into()));
     assert!(!is_system(&"a.sys.b".into()));
+}
+
+#[test]
+fn a_view_carries_its_source_only_where_it_groups_by_the_owner() {
+    let decl = |v: serde_json::Value| -> TypeDecl { serde_json::from_value(v).expect("a type") };
+    let view = |name: &str, by: &[&str], merge: bool| {
+        let merge = if merge {
+            json!([{"source": "claim", "measures": []}])
+        } else {
+            json!([])
+        };
+        decl(
+            json!({"name": name, "view": {"source": "claim", "group_by": by, "merge": merge,
+                    "measures": [{"name": "n", "expr": "count()"}]}}),
+        )
+    };
+    let types = [
+        decl(json!({"name": "claim", "fields": [{"name": "owner", "type": {"kind": "text"}}]})),
+        view("by_owner", &["owner"], false),
+        view("all", &[], false),
+        view("merged", &["owner"], true),
+    ];
+    let find = |t: &TypeName| types.iter().find(|d| &d.name == t);
+    let mut who = principal(Access::Read, &[]);
+    let alice = TypeGrants {
+        only: [("owner".into(), json!("alice"))].into(),
+        ..TypeGrants::default()
+    };
+    who.grants.types.insert("claim".into(), alice);
+    let pairs = vec![(FieldName::from("owner"), json!("alice"))];
+    let only = |ty: &str| only(&who, &ty.into(), &find);
+    assert_eq!(
+        only("by_owner"),
+        Effective::Pairs(pairs.clone()),
+        "rule 16 maps the pairs"
+    );
+    assert_eq!(
+        only("sys:kept.by_owner"),
+        Effective::Pairs(pairs),
+        "a kept name is its view"
+    );
+    assert_eq!(
+        only("all"),
+        Effective::ComputeOnly(vec![]),
+        "no group holds the owner"
+    );
+    assert_eq!(
+        only("merged"),
+        Effective::ComputeOnly(vec![]),
+        "a merge computes"
+    );
+    assert!(only("invoice").whole());
 }

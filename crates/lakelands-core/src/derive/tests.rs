@@ -1,4 +1,5 @@
 use super::*;
+use lakelands_api::error::Names;
 use serde_json::json;
 
 fn ty(v: Value) -> TypeDecl {
@@ -52,9 +53,14 @@ fn cycles_and_self_reads_are_refused() {
     let cyc = ty(
         json!({"name": "t", "fields": [decimal("a", Some("b + 1")), decimal("b", Some("a + 1"))]}),
     );
-    assert!(order(&cyc).unwrap_err().0.contains("cycle"));
+    let fields = Names(vec!["a".into(), "b".into()]);
+    assert_eq!(order(&cyc).unwrap_err().case, Case::DerivedCycle { fields });
     let own = ty(json!({"name": "t", "fields": [decimal("a", Some("a + 1"))]}));
-    assert!(order(&own).unwrap_err().0.contains("itself"));
+    let field = "a".into();
+    assert_eq!(
+        order(&own).unwrap_err().case,
+        Case::DerivedReadsItself { field }
+    );
     let bad = ty(json!({"name": "t", "fields": [decimal("a", Some("1 +"))]}));
     assert!(order(&bad).is_err());
 }

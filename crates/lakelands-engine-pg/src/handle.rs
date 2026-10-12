@@ -17,14 +17,15 @@
 //! loaded tables runs only some time after the load: until then a page
 //! read through an index can be planned as a walk over the type, hundreds
 //! of milliseconds instead of one or two. So the writer counts the records
-//! it puts, and once [`ANALYZE_AFTER`] have gone in since its last
-//! analysis, it runs `ANALYZE` over `records` and the head indexes after
-//! the commit has answered, outside the fold's transaction. A rebuild is
-//! a refold after `clear`, which starts the count again, so it is
-//! analysed as a fresh load is: after its first `ANALYZE_AFTER` records,
-//! and a lake smaller than that is left to PostgreSQL's own. Analysis
-//! changes no answer, only a plan; a failed one leaves the commit as it
-//! is.
+//! it puts, and the order index rows a `sort_index.<type>` setting's write
+//! rebuilds, a type's at once; once [`ANALYZE_AFTER`] have gone in since
+//! its last analysis, it runs `ANALYZE` over `records` and the head
+//! indexes after the commit has answered, outside the fold's transaction.
+//! A rebuild is a refold after `clear`, which starts the count again, so
+//! it is analysed as a fresh load is: after its first `ANALYZE_AFTER`
+//! records, and a lake smaller than that is left to PostgreSQL's own.
+//! Analysis changes no answer, only a plan; a failed one leaves the commit
+//! as it is.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,7 +35,7 @@ use lakelands_api::engine::{
     CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
     Reclaimed, VectorIndex,
 };
-use lakelands_api::error::Result;
+use lakelands_api::error::{Act, Case, Error, Part, Result, Situation};
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::query::cosine;
@@ -46,7 +47,7 @@ use crate::connect::{self, Db, Target};
 use crate::projection::{self, Buffer, HeadTypes, Names, PROJECTION_TABLES};
 use crate::vector_index::{self, Pgvector};
 use crate::view::PgView;
-use crate::{NAME, invalid, lease, lock, log, unavailable};
+use crate::{NAME, invalid, lease, lock, log};
 
 /// The open transaction of the fold: the latest position a put in it
 /// names, which the commit must reach, the head declarations it read, and
@@ -62,8 +63,9 @@ struct Transaction {
     /// The types whose `vector_index.<type>` setting a page wrote, each with
     /// the setting's position: the commit builds their indexes, once.
     asked: BTreeMap<TypeName, Position>,
-    /// The record states staged in it, for the count that tells the
-    /// planner: counted as they are staged, since the buffer is written and
+    /// The record states staged in it, and the order index rows a page's
+    /// settings rebuilt, for the count that tells the planner: counted as
+    /// they are staged and written, since the buffer is written and
     /// emptied a page at a time.
     put: u64,
 }
@@ -99,10 +101,8 @@ impl PgLake {
         let mut reader = connect::connect(&target)?;
         let exists = matches!(shape(&mut reader, &target.schema)?, Shape::Lake);
         if !exists && mode != OpenMode::Create {
-            return Err(unavailable(format!(
-                "there is no lake in the schema `{}`; open it with `create` to make it",
-                target.schema
-            )));
+            let (lake, schema) = (lake.to_string(), Some(target.schema.clone()));
+            return Err(Error::unavailable(Situation::NoLake { lake, schema }));
         }
         let (writing, pgvector) = match mode {
             OpenMode::Read => (None, vector_index::find(&mut reader, false).ok()),
@@ -144,23 +144,24 @@ impl PgLake {
 
     fn writing(&self) -> Result<&Writing> {
         self.writing.as_ref().ok_or_else(|| {
-            unavailable(format!(
-                "lake `{}` is open read-only here; open it for writing to take the lease, append \
-                 or write its projection",
-                self.lake
-            ))
+            let (lake, leased_elsewhere) = (Some(self.lake.to_string()), false);
+            Error::unavailable(Situation::ReadOnly {
+                lake,
+                leased_elsewhere,
+            })
         })
     }
 
     /// The lease connection, when this handle holds `lease`; otherwise
-    /// nothing was `what`.
-    fn holding(&self, lease: &Lease, what: &str) -> Result<MutexGuard<'_, Db>> {
+    /// it is `undone`.
+    fn holding(&self, lease: &Lease, undone: Act) -> Result<MutexGuard<'_, Db>> {
         let writing = self.writing()?;
         if lock(&self.held).as_ref() != Some(lease) {
-            return Err(unavailable(format!(
-                "the lease with fence {} is not held by this handle; nothing was {what}",
-                lease.fence
-            )));
+            let (fence, undone) = (Some(lease.fence), Some(undone));
+            return Err(Error::unavailable(Situation::LeaseNotHeld {
+                fence,
+                undone,
+            }));
         }
         Ok(lock(&writing.lease))
     }
@@ -180,7 +181,8 @@ impl PgLake {
             return Ok(());
         }
         let (page, mut db) = (std::mem::take(&mut t.buffer), lock(&writing.projection));
-        page.write(&mut db, &self.names, &mut t.types, &mut t.asked)
+        t.put += page.write(&mut db, &self.names, &mut t.types, &mut t.asked)?;
+        Ok(())
     }
 }
 
@@ -207,16 +209,9 @@ fn shape(db: &mut Db, schema: &str) -> Result<Shape> {
         .filter(|t| !projection::LAKE_TABLES.contains(&t.as_str()))
         .collect();
     if !tables.iter().any(|t| t == "meta") || !foreign.is_empty() {
-        let names: Vec<String> = foreign.iter().map(|t| format!("`{t}`")).collect();
-        return Err(invalid(format!(
-            "the schema `{schema}` holds tables that are not a lake's ({}); a lake needs a \
-             schema of its own",
-            if names.is_empty() {
-                "it has no `meta`".to_owned()
-            } else {
-                names.join(", ")
-            }
-        )));
+        let tables = (!foreign.is_empty()).then(|| foreign.into_iter().collect());
+        let schema = schema.to_owned();
+        return Err(invalid(Case::SchemaNotALake { schema, tables }));
     }
     // The columns the engine reads must be those it wrote.
     let columns: i64 = db
@@ -229,9 +224,8 @@ fn shape(db: &mut Db, schema: &str) -> Result<Shape> {
         .get(0);
     let lease_table = tables.iter().any(|t| t == "lease");
     if columns != if lease_table { 6 } else { 3 } {
-        return Err(invalid(format!(
-            "the schema `{schema}` holds a `meta` or `lease` table that is not a lake's"
-        )));
+        let schema = schema.to_owned();
+        return Err(invalid(Case::SchemaMetaForeign { schema }));
     }
     Ok(Shape::Lake)
 }
@@ -270,12 +264,11 @@ fn check_name(db: &mut Db, names: &Names, schema: &str, lake: &LakeId) -> Result
         .and_then(|r| r.get(0));
     match held {
         Some(name) if name == lake.as_str() => Ok(()),
-        Some(name) => Err(invalid(format!(
-            "the schema `{schema}` holds the lake `{name}`, not `{lake}`"
-        ))),
-        None => Err(unavailable(format!(
-            "the schema `{schema}` holds no lake's name; it was not created by this engine"
-        ))),
+        Some(held) => {
+            let (schema, lake) = (Some(schema.to_owned()), Box::new(lake.clone()));
+            Err(invalid(Case::LakeOther { schema, held, lake }))
+        }
+        None => Err(Error::unavailable(Situation::Unmade { part: Part::Name })),
     }
 }
 
@@ -335,12 +328,12 @@ impl LakeEngine for PgLake {
     }
 
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        let mut db = self.holding(lease, "appended")?;
+        let mut db = self.holding(lease, Act::Appended)?;
         log::append(&mut db, &self.names, lease, events, false)
     }
 
     fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        let mut db = self.holding(lease, "appended")?;
+        let mut db = self.holding(lease, Act::Appended)?;
         log::append(&mut db, &self.names, lease, events, true)
     }
 
@@ -354,7 +347,7 @@ impl LakeEngine for PgLake {
         imported: bool,
         first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
     ) -> Result<Option<SegmentDigest>> {
-        let mut db = self.holding(lease, "sealed")?;
+        let mut db = self.holding(lease, Act::Sealed)?;
         log::seal(&mut db, &self.names, lease, imported, first)
     }
 
@@ -397,7 +390,7 @@ impl ProjectionStore for PgLake {
         let mut transaction = lock(&self.transaction);
         let t = transaction
             .take()
-            .ok_or_else(|| invalid("there is no transaction to commit: call `begin` first"))?;
+            .ok_or_else(|| invalid(Case::CommitUnbegun))?;
         let mut db = lock(&writing.projection);
         // After a page the server refused, this read fails too: the
         // transaction is taken by now, so its session is rolled back here.
@@ -417,7 +410,7 @@ impl ProjectionStore for PgLake {
         // the vector indexes a setting asked for.
         let written = buffer
             .write(&mut db, &self.names, &mut types, &mut asked)
-            .and_then(|()| {
+            .and_then(|rebuilt| {
                 let older = |(ty, at): (&TypeName, &Position)| {
                     projection::index_older(&mut db, &self.names, &mut types, ty, *at)
                 };
@@ -425,12 +418,14 @@ impl ProjectionStore for PgLake {
                 let v = self.pgvector.as_ref();
                 asked.iter().try_for_each(|(ty, at)| {
                     vector_index::rebuild(&mut db, &self.names, v, ty, *at)
-                })
-            })
-            .and_then(|()| projection::set_folded(&mut db, &self.names, through));
-        db.end(written)?;
-        // Once enough records went in since the last analysis, the planner
-        // learns of them, after the commit and outside it (module doc).
+                })?;
+                projection::set_folded(&mut db, &self.names, through)?;
+                Ok(put + rebuilt)
+            });
+        let put = db.end(written)?;
+        // Once enough records went in since the last analysis, or order
+        // index rows a setting rebuilt, the planner learns of them, after
+        // the commit and outside it (module doc).
         if writing.unanalysed.fetch_add(put, Ordering::Relaxed) + put >= ANALYZE_AFTER {
             writing.unanalysed.store(0, Ordering::Relaxed);
             let _ = projection::analyze(&mut db, &self.names);
@@ -484,6 +479,11 @@ impl ProjectionStore for PgLake {
             t.put += 1;
         }
         Ok(())
+    }
+
+    fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
+        engines::head_only(name)?;
+        self.stage(at, |b| b.end_heads(name.as_str()))
     }
 
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
@@ -541,9 +541,7 @@ impl ProjectionStore for PgLake {
         let writing = self.writing()?;
         let transaction = lock(&self.transaction);
         if transaction.is_some() {
-            return Err(invalid(
-                "the projection is compacted between appends: a transaction is open",
-            ));
+            return Err(invalid(Case::CompactInTransaction));
         }
         let tables: Vec<&str> = PROJECTION_TABLES.iter().copied().chain(["meta"]).collect();
         let mut db = lock(&writing.projection);
@@ -637,7 +635,7 @@ impl VectorIndex for PgLake {
             let key: String = row.get(0);
             let v = vector_of(&row.get::<_, Vec<u8>>(1));
             if exact && v.len() != query.len() {
-                return Err(engines::dimensions(query.len(), v.len(), ty, field, &key));
+                return Err(engines::dimensions(query.len(), v.len(), ty, field));
             }
             top.push(&RecordKey::from(key), cosine(query, &v));
             Ok(())

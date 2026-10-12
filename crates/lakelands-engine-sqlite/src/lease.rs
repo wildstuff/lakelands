@@ -29,7 +29,9 @@ use lakelands_api::engine::Lease;
 use lakelands_api::error::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::{io_error, unavailable};
+use lakelands_api::error::{Detail, Doing, Flaw, Part};
+
+use crate::{damaged, io_error};
 
 /// What the lease file records.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -68,26 +70,30 @@ pub(crate) struct LeaseFile {
     path: PathBuf,
 }
 
-fn read(file: &mut File, path: &Path) -> Result<Recorded> {
+fn read(file: &mut File) -> Result<Recorded> {
     let mut text = String::new();
     file.seek(SeekFrom::Start(0))
         .and_then(|_| file.read_to_string(&mut text))
-        .map_err(|e| io_error("reading", path, e))?;
+        .map_err(|e| io_error(Doing::Read, Part::LeaseFile, e))?;
     if text.trim().is_empty() {
         return Ok(Recorded::default());
     }
-    serde_json::from_str(&text)
-        .map_err(|e| unavailable(format!("the lease file {} is damaged: {e}", path.display())))
+    serde_json::from_str(&text).map_err(|e| {
+        let flaw = Flaw::NotJson {
+            detail: Detail::json(&e),
+        };
+        damaged(Part::LeaseFile, None, flaw)
+    })
 }
 
-fn write(file: &mut File, path: &Path, recorded: &Recorded) -> Result<()> {
+fn write(file: &mut File, recorded: &Recorded) -> Result<()> {
     let mut text = serde_json::to_string(recorded).expect("a lease serialises");
     text.push('\n');
     file.set_len(0)
         .and_then(|()| file.seek(SeekFrom::Start(0)))
         .and_then(|_| file.write_all(text.as_bytes()))
         .and_then(|()| file.sync_all())
-        .map_err(|e| io_error("writing", path, e))
+        .map_err(|e| io_error(Doing::Write, Part::LeaseFile, e))
 }
 
 impl LeaseFile {
@@ -104,12 +110,12 @@ impl LeaseFile {
             .create(true)
             .truncate(false)
             .open(&self.path)
-            .map_err(|e| io_error("opening", &self.path, e))
+            .map_err(|e| io_error(Doing::Open, Part::LeaseFile, e))
     }
 
     /// Who the file says holds the lease, and with which token.
     pub(crate) fn current(&self) -> Result<(u64, String)> {
-        let r = read(&mut self.open()?, &self.path)?;
+        let r = read(&mut self.open()?)?;
         Ok((r.fence, r.holder))
     }
 
@@ -120,16 +126,16 @@ impl LeaseFile {
         // is newer than the workspace's minimum Rust version.
         match FileExt::try_lock(&file) {
             Ok(()) => {}
-            Err(TryLockError::Error(e)) => return Err(io_error("locking", &self.path, e)),
+            Err(TryLockError::Error(e)) => return Err(io_error(Doing::Lock, Part::LeaseFile, e)),
             Err(TryLockError::WouldBlock) => {
                 let (fence, held_by) = self.current()?;
                 return Err(lakelands_core::engines::lease_held(&held_by, fence));
             }
         }
-        let mut recorded = read(&mut file, &self.path)?;
+        let mut recorded = read(&mut file)?;
         recorded.fence = recorded.fence.max(recorded.import_fence.unwrap_or(0)) + 1;
         recorded.holder = holder.to_owned();
-        write(&mut file, &self.path, &recorded)?;
+        write(&mut file, &recorded)?;
         let lease = Lease {
             fence: recorded.fence,
             holder: recorded.holder,
@@ -140,17 +146,17 @@ impl LeaseFile {
     /// The last position an import appended, while the log holds nothing
     /// else.
     pub(crate) fn imported(&self, held: &mut Held) -> Result<Option<u64>> {
-        Ok(read(&mut held.file, &self.path)?.imported)
+        Ok(read(&mut held.file)?.imported)
     }
 
     /// Record that an import appended through `last`, with fences up to
     /// `fence`: a later lease is greater than all of them.
     pub(crate) fn record_import(&self, held: &mut Held, last: u64, fence: u64) -> Result<()> {
-        let mut recorded = read(&mut held.file, &self.path)?;
+        let mut recorded = read(&mut held.file)?;
         recorded.holder = held.lease.holder.clone();
         recorded.imported = Some(last);
         recorded.import_fence = Some(recorded.import_fence.unwrap_or(0).max(fence));
-        write(&mut held.file, &self.path, &recorded)
+        write(&mut held.file, &recorded)
     }
 
     /// Give a held lease up: the file keeps its token and names no holder,
@@ -158,13 +164,13 @@ impl LeaseFile {
     /// failure to clear the holder is reported after it.
     pub(crate) fn release(&self, mut held: Held) -> Result<()> {
         // The file keeps the greatest token and what an import recorded.
-        let cleared = read(&mut held.file, &self.path).and_then(|mut recorded| {
+        let cleared = read(&mut held.file).and_then(|mut recorded| {
             recorded.fence = recorded.fence.max(held.lease.fence);
             recorded.holder.clear();
-            write(&mut held.file, &self.path, &recorded)
+            write(&mut held.file, &recorded)
         });
         let unlocked =
-            FileExt::unlock(&held.file).map_err(|e| io_error("unlocking", &self.path, e));
+            FileExt::unlock(&held.file).map_err(|e| io_error(Doing::Unlock, Part::LeaseFile, e));
         drop(held);
         cleared.and(unlocked)
     }

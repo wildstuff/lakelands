@@ -205,6 +205,17 @@ Two rules hold by it:
 A failure that depends on a record's value stays that record's. A
 declaration in force is not checked again until it is declared again.
 
+## Extended: what a view computes lands as a derived field does (lakelands#563)
+
+A view's measure `max(due_on)` declared into a `number` field was taken,
+and a read answered the view's records without it: the value never
+lands, and nothing said so. Each measure of a view and of its merged
+sources, read over its source's fields, and each group value are held to
+the rule above for a derived field, at the declaration: one that
+certainly computes a kind its field never holds is refused as `invalid`
+on that field, naming the kind. A name a measure answers under is read
+as nothing certain, since an expression may mean the measure by it.
+
 ## Extended: a path steps only into a value that has members (lakelands#552)
 
 A path's first name was checked against the type, and the rest was not:
@@ -222,3 +233,30 @@ own fields; compare the reference's key, or walk to the record it names
 in a pattern. Reading through a reference in a condition is not built
 (lakelands#567). A declaration in force that holds such a path stays in
 force until it is declared again.
+
+## Extended: a valid time is a date-time field (lakelands#714)
+
+`valid_from` and `valid_to` had to name a field of the type, of any
+kind. A read at `valid_at` anchored a record by any string value that
+reads as an instant, so a `text` or a `decimal` field, or a reference
+whose key looks like a date, set a record's validity by coincidence. A
+value that did not read as one left the record valid at no instant, with
+nothing said, and a migration could turn the valid time into `text`.
+
+Each now names a field of kind `date_time`, stored or derived, on a type
+or a view. A field of any other kind is refused as `invalid` on it,
+naming the member and the kind, by `declare`, `apply`, a proposal and a
+migration's `to`, and by the mock in the same words. A write holds a
+`date_time` value to a UTC instant, so a valid time is an instant or
+absent, and the read anchors only those. A declaration in force is not
+checked again until it is declared again, and then it is checked as any
+other is.
+
+## Extended: a date is a valid time too (lakelands#702)
+
+A valid time names a field of kind `date_time` or `date`. A date is the
+instant at its UTC midnight, so a booking valid from `2026-07-01` to
+`2026-07-31` holds from the start of the 1st up to the start of the
+31st, not through it: the interval stays half-open, as for instants. A
+field of any other kind is refused as before, and the refusal names both
+kinds a valid time may be.

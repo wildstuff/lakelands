@@ -71,8 +71,7 @@ async fn an_import_finds_a_digest_that_differs_before_anything_is_sealed() {
     let stopped = lakelands_store::import(to.clone(), through, dir.clone()).await;
     let stopped = stopped.unwrap_err().to_string();
     assert!(
-        stopped.contains("digests the segment before it")
-            && stopped.contains("nothing of this file was imported"),
+        stopped.contains("digests the segment before it") && stopped.contains("import stopped"),
         "{stopped}"
     );
     // The lake holds the first file's events and no sealed segment.

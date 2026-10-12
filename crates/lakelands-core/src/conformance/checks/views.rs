@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use lakelands_api::error::{Case, Place};
 use lakelands_api::key::UNGROUPED;
 use lakelands_api::ontology::{
     Authority, Cardinality, Derived, MatchPair, RelationDecl, StorageKind, TypeDecl, ViewParam,
@@ -19,7 +20,7 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::query::{Pattern, Projection, QueryResult, Step, Walk};
 use lakelands_api::read::Find;
-use lakelands_api::{Error, FieldName, LakeStore, Record, Refusal, TypeName, Value};
+use lakelands_api::{Error, FieldName, LakeStore, Record, TypeName, Value};
 use rust_decimal::Decimal;
 use serde_json::json;
 
@@ -27,8 +28,9 @@ use super::search::doc_search;
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, count_view, dec, decimal, delivered, embedding, field, field_access, find_where,
-    get_at, head_unmoved, measure, object_set_on, partner_totals, pattern, reason, source_record,
-    step, trigger_on, type_decl, type_of, value, vector, view_of,
+    get_at, head_unmoved, invalid_case, invalid_like, invalid_said, measure, object_set_on,
+    partner_totals, pattern, refused_like, source_record, step, trigger_on, type_decl, type_of,
+    value, vector, view_of,
 };
 
 check!(
@@ -521,18 +523,17 @@ async fn a_view_field_that_asks_to_be_searched_or_embedded_is_refused(
     embedded
         .fields
         .push(embedding("near", 3, &["partner"], "m"));
-    for (what, ty, name) in [
-        ("is searchable", searchable, "partner"),
-        ("is a vector", vectored, "near"),
-        ("carries an embedding", embedded, "near"),
+    for (what, ty, name, searchable, embedded) in [
+        ("is searchable", searchable, "partner", true, false),
+        ("is a vector", vectored, "near", false, false),
+        ("carries an embedding", embedded, "near", false, true),
     ] {
         let view = ty.name.clone();
         let r = l.try_declare(ty).await;
-        ensure!(
-            matches!(reason(&r), Some(Refusal::Invalid { message }) if message.contains(view.as_str()) && message.contains(name)),
-            "a view whose field `{name}` {what} must be refused as invalid, naming `{view}` \
-             and `{name}`; declare answered {r:?}"
-        );
+        let case = json!({"code": "view_searched", "searchable": searchable, "embedded": embedded,
+                          "at": [{"name": view}, {"name": name}]});
+        let what = format!("a view whose field `{name}` {what}, naming `{view}` and `{name}`,");
+        refused_like(&what, r, &case)?;
     }
     Ok(())
 }
@@ -545,11 +546,14 @@ async fn a_trigger_or_object_set_on_a_view_is_refused(
     let Lake { cat, own } = &l;
     let trigger = |on: &str| trigger_on("grew", on, Some("total > 0"));
     let set = object_set_on("busy", "pt", "total > 0");
-    let names_both =
-        |r: &lakelands_api::Result<lakelands_api::write::Outcome>, what: &str, on: &str| {
-            matches!(r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
-            if message.contains(what) && message.contains(on))
-        };
+    let names_both = |r: &lakelands_api::Result<lakelands_api::write::Outcome>,
+                      what: &str,
+                      on: &str| {
+        matches!(invalid_said(r), Some(said) if said.at.iter().any(|p| matches!(p,
+                Place::Trigger { name } if name == what) || matches!(p,
+                Place::ObjectSet { name } if name == what))
+                && matches!(&said.case, Case::WatchesView { ty } | Case::SetOfView { ty } if ty == on))
+    };
     let before = store.head().await.must("reading the head")?;
     let r = cat.declare(own, trigger("pt")).await;
     ensure!(
@@ -602,8 +606,9 @@ async fn a_relation_on_a_view_is_derived_or_refused(
         ..RelationDecl::to("by", "invoice")
     };
     let names_both = |r: &lakelands_api::Result<lakelands_api::write::Outcome>, relation: &str| {
-        matches!(reason(r), Some(Refusal::Invalid { message })
-            if message.contains("pt") && message.contains(relation))
+        matches!(invalid_said(r), Some(said)
+            if said.at.iter().any(|p| matches!(p, Place::Relation { name } if name == relation))
+                && matches!(&said.case, Case::ViewRelation { ty, .. } if ty == "pt"))
     };
     let before = store.head().await.must("reading the head")?;
     for (relation, name) in [(linked.clone(), "seen"), (carried, "by")] {
@@ -682,9 +687,10 @@ async fn a_view_reading_a_field_its_source_lacks_is_refused(
             cat.apply(own, vec![Declaration::Type(view)]).await,
         ] {
             ensure!(
-                matches!(reason(&r), Some(Refusal::Invalid { message })
-                    if message.contains(name.as_str()) && message.contains("nope")
-                        && message.contains(source)),
+                matches!(invalid_said(&r), Some(said)
+                    if said.at.first() == Some(&Place::Type { name: name.clone() })
+                        && matches!(&said.case, Case::UnknownField { ty, field }
+                            if ty == source && field == "nope")),
                 "the view `{name}` reads `nope`, which `{source}` does not have, and must be \
                  refused as invalid, naming `{name}`, `{source}` and `nope`; it answered {r:?}"
             );
@@ -726,7 +732,7 @@ async fn a_search_on_a_view_is_refused_naming_it(store: Arc<dyn LakeStore>) -> R
         };
         let r = cat.search(own, s).await;
         ensure!(
-            matches!(reason(&r), Some(Refusal::Invalid { message }) if message.contains("partner_totals") && message.contains("view")),
+            matches!(invalid_case(&r), Some(Case::ViewNotSearched { ty }) if ty == "partner_totals"),
             "a search on the view `partner_totals` ({what}) must be refused as invalid, \
              naming it as a view; it answered {r:?}. An empty answer looks exactly like no \
              match"
@@ -757,7 +763,8 @@ async fn a_view_closing_a_cycle_over_source_is_refused_naming_the_chain(
     ] {
         let r = l.try_declare(counted("view_a", reads)).await;
         ensure!(
-            matches!(reason(&r), Some(Refusal::Invalid { message }) if chain.iter().all(|v| message.contains(&format!("`{v}`")))),
+            matches!(invalid_case(&r), Some(Case::ViewCycle { chain: c })
+                if chain.iter().all(|v| c.0.iter().any(|n| n == v))),
             "`view_a` declared to read `{reads}` closes a cycle of {} view(s); it must be \
              refused as invalid, naming {chain:?}; declare answered {r:?}",
             chain.len()
@@ -769,7 +776,11 @@ async fn a_view_closing_a_cycle_over_source_is_refused_naming_the_chain(
     ];
     let r = cat.apply(own, set).await;
     ensure!(
-        matches!(reason(&r), Some(Refusal::Invalid { message }) if message.contains("`view_x`") && message.contains("`view_y`")),
+        // Refused whole: each view's problem is the cycle, naming both.
+        matches!(invalid_case(&r), Some(Case::SetRefused { problems, .. })
+            if !problems.is_empty() && problems.iter().all(|p| matches!(
+                p.case().map(|s| &s.case), Some(Case::ViewCycle { chain })
+                    if ["view_x", "view_y"].iter().all(|v| chain.0.iter().any(|n| n == v))))),
         "a set whose new views `view_x` and `view_y` read each other must be refused as \
          invalid, naming both; apply answered {r:?}"
     );
@@ -793,25 +804,16 @@ async fn a_view_declares_exactly_the_fields_it_computes(
     };
     let mut extra = partner_totals("totals", StorageKind::Decimal);
     extra.fields.push(field("note", StorageKind::Text));
-    for (what, t, name) in [
-        (
-            "the measure `total` without a field",
-            without("total"),
-            "total",
-        ),
-        (
-            "the group_by field `partner` without a field",
-            without("partner"),
-            "partner",
-        ),
-        ("a field `note` that nothing computes", extra, "note"),
+    // `total` and `partner` without a field, and a `note` nothing computes.
+    let at = json!([{"code": "type", "name": "totals"}]);
+    for (t, name, code) in [
+        (without("total"), "total", "view_value_no_field"),
+        (without("partner"), "partner", "unknown_field"),
+        (extra, "note", "view_field_unfilled"),
     ] {
         let r = l.try_declare(t).await;
-        ensure!(
-            matches!(reason(&r), Some(Refusal::Invalid { message }) if message.contains(&format!("`{name}`")) && message.contains("`totals`")),
-            "a view with {what} must be refused as invalid, naming `{name}` and the view; \
-             declare answered {r:?}"
-        );
+        let what = format!("a view `totals` whose `{name}` has no field or nothing to fill it");
+        refused_like(&what, r, &json!({"code": code, "field": name, "at": at}))?;
     }
     l.declare(partner_totals("totals", StorageKind::Decimal))
         .await?;
@@ -1011,12 +1013,7 @@ async fn every_door_that_writes_or_holds_a_record_refuses_a_view_alike(
     let head = store.head().await.must("reading the head")?;
     let mut red = Vec::new();
     let mut must = |what: &str, view: &str, got: lakelands_api::Result<()>| match &got {
-        Err(
-            e @ Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            },
-        ) if e.to_string().contains(&format!("`{view}`")) => {}
+        Err(e) if matches!(invalid_case(e), Some(Case::IsAView { ty }) if ty == view) => {}
         _ => red.push(format!("{what} answered {got:?}")),
     };
     let upsert = cat.upsert(own, &pt, &p1, fields(), opts()).await;
@@ -1057,13 +1054,10 @@ async fn every_door_that_writes_or_holds_a_record_refuses_a_view_alike(
                       "risk": "low", "effect": "external", "executor": "x"});
     let verb = serde_json::from_value(verb).expect("a verb declaration");
     let on_record = cat.declare(own, verb).await;
+    let nudge =
+        json!({"code": "verb_on_view", "type": "pt", "at": [{"code": "verb", "name": "nudge"}]});
     match &on_record {
-        Err(
-            e @ Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            },
-        ) if e.to_string().contains("`nudge`") && e.to_string().contains("`pt`") => {}
+        Err(e) if invalid_like(e, &nudge) => {}
         _ => red.push(format!(
             "declaring `nudge` on a record of `pt` answered {on_record:?}"
         )),

@@ -43,7 +43,8 @@
 //! same source key brings the copy back. A retention hold crosses through
 //! the host's `restrict` and `unrestrict` only when the principal holds
 //! the `restricted` grant; without it the hold is invisible to the mirror,
-//! and so is the record. Each of these keeps its place in feed order.
+//! and so is the record. A mirror whose principal holds it in the source
+//! must hold it in the target too, or it is refused at the start. Each of these keeps its place in feed order.
 //!
 //! **It fails closed, by type.** At every declaration or migration of a
 //! mapped source type, the mirror asks whether the target's declaration
@@ -118,7 +119,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 /// The event kinds a mirror reads.
-pub const KINDS: [&str; 7] = [
+pub const KINDS: [&str; 8] = [
     "record_upserted",
     "record_ingested",
     "record_retired",
@@ -126,6 +127,7 @@ pub const KINDS: [&str; 7] = [
     "record_unrestricted",
     "declared",
     "migrated",
+    "value_type_migrated",
 ];
 
 /// The prefix of a link type's name.
@@ -147,6 +149,7 @@ pub fn mirror_type() -> TypeDecl {
         authority: Authority::Authored,
         derived: None,
         function: None,
+        computed_at: None,
         depends_on: vec![],
         on_input_change: Default::default(),
         initial: None,
@@ -780,6 +783,16 @@ impl Mirror {
                 "connection `{name}`: the principal may not ingest into lake `{to}`"
             ));
         }
+        // A held record's copy is held, and only a writer with the grant
+        // keeps it: the mirror writes with the grants it is given, never
+        // one it infers (042).
+        if reader.grants.restricted && !writer.grants.restricted {
+            return Err(format!(
+                "connection `{name}`: the principal `{}` reads held records from lake `{from}` \
+                 but holds no `restricted` grant in lake `{to}`, where their copies are held",
+                writer.id
+            ));
+        }
         let home = dir.join("mirrors").join(to.as_str());
         std::fs::create_dir_all(&home)
             .map_err(|err| format!("{} cannot be made: {err}", home.display()))?;
@@ -968,9 +981,16 @@ impl Mirror {
             .poll(Position(from), &filter, self.batch)
             .await
             .map_err(|e| format!("the source's feed failed: {e}"))?;
-        let full = batch.events.len() >= self.batch as usize;
+        // A poll may stop short of the head with no events: read on, unless
+        // it did not move.
+        let more = batch.next <= batch.head && batch.next.0 > from;
         let mut run = Run::default();
         for e in &batch.events {
+            if let EventBody::ValueTypeMigrated { types, .. } = &e.body {
+                self.flush(&mut run).await?;
+                self.revalued(types, e.position).await?;
+                continue;
+            }
             let Some(ty) = type_of(&e.body) else {
                 continue;
             };
@@ -1002,7 +1022,7 @@ impl Mirror {
         }
         // The store's own feed keeps no consumer state; a relay may.
         let _ = feed.ack(&format!("mirror:{}", self.name), batch.next).await;
-        Ok(full)
+        Ok(more)
     }
 
     /// Copy the named types whole, as the source holds them at its head,
@@ -1021,6 +1041,33 @@ impl Mirror {
             }
             return self.save().await;
         }
+        self.copied(types, head).await
+    }
+
+    /// At a `value_type_migrated` at `p`: each running type it rewrites is
+    /// checked again, as at a declaration, and, still admitted, copied
+    /// again whole, whatever the connection started from: the source
+    /// renamed stored values and wrote no record event for them.
+    async fn revalued(&mut self, types: &[TypeName], p: Position) -> Result<(), String> {
+        let running = |m: &Self, t: &TypeName| {
+            let state = m.kept.types.get(t);
+            m.map.contains_key(t) && state.is_some_and(|s| s.stopped.is_none() && p.0 >= s.next)
+        };
+        for t in types {
+            if running(self, t) {
+                self.redeclared(t, p).await?;
+            }
+            if running(self, t) {
+                let head = self.head().await?;
+                self.copied(vec![t.clone()], head).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Copy the named types whole, as the source holds them at `head`, and
+    /// follow each from the position after.
+    async fn copied(&mut self, types: Vec<TypeName>, head: Position) -> Result<(), String> {
         let scat = self.source.catalog(WriteContext::default());
         let mut records = Vec::new();
         for s in &types {

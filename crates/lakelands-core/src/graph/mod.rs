@@ -51,16 +51,18 @@ mod subgraph;
 
 pub use measures::{Component, Components, degrees};
 pub use path::{Path, shortest_path};
-pub use step::{Reached, Traversal, neighbors, step, traverse};
+pub use step::{Reached, Traversal, neighbors, spanned, step, traverse};
 pub use subgraph::{Subgraph, subgraph};
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::slice;
 
 use lakelands_api::engine::ProjectionView;
-use lakelands_api::query::{Depth, Edge, Walk};
+use lakelands_api::query::{Depth, Edge, Step, Walk};
 use lakelands_api::{RecordKey, RelationName, Result, TypeName};
 
 use crate::invalid;
+use lakelands_api::error::Case;
 
 /// A record's identity: its type and its key. Ordered by type, then key.
 pub type Node = (TypeName, RecordKey);
@@ -159,16 +161,12 @@ fn edges_of<S: EdgeSource + ?Sized>(
 /// over the lake's `max_depth`, or one that is empty (`min > max`).
 pub fn check_depth(depth: Depth, max_depth: u32) -> Result<()> {
     if depth.max > max_depth {
-        return Err(invalid(format!(
-            "a step may walk at most {max_depth} hops; this one asks for {}",
-            depth.max
-        )));
+        let (max, asked) = (max_depth, depth.max);
+        return Err(invalid(Case::StepTooDeep { max, asked }));
     }
     if depth.min > depth.max {
-        return Err(invalid(format!(
-            "a step's depth range {}..={} is empty",
-            depth.min, depth.max
-        )));
+        let (min, max) = (depth.min, depth.max);
+        return Err(invalid(Case::DepthEmpty { min, max }));
     }
     Ok(())
 }
@@ -277,6 +275,53 @@ impl<'a, S: EdgeSource + ?Sized> Links<'a, S> {
             })
             .collect())
     }
+}
+
+/// One hop of a walk over several steps at once, from each of `nears`:
+/// the links over every step whose `max` reaches `hop`, each relation in
+/// its own step's direction, kept only where `keep` takes the far end
+/// for that step. One list per record, in `nears`' order, each ordered
+/// by `(relation, far, from, to)` without duplicates.
+fn hop<S, K>(
+    links: &mut Links<'_, S>,
+    nears: &[Node],
+    steps: &[Step],
+    hop: u32,
+    keep: &mut K,
+) -> Result<Vec<Vec<(Node, Edge)>>>
+where
+    S: EdgeSource + ?Sized,
+    K: FnMut(usize, &Node) -> Result<bool>,
+{
+    let mut out: Vec<BTreeMap<(RelationName, Node, Node, Node), Edge>> =
+        vec![BTreeMap::new(); nears.len()];
+    for (i, s) in steps.iter().enumerate() {
+        if s.depth.max < hop {
+            continue;
+        }
+        let around = links.around(nears, slice::from_ref(&s.relation), s.walk)?;
+        for (all, one) in out.iter_mut().zip(around) {
+            for (far, edge) in one {
+                if keep(i, &far)? {
+                    let key = (
+                        edge.relation.clone(),
+                        far,
+                        edge.from.clone(),
+                        edge.to.clone(),
+                    );
+                    all.entry(key).or_insert(edge);
+                }
+            }
+        }
+    }
+    Ok(out
+        .into_iter()
+        .map(|all| {
+            all.into_iter()
+                .map(|((_, far, _, _), e)| (far, e))
+                .collect()
+        })
+        .collect())
 }
 
 #[cfg(test)]

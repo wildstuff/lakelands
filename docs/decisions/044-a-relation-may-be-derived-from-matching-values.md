@@ -39,9 +39,11 @@ of a field of the owning type and a field of the target type:
   walked by scanning the type: correct on every engine, and slower at
   scale. No numeric index is kept.
 - **Rights (024).** A walk over a derived relation probes its matched
-  fields on both sides. A principal that may not read one of them is
+  fields on both sides. A principal that sees one of them masked is
   refused `not_granted`, naming the field, because whether an edge
-  appears answers whether two values are equal.
+  appears answers whether two values are equal. One that may not know
+  of one is not shown the relation, and every walk answers it as a
+  relation the type does not have (lakelands#662).
 - **Cardinality** is declared like any relation's and is not enforced:
   there is no write to refuse. A walk returns every match. A
   `many_to_one` relation whose value three target records hold has

@@ -1,4 +1,4 @@
-package lakelands:data@0.10.0;
+package lakelands:data@0.12.0;
 
 /// The types every interface of the package shares: the contract of
 /// `lakelands-api`, type for type.
@@ -78,6 +78,9 @@ interface types {
         %type: type-name,
         default: option<access>,
         fields: list<field-access>,
+        /// Only the records whose fields hold these values are the
+        /// principal's to read; it writes nothing that reaches the type.
+        only: list<field-value>,
     }
 
     record grants {
@@ -126,7 +129,7 @@ interface types {
     // ------------------------------------------------------------------
 
     enum storage-kind {
-        text, number, decimal, boolean, date-time, bytes, json, reference, vector, geo,
+        text, number, decimal, boolean, date-time, bytes, json, reference, vector, geo, date,
     }
 
     record field-type {
@@ -140,6 +143,11 @@ interface types {
 
     enum on-input-change { keep, clear }
 
+    /// When a computed field is computed: by the fold at a write, its value
+    /// stored; or at every read, from the record as stored and the read's
+    /// clock, never stored.
+    enum computed-at { write, read }
+
     record field-decl {
         name: field-name,
         %type: field-type,
@@ -147,6 +155,7 @@ interface types {
         authority: authority,
         derived: option<condition>,
         function: option<string>,
+        computed-at: option<computed-at>,
         depends-on: list<field-name>,
         on-input-change: on-input-change,
         /// The value the field takes when its record comes to exist and
@@ -334,6 +343,13 @@ interface types {
         renames: list<tuple<field-name, field-name>>,
         /// Relations renamed, old name to new name: each keeps its edges.
         relation-renames: list<tuple<relation-name, relation-name>>,
+    }
+
+    /// A value type's migration: its new declaration and the values it
+    /// renames in every stored record, old to new.
+    record value-type-migration {
+        to: value-type-decl,
+        renames: list<tuple<string, string>>,
     }
 
     /// How a relation's edges are carried.
@@ -647,10 +663,11 @@ interface types {
         report: migration-report,
     }
 
-    /// A value type's tightening and the report its preflight answered
+    /// A value type's migration and the report its preflight answered
     /// when it was proposed.
     record migrate-value-type-write {
         to: value-type-decl,
+        renames: list<tuple<string, string>>,
         report: value-type-report,
     }
 
@@ -798,6 +815,7 @@ interface types {
         nodes: list<%record>,
         edges: list<edge>,
         truncated: bool,
+        next-cursor: option<cursor>,
     }
 
     variant query-result {
@@ -825,6 +843,18 @@ interface types {
         hits: list<hit>,
         next-cursor: option<cursor>,
         ranked-by: string,
+        axes: list<axis>,
+    }
+
+    /// One axis a search ranked by: `lexical` or `vector`, a vector
+    /// axis's field, and, where the search fuses, the candidates it handed
+    /// the fusion for this reader, up to the lake's `max_limit`, with the
+    /// weight it ranked by.
+    record axis {
+        axis: string,
+        field: option<field-name>,
+        candidates: option<u64>,
+        weight: option<f64>,
     }
 
     // ------------------------------------------------------------------
@@ -844,6 +874,9 @@ interface types {
         retire: bool,
         /// The relations whose links the principal may write.
         link: list<relation-name>,
+        /// The values the principal's grant admits records by; empty
+        /// where it admits every record.
+        only: list<field-value>,
     }
 
     record type-access {
@@ -883,15 +916,17 @@ interface types {
     }
 
     /// Why a view is computed at each read: no setting asks for it; it
-    /// cannot be kept (the reason, to a principal shown the view as
-    /// declared); its records are not whole (the groups that are not
+    /// cannot be kept (the case that says why, to a principal shown the
+    /// view as declared); its records are not whole (the groups that are not
     /// exact for this reader); or its records are not kept at this
-    /// position, or by this lake.
+    /// position, or by this lake; or its reader is admitted only some
+    /// records of it or of a type it reads.
     variant not-kept {
         not-asked,
-        cannot-be-kept(option<string>),
+        cannot-be-kept(option<said>),
         not-whole(u64),
         not-kept-here,
+        only-some,
     }
 
     record field-description {
@@ -903,6 +938,7 @@ interface types {
         derived: option<condition>,
         /// The declared function that computes it.
         function: option<string>,
+        computed-at: option<computed-at>,
         depends-on: list<field-name>,
         on-input-change: on-input-change,
         /// The value it takes when its record comes to exist without one.
@@ -993,6 +1029,10 @@ interface types {
         first: list<misfit>,
         fits: bool,
         report-id: string,
+        /// The declarations and aging rules that may name a renamed value.
+        conditions: list<string>,
+        /// Whether one the reader is not shown may name one too.
+        conditions-unshown: bool,
     }
 
     /// One field that uses a value type, as its preflight found it.
@@ -1001,6 +1041,14 @@ interface types {
         field: field-name,
         values-scanned: u64,
         misfits: u64,
+        renamed: list<value-renamed>,
+    }
+
+    /// How many stored values one rename rewrites in a field.
+    record value-renamed {
+        %from: string,
+        to: string,
+        records: u64,
     }
 
     /// Where a stored value a new declaration would refuse is; never what.
@@ -1029,18 +1077,21 @@ interface types {
         proposal(proposal-id),
     }
 
+    /// Why a call was refused. A refusal of `invalid`, `constraint`,
+    /// `precondition` or `unanswered` says its case
+    /// (`lakelands_api::error::Case`) and where it is said.
     variant refusal {
         not-granted,
         wrong-door,
         reserved,
-        invalid(string),
-        constraint(string),
-        precondition(string),
+        invalid(said),
+        constraint(said),
+        precondition(said),
         too-deep(u32),
         too-large(u32),
         migration(migration-report),
         decided,
-        unanswered(string),
+        unanswered(said),
         out-of-range(position),
     }
 
@@ -1054,12 +1105,27 @@ interface types {
         actual: version,
     }
 
+    /// A case of a closed set, as the crate's serde form writes it: the
+    /// places it is said at as JSON text (a list, `[]` where it names
+    /// none), its code, its parameters as JSON text (an object), and the
+    /// sentence its parameters make. A code a caller does not know is
+    /// rendered by its message.
+    record said {
+        at: string,
+        code: string,
+        params: string,
+        message: string,
+    }
+
     variant error {
         refused(refused),
         not-found(missing),
         conflict(conflict),
-        unbound(string),
-        unavailable(string),
+        /// The seam the call needs (`lakelands_api::error::Seam`).
+        unbound(said),
+        /// Why the lake cannot answer now
+        /// (`lakelands_api::error::Situation`).
+        unavailable(said),
     }
 
     // ------------------------------------------------------------------

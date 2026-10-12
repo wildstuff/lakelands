@@ -107,6 +107,7 @@ fn reader(lake: &dyn LakeStore, restricted: bool) -> Principal {
         TypeGrants {
             default: None,
             fields: [("secret".into(), Access::Masked)].into(),
+            ..Default::default()
         },
     );
     Principal {
@@ -582,13 +583,59 @@ async fn a_record_crosses_as_the_connections_source_and_what_it_may_not_read_sta
     }
 }
 
+/// A poll examines at most `FEED_EXAMINED` events, so a mirror whose types
+/// change rarely reads on past a poll that answered none, and the change
+/// after a long run of another type's writes crosses in the same settle.
+#[tokio::test]
+async fn a_mirror_reads_on_past_a_bounded_poll() {
+    let mut source = source_types();
+    source.push(decl(
+        json!({"declare": "type", "name": "visit", "fields": [text("text", "authored")]}),
+    ));
+    let two = Two::with("reads-on", &Engine::Memory, source, target_types()).await;
+    let mut m = two.mirror().await.unwrap();
+    settle(&mut m).await;
+    for i in 0..4_200 {
+        two.upsert("visit", &format!("v{i}"), json!({"text": "seen"}))
+            .await;
+    }
+    two.upsert("partner", "acme", json!({"name": "acme"})).await;
+    settle(&mut m).await;
+    assert!(
+        two.copy("partner", "acme").await.is_some(),
+        "the change after 4 200 writes of an unmirrored type crossed"
+    );
+}
+
+/// A mirror that reads held records writes their copies only with a
+/// writer that holds `restricted` in the target: it is refused before
+/// anything is copied, naming the writer and the grant (042).
+#[tokio::test]
+async fn a_mirror_that_reads_held_records_needs_a_writer_that_may_hold_them() {
+    let mut two = Two::new("held-writer", &Engine::Memory).await;
+    two.restricted = true;
+    two.upsert("customer", "c1", json!({"code": "c1", "name": "Ada"}))
+        .await;
+    let Err(refused) = two.mirror().await else {
+        panic!("a mirror whose writer may not hold held records is refused");
+    };
+    assert!(
+        refused.contains("`mirror`") && refused.contains("no `restricted` grant"),
+        "{refused}"
+    );
+    assert!(
+        two.copy("customer", "c1").await.is_none(),
+        "nothing is copied"
+    );
+}
+
 #[tokio::test]
 async fn a_held_record_crosses_only_to_a_mirror_that_may_see_held_records() {
     for engine in engines() {
         let engine = &engine;
         for restricted in [false, true] {
             let mut two = Two::new(&format!("held-{restricted}"), engine).await;
-            two.restricted = restricted;
+            (two.restricted, two.grants.restricted) = (restricted, restricted);
             two.upsert("customer", "c1", json!({"code": "c1", "name": "Ada"}))
                 .await;
             let mut m = two.mirror().await.unwrap();
@@ -851,6 +898,72 @@ async fn a_rekey_in_the_source_stops_the_type_until_the_target_is_rekeyed_the_sa
     }
 }
 
+/// A value type's renames in the source write no record event: the mirror
+/// checks each type they rewrite again, as at a declaration, and copies it
+/// again whole, also when it started from the head.
+#[tokio::test]
+async fn a_value_renamed_in_the_source_is_copied_again() {
+    let tiers = |one_of: Value| {
+        decl(json!({"declare": "value_type", "name": "tiers", "kind": "text", "one_of": one_of}))
+    };
+    let tiered = |types: Vec<Declaration>, authority: &str| {
+        let mut out = vec![];
+        for d in types {
+            let mut v = serde_json::to_value(&d).unwrap();
+            for f in v
+                .get_mut("fields")
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                if f["name"] == "tier" {
+                    *f = json!({"name": "tier", "authority": authority,
+                                "type": {"kind": "text", "value_type": "tiers"}});
+                }
+            }
+            out.push(decl(v));
+        }
+        out
+    };
+    for engine in engines() {
+        let engine = &engine;
+        for start in [Start::Snapshot, Start::Head] {
+            let mut source = vec![tiers(json!(["gold", "silver"]))];
+            source.extend(tiered(source_types(), "authored"));
+            let mut target = vec![tiers(json!(["gold", "silver", "platinum"]))];
+            target.extend(tiered(target_types(), "source"));
+            let two = Two::with(&format!("revalued-{start:?}"), engine, source, target).await;
+            let mut m = two.mirror_from(start).await.unwrap();
+            settle(&mut m).await;
+            two.upsert("customer", "c1", json!({"code": "c1", "tier": "gold"}))
+                .await;
+            settle(&mut m).await;
+            let cat = doors(two.crm.as_ref());
+            let who = owner(two.crm.as_ref());
+            let m2 = lakelands_api::write::ValueTypeMigration {
+                to: serde_json::from_value(
+                    json!({"name": "tiers", "kind": "text", "one_of": ["platinum", "silver"]}),
+                )
+                .unwrap(),
+                renames: vec![("gold".into(), "platinum".into())],
+            };
+            let report = cat.migrate_value_type(&who, m2.clone()).await.unwrap().data;
+            cat.migrate_value_type_apply(&who, m2, &report.report_id)
+                .await
+                .unwrap();
+            settle(&mut m).await;
+            let copy = two.copy("customer", "c1").await.expect("copied");
+            assert_eq!(
+                copy.fields.get("tier"),
+                Some(&json!("platinum")),
+                "{start:?}"
+            );
+            let kept = &m.kept().types[&TypeName::from("customer")];
+            assert!(kept.stopped.is_none(), "{start:?}: {kept:?}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn snapshot_copies_what_is_there_and_head_does_not() {
     for engine in engines() {
@@ -968,6 +1081,45 @@ async fn a_target_type_the_source_does_not_own_whole_is_refused_at_start() {
             let why = two.mirror().await.unwrap_err();
             assert!(why.contains(said), "{name}: {why}");
         }
+    }
+}
+
+/// A connection's principal held at `none` on `partner.name` in the
+/// source is not shown `partner`, which is keyed by it, so neither is
+/// `customer.partner`, which refers to it (lakelands#718): the mirror is
+/// refused at start, naming the field, and does not stall.
+#[tokio::test]
+async fn a_reference_its_principal_may_not_know_of_in_the_source_is_refused_at_start() {
+    for engine in engines() {
+        let two = Two::with("kept-partner", &engine, source_types(), target_types()).await;
+        let mut kept = reader(two.crm.as_ref(), false);
+        let held = TypeGrants {
+            fields: [("name".into(), Access::None)].into(),
+            ..Default::default()
+        };
+        kept.grants.types.insert(TypeName::from("partner"), held);
+        let config = two.config(Start::Snapshot);
+        config.check().expect("the configuration reads");
+        let mut writer = writer(two.main.as_ref());
+        writer.grants = two.grants.clone();
+        let made = Mirror::new(
+            &config,
+            &config.connections[0],
+            &two.dir,
+            two.crm.clone(),
+            two.main.clone(),
+            kept,
+            writer,
+        )
+        .await;
+        let Err(why) = made else {
+            panic!("the mirror is refused");
+        };
+        assert!(
+            why.contains("`customer` has no field `partner` the principal may read"),
+            "{}: {why}",
+            engine.name()
+        );
     }
 }
 
@@ -1255,6 +1407,7 @@ async fn a_principal_that_may_not_write_sys_mirror_is_refused_naming_the_grant()
             TypeGrants {
                 default: Some(Access::Read),
                 fields: Default::default(),
+                ..Default::default()
             },
         );
         let why = two.mirror().await.unwrap_err();

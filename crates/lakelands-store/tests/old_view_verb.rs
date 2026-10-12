@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use lakelands_api::engine::{EngineOpener, OpenMode};
+use lakelands_api::error::{Case, Said};
 use lakelands_api::event::{Digest, EventBody, LOG_FORMAT_VERSION};
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::seam::{Seams, setting_type};
@@ -40,6 +41,7 @@ async fn a_verb_on_a_record_of_a_view_from_an_older_lake_is_refused_at_the_call(
                 declaration: Declaration::Type(t),
                 schema_hash: Some(hash),
                 version: 1,
+                with_the_set: false,
             }
         };
         let invoice = type_decl(
@@ -69,6 +71,7 @@ async fn a_verb_on_a_record_of_a_view_from_an_older_lake_is_refused_at_the_call(
                 declaration: poke,
                 schema_hash: None,
                 version: 1,
+                with_the_set: false,
             },
         ];
         let mut prev = Digest::zero();
@@ -115,9 +118,10 @@ async fn a_verb_on_a_record_of_a_view_from_an_older_lake_is_refused_at_the_call(
             WriteOpts::default(),
         )
         .await;
+    let view = Said::from(Case::IsAView { ty: "pt".into() });
     assert!(
-        matches!(&got, Err(e @ Error::Refused { reason: Refusal::Invalid { .. }, .. })
-            if e.to_string().contains("`pt`")),
+        matches!(&got, Err(Error::Refused { reason: Refusal::Invalid(said), .. })
+            if **said == view),
         "a call of `poke`, declared on a record of the view `pt` before 0.8.0, is refused as \
          invalid naming `pt`; it answered {got:?}"
     );

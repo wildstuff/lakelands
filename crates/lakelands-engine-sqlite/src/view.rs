@@ -20,7 +20,7 @@ use lakelands_api::read::{Direction, Order};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::is_kept_name;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
-use lakelands_core::engines::{self, decode};
+use lakelands_core::engines::{self, Holders, decode};
 use rusqlite::{Connection, ToSql, params};
 
 use crate::handle::SqliteLake;
@@ -151,25 +151,68 @@ fn unsorted_after_sql(after: bool) -> String {
     )
 }
 
-/// The statement of [`Read::sorted_after`], seeking past the sort key and
-/// key bound as `?4` and `?5` when `from` is set.
-fn sorted_after_sql(dir: Direction, from: bool) -> String {
+/// The statement of [`Read::sorted_after`]: the order index's rows of
+/// `?2` for the records `holders` names, `?4` and `?5` the field and text
+/// they hold, and then the sort key and key bound to seek past when `from`
+/// is set. Many holders are read in the index's order, each kept where the
+/// text index holds its key; few are read from the text index and sorted.
+fn sorted_after_sql(dir: Direction, from: bool, holders: &Holders<'_>) -> String {
+    let (k, key) = match holders {
+        Holders::All => (4, 5),
+        _ => (6, 7),
+    };
     let (seek, by) = match dir {
-        Direction::Asc => ("AND (s.sort_key, s.key) > (?4, ?5)", "s.sort_key, s.key"),
+        Direction::Asc => (
+            format!("AND (s.sort_key, s.key) > (?{k}, ?{key})"),
+            "s.sort_key, s.key",
+        ),
         Direction::Desc => (
-            "AND (s.sort_key < ?4 OR (s.sort_key = ?4 AND s.key > ?5))",
+            format!("AND (s.sort_key < ?{k} OR (s.sort_key = ?{k} AND s.key > ?{key}))"),
             "s.sort_key DESC, s.key",
         ),
     };
-    let seek = if from { seek } else { "" };
+    let seek = if from { seek.as_str() } else { "" };
+    let rows = match holders {
+        Holders::All => "sort_index s WHERE s.ty = ?1 AND s.field = ?2",
+        Holders::Many(..) => {
+            "sort_index s WHERE s.ty = ?1 AND s.field = ?2 AND EXISTS (SELECT 1 FROM text_index t \
+             WHERE t.ty = ?1 AND t.field = ?4 AND t.value = ?5 AND t.key = s.key)"
+        }
+        Holders::Few(..) => {
+            "text_index t CROSS JOIN sort_index s WHERE t.ty = ?1 AND t.field = ?4 \
+             AND t.value = ?5 AND s.ty = ?1 AND s.key = t.key AND s.field = ?2"
+        }
+    };
     format!(
         "SELECT s.sort_key, r.state FROM \
-         (SELECT s.sort_key, s.key FROM sort_index s \
-          WHERE s.ty = ?1 AND s.field = ?2 {seek} ORDER BY {by} LIMIT ?3) s \
+         (SELECT s.sort_key, s.key FROM {rows} {seek} ORDER BY {by} LIMIT ?3) s \
          JOIN records r ON r.ty = ?1 AND r.key = s.key AND r.until IS NULL \
          ORDER BY {by}"
     )
 }
+
+/// The statement of [`Read::unsorted_after`] for the records holding the
+/// text `?5` in `?4`: the text index's rows in key order, those with an
+/// order row for `?2` passed over, cut at the limit before their records
+/// are joined, as in [`holding_after_sql`].
+fn unsorted_holding_sql(after: bool) -> String {
+    format!(
+        "SELECT r.state FROM \
+         (SELECT t.key FROM text_index t \
+          WHERE t.ty = ?1 AND t.field = ?4 AND t.value = ?5 {} \
+          AND NOT EXISTS (SELECT 1 FROM sort_index s \
+          WHERE s.ty = ?1 AND s.field = ?2 AND s.key = t.key) \
+          ORDER BY t.key LIMIT ?3) t \
+         JOIN records r ON r.ty = ?1 AND r.key = t.key AND r.until IS NULL \
+         ORDER BY t.key",
+        key_from("t.key", after.then_some(6))
+    )
+}
+
+/// The statement of [`Read::holders`]: how many records hold the text,
+/// counted up to `?4`.
+const HOLDERS: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM text_index \
+     WHERE ty = ?1 AND field = ?2 AND value = ?3 LIMIT ?4)";
 
 /// The statement of [`Read::record`]: the latest state of the key at or
 /// before the position, and whether it still holds there. No other state
@@ -196,14 +239,21 @@ pub fn seek_statements() -> [String; 2] {
 /// The statement of each first page the view reads from an index in the
 /// page's order, and of the read of one record, as the view runs it, for
 /// the engine's own test of their plans: none may sort (lakelands#580).
+/// A page under an exact text many records hold is among them; one few
+/// hold sorts them, at most [`engines::FEW_HOLDERS`].
 pub fn first_page_statements() -> Vec<String> {
+    let field = FieldName::from("f");
+    let many = Holders::Many(&field, "x");
     vec![
         RECORD_AT.to_owned(),
         records_after_sql(&TypeName::from("t"), true, false),
         holding_after_sql(false),
         unsorted_after_sql(false),
-        sorted_after_sql(Direction::Asc, false),
-        sorted_after_sql(Direction::Desc, false),
+        sorted_after_sql(Direction::Asc, false, &Holders::All),
+        sorted_after_sql(Direction::Desc, false, &Holders::All),
+        sorted_after_sql(Direction::Asc, false, &many),
+        sorted_after_sql(Direction::Desc, false, &many),
+        unsorted_holding_sql(false),
     ]
 }
 
@@ -382,37 +432,62 @@ impl Read<'_> {
         &self,
         ty: &TypeName,
         order: &Order,
+        holders: &Holders<'_>,
         from: Option<(&[u8], &str)>,
         n: u32,
     ) -> Result<Vec<(Vec<u8>, StoredRecord)>> {
         let mut stmt = self
             .conn
-            .prepare_cached(&sorted_after_sql(order.dir, from.is_some()))
+            .prepare_cached(&sorted_after_sql(order.dir, from.is_some(), holders))
             .map_err(sql)?;
-        let row = |r: &rusqlite::Row<'_>| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, String>(1)?));
-        let rows: Vec<(Vec<u8>, String)> = match from {
-            Some((k, key)) => stmt
-                .query_map(params![ty.as_str(), order.field.as_str(), n, k, key], row)
-                .and_then(Iterator::collect),
-            None => stmt
-                .query_map(params![ty.as_str(), order.field.as_str(), n], row)
-                .and_then(Iterator::collect),
+        let (ty, field) = (ty.as_str(), order.field.as_str());
+        let mut args: Vec<&dyn ToSql> = vec![&ty, &field, &n];
+        let holding = holders.text();
+        if let Some((f, t)) = &holding {
+            args.extend([f as &dyn ToSql, t]);
         }
-        .map_err(sql)?;
+        let (k, key) = from.unzip();
+        if from.is_some() {
+            args.extend([&k as &dyn ToSql, &key]);
+        }
+        let row = |r: &rusqlite::Row<'_>| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, String>(1)?));
+        let rows: Vec<(Vec<u8>, String)> = stmt
+            .query_map(args.as_slice(), row)
+            .and_then(Iterator::collect)
+            .map_err(sql)?;
         rows.into_iter()
             .map(|(k, state)| Ok((k, decode_record(&state)?)))
             .collect()
     }
 
+    /// How many head records of a type hold `text` in `field`, counted up
+    /// to `n`: a range of the exact-text index.
+    fn holders(&self, ty: &TypeName, field: &FieldName, text: &str, n: u64) -> Result<u64> {
+        let counted: Option<i64> = one(
+            self.conn,
+            HOLDERS,
+            params![ty.as_str(), field.as_str(), text, n as i64],
+        )?;
+        Ok(counted.map_or(0, i64::unsigned_abs))
+    }
+
     /// At most `n` head records of a type without a row in the order index
-    /// for `field`, in key order after `after`.
+    /// for `field`, in key order after `after`: those `holders` names.
     fn unsorted_after(
         &self,
         ty: &TypeName,
         field: &FieldName,
+        holders: &Holders<'_>,
         after: Option<&str>,
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
+        if let Some((f, t)) = holders.text() {
+            return self.page(
+                &unsorted_holding_sql(after.is_some()),
+                &[&ty.as_str(), &field.as_str(), &n, &f, &t],
+                after,
+            );
+        }
         self.page(
             &unsorted_after_sql(after.is_some()),
             &[&ty.as_str(), &field.as_str(), &n],
@@ -566,47 +641,49 @@ impl ProjectionView for SqliteView<'_> {
                     r.in_key_order(ty, &lookup, after, n)
                 });
             }
-            let records = match lookup {
-                // In a field's order, every record holding the text is read
-                // and sorted.
-                Some((field, text)) => {
-                    let keys = r.keys(
-                        "SELECT key FROM text_index WHERE ty = ?1 AND field = ?2 AND value = ?3",
-                        &[&ty.as_str(), &field.as_str(), &text],
-                    )?;
-                    r.records_by_key(ty, keys)?
-                }
+            let sorted = r.sorted_fields(ty, decl.as_ref())?;
+            let records = match engines::by_order_index(&sorted, scan) {
                 // Ordered by a field the lake indexes, at the head, the page
                 // is read in the order index's order and stops when it is
-                // full.
-                None => {
-                    let sorted = r.sorted_fields(ty, decl.as_ref())?;
-                    match engines::by_order_index(decl.as_ref(), &sorted, scan) {
-                        Some(first) if r.head => {
-                            return engines::scan_in_field_order(
-                                decl.as_ref(),
-                                scan,
-                                |from, n| r.sorted_after(ty, first, from, n),
-                                |after, n| r.unsorted_after(ty, &first.field, after, n),
-                            );
-                        }
-                        // At an earlier position, the head's index with the
-                        // keys changed since; past the ceiling, the sort.
-                        Some(first) => match r.changed(ty, engines::changed_ceiling(scan.limit))? {
-                            Some(changed) => {
-                                return engines::scan_in_field_order_at(
-                                    decl.as_ref(),
-                                    scan,
-                                    &changed,
-                                    |from, n| r.sorted_after(ty, first, from, n),
-                                    |after, n| r.unsorted_after(ty, &first.field, after, n),
-                                );
-                            }
-                            None => r.records(ty)?,
-                        },
-                        None => r.records(ty)?,
-                    }
+                // full: with a text the scan must hold, of the records
+                // holding it.
+                Some(first) if r.head => {
+                    let holders = Holders::of(lookup.as_ref(), |f, t, n| {
+                        r.holders(ty, f, t, n)
+                    })?;
+                    return engines::scan_in_field_order(
+                        decl.as_ref(),
+                        scan,
+                        |from, n| r.sorted_after(ty, first, &holders, from, n),
+                        |after, n| r.unsorted_after(ty, &first.field, &holders, after, n),
+                    );
                 }
+                // At an earlier position, the head's index with the keys
+                // changed since; past the ceiling, the sort.
+                Some(first) => match r.changed(ty, engines::changed_ceiling(scan.limit))? {
+                    Some(changed) => {
+                        return engines::scan_in_field_order_at(
+                            decl.as_ref(),
+                            scan,
+                            &changed,
+                            |from, n| r.sorted_after(ty, first, &Holders::All, from, n),
+                            |after, n| r.unsorted_after(ty, &first.field, &Holders::All, after, n),
+                        );
+                    }
+                    None => r.records(ty)?,
+                },
+                // In a field the lake does not index, every record holding
+                // the text, or the type, is read and sorted.
+                None => match &lookup {
+                    Some((field, text)) => {
+                        let keys = r.keys(
+                            "SELECT key FROM text_index WHERE ty = ?1 AND field = ?2 AND value = ?3",
+                            &[&ty.as_str(), &field.as_str(), text],
+                        )?;
+                        r.records_by_key(ty, keys)?
+                    }
+                    None => r.records(ty)?,
+                },
             };
             Ok(engines::scan(decl.as_ref(), &records, scan))
         })

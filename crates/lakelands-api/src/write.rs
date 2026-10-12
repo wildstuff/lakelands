@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::{Case, Place, Said};
 use crate::expr::Condition;
 use crate::id::{
     Cursor, FieldName, IdempotencyKey, Position, ProposalId, RecordKey, RelationName, SourceId,
@@ -10,7 +11,8 @@ use crate::id::{
 };
 use crate::ontology::{
     ANNOTATION_KEY_MAX_BYTES, ANNOTATIONS_MAX_BYTES, Annotations, FieldDecl, FieldType,
-    RESERVED_ANNOTATION_NAMESPACES, RelationDecl, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl,
+    RESERVED_ANNOTATION_NAMESPACES, RelationDecl, StorageKind, TriggerDecl, TypeDecl,
+    ValueTypeDecl, VerbDecl,
 };
 
 use crate::record::Patch;
@@ -18,6 +20,7 @@ use crate::time::Timestamp;
 
 /// Options every authored write takes.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WriteOpts {
     /// Refuse the write unless the record is at this version
     /// (compare-and-set). For a record that must not exist yet, pass
@@ -131,7 +134,7 @@ impl Outcome {
 
 /// A write that can be proposed instead of applied.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "write", rename_all = "snake_case")]
+#[serde(deny_unknown_fields, tag = "write", rename_all = "snake_case")]
 pub enum ProposedWrite {
     /// An `upsert`.
     Upsert {
@@ -187,12 +190,15 @@ pub enum ProposedWrite {
         #[serde(default)]
         report: Box<MigrationReport>,
     },
-    /// A value type's tightening, as `migrate_value_type_apply` applies it,
+    /// A value type's migration, as `migrate_value_type_apply` applies it,
     /// with the report its preflight answered when it was proposed (log
     /// format version 10).
     MigrateValueType {
         /// The new declaration.
         to: Box<ValueTypeDecl>,
+        /// The values it renames (log format version 12).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        renames: Vec<(String, String)>,
         /// The preflight's report at the proposal, for the reviewer. The
         /// store answers it; whatever a proposer sends is replaced.
         #[serde(default)]
@@ -289,6 +295,7 @@ pub struct Proposal {
 
 /// Which proposals to list.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProposalFilter {
     /// Only proposals in this state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -351,21 +358,22 @@ pub enum Declaration {
     Function(FunctionDecl),
 }
 
-/// Why a declaration's annotations cannot be declared.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Why a declaration's annotations cannot be declared, said at the
+/// declaration, where the map sits in it and the annotation.
+#[derive(Clone, Debug, PartialEq)]
 pub enum AnnotationFault {
     /// A key in a reserved namespace (`sys.`, `lakelands.`).
     Reserved {
         /// The key.
         key: String,
-        /// Why, for a person: the declaration and where the key sits.
-        message: String,
+        /// Its case, said where the key sits.
+        said: Said,
     },
     /// A key without a namespace or too long, a `null` value, an integer
     /// beyond ±(2^53 − 1), or more than [`ANNOTATIONS_MAX_BYTES`] in all.
     Invalid {
-        /// Why, for a person: the declaration and where.
-        message: String,
+        /// Its case, said where the annotation sits.
+        said: Said,
     },
 }
 
@@ -384,28 +392,72 @@ impl Declaration {
         format!("the {kind} declaration `{name}`")
     }
 
+    /// The declaration as the place a case is said at: `type `invoice``.
+    pub fn place(&self) -> Place {
+        match self {
+            Declaration::Type(t) => Place::Type {
+                name: t.name.clone(),
+            },
+            Declaration::ValueType(v) => Place::ValueType {
+                name: v.name.clone(),
+            },
+            Declaration::Verb(v) => Place::Verb {
+                name: v.name.clone(),
+            },
+            Declaration::Trigger(t) => Place::Trigger {
+                name: t.name.clone(),
+            },
+            Declaration::ObjectSet(o) => Place::ObjectSet {
+                name: o.name.clone(),
+            },
+            Declaration::Function(f) => Place::Function {
+                name: f.name.clone(),
+            },
+        }
+    }
+
     /// Every annotation map the declaration holds, with where it sits
     /// (empty for the declaration's own): a type's, its fields', its
     /// relations' and their link fields', a verb's payload fields', a
     /// function's inputs'.
     pub fn annotation_maps(&self) -> Vec<(String, &Annotations)> {
-        fn fields<'a>(at: &str, fs: &'a [FieldDecl], out: &mut Vec<(String, &'a Annotations)>) {
+        let maps = self.annotated().into_iter();
+        maps.map(|(at, _, map)| (at, map)).collect()
+    }
+
+    /// Every annotation map with where it sits, as a path and as the
+    /// places inside the declaration.
+    fn annotated(&self) -> Vec<(String, Vec<Place>, &Annotations)> {
+        type Out<'a> = Vec<(String, Vec<Place>, &'a Annotations)>;
+        fn fields<'a>(at: &str, within: &[Place], fs: &'a [FieldDecl], out: &mut Out<'a>) {
             for (i, f) in fs.iter().enumerate() {
-                out.push((format!("{at}[{i}]"), &f.annotations));
+                let field = Place::Field {
+                    name: f.name.clone(),
+                };
+                let places = [within, &[field]].concat();
+                out.push((format!("{at}[{i}]"), places, &f.annotations));
             }
         }
         let mut out = Vec::new();
         match self {
             Declaration::Type(t) => {
-                out.push((String::new(), &t.annotations));
-                fields("fields", &t.fields, &mut out);
+                out.push((String::new(), Vec::new(), &t.annotations));
+                fields("fields", &[], &t.fields, &mut out);
                 for (i, r) in t.relations.iter().enumerate() {
-                    out.push((format!("relations[{i}]"), &r.annotations));
-                    fields(&format!("relations[{i}].fields"), &r.fields, &mut out);
+                    let relation = [Place::Relation {
+                        name: r.name.clone(),
+                    }];
+                    out.push((format!("relations[{i}]"), relation.to_vec(), &r.annotations));
+                    fields(
+                        &format!("relations[{i}].fields"),
+                        &relation,
+                        &r.fields,
+                        &mut out,
+                    );
                 }
             }
-            Declaration::Verb(v) => fields("payload", &v.payload, &mut out),
-            Declaration::Function(f) => fields("inputs", &f.inputs, &mut out),
+            Declaration::Verb(v) => fields("payload", &[], &v.payload, &mut out),
+            Declaration::Function(f) => fields("inputs", &[], &f.inputs, &mut out),
             Declaration::ValueType(_) | Declaration::Trigger(_) | Declaration::ObjectSet(_) => {}
         }
         out
@@ -418,64 +470,47 @@ impl Declaration {
     /// all the maps together hold at most [`ANNOTATIONS_MAX_BYTES`] of
     /// canonical bytes.
     pub fn annotation_fault(&self) -> Option<AnnotationFault> {
-        let what = self.what();
         let mut bytes = 0;
-        for (at, map) in self.annotation_maps() {
+        for (_, places, map) in self.annotated() {
             if map.is_empty() {
                 continue;
             }
-            let at = if at.is_empty() {
-                String::new()
-            } else {
-                format!(" at `{at}`")
-            };
             for (key, value) in map {
+                // The declaration, where the map sits, the annotation.
+                let said = |case: Case| {
+                    let mut said = Said::from(case).within(Place::Annotation { key: key.clone() });
+                    for place in places.iter().rev() {
+                        said = said.within(place.clone());
+                    }
+                    said.within(self.place())
+                };
                 let segments: Vec<&str> = key.split('.').collect();
                 if RESERVED_ANNOTATION_NAMESPACES.contains(&segments[0]) {
-                    return Some(AnnotationFault::Reserved {
-                        key: key.clone(),
-                        message: format!(
-                            "{what} has the annotation `{key}`{at} in the reserved namespace \
-                             `{}.`",
-                            segments[0]
-                        ),
-                    });
+                    let namespace = segments[0].to_owned();
+                    let said = said(Case::AnnotationReserved { namespace });
+                    let key = key.clone();
+                    return Some(AnnotationFault::Reserved { key, said });
                 }
-                let invalid = |why: String| {
-                    Some(AnnotationFault::Invalid {
-                        message: format!("{what} has the annotation `{key}`{at}: {why}"),
-                    })
-                };
+                let invalid = |case| Some(AnnotationFault::Invalid { said: said(case) });
                 if segments.len() < 2 || !segments.iter().all(|s| is_identifier(s)) {
-                    return invalid(
-                        "a key is a namespace and a name, ASCII identifiers joined by `.` \
-                         (`acme.icon`)"
-                            .into(),
-                    );
+                    return invalid(Case::AnnotationKeyForm);
                 }
                 if key.len() > ANNOTATION_KEY_MAX_BYTES {
-                    return invalid(format!("a key is at most {ANNOTATION_KEY_MAX_BYTES} bytes"));
+                    let max = ANNOTATION_KEY_MAX_BYTES;
+                    return invalid(Case::AnnotationKeyLong { max });
                 }
                 if value.is_null() {
-                    return invalid(
-                        "a value is not `null`; an annotation is taken away by leaving its key \
-                         out"
-                        .into(),
-                    );
+                    return invalid(Case::AnnotationNull);
                 }
                 if let Some(n) = too_large(value) {
-                    return invalid(format!(
-                        "{n} is beyond ±(2^53 − 1), the largest integer every reader reads exactly"
-                    ));
+                    return invalid(Case::IntegerTooLarge { n });
                 }
             }
             bytes += crate::canonical::of(map).len();
         }
-        (bytes > ANNOTATIONS_MAX_BYTES).then(|| AnnotationFault::Invalid {
-            message: format!(
-                "{what} holds {bytes} bytes of annotations, over the {ANNOTATIONS_MAX_BYTES} a \
-                 declaration may hold"
-            ),
+        let max = ANNOTATIONS_MAX_BYTES;
+        (bytes > max).then(|| AnnotationFault::Invalid {
+            said: Said::from(Case::AnnotationsTooLarge { bytes, max }).within(self.place()),
         })
     }
 }
@@ -488,10 +523,7 @@ impl From<AnnotationFault> for crate::error::Error {
                 field: Some(key.into()),
                 reason: Refusal::Reserved,
             },
-            AnnotationFault::Invalid { message } => Error::Refused {
-                field: None,
-                reason: Refusal::Invalid { message },
-            },
+            AnnotationFault::Invalid { said } => Error::invalid(said),
         }
     }
 }
@@ -505,12 +537,12 @@ fn is_identifier(s: &str) -> bool {
 }
 
 /// An integer anywhere in a value beyond ±(2^53 − 1), if there is one.
-fn too_large(value: &serde_json::Value) -> Option<String> {
+fn too_large(value: &serde_json::Value) -> Option<serde_json::Number> {
     const MAX: u64 = (1 << 53) - 1;
     match value {
         serde_json::Value::Number(n) => (n.as_u64().is_some_and(|u| u > MAX)
             || n.as_i64().is_some_and(|i| i.unsigned_abs() > MAX))
-        .then(|| n.to_string()),
+        .then(|| n.clone()),
         serde_json::Value::Array(items) => items.iter().find_map(too_large),
         serde_json::Value::Object(m) => m.values().find_map(too_large),
         _ => None,
@@ -556,9 +588,10 @@ impl<'de> Deserialize<'de> for Declaration {
     }
 }
 
-/// The sentence a declaration that cannot be read is refused with: the
-/// declaration, then the member it does not take and where it sits, or
-/// what else is wrong and where.
+/// What a declaration that cannot be read says, as a parse error: the
+/// declaration, and where in it the parser stopped. Which member it does
+/// not take is found by the doors from the parse itself, never from these
+/// words (lakelands#650).
 fn refusal(
     kind: &str,
     name: Option<&str>,
@@ -568,30 +601,9 @@ fn refusal(
         Some(name) => format!("the {kind} declaration `{name}`"),
         None => format!("a {kind} declaration"),
     };
-    let path = e.path().to_string();
-    let inner = e.inner().to_string();
-    if let Some((member, rest)) = inner
-        .strip_prefix("unknown field `")
-        .and_then(|rest| rest.split_once('`'))
-    {
-        let parent = path
-            .strip_suffix(member)
-            .map_or("", |p| p.trim_end_matches('.'));
-        let at = if parent.is_empty() {
-            String::new()
-        } else {
-            format!(" at `{parent}`")
-        };
-        let takes = rest
-            .strip_prefix(", expected ")
-            .map(|t| format!(" (it takes {t})"))
-            .unwrap_or_default();
-        return format!("{what} has no member `{member}`{at}{takes}");
-    }
-    if path == "." {
-        format!("{what}: {inner}")
-    } else {
-        format!("{what}: at `{path}`: {inner}")
+    match e.path().to_string().as_str() {
+        "." => format!("{what}: {}", e.inner()),
+        path => format!("{what}: at `{path}`: {}", e.inner()),
     }
 }
 
@@ -648,45 +660,74 @@ pub struct Migration {
 }
 
 impl Migration {
+    /// The fields the migration renames, as pairs of the old name and the
+    /// new. A pair names a field of `before` and one of the new shape, each
+    /// once, and no new name is a field `before` keeps. Otherwise the case
+    /// that says why. Judged against an author's view of the type, a field
+    /// it may not know of is no field to it (lakelands#750). It lives in
+    /// the contract so that the mock refuses the same.
+    pub fn renamed_fields(&self, before: &TypeDecl) -> Result<Vec<(&FieldName, &FieldName)>, Case> {
+        let has = |t: &TypeDecl, n: &FieldName| t.fields.iter().any(|f| &f.name == n);
+        let mut out: Vec<(&FieldName, &FieldName)> = Vec::new();
+        for (from, to) in &self.renames {
+            if !has(before, from) {
+                return Err(Case::RenameFromUnknown { from: from.clone() });
+            }
+            if !has(&self.to, to) {
+                return Err(Case::RenameToUnknown { to: to.clone() });
+            }
+            if out.iter().any(|(f, _)| *f == from) {
+                let field = from.clone();
+                return Err(Case::RenameRepeated { field });
+            }
+            if out.iter().any(|(_, t)| *t == to) {
+                return Err(Case::RenameRepeated { field: to.clone() });
+            }
+            out.push((from, to));
+        }
+        let renamed = |n: &FieldName| out.iter().any(|(f, _)| *f == n);
+        let mut onto: Vec<&FieldName> = out.iter().map(|(_, t)| *t).collect();
+        onto.sort();
+        match onto.into_iter().find(|t| has(before, t) && !renamed(t)) {
+            Some(to) => Err(Case::RenameCollides { to: to.clone() }),
+            None => Ok(out),
+        }
+    }
+
     /// The relations the migration renames, each as it stood on `before`
     /// and as it stands. A pair names a relation of the type before and
     /// one of `to`, each once, and frees the old name. A rename moves edges
     /// and changes none: the carrier, the target, the cardinality and, for
     /// a relation carried by link records, its fields and who writes them
-    /// stay. Otherwise the sentence that says why, naming the relation. It
+    /// stay. Otherwise the case that says why, said at the rename. It
     /// lives in the contract so that the mock refuses the same.
     pub fn renamed_relations<'a>(
         &'a self,
         before: &'a TypeDecl,
-    ) -> std::result::Result<Vec<(&'a RelationDecl, &'a RelationDecl)>, String> {
+    ) -> std::result::Result<Vec<(&'a RelationDecl, &'a RelationDecl)>, Said> {
         let mut out = Vec::new();
         for (i, (old, new)) in self.relation_renames.iter().enumerate() {
-            let wrong = |why: &str| format!("renaming relation `{old}` to `{new}`: {why}");
+            let wrong = |case: Case| {
+                let (from, to) = (old.clone(), new.clone());
+                Said::from(case).within(Place::RelationRename { from, to })
+            };
             let of = |t: &'a TypeDecl, n| t.relations.iter().find(|r| &r.name == n);
             let (Some(was), Some(is)) = (of(before, old), of(&self.to, new)) else {
-                return Err(wrong(
-                    "the first names a relation the type has, the second one the new shape has",
-                ));
+                return Err(wrong(Case::RelationRenameNamesNone));
             };
             let again = |(o, n): &(RelationName, RelationName)| o == old || n == new;
             if self.relation_renames[..i].iter().any(again)
                 || of(before, new).is_some()
                 || of(&self.to, old).is_some()
             {
-                return Err(wrong(
-                    "a relation is renamed once, to a name no relation of the type bears, and \
-                     leaves its old name free",
-                ));
+                return Err(wrong(Case::RelationRenameNotOnce));
             }
             let kept = |r: &'a RelationDecl| {
                 let carried = (&r.via, &r.derived, &r.target, r.cardinality);
                 (carried, &r.fields, r.authority)
             };
             if kept(was) != kept(is) {
-                return Err(wrong(
-                    "a rename keeps the relation's carrier, target, cardinality, link fields \
-                     and authority; change them in a migration of their own",
-                ));
+                return Err(wrong(Case::RelationRenameChanges));
             }
             out.push((was, is));
         }
@@ -834,6 +875,87 @@ pub struct Restated {
     pub to: serde_json::Value,
 }
 
+/// A value type's migration: its new declaration, and the values it
+/// renames in every stored record that holds them (log format version 12).
+/// With no rename it changes no record, and is the tightening it was
+/// before.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ValueTypeMigration {
+    /// The value type's new declaration.
+    pub to: ValueTypeDecl,
+    /// Values renamed: old value to new value, of a text value type.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub renames: Vec<(String, String)>,
+}
+
+impl From<ValueTypeDecl> for ValueTypeMigration {
+    /// A migration that renames no value.
+    fn from(to: ValueTypeDecl) -> ValueTypeMigration {
+        ValueTypeMigration {
+            to,
+            renames: Vec::new(),
+        }
+    }
+}
+
+impl ValueTypeMigration {
+    /// Refuse, with the case, renames that cannot be applied to `before`, the
+    /// declaration in force: of a value type not text; an old value
+    /// `before` does not accept, a new one `to` does not, a value renamed
+    /// to itself or twice. A merge, a chain and a swap are allowed, unlike
+    /// a type's relation renames: each pair maps a value as it stood before.
+    /// Here so that the mock refuses the same; `accepts` is the caller's
+    /// check of a value.
+    pub fn check_renames(
+        &self,
+        before: &ValueTypeDecl,
+        accepts: impl Fn(&ValueTypeDecl, &str) -> bool,
+    ) -> std::result::Result<(), Said> {
+        if !self.renames.is_empty() && self.to.kind != StorageKind::Text {
+            let value_type = self.to.name.clone();
+            return Err(Case::ValueRenameNotText { value_type }.into());
+        }
+        for (i, (old, new)) in self.renames.iter().enumerate() {
+            let wrong = |case: Case| {
+                let (from, to) = (old.clone(), new.clone());
+                Err(Said::from(case).within(Place::ValueRename { from, to }))
+            };
+            if old == new {
+                return wrong(Case::ValueRenameSame);
+            }
+            if self.renames[..i].iter().any(|(o, _)| o == old) {
+                return wrong(Case::ValueRenameTwice);
+            }
+            if !accepts(before, old) {
+                return wrong(Case::ValueRenameOldRefused);
+            }
+            if !accepts(&self.to, new) {
+                return wrong(Case::ValueRenameNewRefused);
+            }
+        }
+        Ok(())
+    }
+
+    /// A stored value as the migration leaves it: renamed, or as it is.
+    pub fn renamed<'a>(&'a self, value: &'a str) -> &'a str {
+        let pair = self.renames.iter().find(|(old, _)| old == value);
+        pair.map_or(value, |(_, new)| new)
+    }
+}
+
+/// How many stored values one of a value type's renames rewrites in one
+/// field.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValueRenamed {
+    /// The old value.
+    pub from: String,
+    /// The new value.
+    pub to: String,
+    /// The records whose field holds the old value.
+    pub records: u64,
+}
+
 /// The preflight of a migration: what it would do to the stored records
 /// and to the declaration, computed before anything changes. Every
 /// difference between the declaration in force and `to` is in it. A migration is applied only when its
@@ -846,9 +968,10 @@ pub struct MigrationReport {
     /// a reader who may not see the type.
     #[serde(rename = "type")]
     pub ty: TypeName,
-    /// The schema hash before.
+    /// The schema hash before, of the shape the reader is shown, as
+    /// `describe` answers it.
     pub from_schema_hash: String,
-    /// The schema hash after.
+    /// The schema hash after, of the shape the reader is shown.
     pub to_schema_hash: String,
     /// Records examined.
     pub records_scanned: u64,
@@ -895,7 +1018,9 @@ pub struct MigrationReport {
     /// nothing of what the migration removes, which is `dropped`.
     pub lossless: bool,
     /// Names this report; `migrate_apply` must repeat it. It is the id of
-    /// the whole report, whatever its reader is shown of it.
+    /// the report as its reader is shown it and of the head it was made
+    /// at: the SHA-256 of `{"report": …, "head": …}` in canonical form,
+    /// the report with this member empty.
     pub report_id: String,
     /// Whether the report holds more than this reader is shown: an answer
     /// says so, without a name. A logged and a stored report hold `false`.
@@ -1062,7 +1187,7 @@ pub struct TypeRetired {
 /// would refuse among the values stored under it, computed before
 /// anything changes (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
 /// The empty report (`Default`) is what a proposer sends with a proposed
-/// tightening, which the store replaces with the preflight's.
+/// value type's migration, which the store replaces with the preflight's.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValueTypeReport {
     /// The value type migrated.
@@ -1074,13 +1199,24 @@ pub struct ValueTypeReport {
     pub records_scanned: u64,
     /// Per field that uses it: the values examined and those refused.
     pub fields: Vec<ValueTypeUse>,
-    /// Values the new declaration would refuse, over every field.
+    /// Values the new declaration would refuse, as the renames leave them,
+    /// over every field, shown to the reader or not.
     pub misfits: u64,
     /// The first misfits, at most ten. Never values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub first: Vec<Misfit>,
-    /// True when every stored value fits the new declaration.
+    /// True when every stored value fits the new declaration, in every
+    /// field, shown to the reader or not.
     pub fits: bool,
+    /// The declarations in force that may name an old value the migration
+    /// renames in a condition or an expression, each as its kind and name
+    /// say it (set `open_tasks`), and the aging rules that move from or
+    /// to one. They stay as they are: changing them is the author's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<String>,
+    /// Whether a declaration the reader is not shown may name one too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub conditions_unshown: bool,
     /// Names this report; `migrate_value_type_apply` must repeat it.
     pub report_id: String,
 }
@@ -1098,6 +1234,9 @@ pub struct ValueTypeUse {
     /// Values the new declaration would refuse: stored ones, and the
     /// field's declared `initial`.
     pub misfits: u64,
+    /// Per rename: how many stored values in the field it rewrites.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub renamed: Vec<ValueRenamed>,
 }
 
 /// A stored value a new declaration would refuse: where it is, never what.

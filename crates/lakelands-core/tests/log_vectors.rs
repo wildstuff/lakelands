@@ -291,7 +291,9 @@ fn the_version_3_events_recompute_and_a_version_2_upstream_is_refused() {
         "the id leaves `upstream` out"
     );
     let negative: Event = serde_json::from_str(v3["negative"].as_str().unwrap()).unwrap();
-    let why = lakelands_core::versions::below(&negative).expect("refused");
+    let why = lakelands_core::versions::below(&negative)
+        .expect("refused")
+        .to_string();
     assert!(
         why.contains("`upstream`") && why.contains("format 3 added"),
         "{why}"
@@ -302,7 +304,9 @@ fn the_version_3_events_recompute_and_a_version_2_upstream_is_refused() {
         None,
         "its version is right"
     );
-    let why = lakelands_core::versions::misplaced(&misplaced).expect("refused");
+    let why = lakelands_core::versions::misplaced(&misplaced)
+        .expect("refused")
+        .to_string();
     assert!(why.contains("`record_retired`"), "{why}");
 }
 
@@ -353,7 +357,9 @@ fn the_version_4_proposals_recompute_and_a_version_3_one_is_refused() {
         prev = event.hash.0.clone();
     }
     let negative: Event = serde_json::from_str(v4["negative"].as_str().unwrap()).unwrap();
-    let why = lakelands_core::versions::below(&negative).expect("refused");
+    let why = lakelands_core::versions::below(&negative)
+        .expect("refused")
+        .to_string();
     assert!(
         why.contains("proposes a declaration or a migration") && why.contains("format 4 added"),
         "{why}"
@@ -417,10 +423,14 @@ fn the_version_5_annotations_recompute_and_a_version_4_one_is_refused() {
         "annotations are not shape"
     );
     let misplaced: Event = serde_json::from_str(v5["misplaced"].as_str().unwrap()).unwrap();
-    let why = lakelands_core::versions::misplaced(&misplaced).expect("refused");
+    let why = lakelands_core::versions::misplaced(&misplaced)
+        .expect("refused")
+        .to_string();
     assert!(why.contains("`context` carries `cause`"), "{why}");
     let negative: Event = serde_json::from_str(v5["negative"].as_str().unwrap()).unwrap();
-    let why = lakelands_core::versions::below(&negative).expect("refused");
+    let why = lakelands_core::versions::below(&negative)
+        .expect("refused")
+        .to_string();
     assert!(
         why.contains("`annotations`") && why.contains("format 5 added"),
         "{why}"
@@ -483,7 +493,9 @@ fn the_version_6_derived_relation_recomputes_and_a_version_5_one_is_refused() {
         "`derived` is not shape"
     );
     let negative: Event = serde_json::from_str(v6["negative"].as_str().unwrap()).unwrap();
-    let why = lakelands_core::versions::below(&negative).expect("refused");
+    let why = lakelands_core::versions::below(&negative)
+        .expect("refused")
+        .to_string();
     assert!(
         why.contains("derived relation") && why.contains("format 6 added"),
         "{why}"
@@ -505,7 +517,9 @@ fn the_version_6_derived_relation_recomputes_and_a_version_5_one_is_refused() {
     assert_eq!(lakelands_core::versions::needed(&capped.body, false), 6);
     let mut below = capped.clone();
     below.v = 5;
-    let why = lakelands_core::versions::below(&below).expect("refused");
+    let why = lakelands_core::versions::below(&below)
+        .expect("refused")
+        .to_string();
     assert!(why.contains("`max_depth`"), "{why}");
 }
 
@@ -539,7 +553,9 @@ fn the_version_7_retired_guard_recomputes_and_a_version_6_one_is_refused() {
     assert_eq!(lakelands_core::versions::needed(&event.body, false), 7);
     let negative: Event = serde_json::from_str(v7["negative"].as_str().unwrap()).unwrap();
     assert_eq!(negative.v, 6);
-    let why = lakelands_core::versions::below(&negative).expect("refused");
+    let why = lakelands_core::versions::below(&negative)
+        .expect("refused")
+        .to_string();
     assert!(
         why.contains("`retired`") && why.contains("format 7 added"),
         "{why}"
@@ -576,7 +592,9 @@ fn the_version_8_view_with_parameters_recomputes_and_a_version_7_one_is_refused(
     assert_eq!(lakelands_core::versions::needed(&event.body, false), 8);
     let negative: Event = serde_json::from_str(v8["negative"].as_str().unwrap()).unwrap();
     assert_eq!(negative.v, 7);
-    let why = lakelands_core::versions::below(&negative).expect("refused");
+    let why = lakelands_core::versions::below(&negative)
+        .expect("refused")
+        .to_string();
     assert!(
         why.contains("parameters") && why.contains("format 8 added"),
         "{why}"
@@ -619,7 +637,9 @@ fn the_version_8_verb_on_its_type_recomputes_and_a_version_7_one_is_refused() {
         };
         let negative: Event = serde_json::from_str(v8[name].as_str().unwrap()).unwrap();
         assert_eq!(negative.v, 7);
-        let why = lakelands_core::versions::below(&negative).expect("refused");
+        let why = lakelands_core::versions::below(&negative)
+            .expect("refused")
+            .to_string();
         assert!(
             why.contains(what) && why.contains("format 8 added"),
             "{why}"
@@ -669,7 +689,9 @@ fn the_version_10_proposed_tightening_recomputes_and_a_version_9_one_is_refused(
     assert_eq!(prev, v10["hashes"][1].as_str().unwrap());
     let negative: Event = serde_json::from_str(v10["negative"].as_str().unwrap()).unwrap();
     assert_eq!(negative.v, 9);
-    let why = lakelands_core::versions::below(&negative).expect("refused");
+    let why = lakelands_core::versions::below(&negative)
+        .expect("refused")
+        .to_string();
     assert!(
         why.contains("tightening") && why.contains("format 10 added"),
         "{why}"
@@ -705,8 +727,85 @@ fn the_version_11_lines_recompute_and_each_written_as_version_10_is_refused() {
     for negative in v11["negatives"].as_array().unwrap() {
         let negative: Event = serde_json::from_str(negative.as_str().unwrap()).unwrap();
         assert_eq!(negative.v, 10);
-        let why = lakelands_core::versions::below(&negative).expect("refused");
+        let why = lakelands_core::versions::below(&negative)
+            .expect("refused")
+            .to_string();
         assert!(why.contains("format 11 added"), "{why}");
+    }
+}
+
+#[test]
+fn the_version_12_line_recomputes_and_written_as_version_11_is_refused() {
+    let v12 = read_json("v12.json");
+    let mut prev = read_json("v11.json")["hashes"][7]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for line in v12["lines"].as_array().unwrap() {
+        let line = line.as_str().unwrap();
+        let value: Value = serde_json::from_str(line).unwrap();
+        let event: Event = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            canonical::of(&event),
+            line.as_bytes(),
+            "the contract writes it as the line"
+        );
+        let mut body = value;
+        body.as_object_mut().unwrap().remove("hash");
+        assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
+        assert_eq!(event.prev.0, prev, "it follows the event before it");
+        let needed = lakelands_core::versions::needed(&event.body, false);
+        assert_eq!((event.v, needed), (12, 12));
+        prev = event.hash.0;
+    }
+    let hashes = v12["hashes"].as_array().unwrap();
+    assert_eq!(prev, hashes.last().unwrap().as_str().unwrap());
+    for negative in v12["negatives"].as_array().unwrap() {
+        let negative: Event = serde_json::from_str(negative.as_str().unwrap()).unwrap();
+        assert_eq!(negative.v, 11);
+        let why = lakelands_core::versions::below(&negative)
+            .expect("refused")
+            .to_string();
+        assert!(why.contains("format 12 added"), "{why}");
+    }
+}
+
+#[test]
+fn the_version_13_lines_recompute_and_written_as_version_12_are_refused() {
+    let v13 = read_json("v13.json");
+    let mut prev = read_json("v12.json")["hashes"][2]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for line in v13["lines"].as_array().unwrap() {
+        let line = line.as_str().unwrap();
+        let value: Value = serde_json::from_str(line).unwrap();
+        let event: Event = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            canonical::of(&event),
+            line.as_bytes(),
+            "the contract writes it as the line"
+        );
+        let mut body = value;
+        body.as_object_mut().unwrap().remove("hash");
+        assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
+        assert_eq!(event.prev.0, prev, "it follows the event before it");
+        // A pinned proposal and a declaration that names a date need 13;
+        // a record holding a date is written in the lake's version.
+        let needed = lakelands_core::versions::needed(&event.body, false);
+        let added = !matches!(event.body, EventBody::RecordUpserted { .. });
+        assert_eq!((event.v, added), (13, needed == 13));
+        prev = event.hash.0;
+    }
+    let hashes = v13["hashes"].as_array().unwrap();
+    assert_eq!(prev, hashes.last().unwrap().as_str().unwrap());
+    for negative in v13["negatives"].as_array().unwrap() {
+        let negative: Event = serde_json::from_str(negative.as_str().unwrap()).unwrap();
+        assert_eq!(negative.v, 12);
+        let why = lakelands_core::versions::below(&negative)
+            .expect("refused")
+            .to_string();
+        assert!(why.contains("format 13 added"), "{why}");
     }
 }
 
@@ -737,7 +836,9 @@ fn the_version_9_view_that_merges_recomputes_and_a_version_8_one_is_refused() {
     assert_eq!(lakelands_core::versions::needed(&event.body, false), 9);
     let negative: Event = serde_json::from_str(v9["negative"].as_str().unwrap()).unwrap();
     assert_eq!(negative.v, 8);
-    let why = lakelands_core::versions::below(&negative).expect("refused");
+    let why = lakelands_core::versions::below(&negative)
+        .expect("refused")
+        .to_string();
     assert!(
         why.contains("merges sources") && why.contains("format 9 added"),
         "{why}"
@@ -763,9 +864,10 @@ fn the_negative_vector_whose_known_at_goes_back_is_refused_at_its_position() {
     assert_eq!(str_of(&six, "prev"), str_of(&five, "hash"));
     assert!(str_of(&six, "known_at") < str_of(&five, "known_at"));
     match lakelands_core::export::verify(&dir) {
-        Err(lakelands_api::Error::Unavailable { message }) => assert!(
-            message.contains("at position 6:") && message.contains("known_at"),
-            "{message}"
+        Err(lakelands_api::Error::Unavailable { situation }) => assert!(
+            situation.to_string().contains("at position 6:")
+                && situation.to_string().contains("known_at"),
+            "{situation}"
         ),
         other => {
             panic!("a known_at going back is refused at position 6, and it answered {other:?}")

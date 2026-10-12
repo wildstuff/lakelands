@@ -1,8 +1,14 @@
 use super::*;
 use serde_json::json;
 
-/// What `keepable` says of a view over `invoice` with these members.
+/// What `keepable` says of a view over `invoice` with these members, as
+/// its sentence.
 fn said(view: serde_json::Value) -> Result<(), String> {
+    case(view).map_err(|said| said.to_string())
+}
+
+/// What `keepable` says of a view over `invoice` with these members.
+fn case(view: serde_json::Value) -> Result<(), Said> {
     use StorageKind as K;
     let kinds = [
         ("partner", K::Reference),
@@ -78,18 +84,18 @@ fn a_view_is_kept_where_every_fold_is_a_function_of_its_values() {
         (
             &grouped,
             "sum(data)",
-            format!("`sum(data)` adds what is of no certain kind; {adds}"),
+            format!("`sum(data)` adds what is of no certain kind: {adds}"),
         ),
         (
             &grouped,
             "count() + sum(if(open, amount, note))",
-            format!("`sum(if(open, amount, note))` adds what is of no certain kind; {adds}"),
+            format!("`sum(if(open, amount, note))` adds what is of no certain kind: {adds}"),
         ),
         (
             &grouped,
             "sum(coalesce(if(open, amount, null), note))",
             format!(
-                "`sum(coalesce(if(open, amount, null), note))` adds what is of no certain kind; \
+                "`sum(coalesce(if(open, amount, null), note))` adds what is of no certain kind: \
                  {adds}"
             ),
         ),
@@ -123,13 +129,8 @@ fn a_view_that_a_read_or_the_clock_decides_is_not_kept() {
     let clock = "reads the clock, and a kept record is computed when its source is written";
     let count = json!([{"name": "n", "expr": "count()"}]);
     let param = json!({"params": [{"name": "since", "kind": "date_time"}], "measures": count});
-    assert_eq!(
-        said(param),
-        Err(
-            "it declares the parameter `since`, and a kept record is the same for every read"
-                .into()
-        )
-    );
+    let name = "since".into();
+    assert_eq!(case(param), Err(Case::KeptParam { name }.into()));
     let late = json!({"where": "due < now()", "measures": count});
     assert_eq!(
         said(late),

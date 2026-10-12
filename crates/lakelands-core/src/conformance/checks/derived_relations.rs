@@ -12,13 +12,13 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::query::{Pattern, Projection, QueryResult, Walk};
 use lakelands_api::write::WriteOpts;
-use lakelands_api::{Access, Catalog, LakeStore, Position, Principal, Value};
+use lakelands_api::{Access, Catalog, LakeStore, Position, Principal, Refusal, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, field_access, head_unmoved, invalid_naming, no_such_field, owner,
-    patch, pattern, step, type_decl, type_of,
+    Lake, Must, doors, field, field_access, head_unmoved, is_invalid, owner, patch, pattern,
+    refused_alike, refused_like, refused_on, step, type_decl, type_of,
 };
 
 check!(
@@ -42,7 +42,7 @@ check!(
 check!(
     /// A walk probes the matched fields on both sides.
     PROBES_BOTH_SIDES = a_principal_without_read_on_a_matched_field_is_refused_naming_it,
-    "024, 044 and 006: a walk over a derived relation, a step and a measure alike, is answered as for a field the type does not declare, naming the field, when the principal may not know of a matched field on either side"
+    "024, 044 and 006: a walk over a derived relation, a step either way, a graph and a measure alike, past its first hop too, is answered as for a relation the type does not declare, naming only the relation, when the principal may not know of a matched field on either side; over a matched field it sees masked it is refused as not granted, naming the field"
 );
 
 check!(
@@ -270,6 +270,7 @@ async fn a_principal_without_read_on_a_matched_field_is_refused_naming_it(
     let cat = doors(store.as_ref());
     let blind = |ty: &str, f: &str| field_access(store.as_ref(), "blind", ty, &[(f, Access::None)]);
     let in_local = vec![step("local_customer", Walk::In)];
+    let both = |relation| vec![step(relation, Walk::Both)];
     let degree = pattern("customer", None, in_local, Projection::Degree);
     let cases = [
         (
@@ -283,16 +284,75 @@ async fn a_principal_without_read_on_a_matched_field_is_refused_naming_it(
             "region",
         ),
         (blind("invoice", "region"), degree, "region"),
+        (
+            blind("invoice", "customer_no"),
+            walk("customer", "10", "customer", Walk::In, None),
+            "customer_no",
+        ),
+        (
+            blind("invoice", "customer_no"),
+            pattern("invoice", Some("i1"), both("customer"), Projection::Graph),
+            "customer_no",
+        ),
+        (
+            blind("customer", "region"),
+            pattern(
+                "customer",
+                None,
+                both("local_customer"),
+                Projection::Components,
+            ),
+            "region",
+        ),
     ];
     for (who, p, field) in cases {
-        let what = format!("{:?} over `{}`", p.project, p.steps[0].relation);
+        let (relation, what) = (p.steps[0].relation.to_string(), format!("{:?}", p.project));
+        // The same walk over `ghost`, which the type does not declare.
+        let mut ghost = p.clone();
+        ghost.steps[0].relation = "ghost".into();
+        let ghost = cat.query(&who, ghost).await;
         let r = cat.query(&who, p).await;
         ensure!(
-            no_such_field(&r, field),
-            "{what} by a principal who may not know of `{field}` is answered as for a field \
-             the type does not declare, naming it; it answered {r:?}"
+            is_invalid(&r),
+            "{what} over `{relation}` by a principal who may not know of `{field}` is answered \
+             as for a relation the type does not declare, naming only the relation; it \
+             answered {r:?}"
         );
+        let what = format!("{what} over `{relation}`, held from `{field}`,");
+        refused_alike(&what, &r, ghost, ("ghost", &relation))?;
     }
+    let masked = [("customer_no", Access::Masked)];
+    let masked = field_access(store.as_ref(), "masked", "invoice", &masked);
+    let r = (cat.query(&masked, walk("invoice", "i1", "customer", Walk::Out, None))).await;
+    ensure!(
+        matches!(refused_on(&r), Some(("customer_no", Refusal::NotGranted))),
+        "a walk over `customer` by a principal who sees `customer_no` masked is refused as not \
+         granted, naming it; it answered {r:?}"
+    );
+    // From `m1`, whose own `customer` reaches `10`, the invoices'
+    // `customer` comes up only at the second hop, around `10`.
+    let l = Lake::of(store.as_ref());
+    let about = json!({"name": "about", "type": {"kind": "reference", "target": "customer"}});
+    l.declare_json(json!({"declare": "type", "name": "memo", "fields": [about],
+        "relations": [{"name": "customer", "target": "customer", "via": "about"}]}))
+        .await?;
+    l.upsert("memo", "m1", json!({"about": "10"})).await?;
+    let depth = lakelands_api::query::Depth { min: 1, max: 2 };
+    let steps = vec![lakelands_api::query::Step {
+        depth,
+        ..step("customer", Walk::Both)
+    }];
+    let r = (cat.query(
+        &masked,
+        pattern("memo", Some("m1"), steps, Projection::Graph),
+    ))
+    .await;
+    ensure!(
+        matches!(refused_on(&r), Some(("customer_no", Refusal::NotGranted))),
+        "a graph two hops over `customer` from `m1` by a principal who sees `customer_no` \
+         masked is refused as not granted, naming it, where the second hop walks the \
+         invoices' `customer`; it answered {r:?}"
+    );
     Ok(())
 }
 
@@ -416,7 +476,9 @@ async fn a_derived_relation_is_declared_not_migrated_and_never_moves_carrier(
         ),
     ] {
         let head = store.head().await.must("reading the head")?;
-        invalid_naming(what, l.try_declare(t).await, &["customer", "carrier"])?;
+        let case = json!({"code": "carrier_changed",
+                          "at": [{"code": "relation", "name": "customer"}]});
+        refused_like(what, l.try_declare(t).await, &case)?;
         head_unmoved(store.as_ref(), head, what).await?;
     }
     Ok(())
@@ -451,20 +513,21 @@ async fn a_match_pair_of_two_kinds_is_refused_naming_both(
         via: Some("customer_no".into()),
         ..derived("customer", "customer", vec![pair("customer_no", "no")])
     }];
-    for (what, t, named) in [
+    for (what, t, case) in [
         (
             "a pair of a text and a number field",
             two_kinds,
-            vec!["account_no", "number"],
+            json!({"code": "pair_kinds", "from": "account_no", "to": "number"}),
         ),
         (
             "a derived relation with `via`",
             with_via,
-            vec!["customer", "via"],
+            json!({"code": "derived_stores_edge",
+                   "at": [{"code": "relation", "name": "customer"}]}),
         ),
     ] {
         let head = store.head().await.must("reading the head")?;
-        invalid_naming(what, l.try_declare(t).await, &named)?;
+        refused_like(what, l.try_declare(t).await, &case)?;
         head_unmoved(store.as_ref(), head, what).await?;
     }
     Ok(())

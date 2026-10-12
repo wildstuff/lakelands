@@ -26,6 +26,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::ProjectionView;
+use lakelands_api::error::{Case, RecordName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::{Origin, StoredRecord, Value};
 use lakelands_api::write::{PurgeMoved, PurgeReference, PurgeReport, RecordRef, TypeRetired};
@@ -85,14 +86,10 @@ fn co_owned(decl: &TypeDecl, r: &StoredRecord, source: &SourceId) -> bool {
 fn named(ontology: &Ontology, ty: &TypeName) -> Result<BTreeSet<TypeName>> {
     let decl = ontology.ty(ty)?;
     if decl.view.is_some() {
-        return Err(invalid(format!(
-            "`{ty}` is a view; it holds no records a purge could take"
-        )));
+        return Err(invalid(Case::IsAView { ty: ty.clone() }));
     }
     if !decl.field_meta {
-        return Err(invalid(format!(
-            "`{ty}` keeps no per-field provenance; a purge cannot read who brought its records in"
-        )));
+        return Err(invalid(Case::NoProvenance { ty: ty.clone() }));
     }
     let links = (decl.relations.iter()).map(|r| links::link_type_name(ty, &r.name));
     Ok(links.chain([ty.clone()]).collect())
@@ -124,23 +121,23 @@ fn selection(
                 continue;
             }
             if co_owned(decl, &r, source) {
-                shared.push(format!("`{}` `{}`", r.ty, r.key));
+                let (ty, key) = (r.ty.clone(), r.key.clone());
+                shared.push(RecordName::Of { ty, key });
             } else {
                 purged.push(r);
             }
         }
     }
     if !shared.is_empty() {
-        let n = shared.len();
+        let count = shared.len();
         shared.truncate(NAMED);
-        let from = ty.map(|t| format!(" from `{t}`")).unwrap_or_default();
-        return Err(invalid(format!(
-            "the purge of `{source}`{from} is refused whole: {n} record(s) it brought in were also \
-             written by another hand (a principal, or another source), and a purge never \
-             half-removes a record; retire them or clear those fields, then purge again. \
-             First: {}",
-            shared.join(", ")
-        )));
+        let (source, ty, first) = (source.clone(), ty.cloned(), shared);
+        return Err(invalid(Case::PurgeShared {
+            source,
+            ty,
+            count,
+            first,
+        }));
     }
     Ok((purged, unsearched))
 }
@@ -291,13 +288,12 @@ pub fn run(
         who: &system,
         context: WriteContext::default(),
         followed: None,
+        shown: None,
     };
     let mut w = lake.for_write()?;
     let view = lake.engine.view(None)?;
     if report_id.is_some_and(|given| given != id(source, ty, view.position())) {
-        return Err(invalid(
-            "that report is not of this purge at this head; run the preflight again",
-        ));
+        return Err(invalid(Case::PurgeReportStale));
     }
     let (purged, unsearched) = selection(view.as_ref(), &w.ontology, source, ty)?;
     let mut report = report(

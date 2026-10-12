@@ -100,6 +100,20 @@ macro_rules! ensure {
     };
 }
 
+/// Fails the check unless the answer is a refusal as invalid whose case
+/// matches the pattern:
+/// `refused_as!(what, answer, Case::UnknownField { field, .. } if field == "x")`.
+macro_rules! refused_as {
+    ($what:expr, $answer:expr, $case:pat $(if $guard:expr)?) => {
+        $crate::conformance::fixture::refused_as(
+            $what,
+            $answer,
+            stringify!($case $(if $guard)?),
+            |said| matches!(&said.case, $case $(if $guard)?),
+        )
+    };
+}
+
 pub mod backing;
 pub mod checks;
 pub mod engine;
@@ -157,9 +171,9 @@ pub trait Harness: Send + Sync {
     fn importer(&self) -> Import {
         Arc::new(|_, _, _, _| {
             Box::pin(async {
-                Err(lakelands_api::Error::Unbound {
-                    seam: "import (this harness imports no export)".into(),
-                })
+                let op = "import".to_owned();
+                let seam = lakelands_api::error::Seam::Operation { op };
+                Err(lakelands_api::Error::unbound(seam))
             })
         })
     }

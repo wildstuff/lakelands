@@ -15,6 +15,7 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
+use lakelands_api::error::{self, Case};
 use lakelands_api::expr::Condition;
 use lakelands_api::seam::{FunctionBacking, FunctionCall};
 use lakelands_api::{FieldName, Result, Timestamp, Value};
@@ -33,14 +34,13 @@ impl ExprBacking {
     /// the `inputs` object. `now()` reads `now`, as it reads the event's
     /// `known_at` in the fold.
     pub fn compute(call: &FunctionCall, now: Timestamp) -> Result<Value> {
-        let condition: Condition =
-            serde_json::from_value(call.config["expr"].clone()).map_err(|e| {
-                invalid(format!(
-                    "function `{}`: its `expr` backing needs `config.expr`, an expression: {e}",
-                    call.function
-                ))
-            })?;
-        let e = crate::declare::condition(&condition, Place::Record, &call.function)?;
+        let on = [error::Place::Function {
+            name: call.function.clone(),
+        }];
+        let wrong = |case: Case| invalid(crate::declare::at(&on, case));
+        let condition: Condition = serde_json::from_value(call.config["expr"].clone())
+            .map_err(|e| wrong(Case::ExprConfig { fault: (&e).into() }))?;
+        let e = crate::declare::condition(&condition, Place::Record, &on)?;
         let inputs: BTreeMap<FieldName, Value> = match &call.inputs {
             Value::Object(m) => m
                 .iter()
@@ -48,10 +48,9 @@ impl ExprBacking {
                 .collect(),
             Value::Null => BTreeMap::new(),
             other => {
-                return Err(invalid(format!(
-                    "function `{}`: its inputs are an object of values by name, not {other}",
-                    call.function
-                )));
+                return Err(wrong(Case::InputsNotObject {
+                    value: other.clone(),
+                }));
             }
         };
         let scope = RecordScope {
@@ -59,12 +58,7 @@ impl ExprBacking {
             settings: None,
             now,
         };
-        let out = expr::eval(&e, &scope).map_err(|err| {
-            invalid(format!(
-                "function `{}` cannot be computed: {err}",
-                call.function
-            ))
-        })?;
+        let out = expr::eval(&e, &scope).map_err(wrong)?;
         Ok(expr::aggregate::to_value(&out))
     }
 }

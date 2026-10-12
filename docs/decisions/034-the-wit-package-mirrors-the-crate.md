@@ -74,3 +74,25 @@ from `0.2.0` to `0.4.0`, and gathers both releases' changes. It takes
 the number of the release that first ships it, so a caller who reads a
 package version knows which release it came with. A `0.3.0` package
 never existed, and none is made after the fact.
+
+## Extended: a case travels as its code and its parameters (lakelands#650)
+
+`unbound` and `unavailable` carry a `said`: the places it is said at as
+JSON text (`[]` for these two, which name none; a refusal's case names
+them), the case's `code`, its parameters as JSON text, and its `message`
+(015, extended). The record has its final shape now, so the package
+changes once for both. The refusals `invalid`, `constraint`,
+`precondition` and `unanswered` carry the same record, with their
+places in `at`, and the drift test reads a case's parameters, which serde
+writes beside its code, into `params`. The crate's
+`Seam` and `Situation` are closed sets with parameters, and `Situation`
+holds other closed sets (a `Flaw`, an `Exchange`, a remote end), about a
+hundred and fifty cases in all. Mirrored case for case, the WIT would
+grow by each new case, and every new case would make a new package
+version. A component built against an older package could not read a
+newer code at all. As a code and JSON text it reads every code, renders
+one it does not know by its message, and the package moves only when
+the record does. This is the rule above, applied where the component
+model could say it but only at a size that defeats the drift test's
+purpose. The package moves to `0.12.0`, the version of the release that
+first ships it.

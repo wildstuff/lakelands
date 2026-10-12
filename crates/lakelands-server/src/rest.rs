@@ -14,7 +14,8 @@
 //!   the head of the log for an error.
 //! - A failure is one of the contract's closed set, as JSON, with the two
 //!   sentences a person reads (`what`, `todo`) beside it. A request the
-//!   server cannot read is `refused` as `invalid`.
+//!   server cannot read is `refused` as `invalid`, with a case: `what` is
+//!   the case's sentence and `todo` its advice ([`Failure::of`]).
 //! - A write takes `If-Match: <version>` and `Idempotency-Key`; `PUT` also
 //!   takes `If-None-Match: *` for a record that must not exist yet. A read
 //!   of one record answers its version as `ETag`.
@@ -39,7 +40,7 @@ use http_body_util::combinators::BoxBody;
 use hyper::body::{Body, Frame, Incoming};
 use hyper::header::{CONTENT_TYPE, HeaderValue};
 use hyper::{HeaderMap, Method, Request, Response, StatusCode};
-use lakelands_api::error::{Error, Refusal};
+use lakelands_api::error::{Case, Error, Form, Names, Refusal, Said};
 use lakelands_api::id::{LakeId, Position, SourceId};
 use lakelands_api::read::POSITION_HEADER;
 use lakelands_api::record::SourceRecord;
@@ -89,20 +90,23 @@ fn status_of(e: &Error) -> StatusCode {
     match e {
         Error::Refused { reason, .. } => match reason {
             Refusal::NotGranted | Refusal::WrongDoor | Refusal::Reserved => StatusCode::FORBIDDEN,
-            Refusal::Decided | Refusal::Unanswered { .. } => StatusCode::CONFLICT,
-            Refusal::Invalid { .. }
-            | Refusal::Constraint { .. }
-            | Refusal::Precondition { .. }
+            Refusal::Decided | Refusal::Unanswered(_) => StatusCode::CONFLICT,
+            Refusal::Invalid(_)
+            | Refusal::Constraint(_)
+            | Refusal::Precondition(_)
             | Refusal::TooDeep { .. }
             | Refusal::TooLarge { .. }
             | Refusal::Migration { .. }
-            | Refusal::OutOfRange { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            | Refusal::OutOfRange { .. }
+            | Refusal::Unknown(_) => StatusCode::UNPROCESSABLE_ENTITY,
         },
         Error::NotFound { .. } => StatusCode::NOT_FOUND,
         // The version the write expected came in `If-Match`.
         Error::Conflict { .. } => StatusCode::PRECONDITION_FAILED,
         Error::Unbound { .. } => StatusCode::NOT_IMPLEMENTED,
         Error::Unavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
+        // The store says no error of a kind its build does not know.
+        Error::Unknown(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
@@ -111,32 +115,27 @@ fn contract(e: Error) -> Stop {
     Box::new(json_reply(status_of(&e), &failure_json(&e, &f)))
 }
 
-/// A request the server cannot take as it is: refused as `invalid`.
-fn invalid(status: StatusCode, what: impl Into<String>, todo: impl Into<String>) -> Stop {
-    let f = Failure::new(what, todo);
-    let e = Error::Refused {
-        field: None,
-        reason: Refusal::Invalid {
-            message: f.what.clone(),
-        },
-    };
-    Box::new(json_reply(status, &failure_json(&e, &f)))
+/// A request the server cannot take as it is: refused as `invalid`,
+/// saying its case and the case's advice.
+fn invalid(status: StatusCode, said: impl Into<Said>) -> Stop {
+    let said = said.into();
+    let f = Failure::of(&said);
+    Box::new(json_reply(status, &failure_json(&Error::invalid(said), &f)))
 }
 
 /// A request the door turned away, said as REST says a refusal.
 fn turned(t: Turned) -> Stop {
-    let reason = match t.why {
-        Turn::NotGranted => Refusal::NotGranted,
-        Turn::Invalid | Turn::NotJson => Refusal::Invalid {
-            message: t.what.clone(),
-        },
-    };
-    let e = Error::Refused {
-        field: None,
-        reason,
-    };
-    let f = Failure::new(t.what, t.todo);
-    Box::new(json_reply(t.status, &failure_json(&e, &f)))
+    match t.why {
+        Turn::NotGranted(what, todo) => {
+            let e = Error::Refused {
+                field: None,
+                reason: Refusal::NotGranted,
+            };
+            let f = Failure::new(what, todo);
+            Box::new(json_reply(t.status, &failure_json(&e, &f)))
+        }
+        Turn::Invalid(case) => invalid(t.status, case),
+    }
 }
 
 fn with_position(mut r: Answer, p: Option<Position>) -> Answer {
@@ -267,19 +266,16 @@ fn query_args(
     for pair in query.unwrap_or("").split('&').filter(|p| !p.is_empty()) {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
         let (Some(k), Some(v)) = (decode(k, true), decode(v, true)) else {
-            return Err(invalid(
-                StatusCode::BAD_REQUEST,
-                "the query is not valid percent-encoded UTF-8",
-                "encode the query's parameters and send the request again",
-            ));
+            return Err(invalid(StatusCode::BAD_REQUEST, Case::QueryNotEncoded));
         };
         let Some((_, kind)) = takes.iter().find(|(p, _)| *p == k) else {
-            let known: Vec<_> = takes.iter().map(|(p, _)| format!("`{p}`")).collect();
-            return Err(invalid(
-                StatusCode::BAD_REQUEST,
-                format!("`{route}` takes no parameter `{k}`; nothing was done"),
-                format!("use only {}", known.join(", ")),
-            ));
+            let known: Names = takes.iter().map(|(p, _)| p).collect();
+            let case = Case::NoParameter {
+                route: route.into(),
+                parameter: k,
+                takes: (!known.0.is_empty()).then_some(known),
+            };
+            return Err(invalid(StatusCode::BAD_REQUEST, case));
         };
         let value = match kind {
             Kind::Text => Some(json!(v)),
@@ -297,18 +293,20 @@ fn query_args(
             Kind::Each => (!v.is_empty()).then(|| json!(v)),
         };
         let Some(value) = value else {
-            return Err(invalid(
-                StatusCode::BAD_REQUEST,
-                format!("`{k}` cannot be `{v}`"),
-                match kind {
-                    Kind::Int => "give a whole number",
-                    Kind::Flag => "give `true` or `false`",
-                    Kind::Json => "give it as JSON",
-                    Kind::Order => "give fields separated by commas, `-field` for descending",
-                    Kind::Each => "give a value that is not empty, or leave the parameter out",
-                    Kind::Text | Kind::List => "correct it",
-                },
-            ));
+            // Text and a list take any value.
+            let form = match kind {
+                Kind::Int => Form::Whole,
+                Kind::Flag => Form::Flag,
+                Kind::Json => Form::Json,
+                Kind::Order => Form::Order,
+                Kind::Each | Kind::Text | Kind::List => Form::Given,
+            };
+            let case = Case::ParameterForm {
+                parameter: k,
+                value: v,
+                form,
+            };
+            return Err(invalid(StatusCode::BAD_REQUEST, case));
         };
         if matches!(kind, Kind::Each) {
             let all = out.entry(k.clone()).or_insert_with(|| json!([]));
@@ -318,11 +316,8 @@ fn query_args(
             continue;
         }
         if out.insert(k.clone(), value).is_some() {
-            return Err(invalid(
-                StatusCode::BAD_REQUEST,
-                format!("`{k}` is given twice"),
-                "give each parameter once",
-            ));
+            let case = Case::ParameterTwice { parameter: k };
+            return Err(invalid(StatusCode::BAD_REQUEST, case));
         }
     }
     Ok(out)
@@ -410,12 +405,12 @@ fn route(method: &Method, rest: &str) -> Result<Target, Stop> {
     if allowed.is_empty() {
         return Err(no_route());
     }
+    let case = Case::RouteMethod {
+        allow: allowed.iter().collect(),
+        method: method.as_str().into(),
+    };
     let allow = allowed.join(", ");
-    let mut a = invalid(
-        StatusCode::METHOD_NOT_ALLOWED,
-        format!("this route takes {allow}, not {method}"),
-        format!("send it as {allow}"),
-    );
+    let mut a = invalid(StatusCode::METHOD_NOT_ALLOWED, case);
     a.headers_mut().insert(
         "allow",
         HeaderValue::from_str(&allow).expect("methods are a header value"),
@@ -424,11 +419,7 @@ fn route(method: &Method, rest: &str) -> Result<Target, Stop> {
 }
 
 fn no_route() -> Stop {
-    invalid(
-        StatusCode::NOT_FOUND,
-        "there is no such route",
-        "see the routes in docs/rest.md; MCP is served at /lakes/<id>/mcp",
-    )
+    invalid(StatusCode::NOT_FOUND, Case::NoRoute)
 }
 
 /// The door a method and a path lead to, if any.
@@ -703,32 +694,21 @@ fn write_headers(h: &HeaderMap, new: bool, a: &mut Map<String, Value>) -> Result
     };
     let expected = match (header(h, "if-match"), header(h, "if-none-match")) {
         (Some(_), Some(_)) => {
-            return Err(invalid(
-                StatusCode::BAD_REQUEST,
-                "`If-Match` and `If-None-Match` cannot both be given",
-                "give `If-Match: <version>`, or `If-None-Match: *` for a record that must not exist yet",
-            ));
+            return Err(invalid(StatusCode::BAD_REQUEST, Case::IfMatchBoth));
         }
         (Some(v), None) => Some(version(v).ok_or_else(|| {
-            invalid(
-                StatusCode::BAD_REQUEST,
-                format!("`If-Match: {v}` names no version"),
-                "give the record's version as its `ETag` answered it; a weak `W/` one is not taken",
-            )
+            let value = v.into();
+            invalid(StatusCode::BAD_REQUEST, Case::IfMatchNoVersion { value })
         })?),
         (None, Some(_)) if !new => {
-            return Err(invalid(
-                StatusCode::BAD_REQUEST,
-                "only `PUT` takes `If-None-Match`",
-                "give `If-Match: <version>` instead",
-            ));
+            return Err(invalid(StatusCode::BAD_REQUEST, Case::IfNoneMatchNotPut));
         }
         (None, Some("*")) => Some(0),
         (None, Some(v)) => {
+            let value = v.into();
             return Err(invalid(
                 StatusCode::BAD_REQUEST,
-                format!("`If-None-Match: {v}` is not taken"),
-                "give `If-None-Match: *` for a record that must not exist yet",
+                Case::IfNoneMatchValue { value },
             ));
         }
         (None, None) => None,
@@ -747,18 +727,16 @@ fn write_headers(h: &HeaderMap, new: bool, a: &mut Map<String, Value>) -> Result
 /// header and the verb.
 fn once_headers(h: &HeaderMap, door: &Door, a: &mut Map<String, Value>) -> Result<(), Stop> {
     let verb = match door {
-        Door::Call { verb } => verb.as_str(),
-        _ => "",
+        Door::Call { verb } => verb.clone(),
+        _ => "".into(),
     };
     for (name, lower) in [("If-Match", "if-match"), ("If-None-Match", "if-none-match")] {
         if header(h, lower).is_some() {
-            return Err(invalid(
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "`POST …/verbs/{verb}` takes no `{name}`: verb `{verb}` is called on its type, which has no record version"
-                ),
-                "send it without the header",
-            ));
+            let case = Case::VerbTypeHeader {
+                header: name.into(),
+                verb,
+            };
+            return Err(invalid(StatusCode::BAD_REQUEST, case));
         }
     }
     if let Some(k) = header(h, "idempotency-key") {
@@ -786,11 +764,8 @@ async fn door(
     match r.body {
         BodyAs::Nothing => {
             if json_body(req).await?.is_some() {
-                return Err(invalid(
-                    StatusCode::BAD_REQUEST,
-                    format!("`{}` takes no body", r.label),
-                    "send it without one",
-                ));
+                let route = r.label.into();
+                return Err(invalid(StatusCode::BAD_REQUEST, Case::NoBody { route }));
             }
         }
         BodyAs::One(arg, required) => match json_body(req).await? {
@@ -801,11 +776,11 @@ async fn door(
                 a.insert(arg.into(), json!({}));
             }
             _ => {
-                return Err(invalid(
-                    StatusCode::BAD_REQUEST,
-                    format!("`{}` takes a JSON object of {arg}", r.label),
-                    format!("send the {arg} as one JSON object"),
-                ));
+                let case = Case::BodyObjectOf {
+                    route: r.label.into(),
+                    argument: arg.into(),
+                };
+                return Err(invalid(StatusCode::BAD_REQUEST, case));
             }
         },
         BodyAs::Args => {
@@ -813,33 +788,28 @@ async fn door(
                 Some(Value::Object(o)) => o,
                 None => Map::new(),
                 Some(_) => {
+                    let route = r.label.into();
                     return Err(invalid(
                         StatusCode::BAD_REQUEST,
-                        format!("`{}` takes a JSON object", r.label),
-                        "send the arguments as one JSON object",
+                        Case::BodyNotObject { route },
                     ));
                 }
             };
             if let Some(k) = body.keys().find(|k| a.contains_key(*k)) {
+                let argument = k.clone();
                 return Err(invalid(
                     StatusCode::BAD_REQUEST,
-                    format!("the path already names `{k}`"),
-                    format!("leave `{k}` out of the body"),
+                    Case::PathNames { argument },
                 ));
             }
             let names = body.contains_key("report_id");
             let wrong = match r.report {
                 Report::Any => None,
-                Report::Refused => names.then_some("the preflight takes no `report_id`"),
-                Report::Required => (!names)
-                    .then_some("applying a migration needs the `report_id` its preflight answered"),
+                Report::Refused => names.then_some(Case::PreflightReportId),
+                Report::Required => (!names).then_some(Case::ApplyNeedsReportId),
             };
-            if let Some(what) = wrong {
-                return Err(invalid(
-                    StatusCode::BAD_REQUEST,
-                    what,
-                    "run the preflight at …/schema/migrate, then send its report to …/schema/migrate/apply",
-                ));
+            if let Some(case) = wrong {
+                return Err(invalid(StatusCode::BAD_REQUEST, case));
             }
             a.extend(body);
             // Refuse what the door does not take before anything runs, as
@@ -849,21 +819,20 @@ async fn door(
                 .describe(who, Default::default())
                 .await
                 .map_err(contract)?;
-            let specs = tools(&d.data).map_err(|p| {
-                contract(Error::Unavailable {
-                    message: format!("the lake's names cannot all become tools: {}", to_json(&p)),
-                })
+            let specs = tools(&d.data).map_err(|problems| {
+                let names = lakelands_api::error::Situation::ToolNames { problems };
+                contract(Error::unavailable(names))
             })?;
             if let Some(spec) = specs.iter().find(|s| s.door == r.door)
                 && let Some(fault) = unknown_argument(spec, &a)
             {
-                return Err(fault_answer(fault, r.label));
+                return Err(fault_answer(fault));
             }
         }
     }
     let v = doors::run(catalog.as_ref(), who, &r.door, r.label, a)
         .await
-        .map_err(|f| fault_answer(f, r.label))?;
+        .map_err(fault_answer)?;
     let status = if v["outcome"] == "proposed" {
         StatusCode::ACCEPTED
     } else {
@@ -881,14 +850,10 @@ async fn door(
     Ok(with_position(answer, v["position"].as_u64().map(Position)))
 }
 
-fn fault_answer(f: Fault, label: &str) -> Stop {
+fn fault_answer(f: Fault) -> Stop {
     match f {
         Fault::Contract(e) => contract(e),
-        Fault::Arguments(what, _) => invalid(
-            StatusCode::BAD_REQUEST,
-            what,
-            format!("correct the request against `{label}` in docs/rest.md and send it again"),
-        ),
+        Fault::Arguments(said) => invalid(StatusCode::BAD_REQUEST, *said),
     }
 }
 
@@ -938,11 +903,11 @@ struct Lines {
     line: usize,
     ended: bool,
     stopped: bool,
-    fault: Arc<Mutex<Option<String>>>,
+    fault: Arc<Mutex<Option<Case>>>,
 }
 
 impl Lines {
-    fn stop(&mut self, why: String) -> Poll<Option<SourceRecord>> {
+    fn stop(&mut self, why: Case) -> Poll<Option<SourceRecord>> {
         self.stopped = true;
         *self.fault.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
         Poll::Ready(None)
@@ -962,8 +927,11 @@ impl Stream for Lines {
                 // The line is held to the cap however the body was cut: a
                 // read may bring its last bytes and its line feed at once.
                 if i > MAX_LINE {
-                    let n = this.line + 1;
-                    return this.stop(format!("line {n} is longer than {MAX_LINE} bytes"));
+                    let line = this.line + 1;
+                    return this.stop(Case::LineTooLong {
+                        line,
+                        max: MAX_LINE,
+                    });
                 }
                 let text: Vec<u8> = this.buf.drain(..=i).collect();
                 this.line += 1;
@@ -972,15 +940,25 @@ impl Stream for Lines {
                 }
                 return match serde_json::from_slice::<SourceRecord>(&text) {
                     Ok(r) => Poll::Ready(Some(r)),
-                    Err(e) => this.stop(format!("line {} is not a record: {e}", this.line)),
+                    Err(e) => {
+                        let (line, fault, column) = (this.line, (&e).into(), e.column());
+                        this.stop(Case::LineNotRecord {
+                            line,
+                            fault,
+                            column,
+                        })
+                    }
                 };
             }
             if this.ended {
                 return Poll::Ready(None);
             }
             if this.buf.len() > MAX_LINE {
-                let n = this.line + 1;
-                return this.stop(format!("line {n} is longer than {MAX_LINE} bytes"));
+                let line = this.line + 1;
+                return this.stop(Case::LineTooLong {
+                    line,
+                    max: MAX_LINE,
+                });
             }
             let Some(body) = this.body.as_mut() else {
                 return Poll::Ready(None);
@@ -998,10 +976,11 @@ impl Stream for Lines {
                         this.buf.extend_from_slice(&data);
                     }
                 }
-                Poll::Ready(Some(Err(e))) => {
-                    let n = this.line + 1;
+                // The transport's own words name nothing a caller needs.
+                Poll::Ready(Some(Err(_))) => {
+                    let line = this.line + 1;
                     this.body = None;
-                    return this.stop(format!("the body was cut off at line {n}: {e}"));
+                    return this.stop(Case::BodyCutOff { line });
                 }
             }
         }
@@ -1045,8 +1024,7 @@ async fn ingest(
     {
         return Err(invalid(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "ingest takes application/x-ndjson",
-            "send one record per line as NDJSON",
+            Case::IngestMediaType,
         ));
     }
     let head = store.head().await.ok();
@@ -1096,17 +1074,11 @@ async fn ingest(
         }
         let why = fault.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(why) = why {
-            let f = Failure::new(
-                why,
-                "correct that line and send the body again; what came before it is committed, and sending it again appends nothing",
-            );
-            let e = Error::Refused {
-                field: None,
-                reason: Refusal::Invalid {
-                    message: f.what.clone(),
-                },
-            };
-            let _ = tx.send(line(&failure_json(&e, &f))).await;
+            let said = Said::from(why);
+            let f = Failure::of(&said);
+            let _ = tx
+                .send(line(&failure_json(&Error::invalid(said), &f)))
+                .await;
         }
     });
     Ok(with_position(streamed("application/x-ndjson", rx), head))

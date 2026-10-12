@@ -1,6 +1,6 @@
 use super::*;
 use crate::shape::schema_hash;
-use lakelands_api::ontology::{Authority, StorageKind};
+use lakelands_api::ontology::{Authority, FieldType, StorageKind};
 use serde_json::json;
 
 fn base() -> TypeDecl {
@@ -239,7 +239,7 @@ fn a_migration_lists_every_reshaping_reason_and_only_those() {
     });
     let reasons = migrates(&base(), &after);
     assert_eq!(reasons.len(), 3, "{reasons:?}");
-    assert!(reasons.iter().all(Reason::reshapes));
+    assert!(reasons.iter().all(reshapes));
 }
 
 fn view(filter: &str) -> TypeDecl {

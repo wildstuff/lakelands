@@ -10,12 +10,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use lakelands_api::error::{Error, Missing, Refusal};
+use lakelands_api::error::{Case, Error, Missing, Place, Refusal, Said};
 use lakelands_api::id::{Position, RecordKey, SourceId, TypeName, Version};
 use lakelands_api::location::Limits;
 use lakelands_api::read::Get;
 use lakelands_api::record::SourceRecord;
-use lakelands_api::seam::FeedFilter;
+use lakelands_api::seam::{FEED_EXAMINED, FeedFilter};
 use lakelands_api::write::{MigrationReport, WriteOpts};
 use lakelands_api::{LakeId, LakeStore, Principal, Timestamp, WriteContext};
 use lakelands_client::{ApiKey, RemoteConfig, RemoteLake};
@@ -90,7 +90,12 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
         field: field.map(Into::into),
         reason,
     };
-    let message = || "what it was".to_owned();
+    let (ty, field) = (TypeName::from("invoice"), "status".into());
+    let case = Case::UnknownField { ty, field };
+    let place = Place::Type {
+        name: "invoice".into(),
+    };
+    let said = || Box::new(Said::from(case.clone()).within(place.clone()));
     let report = MigrationReport {
         ty: "invoice".into(),
         from_schema_hash: "a".into(),
@@ -113,18 +118,9 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
         (403, refused(Some("amount"), Refusal::NotGranted)),
         (403, refused(Some("amount"), Refusal::WrongDoor)),
         (403, refused(None, Refusal::Reserved)),
-        (
-            422,
-            refused(Some("status"), Refusal::Invalid { message: message() }),
-        ),
-        (
-            422,
-            refused(Some("partner"), Refusal::Constraint { message: message() }),
-        ),
-        (
-            422,
-            refused(None, Refusal::Precondition { message: message() }),
-        ),
+        (422, refused(Some("status"), Refusal::Invalid(said()))),
+        (422, refused(Some("partner"), Refusal::Constraint(said()))),
+        (422, refused(None, Refusal::Precondition(said()))),
         (422, refused(None, Refusal::TooDeep { max: 4 })),
         (422, refused(None, Refusal::TooLarge { max: 5 })),
         (
@@ -137,10 +133,7 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
             ),
         ),
         (409, refused(None, Refusal::Decided)),
-        (
-            409,
-            refused(None, Refusal::Unanswered { message: message() }),
-        ),
+        (409, refused(None, Refusal::Unanswered(said()))),
         (
             422,
             refused(None, Refusal::OutOfRange { head: Position(7) }),
@@ -171,11 +164,14 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
         ),
         (
             501,
-            Error::Unbound {
-                seam: "executor `mailer`".into(),
-            },
+            Error::unbound(lakelands_api::error::Seam::Executor {
+                name: "mailer".into(),
+            }),
         ),
-        (503, Error::Unavailable { message: message() }),
+        (
+            503,
+            Error::unavailable(lakelands_api::error::Situation::Moved),
+        ),
     ];
     let answers = errors
         .iter()
@@ -197,7 +193,7 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
 }
 
 /// An answer that is not the contract's is `Unavailable`, naming the
-/// host, the port and the path, and never the key.
+/// lake, and never its address, the path or the key.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_answer_that_is_not_the_contracts_is_unavailable_naming_where() {
     let (addr, _) = fake(vec![
@@ -213,12 +209,16 @@ async fn an_answer_that_is_not_the_contracts_is_unavailable_naming_where() {
             .get(&owner(&lake), &"invoice".into(), get("INV 1"))
             .await
             .unwrap_err();
-        let Error::Unavailable { message } = &e else {
+        let Error::Unavailable { situation } = &e else {
             panic!("expected unavailable, got {e:?}");
         };
-        assert!(message.contains(&addr.to_string()), "{message}");
+        let message = situation.to_string();
         assert!(
-            message.contains("/lakes/finance/types/invoice/records/INV%201"),
+            message.contains("the REST door of lake `finance`"),
+            "{message}"
+        );
+        assert!(
+            !message.contains(&addr.to_string()) && !message.contains("INV"),
             "{message}"
         );
         assert!(message.contains(status), "{message}");
@@ -374,6 +374,56 @@ async fn poll_reads_what_the_stores_own_feed_reads() {
     assert_eq!(remote.head().await.unwrap(), written.position());
 }
 
+/// A poll over the wire whose filter matches nothing reaches the head and
+/// ends: the server reads the log a bounded poll at a time
+/// (lakelands#558). No `limit` answers more than the bound, as on the
+/// store's own feed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_poll_over_the_wire_that_matches_nothing_reaches_the_head() {
+    let store = common::memory_lake("finance", Limits::default()).await;
+    let (addr, keys) = common::serve(store.clone()).await;
+    let remote: Arc<dyn LakeStore> = Arc::new(common::remote(addr, store.lake(), keys));
+    let f = setup(store.clone()).await;
+    let records = (0..4200).map(|i| SourceRecord {
+        upstream: None,
+        ty: "invoice".into(),
+        key: RecordKey::from(format!("B-{i}").as_str()),
+        fields: patch(&[("amount", json!(format!("{i}.00")))]),
+        seen_at: None,
+    });
+    let records = lakelands_mock::stream::of(records.collect());
+    let bank = SourceId::from("bank");
+    let mut acks = f
+        .catalog
+        .ingest(&f.cast.importer, &bank, records)
+        .await
+        .unwrap();
+    let acks = lakelands_mock::stream::collect(&mut acks).await;
+    assert!(acks.iter().all(Result::is_ok), "{acks:?}");
+    let head = store.head().await.unwrap();
+    assert!(head.0 > u64::from(FEED_EXAMINED));
+    let none = FeedFilter {
+        kinds: vec!["trigger_fired".into()],
+        ..FeedFilter::default()
+    };
+    let polled = remote.feed().poll(Position(0), &none, 10).await.unwrap();
+    assert!(polled.events.is_empty());
+    assert_eq!((polled.next, polled.head), (head.next(), head));
+    let all = FeedFilter::default();
+    let ours = remote
+        .feed()
+        .poll(Position(0), &all, u32::MAX)
+        .await
+        .unwrap();
+    let theirs = store
+        .feed()
+        .poll(Position(0), &all, u32::MAX)
+        .await
+        .unwrap();
+    assert_eq!(ours.events.len() as u32, FEED_EXAMINED);
+    assert_eq!(ours, theirs);
+}
+
 /// An export through a client is the served store's own, byte for byte:
 /// every event crosses the wire and re-serialises to its stored bytes,
 /// the host's checkpoint and a restricted record's hold included.
@@ -460,6 +510,10 @@ async fn every_host_operation_is_unbound_naming_it() {
         ),
         ("compact", remote.compact().await.map(|_| ())),
         (
+            "bind_embed",
+            remote.bind_embed(lakelands_core::conformance::backing::embedder()),
+        ),
+        (
             "position_at",
             remote.position_at(midnight).await.map(|_| ()),
         ),
@@ -470,8 +524,11 @@ async fn every_host_operation_is_unbound_naming_it() {
     ];
     for (op, answer) in answers {
         match answer {
-            Err(Error::Unbound { seam }) => {
-                assert!(seam.contains(&format!("`{op}`")), "{op}: {seam}");
+            Err(e) if e.seam().is_some() => {
+                let Some(lakelands_api::error::Seam::Operation { op: named }) = e.seam() else {
+                    panic!("{op}: {e:?}");
+                };
+                assert_eq!(named, op, "{op}");
             }
             other => panic!("{op}: expected unbound, got {other:?}"),
         }
@@ -551,7 +608,7 @@ async fn a_who_without_a_key_is_refused_before_anything_is_sent() {
 }
 
 /// A key is in no `Debug` and in no failure: the connection refused
-/// names the host, the port and the path, and not the key.
+/// names the lake, and not its address, the path or the key.
 #[tokio::test(flavor = "multi_thread")]
 async fn no_key_shows_in_debug_or_in_a_failure() {
     let closed = {
@@ -568,15 +625,19 @@ async fn no_key_shows_in_debug_or_in_a_failure() {
         .get(&owner(&lake), &"invoice".into(), get("INV-1"))
         .await
         .unwrap_err();
-    let Error::Unavailable { message } = &e else {
+    let Error::Unavailable { situation } = &e else {
         panic!("expected unavailable, got {e:?}");
     };
-    assert!(message.contains(&closed.to_string()), "{message}");
+    let message = situation.to_string();
     assert!(
-        message.contains("/lakes/finance/types/invoice/records/INV-1"),
+        message.contains("the REST door of lake `finance`"),
         "{message}"
     );
-    for text in [&shown, message] {
+    assert!(
+        !message.contains(&closed.to_string()) && !message.contains("INV-1"),
+        "{message}"
+    );
+    for text in [&shown, &message] {
         assert!(!text.contains("k-owner"), "{text}");
     }
 }
@@ -648,7 +709,8 @@ fn capped(addr: std::net::SocketAddr) -> RemoteLake {
 
 fn too_long(e: Error, what: &str) {
     match e {
-        Error::Unavailable { message } => {
+        Error::Unavailable { situation } => {
+            let message = situation.to_string();
             assert!(
                 message.contains("more than 65536 bytes"),
                 "{what}: {message}"

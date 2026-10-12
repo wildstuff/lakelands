@@ -23,13 +23,14 @@
 
 use std::collections::BTreeMap;
 
+use lakelands_api::error::{Case, Naming, Place, Said};
 use lakelands_api::expr::{CmpOp, Condition, Expr, Func};
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Group, GroupKey};
 use lakelands_api::{FieldName, Timestamp, Value};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
-use super::eval::{EvalError, RecordScope, Result, Scope, Val, compare, err, eval};
+use super::eval::{RecordScope, Result, Scope, Val, compare, err, eval, operand};
 
 /// The scope of one group: its folds, its grouping values, and the
 /// measures computed before the one being evaluated.
@@ -80,8 +81,8 @@ struct Fold {
     sum: Decimal,
     scales: Scales,
     best: Option<Val>,
-    failed: Option<EvalError>,
-    wrong: Option<EvalError>,
+    failed: Option<Case>,
+    wrong: Option<Case>,
 }
 
 impl Fold {
@@ -129,7 +130,8 @@ impl Fold {
 
     fn value(&self, func: Func, arg: Option<&Expr>) -> Result<Val> {
         if arg.is_none() && func != Func::Count {
-            return err(format!("{}() needs a field", super::func_name(func)));
+            let name = super::func_name(func).into();
+            return err(Case::AggregateNeedsField { name });
         }
         if let Some(e) = self.failed.as_ref().or(self.wrong.as_ref()) {
             return Err(e.clone());
@@ -142,27 +144,25 @@ impl Fold {
             Func::Count => Ok(Val::Num(count)),
             Func::Sum => Ok(Val::Num(sum)),
             Func::Avg if self.count == 0 => Ok(Val::Null),
-            Func::Avg => (sum.checked_div(count).map(Val::Num))
-                .ok_or_else(|| EvalError("the average is too large for exact arithmetic".into())),
+            Func::Avg => (sum.checked_div(count).map(Val::Num)).ok_or(Case::Overflow),
             Func::Min | Func::Max => Ok(self.best.clone().unwrap_or(Val::Null)),
-            _ => err(format!("{}() is not an aggregate", super::func_name(func))),
+            _ => err(Case::NotAggregate {
+                name: super::func_name(func).into(),
+            }),
         }
     }
 
     /// The sum plus one value, exactly: a value that is not a number is an
     /// error, never skipped.
     fn exact_add(&mut self, v: &Val) -> Result<()> {
+        let not = || Case::SumNotNumber { value: operand(v) };
         let n = match v {
             Val::Num(d) => *d,
-            Val::Text(s) => s.parse::<Decimal>().map_err(|_| {
-                EvalError(format!("sum() met the text '{s}', which is not a number"))
-            })?,
-            other => return err(format!("sum() met {other:?}, which is not a number")),
+            Val::Text(s) => s.parse::<Decimal>().map_err(|_| not())?,
+            _ => return Err(not()),
         };
         self.scales.fold(n, true);
-        let sum = self.sum.checked_add(n);
-        self.sum =
-            sum.ok_or_else(|| EvalError("the sum is too large for exact arithmetic".into()))?;
+        self.sum = self.sum.checked_add(n).ok_or(Case::Overflow)?;
         Ok(())
     }
 }
@@ -317,7 +317,7 @@ impl Grouping {
                 Some(e) => {
                     let scope = RecordScope {
                         fields: row,
-                        settings: None,
+                        settings,
                         now: self.now,
                     };
                     eval(e, &scope).map_or(Value::Null, |v| to_value(&v))
@@ -356,32 +356,35 @@ pub fn to_value(v: &Val) -> Value {
 /// One record's fields.
 pub type Row = BTreeMap<FieldName, Value>;
 
+/// An aggregate's answer, or the case of why it has none, said where it
+/// is.
+pub type Answer<T> = std::result::Result<T, Said>;
+
 /// An aggregate's group keys, resolved: each key's name and, for a named
-/// expression, the expression, parsed and checked as a `where` is. Names
-/// follow the rule for field names and are distinct.
-pub fn group_keys(keys: &[GroupKey]) -> Result<Vec<(FieldName, Option<Expr>)>> {
+/// expression, the expression, parsed and checked as a `where` is. A named
+/// key's name follows the rule for field names, a field key names its
+/// field, and the names are distinct.
+pub fn group_keys(keys: &[GroupKey]) -> Answer<Vec<(FieldName, Option<Expr>)>> {
     let mut out: Vec<(FieldName, Option<Expr>)> = Vec::with_capacity(keys.len());
     for key in keys {
         let name = key.name();
-        if let Some(fault) = crate::names::fault("group", name.as_str()) {
-            return Err(EvalError(fault));
+        if let GroupKey::Named { .. } = key
+            && let Some(fault) = crate::names::fault(Naming::Group, name.as_str())
+        {
+            return Err(fault.into());
         }
         if out.iter().any(|(n, _)| n == name) {
-            return Err(EvalError(format!(
-                "two group keys are named `{name}`; each needs a name of its own"
-            )));
+            return Err(Case::GroupKeyTwice { name: name.clone() }.into());
         }
+        let within = |case: Case| Said::from(case).within(Place::Group { name: name.clone() });
         let expr = match key {
             GroupKey::Field(_) => None,
             GroupKey::Named { expr, .. } => {
                 let e = match expr {
                     Condition::Expr(e) => e.clone(),
-                    Condition::Text(t) => super::parse(t).map_err(|e| {
-                        EvalError(format!("group `{name}`: `{t}` does not parse: {e}"))
-                    })?,
+                    Condition::Text(t) => super::parse(t).map_err(|e| within(e.case))?,
                 };
-                super::check(&e, super::Place::Record)
-                    .map_err(|e| EvalError(format!("group `{name}`: {e}")))?;
+                super::check(&e, super::Place::Record).map_err(within)?;
                 Some(e)
             }
         };
@@ -390,28 +393,98 @@ pub fn group_keys(keys: &[GroupKey]) -> Result<Vec<(FieldName, Option<Expr>)>> {
     Ok(out)
 }
 
-/// `find`'s aggregate over a set of records. No records and no grouping
-/// give one group, so `count` answers 0 rather than nothing.
-pub fn aggregate(rows: &[&Row], agg: &Aggregate, now: Timestamp) -> Result<Vec<Group>> {
+/// A pattern's aggregate read over its rows, which hold each value under
+/// its path, `<type>.<field>` or `<type>.key`, for each type `bound`
+/// (018, extended). A measure's field and a field key name a path whole.
+/// Each path of a named key reads the longest type bound, a field of it,
+/// then members, and is rewritten to the row's one key. A name no bound
+/// type starts is refused. Answers the aggregate so read and each type
+/// and field it reads.
+pub fn over_rows(
+    agg: &Aggregate,
+    bound: &dyn Fn(&str) -> bool,
+) -> Answer<(Aggregate, Vec<(String, FieldName)>)> {
+    let read = std::cell::RefCell::new(Vec::new());
+    let joined = |path: &[FieldName]| {
+        path.iter()
+            .map(FieldName::as_str)
+            .collect::<Vec<_>>()
+            .join(".")
+    };
+    let unbound = |path: String| Said::from(Case::PatternNoPath { path });
+    // Where a path's field stands: after the longest type `bound`.
+    let at = |path: &[FieldName]| {
+        let k = (1..path.len()).rev().find(|&k| bound(&joined(&path[..k])));
+        let k = k.ok_or_else(|| unbound(joined(path)))?;
+        read.borrow_mut()
+            .push((joined(&path[..k]), path[k].clone()));
+        Ok(k)
+    };
+    let whole = |name: &FieldName| {
+        let path: Vec<FieldName> = name.as_str().split('.').map(FieldName::from).collect();
+        match at(&path)? {
+            k if k + 1 == path.len() => Ok(()),
+            _ => Err(unbound(name.to_string())),
+        }
+    };
+    agg.measures
+        .iter()
+        .filter_map(|m| m.field.as_ref())
+        .try_for_each(whole)?;
+    let mut out = agg.clone();
+    for (key, (_, e)) in out.group_by.iter_mut().zip(group_keys(&agg.group_by)?) {
+        let (GroupKey::Named { expr, .. }, Some(e)) = (&mut *key, e) else {
+            if let GroupKey::Field(f) = key {
+                whole(f)?;
+            }
+            continue;
+        };
+        let failed = std::cell::RefCell::new(None);
+        let e = lakelands_api::expr::rewrite(&e, &|x| {
+            let Expr::Path { path } = x else {
+                return None;
+            };
+            let k = at(path).map_err(|e| failed.replace(Some(e))).ok()?;
+            let head = std::iter::once(FieldName::from(joined(&path[..=k])));
+            let path = head.chain(path[k + 1..].iter().cloned()).collect();
+            Some(Expr::Path { path })
+        });
+        if let Some(e) = failed.into_inner() {
+            return Err(e);
+        }
+        *expr = Condition::Expr(e);
+    }
+    Ok((out, read.into_inner()))
+}
+
+/// A pattern's aggregate over its rows, its keys reading the lake's
+/// `settings`. No rows and no grouping give one group, so `count`
+/// answers 0 rather than nothing.
+pub fn aggregate(
+    rows: &[&Row],
+    agg: &Aggregate,
+    settings: &BTreeMap<String, Value>,
+    now: Timestamp,
+) -> Answer<Vec<Group>> {
     let mut grouping = grouping(agg, now)?;
-    rows.iter().for_each(|r| grouping.add(r, None));
+    rows.iter().for_each(|r| grouping.add(r, Some(settings)));
     answer(grouping, agg)
 }
 
 /// The grouping `find`'s aggregate folds its records into as they come.
-pub fn grouping(agg: &Aggregate, now: Timestamp) -> Result<Grouping> {
+pub fn grouping(agg: &Aggregate, now: Timestamp) -> Answer<Grouping> {
     let calls: Vec<_> = agg.measures.iter().map(call).collect();
     Ok(Grouping::new(group_keys(&agg.group_by)?, &calls, now))
 }
 
 /// [`aggregate`]'s answer over the records `grouping` folded.
-pub fn answer(grouping: Grouping, agg: &Aggregate) -> Result<Vec<Group>> {
+pub fn answer(grouping: Grouping, agg: &Aggregate) -> Answer<Vec<Group>> {
     let (calls, now): (Vec<_>, _) = (agg.measures.iter().map(call).collect(), grouping.now);
     let mut grouped = grouping.groups();
     if grouped.is_empty() && agg.group_by.is_empty() {
         grouped.push(Default::default());
     }
-    let group = |(by, folds): (Row, Folds)| {
+    let group = |(by, folds): (Row, Folds)| -> Answer<Group> {
         // A measure of `find` names a field; no setting is read.
         let values = measures(&folds, &by, &calls, Row::new(), None, now)?;
         Ok(Group { by, values })
@@ -462,7 +535,7 @@ pub fn measures(
 }
 
 mod kept;
-pub use kept::{Keeping, KeptFolds};
+pub use kept::{Entry, Keeping, KeptFolds, Placed};
 
 #[cfg(test)]
 mod tests;

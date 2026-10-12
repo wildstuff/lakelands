@@ -10,8 +10,9 @@
 //! could see it then, through the contract's own reads.
 //!
 //! - **`notifications/tools/list_changed`** goes to every session when the
-//!   feed shows a `declared` or `migrated` event, whoever caused it: the
-//!   tools are generated from the ontology the principal sees.
+//!   feed shows a `declared`, `migrated` or `value_type_migrated` event,
+//!   whoever caused it: the tools are generated from the ontology the
+//!   principal sees, which shows a value type's values as an `enum`.
 //! - **`notifications/lakelands/changed`** goes to a subscribed session,
 //!   once per event of the kinds it asked for ([`CHANGE_KINDS`] by
 //!   default) from its position on, when the principal may `get` the
@@ -82,7 +83,7 @@ use lakelands_api::event::{Event, EventBody};
 use lakelands_api::id::{Position, RecordKey, TypeName};
 use lakelands_api::principal::{Grants, PrincipalKind};
 use lakelands_api::read::{Get, ReadAt};
-use lakelands_api::seam::FeedFilter;
+use lakelands_api::seam::{FeedBatch, FeedFilter};
 use lakelands_api::tools::CHANGE_KINDS;
 use lakelands_api::{Catalog, LakeStore, Principal, WriteContext};
 use serde_json::{Map, Value, json};
@@ -130,6 +131,10 @@ struct Inner {
     next: Position,
     /// The next position whose declarations are told of.
     declared: Position,
+    /// The tools changes the pump has queued.
+    tools_made: u64,
+    /// How many of them the session's last answered `tools/list` covers.
+    tools_listed: u64,
 }
 
 /// One session's subscription and positions, shared with its pump.
@@ -149,6 +154,8 @@ impl Watch {
                 generation: 0,
                 next: Position::GENESIS,
                 declared: Position::GENESIS,
+                tools_made: 0,
+                tools_listed: 0,
             }),
             wake: Notify::new(),
         })
@@ -210,6 +217,28 @@ impl Watch {
     /// always, a change only while its subscription holds.
     pub fn current(&self, q: &Queued) -> bool {
         q.generation.is_none_or(|g| g == self.inner().generation)
+    }
+
+    /// The tools changes queued so far; read before the tools a
+    /// `tools/list` answers, so a change made meanwhile stays owed.
+    pub(crate) fn tools_made(&self) -> u64 {
+        self.inner().tools_made
+    }
+
+    /// The session answered `tools/list` with the tools as they stood
+    /// after `made` changes: those changes are no longer owed.
+    pub(crate) fn listed(&self, made: u64) {
+        let mut i = self.inner();
+        i.tools_listed = i.tools_listed.max(made);
+    }
+
+    /// Whether a tools change was queued that no `tools/list` has
+    /// answered since. A tools change has no position to resume from, and
+    /// a stream that took it may have closed before its client read it:
+    /// only the session listing its tools again shows the change arrived.
+    pub fn tools_owed(&self) -> bool {
+        let i = self.inner();
+        i.tools_made > i.tools_listed
     }
 
     fn snapshot(&self) -> (u64, Option<Subscription>, Position, Position) {
@@ -295,7 +324,11 @@ pub async fn pump(
             return;
         }
         let (generation, subscription, next, declared) = watch.snapshot();
-        let mut kinds: Vec<String> = vec!["declared".into(), "migrated".into()];
+        let mut kinds: Vec<String> = vec![
+            "declared".into(),
+            "migrated".into(),
+            "value_type_migrated".into(),
+        ];
         let from = match &subscription {
             Some(s) => {
                 kinds.extend(s.kinds.iter().cloned());
@@ -325,15 +358,21 @@ pub async fn pump(
             if watch.generation() != generation {
                 continue 'poll;
             }
-            if matches!(e.body.kind(), "declared" | "migrated") {
+            if matches!(
+                e.body.kind(),
+                "declared" | "migrated" | "value_type_migrated"
+            ) {
                 view.forget();
             }
             let queued = match e.body.kind() {
-                "declared" | "migrated" if e.position >= declared => Some(Queued {
-                    generation: None,
-                    message: json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}),
-                }),
-                "declared" | "migrated" => None,
+                "declared" | "migrated" | "value_type_migrated" if e.position >= declared => {
+                    watch.inner().tools_made += 1;
+                    Some(Queued {
+                        generation: None,
+                        message: json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}),
+                    })
+                }
+                "declared" | "migrated" | "value_type_migrated" => None,
                 kind => match &subscription {
                     Some(s) if e.position >= next && s.kinds.iter().any(|k| k == kind) => {
                         match view.of(e, s).await {
@@ -362,11 +401,18 @@ pub async fn pump(
         }
         watch.advance(generation, batch.next);
         view_at = Some(batch.next);
-        let caught_up = batch.events.is_empty() || batch.next > batch.head;
-        if caught_up {
+        if caught_up(&batch, from) {
             wait(&watch, &queue, pause).await;
         }
     }
+}
+
+/// Whether a batch reached the head, so the pump pauses before it polls
+/// again; a batch with no events may stop short of it. One whose `next`
+/// did not move from `from` pauses too, rather than poll the same place
+/// at once again.
+fn caught_up(batch: &FeedBatch, from: Position) -> bool {
+    batch.next > batch.head || batch.next == from
 }
 
 /// The lake as its host reads it: every field of every type.
@@ -577,11 +623,18 @@ impl<'a> View<'a> {
             .describe_type(self.host, ty, as_of(at))
             .await
             .map_err(|e| failed(&e))?;
-        let w = d
-            .data
-            .fields
-            .iter()
-            .all(|f| self.who.grants.access(ty, &f.name).reads());
+        // As the principal's own description shows it, which leaves out a
+        // field its grants leave readable but it may not know of, as a
+        // reference to a type it is not shown (024, extended).
+        let mine = self
+            .catalog
+            .describe_type(self.who, ty, as_of(at))
+            .await
+            .map_err(|e| failed(&e))?;
+        let reads = |n: &lakelands_api::FieldName| {
+            (mine.data.fields.iter()).any(|f| &f.name == n && f.access.reads())
+        };
+        let w = d.data.fields.iter().all(|f| reads(&f.name));
         self.whole.insert(ty.clone(), w);
         Ok(w)
     }
@@ -603,5 +656,31 @@ pub(crate) fn kinds(asked: Option<Vec<String>>) -> Result<Vec<String>, String> {
             Some(bad) => Err(bad.clone()),
             None => Ok(k),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A poll stops after `FEED_EXAMINED` events examined, so a batch with
+    /// no events short of the head is not the end of the log: the pump
+    /// reads on at once and pauses only past the head, or when `next` did
+    /// not move.
+    #[test]
+    fn an_empty_batch_short_of_the_head_is_not_caught_up() {
+        let examined = Position(u64::from(lakelands_api::seam::FEED_EXAMINED));
+        let batch = |next, head| FeedBatch {
+            events: Vec::new(),
+            next,
+            head,
+        };
+        let from = Position::GENESIS;
+        assert!(!caught_up(&batch(examined, Position(10_000)), from));
+        assert!(caught_up(&batch(Position(10_001), Position(10_000)), from));
+        assert!(
+            caught_up(&batch(examined, Position(10_000)), examined),
+            "a batch whose `next` did not move pauses"
+        );
     }
 }

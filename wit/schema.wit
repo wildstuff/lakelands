@@ -1,4 +1,4 @@
-package lakelands:data@0.10.0;
+package lakelands:data@0.12.0;
 
 /// The lake's map: describing it and changing it. A bundle is declared
 /// whole with `apply`; a shape change goes through `migrate` and its
@@ -7,7 +7,7 @@ interface schema {
     use types.{
         principal, read-at, type-name, lake-description-reply, type-description-reply,
         declaration, field-decl, migration, migration-report-reply, outcome, error,
-        value-type-decl, value-type-report-reply, recomputed,
+        value-type-migration, value-type-report-reply, recomputed,
     };
     use store.{catalog};
 
@@ -23,10 +23,11 @@ interface schema {
     migrate: func(catalog: borrow<catalog>, who: principal, migration: migration) -> result<migration-report-reply, error>;
     /// Apply a migration against the report `migrate` answered.
     migrate-apply: func(catalog: borrow<catalog>, who: principal, migration: migration, report-id: string) -> result<outcome, error>;
-    /// The preflight of tightening a value type: every value stored under
-    /// it, checked against the new declaration. Nothing is written.
-    migrate-value-type: func(catalog: borrow<catalog>, who: principal, to: value-type-decl) -> result<value-type-report-reply, error>;
-    /// Put a tightened value type in force against the report
+    /// The preflight of a value type's migration: every value stored under
+    /// it, renamed as the migration renames it, checked against the new
+    /// declaration. Nothing is written.
+    migrate-value-type: func(catalog: borrow<catalog>, who: principal, migration: value-type-migration) -> result<value-type-report-reply, error>;
+    /// Put a value type's migration in force against the report
     /// `migrate-value-type` answered.
-    migrate-value-type-apply: func(catalog: borrow<catalog>, who: principal, to: value-type-decl, report-id: string) -> result<outcome, error>;
+    migrate-value-type-apply: func(catalog: borrow<catalog>, who: principal, migration: value-type-migration, report-id: string) -> result<outcome, error>;
 }

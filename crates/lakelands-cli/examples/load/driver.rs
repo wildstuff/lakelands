@@ -482,6 +482,7 @@ fn principals() -> Vec<Entry> {
                 TypeGrants {
                     default: None,
                     fields: [("secret".into(), Access::None)].into(),
+                    ..Default::default()
                 },
             ),
             (
@@ -489,6 +490,7 @@ fn principals() -> Vec<Entry> {
                 TypeGrants {
                     default: Some(Access::None),
                     fields: BTreeMap::new(),
+                    ..Default::default()
                 },
             ),
         ]
@@ -689,7 +691,7 @@ impl From<Oops> for String {
 /// A client door's error: `unavailable` is the server not answering.
 fn remote_oops(e: lakelands_api::Error) -> Oops {
     match e {
-        lakelands_api::Error::Unavailable { message } => Oops::Stall(message),
+        e @ lakelands_api::Error::Unavailable { .. } => Oops::Stall(e.said()),
         other => Oops::Wrong(format!("{other:?}")),
     }
 }

@@ -10,12 +10,13 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, ReadAt, TypeName};
 use serde_json::json;
 
-use crate::conformance::fixture::{Lake, Must, doors, field, owner, type_decl};
+use crate::conformance::fixture::{Lake, Must, doors, field, invalid_case, owner, type_decl};
 use crate::conformance::{Failure, Reopen, backing};
 
 check!(
@@ -132,10 +133,9 @@ async fn a_vocabulary_naming_a_reserved_type_refuses_the_writers_open(
         )
         .await;
         match answer {
-            Err(lakelands_api::Error::Refused {
-                reason: lakelands_api::Refusal::Invalid { message },
-                ..
-            }) if message.contains(&format!("`{name}`")) && message.contains("reserved") => {}
+            Err(e)
+                if matches!(invalid_case(&e), Some(Case::VocabularyReserved { ty, .. })
+                if ty == name) => {}
             Err(e) => {
                 return Err(Failure::new(format!(
                     "a vocabulary naming `{name}` is refused at the writer's open as invalid, \

@@ -110,10 +110,11 @@ is recorded, the retry is `applied` with it, `null` included. Where none
 is, the retry is refused as `unanswered`, never `applied`: one sentence,
 true whichever way the position got there, says that the call is in the
 log at that position, that no answer is recorded and that the retry
-runs nothing; that a call still running will have its answer recorded
-and a retry then answers it; and that a call whose first answer said its
-executor was not handed it is called again under another key or with
-none, or proposed again. A retry may not tell the two apart, and the
+runs nothing; that a call still running, or whose answer is held, will
+have its answer recorded and a retry then answers it, unless the handle
+that ran it is dropped or loses its lease first; and that a call whose
+first answer said its executor was not handed it is called again under
+another key or with none, or proposed again. A retry may not tell the two apart, and the
 caller may: it was given the first answer.
 
 The answer is found by a seek, not by a read of the log after the call.
@@ -129,6 +130,41 @@ told by what the acceptance appended (a write verb's write follows its
 call, caused by it), whatever was declared since: an external call is
 answered as a retry of a call is, and any other acceptance is
 `decided`.
+
+## Extended: the executor is handed the record its call was judged on (lakelands#660)
+
+An executor is handed the record as it stood at the position that made
+its verb due, the `verb_called` or the `write_accepted`, where the call
+was judged; not as the head holds it when the hand-out comes. A write
+between the two, another caller's or a retirement, does not reach the
+executor, so it never acts on a record its call was not judged on: a
+record retired after the call is handed as it stood, where it was
+refused before. A purge appends and removes nothing, and compaction
+keeps the projection's history, so that state is always there to read;
+there is no fallback to the head.
+
+## Extended: an executor's answer is held until it is recorded (lakelands#646)
+
+An executor's answer whose append the engine refuses `unavailable`, or
+that a writer which cannot catch up with its log cannot append, is not
+lost to the handle that ran it: the writer holds it, and the next
+write that takes the writer appends it, the oldest first, before it is
+decided. A call sent again under its key therefore records the held
+answer and is answered it; a neighbour's write, an ingest, an aging run,
+a purge, the drain and the preflights of `migrate` and
+`migrate_value_type` record it too, since each takes the writer; a
+preflight that does moves the head, so a purge's run is then refused
+until its preflight is run again, as after any neighbour's write. The
+first answer says so: the answer is held and recorded before the next
+write, and sent again under its key, or accepted again, the call answers
+it. A held answer leaves the writer once the engine holds it, before it
+is folded, so a fold that fails is told as any append's is, and the
+write that recorded it catches up before it is decided. One that is
+refused again stays held and stops no other write: nothing in the log
+depends on it. Any other refusal is answered and the answer is not held.
+The answer stays where the handle is: closed or dropped before a write
+records it, or its lease lost, the handle loses it, and a retry is then
+`unanswered`; the first answer carried the output.
 
 Handing a position out again where no answer is recorded was weighed
 and not built. It would change what an executor is promised, once per
@@ -162,12 +198,13 @@ applied in part.
 more than its reader is shown, and says nothing else of it: no name and
 no count, since a count would say how many names are hidden. Where the
 reader may see nothing of the write, the entry has no write at all: a
-write to a type it may not see, to a record it is not answered (one
-restricted, without the grant), a call of a verb on such a type, a
-bundle none of whose declarations it would be shown. The entry keeps its
-id, its proposer, its times, its state and the proposer's `why`, so a
-reviewer without a read grant still finds what it is asked to decide,
-and accepts it by its id.
+write to a record it is not answered (one restricted, without the
+grant), a call of a verb on such a record, a bundle none of whose
+declarations it would be shown. The entry keeps its id, its proposer,
+its times, its state and the proposer's `why`, so a reviewer without a
+read grant on the record still finds what it is asked to decide, and
+accepts it by its id. A proposal that names a type its reader is not
+shown is not listed at all (below, lakelands#762).
 
 The absent write is a form of the answer and of nothing else. A stored
 proposal and a logged `write_proposed` hold the write whole, and
@@ -179,7 +216,7 @@ logged.
 entry as its reader is shown it. A type the reader may not see answers
 what a type that is not declared answers, an empty listing; an entry
 without a write is of no kind. The unfiltered listing and `state` hold
-every entry. Ordering and paging were already over the entry as shown.
+every entry the reader is listed. Ordering and paging were already over the entry as shown.
 
 **A proposed bundle** shows each declaration `describe` would show its
 reader once the bundle is in force: a type it could see, with the fields
@@ -203,6 +240,118 @@ the fresh report as the accepter may know it, by the rule of the
 listing, and says `more` where that is less than the whole
 (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 extended, lakelands#531).
+
+## Extended: a proposal on a type its reader is not shown is not there (lakelands#762)
+
+A proposal that names a type its reader is not shown is not there to
+that reader. `proposals` does not list it, and `accept` and `reject`
+answer as for a proposal id that does not exist, word for word. The
+types a proposal names are:
+
+- the type an upsert or a retirement writes, and the type of a called
+  verb;
+- of a migration's `to` and of each type a bundle declares: the type
+  itself and, of a view, its sources; and the target of each relation
+  and reference field it adds, changes or drops against the type in
+  force, both compared completed, as the lake keeps a type (each
+  computed field's `depends_on` filled, a link field's among them);
+- the type each verb, trigger and object set of a bundle is on.
+
+A call of a verb that reads a field its reader may not read is not there
+either. Such a verb is not described to that reader, and the proposal
+would tell that its `requires` held
+(`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+extended, lakelands#779).
+
+A link type is shown only with both its ends
+(`docs/decisions/006-grants-not-roles.md`, extended), so a write to a
+link with a hidden end is among them, and so is a bundle that adds a
+relation or a reference to a hidden type. A relation or a reference
+restated as it stands names nothing the type in force does not. "As it
+stands" is equal as declared, in order (link fields and `depends_on`
+included), as the lake judges a declaration in force: a restatement that
+reorders them counts as a change, and errs toward hiding. An
+author's declaration carries back the relations it is not shown, so a
+reader not shown a relation's target still proposes, lists and decides
+its own redeclaration and migration of the type, which it may author
+directly. Only a type the lake declares counts: a bundle may declare a
+new type its reader would not be shown once in force, and is listed
+without that declaration, as above.
+
+A listed migration is judged by its reader as it stands; its report is
+then trimmed, as above, by the reader's grants at the proposal, against
+the type as it stood. An accept or a reject judges this as soon as the
+proposal is found,
+before anything else of it is told: whether it is decided, whether a
+pinned record moved since it was proposed, whether its write or its
+bundle would apply. Nothing is appended. A proposal hidden only by a
+record, one restricted or outside a holder's `only`, stays listed
+without its write, as above. A reviewer shown every type it names
+decides it as before, what its grants hide of a record or a field
+included.
+
+So no answer that reports on a type's migration is given to one not
+shown the type, and its report needs no form with the type taken out:
+`propose`, the preview `migrate` and `migrate_apply` answer that the
+type is not declared (027, extended), and the accept and the listing
+answer as here.
+
+**Why.** An accept is a write to what the proposal names, and its answer
+tells what it judged. If it applied, it wrote to a type its reviewer may
+not read, or reshaped one. If it was refused, it named the type, a key
+of it, a field and its kind, or that a hidden record moved. A listed
+entry whose id the accept then calls absent would tell a proposal hidden
+by its type from one hidden by a record. To a principal not shown a
+type, the type is one that is not declared
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+extended), and a proposal on a type that is not there is not there
+either: not in the listing, and not at the accept.
+
+## Extended: an accept's refusal names what its reviewer's listing shows (lakelands#780)
+
+An accept applies the proposer's write, planned again as the proposer,
+so a refusal of that plan is the proposer's: it may name a field, a
+type, a key or a value the reviewer is not shown. What an accept
+answers a reviewer is judged by the reviewer's view, as its listing is.
+A refusal of the write it applies (an upsert's plan, a verb's run) is
+told whole where the reviewer is shown each thing it names:
+
+- each type, one the reviewer is shown;
+- each field, one it reads of the type written; a verb named counts the
+  fields its `requires` reads;
+- each verb, the one called;
+- what a field's declaration says (the values it allows, its value
+  type), only beside a field named;
+- each key, the one written or, as each value, one the listing shows
+  under a field named, or in a call's payload, which is listed only
+  whole.
+
+A call of a verb whose `requires` or set values read a field the
+reviewer is kept from does not come to this. It is not there to that
+reviewer (above; `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+extended, lakelands#779).
+
+A name of another kind, a relation's, a trigger's or a function's, is
+not judged. Any refusal is told whole to a reviewer that reads
+everything, and to the proposer, whose own write was told the same.
+Otherwise the accept answers as a proposal stale since it was proposed:
+the write changed since it was proposed, naming only the type and the
+key written, which the listing shows. A conflict names versions only,
+and is told whole. A retirement's refusal names only the record it
+retires, and what a write sets off is judged by declarations the lake
+already took, so neither is judged. A refusal is judged by what its
+case's members are, as typed (`Named` in the contract), so the store
+and the mock judge alike. A link's cardinality is judged only where a
+link is written, and no proposal writes one. A reject answers nothing
+of the write.
+
+**Why.** The listing shows a reviewer the proposal trimmed to what it
+may know, and says `more` where that is less than the whole. A refusal
+that names a hidden field, its target type and the key it held would
+tell the reviewer what the listing withheld, through the door the
+reviewer is meant to use on it. A write that no longer applies needs no
+more than that answer to be proposed again, by one who may see what
+changed.
 
 ## Extended: a value type's tightening is proposed like a migration (lakelands#476)
 
@@ -338,9 +487,11 @@ checks, the append. Where a step runs "the record checks", they are
 its scope (`invalid`, naming the verb); a verb called on a record of a
 view (`invalid`, 018, extended); the principal may call it
 (`not_granted`); an external verb's executor is bound (`unbound`); the
-payload, field by field in name order (a field the verb does not take
-is `invalid`, a value that does not fit is `constraint`, each naming the
-field), then its required fields (`constraint`); on a record: the record
+payload: a member the verb does not declare (`invalid`, naming the verb
+and the member, as one missing from the payload and never from the type,
+even where the type has a field of that name), then field by field in
+name order a value that does not fit (`constraint`, naming the field),
+then its required fields (`constraint`); on a record: the record
 is live (`not_found`), the expected version (`conflict`), `requires`
 (`precondition`). A `low` verb then computes its assignments (`invalid`,
 naming the verb) and makes its write through the record checks. At any

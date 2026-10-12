@@ -42,6 +42,7 @@ const ALL: TypeRights = TypeRights {
     upsert: true,
     retire: true,
     link: Vec::new(),
+    only: BTreeMap::new(),
 };
 const READ: TypeRights = TypeRights {
     find: true,
@@ -49,6 +50,7 @@ const READ: TypeRights = TypeRights {
     upsert: false,
     retire: false,
     link: Vec::new(),
+    only: BTreeMap::new(),
 };
 
 fn lake(
@@ -475,6 +477,12 @@ fn the_generic_tools_emitted_are_exactly_the_generic_list() {
     let mut listed = GENERIC_TOOLS.to_vec();
     listed.sort();
     assert_eq!(emitted, listed);
+    // A door that binds a seam is the host's, and no tool's.
+    assert!(
+        names(&t).iter().all(|n| !n.contains("bind")),
+        "{:?}",
+        names(&t)
+    );
 }
 
 #[test]
@@ -493,4 +501,14 @@ fn the_argument_schemas_reach_every_argument_the_doors_take() {
     assert!(arg("describe", &["valid_at"]).is_object());
     assert!(arg("search", &["cursor"]).is_object());
     assert!(arg("proposals", &["state"]).is_object());
+}
+
+#[test]
+fn a_date_field_is_a_string_of_the_format_date() {
+    let ty = crate::ontology::FieldType::kind(StorageKind::Date);
+    let schema = field_schema(&ty, &lake_of(Vec::new()));
+    assert_eq!(
+        schema,
+        serde_json::json!({"type": "string", "format": "date"})
+    );
 }

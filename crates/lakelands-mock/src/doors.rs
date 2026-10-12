@@ -5,11 +5,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use lakelands_api::describe::{
-    ExecutorDescription, FieldDescription, Kept, LakeDescription, LakeRights, TypeAccess,
+    ExecutorDescription, FieldDescription, Kept, LakeDescription, LakeRights, NotKept, TypeAccess,
     TypeDescription, TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
 };
-use lakelands_api::error::{Error, Missing, Refusal, Result};
+use lakelands_api::error::{
+    Case, Error, Missing, Named, Names, Place, Refusal, Result, Revision, Said, Seam, Unmocked,
+};
 use lakelands_api::event::{Event, EventBody, EventId};
+use lakelands_api::expr::kind::Kind;
 use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::id::{
     Cursor, FieldName, LakeId, Position, ProposalId, RecordKey, RelationName, SourceId, TypeName,
@@ -18,25 +21,35 @@ use lakelands_api::id::{
 use lakelands_api::ontology::{
     Authority, FieldDecl, RelationDecl, Risk, TypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl,
 };
-use lakelands_api::principal::{Access, Principal, PrincipalKind, Renamed, WriteContext};
-use lakelands_api::query::{Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk};
+use lakelands_api::principal::{
+    Access, Principal, PrincipalKind, Renamed, TypeGrants, WriteContext,
+};
+use lakelands_api::query::{
+    Axis, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk,
+};
 use lakelands_api::read::{After, Direction, Find, Found, Get, Order, OrderBy, ReadAt, Reply};
 use lakelands_api::record::{Origin, Patch, Record, SourceRecord, StoredRecord, Value};
 use lakelands_api::seam::{
-    SETTING_TYPE, SORT_INDEX_SETTING, VECTOR_INDEX_SETTING, VIEW_KEPT_SETTING, indexable, sortable,
+    SEARCH_WEIGHTS_SETTING, SETTING_TYPE, SORT_INDEX_SETTING, VECTOR_INDEX_SETTING,
+    VIEW_KEPT_SETTING, indexable, search_weights, sortable,
 };
 use lakelands_api::write::{
-    Committed, Declaration, FieldConversion, FunctionDecl, Migration, MigrationReport,
+    Carrier, Committed, Declaration, FieldConversion, FunctionDecl, Migration, MigrationReport,
     ObjectSetDecl, Outcome, Proposal, ProposalFilter, ProposalState, ProposedWrite, Recompute,
-    WriteOpts,
+    ValueTypeMigration, WriteOpts,
 };
 use lakelands_api::{Catalog, CommitStream, SourceStream};
 
 use crate::expr::{self, Scope};
 
 mod measures;
+pub(crate) mod rules;
+mod views;
 use crate::links;
-use crate::state::{DeclaredType, State, access, door_writes, field};
+use crate::state::{
+    DeclaredType, State, access, admits, creates, door_writes, field, holds_only, only_applies,
+    only_holder, own_only, pinnable,
+};
 use crate::{Batch, Draft, Log, Shared, refused, stream, value};
 
 pub(crate) struct MockCatalog {
@@ -51,6 +64,23 @@ fn on(field: &FieldName, reason: Refusal) -> Error {
     }
 }
 
+/// A refusal of `field`'s value as not well-formed.
+fn invalid_field(field: &FieldName, said: impl Into<Said>) -> Error {
+    on(field, Refusal::Invalid(Box::new(said.into())))
+}
+
+/// A refusal of what a constraint does not allow, at `field`.
+fn constraint(field: &FieldName, said: impl Into<Said>) -> Error {
+    on(field, Refusal::Constraint(Box::new(said.into())))
+}
+
+/// `said`, inside the places `at`, outermost first.
+fn at(at: &[Place], said: impl Into<Said>) -> Said {
+    let mut said = said.into();
+    said.at.splice(0..0, at.iter().cloned());
+    said
+}
+
 /// The names a read binds against the view parameters `decl` declares:
 /// none unknown and none missing, as the store refuses them. The mock
 /// computes no view, so it checks no value's kind.
@@ -60,16 +90,21 @@ fn bound(decl: &TypeDecl, given: &lakelands_api::Params) -> Result<()> {
         .keys()
         .find(|k| !declared.iter().any(|p| &p.name == *k))
     {
-        return Err(invalid(format!(
-            "`{}` declares no parameter `{k}`",
-            decl.name
-        )));
+        let names: Names = declared.iter().map(|p| &p.name).collect();
+        let declared = (!names.0.is_empty()).then_some(names);
+        let (ty, name) = (decl.name.clone(), k.clone());
+        return Err(invalid(Case::ParamUnknown { ty, name, declared }));
     }
     match declared.iter().find(|p| !given.contains_key(&p.name)) {
-        Some(p) => Err(invalid(format!(
-            "view `{}` needs parameter `{}`",
-            decl.name, p.name
-        ))),
+        Some(p) => {
+            let (ty, name, kind) = (decl.name.clone(), p.name.clone(), p.kind);
+            Err(invalid(Case::ParamMissing {
+                ty,
+                name,
+                kind,
+                unbound: false,
+            }))
+        }
         None => Ok(()),
     }
 }
@@ -82,38 +117,33 @@ fn scoped<'k>(
     key: Option<&'k RecordKey>,
     opts: &WriteOpts,
 ) -> Result<Option<&'k RecordKey>> {
+    let (verb, ty) = (v.name.clone(), v.on.clone());
     match (v.scope, key) {
-        (VerbScope::Type, Some(_)) => Err(invalid(format!(
-            "verb `{}` is called on the type `{}`, not on a record: it takes no key",
-            v.name, v.on
-        ))),
-        (VerbScope::Type, None) if opts.expected_version.is_some() => Err(invalid(format!(
-            "verb `{}` is called on the type `{}`: there is no record version to compare",
-            v.name, v.on
-        ))),
-        (VerbScope::Record, None) => Err(invalid(format!(
-            "verb `{}` is called on a `{}` record: it needs that record's key",
-            v.name, v.on
-        ))),
+        (VerbScope::Type, Some(_)) => Err(invalid(Case::VerbTypeTakesNoKey { verb, ty })),
+        (VerbScope::Record, None) => Err(invalid(Case::VerbNeedsKey { verb, ty })),
+        (VerbScope::Type, None) if opts.expected_version.is_some() => {
+            Err(invalid(Case::VerbTypeNoVersion { verb, ty }))
+        }
         (_, key) => Ok(key),
     }
 }
 
 /// The record key of a call that runs a write, which only a verb on a
-/// record has: its scope was checked when it was called.
+/// record has: its scope was checked when it was called, and a verb on its
+/// type with a write effect is not declared.
 fn record_key<'k>(v: &VerbDecl, key: Option<&'k RecordKey>) -> Result<&'k RecordKey> {
     scoped(v, key, &WriteOpts::default())?.ok_or_else(|| {
-        invalid(format!(
-            "verb `{}` is called on the type `{}`; only a verb on a record writes",
-            v.name, v.on
-        ))
+        let on = [Place::Verb {
+            name: v.name.clone(),
+        }];
+        let ty = v.on.clone();
+        invalid(at(&on, Case::TypeVerbWrites { ty }))
     })
 }
 
-fn invalid(message: impl Into<String>) -> Error {
-    refused(Refusal::Invalid {
-        message: message.into(),
-    })
+/// A refusal of what the caller asked for as not well-formed.
+fn invalid(said: impl Into<Said>) -> Error {
+    Error::invalid(said)
 }
 
 fn no_type(name: &TypeName) -> Error {
@@ -131,37 +161,26 @@ fn no_record(ty: &TypeName, key: &RecordKey) -> Error {
     }
 }
 
-/// Whether a revision of a type would reshape stored records, so that it
-/// needs `migrate` (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`),
-/// by the store's own reasons: a field removed, retyped or made required;
-/// a new field required; the key changed; a relation removed or
-/// retargeted, or its cardinality narrowed; a stored type turned into a
-/// view. A change of meaning, an added optional field or relation, a
-/// loosened requirement or cardinality, is a declaration; and a view
-/// stores nothing, so every change of one is, a view ceasing to be one
-/// included.
-fn reshapes(
-    old: &lakelands_api::ontology::TypeDecl,
-    new: &lakelands_api::ontology::TypeDecl,
-) -> bool {
+/// The changes of a revision of a type that would reshape stored records,
+/// so that it needs `migrate` (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`),
+/// by the store's own reasons and in its order: a field removed, retyped or
+/// made required, a new field required (a link's fields as well); the key
+/// changed; a relation removed or retargeted, or its cardinality narrowed;
+/// a stored type turned into a view. A change of meaning, an added optional
+/// field or relation, a loosened requirement or cardinality, is a
+/// declaration; and a view stores nothing, so every change of one is, a
+/// view ceasing to be one included. Empty: it is declared.
+fn reshaping(old: &TypeDecl, new: &TypeDecl) -> Vec<Revision> {
     use lakelands_api::ontology::Cardinality;
+    let mut out = Vec::new();
     if old.view.is_some() {
-        return false;
+        return out;
     }
-    if old.view.is_none() && new.view.is_some() {
-        return true;
-    }
+    fields_reshaped(&old.fields, &new.fields, None, &mut out);
     if old.key != new.key {
-        return true;
+        let (from, to) = (old.key.iter().collect(), new.key.iter().collect());
+        out.push(Revision::KeyChanged { from, to });
     }
-    let changed = old.fields.iter().any(|o| match field(new, &o.name) {
-        None => true,
-        Some(n) => n.ty != o.ty || (n.required && !o.required),
-    });
-    let required_added = new
-        .fields
-        .iter()
-        .any(|n| n.required && field(old, &n.name).is_none());
     // Whether each side of a relation may link many: (this side, target).
     let sides = |c: Cardinality| match c {
         Cardinality::OneToOne => (false, false),
@@ -169,17 +188,80 @@ fn reshapes(
         Cardinality::ManyToOne => (true, false),
         Cardinality::ManyToMany => (true, true),
     };
-    let relation_reshaped =
-        old.relations
-            .iter()
-            .any(|o| match new.relations.iter().find(|n| n.name == o.name) {
-                None => true,
-                Some(n) => {
-                    let ((a, b), (c, d)) = (sides(o.cardinality), sides(n.cardinality));
-                    n.target != o.target || !((!a || c) && (!b || d))
-                }
+    let mut relations: Vec<&RelationDecl> = old.relations.iter().collect();
+    relations.sort_by(|a, b| a.name.cmp(&b.name));
+    for o in relations {
+        let relation = o.name.clone();
+        let Some(n) = new.relations.iter().find(|n| n.name == o.name) else {
+            out.push(Revision::RelationRemoved { relation });
+            continue;
+        };
+        if n.target != o.target {
+            let (from, to) = (o.target.clone(), n.target.clone());
+            let relation = relation.clone();
+            out.push(Revision::RelationRetargeted { relation, from, to });
+        }
+        let ((a, b), (c, d)) = (sides(o.cardinality), sides(n.cardinality));
+        if !((!a || c) && (!b || d)) {
+            let (from, to) = (o.cardinality, n.cardinality);
+            let relation = relation.clone();
+            out.push(Revision::CardinalityChanged { relation, from, to });
+        }
+        fields_reshaped(&o.fields, &n.fields, Some(&relation), &mut out);
+    }
+    if new.view.is_some() {
+        out.push(Revision::BecameView);
+    }
+    out
+}
+
+/// The field changes that reshape stored records, in field-name order.
+fn fields_reshaped(
+    old: &[FieldDecl],
+    new: &[FieldDecl],
+    relation: Option<&RelationName>,
+    out: &mut Vec<Revision>,
+) {
+    let by_name = |fs: &[FieldDecl]| {
+        let mut fs: Vec<FieldDecl> = fs.to_vec();
+        fs.sort_by(|a, b| a.name.cmp(&b.name));
+        fs
+    };
+    let (old, new) = (by_name(old), by_name(new));
+    let relation = || relation.cloned();
+    for o in &old {
+        let field = o.name.clone();
+        let Some(n) = new.iter().find(|n| n.name == o.name) else {
+            let relation = relation();
+            out.push(Revision::FieldRemoved { field, relation });
+            continue;
+        };
+        if n.ty != o.ty {
+            let (from, to) = (o.ty.clone(), n.ty.clone());
+            let (field, relation) = (field.clone(), relation());
+            out.push(Revision::FieldRetyped {
+                field,
+                relation,
+                from,
+                to,
             });
-    changed || required_added || relation_reshaped
+        }
+        if n.required && !o.required {
+            let relation = relation();
+            out.push(Revision::FieldRequired { field, relation });
+        }
+    }
+    for n in new.iter().filter(|n| n.required) {
+        if !old.iter().any(|o| o.name == n.name) {
+            let (field, relation) = (n.name.clone(), relation());
+            let required = true;
+            out.push(Revision::FieldAdded {
+                field,
+                relation,
+                required,
+            });
+        }
+    }
 }
 
 /// Whether declaring a type of this name is reserved: a `sys.` type is
@@ -219,28 +301,26 @@ fn uncursor(c: &Cursor, door: &str, ty: Option<&TypeName>, of: &str) -> Result<(
         parts.next(),
         parts.next(),
     ) else {
-        return Err(invalid("the cursor was not issued by this lake"));
+        return Err(invalid(Case::CursorForeign));
     };
     let (Ok(p), Ok(o)) = (p.parse(), o.parse()) else {
-        return Err(invalid("the cursor was not issued by this lake"));
-    };
-    let on = |door: &str, ty: &str| match ty {
-        "" => format!("`{door}`"),
-        ty => format!("`{door}` on `{ty}`"),
+        return Err(invalid(Case::CursorForeign));
     };
     let here = ty.map_or("", TypeName::as_str);
     if d != door || t != here {
-        return Err(invalid(format!(
-            "the cursor was handed out for {}, not {}; continue it there",
-            on(d, t),
-            on(door, here)
-        )));
+        let named = |t: &str| (!t.is_empty()).then(|| Box::new(TypeName::from(t)));
+        let (was, was_ty) = (d.to_owned(), named(t));
+        let (door, ty) = (door.to_owned(), ty.cloned().map(Box::new));
+        return Err(invalid(Case::CursorOtherDoor {
+            was,
+            was_ty,
+            door,
+            ty,
+        }));
     }
     if f != of {
-        return Err(invalid(format!(
-            "the cursor was handed out for another `{door}`; continue it with the read its \
-             first page was read with"
-        )));
+        let door = door.to_owned();
+        return Err(invalid(Case::CursorOtherRead { door }));
     }
     Ok((Position(p), o))
 }
@@ -284,44 +364,34 @@ fn resume_after(
     a: &After,
 ) -> Result<(Vec<Option<Value>>, RecordKey)> {
     if find.cursor.is_some() {
-        return Err(invalid(
-            "`after` and `cursor` both name where a page starts; give one",
-        ));
+        return Err(invalid(Case::AfterWithCursor));
     }
     if find.aggregate.is_some() {
-        return Err(invalid(
-            "`after` pages records; an `aggregate` has no pages",
-        ));
+        return Err(invalid(Case::AfterWithAggregate));
     }
     if a.values.len() != find.order_by.len() {
-        return Err(invalid(format!(
-            "`after.values` holds {} value(s) and `order_by` has {} key(s); give one value per key",
-            a.values.len(),
-            find.order_by.len()
-        )));
+        let (values, keys) = (a.values.len(), find.order_by.len());
+        return Err(invalid(Case::AfterCount { values, keys }));
     }
     let mut values = Vec::with_capacity(a.values.len());
     for (i, (v, o)) in a.values.iter().zip(&find.order_by).enumerate() {
-        let unfit = |why: String| Error::Refused {
-            field: Some(o.field.clone()),
-            reason: Refusal::Invalid {
-                message: format!("`after.values[{i}]` does not fit `{}`: {why}", o.field),
-            },
+        let unfit = |why: Case| {
+            let (index, field, why) = (i, o.field.clone(), Box::new(why));
+            invalid_field(&o.field, Case::AfterUnfit { index, field, why })
         };
         let v = match (o.by, v) {
             (_, Value::Null) => None,
             (OrderBy::Latest, Value::Number(n)) if n.is_u64() => Some(v.clone()),
             (OrderBy::Latest, _) => {
-                return Err(unfit("a position is a non-negative integer".into()));
+                return Err(unfit(Case::PositionNotInteger));
             }
-            (OrderBy::KnownAt | OrderBy::SeenAt, Value::String(s)) => Some(
-                lakelands_api::Timestamp::parse(s)
-                    .map_err(|e| unfit(e.to_string()))?
-                    .to_string()
-                    .into(),
-            ),
+            (OrderBy::KnownAt | OrderBy::SeenAt, Value::String(s)) => {
+                let value = || Case::NotDateTime { value: s.clone() };
+                let t = lakelands_api::Timestamp::parse(s).map_err(|_| unfit(value()))?;
+                Some(t.to_string().into())
+            }
             (OrderBy::KnownAt | OrderBy::SeenAt, _) => {
-                return Err(unfit("an instant is given as text".into()));
+                return Err(unfit(Case::InstantNotText));
             }
             (OrderBy::Value, v) => match field(&t.decl, &o.field) {
                 Some(f) => {
@@ -366,10 +436,17 @@ impl MockCatalog {
     /// As the store: a principal with its grants held through the lake's
     /// renames (`Grants::follow`), for a read at `at` or a write at the head.
     /// The list is every `migrated` event's renames, in the log's order.
+    /// Then each reference to a type it is not shown, by the lake at `at`,
+    /// is held at `none` ([`State::hidden`]).
     fn followed(&self, who: &Principal, at: Option<Position>) -> Principal {
         let mut who = who.clone();
         who.grants.follow(&self.renames(), at);
-        who
+        if !hides_some(&who) {
+            return who;
+        }
+        let log = self.log();
+        let st = (self.state_at(&log, at)).or_else(|_| self.state_at(&log, None));
+        st.map_or(who.clone(), |(_, st)| st.hidden(&who))
     }
 
     /// As the store: the lake's list of renames, every `migrated` event's
@@ -412,9 +489,8 @@ impl MockCatalog {
             let log = self.log();
             let head = Shared::head(&log);
             if cause > head {
-                return Err(refused(Refusal::Invalid {
-                    message: format!("the cause {cause} is past the lake's head {head}"),
-                }));
+                let head = Some(head);
+                return Err(invalid(Case::CausePastHead { cause, head }));
             }
             if let EventBody::TriggerFired { trigger, .. } = &log.events[cause.0 as usize].body
                 && let Some(m) = State::fold(&log.events)
@@ -453,9 +529,9 @@ impl MockCatalog {
         } else {
             l.max_limit
         };
-        let asked = asked.unwrap_or(l.default_limit);
+        let asked = asked.unwrap_or(l.default_limit.min(max));
         if asked == 0 || asked > max {
-            return Err(invalid(format!("a limit is between 1 and {max}")));
+            return Err(invalid(Case::LimitRange { max }));
         }
         Ok(asked as usize)
     }
@@ -491,6 +567,7 @@ impl MockCatalog {
                 declaration,
                 schema_hash,
                 version,
+                with_the_set: false,
             },
         ));
         for d in links {
@@ -520,6 +597,7 @@ fn link_drafts(st: &State, who: &Principal, d: &Declaration) -> Vec<Draft> {
                     declaration,
                     schema_hash,
                     version,
+                    with_the_set: false,
                 },
             )
         })
@@ -534,8 +612,9 @@ fn link_relation(
     relation: &RelationName,
 ) -> Result<lakelands_api::ontology::RelationDecl> {
     // As the store: an undeclared type, or one the principal is not shown,
-    // is not found; a relation it does not carry by link records is
-    // invalid; one the principal may not write the links of is not granted.
+    // is not found; a relation it does not carry by link records, or is
+    // not shown, is invalid; one the principal may not write the links of
+    // is not granted.
     let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
     not_a_view(&t.decl)?;
     let r = t
@@ -543,11 +622,11 @@ fn link_relation(
         .relations
         .iter()
         .find(|r| &r.name == relation && r.via.is_none() && r.derived.is_none())
+        .filter(|r| relation_shown(st, who, &t.decl, r))
         .cloned()
         .ok_or_else(|| {
-            invalid(format!(
-                "`{ty}` has no relation `{relation}` carried by link records"
-            ))
+            let (ty, relation) = (ty.clone(), relation.clone());
+            invalid(Case::NoLinkRelation { ty, relation })
         })?;
     if st.visible(who, &links::name(ty, relation)).is_none() {
         return Err(refused(Refusal::NotGranted));
@@ -559,18 +638,18 @@ fn link_relation(
 /// refused in one sentence.
 fn not_a_view(decl: &TypeDecl) -> Result<()> {
     match decl.view {
-        Some(_) => Err(invalid(format!(
-            "`{}` is a view; it is computed, never written",
-            decl.name
-        ))),
+        Some(_) => Err(invalid(Case::IsAView {
+            ty: decl.name.clone(),
+        })),
         None => Ok(()),
     }
 }
 
 /// The relation's cardinality over live links, the link from `from` to
-/// `to` among them.
+/// `to` among them; the other end named only where `who` is shown it.
 fn link_cardinality(
     st: &State,
+    who: &Principal,
     lt: &TypeName,
     r: &lakelands_api::ontology::RelationDecl,
     from: &RecordKey,
@@ -593,32 +672,42 @@ fn link_cardinality(
         if f.as_deref() == Some(from.as_str()) && o.as_deref() == Some(to.as_str()) {
             continue;
         }
-        // The store's words, so a transcript reads the same on both.
+        // The store's case, so a transcript reads the same on both.
+        let (relation, cardinality) = (r.name.clone(), r.cardinality);
+        let key = |ty: &TypeName, k: Option<String>| {
+            let k = RecordKey::from(k.unwrap_or_default());
+            let r = st.records.get(&(ty.clone(), k.clone()));
+            let shown = r.is_some_and(|r| {
+                (who.grants.restricted || !r.restricted) && admits(who, ty, &r.fields)
+            });
+            shown.then_some(k)
+        };
         let why = if per_from && f.as_deref() == Some(from.as_str()) {
-            Some(format!(
-                "`{from}` already links over `{}` to `{}`",
-                r.name,
-                o.as_deref().unwrap_or_default()
-            ))
+            let (from, to) = (from.clone(), key(&r.target, o));
+            Some(Case::LinkedAlreadyFrom {
+                from,
+                relation,
+                to,
+                cardinality,
+            })
         } else if per_to && o.as_deref() == Some(to.as_str()) {
-            Some(format!(
-                "`{to}` is already linked over `{}` from `{}`",
-                r.name,
-                f.as_deref().unwrap_or_default()
-            ))
+            let ends = st
+                .types
+                .values()
+                .find(|t| &links::name(&t.decl.name, &r.name) == lt);
+            let ty = ends.map(|t| t.decl.name.clone()).unwrap_or_default();
+            let (to, from) = (to.clone(), key(&ty, f));
+            Some(Case::LinkedAlreadyTo {
+                to,
+                relation,
+                from,
+                cardinality,
+            })
         } else {
             None
         };
         if let Some(why) = why {
-            return Err(on(
-                &FieldName::from(links::TO),
-                Refusal::Constraint {
-                    message: format!(
-                        "{why}, and `{}` allows one ({:?}); unlink it first",
-                        r.name, r.cardinality
-                    ),
-                },
-            ));
+            return Err(constraint(&FieldName::from(links::TO), why));
         }
     }
     Ok(())
@@ -658,19 +747,17 @@ fn identity_version(st: &State, d: &Declaration) -> (Option<String>, u32) {
 /// rules, as the store does first, and otherwise as unbound, since the
 /// mock binds no embedding backend.
 fn embeddings(t: &lakelands_api::ontology::TypeDecl) -> Result<()> {
-    if let Some((field, message)) = t.embedding_problem() {
-        return Err(on(&field, Refusal::Invalid { message }));
+    if let Some((field, why)) = t.embedding_problem() {
+        return Err(invalid_field(&field, why));
     }
     if let Some((f, e)) = t.fields.iter().find_map(|f| Some((f, f.embed.as_ref()?))) {
-        return Err(Error::Unbound {
-            seam: format!(
-                "the embedding model `{}` with {} dimensions, for `{}.{}` (none is bound)",
-                e.model,
-                f.ty.dimensions.unwrap_or(0),
-                t.name,
-                f.name
-            ),
-        });
+        return Err(Error::unbound(Seam::Embedding {
+            model: e.model.clone(),
+            dimensions: f.ty.dimensions.unwrap_or(0),
+            ty: t.name.clone(),
+            field: f.name.to_string(),
+            bound: None,
+        }));
     }
     Ok(())
 }
@@ -698,22 +785,30 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
     if let Some(fault) = d.annotation_fault() {
         return Err(fault.into());
     }
+    rules::declaration(st, d)?;
     check_initial(st, d)?;
     if let Declaration::Type(t) = d {
         embeddings(t)?;
+        let function = |n: &str| st.functions.iter().find(|f| f.name == n);
+        if let Some((field, why)) = t.computed_at_problem(function) {
+            return Err(invalid_field(&field, why));
+        }
+        read_as_stored(st, t)?;
         // As the store: a derived field's expression can be evaluated, and
         // what it computes can land in the field.
         for f in t.fields.iter().filter(|_| t.view.is_none()) {
-            let Some(e) = f.derived.as_ref().and_then(|c| expr::typed(c).ok()) else {
+            let Some(e) = f.derived.as_ref().and_then(|c| c.typed().ok()) else {
                 continue;
             };
-            if let Some(k) = evaluates(&e, t)?.filter(|k| !k.lands(f.ty.kind)) {
-                let is = k.name();
-                let message = format!(
-                    "`{}`: its expression is {is}, which the field never holds",
-                    f.name
-                );
-                return Err(on(&f.name, Refusal::Invalid { message }));
+            let on = [of_type(&t.name), of_field(&f.name)];
+            if let Some(kind) = evaluates(&e, t, &on)?.filter(|k| !k.lands(f.ty.kind)) {
+                let (holds, duration) = (f.ty.kind, kind == Kind::Duration);
+                let case = Case::NeverLands {
+                    kind,
+                    holds,
+                    duration,
+                };
+                return Err(invalid_field(&f.name, at(&on, case)));
             }
         }
     }
@@ -723,130 +818,107 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
     match d {
         // The mock binds no function backing; `expr` is computed inside.
         Declaration::Function(f) if f.backing != "expr" => {
-            return Err(Error::Unbound {
-                seam: format!(
-                    "the `{}` function backing (the host bound none of that kind)",
-                    f.backing
-                ),
-            });
+            return Err(Error::unbound(Seam::FunctionBacking {
+                kind: f.backing.clone(),
+            }));
         }
         Declaration::Type(t) => {
             if reserved(t.name.as_str(), who) {
                 return Err(refused(Refusal::Reserved));
             }
+            shape_names(t)?;
+            views::check(st, t)?;
             // A view is hashed over its conditions' typed form, so one that
             // does not parse has no schema hash and is not declared.
-            lakelands_api::shape::schema_hash(t).map_err(|e| invalid(e.to_string()))?;
-            if let Some(old) = st.types.get(&t.name) {
-                if reshapes(&old.decl, t) {
-                    return Err(invalid(format!(
-                        "this declaration reshapes the records of `{}`; change it with `migrate`",
-                        t.name
-                    )));
-                }
-            } else {
+            lakelands_api::shape::schema_hash(t).map_err(invalid)?;
+            if !st.types.contains_key(&t.name) {
                 types.push(t.name.clone());
             }
-            // As the store: a view reads only fields its sources have.
-            if let Some(v) = t.view.as_deref() {
-                for (from, reads) in view_reads(v) {
-                    let Some(source) = st.types.get(&from) else {
-                        continue;
-                    };
-                    if let Some(n) = reads
-                        .iter()
-                        .find(|n| !source.decl.fields.iter().any(|f| &f.name == *n))
-                    {
-                        return Err(invalid(format!(
-                            "type `{}`: its view reads `{n}` of `{from}`, which `{from}` does not \
-                             have",
-                            t.name
-                        )));
-                    }
+            for f in &t.fields {
+                if let Some(target) = &f.ty.target
+                    && !known(target, Some(&t.name))
+                {
+                    let on = [of_type(&t.name), of_field(&f.name)];
+                    let ty = target.clone();
+                    return Err(invalid_field(&f.name, at(&on, Case::Undeclared { ty })));
+                }
+            }
+            for r in &t.relations {
+                let name = r.name.clone();
+                let on = [of_type(&t.name), Place::Relation { name }];
+                let wrong = |c: Case| invalid(at(&on, c));
+                // As the store: a view's records are computed, so only a
+                // relation derived from matching values starts from one.
+                if t.view.is_some() && r.derived.is_none() {
+                    let (ty, carrier) = (t.name.clone(), carrier(r));
+                    return Err(wrong(Case::ViewRelation { ty, carrier }));
+                }
+                // As the store: a `via` names a field of the type.
+                if let Some(via) = r
+                    .via
+                    .as_ref()
+                    .filter(|v| !t.fields.iter().any(|f| &f.name == *v))
+                {
+                    let (ty, field) = (t.name.clone(), via.clone());
+                    return Err(wrong(Case::UnknownField { ty, field }));
+                }
+                if r.via.is_some() && !r.fields.is_empty() {
+                    return Err(wrong(Case::ViaWithFields));
+                }
+                if !matches!(r.authority, Authority::Authored | Authority::Source) {
+                    let authority = r.authority;
+                    return Err(wrong(Case::LinkAuthority { authority }));
+                }
+                if r.authority == Authority::Source
+                    && let Some(f) = (r.fields.iter())
+                        .find(|f| !matches!(f.authority, Authority::Source | Authority::Derived))
+                {
+                    let (field, authority) = (f.name.clone(), f.authority);
+                    let case = Case::LinkFieldAuthority { field, authority };
+                    return Err(invalid_field(&f.name, at(&on, case)));
+                }
+                if let Some(f) = (r.fields.iter())
+                    .find(|f| f.name.as_str() == links::FROM || f.name.as_str() == links::TO)
+                {
+                    let field = f.name.clone();
+                    return Err(wrong(Case::LinkFieldIsEnd { field }));
+                }
+                if let Some(before) = st
+                    .types
+                    .get(&t.name)
+                    .and_then(|o| o.decl.relations.iter().find(|b| b.name == r.name))
+                    && carrier(before) != carrier(r)
+                {
+                    let (from, to) = (carrier(before), carrier(r));
+                    return Err(wrong(Case::CarrierChanged { from, to }));
+                }
+                if !known(&r.target, Some(&t.name)) {
+                    let ty = r.target.clone();
+                    return Err(wrong(Case::Undeclared { ty }));
+                }
+                if let Some(d) = &r.derived {
+                    derived_pairs(st, t, r, d)?;
+                }
+            }
+            // As the store: a reshape is judged after the shape's own checks,
+            // so a migration that is forgiven it is still checked whole.
+            if let Some(old) = st.types.get(&t.name) {
+                let reasons = reshaping(&old.decl, t);
+                if !reasons.is_empty() {
+                    let ty = t.name.clone();
+                    return Err(invalid(Case::Reshapes { ty, reasons }));
                 }
             }
             // Its link types too, as the store: a relation dropped by a
             // migration and declared again with another target would
             // reshape the links it kept.
             for lt in links::of(t) {
-                if let Some(old) = st.types.get(&lt.name)
-                    && reshapes(&old.decl, &lt)
-                {
-                    return Err(invalid(format!(
-                        "this declaration reshapes the links `{}` holds; that is a migration of `{}`",
-                        lt.name, t.name
-                    )));
-                }
-            }
-            for f in &t.fields {
-                if let Some(target) = &f.ty.target
-                    && !known(target, Some(&t.name))
-                {
-                    return Err(on(
-                        &f.name,
-                        Refusal::Invalid {
-                            message: format!(
-                                "type `{}`, field `{}`: its target `{target}` is not a declared type",
-                                t.name, f.name
-                            ),
-                        },
-                    ));
-                }
-            }
-            for r in &t.relations {
-                // As the store: a view's records are computed, so only a
-                // relation derived from matching values starts from one.
-                if t.view.is_some() && r.derived.is_none() {
-                    let carrier = if r.via.is_some() {
-                        "a `via` field"
-                    } else {
-                        "link records"
-                    };
-                    return Err(invalid(format!(
-                        "type `{}`, relation `{}`: `{}` is a view, whose records are computed \
-                         and never written, so a relation carried by {carrier} could never hold \
-                         an edge; a relation on a view is derived from matching values",
-                        t.name, r.name, t.name
-                    )));
-                }
-                if !known(&r.target, Some(&t.name)) {
-                    return Err(invalid(format!(
-                        "type `{}`, relation `{}`: `{}` is not a declared type",
-                        t.name, r.name, r.target
-                    )));
-                }
-                if r.via.is_some() && !r.fields.is_empty() {
-                    return Err(invalid(format!(
-                        "type `{}`, relation `{}`: a relation carried by `via` has no fields of \
-                         its own",
-                        t.name, r.name
-                    )));
-                }
-                if !matches!(r.authority, Authority::Authored | Authority::Source)
-                    || r.fields
-                        .iter()
-                        .any(|f| f.name.as_str() == links::FROM || f.name.as_str() == links::TO)
-                {
-                    return Err(invalid(format!(
-                        "type `{}`, relation `{}`: its links are written by `authored` or \
-                         `source`, and its fields do not name `from` or `to`",
-                        t.name, r.name
-                    )));
-                }
-                if let Some(before) = st
-                    .types
-                    .get(&t.name)
-                    .and_then(|o| o.decl.relations.iter().find(|b| b.name == r.name))
-                    && (before.via.is_some() != r.via.is_some()
-                        || before.derived.is_some() != r.derived.is_some())
-                {
-                    return Err(invalid(format!(
-                        "type `{}`, relation `{}`: a relation keeps its carrier",
-                        t.name, r.name
-                    )));
-                }
-                if let Some(d) = &r.derived {
-                    derived_pairs(st, t, r, d)?;
+                if let Some(old) = st.types.get(&lt.name) {
+                    let reasons = reshaping(&old.decl, &lt);
+                    if !reasons.is_empty() {
+                        let (ty, links) = (t.name.clone(), lt.name.clone());
+                        return Err(invalid(Case::ReshapesLinks { ty, links, reasons }));
+                    }
                 }
             }
         }
@@ -856,17 +928,12 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                     // As the store: a verb on its type has no record, so
                     // nothing for a write effect to set or `requires` to read.
                     if v.scope == VerbScope::Type {
+                        let (on, ty) = ([d.place()], v.on.clone());
                         if matches!(v.effect, VerbEffect::Write { .. }) {
-                            return Err(invalid(format!(
-                                "verb `{}` is declared on the type `{}`, and a write effect sets fields of a record it does not have",
-                                v.name, v.on
-                            )));
+                            return Err(invalid(at(&on, Case::TypeVerbWrites { ty })));
                         }
                         if v.requires.is_some() {
-                            return Err(invalid(format!(
-                                "verb `{}` is declared on the type `{}`; `requires` reads a record it does not have",
-                                v.name, v.on
-                            )));
+                            return Err(invalid(at(&on, Case::TypeVerbRequires { ty })));
                         }
                     }
                     // A revision of a verb the lake holds is not a second name.
@@ -891,69 +958,38 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                         .and_then(|r| r.via.clone())
                 })
             {
-                return Err(Error::Refused {
-                    field: Some("on".into()),
-                    reason: Refusal::Invalid {
-                        message: format!(
-                            "`{relation}` is carried by `{via}`; watch `{owner}` with `changed({via})`"
-                        ),
-                    },
-                });
+                let (ty, owner) = (t.on.clone(), Box::new(owner));
+                let case = Case::WatchesViaLinks {
+                    ty,
+                    relation,
+                    via,
+                    owner,
+                };
+                return Err(invalid_field(&"on".into(), at(&[d.place()], case)));
             }
             if let Some(ty) = target {
                 // As the store: a declaration that names an undeclared
                 // type is invalid, naming both.
                 if !st.types.contains_key(ty) {
-                    return Err(invalid(match other {
-                        Declaration::Verb(v) => {
-                            format!("verb `{}` acts on `{ty}`, which is not declared", v.name)
-                        }
-                        Declaration::Trigger(t) => {
-                            format!("trigger `{}` watches `{ty}`, which is not declared", t.name)
-                        }
-                        Declaration::ObjectSet(s) => format!(
-                            "object set `{}` holds `{ty}`, which is not declared",
-                            s.name
-                        ),
-                        _ => format!("`{ty}` is not declared"),
-                    }));
+                    let case = Case::Undeclared { ty: ty.clone() };
+                    return Err(invalid(at(&[d.place()], case)));
                 }
                 // As the store: a view is never written, so a trigger on
                 // one never fires, and an object set holds stored records.
                 if st.types.get(ty).is_some_and(|o| o.decl.view.is_some()) {
+                    let (on, ty) = ([d.place()], ty.clone());
                     match other {
-                        Declaration::Trigger(t) => {
-                            return Err(Error::Refused {
-                                field: Some("on".into()),
-                                reason: Refusal::Invalid {
-                                    message: format!(
-                                        "trigger `{}` watches `{ty}`, a view; a view is never \
-                                         written, so no write of it fires a trigger",
-                                        t.name
-                                    ),
-                                },
-                            });
+                        Declaration::Trigger(_) => {
+                            let case = at(&on, Case::WatchesView { ty });
+                            return Err(invalid_field(&"on".into(), case));
                         }
-                        Declaration::ObjectSet(s) => {
-                            return Err(Error::Refused {
-                                field: Some("of".into()),
-                                reason: Refusal::Invalid {
-                                    message: format!(
-                                        "object set `{}` holds `{ty}`, a view; a view's records \
-                                         are computed on read, and an object set holds stored \
-                                         records only",
-                                        s.name
-                                    ),
-                                },
-                            });
+                        Declaration::ObjectSet(_) => {
+                            let case = at(&on, Case::SetOfView { ty });
+                            return Err(invalid_field(&"of".into(), case));
                         }
                         // A verb on a record of a view could never act.
                         Declaration::Verb(v) if v.scope == VerbScope::Record => {
-                            return Err(invalid(format!(
-                                "verb `{}` is declared on a record of `{ty}`, a view, whose \
-                                 records are computed and never written",
-                                v.name
-                            )));
+                            return Err(invalid(at(&on, Case::VerbOnView { ty })));
                         }
                         _ => {}
                     }
@@ -992,10 +1028,7 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
     }
     let problems = lakelands_api::tools::name_problems(&types, &verbs, &link_relations);
     if !problems.is_empty() {
-        return Err(invalid(format!(
-            "these names cannot all become tools: {}",
-            serde_json::to_string(&problems).unwrap_or_default()
-        )));
+        return Err(invalid(Case::ToolNames { problems }));
     }
     Ok(())
 }
@@ -1011,31 +1044,65 @@ fn authored_writable(who: &Principal, t: &DeclaredType) -> bool {
 
 /// Whether a principal may retire records of a type: only if its grants
 /// let it write every field of the type, whatever the field's authority.
+/// As the store: a view's records are computed, and are never retired.
 fn may_retire(who: &Principal, t: &DeclaredType) -> bool {
-    t.decl
-        .fields
-        .iter()
-        .all(|f| who.grants.access(&t.decl.name, &f.name).writes())
+    t.decl.view.is_none()
+        && t.decl
+            .fields
+            .iter()
+            .all(|f| who.grants.access(&t.decl.name, &f.name).writes())
+}
+
+/// Whether `who` may read every field `v` reads, as the store judges a
+/// filter on it: a verb that reads one would answer it (024, extended).
+fn reads_what_it_reads(who: &Principal, decl: &TypeDecl, v: &VerbDecl) -> bool {
+    let reads = |n: &FieldName| field(decl, n).is_none_or(|f| access(who, decl, f).reads());
+    v.fields_read().is_some_and(|read| read.iter().all(reads))
 }
 
 fn callable(st: &State, who: &Principal, v: &VerbDecl) -> bool {
-    let Some(t) = st.visible(who, &v.on) else {
+    // A holder of `only` calls no verb that waits for review and could
+    // move its pairs (051).
+    let held = |t: &&DeclaredType| only_holder(who, &t.decl) && !pinnable(who, &t.decl, Some(v));
+    let Some(t) = (st.visible(who, &v.on)).filter(|t| !held(t) || v.risk == Risk::Low) else {
         return false;
     };
-    match &v.effect {
-        VerbEffect::Write { set } => set
-            .iter()
-            .all(|a| field(&t.decl, &a.field).is_some_and(|f| access(who, &t.decl, f).writes())),
-        // Carrying it out writes nothing of the record, so it asks for
-        // write access to the type, as the store does.
-        VerbEffect::External { .. } => who
-            .grants
-            .types
-            .get(&v.on)
-            .and_then(|t| t.default)
-            .unwrap_or(who.grants.default)
-            .writes(),
-    }
+    reads_what_it_reads(who, &t.decl, v)
+        && match &v.effect {
+            VerbEffect::Write { set } => set.iter().all(|a| {
+                field(&t.decl, &a.field).is_some_and(|f| access(who, &t.decl, f).writes())
+            }),
+            // Carrying it out writes nothing of the record, so it asks for
+            // write access to the type, as the store does.
+            VerbEffect::External { .. } => who
+                .grants
+                .types
+                .get(&v.on)
+                .and_then(|t| t.default)
+                .unwrap_or(who.grants.default)
+                .writes(),
+        }
+}
+
+/// As the store: whether `who` is shown relation `r` of `owner`: both ends
+/// shown, the reference field that carries it known, and of a derived
+/// relation every matched field known on its side.
+pub(crate) fn relation_shown(
+    st: &State,
+    who: &Principal,
+    owner: &TypeDecl,
+    r: &RelationDecl,
+) -> bool {
+    let Some(target) = st.visible(who, &r.target) else {
+        return false;
+    };
+    let known = |t: &TypeDecl, n: &FieldName| {
+        field(t, n).is_some_and(|f| access(who, t, f) != Access::None)
+    };
+    let mut pairs = r.derived.iter().flat_map(|d| &d.pairs);
+    st.visible(who, &owner.name).is_some()
+        && r.via.iter().all(|v| known(owner, v))
+        && pairs.all(|p| known(owner, &p.from) && known(&target.decl, &p.to))
 }
 
 fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescription {
@@ -1048,6 +1115,17 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
             a => Some(FieldDescription::of(f, a)),
         })
         .collect();
+    // As the store: over the fields as shown.
+    let searchable = fields.iter().any(|f| f.searchable);
+    // As the store: a valid time over a field the principal may not know
+    // of is not named.
+    let named = |v: &FieldName| fields.iter().any(|f| &f.name == v);
+    let (valid_from, valid_to) = (
+        d.valid_from.clone().filter(named),
+        d.valid_to.clone().filter(named),
+    );
+    let sourced =
+        (fields.iter()).any(|f| matches!(f.authority, Authority::Source | Authority::Shared));
     let visible = |names: Vec<FieldName>| -> Vec<FieldName> {
         names
             .into_iter()
@@ -1059,6 +1137,13 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
     // The mock keeps no view: one that is asked for and could be kept is
     // not kept here.
     let kept = d.view.as_deref().map(|v| {
+        // As the store: to a holder of `only` a view is its own records,
+        // never every owner's groups (051).
+        if st.only_some(who, d, &mut Vec::new()) {
+            return Kept::Computed {
+                why: NotKept::OnlySome,
+            };
+        }
         let key = RecordKey::from(format!("{VIEW_KEPT_SETTING}{}", d.name));
         let setting = st.live(&TypeName::from(SETTING_TYPE), &key);
         let (value, shown) = (
@@ -1067,6 +1152,12 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
         );
         Kept::by_declaration(v, value, shown, |t| st.types.get(t).map(|t| &t.decl))
     });
+    // As the store: an index is named where the view is kept, or asked to
+    // be and can be, as `kept` tells this reader.
+    let sorted = match &kept {
+        Some(k) if !k.names_its_index() => Vec::new(),
+        _ => sorted,
+    };
     TypeDescription {
         annotations: d.annotations.clone(),
         name: d.name.clone(),
@@ -1077,15 +1168,19 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
             .view
             .clone()
             .filter(|v| view_visible(st, who, v))
-            .map(|v| *v),
+            .map(|mut v| {
+                v.keep_measures(|n| fields.iter().any(|f| &f.name == n));
+                *v
+            }),
         fields,
         relations: d
             .relations
             .iter()
-            .filter(|r| st.visible(who, &r.target).is_some())
+            .filter(|r| relation_shown(st, who, d, r))
             .map(|r| {
-                // A link field the principal may not read is described by
-                // its shape alone, as a type's own field is.
+                // As the store: a relation is described where it is shown.
+                // A link field the principal may not read is
+                // described by its shape alone, as a type's own field is.
                 let link = crate::links::link_type(&d.name, r);
                 let mut r = r.clone();
                 r.fields.retain(|f| access(who, &link, f) != Access::None);
@@ -1098,16 +1193,19 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
             })
             .collect(),
         access: TypeAccess {
-            key: d.key.clone(),
-            valid_from: d.valid_from.clone(),
-            valid_to: d.valid_to.clone(),
-            searchable: d.fields.iter().any(|f| f.searchable),
+            key: d.key_fields().to_vec(),
+            valid_from,
+            valid_to,
+            searchable,
             field_meta: d.field_meta,
         },
         may: TypeRights {
             find: true,
             get: true,
-            upsert: !links::is_link_type(&d.name) && authored_writable(who, t),
+            upsert: creates(who, d)
+                && d.view.is_none()
+                && !links::is_link_type(&d.name)
+                && authored_writable(who, t),
             retire: !links::is_link_type(&d.name) && may_retire(who, t),
             link: d
                 .relations
@@ -1116,7 +1214,7 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
                     r.via.is_none()
                         && r.derived.is_none()
                         && r.authority == Authority::Authored
-                        && st.visible(who, &r.target).is_some()
+                        && relation_shown(st, who, d, r)
                 })
                 .filter(|r| {
                     let lt = links::link_type(&d.name, r);
@@ -1124,6 +1222,13 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
                 })
                 .map(|r| r.name.clone())
                 .collect(),
+            // Told only where it applies, so it names no field its reader
+            // may not read.
+            only: if only_applies(who, d) {
+                own_only(who, &d.name).clone()
+            } else {
+                Default::default()
+            },
         },
         verbs: st
             .verbs
@@ -1132,15 +1237,17 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
             .map(|v| v.name.clone())
             .collect(),
         lineage: TypeLineage {
-            sourced: d
-                .fields
-                .iter()
-                .any(|f| matches!(f.authority, Authority::Source | Authority::Shared)),
+            sourced,
             view_of: d.view.as_ref().map(|v| v.source.clone()),
         },
         lifecycle: TypeLifecycle {
             version: t.version,
-            schema_hash: t.schema_hash.clone(),
+            schema_hash: shown_hash(
+                (st, who),
+                d,
+                d.view.as_deref().is_none_or(|v| view_visible(st, who, v)),
+                &t.schema_hash,
+            ),
             sorted,
             indexed,
             kept,
@@ -1177,19 +1284,25 @@ fn expanded<'s>(
     set: &dyn Fn(&str) -> Option<&'s ObjectSetDecl>,
     ty: &TypeName,
     e: &Expr,
-    at: &str,
+    on: &[Place],
 ) -> Result<Expr> {
-    let named = |name: &str| match set(name) {
-        Some(s) if &s.of == ty => expr::typed(&s.filter).map_err(|e| e.to_string()),
-        Some(s) => Err(format!(
-            "in_set('{name}') names a set of `{}`, not of `{ty}`",
-            s.of
-        )),
-        None => Err(format!(
-            "in_set('{name}') names an object set that is not declared"
-        )),
+    let named = |name: &str| {
+        let set_name = name.to_owned();
+        match set(name) {
+            Some(s) if &s.of == ty => expr::typed(&s.filter).map_err(Said::from),
+            Some(s) => {
+                let (of, ty) = (s.of.clone(), ty.clone());
+                Err(Case::SetOfOtherType {
+                    set: set_name,
+                    of,
+                    ty,
+                }
+                .into())
+            }
+            None => Err(Case::SetUndeclared { set: set_name }.into()),
+        }
     };
-    lakelands_api::expr::expand(e, &named).map_err(|e| invalid(format!("{at}: {e}")))
+    lakelands_api::expr::expand(e, &named).map_err(|s| invalid(at(on, s)))
 }
 
 /// The fields a condition names: the first segment of each path, and what
@@ -1197,8 +1310,9 @@ fn expanded<'s>(
 /// names a set that is not among them.
 fn named(sets: &[ObjectSetDecl], c: &Condition) -> Option<BTreeSet<FieldName>> {
     let filter = |n: &str| {
-        let s = sets.iter().find(|s| s.name == n).ok_or_else(String::new)?;
-        expr::typed(&s.filter).map_err(|e| e.to_string())
+        let set = n.to_owned();
+        let s = (sets.iter().find(|s| s.name == n)).ok_or(Case::SetUndeclared { set })?;
+        expr::typed(&s.filter).map_err(Said::from)
     };
     let e = lakelands_api::expr::expand(&expr::typed(c).ok()?, &filter).ok()?;
     let mut paths = vec![];
@@ -1218,29 +1332,36 @@ fn condition_visible(st: &State, who: &Principal, ty: &TypeName, c: Option<&Cond
     who.grants.schema || c.is_none_or(|c| named(c).is_some_and(|n| reads_all(st, who, ty, &n)))
 }
 
-/// As the store: a read of a view probes what its definition reads, so a
-/// reader `describe` withholds the definition from is not granted it, and
-/// no field of its source is named.
+/// As the store: a read of a view probes what computing it reads, each
+/// source in turn, its own first, and after each a source that is itself
+/// a view by that view's probes (024). The refusal names the field to a
+/// holder of the `schema` grant; to another reader, whom `describe` may
+/// withhold the definition from, it names nothing.
 fn view_readable(st: &State, who: &Principal, t: &DeclaredType) -> Result<()> {
-    match t.decl.view.as_deref() {
-        Some(v) if !view_visible(st, who, v) => Err(refused(Refusal::NotGranted)),
-        _ => Ok(()),
+    let Some(v) = t.decl.view.as_deref() else {
+        return Ok(());
+    };
+    let unnamed = |e| match who.grants.schema {
+        true => e,
+        false => refused(Refusal::NotGranted),
+    };
+    for (source, reads) in view_reads(v) {
+        let s = st.types.get(&source).ok_or_else(|| no_type(&source))?;
+        for name in &reads {
+            readable(st, who, s, name).map_err(unnamed)?;
+        }
+        view_readable(st, who, s)?;
     }
+    Ok(())
 }
 
-/// A view is shown whole on the same rule, over its source's fields.
+/// A view is shown whole to a holder of the `schema` grant, or to one who
+/// reads every field it reads of each of its sources.
 fn view_visible(st: &State, who: &Principal, v: &ViewDecl) -> bool {
-    if who.grants.schema {
-        return true;
-    }
-    let mut names: BTreeSet<FieldName> = v.group_by.iter().cloned().collect();
-    for c in v.r#where.iter().chain(v.measures.iter().map(|m| &m.expr)) {
-        match named(&[], c) {
-            Some(n) => names.extend(n),
-            None => return false,
-        }
-    }
-    reads_all(st, who, &v.source, &names)
+    who.grants.schema
+        || view_reads(v)
+            .iter()
+            .all(|(source, reads)| reads_all(st, who, source, reads))
 }
 
 /// A function is shown when it computes some field and, on every type
@@ -1262,12 +1383,13 @@ fn function_visible(st: &State, who: &Principal, f: &FunctionDecl) -> bool {
         .collect();
     !uses.is_empty()
         && uses.iter().all(|(ty, x)| {
-            reads_all(
-                st,
-                who,
-                ty,
-                std::iter::once(*x).chain(f.inputs.iter().map(|i| &i.name)),
-            )
+            st.visible(who, ty).is_some()
+                && reads_all(
+                    st,
+                    who,
+                    ty,
+                    std::iter::once(*x).chain(f.inputs.iter().map(|i| &i.name)),
+                )
         })
 }
 
@@ -1346,9 +1468,29 @@ fn describe_lake(lake: &LakeId, st: &State, who: &Principal) -> LakeDescription 
 
 /// As the store: the kind an expression certainly computes over a type's
 /// records, or the refusal of one that can never be evaluated over them.
-fn evaluates(e: &Expr, t: &TypeDecl) -> Result<Option<lakelands_api::expr::kind::Kind>> {
+fn evaluates(e: &Expr, t: &TypeDecl, on: &[Place]) -> Result<Option<Kind>> {
     let kind = |n: &FieldName| field(t, n).map(|f| f.ty.kind);
-    lakelands_api::expr::kind::of(e, &kind).map_err(invalid)
+    lakelands_api::expr::kind::of(e, &kind).map_err(|why| invalid(at(on, why)))
+}
+
+fn of_type(name: &TypeName) -> Place {
+    let name = name.clone();
+    Place::Type { name }
+}
+
+fn of_field(name: &FieldName) -> Place {
+    let name = name.clone();
+    Place::Field { name }
+}
+
+/// What carries a relation's edges: a `via` field, link records, or
+/// nothing stored (derived).
+fn carrier(r: &RelationDecl) -> Carrier {
+    match (&r.via, &r.derived) {
+        (_, Some(_)) => Carrier::Derived,
+        (Some(_), None) => Carrier::Via,
+        (None, None) => Carrier::Links,
+    }
 }
 
 /// The typed filter, with every path it reads checked against the type
@@ -1367,34 +1509,24 @@ fn filter(
         let reads = named(&st.object_sets, &s.filter);
         reads.is_some_and(|names| reads_all(st, who, &s.of, &names))
     };
-    let e = expanded(
-        &|n| all(n).filter(shown),
-        &t.decl.name,
-        &expr::typed(c)?,
-        "where",
-    )?;
+    let on = [Place::Where];
+    let typed = expr::typed(c).map_err(|c| invalid(at(&on, c)))?;
+    let e = expanded(&|n| all(n).filter(shown), &t.decl.name, &typed, &on)?;
     let mut paths = Vec::new();
     expr::paths(&e, &mut paths);
     for p in paths {
+        // As the store: a path reads its first field, and one that walks
+        // into what has no members is refused by what it evaluates.
         let name = match p.as_slice() {
-            [f] => f,
             [ty, f] if ty.as_str() == t.decl.name.as_str() => f,
-            _ => {
-                return Err(invalid(format!(
-                    "`{}` does not name a field of `{}`",
-                    p.iter()
-                        .map(FieldName::as_str)
-                        .collect::<Vec<_>>()
-                        .join("."),
-                    t.decl.name
-                )));
-            }
+            [f, ..] => f,
+            [] => continue,
         };
         readable(st, who, t, name)?;
     }
     // As the store: what can never be evaluated is refused, once the reader
     // is known to read the fields it names.
-    evaluates(&e, &t.decl)?;
+    evaluates(&e, &t.decl, &on)?;
     Ok(Some(e))
 }
 
@@ -1408,31 +1540,48 @@ fn readable(_: &State, who: &Principal, t: &DeclaredType, name: &FieldName) -> R
     }
 }
 
+/// As the store (051): refuse a read that names `t` where `who`'s `only`
+/// on it cannot be applied, naming the type and never the field.
+fn check_only(who: &Principal, t: &DeclaredType) -> Result<()> {
+    if only_applies(who, &t.decl) {
+        return Ok(());
+    }
+    Err(invalid(Case::OnlyUnappliable {
+        ty: t.decl.name.clone(),
+    }))
+}
+
 /// The answer for a field the type does not declare, which is also the
 /// answer for one the principal may not know of.
 fn no_field(ty: &TypeName, name: &FieldName) -> Error {
-    on(
-        name,
-        Refusal::Invalid {
-            message: format!("`{ty}` has no field `{name}`"),
-        },
-    )
+    let (ty, field) = (ty.clone(), name.clone());
+    invalid_field(name, Case::UnknownField { ty, field })
 }
+
+/// A read's valid time for a type, as the principal is shown it: the
+/// instant, and whether each bound is shown.
+type Valid = Option<(lakelands_api::Timestamp, bool, bool)>;
 
 /// A read at a valid time filters on the type's valid-time fields, so it
-/// probes them as a filter on them would (024).
-fn valid_time_readable(st: &State, who: &Principal, t: &DeclaredType, at: ReadAt) -> Result<()> {
-    if at.valid_at.is_some() {
-        for f in t.decl.valid_from.iter().chain(&t.decl.valid_to) {
-            readable(st, who, t, f)?;
-        }
+/// probes them as a filter on them would (024). As the store, a bound over
+/// a field the principal may not know of is not described, so it is
+/// dropped, and only the bounds shown are probed.
+fn valid_time_readable(st: &State, who: &Principal, t: &DeclaredType, at: ReadAt) -> Result<Valid> {
+    let shown =
+        |n: &FieldName| field(&t.decl, n).is_none_or(|f| access(who, &t.decl, f) != Access::None);
+    let Some(at) = at.valid_at else {
+        return Ok(None);
+    };
+    let (from, to) = (t.decl.valid_from.as_ref(), t.decl.valid_to.as_ref());
+    for f in from.into_iter().chain(to).filter(|f| shown(f)) {
+        readable(st, who, t, f)?;
     }
-    Ok(())
+    Ok(Some((at, from.is_some_and(shown), to.is_some_and(shown))))
 }
 
-/// Whether a record is valid at a business instant.
-fn valid_at(t: &DeclaredType, r: &StoredRecord, at: Option<lakelands_api::Timestamp>) -> bool {
-    let (Some(at), Some(from)) = (at, &t.decl.valid_from) else {
+/// Whether a record is valid at a business instant, by the bounds shown.
+fn valid_at(t: &DeclaredType, r: &StoredRecord, valid: Valid) -> bool {
+    let (Some((at, from_shown, to_shown)), Some(from)) = (valid, &t.decl.valid_from) else {
         return true;
     };
     let ts = |f: &FieldName| {
@@ -1441,18 +1590,14 @@ fn valid_at(t: &DeclaredType, r: &StoredRecord, at: Option<lakelands_api::Timest
             .and_then(Value::as_str)
             .and_then(|s| lakelands_api::Timestamp::parse(s).ok())
     };
-    let starts = ts(from).is_some_and(|s| s <= at);
-    let ends = t
-        .decl
-        .valid_to
-        .as_ref()
-        .and_then(ts)
-        .is_some_and(|e| e <= at);
+    let starts = !from_shown || ts(from).is_some_and(|s| s <= at);
+    let to = t.decl.valid_to.as_ref().filter(|_| to_shown);
+    let ends = to.and_then(ts).is_some_and(|e| e <= at);
     starts && !ends
 }
 
-/// The live records of a type a principal may read, valid at `at`,
-/// matching a filter.
+/// The live records of a type a principal may read, its grant's `only`
+/// admitting them (051), valid at `at`, matching a filter.
 fn candidates<'a>(
     st: &'a State,
     who: &Principal,
@@ -1460,13 +1605,13 @@ fn candidates<'a>(
     at: ReadAt,
     filter: Option<&Expr>,
 ) -> Result<Vec<&'a StoredRecord>> {
-    valid_time_readable(st, who, t, at)?;
+    let valid = valid_time_readable(st, who, t, at)?;
     let mut out = Vec::new();
     for r in st.records.values() {
         if r.ty != t.decl.name || r.retired || (r.restricted && !who.grants.restricted) {
             continue;
         }
-        if !valid_at(t, r, at.valid_at) {
+        if !valid_at(t, r, valid) || !st.admitted(who, r) {
             continue;
         }
         if let Some(e) = filter {
@@ -1502,14 +1647,7 @@ fn check_patch<'a>(
     let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
     not_a_view(&t.decl)?;
     for (name, v) in patch {
-        let f = field(&t.decl, name).ok_or_else(|| {
-            on(
-                name,
-                Refusal::Invalid {
-                    message: format!("`{ty}` has no field `{name}`"),
-                },
-            )
-        })?;
+        let f = field(&t.decl, name).ok_or_else(|| no_field(ty, name))?;
         if access(who, &t.decl, f) == Access::None {
             return Err(no_field(&t.decl.name, name));
         }
@@ -1520,9 +1658,9 @@ fn check_patch<'a>(
             return Err(on(name, Refusal::NotGranted));
         }
         if !v.is_null()
-            && let Some(message) = value::misfit(&f.ty, v, &st.value_types)
+            && let Some(why) = value::misfit(&f.ty, v, &st.value_types)
         {
-            return Err(on(name, Refusal::Constraint { message }));
+            return Err(constraint(name, why));
         }
     }
     Ok(t)
@@ -1543,9 +1681,12 @@ fn canonical_patch(t: &DeclaredType, patch: Patch) -> Patch {
 }
 
 /// Refuse a reference that names no live record of its target type, nor
-/// one written earlier in the same ingest window.
+/// one written earlier in the same ingest window. A record its writer's
+/// `only` does not admit is, to it, not there (051), and under one that
+/// cannot be applied none is (lakelands#771).
 fn check_references(
     st: &State,
+    who: &Principal,
     t: &DeclaredType,
     patch: &Patch,
     earlier: &BTreeMap<(TypeName, RecordKey), Version>,
@@ -1556,15 +1697,10 @@ fn check_references(
         };
         let Some(key) = v.as_str() else { continue };
         let slot = (target.clone(), RecordKey::from(key));
-        if st.live(&slot.0, &slot.1).is_none() && !earlier.contains_key(&slot) {
-            return Err(on(
-                name,
-                Refusal::Constraint {
-                    message: format!(
-                        "`{name}` names `{target}` `{key}`, which is not a live record"
-                    ),
-                },
-            ));
+        let live = (st.live(&slot.0, &slot.1)).filter(|r| st.only_admits(who, target, &r.fields));
+        if live.is_none() && !earlier.contains_key(&slot) {
+            let (field, (ty, key)) = (name.clone(), slot);
+            return Err(constraint(name, Case::NotLive { field, ty, key }));
         }
     }
     Ok(())
@@ -1589,31 +1725,34 @@ fn with_key_fields(
     if live.is_none() && !fields.iter().all(|f| patch.contains_key(f)) {
         let parts = lakelands_api::key::key_components(key);
         if parts.len() != fields.len() {
-            return Err(invalid(format!(
-                "`{}` is keyed by {} field(s), and the key `{key}` has {} component(s)",
-                t.decl.name,
-                fields.len(),
-                parts.len()
-            )));
+            let (ty, key) = (t.decl.name.clone(), key.clone());
+            let (fields, parts) = (fields.len(), parts.len());
+            return Err(invalid(Case::KeyComponents {
+                ty,
+                fields,
+                key,
+                parts,
+            }));
         }
         for (name, part) in fields.iter().zip(parts) {
             if patch.contains_key(name) {
                 continue;
             }
             let f = field(&t.decl, name).expect("a key names a field");
-            let v = match f.ty.kind {
+            let kind = f.ty.kind;
+            let wrong = |part: &str| {
+                let (part, field) = (part.to_owned(), name.clone());
+                invalid(Case::KeyComponentKind { part, kind, field })
+            };
+            let v = match kind {
                 lakelands_api::ontology::StorageKind::Number => part
                     .parse::<serde_json::Number>()
                     .map(Value::Number)
-                    .map_err(|_| invalid(format!("the key component `{part}` is not a number")))?,
+                    .map_err(|_| wrong(&part))?,
                 lakelands_api::ontology::StorageKind::Boolean => match part.as_str() {
                     "true" => Value::Bool(true),
                     "false" => Value::Bool(false),
-                    _ => {
-                        return Err(invalid(format!(
-                            "the key component `{part}` is not a boolean"
-                        )));
-                    }
+                    _ => return Err(wrong(&part)),
                 },
                 _ => Value::String(part),
             };
@@ -1627,8 +1766,8 @@ fn with_key_fields(
             if !access(who, &t.decl, f).writes() {
                 return Err(on(name, Refusal::NotGranted));
             }
-            if let Some(message) = value::misfit(&f.ty, &v, &st.value_types) {
-                return Err(on(name, Refusal::Constraint { message }));
+            if let Some(why) = value::misfit(&f.ty, &v, &st.value_types) {
+                return Err(constraint(name, why));
             }
             patch.insert(name.clone(), v);
         }
@@ -1642,13 +1781,36 @@ fn with_key_fields(
                 .and_then(lakelands_api::key::key_component)
         })
         .collect();
-    match derived.map(|d| d.join(":")) {
-        Some(d) if d != key.as_str() => Err(invalid(format!(
-            "the key `{key}` and the key fields of `{}` (which make `{d}`) disagree",
-            t.decl.name
-        ))),
+    match derived.map(|d| RecordKey::from(d.join(":"))) {
+        Some(derived) if &derived != key => {
+            let (key, ty) = (key.clone(), t.decl.name.clone());
+            Err(invalid(Case::KeyDisagrees { key, ty, derived }))
+        }
         _ => Ok(()),
     }
+}
+
+/// The fields a write leaves, as the store's fold makes them before it
+/// computes: the patch over the fields before, a null clearing one, and
+/// at a create each `initial` value the patch left out (050).
+fn after_write(
+    t: &DeclaredType,
+    before: Option<&BTreeMap<FieldName, Value>>,
+    patch: &Patch,
+) -> BTreeMap<FieldName, Value> {
+    let mut after = before.cloned().unwrap_or_default();
+    for (f, v) in patch {
+        match v {
+            Value::Null => after.remove(f),
+            v => after.insert(f.clone(), v.clone()),
+        };
+    }
+    for f in t.decl.fields.iter().filter(|_| before.is_none()) {
+        if let Some(v) = f.initial.as_ref().filter(|_| !after.contains_key(&f.name)) {
+            after.insert(f.name.clone(), v.clone());
+        }
+    }
+    after
 }
 
 /// Refuse a record that would lack a value for a required field, as the
@@ -1661,19 +1823,7 @@ fn check_required(
     before: Option<&BTreeMap<FieldName, Value>>,
     patch: &Patch,
 ) -> Result<()> {
-    let mut after = before.cloned().unwrap_or_default();
-    for (f, v) in patch {
-        after.insert(f.clone(), v.clone());
-    }
-    for f in t.decl.fields.iter().filter(|_| before.is_none()) {
-        if let Some(v) = f
-            .initial
-            .as_ref()
-            .filter(|_| after.get(&f.name).is_none_or(Value::is_null))
-        {
-            after.insert(f.name.clone(), v.clone());
-        }
-    }
+    let after = after_write(t, before, patch);
     for f in t
         .decl
         .fields
@@ -1689,14 +1839,14 @@ fn check_required(
         let has = match f
             .derived
             .as_ref()
-            .map(|c| expr::eval(&expr::typed(c)?, &scope))
+            .map(|c| expr::eval(&expr::typed(c).map_err(invalid)?, &scope))
         {
             Some(computed) => computed.map_or(true, |v| !v.is_null()),
             None => after.get(&f.name).is_some_and(|v| !v.is_null()),
         };
         if !has {
-            let message = format!("`{}` requires a value for `{}`", t.decl.name, f.name);
-            return Err(on(&f.name, Refusal::Constraint { message }));
+            let (ty, field) = (t.decl.name.clone(), f.name.clone());
+            return Err(constraint(&f.name, Case::Required { ty, field }));
         }
     }
     Ok(())
@@ -1705,44 +1855,56 @@ fn check_required(
 /// As the store (050): `initial` stands on an authored field of a type's
 /// own alone, with a value a write of the field would take.
 fn check_initial(st: &State, d: &Declaration) -> Result<()> {
-    let refuse = |f: &FieldDecl, why: &str| {
-        let message = format!("field `{}` declares an `initial` value: {why}", f.name);
-        Err(on(&f.name, Refusal::Invalid { message }))
+    let refuse = |owner: &[Place], f: &FieldDecl, why: Case| {
+        let on = [owner, &[of_field(&f.name), Place::Initial]].concat();
+        Err(invalid_field(&f.name, at(&on, why)))
     };
-    let elsewhere: Vec<&FieldDecl> = match d {
-        Declaration::Type(t) => t.relations.iter().flat_map(|r| &r.fields).collect(),
-        Declaration::Verb(v) => v.payload.iter().collect(),
-        Declaration::Function(f) => f.inputs.iter().collect(),
+    let place = d.place();
+    let elsewhere: Vec<(Vec<Place>, &FieldDecl)> = match d {
+        Declaration::Type(t) => (t.relations.iter())
+            .flat_map(|r| {
+                let name = r.name.clone();
+                let on = vec![place.clone(), Place::Relation { name }];
+                r.fields.iter().map(move |f| (on.clone(), f))
+            })
+            .collect(),
+        Declaration::Verb(v) => (v.payload.iter())
+            .map(|f| (vec![place.clone(), Place::Payload], f))
+            .collect(),
+        Declaration::Function(f) => (f.inputs.iter())
+            .map(|f| (vec![place.clone(), Place::Input], f))
+            .collect(),
         _ => Vec::new(),
     };
-    if let Some(f) = elsewhere.into_iter().find(|f| f.initial.is_some()) {
-        return refuse(f, "only a field of a type declares one");
+    if let Some((on, f)) = elsewhere.into_iter().find(|(_, f)| f.initial.is_some()) {
+        return refuse(&on, f, Case::InitialNotOfType);
     }
     let Declaration::Type(t) = d else {
         return Ok(());
     };
+    let owner = [place];
     for f in &t.fields {
         let Some(v) = &f.initial else {
             continue;
         };
         let names = t.relations.iter().any(|r| r.via.as_ref() == Some(&f.name));
-        if t.view.is_some() {
-            return refuse(f, "a view's records are computed, and none is created");
+        let why = if t.view.is_some() {
+            Case::InitialInView
         } else if f.authority != Authority::Authored || f.derived.is_some() {
-            return refuse(f, "only a field its authors alone write takes one");
+            Case::InitialNotAuthored
         } else if t.key.contains(&f.name) {
-            return refuse(f, "a key's field is given by the record's key");
+            Case::InitialKey
         } else if f.ty.target.is_some() || names {
-            return refuse(
-                f,
-                "a field that names a record is checked by the door that writes it",
-            );
+            Case::InitialReference
         } else if f.on_input_change == lakelands_api::ontology::OnInputChange::Clear {
-            return refuse(f, "its inputs would clear it at their next change");
-        }
-        if let Some(message) = value::misfit(&f.ty, v, &st.value_types) {
-            return Err(on(&f.name, Refusal::Constraint { message }));
-        }
+            Case::InitialCleared
+        } else {
+            match value::misfit(&f.ty, v, &st.value_types) {
+                Some(why) => return Err(constraint(&f.name, why)),
+                None => continue,
+            }
+        };
+        return refuse(&owner, f, why);
     }
     Ok(())
 }
@@ -1765,8 +1927,13 @@ fn check_rule(st: &State, who: &Principal, key: &RecordKey, patch: &Patch) -> Re
             fields.insert(name.clone(), v.clone());
         }
     }
-    let rule = crate::aging::check(st, &fields)
-        .map_err(|(field, message)| on(&field, Refusal::Invalid { message }))?;
+    let rule =
+        crate::aging::check(st, &fields).map_err(|(field, why)| invalid_field(&field, *why))?;
+    // A rule moves every owner's records: never one a holder of `only`
+    // on its type writes (051).
+    if (st.types.get(&rule.on)).is_some_and(|t| only_holder(who, &t.decl)) {
+        return Err(refused(Refusal::NotGranted));
+    }
     // As the store: the author holds write on the field the rule moves,
     // and read on every field its condition probes.
     check_patch(
@@ -1783,14 +1950,7 @@ fn check_rule(st: &State, who: &Principal, key: &RecordKey, patch: &Patch) -> Re
         match field(&t.decl, name) {
             Some(f) if access(who, &t.decl, f).reads() => {}
             Some(_) => return Err(on(name, Refusal::NotGranted)),
-            None => {
-                return Err(on(
-                    name,
-                    Refusal::Invalid {
-                        message: format!("`{}` has no field `{name}`", rule.on),
-                    },
-                ));
-            }
+            None => return Err(no_field(&rule.on, name)),
         }
     }
     Ok(())
@@ -1810,7 +1970,6 @@ fn check_setting(st: &State, who: &Principal, key: &RecordKey, patch: &Patch) ->
     let declared = |t: &TypeName| st.types.get(t).map(|t| &t.decl);
     let shown = |t: &TypeName| st.visible(who, t).map(|t| describe_type(st, who, t));
     lakelands_api::seam::check_setting(key.as_str(), value.as_ref(), &declared, &shown)
-        .map_err(|(field, message)| on(&field, Refusal::Invalid { message }))
 }
 
 /// The fields of `t` the lake keeps an index for: those its
@@ -1827,7 +1986,8 @@ fn index_fields(
         return Vec::new();
     };
     let mut out: Vec<FieldName> = Vec::new();
-    if t.view.is_some() {
+    // As the store: a view's order index is its kept records'.
+    if t.view.is_some() && prefix != SORT_INDEX_SETTING {
         return out;
     }
     for name in setting
@@ -1848,7 +2008,13 @@ fn index_fields(
 }
 
 fn check_version(st: &State, ty: &TypeName, key: &RecordKey, opts: &WriteOpts) -> Result<Version> {
-    let actual = st.version(ty, key);
+    versioned(st.records.get(&(ty.clone(), key.clone())), opts)
+}
+
+/// The expected version checked against `own`, the record a write is
+/// judged on; answers its version, 0 for none.
+fn versioned(own: Option<&StoredRecord>, opts: &WriteOpts) -> Result<Version> {
+    let actual = own.map_or(Version(0), |r| r.version);
     match opts.expected_version {
         Some(expected) if expected != actual => Err(Error::Conflict { expected, actual }),
         _ => Ok(actual),
@@ -1877,7 +2043,7 @@ fn plan_upsert(
     // it is told nothing of the write.
     st.visible(who, ty).ok_or_else(|| no_type(ty))?;
     if patch.is_empty() {
-        return Err(invalid("nothing to write: the patch carries no field"));
+        return Err(invalid(Case::PatchEmpty));
     }
     // As the store's record plan: every door that writes a rule checks it,
     // `upsert`, a verb's write and an accepted proposal alike.
@@ -1888,21 +2054,23 @@ fn plan_upsert(
     if ty.as_str() == SETTING_TYPE {
         check_setting(st, who, key, &patch)?;
     }
-    let actual = check_version(st, ty, key, opts)?;
+    // As the store (051): a holder is judged against the record it owns
+    // at the key; another's is, to it, a key that is free, refused once
+    // every check has passed.
+    let own = (st.records.get(&(ty.clone(), key.clone()))).filter(|r| st.admitted(who, r));
+    let live = own.filter(|r| !r.retired);
+    let other = live.is_none() && st.live(ty, key).is_some();
+    versioned(own, opts)?;
     let mut patch = canonical_patch(t, patch);
-    with_key_fields(
-        t,
-        st,
-        who,
-        st.live(ty, key),
-        key,
-        &mut patch,
-        Origin::Authored,
-    )?;
+    with_key_fields(t, st, who, live, key, &mut patch, Origin::Authored)?;
     // After the key fields are filled: a key field may be a reference too.
-    check_references(st, t, &patch, &BTreeMap::new())?;
-    check_required(t, st.live(ty, key).map(|r| &r.fields), &patch)?;
-    let version = Version(actual.0 + 1);
+    check_references(st, who, t, &patch, &BTreeMap::new())?;
+    check_required(t, live.map(|r| &r.fields), &patch)?;
+    let after = after_write(t, live.map(|r| &r.fields), &patch);
+    if other || !st.admits_fields(who, ty, &after) {
+        return Err(refused(Refusal::NotGranted));
+    }
+    let version = Version(st.version(ty, key).0 + 1);
     let mut d = Draft::new(
         who,
         Origin::Authored,
@@ -1933,7 +2101,9 @@ fn plan_retire(
     if !may_retire(who, t) {
         return Err(refused(Refusal::NotGranted));
     }
-    st.live(ty, key).ok_or_else(|| no_record(ty, key))?;
+    // To a holder of `only`, another's record is not found (051).
+    let own = st.live(ty, key).filter(|r| st.admitted(who, r));
+    own.ok_or_else(|| no_record(ty, key))?;
     let actual = check_version(st, ty, key, opts)?;
     let version = Version(actual.0 + 1);
     let mut d = Draft::new(
@@ -1983,37 +2153,49 @@ fn check_call<'a>(
     if !callable(st, who, v) {
         return Err(refused(Refusal::NotGranted));
     }
-    let rec = match key {
-        Some(key) => Some(st.live(&v.on, key).ok_or_else(|| no_record(&v.on, key))?),
-        None => None,
-    };
+    // The mock binds no executor, so a verb that reaches outside the lake
+    // is refused, as the store refuses one whose executor its host did not
+    // bind: before the payload, and whether it runs or is proposed (013).
+    if let VerbEffect::External { executor } = &v.effect {
+        return Err(Error::unbound(Seam::Executor {
+            name: executor.clone(),
+        }));
+    }
+    // As the store: a member the verb does not declare before any value.
+    let declared = |n: &&FieldName| v.payload.iter().any(|f| &f.name == *n);
+    if let Some(name) = payload.keys().find(|n| !declared(n)) {
+        let (verb, member) = (verb.clone(), name.clone());
+        return Err(invalid_field(
+            name,
+            Case::PayloadUndeclared { verb, member },
+        ));
+    }
     for (name, val) in payload {
-        let f = v.payload.iter().find(|f| &f.name == name).ok_or_else(|| {
-            on(
-                name,
-                Refusal::Invalid {
-                    message: format!("`{verb}` takes no `{name}`"),
-                },
-            )
-        })?;
+        let Some(f) = v.payload.iter().find(|f| &f.name == name) else {
+            continue;
+        };
         if !val.is_null()
-            && let Some(message) = value::misfit(&f.ty, val, &st.value_types)
+            && let Some(why) = value::misfit(&f.ty, val, &st.value_types)
         {
-            return Err(on(name, Refusal::Constraint { message }));
+            return Err(constraint(name, why));
         }
     }
     for f in v.payload.iter().filter(|f| f.required) {
         if payload.get(&f.name).is_none_or(Value::is_null) {
-            return Err(on(
-                &f.name,
-                Refusal::Constraint {
-                    message: format!("`{verb}` needs `{}`", f.name),
-                },
-            ));
+            let (verb, member) = (verb.clone(), f.name.clone());
+            return Err(constraint(&f.name, Case::PayloadRequired { verb, member }));
         }
     }
-    // The version before `requires` is judged on the record, whether the
-    // call runs or is proposed (013 and 024, extended).
+    // The record after the payload; the version before `requires` is
+    // judged on it, whether the call runs or is proposed (013 and 024,
+    // extended).
+    let rec = match key {
+        Some(key) => Some(
+            (st.live(&v.on, key).filter(|r| st.admitted(who, r)))
+                .ok_or_else(|| no_record(&v.on, key))?,
+        ),
+        None => None,
+    };
     if let (Some(_), Some(key)) = (rec, key) {
         check_version(st, &v.on, key, opts)?;
     }
@@ -2025,10 +2207,10 @@ fn check_call<'a>(
             payload: Some(payload),
             now: None,
         };
-        if !expr::holds(&expr::typed(req)?, &scope)? {
-            return Err(refused(Refusal::Precondition {
-                message: format!("`{verb}` does not apply to `{key}` as it stands"),
-            }));
+        if !expr::holds(&expr::typed(req).map_err(invalid)?, &scope)? {
+            let (verb, ty, key) = (verb.clone(), v.on.clone(), key.clone());
+            let case = Case::RequiresUnmet { verb, ty, key };
+            return Err(refused(Refusal::Precondition(Box::new(case.into()))));
         }
     }
     Ok(v)
@@ -2047,9 +2229,9 @@ fn plan_run(
     let set = match &v.effect {
         VerbEffect::Write { set } => set,
         VerbEffect::External { executor } => {
-            return Err(Error::Unbound {
-                seam: format!("the verb executor `{executor}`"),
-            });
+            return Err(Error::unbound(Seam::Executor {
+                name: executor.clone(),
+            }));
         }
     };
     let rec = st.live(&v.on, key).ok_or_else(|| no_record(&v.on, key))?;
@@ -2063,7 +2245,7 @@ fn plan_run(
     for a in set {
         patch.insert(
             a.field.clone(),
-            expr::eval(&expr::typed(&a.value)?, &scope)?,
+            expr::eval(&expr::typed(&a.value).map_err(invalid)?, &scope)?,
         );
     }
     let mut called = Draft::new(
@@ -2092,33 +2274,104 @@ fn tightening(
     st: &State,
     who: &Principal,
     head: Position,
-    to: &lakelands_api::ontology::ValueTypeDecl,
+    m: &ValueTypeMigration,
 ) -> Result<lakelands_api::write::ValueTypeReport> {
-    check_new_value_type(st, who, to)?;
-    let report = crate::valuetypes::preflight(st, head, to)?;
+    check_new_value_type(st, who, &m.to)?;
+    let report = crate::valuetypes::preflight(st, head, m)?;
+    renames_shown(st, who, m, &report)?;
     if !report.fits {
-        return Err(invalid(format!(
-            "value type `{}` is not tightened: {} stored value(s) or a field's declared \
-             `initial` would not fit it; change them first.",
-            to.name, report.misfits
-        )));
+        let (value_type, misfits) = (m.to.name.clone(), report.misfits);
+        let first = Vec::new();
+        return Err(invalid(Case::ValueTypeNotTightened {
+            value_type,
+            misfits,
+            first,
+        }));
     }
     Ok(report)
+}
+
+/// As the store: a migration that renames values writes every field that
+/// uses the value type, and is refused, naming nothing, to a caller not
+/// shown one of them.
+fn renames_shown(
+    st: &State,
+    who: &Principal,
+    m: &ValueTypeMigration,
+    report: &lakelands_api::write::ValueTypeReport,
+) -> Result<()> {
+    let read = |ty: &TypeName, f: &FieldName| {
+        (st.visible(who, ty)).is_some_and(|t| readable(st, who, t, f).is_ok())
+    };
+    match m.renames.is_empty() || report.fields.iter().all(|u| read(&u.ty, &u.field)) {
+        true => Ok(()),
+        false => Err(refused(Refusal::NotGranted)),
+    }
+}
+
+/// The events that put a value type's migration in force, as the store
+/// appends them: without renames one `declared`; with them the
+/// `value_type_migrated`, then the system's `declared` of each type whose
+/// field's `initial` it renames, one set. Each is caused by `cause`.
+fn value_type_drafts(
+    st: &State,
+    who: &Principal,
+    m: ValueTypeMigration,
+    report_id: String,
+    cause: Option<Position>,
+) -> Vec<Draft> {
+    let declaration = Declaration::ValueType(m.to.clone());
+    let (schema_hash, version) = identity_version(st, &declaration);
+    let caused = |mut d: Draft| {
+        d.cause = cause.or(d.cause);
+        d
+    };
+    if m.renames.is_empty() {
+        let body = EventBody::Declared {
+            declaration,
+            schema_hash,
+            version,
+            with_the_set: false,
+        };
+        return vec![caused(Draft::new(who, Origin::System, body))];
+    }
+    let initials = crate::valuetypes::initials(st, &m);
+    let body = EventBody::ValueTypeMigrated {
+        types: crate::valuetypes::using_types(st, &m.to.name),
+        declaration: m.to,
+        version,
+        renames: m.renames,
+        report_id,
+    };
+    let mut out = vec![caused(Draft::new(who, Origin::Authored, body))];
+    let last = initials.len();
+    for (i, t) in initials.into_iter().enumerate() {
+        let declaration = Declaration::Type(t);
+        let (schema_hash, version) = identity_version(st, &declaration);
+        let body = EventBody::Declared {
+            declaration,
+            schema_hash,
+            version,
+            with_the_set: i + 1 < last,
+        };
+        out.push(caused(Draft::new(who, Origin::System, body)));
+    }
+    out
 }
 
 fn plan_propose(
     st: &State,
     batch: &mut Batch,
     who: &Principal,
-    write: ProposedWrite,
+    (write, pinned): (ProposedWrite, bool),
     why: String,
     key: Option<lakelands_api::IdempotencyKey>,
 ) -> Result<(Position, ProposalId)> {
     // A change of shape is read as its proposer's view, and logged so.
-    let mut write = write;
+    let (mut write, mut author) = (write, None);
     match &mut write {
         ProposedWrite::Declare { declarations } => redeclared(st, who, declarations)?,
-        ProposedWrite::Migrate { migration, .. } => authored(st, who, migration)?,
+        ProposedWrite::Migrate { migration, .. } => author = authored(st, who, migration)?,
         _ => {}
     }
     // A proposal is checked as its write would be, so that an accept
@@ -2146,37 +2399,67 @@ fn plan_propose(
             payload,
             opts,
         } => {
-            // The mock binds no executor: a call that could not run when
-            // accepted is not proposed.
-            if let VerbEffect::External { executor } =
-                &check_call(st, who, verb, key.as_ref(), payload, opts)?.effect
-            {
-                return Err(Error::Unbound {
-                    seam: format!("the verb executor `{executor}`"),
-                });
-            }
+            check_call(st, who, verb, key.as_ref(), payload, opts)?;
         }
         // A change of the ontology is checked as its door would check it;
         // the proposer needs no `schema` grant.
         ProposedWrite::Declare { declarations } => check_set(st, who, declarations)?,
         ProposedWrite::Migrate { .. } | ProposedWrite::MigrateValueType { .. } => {}
     }
+    // As the store (051): a pinned proposal is judged as its write would
+    // be now, against the record its proposer owns at the key.
+    let (by, scratch) = (
+        By {
+            st,
+            who,
+            cause: None,
+        },
+        &mut Batch::new(batch.peek().0),
+    );
+    match &write {
+        ProposedWrite::Upsert {
+            ty,
+            key,
+            patch,
+            opts,
+        } if pinned => {
+            plan_upsert(&by, scratch, ty, key, patch.clone(), opts)?;
+        }
+        ProposedWrite::Retire { ty, key, opts } if pinned => {
+            plan_retire(&by, scratch, ty, key, opts)?;
+        }
+        ProposedWrite::Call {
+            verb,
+            key: Some(key),
+            payload,
+            opts,
+        } if pinned => {
+            let v = &st.verbs[verb];
+            plan_run(&by, scratch, v, key, payload.clone(), opts)?;
+        }
+        _ => {}
+    }
     let write = match write {
         ProposedWrite::Migrate { migration, .. } => {
             let head = Position(batch.peek().0.saturating_sub(1));
-            let report = preflight(st, head, &migration, who)?;
+            let report = preflight(st, head, (&migration, author.as_ref()), who)?;
             if !report.lossless {
-                return Err(lossy(st, who, &migration, report));
+                return Err(lossy(st, who, &migration, head, report));
             }
             ProposedWrite::Migrate {
                 migration,
                 report: Box::new(report),
             }
         }
-        ProposedWrite::MigrateValueType { to, .. } => {
+        ProposedWrite::MigrateValueType { to, renames, .. } => {
             let head = Position(batch.peek().0.saturating_sub(1));
-            let report = Box::new(tightening(st, who, head, &to)?);
-            ProposedWrite::MigrateValueType { to, report }
+            let m = ValueTypeMigration { to: *to, renames };
+            let report = Box::new(tightening(st, who, head, &m)?);
+            ProposedWrite::MigrateValueType {
+                to: Box::new(m.to),
+                renames: m.renames,
+                report,
+            }
         }
         other => other,
     };
@@ -2188,6 +2471,7 @@ fn plan_propose(
             proposal: id.clone(),
             write,
             why,
+            pinned,
         },
     );
     d.key = key;
@@ -2199,18 +2483,14 @@ fn plan_propose(
 /// it, every problem collected into one refusal.
 fn check_set(st: &State, who: &Principal, declarations: &[Declaration]) -> Result<()> {
     if declarations.is_empty() {
-        return Err(invalid(
-            "nothing to apply: the set holds no declaration".to_owned(),
-        ));
+        return Err(invalid(Case::SetEmpty));
     }
     let ids: Vec<String> = declarations.iter().map(identity).collect();
-    let mut problems: Vec<(String, Error)> = Vec::new();
+    let mut problems: Vec<(Place, Error)> = Vec::new();
     for (i, id) in ids.iter().enumerate() {
         if ids[..i].contains(id) {
-            problems.push((
-                id.clone(),
-                invalid(format!("the set declares {id} more than once")),
-            ));
+            let twice = invalid(Case::SetDeclaresTwice);
+            problems.push((declarations[i].place(), twice));
         }
     }
     for (i, d) in declarations.iter().enumerate() {
@@ -2222,21 +2502,18 @@ fn check_set(st: &State, who: &Principal, declarations: &[Declaration]) -> Resul
             }
         }
         if let Err(e) = check_declaration(&probe, who, d) {
-            problems.push((ids[i].clone(), e));
+            problems.push((d.place(), e));
         }
     }
     match problems.len() {
         0 => Ok(()),
-        1 => Err(problems.remove(0).1),
-        n => {
-            let all: Vec<String> = problems
-                .iter()
-                .map(|(id, e)| format!("{id}: {e}"))
-                .collect();
-            Err(invalid(format!(
-                "the set is refused whole, with {n} problems: {}",
-                all.join("; ")
-            )))
+        1 => {
+            let (at, e) = problems.remove(0);
+            Err(e.within(at))
+        }
+        count => {
+            let problems = problems.into_iter().map(|(at, e)| e.within(at)).collect();
+            Err(invalid(Case::SetRefused { count, problems }))
         }
     }
 }
@@ -2335,6 +2612,7 @@ fn set_drafts(st: &State, who: &Principal, declarations: Vec<Declaration>) -> Ve
                 declaration,
                 schema_hash,
                 version,
+                with_the_set: false,
             },
         ));
         out.extend(links);
@@ -2448,10 +2726,9 @@ fn reads_its_type(st: &State, d: &Declaration) -> Result<()> {
             let has = |m: &&FieldName| v.payload.iter().any(|f| &f.name == *m);
             let members = paths.iter().filter_map(|p| expr::payload_member(p));
             if let Some(m) = members.into_iter().find(|m| !has(m)) {
-                return Err(invalid(format!(
-                    "verb `{}` sets `{}` from `payload.{m}`, which its payload does not have",
-                    v.name, a.field
-                )));
+                let on = [d.place(), of_field(&a.field)];
+                let member = m.clone();
+                return Err(invalid(at(&on, Case::PayloadNoMember { member })));
             }
         }
     }
@@ -2471,11 +2748,9 @@ fn reads_its_type(st: &State, d: &Declaration) -> Result<()> {
             .iter()
             .find(|x| x.name == s.name && x.of != s.of)
     {
-        let message = format!(
-            "object set `{}` holds records of `{}`; a set of `{}` takes another name",
-            s.name, was.of, s.of
-        );
-        return Err(self::on(&"of".into(), Refusal::Invalid { message }));
+        let (was, ty) = (was.of.clone(), s.of.clone());
+        let case = at(&[d.place()], Case::SetRetyped { was, ty });
+        return Err(invalid_field(&"of".into(), case));
     }
     let condition = match d {
         Declaration::ObjectSet(s) => Some(&s.filter),
@@ -2489,17 +2764,23 @@ fn reads_its_type(st: &State, d: &Declaration) -> Result<()> {
             Declaration::ObjectSet(s) if s.name == n => Some(s),
             _ => st.object_sets.iter().find(|x| x.name == n),
         };
-        evaluates(&expanded(&pending, &on.name, &e, &d.what())?, on)?;
+        let place = [d.place()];
+        evaluates(&expanded(&pending, &on.name, &e, &place)?, on, &place)?;
     }
     if let Some(on) = on
         && let reads = declaration_reads(st, d, &on.name)
         && let Some(n) = (reads.iter()).find(|n| field(on, n).is_none())
     {
-        return Err(invalid(format!(
-            "{} reads `{n}`, which `{}` does not have",
-            d.what(),
-            on.name
-        )));
+        let (ty, field) = (on.name.clone(), n.clone());
+        return Err(invalid(at(&[d.place()], Case::UnknownField { ty, field })));
+    }
+    // As the store: a verb, a trigger and a set read a record as stored.
+    if let Some(on) = on.filter(|_| !matches!(d, Declaration::Type(_)))
+        && let reads = declaration_reads(st, d, &on.name)
+        && let Some(n) = (reads.iter()).find(|n| field(on, n).is_some_and(|f| f.at_read()))
+    {
+        let (field, ty) = (n.clone(), on.name.clone());
+        return Err(invalid(at(&[d.place()], Case::ReadsAtRead { field, ty })));
     }
     Ok(())
 }
@@ -2507,85 +2788,149 @@ fn reads_its_type(st: &State, d: &Declaration) -> Result<()> {
 /// As the store: a view with parameters is bound only by a read that names
 /// it, so a pattern's step that arrives at one other than its start is
 /// refused before anything is read.
-fn unbound_view(start: &TypeName, reached: &DeclaredType, relation: &RelationName) -> Result<()> {
+fn unbound_view(start: &TypeName, reached: &DeclaredType, step: Place) -> Result<()> {
     match reached.decl.view.as_deref().and_then(|v| v.params.first()) {
-        Some(param) if &reached.decl.name != start => Err(invalid(format!(
-            "a step over `{relation}` arrives at view `{}`, which needs parameter `{}`, and only \
-             a read that names the view binds it",
-            reached.decl.name, param.name
-        ))),
+        Some(p) if &reached.decl.name != start => {
+            let (ty, name, kind) = (reached.decl.name.clone(), p.name.clone(), p.kind);
+            let case = Case::ParamMissing {
+                ty,
+                name,
+                kind,
+                unbound: true,
+            };
+            Err(invalid(Said::from(case).within(step)))
+        }
         _ => Ok(()),
     }
 }
 
 /// Reads `to`, a migration's or a redeclaration's shape of the type
 /// declared as `before`, as its author's view, as the store does: a field
-/// `who` may not know of is put back as declared, at its declared place,
-/// and so are such link fields of each relation `to` keeps. A shape that
-/// names one declares it twice, a rename from one is from no field, and a
-/// field one is built from is refused on that field.
+/// `who` may not know of, or a relation it is not shown, is put back as
+/// declared, at its declared place, and so are such link fields of each
+/// relation `to` keeps or renames that it is shown. A shape that names one
+/// declares it twice, found where the declaration is checked; a rename
+/// from one is judged against the author's view ([`preflight`]); a field
+/// one reads is refused on that field.
 fn as_author(
-    who: &Principal,
+    (st, who): (&State, &Principal),
     before: &TypeDecl,
     to: &mut TypeDecl,
-    renames: &[(FieldName, FieldName)],
+    relations: &[(RelationName, RelationName)],
 ) -> Result<()> {
     let hidden = |t: &TypeDecl, f: &FieldDecl| access(who, t, f) == Access::None;
-    let on = |f: &FieldName, message: String| Error::Refused {
-        field: Some(f.clone()),
-        reason: Refusal::Invalid { message },
-    };
+    let unshown = |r: &RelationDecl| !relation_shown(st, who, before, r);
     let put_back = |t: &TypeDecl, declared: &[FieldDecl], fields: &mut Vec<FieldDecl>| {
         for (i, f) in declared.iter().enumerate().filter(|(_, f)| hidden(t, f)) {
             fields.insert(i.min(fields.len()), f.clone());
         }
     };
     let unknown: Vec<&FieldDecl> = (before.fields.iter().filter(|f| hidden(before, f))).collect();
-    for f in &unknown {
-        if renames.iter().any(|(from, _)| from == &f.name) {
-            let name = &f.name;
-            return Err(invalid(format!(
-                "rename from `{name}`: no such field before the migration"
-            )));
-        }
-        if field(to, &f.name).is_some() {
-            return Err(on(
-                &f.name,
-                format!("type `{}` declares `{}` twice", to.name, f.name),
-            ));
+    put_back(before, &before.fields, &mut to.fields);
+    // As the store: a valid time over a field the author may not know of,
+    // left out, stands as declared.
+    let unseen = |v: &Option<FieldName>| {
+        v.as_ref()
+            .is_some_and(|v| unknown.iter().any(|f| &f.name == v))
+    };
+    for (axis, sent, held) in [
+        ("valid_from", &mut to.valid_from, &before.valid_from),
+        ("valid_to", &mut to.valid_to, &before.valid_to),
+    ] {
+        if sent.is_none() && unseen(held) {
+            sent.clone_from(held);
+        } else if *sent != *held && unseen(held) && !unseen(sent) {
+            // As the store: a field the author may name, sent where a bound
+            // it may not know of stands, is refused as the bound taken.
+            // A hidden field's name is left to the declaration.
+            let (name, axis) = (to.name.clone(), axis.to_owned());
+            let said = Said::from(Case::ValidTimeStands { axis });
+            return Err(invalid(said.within(Place::Type { name })));
         }
     }
-    put_back(before, &before.fields, &mut to.fields);
     for r in &mut to.relations {
-        if let Some(old) = before.relations.iter().find(|o| o.name == r.name) {
+        // As the store: a renamed relation is the one it was, and one its
+        // author is not shown is none to rename.
+        let was = relations.iter().find(|(_, new)| new == &r.name);
+        let name = was.map_or(&r.name, |(old, _)| old);
+        let shown = |o: &&RelationDecl| &o.name == name && !unshown(o);
+        if let Some(old) = before.relations.iter().find(shown) {
             let link = links::link_type(&before.name, old);
             put_back(&link, &old.fields, &mut r.fields);
         }
     }
+    for (i, r) in before
+        .relations
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| unshown(r))
+    {
+        to.relations.insert(i.min(to.relations.len()), r.clone());
+    }
+    // What a relation it is not shown reads: its `via`, its match's own side.
+    let hid = before.relations.iter().filter(|r| unshown(r));
+    let matched = hid.flat_map(|r| {
+        let pairs = r.derived.iter().flat_map(|d| &d.pairs);
+        r.via.iter().chain(pairs.map(|p| &p.from))
+    });
     let mut reads = (unknown.iter().copied())
-        .flat_map(|f| (f.depends_on.iter()).chain(f.embed.iter().flat_map(|e| &e.from)));
+        .flat_map(|f| (f.depends_on.iter()).chain(f.embed.iter().flat_map(|e| &e.from)))
+        .chain(matched);
     match reads.find(|n| field(to, n).is_none()) {
         Some(n) => {
-            let ty = &to.name;
-            Err(on(
-                n,
-                format!("`{n}` is read by another field of `{ty}` and cannot be removed"),
-            ))
+            let (field, ty) = (n.clone(), to.name.clone());
+            Err(invalid_field(n, Case::FieldReadElsewhere { field, ty }))
         }
         None => Ok(()),
     }
 }
 
-/// A migration read as its author's view of its type.
-fn authored(st: &State, who: &Principal, m: &mut Migration) -> Result<()> {
+/// A migration read as its author's view of its type, and that view, for
+/// [`preflight`] to judge its names against, as the store does.
+fn authored(st: &State, who: &Principal, m: &mut Migration) -> Result<Option<Authored>> {
     if st.types.contains_key(&m.to.name) && st.visible(who, &m.to.name).is_none() {
         return Err(no_type(&m.to.name));
     }
     reads_as_author(st, who, &[Declaration::Type(m.to.clone())], true)?;
-    match st.types.get(&m.to.name) {
-        Some(before) => as_author(who, &before.decl, &mut m.to, &m.renames),
-        None => Ok(()),
+    let Some(before) = st.types.get(&m.to.name) else {
+        return Ok(None);
+    };
+    let (sent, mut known) = (m.clone(), before.decl.clone());
+    known_fields((st, who), &mut known);
+    as_author((st, who), &before.decl, &mut m.to, &m.relation_renames)?;
+    Ok(Some(Authored { sent, known }))
+}
+
+/// A migration as its author sent it, and the type as its author sees it.
+struct Authored {
+    sent: Migration,
+    known: TypeDecl,
+}
+
+/// As the store: a key and a valid time name fields of their type, and a
+/// valid time a date-time or a date field, in the store's cases.
+fn shape_names(t: &TypeDecl) -> Result<()> {
+    let has = |f: &FieldName| t.fields.iter().any(|d| &d.name == f);
+    let owner = [of_type(&t.name)];
+    if let Some(k) = (t.key.iter().chain(&t.valid_from).chain(&t.valid_to)).find(|k| !has(k)) {
+        let (ty, field) = (t.name.clone(), k.clone());
+        return Err(invalid_field(
+            k,
+            at(&owner, Case::UnknownField { ty, field }),
+        ));
     }
+    for (axis, k) in [("valid_from", &t.valid_from), ("valid_to", &t.valid_to)] {
+        let field = k
+            .as_ref()
+            .and_then(|k| t.fields.iter().find(|f| &f.name == k));
+        use lakelands_api::ontology::StorageKind as K;
+        if let Some(f) = field.filter(|f| !matches!(f.ty.kind, K::DateTime | K::Date)) {
+            let (field, axis, kind) = (f.name.clone(), axis.to_owned(), f.ty.kind);
+            let case = Case::ValidTimeNotTime { field, axis, kind };
+            return Err(invalid_field(&f.name, at(&owner, case)));
+        }
+    }
+    Ok(())
 }
 
 /// As the store: a declaration reads only what its author may read. The
@@ -2612,38 +2957,39 @@ fn reads_as_author(
     let mut seen = st.clone();
     seen.types.retain(|name, _| shown(name));
     for t in seen.types.values_mut() {
-        known_fields(who, &mut t.decl);
+        known_fields((st, who), &mut t.decl);
     }
-    // As the store: what a type's shape names stands as declared, known to
-    // its author or not: a key field, a valid time, a relation's `via`.
+    // As the store: a valid time left out where the one in force names a
+    // field outside the author's view stands as declared, left out of both
+    // sides; a valid time sent, the one in force too, is read against the
+    // view.
     let mut shaped = sent.to_vec();
     for d in &mut shaped {
         let Declaration::Type(t) = d else { continue };
         let (Some(was), Some(e)) = (st.types.get(&t.name), seen.types.get_mut(&t.name)) else {
             continue;
         };
-        let via = t.relations.iter().filter_map(|r| r.via.as_ref());
-        let named = t
-            .key
-            .iter()
-            .chain(&t.valid_from)
-            .chain(&t.valid_to)
-            .chain(via);
-        let named: Vec<FieldName> = named.cloned().collect();
-        let declared = was.decl.fields.iter().enumerate();
-        for (i, f) in declared.filter(|(_, f)| named.contains(&f.name)) {
-            for fields in [&mut t.fields, &mut e.decl.fields] {
-                if !fields.iter().any(|x| x.name == f.name) {
-                    fields.insert(i.min(fields.len()), f.clone());
-                }
+        let held = &was.decl;
+        let view: Vec<FieldName> = e.decl.fields.iter().map(|f| f.name.clone()).collect();
+        let unseen = |f: &Option<FieldName>| f.as_ref().is_some_and(|f| !view.contains(f));
+        for (sent, kept, was) in [
+            (&mut t.valid_from, &mut e.decl.valid_from, &held.valid_from),
+            (&mut t.valid_to, &mut e.decl.valid_to, &held.valid_to),
+        ] {
+            if sent.is_none() && unseen(was) {
+                (*sent, *kept) = (None, None);
             }
         }
     }
     // A migration's shape is refused as a declaration, of the type or of
     // a relation's links.
     let reshaping = |e: &Error| {
-        let why = e.to_string();
-        reshapes && (why.contains("change it with `migrate`") || why.contains("is a migration"))
+        let said = e.case().map(|s| &s.case);
+        reshapes
+            && matches!(
+                said,
+                Some(Case::Reshapes { .. } | Case::ReshapesLinks { .. })
+            )
     };
     check_set(&seen, who, &shaped).or_else(|e| if reshaping(&e) { Ok(()) } else { Err(e) })?;
     let mut after = st.clone();
@@ -2716,16 +3062,17 @@ fn redeclared(st: &State, who: &Principal, declarations: &mut [Declaration]) -> 
         if let Declaration::Type(t) = d
             && let Some(before) = st.types.get(&t.name)
         {
-            as_author(who, &before.decl, t, &[])?;
+            as_author((st, who), &before.decl, t, &[])?;
         }
     }
     Ok(())
 }
 
 /// `t` without the fields `who` may not know of, a relation's link fields
-/// too.
-fn known_fields(who: &Principal, t: &mut TypeDecl) {
+/// too, and without the relations it is not shown.
+fn known_fields((st, who): (&State, &Principal), t: &mut TypeDecl) {
     let whole = t.clone();
+    t.relations.retain(|r| relation_shown(st, who, &whole, r));
     t.fields.retain(|f| access(who, &whole, f) != Access::None);
     for r in &mut t.relations {
         let link = links::link_type(&whole.name, r);
@@ -2735,8 +3082,9 @@ fn known_fields(who: &Principal, t: &mut TypeDecl) {
 
 /// As the store: `t` as `describe` would show its fields to `who`, one it
 /// may not read left with its shape alone; what a listing hands out.
-fn described_fields(who: &Principal, t: &mut TypeDecl) {
+fn described_fields((st, who): (&State, &Principal), t: &mut TypeDecl) {
     let whole = t.clone();
+    t.relations.retain(|r| relation_shown(st, who, &whole, r));
     let shown = |of: &TypeDecl, fields: &mut Vec<FieldDecl>| {
         fields.retain(|f| access(who, of, f) != Access::None);
         let unread = fields.iter_mut().filter(|f| !access(who, of, f).reads());
@@ -2745,6 +3093,23 @@ fn described_fields(who: &Principal, t: &mut TypeDecl) {
     shown(&whole, &mut t.fields);
     for r in &mut t.relations {
         shown(&links::link_type(&whole.name, r), &mut r.fields);
+    }
+    let held = |v: &FieldName| t.fields.iter().any(|f| &f.name == v);
+    (t.valid_from, t.valid_to) = (
+        t.valid_from.take().filter(held),
+        t.valid_to.take().filter(held),
+    );
+    // As the store: the key its records carry, and no measure of a field
+    // left out (lakelands#782).
+    t.key = t.key_fields().to_vec();
+    keep_known_measures(t);
+}
+
+/// As the store: `t`'s view without the measures that name a field `t`
+/// no longer holds.
+fn keep_known_measures(t: &mut TypeDecl) {
+    if let Some(v) = &mut t.view {
+        v.keep_measures(|n| t.fields.iter().any(|f| &f.name == n));
     }
 }
 
@@ -2780,29 +3145,22 @@ fn holds(t: &TypeDecl, name: &FieldName) -> bool {
 /// As the store: a migration's report as `who` may know it, wherever one
 /// is answered. An entry is shown where the reader may see the type and
 /// know of the field, a member restated beyond the shape where it reads
-/// the field in `to` and as the type stands; the totals, the hashes and
-/// the id stay, and `more` says that something was left out. The mock
-/// restricts no record, so every sample key is of a record its reader is
-/// answered.
-fn shown_report(st: &State, who: &Principal, m: &Migration, report: &mut MigrationReport) {
-    // As the store: one who may not see the migrated type is answered no
-    // name at all.
-    let Some(was) = st.visible(who, &m.to.name) else {
-        (report.ty, report.more) = (TypeName::default(), true);
-        report.fields.clear();
-        report.dropped.clear();
-        report.relations.clear();
-        report.carried.clear();
-        report.rekeyed.clear();
-        report.references.clear();
-        report.sample_collisions.clear();
-        report.restated.clear();
-        return;
-    };
+/// the field in `to` and in the type it was made against (`stands`, a
+/// listed proposal's as it stood, else the type as it stands, judged shown
+/// by the caller as the store judges it); the totals stay, and `more`
+/// says that something was left out ([`shown_hashes`] sets the hashes and
+/// the id after it). The mock restricts no record, so every sample key is
+/// of a record its reader is answered.
+fn shown_report(
+    st: &State,
+    who: &Principal,
+    m: &Migration,
+    (report, stands): (&mut MigrationReport, &TypeDecl),
+) {
     let whole = report.clone();
-    let (stands, mut was, mut to) = (&was.decl, was.decl.clone(), m.to.clone());
-    known_fields(who, &mut was);
-    known_fields(who, &mut to);
+    let (mut was, mut to) = (stands.clone(), m.to.clone());
+    known_fields((st, who), &mut was);
+    known_fields((st, who), &mut to);
     let sourced = |new: &FieldName| {
         let mut from = m.renames.iter().filter(|(_, n)| n == new);
         from.all(|(old, _)| holds(&was, old))
@@ -2819,10 +3177,15 @@ fn shown_report(st: &State, who: &Principal, m: &Migration, report: &mut Migrati
         let had = m.renames.iter().find(|(_, new)| new == f);
         !unread(who, &m.to, f) && !unread(who, stands, had.map_or(f, |(old, _)| old))
     };
+    // A valid time over a field the reader may not know of is not named
+    // (024, extended).
+    let named =
+        |v: &serde_json::Value, t: &TypeDecl| v.as_str().is_none_or(|f| holds(t, &f.into()));
     report.restated.retain(|r| {
         let shape = !FieldDecl::UNREAD.contains(&r.member.as_str());
         let shown = |f| holds(&to, f) && sourced(f) && (shape || read(f));
-        r.field.as_ref().is_none_or(shown)
+        let timed = r.field.is_none() && matches!(r.member.as_str(), "valid_from" | "valid_to");
+        r.field.as_ref().is_none_or(shown) && (!timed || named(&r.was, &was) && named(&r.to, &to))
     });
     report.dropped.retain(|(f, _)| holds(&was, f));
     // As the store: a renamed relation as a dropped one, by the name it
@@ -2844,11 +3207,25 @@ fn shown_report(st: &State, who: &Principal, m: &Migration, report: &mut Migrati
 
 /// The refusal of a migration that is not lossless, with its report as
 /// the caller may know it.
-fn lossy(st: &State, who: &Principal, m: &Migration, mut report: MigrationReport) -> Error {
-    shown_report(st, who, m, &mut report);
+fn lossy(st: &State, who: &Principal, m: &Migration, head: Position, r: MigrationReport) -> Error {
     refused(Refusal::Migration {
-        report: Box::new(report),
+        report: Box::new(shown(st, who, m, head, r)),
     })
+}
+
+/// As the store: a report as the caller may know it, its hashes and id
+/// those of what it is shown, the report made from the type at the head.
+fn shown(
+    st: &State,
+    who: &Principal,
+    m: &Migration,
+    head: Position,
+    mut report: MigrationReport,
+) -> MigrationReport {
+    let made = st.types.get(&m.to.name).map_or(&m.to, |t| &t.decl);
+    shown_report(st, who, m, (&mut report, made));
+    shown_hashes((st, who), made, m, (&mut report, head));
+    report
 }
 
 /// As the store: a proposed shape completed, as a shape in force is.
@@ -2875,22 +3252,41 @@ fn completed(st: &State, write: &mut ProposedWrite) {
 /// a read of the record would show it and a name where `describe` would.
 /// False when the reader may see nothing of it. The proposal holds the
 /// completed shape, so a relation's link fields are trimmed too.
-fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite, since: &[Renamed]) -> bool {
+fn known_shape(
+    st: &State,
+    who: &Principal,
+    write: &mut ProposedWrite,
+    (then, made, at): (&Principal, Option<&TypeDecl>, Position),
+) -> bool {
     let seen = |ty: &TypeName| st.visible(who, ty).is_some();
     let read = |ty: &TypeName, f: &FieldName| {
         (st.visible(who, ty)).is_some_and(|t| readable(st, who, t, f).is_ok())
     };
+    // As the store (051): a record its `only` does not admit, retired or
+    // not, or after a proposed patch, is not answered; one that cannot be
+    // applied admits none (lakelands#771).
+    let stored = |ty: &TypeName, key: &RecordKey| st.records.get(&(ty.clone(), key.clone()));
+    let answered = |ty: &TypeName, key: &RecordKey| {
+        seen(ty) && stored(ty, key).is_none_or(|r| st.only_admits(who, ty, &r.fields))
+    };
     match write {
         // A field the reader may not know of and a masked one both leave
         // the patch: it holds values, and no place for a name.
-        ProposedWrite::Upsert { ty, patch, .. } => {
+        ProposedWrite::Upsert { ty, key, patch, .. } => {
+            let live = stored(ty, key).filter(|r| !r.retired);
+            let mut after = live.map(|r| r.fields.clone()).unwrap_or_default();
+            after.extend(patch.clone());
             patch.retain(|f, _| read(ty, f));
-            seen(ty)
+            answered(ty, key) && st.only_admits(who, ty, &after)
         }
-        ProposedWrite::Retire { ty, .. } => seen(ty),
+        ProposedWrite::Retire { ty, key, .. } => answered(ty, key),
         // A payload is what the verb's fields become: whole to a reader who
-        // may read each field the verb sets, and empty otherwise.
-        ProposedWrite::Call { verb, payload, .. } => {
+        // may read each field the verb sets, and empty otherwise. One whose
+        // verb reads a field the reader may not read is not listed
+        // ([`hidden_from`]).
+        ProposedWrite::Call {
+            verb, key, payload, ..
+        } => {
             let Some(v) = st.verbs.get(verb) else {
                 return false;
             };
@@ -2899,16 +3295,25 @@ fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite, since: &[
             {
                 payload.clear();
             }
-            seen(&v.on)
+            key.as_ref().map_or(seen(&v.on), |k| answered(&v.on, k))
         }
         // The report names what the migration does to the type as it
-        // stands; its totals, hashes and id stay whole.
+        // stands; its totals stay whole, its hashes are of the shapes the
+        // reader is shown, and its id is made at the head before the
+        // proposal.
         ProposedWrite::Migrate { migration, report } => {
-            if st.visible(who, &migration.to.name).is_none() {
+            let Some(was) = st.visible(who, &migration.to.name) else {
                 return false;
-            }
-            shown_report(st, who, migration, report);
-            known_migration(st, who, migration, since);
+            };
+            shown_report(st, then, migration, (report, made.unwrap_or(&was.decl)));
+            let before = Position(at.0.saturating_sub(1));
+            shown_hashes(
+                (st, then),
+                made.unwrap_or(&was.decl),
+                migration,
+                (report, before),
+            );
+            known_migration(st, then, migration, made);
             true
         }
         // Each declaration as `describe` would show it once the bundle is
@@ -2919,10 +3324,11 @@ fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite, since: &[
                 let (hash, version) = identity_version(&after, d);
                 after.declare(d, hash, version);
             }
+            let who = &after.hidden(then);
             declarations.retain(|d| listed(&after, who, d));
             for d in declarations.iter_mut() {
                 if let Declaration::Type(t) = d {
-                    described_fields(who, t);
+                    described_fields((&after, who), t);
                 }
             }
             !declarations.is_empty()
@@ -2938,8 +3344,24 @@ fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite, since: &[
 
 /// As the store: a migration that is not in force as `who` may know it,
 /// its shape judged with the grants held through its own renames, and a
-/// rename only where `who` may know of the field under both names.
-fn known_migration(st: &State, who: &Principal, m: &mut Migration, since: &[Renamed]) {
+/// rename only where `who` may know of the field under both names, the
+/// old one in `made`, the type it was proposed against, else at the head.
+fn known_migration(st: &State, who: &Principal, m: &mut Migration, made: Option<&TypeDecl>) {
+    let then = following(who, m);
+    let head = st.types.get(&m.to.name).map(|t| &t.decl);
+    let mut was = made.or(head).cloned();
+    if let Some(was) = &mut was {
+        known_fields((st, who), was);
+    }
+    described_fields((st, &then), &mut m.to);
+    let old = |n: &FieldName| was.as_ref().is_none_or(|w| holds(w, n));
+    m.renames
+        .retain(|(from, new)| old(from) && holds(&m.to, new));
+}
+
+/// As the store: `who` with its grants held through a migration's own
+/// renames.
+fn following(who: &Principal, m: &Migration) -> Principal {
     let (at, ty, renames) = (Position(u64::MAX), m.to.name.clone(), m.renames.clone());
     let mut list = vec![Renamed {
         at,
@@ -2953,19 +3375,64 @@ fn known_migration(st: &State, who: &Principal, m: &mut Migration, since: &[Rena
         to: Some(to),
         ..Renamed::default()
     }));
-    // As the store: a proposal that waited is judged from the names its
-    // old ones bear now.
-    let list = Renamed::at_head(since, list);
     let mut then = who.clone();
     (then.grants).follow(&list, None);
-    let mut was = st.types.get(&m.to.name).map(|t| t.decl.clone());
-    if let Some(was) = &mut was {
-        known_fields(who, was);
+    then
+}
+
+/// As the store: whether `who` may not know of some field, which only a
+/// `none` its grants give hides.
+pub(crate) fn hides_some(who: &Principal) -> bool {
+    let (g, none) = (&who.grants, |a: &Access| *a == Access::None);
+    let typed =
+        |t: &TypeGrants| t.default.as_ref().is_some_and(none) || t.fields.values().any(none);
+    none(&g.default) || g.types.values().any(typed)
+}
+
+/// As the store: the schema hash of `t` as `who` is shown it, `whole`
+/// where nothing is left out.
+fn shown_hash(
+    (st, who): (&State, &Principal),
+    t: &TypeDecl,
+    view_shown: bool,
+    whole: &str,
+) -> String {
+    let mut shown = t.clone();
+    known_fields((st, who), &mut shown);
+    shown.view = shown.view.filter(|_| view_shown);
+    keep_known_measures(&mut shown);
+    match shown == *t {
+        true => whole.to_owned(),
+        false => lakelands_api::shape::schema_hash(&shown).unwrap_or_default(),
     }
-    described_fields(&then, &mut m.to);
-    let old = |n: &FieldName| was.as_ref().is_none_or(|w| holds(w, n));
-    m.renames
-        .retain(|(from, new)| old(from) && holds(&m.to, new));
+}
+
+/// As the store: a report's hashes as `who` is shown them, set after
+/// `more`, `from` of `made`, the type the report was made from; and its
+/// id made again over what it shows at `head`.
+fn shown_hashes(
+    (st, who): (&State, &Principal),
+    made: &TypeDecl,
+    m: &Migration,
+    (report, head): (&mut MigrationReport, Position),
+) {
+    if report.ty == m.to.name {
+        report.from_schema_hash = shown_hash((st, who), made, true, &report.from_schema_hash);
+        let then = following(who, m);
+        report.to_schema_hash = shown_hash((st, &then), &m.to, true, &report.to_schema_hash);
+    }
+    report.report_id = report_id(report, head);
+}
+
+/// As the store: a report's id, the SHA-256 of what it says to its reader
+/// and where the lake stood, in canonical form.
+fn report_id(report: &MigrationReport, head: Position) -> String {
+    let report = MigrationReport {
+        report_id: String::new(),
+        ..report.clone()
+    };
+    let report = serde_json::to_value(&report).unwrap_or_default();
+    lakelands_api::canonical::sha256_hex(&serde_json::json!({"report": report, "head": head.0}))
 }
 
 /// As the store: whether a proposed declaration is listed to `who`, over
@@ -3007,7 +3474,7 @@ fn listed(st: &State, who: &Principal, d: &Declaration) -> bool {
 fn preflight(
     st: &State,
     head: Position,
-    m: &Migration,
+    (m, author): (&Migration, Option<&Authored>),
     who: &Principal,
 ) -> Result<MigrationReport> {
     let ty = &m.to.name;
@@ -3015,61 +3482,88 @@ fn preflight(
     // As the store: a view changes, or becomes a stored type, by being
     // declared again; a stored type never becomes a view.
     if t.decl.view.is_some() || m.to.view.is_some() {
+        let ty = ty.clone();
         return Err(invalid(
             match (t.decl.view.is_some(), m.to.view.is_some()) {
-                (true, true) => format!(
-                    "`{ty}` is a view, and a view changes by being declared again, never by a \
-                 migration"
-                ),
-                (true, false) => format!(
-                    "`{ty}` is a view, and it becomes a stored type by being declared as one, never \
-                 by a migration"
-                ),
-                _ => format!(
-                    "the migration would turn the stored type `{ty}` into a view; declare the view \
-                 under another name (`{ty}` keeps its name and its records)"
-                ),
+                (true, true) => Case::MigrationOfView { ty },
+                (true, false) => Case::MigrationViewToStored { ty },
+                _ => Case::MigrationToView { ty },
             },
         ));
     }
     if t.decl.key != m.to.key {
-        return Err(invalid(format!(
-            "the in-memory mock does not re-key: `{ty}` keeps its key fields here"
-        )));
+        let what = Unmocked::Rekey;
+        return Err(invalid(Case::MockCannot { what }));
     }
+    // As the store: the shape is checked as a declaration, its reshape
+    // forgiven, so a name it holds twice is found here.
+    check_declaration(st, who, &Declaration::Type(m.to.clone())).or_else(|e| {
+        match e.case().map(|s| &s.case) {
+            Some(Case::Reshapes { .. } | Case::ReshapesLinks { .. }) => Ok(()),
+            _ => Err(e),
+        }
+    })?;
+    // The refusal of a migration that takes away a field a declaration
+    // reads, said after the migration, at the reader where it is named.
+    let after_it = |said: Said| {
+        let name = ty.clone();
+        invalid(said.within(Place::AfterMigration { name }))
+    };
+    let taken = |reader: Option<Place>, n: &FieldName, is: &TypeName| {
+        let renamed = |(from, _): &&(FieldName, FieldName)| from == n && is == ty;
+        let renamed = m.renames.iter().find(renamed).map(|(_, to)| to.clone());
+        let (unnamed, field, ty) = (reader.is_none(), n.clone(), is.clone());
+        let said = Said::from(Case::MigrationTakesRead {
+            unnamed,
+            field,
+            ty,
+            renamed,
+        });
+        after_it(match reader {
+            Some(reader) => said.within(reader),
+            None => said,
+        })
+    };
     // As the store: a view over the type, as its source or a merged one,
-    // reads the shape the migration leaves, so every field it reads
-    // (grouping, `where`, what its measures aggregate) must remain.
+    // reads the shape the migration leaves: it is declared again against
+    // it, and every field it reads (grouping, `where`, what its measures
+    // aggregate) must remain.
+    let mut after = st.clone();
+    let to = Declaration::Type(m.to.clone());
+    let (hash, version) = identity_version(&after, &to);
+    after.declare(&to, hash, version);
     for o in st.types.values() {
         let Some(v) = o.decl.view.as_deref() else {
             continue;
         };
-        for (source, reads) in view_reads(v) {
-            if &source != ty {
-                continue;
-            }
-            if let Some(gone) = reads
-                .iter()
-                .find(|n| !m.to.fields.iter().any(|f| &f.name == *n))
-            {
-                let how = match m.renames.iter().find(|(from, _)| from == gone) {
-                    Some((_, to)) => format!("renames to `{to}`"),
-                    None => "drops".to_owned(),
-                };
-                // As the store: the view is named only to an author
-                // `describe` shows its definition to.
-                let seen = describe_lake(&who.lake, st, who);
-                let shown = |s: &TypeDescription| s.name == o.decl.name && s.view.is_some();
-                let reader = match seen.types.iter().any(shown) {
-                    true => format!("view `{}`", o.decl.name),
-                    false => "a declaration".to_owned(),
-                };
-                return Err(invalid(format!(
-                    "after the migration of `{ty}`, {reader} reads `{gone}` of `{ty}`, which \
-                     the migration {how}"
-                )));
-            }
+        if &v.source != ty && !v.merge.iter().any(|s| &s.source == ty) {
+            continue;
         }
+        let reads = view_reads(v);
+        let gone = |reader: Option<Place>| {
+            let of = reads.iter().filter(|(source, _)| source == ty);
+            of.flat_map(|(_, names)| names)
+                .find(|n| field(&t.decl, n).is_some() && field(&m.to, n).is_none())
+                .map(|n| taken(reader, n, ty))
+        };
+        let after_place = Place::AfterMigration { name: ty.clone() };
+        let view = Declaration::Type(o.decl.clone());
+        let checked = check_declaration(&after, who, &view).map_err(|e| e.within(after_place));
+        let name = o.decl.name.clone();
+        let named = checked.and_then(|()| gone(Some(Place::View { name })).map_or(Ok(()), Err));
+        let Err(named) = named else { continue };
+        // As the store: the view is named only to an author `describe`
+        // shows its definition to; another is told that a declaration
+        // reads the field, or that one could not be declared.
+        let seen = describe_lake(&who.lake, st, who);
+        let shown = |s: &TypeDescription| s.name == o.decl.name && s.view.is_some();
+        if seen.types.iter().any(shown) {
+            return Err(named);
+        }
+        return Err(gone(None).unwrap_or_else(|| {
+            let ty = ty.clone();
+            after_it(Case::NoLongerDeclarable { ty }.into())
+        }));
     }
     // As the store: so does every other declaration in force, in the
     // store's order (types, verbs, triggers, object sets, each by name):
@@ -3099,28 +3593,13 @@ fn preflight(
         for d in &readers {
             let reads = declaration_reads(st, d, &was.name);
             let gone = |n: &&FieldName| field(was, n).is_some() && field(is, n).is_none();
-            let said = |reader: String, n: &FieldName| {
-                let renamed = |(from, _): &&(FieldName, FieldName)| from == n && &is.name == ty;
-                let how = match m.renames.iter().find(renamed) {
-                    Some((_, to)) => format!("renames to `{to}`"),
-                    None => "drops".to_owned(),
-                };
-                invalid(format!(
-                    "after the migration of `{ty}`, {reader} reads `{n}` of `{}`, which the \
-                     migration {how}",
-                    is.name
-                ))
-            };
             let Some(n) = reads.iter().find(gone) else {
                 continue;
             };
             // As the store: an accepter who may not know of the field is told
             // neither it nor its reader.
             if field(was, n).is_some_and(|f| access(who, was, f) == Access::None) {
-                return Err(invalid(format!(
-                    "after the migration of `{ty}`, a declaration reads a field the migration \
-                     takes away"
-                )));
+                return Err(after_it(Case::ReadsTakenAway.into()));
             }
             // As the store: the reader is named only to an author `describe`
             // shows it to; another is told that a declaration reads the
@@ -3134,16 +3613,31 @@ fn preflight(
                 Declaration::ObjectSet(o) => seen.object_sets.iter().any(|s| s.name == o.name),
                 _ => true,
             };
-            let reader = if shown {
-                d.what()
-            } else {
-                "a declaration".to_owned()
+            // A type by what it is shown of it: a relation it is not shown
+            // reads nothing it is told of.
+            let own = match d {
+                Declaration::Type(t) if shown => {
+                    let mut t = t.clone();
+                    known_fields((st, who), &mut t);
+                    let seen = declaration_reads(st, &Declaration::Type(t), &was.name);
+                    seen.into_iter().find(|n| gone(&n))
+                }
+                _ => shown.then(|| n.clone()),
             };
-            return Err(said(reader, n));
+            return Err(match own {
+                Some(n) => taken(Some(d.place()), &n, &is.name),
+                None => taken(None, n, &is.name),
+            });
         }
     }
     // As the store: and the type it migrates to reads only fields it has.
     reads_its_type(st, &Declaration::Type(m.to.clone()))?;
+    // As the store: the renames as their author sent them are judged
+    // against the type as it sees it, then against the type.
+    if let Some(a) = author {
+        a.sent.renamed_fields(&a.known).map_err(invalid)?;
+    }
+    m.renamed_fields(&t.decl).map_err(invalid)?;
     let renamed = |old: &FieldName| -> FieldName {
         m.renames
             .iter()
@@ -3211,18 +3705,21 @@ fn preflight(
         .collect();
     // As the store: a renamed relation keeps its edges; its link records
     // move to the new name's link type, which must hold none.
+    if let Some(a) = author {
+        a.sent.renamed_relations(&a.known).map_err(invalid)?;
+    }
     let pairs = m.renamed_relations(&t.decl).map_err(invalid)?;
     let held = |lt: &TypeName| st.records.values().filter(|r| &r.ty == lt).count() as u64;
     let mut relations = Vec::new();
     for (was, is) in &pairs {
         let carrier = lakelands_api::write::Carrier::of(was);
         let by_links = carrier == lakelands_api::write::Carrier::Links;
+        let wrong = |why: Case| {
+            let (from, to) = (was.name.clone(), is.name.clone());
+            invalid(Said::from(why).within(Place::RelationRename { from, to }))
+        };
         if by_links && held(&links::name(ty, &is.name)) > 0 {
-            return Err(invalid(format!(
-                "renaming relation `{}` to `{}`: the lake keeps the links of an earlier \
-                 relation of that name; take another name",
-                was.name, is.name
-            )));
+            return Err(wrong(Case::RenameNameHeld));
         }
         // As the store: a reference into the link type would name keys that
         // end, and the type that refers to it is named to one who sees it.
@@ -3238,12 +3735,8 @@ fn preflight(
             .peekable();
         if referring.peek().is_some() {
             let named = referring.find(|d| st.visible(who, &d.decl.name).is_some());
-            let it = named.map_or("a declaration".into(), |d| format!("`{}`", d.decl.name));
-            return Err(invalid(format!(
-                "renaming relation `{}` to `{}`: {it} refers to its link type `{old}`, whose \
-                 records would move; retarget it first",
-                was.name, is.name
-            )));
+            let (ty, links) = (named.map(|d| d.decl.name.clone()), old.clone());
+            return Err(wrong(Case::RenameReferredLinks { ty, links }));
         }
         relations.push(lakelands_api::write::RelationRename {
             from: was.name.clone(),
@@ -3277,8 +3770,7 @@ fn preflight(
     let mut report = MigrationReport {
         ty: ty.clone(),
         from_schema_hash: t.schema_hash.clone(),
-        to_schema_hash: lakelands_api::shape::schema_hash(&m.to)
-            .map_err(|e| invalid(e.to_string()))?,
+        to_schema_hash: lakelands_api::shape::schema_hash(&m.to).map_err(invalid)?,
         records_scanned: live.len() as u64,
         lossless: fields.iter().all(|f| f.not_convertible == 0),
         fields,
@@ -3292,8 +3784,7 @@ fn preflight(
         carried,
         restated,
     };
-    let seed = serde_json::to_vec(&(&report, head.0, m)).unwrap_or_default();
-    report.report_id = value::hex(&seed, 1);
+    report.report_id = report_id(&report, head);
     Ok(report)
 }
 
@@ -3373,6 +3864,7 @@ impl Catalog for MockCatalog {
         };
         let (position, st) = self.state_at(&self.log(), pinned)?;
         let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+        check_only(who, t)?;
         bound(&t.decl, &find.params)?;
         view_readable(&st, who, t)?;
         let after = find
@@ -3381,9 +3873,7 @@ impl Catalog for MockCatalog {
             .map(|a| resume_after(&st, t, &find, a))
             .transpose()?;
         if find.total && find.aggregate.is_some() {
-            return Err(invalid(
-                "`total` counts the records a page lists; an `aggregate` answers groups, so give one",
-            ));
+            return Err(invalid(Case::TotalWithAggregate));
         }
         let skip = match find.offset {
             None => 0,
@@ -3394,9 +3884,8 @@ impl Catalog for MockCatalog {
                     (find.aggregate.is_some(), "aggregate"),
                 ];
                 if let Some((_, other)) = beside.iter().find(|(given, _)| *given) {
-                    return Err(invalid(format!(
-                        "`offset` and `{other}` both say where the answer starts; give one"
-                    )));
+                    let other = (*other).to_owned();
+                    return Err(invalid(Case::OffsetBeside { other }));
                 }
                 let max = self.shared.limits.max_offset;
                 if skip > max {
@@ -3406,24 +3895,22 @@ impl Catalog for MockCatalog {
             }
         };
         if find.aggregate.is_some() {
-            return Err(invalid("the in-memory mock does not aggregate"));
+            let what = Unmocked::Aggregate;
+            return Err(invalid(Case::MockCannot { what }));
         }
         let e = filter(&st, who, t, find.filter.as_ref())?;
         for o in &find.order_by {
-            if let Some((field, message)) = o.misfit() {
-                return Err(Error::Refused {
-                    field,
-                    reason: Refusal::Invalid { message },
-                });
+            if let Some((field, case)) = o.misfit() {
+                let reason = Refusal::Invalid(Box::new(case.into()));
+                return Err(Error::Refused { field, reason });
             }
             if o.by == OrderBy::Latest && t.decl.view.is_some() {
-                return Err(invalid(format!(
-                    "`order_by` `latest` orders records by their latest change, and `{ty}` is a \
-                     view, whose records are computed and have none"
-                )));
+                let ty = Some(ty.clone());
+                return Err(invalid(Case::LatestNoChange { ty }));
             }
             if o.by != OrderBy::Latest {
                 readable(&st, who, t, &o.field)?;
+                steady_order(&t.decl, o.field.as_str())?;
             }
         }
         let mut rows = candidates(&st, who, t, find.at, e.as_ref())?;
@@ -3480,13 +3967,14 @@ impl Catalog for MockCatalog {
         let who = &self.followed(who, get.at.as_of);
         let (position, st) = self.state_at(&self.log(), get.at.as_of)?;
         let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+        check_only(who, t)?;
         bound(&t.decl, &get.params)?;
         view_readable(&st, who, t)?;
-        valid_time_readable(&st, who, t, get.at)?;
+        let valid = valid_time_readable(&st, who, t, get.at)?;
         let r = st
             .live(ty, &get.key)
             .filter(|r| !r.restricted || who.grants.restricted)
-            .filter(|r| valid_at(t, r, get.at.valid_at))
+            .filter(|r| valid_at(t, r, valid) && st.admitted(who, r))
             .ok_or_else(|| no_record(ty, &get.key))?;
         Ok(Reply {
             position,
@@ -3590,11 +4078,10 @@ impl Catalog for MockCatalog {
             .into_iter()
             .find(|f| fields.contains_key(*f))
         {
-            return Err(on(
-                &FieldName::from(f),
-                Refusal::Invalid {
-                    message: format!("a link's `{f}` is given as `key` and `to`"),
-                },
+            let end = FieldName::from(f);
+            return Err(invalid_field(
+                &end,
+                Case::LinkEndAsField { end: end.clone() },
             ));
         }
         let lt = links::name(ty, relation);
@@ -3616,7 +4103,7 @@ impl Catalog for MockCatalog {
             &opts,
         )?;
         // The cardinality reads other links: after the grants (024).
-        link_cardinality(&st, &lt, &r, key, to)?;
+        link_cardinality(&st, who, &lt, &r, key, to)?;
         let position = batch.peek().0 - 1;
         self.commit(&mut log, batch);
         Ok(Outcome::Applied {
@@ -3686,14 +4173,6 @@ impl Catalog for MockCatalog {
             return Ok(o);
         }
         let v = check_call(&st, who, verb, key, &payload, &opts)?.clone();
-        // The mock binds no executor, so a verb that reaches outside the
-        // lake is refused when called, as the store refuses one whose
-        // executor its host did not bind.
-        if let VerbEffect::External { executor } = &v.effect {
-            return Err(Error::Unbound {
-                seam: format!("the verb executor `{executor}`"),
-            });
-        }
         // Past the executor, only a verb on a record is left.
         let key = record_key(&v, key)?;
         check_version(&st, &v.on, key, &opts)?;
@@ -3725,8 +4204,9 @@ impl Catalog for MockCatalog {
                 payload,
                 opts,
             };
+            let pinned = pinned(&st, who, &write)?;
             let (position, proposal) =
-                plan_propose(&st, &mut batch, who, write, why.clone(), key_)?;
+                plan_propose(&st, &mut batch, who, (write, pinned), why.clone(), key_)?;
             log.proposers.insert(proposal.clone(), who.clone());
             Outcome::Proposed {
                 position,
@@ -3762,38 +4242,46 @@ impl Catalog for MockCatalog {
         let t = st
             .visible(who, &start.ty)
             .ok_or_else(|| no_type(&start.ty))?;
+        check_only(who, t)?;
         bound(&t.decl, &start.params)?;
         view_readable(&st, who, t)?;
         let measure = matches!(pattern.project, Projection::Degree | Projection::Components);
         let limit = self.limit(pattern.limit, measure)?;
-        if start.search.is_some() || pattern.to.is_some() {
-            return Err(invalid(
-                "the in-memory mock starts a pattern from a key or a filter only",
-            ));
+        if start.search.is_some() {
+            let what = Unmocked::PatternStart;
+            return Err(invalid(Case::MockCannot { what }));
         }
+        if pattern.to.is_some() && !measure {
+            let what = Unmocked::PatternTo;
+            return Err(invalid(Case::MockCannot { what }));
+        }
+        let step_at = |i: usize, relation: &RelationName| Place::Step {
+            step: i + 1,
+            relation: relation.clone(),
+        };
         if measure {
             measures::check(&pattern)?;
-            for step in &pattern.steps {
+            for (i, step) in pattern.steps.iter().enumerate() {
                 let declared = st.types.values().any(|o| {
                     o.decl.relations.iter().any(|r| {
                         r.name == step.relation
+                            && relation_shown(&st, who, &o.decl, r)
                             && (pattern.project == Projection::Components
                                 || (step.walk != Walk::In && o.decl.name == t.decl.name)
                                 || (step.walk != Walk::Out && r.target == t.decl.name))
                     })
                 });
                 if !declared {
-                    return Err(invalid(format!(
-                        "`{}` has no relation `{}` to walk",
-                        t.decl.name, step.relation
-                    )));
+                    let (ty, relation, walk) =
+                        (t.decl.name.clone(), step.relation.clone(), step.walk);
+                    return Err(invalid(Case::NoRelationToWalk { ty, relation, walk }));
                 }
                 // Either end of the relation the measure may arrive at.
                 for o in st.types.values() {
                     for r in o.decl.relations.iter().filter(|r| r.name == step.relation) {
                         for end in [&o.decl.name, &r.target] {
                             if let Some(e) = st.types.get(end) {
-                                unbound_view(&t.decl.name, e, &step.relation)?;
+                                unbound_view(&t.decl.name, e, step_at(i, &step.relation))?;
                             }
                         }
                     }
@@ -3826,7 +4314,8 @@ impl Catalog for MockCatalog {
             });
         }
         let Projection::Rows { fields } = &pattern.project else {
-            return Err(invalid("the in-memory mock projects patterns as rows only"));
+            let what = Unmocked::PatternProjection;
+            return Err(invalid(Case::MockCannot { what }));
         };
         // Rows are ordered by their paths, `type.field`: each probes its
         // field as `find`'s order does (024), on a type the principal is
@@ -3837,6 +4326,7 @@ impl Catalog for MockCatalog {
                 && let Some(ot) = st.visible(who, &TypeName::from(ty))
             {
                 readable(&st, who, ot, &FieldName::from(field))?;
+                steady_order(&ot.decl, field)?;
             }
         }
         let e = filter(&st, who, t, start.filter.as_ref())?;
@@ -3846,13 +4336,17 @@ impl Catalog for MockCatalog {
             .map(|r| vec![r])
             .collect();
         let mut scope_ty = t;
-        for step in &pattern.steps {
+        for (i, step) in pattern.steps.iter().enumerate() {
             // A step over a relation the type does not declare is
             // refused, not answered empty. A step naming a relation's
             // `inverse` walks that relation the other way; a relation
             // declared under the name wins.
+            let shown = |o: &TypeDecl, r: &RelationDecl| relation_shown(&st, who, o, r);
             let forward = |named: &dyn Fn(&RelationDecl) -> bool| {
-                let r = scope_ty.decl.relations.iter().find(|r| named(r))?;
+                let relations = scope_ty.decl.relations.iter();
+                let r = relations
+                    .filter(|r| shown(&scope_ty.decl, r))
+                    .find(|r| named(r))?;
                 let link = links::name(&scope_ty.decl.name, &r.name);
                 Some((
                     r.target.clone(),
@@ -3869,8 +4363,8 @@ impl Catalog for MockCatalog {
                         .iter()
                         .find(|r| r.target == scope_ty.decl.name && named(r))?;
                     // As the store: named from its target's end only to
-                    // one shown the type that declares it (006, extended).
-                    st.visible(who, &o.decl.name)?;
+                    // one shown the relation (006, extended).
+                    shown(&o.decl, r).then_some(())?;
                     let link = links::name(&o.decl.name, &r.name);
                     Some((
                         o.decl.name.clone(),
@@ -3887,46 +4381,41 @@ impl Catalog for MockCatalog {
                 _ => backward(&name).or_else(|| forward(&inverse)),
             };
             let Some((target, via, forward, link_type)) = walked else {
-                return Err(invalid(match step.walk {
-                    Walk::Out => format!(
-                        "`{}` declares no relation `{}`",
-                        scope_ty.decl.name, step.relation
-                    ),
-                    _ => format!(
-                        "no relation `{}` reaches `{}`",
-                        step.relation, scope_ty.decl.name
-                    ),
-                }));
+                let (ty, relation) = (scope_ty.decl.name.clone(), step.relation.clone());
+                let walk = step.walk;
+                return Err(invalid(Case::NoRelationToWalk { ty, relation, walk }));
             };
             if step.depth.min != 1 || step.depth.max != 1 || step.walk == Walk::Both {
-                return Err(invalid(
-                    "the in-memory mock walks one hop, in one direction, per step",
-                ));
+                let what = Unmocked::Hops;
+                return Err(invalid(Case::MockCannot { what }));
             }
-            // A relation without `via` is walked over its live link records.
+            // A relation without `via` is walked over its live link records
+            // its walker's grants admit (051).
             let linked_by = |from: &RecordKey, to: &RecordKey| {
                 st.live(&link_type, &lakelands_api::key::link_key(from, to))
-                    .is_some()
+                    .is_some_and(|l| st.admitted(who, l))
             };
             let next = st.visible(who, &target).ok_or_else(|| no_type(&target))?;
             view_readable(&st, who, next)?;
-            unbound_view(&t.decl.name, next, &step.relation)?;
+            unbound_view(&t.decl.name, next, step_at(i, &step.relation))?;
             if let Some(ty) = &step.ty
                 && ty != &target
             {
-                return Err(invalid(format!(
-                    "`{}` reaches `{target}`, not `{ty}`",
-                    step.relation
-                )));
+                let (reached, ty) = (target.clone(), ty.clone());
+                let said = Said::from(Case::StepReaches { reached, ty });
+                return Err(invalid(said.within(step_at(i, &step.relation))));
             }
-            // A derived relation probes its matched fields on both sides
-            // (024, 044).
+            // A relation probes the reference field that carries it, and a
+            // derived one its matched fields on both sides (024, 044).
+            let (owner, target) = if forward {
+                (scope_ty, next)
+            } else {
+                (next, scope_ty)
+            };
+            if let (Some(v), _) = &via {
+                readable(&st, who, owner, v)?;
+            }
             if let (_, Some(d)) = &via {
-                let (owner, target) = if forward {
-                    (scope_ty, next)
-                } else {
-                    (next, scope_ty)
-                };
                 for p in &d.pairs {
                     readable(&st, who, owner, &p.from)?;
                     readable(&st, who, target, &p.to)?;
@@ -3991,6 +4480,7 @@ impl Catalog for MockCatalog {
 
     async fn search(&self, who: &Principal, search: Search) -> Result<Reply<Hits>> {
         self.admit(who)?;
+        let given = who;
         let who = &self.followed(who, search.at.as_of);
         let of = read_of(serde_json::to_string(&(
             &search.mode,
@@ -4008,14 +4498,13 @@ impl Catalog for MockCatalog {
         let t = st
             .visible(who, &search.ty)
             .ok_or_else(|| no_type(&search.ty))?;
+        check_only(who, t)?;
         if t.decl.view.is_some() {
-            return Err(invalid(format!(
-                "`{}` is a view, and a view is not searched",
-                search.ty
-            )));
+            let ty = search.ty.clone();
+            return Err(invalid(Case::ViewNotSearched { ty }));
         }
-        if let Some((field, message)) = search.mode.misfit() {
-            let reason = Refusal::Invalid { message };
+        if let Some((field, case)) = search.mode.misfit() {
+            let reason = Refusal::Invalid(Box::new(case.into()));
             return Err(Error::Refused { field, reason });
         }
         // A search probes every searchable field, or the ones it names,
@@ -4035,27 +4524,23 @@ impl Catalog for MockCatalog {
             embed.into_iter().flat_map(|e| e.from.iter()).chain([*v])
         });
         let searched: Vec<&FieldName> = match text_fields {
-            // Naming none, it reads the searchable fields the caller knows
-            // of; one it may not know of is never searched.
+            // Naming none, it reads the searchable fields the caller reads;
+            // one it may not read is never searched.
             None => t
                 .decl
                 .fields
                 .iter()
-                .filter(|f| f.searchable && access(who, &t.decl, f) != Access::None)
+                .filter(|f| f.searchable && access(who, &t.decl, f).reads())
                 .map(|f| &f.name)
                 .collect(),
-            Some([]) => return Err(invalid("`fields` names no field")),
+            Some([]) => return Err(invalid(Case::SearchFieldsEmpty)),
             Some(named) => {
                 let named: BTreeSet<&FieldName> = named.iter().collect();
                 for name in &named {
                     readable(&st, who, t, name)?;
                     if !field(&t.decl, name).is_some_and(|f| f.searchable) {
-                        return Err(on(
-                            name,
-                            Refusal::Invalid {
-                                message: format!("`{name}` of `{}` is not searchable", t.decl.name),
-                            },
-                        ));
+                        let (field, ty) = ((*name).clone(), t.decl.name.clone());
+                        return Err(invalid_field(name, Case::NotSearchable { field, ty }));
                     }
                 }
                 named.into_iter().collect()
@@ -4064,8 +4549,65 @@ impl Catalog for MockCatalog {
         for name in searched.iter().copied().chain(probed) {
             readable(&st, who, t, name)?;
         }
+        // As the store: a vector ranking reads a vector field, and a hybrid
+        // search without a vector reads one a model fills.
+        for (name, ..) in &vectors {
+            if let Some(f) = field(&t.decl, name)
+                .filter(|f| f.ty.kind != lakelands_api::ontology::StorageKind::Vector)
+            {
+                let (field, kind) = ((*name).clone(), f.ty.kind);
+                return Err(invalid_field(name, Case::SearchNotVector { field, kind }));
+            }
+        }
+        if let SearchMode::Hybrid {
+            field: name,
+            vector: None,
+            ..
+        } = &search.mode
+            && field(&t.decl, name).is_some_and(|f| f.embed.is_none())
+        {
+            let case = Case::SearchNeedsVector {
+                field: name.clone(),
+            };
+            return Err(invalid_field(name, case));
+        }
+        // As the store: a query vector is judged by the field's declared
+        // length, never by a stored vector.
+        let embedded = matches!(&search.mode, SearchMode::Hybrid { vector: None, .. });
+        for (f, v, _) in vectors.iter().filter(|_| !embedded) {
+            let d = field(&t.decl, f).and_then(|f| f.ty.dimensions);
+            if let Some(d) = d.filter(|d| v.len() != *d as usize) {
+                let case = Case::QueryDimensions {
+                    query: v.len(),
+                    held: d as usize,
+                };
+                let at = Said::from(case).within(Place::Field { name: (*f).clone() });
+                let name = search.ty.clone();
+                return Err(invalid(at.within(Place::Type { name })));
+            }
+        }
         let e = filter(&st, who, t, search.filter.as_ref())?;
-        let rows = candidates(&st, who, t, search.at, e.as_ref())?;
+        let mut rows = candidates(&st, who, t, search.at, e.as_ref())?;
+        // As the store (051): a holder's search before the head keeps a
+        // candidate only where the head admits it too, a link by its ends,
+        // under the grant followed there and by the name its type bears
+        // there, so that a ranking by the head's text and vectors finds no
+        // other's record.
+        if pinned.is_some() && only_holder(who, &t.decl) {
+            // One lock at a time: `followed` reads the log too.
+            let head = self.state_at(&self.log(), None)?.1;
+            let now = self.followed(given, None);
+            let mut name = t.decl.name.clone();
+            for r in self.renames() {
+                if let Some(to) = r.to.filter(|_| r.at > position && r.ty == name) {
+                    name = to;
+                }
+            }
+            rows.retain(|r| {
+                let at_head = head.records.get(&(name.clone(), r.key.clone()));
+                at_head.is_some_and(|h| !h.retired && head.admitted(&now, h))
+            });
+        }
         // A field the lake asks an index for at the head answers the
         // index's set, and says so; the mock's set is the exact ranking.
         let by_text = matches!(
@@ -4124,6 +4666,19 @@ impl Catalog for MockCatalog {
         // order they are summed: a hybrid search's text, then each vector
         // field (046).
         let mut lists = Vec::new();
+        // As the store: each axis that ranked, counted where it is fused.
+        let axis = |field: Option<&FieldName>| Axis {
+            axis: (if field.is_some() { "vector" } else { "lexical" }).into(),
+            field: field.cloned(),
+            candidates: None,
+            weight: None,
+        };
+        // As the store: a ranking the search does not weigh takes its
+        // type's `search_weights` setting at the read's position.
+        let key = RecordKey::from(format!("{SEARCH_WEIGHTS_SETTING}{}", search.ty));
+        let set = st.live(&TypeName::from(SETTING_TYPE), &key);
+        let (field_weights, text_default) = search_weights(set.and_then(|r| r.fields.get("value")));
+        let mut axes = Vec::new();
         if let (
             SearchMode::Hybrid {
                 text, text_weight, ..
@@ -4131,10 +4686,16 @@ impl Catalog for MockCatalog {
             false,
         ) = (&search.mode, by_text)
         {
-            lists.push((text_weight.unwrap_or(1.0), matching(text)));
+            lists.push((text_weight.or(text_default).unwrap_or(1.0), matching(text)));
+            axes.push(axis(None));
         }
         for (f, vector, weight) in vectors.iter().filter(|_| !by_text) {
-            lists.push((weight.unwrap_or(1.0), nearest(f, vector)));
+            let set = field_weights.get(f.as_str()).copied();
+            lists.push((weight.or(set).unwrap_or(1.0), nearest(f, vector)));
+            axes.push(axis(Some(f)));
+        }
+        if axes.is_empty() {
+            axes.push(axis(None));
         }
         let (scored, ranked_by) = match &search.mode {
             SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. } if by_text => {
@@ -4150,6 +4711,9 @@ impl Catalog for MockCatalog {
                 // the read may see and to `max_limit` (046).
                 let window = self.shared.limits.max_limit as usize;
                 let mut fused: BTreeMap<&RecordKey, (f64, &StoredRecord)> = BTreeMap::new();
+                for (a, (w, list)) in axes.iter_mut().zip(&lists) {
+                    (a.candidates, a.weight) = (Some(list.len().min(window) as u64), Some(*w));
+                }
                 for (weight, list) in lists {
                     for (rank, (_, r)) in best_first(list).into_iter().take(window).enumerate() {
                         fused.entry(&r.key).or_insert((0.0, r)).0 += weight / (60.0 + rank as f64);
@@ -4183,6 +4747,7 @@ impl Catalog for MockCatalog {
                 hits,
                 next_cursor,
                 ranked_by: ranked_by.to_owned(),
+                axes,
             },
         })
     }
@@ -4212,8 +4777,10 @@ impl Catalog for MockCatalog {
         if let Some(o) = remembered(&st, who, &opts) {
             return Ok(o);
         }
+        let pinned = pinned(&st, who, &write)?;
         let key = opts.idempotency_key;
         let mut batch = Batch::at(&log);
+        let write = (write, pinned);
         let (position, proposal) = plan_propose(&st, &mut batch, who, write, why.clone(), key)?;
         log.proposers.insert(proposal.clone(), who.clone());
         self.commit(&mut log, batch);
@@ -4234,11 +4801,13 @@ impl Catalog for MockCatalog {
         if write.is_schema() && !who.grants.schema {
             return Err(refused(Refusal::NotGranted));
         }
-        let proposer = log
-            .proposers
-            .get(proposal)
-            .cloned()
-            .ok_or_else(|| invalid("the mock does not know who made this proposal"))?;
+        let (_, then) = self.state_at(&log, Some(p.position))?;
+        let logged = log.events.get(p.position.0 as usize);
+        unmoved(&st, &then, logged, p.position)?;
+        let proposer = log.proposers.get(proposal).cloned().ok_or_else(|| {
+            let what = Unmocked::Proposer;
+            invalid(Case::MockCannot { what })
+        })?;
         let mut batch = Batch::at(&log);
         let accepted = batch.push(Draft::new(
             who,
@@ -4255,13 +4824,19 @@ impl Catalog for MockCatalog {
             cause: Some(accepted),
         };
         let mut renamed = Vec::new();
+        let told = |e| told(&st, who, p, e);
         let version = match write {
             ProposedWrite::Upsert {
                 ty,
                 key,
                 patch,
                 opts,
-            } => Some(plan_upsert(&by, &mut batch, &ty, &key, patch, &opts)?),
+            } => {
+                let version = plan_upsert(&by, &mut batch, &ty, &key, patch, &opts);
+                let version = version.map_err(told)?;
+                reviewed(&st, who, &batch, &ty, &key)?;
+                Some(version)
+            }
             ProposedWrite::Retire { ty, key, opts } => {
                 Some(plan_retire(&by, &mut batch, &ty, &key, &opts)?)
             }
@@ -4276,18 +4851,18 @@ impl Catalog for MockCatalog {
                 // differently since, it is not what was checked (013).
                 if let Some(now) = st.verbs.get(&verb) {
                     scoped(now, key.as_ref(), &opts)?;
-                    let (_, then) = self.state_at(&log, Some(p.position))?;
                     if then.verbs.get(&verb) != Some(now) {
-                        return Err(invalid(format!(
-                            "verb `{verb}` was declared again, differently, after this call \
-                             was proposed; propose the call again"
-                        )));
+                        let verb = verb.clone();
+                        return Err(invalid(Case::VerbRedeclared { verb }));
                     }
                 }
-                let v = check_call(&st, &proposer, &verb, key.as_ref(), &payload, &opts)?.clone();
+                let v = check_call(&st, &proposer, &verb, key.as_ref(), &payload, &opts);
+                let v = v.map_err(told)?.clone();
                 let key = record_key(&v, key.as_ref())?;
                 check_version(&st, &v.on, key, &opts)?;
-                Some(plan_run(&by, &mut batch, &v, key, payload, &opts)?)
+                let version = plan_run(&by, &mut batch, &v, key, payload, &opts).map_err(told)?;
+                reviewed(&st, who, &batch, &v.on, key)?;
+                Some(version)
             }
             // Checked again on the head; a refusal leaves the proposal
             // pending, since nothing is committed.
@@ -4310,24 +4885,21 @@ impl Catalog for MockCatalog {
                 // the proposal it would remove what was added since.
                 let ty = &migration.to.name;
                 let on = st.types.get(ty).map(|t| &t.schema_hash);
+                let changed = || invalid(Case::ChangedSinceProposed { ty: ty.clone() });
                 if on != Some(&shown.from_schema_hash) {
-                    return Err(invalid(format!(
-                        "`{ty}` changed since this migration was proposed; propose it again"
-                    )));
+                    return Err(changed());
                 }
                 let head = Position(accepted.0.saturating_sub(1));
-                let report = preflight(&st, head, &migration, who)?;
+                let report = preflight(&st, head, (&migration, None), who)?;
                 // As the store: nor does it take away a mark set since.
                 if report.restated != shown.restated {
-                    return Err(invalid(format!(
-                        "`{ty}` changed since this migration was proposed; propose it again"
-                    )));
+                    return Err(changed());
                 }
                 if !report.lossless {
-                    return Err(lossy(&st, who, &migration, report));
+                    return Err(lossy(&st, who, &migration, head, report));
                 }
                 let mut known = (*migration).clone();
-                known_migration(&st, who, &mut known, &[]);
+                known_migration(&st, who, &mut known, None);
                 renamed = known.renames;
                 let version = st
                     .types
@@ -4351,27 +4923,40 @@ impl Catalog for MockCatalog {
                 }
                 None
             }
-            ProposedWrite::MigrateValueType { to, report: shown } => {
+            ProposedWrite::MigrateValueType {
+                to,
+                renames,
+                report: shown,
+            } => {
                 // As a migration: accepted only on the declaration it was
                 // proposed on, and only while every stored value fits.
                 let declaration = Declaration::ValueType((*to).clone());
-                let (schema_hash, version) = identity_version(&st, &declaration);
+                let (_, version) = identity_version(&st, &declaration);
+                let name = to.name.clone();
+                let changed = || {
+                    let value_type = name.clone();
+                    invalid(Case::ValueTypeChangedSinceProposed { value_type })
+                };
                 if version != shown.from_version + 1 {
-                    return Err(invalid(format!(
-                        "value type `{}` changed since this was proposed; propose it again",
-                        to.name
-                    )));
+                    return Err(changed());
                 }
                 let head = Position(accepted.0.saturating_sub(1));
-                tightening(&st, &proposer, head, &to)?;
-                let body = EventBody::Declared {
-                    declaration,
-                    schema_hash,
-                    version,
+                let m = ValueTypeMigration { to: *to, renames };
+                let report = tightening(&st, &proposer, head, &m)?;
+                // As the store: renames reach only the fields the report
+                // named at the proposal.
+                let uses = |r: &lakelands_api::write::ValueTypeReport| {
+                    (r.fields.iter())
+                        .map(|u| (u.ty.clone(), u.field.clone()))
+                        .collect::<Vec<_>>()
                 };
-                let mut d = Draft::new(&proposer, Origin::System, body);
-                d.cause = Some(accepted);
-                batch.push(d);
+                if !m.renames.is_empty() && uses(&report) != uses(&shown) {
+                    return Err(changed());
+                }
+                let id = report.report_id;
+                for d in value_type_drafts(&st, &proposer, m, id, Some(accepted)) {
+                    batch.push(d);
+                }
                 None
             }
         };
@@ -4422,7 +5007,7 @@ impl Catalog for MockCatalog {
         filter: ProposalFilter,
     ) -> Result<Reply<Vec<Proposal>>> {
         self.admit(who)?;
-        let who = &self.followed(who, None);
+        let asked = who;
         let limit = self.limit(filter.limit, false)?;
         let (pinned, offset) = match &filter.cursor {
             Some(c) => {
@@ -4432,6 +5017,12 @@ impl Catalog for MockCatalog {
             None => (filter.at.as_of, 0),
         };
         let (position, st) = self.state_at(&self.log(), pinned)?;
+        // As the store: the reader's grants followed to the listing, its
+        // references hidden by the lake there (024, extended).
+        let renames = self.renames();
+        let mut here = asked.clone();
+        here.grants.follow(&renames, pinned);
+        let who = &st.hidden(&here);
         let touches = |w: &ProposedWrite, ty: &TypeName| match w {
             ProposedWrite::Upsert { ty: t, .. } | ProposedWrite::Retire { ty: t, .. } => t == ty,
             ProposedWrite::Call { verb, .. } => st.verbs.get(verb).is_some_and(|v| &v.on == ty),
@@ -4453,6 +5044,13 @@ impl Catalog for MockCatalog {
             .values()
             .filter(|p| who.grants.review || p.proposer == writer)
             .filter(|p| filter.state.is_none_or(|s| p.state == s))
+            // A migration's report counts every owner's records: a holder
+            // of `only` is listed none (051).
+            .filter(|p| !holds_only(who) || !p.write.as_ref().is_some_and(migrates))
+            // As the store (lakelands#762): one on a type its reader is not
+            // shown, or of a verb that reads what it may not read, is not
+            // there to it.
+            .filter(|p| !p.write.as_ref().is_some_and(|w| hidden_from(&st, who, w)))
             .cloned()
             .collect();
         // Proposals are made in log order, so `proposed_at` and
@@ -4467,16 +5065,39 @@ impl Catalog for MockCatalog {
         }
         // As the store: the entry as its reader is shown it, and the kind
         // and the type asked of that.
-        let renames = self.renames();
         for p in &mut rows {
             // `more` is what the trim left out, not what the completion added.
             let mut logged = p.write.take();
             logged.iter_mut().for_each(|w| completed(&st, w));
             let shown = logged.clone();
-            let since: Vec<Renamed> = (renames.iter().filter(|r| r.at > p.position))
-                .cloned()
-                .collect();
-            p.write = shown.and_then(|mut w| known_shape(&st, who, &mut w, &since).then_some(w));
+            // As the store: a proposed migration is judged with the grants
+            // followed to the position it was proposed at, and a report made
+            // from a type changed since by the type it was made from, where
+            // those grants hide a field.
+            // Its references are held as the type it was proposed against
+            // shows them; a bundle's, as the bundle in force would, from the
+            // grants as asked.
+            let mut then = asked.clone();
+            then.grants.follow(&renames, Some(p.position));
+            let made = match &logged {
+                Some(ProposedWrite::Migrate { migration, report }) => {
+                    let ty = &migration.to.name;
+                    let head = st.types.get(ty).map(|t| &t.schema_hash);
+                    let stale = head != Some(&report.from_schema_hash) && hides_some(&then);
+                    let at = stale.then(|| self.state_at(&self.log(), Some(p.position)).ok());
+                    let at = at.flatten().map(|(_, at)| at);
+                    then = at.as_ref().unwrap_or(&st).hidden(&then);
+                    let made = at.and_then(|at| at.types.get(ty).cloned());
+                    made.map(|t| t.decl)
+                }
+                Some(ProposedWrite::Declare { .. }) => {
+                    then = here.clone();
+                    None
+                }
+                _ => None,
+            };
+            let listing = (&then, made.as_ref(), p.position);
+            p.write = shown.and_then(|mut w| known_shape(&st, who, &mut w, listing).then_some(w));
             p.more = p.write != logged;
         }
         rows.retain(|p| {
@@ -4494,7 +5115,7 @@ impl Catalog for MockCatalog {
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome> {
         self.admit_write(who)?;
         let who = &self.followed(who, None);
-        if !who.grants.schema {
+        if !who.grants.schema || holds_only(who) {
             return Err(refused(Refusal::NotGranted));
         }
         let mut log = self.log();
@@ -4514,7 +5135,7 @@ impl Catalog for MockCatalog {
     async fn apply(&self, who: &Principal, declarations: Vec<Declaration>) -> Result<Outcome> {
         self.admit_write(who)?;
         let who = &self.followed(who, None);
-        if !who.grants.schema {
+        if !who.grants.schema || holds_only(who) {
             return Err(refused(Refusal::NotGranted));
         }
         let mut log = self.log();
@@ -4547,7 +5168,7 @@ impl Catalog for MockCatalog {
     async fn recompute(&self, who: &Principal, what: Recompute) -> Result<Outcome> {
         self.admit_write(who)?;
         let who = &self.followed(who, None);
-        if !who.grants.schema {
+        if !who.grants.schema || holds_only(who) {
             return Err(refused(Refusal::NotGranted));
         }
         let mut log = self.log();
@@ -4562,12 +5183,7 @@ impl Catalog for MockCatalog {
             },
             Recompute::Type(name) => {
                 st.visible(who, &name).ok_or_else(|| no_type(&name))?;
-                return Err(invalid(format!(
-                    "`{name}` has no field computed outside the lake (an embedding, or a \
-                     field of a function with a backing), so nothing of it is computed \
-                     again: a derived field is as of its record's last write, and a \
-                     function is named itself"
-                )));
+                return Err(invalid(Case::NothingComputedOutside { ty: name }));
             }
         };
         let (schema_hash, version) = identity_version(&st, &declaration);
@@ -4576,6 +5192,7 @@ impl Catalog for MockCatalog {
             declaration,
             schema_hash,
             version,
+            with_the_set: false,
         };
         let position = batch.push(Draft::new(who, Origin::System, body));
         self.commit(&mut log, batch);
@@ -4592,7 +5209,7 @@ impl Catalog for MockCatalog {
     async fn add_field(&self, who: &Principal, ty: &TypeName, f: FieldDecl) -> Result<Outcome> {
         self.admit_write(who)?;
         let who = &self.followed(who, None);
-        if !who.grants.schema {
+        if !who.grants.schema || holds_only(who) {
             return Err(refused(Refusal::NotGranted));
         }
         let mut log = self.log();
@@ -4601,41 +5218,16 @@ impl Catalog for MockCatalog {
             return Err(refused(Refusal::Reserved));
         }
         let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
-        if field(&t.decl, &f.name).is_some() {
-            return Err(on(
-                &f.name,
-                Refusal::Invalid {
-                    message: format!("`{ty}` already has a field `{}`", f.name),
-                },
-            ));
-        }
-        if f.required && st.records.values().any(|r| &r.ty == ty && !r.retired) {
-            return Err(on(
-                &f.name,
-                Refusal::Constraint {
-                    message: format!(
-                        "`{}` cannot be required: records of `{ty}` have no value for it",
-                        f.name
-                    ),
-                },
-            ));
-        }
+        // As the store: the field is added to its author's view of the
+        // type, and the type with it is declared as `declare` declares it.
         let mut decl = t.decl.clone();
+        known_fields((&st, who), &mut decl);
+        if field(&decl, &f.name).is_some() {
+            let (ty, field) = (ty.clone(), f.name.clone());
+            return Err(invalid_field(&f.name, Case::FieldExists { ty, field }));
+        }
         decl.fields.push(f);
-        embeddings(&decl)?;
-        let mut batch = Batch::at(&log);
-        let position = batch.push(Draft::new(
-            who,
-            Origin::System,
-            EventBody::Declared {
-                schema_hash: Some(
-                    lakelands_api::shape::schema_hash(&decl).map_err(|e| invalid(e.to_string()))?,
-                ),
-                version: t.version + 1,
-                declaration: Declaration::Type(decl),
-            },
-        ));
-        self.commit(&mut log, batch);
+        let position = self.declare_in(&mut log, who, Declaration::Type(decl))?;
         Ok(Outcome::Applied {
             position,
             version: None,
@@ -4652,34 +5244,36 @@ impl Catalog for MockCatalog {
     ) -> Result<Reply<MigrationReport>> {
         self.admit(who)?;
         let who = &self.followed(who, None);
-        if !who.grants.schema {
+        if !who.grants.schema || holds_only(who) {
             return Err(refused(Refusal::NotGranted));
         }
         let log = self.log();
         let (position, st) = self.state_at(&log, None)?;
         let mut migration = migration;
-        authored(&st, who, &mut migration)?;
-        let mut data = preflight(&st, position, &migration, who)?;
-        shown_report(&st, who, &migration, &mut data);
+        let author = authored(&st, who, &mut migration)?;
+        let data = preflight(&st, position, (&migration, author.as_ref()), who)?;
+        let data = shown(&st, who, &migration, position, data);
         Ok(Reply { position, data })
     }
 
     async fn migrate_value_type(
         &self,
         who: &Principal,
-        to: lakelands_api::ontology::ValueTypeDecl,
+        m: ValueTypeMigration,
     ) -> Result<Reply<lakelands_api::write::ValueTypeReport>> {
         self.admit_write(who)?;
         let who = &self.followed(who, None);
-        if !who.grants.schema {
+        if !who.grants.schema || holds_only(who) {
             return Err(refused(Refusal::NotGranted));
         }
         let log = self.log();
         let (head, st) = self.state_at(&log, None)?;
-        check_new_value_type(&st, who, &to)?;
+        check_new_value_type(&st, who, &m.to)?;
         // As the store: a use and a misfit are shown where the caller is
-        // shown the type and reads the field; the totals and the id stay.
-        let mut data = crate::valuetypes::preflight(&st, head, &to)?;
+        // shown the type and reads the field; the totals, `fits` and the id
+        // stay, and renames are not granted to one shown less.
+        let mut data = crate::valuetypes::preflight(&st, head, &m)?;
+        renames_shown(&st, who, &m, &data)?;
         let read = |ty: &TypeName, f: &FieldName| {
             (st.visible(who, ty)).is_some_and(|t| readable(&st, who, t, f).is_ok())
         };
@@ -4694,42 +5288,47 @@ impl Catalog for MockCatalog {
     async fn migrate_value_type_apply(
         &self,
         who: &Principal,
-        to: lakelands_api::ontology::ValueTypeDecl,
+        m: ValueTypeMigration,
         report_id: &str,
     ) -> Result<Outcome> {
         self.admit_write(who)?;
         let who = &self.followed(who, None);
-        if !who.grants.schema {
+        if !who.grants.schema || holds_only(who) {
             return Err(refused(Refusal::NotGranted));
         }
         let mut log = self.log();
         let (head, st) = self.state_at(&log, None)?;
-        check_new_value_type(&st, who, &to)?;
-        let report = crate::valuetypes::preflight(&st, head, &to)?;
+        check_new_value_type(&st, who, &m.to)?;
+        let report = crate::valuetypes::preflight(&st, head, &m)?;
         if report.report_id != report_id {
-            return Err(invalid(
-                "the lake moved since this report was made; run the preflight again",
-            ));
+            return Err(invalid(Case::MigrationStale));
         }
+        renames_shown(&st, who, &m, &report)?;
         if !report.fits {
-            return Err(invalid(format!(
-                "value type `{}` is not tightened: {} stored value(s) or a field's declared \
-                 `initial` would not fit it",
-                to.name, report.misfits
-            )));
+            // As the store: the first misfits the caller is shown are named.
+            let read = |ty: &TypeName, f: &FieldName| {
+                (st.visible(who, ty)).is_some_and(|t| readable(&st, who, t, f).is_ok())
+            };
+            let first = (report.first.iter().filter(|m| read(&m.ty, &m.field)))
+                .map(|m| lakelands_api::error::RecordName::FieldOf {
+                    ty: m.ty.clone(),
+                    key: m.key.clone(),
+                    field: m.field.clone(),
+                })
+                .collect();
+            let (value_type, misfits) = (m.to.name.clone(), report.misfits);
+            return Err(invalid(Case::ValueTypeNotTightened {
+                value_type,
+                misfits,
+                first,
+            }));
         }
-        let declaration = Declaration::ValueType(to);
-        let (schema_hash, version) = identity_version(&st, &declaration);
         let mut batch = Batch::at(&log);
-        let position = batch.push(Draft::new(
-            who,
-            Origin::System,
-            EventBody::Declared {
-                declaration,
-                schema_hash,
-                version,
-            },
-        ));
+        let mut drafts = value_type_drafts(&st, who, m, report.report_id, None).into_iter();
+        let position = drafts.next().map(|d| batch.push(d)).unwrap_or(head);
+        drafts.for_each(|d| {
+            batch.push(d);
+        });
         self.commit(&mut log, batch);
         Ok(Outcome::Applied {
             position,
@@ -4748,21 +5347,19 @@ impl Catalog for MockCatalog {
     ) -> Result<Outcome> {
         self.admit_write(who)?;
         let who = &self.followed(who, None);
-        if !who.grants.schema {
+        if !who.grants.schema || holds_only(who) {
             return Err(refused(Refusal::NotGranted));
         }
         let mut log = self.log();
         let (head, st) = self.state_at(&log, None)?;
         let mut migration = migration;
-        authored(&st, who, &mut migration)?;
-        let report = preflight(&st, head, &migration, who)?;
-        if report.report_id != report_id {
-            return Err(invalid(
-                "the lake moved since this report was made; run the preflight again",
-            ));
+        let author = authored(&st, who, &mut migration)?;
+        let report = preflight(&st, head, (&migration, author.as_ref()), who)?;
+        if shown(&st, who, &migration, head, report.clone()).report_id != report_id {
+            return Err(invalid(Case::MigrationStale));
         }
         if !report.lossless {
-            return Err(lossy(&st, who, &migration, report));
+            return Err(lossy(&st, who, &migration, head, report));
         }
         // As the store: a migration to the type in force appends nothing.
         if unchanged(&st, &migration) {
@@ -4785,7 +5382,7 @@ impl Catalog for MockCatalog {
         let report_id = report.report_id;
         // The answer names each rename as the one answered may know it.
         let mut known = migration.clone();
-        known_migration(&st, who, &mut known, &[]);
+        known_migration(&st, who, &mut known, None);
         let position = batch.push(Draft::new(
             who,
             Origin::System,
@@ -4830,6 +5427,7 @@ impl Catalog for MockCatalog {
                 declaration,
                 schema_hash,
                 version,
+                with_the_set: false,
             };
             batch.push(Draft::new(who, Origin::System, body));
         }
@@ -4841,6 +5439,7 @@ impl Catalog for MockCatalog {
                 declaration,
                 schema_hash,
                 version,
+                with_the_set: false,
             };
             batch.push(Draft::new(who, Origin::System, body));
         }
@@ -4913,7 +5512,7 @@ fn plan_window(
     for r in chunk {
         st.visible(who, &r.ty).ok_or_else(|| no_type(&r.ty))?;
         if r.fields.is_empty() {
-            return Err(invalid("nothing to write: the patch carries no field"));
+            return Err(invalid(Case::PatchEmpty));
         }
         let t = check_patch(st, who, &r.ty, &r.fields, Origin::Source)?;
         let checked = canonical_patch(t, r.fields.clone());
@@ -4926,18 +5525,26 @@ fn plan_window(
         let id = content_id(source, r, before, &checked);
         // A record that would change no field is a duplicate too, so a full
         // re-import of unchanged data appends nothing.
+        // As the store (051): a record a holder is not admitted is, to it,
+        // a key that is free: not compared, and a live one refused once
+        // every check has passed.
+        let planned = (w.planned.get(&slot)).map(|f| !st.admits_fields(who, &r.ty, f));
+        let not_own = |s: &StoredRecord| !st.admitted(who, s);
+        let other = planned.unwrap_or_else(|| st.live(&r.ty, &r.key).is_some_and(not_own));
+        let unowned = planned.unwrap_or_else(|| st.records.get(&slot).is_some_and(not_own));
         let now = w
             .planned
             .get(&slot)
             .cloned()
-            .or_else(|| st.live(&r.ty, &r.key).map(|l| l.fields.clone()));
+            .or_else(|| st.live(&r.ty, &r.key).map(|l| l.fields.clone()))
+            .filter(|_| !other);
         let unchanged = now.as_ref().is_some_and(|fields| {
             checked.iter().all(|(f, v)| match fields.get(f) {
                 Some(stored) => stored == v,
                 None => v.is_null(),
             })
         });
-        if unchanged || st.ingested.contains(&id) || !w.ids.insert(id.clone()) {
+        if unchanged || !unowned && (st.ingested.contains(&id) || !w.ids.insert(id.clone())) {
             w.duplicates += 1;
             continue;
         }
@@ -4946,7 +5553,7 @@ fn plan_window(
             t,
             st,
             who,
-            st.live(&r.ty, &r.key),
+            st.live(&r.ty, &r.key).filter(|_| !other),
             &r.key,
             &mut fields,
             Origin::Source,
@@ -4960,13 +5567,21 @@ fn plan_window(
                 .any(|x| links::name(&o.decl.name, &x.name) == r.ty)
         });
         if links::is_link_type(&r.ty) && !carried {
-            return Err(invalid(format!(
-                "`{}` is the link type of no relation: its relation was renamed or removed",
-                r.ty
-            )));
+            let ty = r.ty.clone();
+            return Err(invalid(Case::UnclaimedLinkType { ty }));
+        }
+        // A record earlier in this window counts as there.
+        check_references(st, who, t, &fields, &w.versions)?;
+        check_required(t, now.as_ref(), &fields)?;
+        // As the store: a record this window made is there for its next one.
+        let made = now.is_none();
+        let after = after_write(t, now.as_ref(), &fields);
+        if other || !st.admits_fields(who, &r.ty, &after) {
+            return Err(refused(Refusal::NotGranted));
         }
         // A link holds its relation's cardinality, over the lake's live
-        // links and those earlier in this window.
+        // links and those earlier in this window, judged once the record
+        // is admitted, as the store judges it.
         if links::is_link_type(&r.ty)
             && let Some(rel) = st.types.values().find_map(|o| {
                 o.decl
@@ -4982,7 +5597,7 @@ fn plan_window(
         {
             let end = |f: &str| fields.get(f).and_then(Value::as_str).map(RecordKey::from);
             if let (Some(from), Some(to)) = (end(links::FROM), end(links::TO)) {
-                link_cardinality(st, &r.ty, &rel, &from, &to)?;
+                link_cardinality(st, who, &r.ty, &rel, &from, &to)?;
                 for ((lt, k), planned) in &w.planned {
                     if lt != &r.ty || k == &r.key {
                         continue;
@@ -4994,33 +5609,22 @@ fn plan_window(
                         lakelands_api::ontology::Cardinality::OneToOne => (true, true),
                         lakelands_api::ontology::Cardinality::ManyToMany => (false, false),
                     };
-                    if (per_from && pe(links::FROM).as_deref() == Some(from.as_str()))
-                        || (per_to && pe(links::TO).as_deref() == Some(to.as_str()))
+                    let (f, o) = (pe(links::FROM), pe(links::TO));
+                    if (per_from && f.as_deref() == Some(from.as_str()))
+                        || (per_to && o.as_deref() == Some(to.as_str()))
                     {
-                        return Err(on(
-                            &FieldName::from(links::TO),
-                            Refusal::Constraint {
-                                message: format!(
-                                    "the window links over `{}` already, and it allows one",
-                                    rel.name
-                                ),
-                            },
-                        ));
+                        let key = |k: Option<String>| RecordKey::from(k.unwrap_or_default());
+                        let (from, to) = (key(f), key(o));
+                        let (relation, cardinality) = (rel.name.clone(), rel.cardinality);
+                        let case = Case::WindowLinksAlready {
+                            from,
+                            to,
+                            relation,
+                            cardinality,
+                        };
+                        return Err(constraint(&FieldName::from(links::TO), case));
                     }
                 }
-            }
-        }
-        // A record earlier in this window counts as there.
-        check_references(st, t, &fields, &w.versions)?;
-        check_required(t, now.as_ref(), &fields)?;
-        // As the store: a record this window made is there for its next one.
-        let made = now.is_none();
-        let mut after = now.unwrap_or_default();
-        for (f, v) in &fields {
-            if v.is_null() {
-                after.remove(f);
-            } else {
-                after.insert(f.clone(), v.clone());
             }
         }
         w.planned.insert(slot.clone(), after);
@@ -5053,14 +5657,247 @@ fn remembered(st: &State, who: &Principal, opts: &WriteOpts) -> Option<Outcome> 
     st.idempotent.get(&(who.writer(), key.clone())).cloned()
 }
 
+/// As the store (051): whether `who`'s proposal of `write` is pinned, a
+/// write to a record of a type it holds `only` on; a change of shape and a
+/// write that anything but itself could move off its pairs are refused. A
+/// type it is not shown is answered as not there.
+fn pinned(st: &State, who: &Principal, write: &ProposedWrite) -> Result<bool> {
+    if !holds_only(who) {
+        return Ok(false);
+    }
+    let (ty, verb) = match write {
+        ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => (ty, None),
+        ProposedWrite::Call { verb, .. } => {
+            let shown = (st.verbs.get(verb)).filter(|v| st.visible(who, &v.on).is_some());
+            let missing = || Error::NotFound {
+                missing: Missing::Verb { name: verb.clone() },
+            };
+            let v = shown.ok_or_else(missing)?;
+            (&v.on, Some(v))
+        }
+        _ => return Err(refused(Refusal::NotGranted)),
+    };
+    let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+    let pinned = only_holder(who, &t.decl);
+    if pinned && !pinnable(who, &t.decl, verb) {
+        return Err(refused(Refusal::NotGranted));
+    }
+    Ok(pinned)
+}
+
+/// As the store (051): whether a reviewer decides the proposal logged at
+/// `at`, writing `write`: one holding `only` decides no change of shape,
+/// and no write to a type it holds `only` on that its listing would not
+/// show it whole.
+fn decides(st: &State, who: &Principal, write: &ProposedWrite, at: Position) -> bool {
+    if !holds_only(who) {
+        return true;
+    }
+    let ty = match write {
+        ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => ty,
+        ProposedWrite::Call { verb, .. } => match st.verbs.get(verb) {
+            Some(v) => &v.on,
+            None => return false,
+        },
+        _ => return false,
+    };
+    if st.types.get(ty).is_some_and(|t| !only_holder(who, &t.decl)) {
+        return true;
+    }
+    let mut shown = write.clone();
+    known_shape(st, who, &mut shown, (who, None, at)) && shown == *write
+}
+
+/// As the store (051): the accept of a pinned proposal, `logged`, made at
+/// `at`, is refused once the record it writes or its type changed after
+/// it; `then` is the lake at `at`.
+fn unmoved(st: &State, then: &State, logged: Option<&Event>, at: Position) -> Result<()> {
+    let Some(EventBody::WriteProposed {
+        write,
+        pinned: true,
+        ..
+    }) = logged.map(|e| &e.body)
+    else {
+        return Ok(());
+    };
+    let (ty, key) = match write {
+        ProposedWrite::Upsert { ty, key, .. } | ProposedWrite::Retire { ty, key, .. } => {
+            (ty, Some(key))
+        }
+        ProposedWrite::Call { verb, key, .. } => match st.verbs.get(verb) {
+            Some(v) => (&v.on, key.as_ref()),
+            None => return Ok(()),
+        },
+        _ => return Ok(()),
+    };
+    let version = |s: &State| s.types.get(ty).map(|t| t.version);
+    let moved_at = |ty: &TypeName, k: &RecordKey| {
+        let stored = st.records.get(&(ty.clone(), k.clone()));
+        stored.is_some_and(|r| r.position > at)
+    };
+    let mut moved = key.is_some_and(|k| moved_at(ty, k));
+    // As the store: a link is its holder's by its end records too, and a
+    // change to an end moves no link.
+    let ends = st.types.values().find_map(|o| {
+        let carried = (o.decl.relations.iter()).find(|x| {
+            x.via.is_none() && x.derived.is_none() && links::name(&o.decl.name, &x.name) == *ty
+        });
+        carried.map(|x| [o.decl.name.clone(), x.target.clone()])
+    });
+    if let (Some(key), Some(ends)) = (key, ends) {
+        let parts = lakelands_api::key::key_components(key);
+        for (end, k) in ends.iter().zip(&parts) {
+            moved = moved || moved_at(end, &RecordKey::from(k.as_str()));
+        }
+    }
+    if !moved && version(st) == version(then) {
+        return Ok(());
+    }
+    let (ty, key) = (ty.clone(), key.cloned());
+    Err(invalid(Case::WriteChangedSinceProposed { ty, key }))
+}
+
+/// As the store (051): what an accepted write leaves of the record `key`
+/// of `ty` is judged by the reviewer's pairs too.
+fn reviewed(
+    st: &State,
+    who: &Principal,
+    batch: &Batch,
+    ty: &TypeName,
+    key: &RecordKey,
+) -> Result<()> {
+    let Some(t) = st.types.get(ty) else {
+        return Ok(());
+    };
+    for d in &batch.drafts {
+        if let EventBody::RecordUpserted {
+            ty: on,
+            key: at,
+            patch,
+            ..
+        } = &d.body
+            && (on, at) == (ty, key)
+        {
+            let after = after_write(t, st.live(ty, key).map(|r| &r.fields), patch);
+            if !st.admits_fields(who, ty, &after) {
+                return Err(refused(Refusal::NotGranted));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether a proposed write is a migration, of a type or a value type.
+fn migrates(w: &ProposedWrite) -> bool {
+    matches!(
+        w,
+        ProposedWrite::Migrate { .. } | ProposedWrite::MigrateValueType { .. }
+    )
+}
+
+/// As the store (lakelands#780): a refusal of the proposer's plan as an
+/// accept answers its reviewer, whole where its listing shows the reviewer
+/// all it names, or to its proposer, and else as a proposal stale since it
+/// was proposed.
+fn told(st: &State, who: &Principal, p: &Proposal, e: Error) -> Error {
+    let (ty, key) = match &p.write {
+        Some(ProposedWrite::Upsert { ty, key, .. } | ProposedWrite::Retire { ty, key, .. }) => {
+            (ty.clone(), Some(key.clone()))
+        }
+        Some(ProposedWrite::Call { verb, key, .. }) => match st.verbs.get(verb) {
+            Some(v) => (v.on.clone(), key.clone()),
+            None => return e,
+        },
+        _ => return e,
+    };
+    let judged = matches!(e, Error::Refused { .. } | Error::NotFound { .. });
+    if !judged || who.grants.reads_everything() || p.proposer == who.writer() {
+        return e;
+    }
+    let mut listed = p.write.clone().expect("a held proposal holds its write");
+    let shown = known_shape(st, who, &mut listed, (who, None, p.position));
+    let sees = |t: &TypeName| st.visible(who, t).is_some();
+    let read =
+        |f: &FieldName| (st.visible(who, &ty)).is_some_and(|d| readable(st, who, d, f).is_ok());
+    let requires = |v: &VerbName| st.verbs.get(v).and_then(|v| v.requires.clone());
+    let mut named = Named::default();
+    e.names(&mut named);
+    match shown && named.shown_by(&listed, &sees, &read, &requires) {
+        true => e,
+        false => invalid(Case::WriteChangedSinceProposed { ty, key }),
+    }
+}
+
+/// As the store (lakelands#762): whether a proposed write names a type
+/// `who` is not shown, one the lake declares: the type it writes or a
+/// called verb is on; of a migration's `to` and of each type a bundle
+/// declares, what [`TypeDecl::names_against`] names against the type in force,
+/// the shape completed as the mock keeps it; and the type each verb,
+/// trigger and object set of a bundle is on. A call of a verb that reads a
+/// field `who` may not read is hidden too (024, extended).
+fn hidden_from(st: &State, who: &Principal, write: &ProposedWrite) -> bool {
+    let shape = |t: &TypeDecl| {
+        let mut t = t.clone();
+        st.complete(&mut t);
+        let held = st.types.get(&t.name).map(|d| &d.decl);
+        t.names_against(held)
+    };
+    let mut named: Vec<TypeName> = Vec::new();
+    match write {
+        ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => {
+            named.push(ty.clone())
+        }
+        ProposedWrite::Call { verb, .. } => {
+            let Some(v) = st.verbs.get(verb) else {
+                return false;
+            };
+            let on = st.types.get(&v.on).map(|t| &t.decl);
+            if on.is_some_and(|t| !reads_what_it_reads(who, t, v)) {
+                return true;
+            }
+            named.push(v.on.clone())
+        }
+        ProposedWrite::Migrate { migration, .. } => named.extend(shape(&migration.to)),
+        ProposedWrite::Declare { declarations } => {
+            for d in declarations {
+                match d {
+                    Declaration::Type(t) => named.extend(shape(t)),
+                    Declaration::Verb(v) => named.push(v.on.clone()),
+                    Declaration::Trigger(t) => named.push(t.on.clone()),
+                    Declaration::ObjectSet(s) => named.push(s.of.clone()),
+                    Declaration::ValueType(_) | Declaration::Function(_) => {}
+                }
+            }
+        }
+        ProposedWrite::MigrateValueType { .. } => {}
+    }
+    named
+        .iter()
+        .any(|ty| st.types.contains_key(ty) && st.visible(who, ty).is_none())
+}
+
 /// A pending proposal a reviewer may decide.
 fn decidable<'a>(st: &'a State, who: &Principal, id: &ProposalId) -> Result<&'a Proposal> {
     if !who.grants.review {
         return Err(refused(Refusal::NotGranted));
     }
-    let p = st.proposals.get(id).ok_or_else(|| Error::NotFound {
+    let absent = || Error::NotFound {
         missing: Missing::Proposal { id: id.clone() },
-    })?;
+    };
+    let p = st.proposals.get(id).ok_or_else(absent)?;
+    // As the store (lakelands#762): a proposal on a type its reviewer is
+    // not shown, or of a verb that reads what it may not read, is not there.
+    if p.write.as_ref().is_some_and(|w| hidden_from(st, who, w)) {
+        return Err(absent());
+    }
+    // Before it is told decided: a holder of `only` decides only what its
+    // listing shows it whole (051).
+    if p.write
+        .as_ref()
+        .is_some_and(|w| !decides(st, who, w, p.position))
+    {
+        return Err(refused(Refusal::NotGranted));
+    }
     if p.state != ProposalState::Pending {
         return Err(refused(Refusal::Decided));
     }
@@ -5091,14 +5928,14 @@ fn derived_pairs(
     r: &lakelands_api::ontology::RelationDecl,
     d: &lakelands_api::ontology::Derived,
 ) -> Result<()> {
-    let at = |why: String| invalid(format!("type `{}`, relation `{}`: {why}", t.name, r.name));
+    let name = r.name.clone();
+    let on = [of_type(&t.name), Place::Relation { name }];
+    let wrong = |c: Case| Err(invalid(at(&on, c)));
     if r.via.is_some() || !r.fields.is_empty() || r.authority != Authority::Authored {
-        return Err(at(
-            "a derived relation has no `via`, fields or link authority".into(),
-        ));
+        return wrong(Case::DerivedStoresEdge);
     }
     if d.pairs.is_empty() {
-        return Err(at("a derived relation matches at least one pair".into()));
+        return wrong(Case::DerivedNoPair);
     }
     let target = if r.target == t.name {
         Some(t)
@@ -5106,26 +5943,96 @@ fn derived_pairs(
         st.types.get(&r.target).map(|o| &o.decl)
     };
     for p in &d.pairs {
-        let from = t.fields.iter().find(|f| f.name == p.from);
-        let to = target.and_then(|u| u.fields.iter().find(|f| f.name == p.to));
-        let (Some(from), Some(to)) = (from, to) else {
-            return Err(at(format!(
-                "the pair `{}` = `{}` names a field not declared",
-                p.from, p.to
-            )));
+        let (from, to) = (p.from.clone(), p.to.clone());
+        if d.pairs.iter().filter(|q| *q == p).count() > 1 {
+            return wrong(Case::PairTwice { from, to });
+        }
+        let left = t.fields.iter().find(|f| f.name == p.from);
+        let right = target.and_then(|u| u.fields.iter().find(|f| f.name == p.to));
+        let (Some(left), Some(right)) = (left, right) else {
+            let (ty, target) = (t.name.clone(), Box::new(r.target.clone()));
+            return wrong(Case::PairUnknown {
+                from,
+                to,
+                ty,
+                target,
+            });
         };
-        if from.ty.kind != to.ty.kind {
-            return Err(at(format!(
-                "the pair `{}` = `{}` matches fields of two kinds",
-                p.from, p.to
-            )));
+        let kind = left.ty.kind;
+        if kind != right.ty.kind {
+            let right = right.ty.kind;
+            return wrong(Case::PairKinds {
+                from,
+                to,
+                left: kind,
+                right,
+            });
         }
-        if !lakelands_api::key::keyable(from.ty.kind) {
-            return Err(at(format!(
-                "the pair `{}` = `{}` is of a kind no key may be",
-                p.from, p.to
-            )));
+        if !lakelands_api::key::keyable(kind) {
+            return wrong(Case::PairUnkeyable { from, to, kind });
         }
+        if right.at_read() {
+            let target = r.target.clone();
+            return wrong(Case::PairAtRead { from, to, target });
+        }
+    }
+    Ok(())
+}
+
+/// As the store: a field a trigger, a verb, an object set or another
+/// type's derived relation in force reads as stored is not taken to the
+/// read; the refusal names the field alone.
+fn read_as_stored(st: &State, t: &TypeDecl) -> Result<()> {
+    if !t.fields.iter().any(FieldDecl::at_read) {
+        return Ok(());
+    }
+    let verbs = st
+        .verbs
+        .values()
+        .filter(|v| v.on == t.name)
+        .map(|v| Declaration::Verb(v.clone()));
+    let triggers = (st.triggers.iter())
+        .filter(|x| x.on == t.name)
+        .map(|x| Declaration::Trigger(x.clone()));
+    let sets = (st.object_sets.iter())
+        .filter(|x| x.of == t.name)
+        .map(|x| Declaration::ObjectSet(x.clone()));
+    let mut read = BTreeSet::new();
+    for d in verbs.chain(triggers).chain(sets) {
+        read.extend(declaration_reads(st, &d, &t.name));
+    }
+    let others = st.types.values().filter(|e| e.decl.name != t.name);
+    let matching = others
+        .flat_map(|e| &e.decl.relations)
+        .filter(|r| r.target == t.name);
+    read.extend(
+        matching
+            .flat_map(|r| r.derived.iter().flat_map(|d| &d.pairs))
+            .map(|p| p.to.clone()),
+    );
+    match t
+        .fields
+        .iter()
+        .find(|f| f.at_read() && read.contains(&f.name))
+    {
+        Some(f) => {
+            let on = [of_type(&t.name), of_field(&f.name)];
+            Err(invalid_field(&f.name, at(&on, Case::ReadAsStored)))
+        }
+        None => Ok(()),
+    }
+}
+
+/// As the store: an order by a field computed at the read is refused, once
+/// the reader is known to read it.
+fn steady_order(decl: &TypeDecl, field: &str) -> Result<()> {
+    if decl
+        .fields
+        .iter()
+        .any(|f| f.name.as_str() == field && f.at_read())
+    {
+        let (field, ty) = (field.into(), decl.name.clone());
+        return Err(invalid(Case::OrderAtRead { field, ty }));
     }
     Ok(())
 }
@@ -5134,11 +6041,10 @@ fn derived_pairs(
 fn trigger_ceiling(d: &Declaration, ceiling: u32) -> Result<()> {
     match d {
         Declaration::Trigger(t) if t.max_depth.is_some_and(|m| m > ceiling) => {
-            Err(invalid(format!(
-                "trigger `{}`: its `max_depth` {} is above the lake's `max_reactive_depth` {ceiling}",
-                t.name,
-                t.max_depth.unwrap_or_default()
-            )))
+            let (depth, max) = (t.max_depth.unwrap_or_default(), ceiling);
+            let said = Said::from(Case::TriggerTooDeep { depth, max });
+            let name = t.name.clone();
+            Err(invalid(said.within(Place::Trigger { name })))
         }
         _ => Ok(()),
     }

@@ -18,23 +18,23 @@ use hyper::header::HeaderValue;
 use lakelands_api::Catalog;
 use lakelands_api::catalog::{CommitStream, SourceStream};
 use lakelands_api::describe::{LakeDescription, TypeDescription};
-use lakelands_api::error::{Error, Refusal, Result};
+use lakelands_api::error::{Case, Detail, Error, Exchange, Result, Segment};
 use lakelands_api::expr::Condition;
 use lakelands_api::id::{
     LakeId, ProposalId, RecordKey, RelationName, SourceId, TypeName, VerbName,
 };
-use lakelands_api::ontology::{FieldDecl, ValueTypeDecl};
+use lakelands_api::ontology::FieldDecl;
 use lakelands_api::principal::Principal;
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
 use lakelands_api::read::{Find, Found, Get, ReadAt, Reply};
 use lakelands_api::record::{Patch, Record};
 use lakelands_api::write::{
     Committed, Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter,
-    ProposedWrite, Recompute, ValueTypeReport, WriteOpts,
+    ProposedWrite, Recompute, ValueTypeMigration, ValueTypeReport, WriteOpts,
 };
 use serde_json::{Value, json};
 
-use crate::wire::{Call, Wire, invalid, query_of, seg};
+use crate::wire::{Call, Wire, query_of, seg};
 
 /// The doors of a lake another process serves.
 pub(crate) struct RemoteCatalog {
@@ -55,8 +55,8 @@ impl RemoteCatalog {
 fn record(ty: &TypeName, key: &RecordKey) -> Result<String> {
     Ok(format!(
         "types/{}/records/{}",
-        seg(ty.as_str(), "the type")?,
-        seg(key.as_str(), "the key")?
+        seg(ty.as_str(), Segment::Type)?,
+        seg(key.as_str(), Segment::Key)?
     ))
 }
 
@@ -64,8 +64,8 @@ fn link(ty: &TypeName, key: &RecordKey, relation: &RelationName, to: &RecordKey)
     Ok(format!(
         "{}/links/{}/{}",
         record(ty, key)?,
-        seg(relation.as_str(), "the relation")?,
-        seg(to.as_str(), "the key linked to")?
+        seg(relation.as_str(), Segment::Relation)?,
+        seg(to.as_str(), Segment::To)?
     ))
 }
 
@@ -93,9 +93,7 @@ fn write_headers(mut call: Call, opts: &WriteOpts, put: bool) -> Result<Call> {
     }
     if let Some(k) = &opts.idempotency_key {
         if HeaderValue::from_str(k.as_str()).is_err() {
-            return Err(invalid(
-                "the idempotency key holds a character a header cannot carry, such as a line break",
-            ));
+            return Err(Error::invalid(Case::IdempotencyKeyHeader));
         }
         call = call.header("idempotency-key", k.as_str().to_owned());
     }
@@ -125,7 +123,7 @@ impl Catalog for RemoteCatalog {
     ) -> Result<Reply<TypeDescription>> {
         let call = Call::new(
             Method::GET,
-            format!("describe/{}", seg(ty.as_str(), "the type")?),
+            format!("describe/{}", seg(ty.as_str(), Segment::Type)?),
         )
         .query(at_query(&at));
         self.go(who, call).await
@@ -137,17 +135,11 @@ impl Catalog for RemoteCatalog {
     /// lake refuses.
     async fn find(&self, who: &Principal, ty: &TypeName, find: Find) -> Result<Reply<Found>> {
         if let Some(Condition::Expr(_)) = find.filter {
-            return Err(Error::Refused {
-                field: None,
-                reason: Refusal::Invalid {
-                    message: "over REST, `find` takes `where` in its text form only; give the condition as text"
-                        .into(),
-                },
-            });
+            return Err(Error::invalid(Case::FindWhereText));
         }
         let call = Call::new(
             Method::GET,
-            format!("types/{}/records", seg(ty.as_str(), "the type")?),
+            format!("types/{}/records", seg(ty.as_str(), Segment::Type)?),
         )
         .query(query_of(&members(&find, &[])));
         self.go(who, call).await
@@ -220,9 +212,9 @@ impl Catalog for RemoteCatalog {
     ) -> Result<Outcome> {
         // A verb on its type takes the keyless route. Whether the verb
         // takes a key is the server's to say, not the client's.
-        let verb = seg(verb.as_str(), "the verb")?;
+        let verb = seg(verb.as_str(), Segment::Verb)?;
         let path = match key {
-            Some(key) => format!("verbs/{verb}/{}", seg(key.as_str(), "the key")?),
+            Some(key) => format!("verbs/{verb}/{}", seg(key.as_str(), Segment::Key)?),
             None => format!("verbs/{verb}"),
         };
         let call = Call::new(Method::POST, path).json(&members(&payload, &[]));
@@ -248,7 +240,7 @@ impl Catalog for RemoteCatalog {
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome> {
         let path = format!(
             "proposals/{}/accept",
-            seg(proposal.as_str(), "the proposal")?
+            seg(proposal.as_str(), Segment::Proposal)?
         );
         self.go(who, Call::new(Method::POST, path)).await
     }
@@ -261,7 +253,7 @@ impl Catalog for RemoteCatalog {
     ) -> Result<Outcome> {
         let path = format!(
             "proposals/{}/reject",
-            seg(proposal.as_str(), "the proposal")?
+            seg(proposal.as_str(), Segment::Proposal)?
         );
         let call = Call::new(Method::POST, path).json(&json!({ "reason": reason }));
         self.go(who, call).await
@@ -324,21 +316,21 @@ impl Catalog for RemoteCatalog {
     async fn migrate_value_type(
         &self,
         who: &Principal,
-        to: ValueTypeDecl,
+        m: ValueTypeMigration,
     ) -> Result<Reply<ValueTypeReport>> {
-        let call =
-            Call::new(Method::POST, "schema/migrate".into()).json(&json!({ "value_type": to }));
+        let body = json!({ "value_type": m.to, "renames": m.renames });
+        let call = Call::new(Method::POST, "schema/migrate".into()).json(&body);
         self.go(who, call).await
     }
 
     async fn migrate_value_type_apply(
         &self,
         who: &Principal,
-        to: ValueTypeDecl,
+        m: ValueTypeMigration,
         report_id: &str,
     ) -> Result<Outcome> {
-        let call = Call::new(Method::POST, "schema/migrate/apply".into())
-            .json(&json!({ "value_type": to, "report_id": report_id }));
+        let body = json!({ "value_type": m.to, "renames": m.renames, "report_id": report_id });
+        let call = Call::new(Method::POST, "schema/migrate/apply".into()).json(&body);
         self.go(who, call).await
     }
 
@@ -364,7 +356,7 @@ impl Catalog for RemoteCatalog {
         records: SourceStream,
     ) -> Result<CommitStream> {
         let key = self.wire.key_of(who)?;
-        let path = format!("ingest/{}", seg(source.as_str(), "the source")?);
+        let path = format!("ingest/{}", seg(source.as_str(), Segment::Source)?);
         let upload = Arc::new(Upload::default());
         let body = Ndjson {
             records,
@@ -374,14 +366,13 @@ impl Catalog for RemoteCatalog {
         let call = Call::new(Method::POST, path.clone()).stream("application/x-ndjson", body);
         let r = self.wire.send(key, call).await?;
         if !r.status().is_success() {
-            return Err(self.wire.failure(&path, r).await);
+            return Err(self.wire.failure(r).await);
         }
         Ok(Box::pin(Commits {
             silent: Box::pin(tokio::time::sleep(self.wire.silence)),
             armed: false,
             spoke: Instant::now(),
             wire: self.wire.clone(),
-            path,
             body: r.into_body(),
             upload,
             buf: Vec::new(),
@@ -498,7 +489,6 @@ struct Commits {
     /// When the answer last brought a frame.
     spoke: Instant,
     wire: Arc<Wire>,
-    path: String,
     body: Incoming,
     upload: Arc<Upload>,
     buf: Vec<u8>,
@@ -512,10 +502,8 @@ impl Commits {
             return Ok(c);
         }
         self.done = true;
-        Err(serde_json::from_slice::<Error>(text).unwrap_or_else(|_| {
-            self.wire
-                .unavailable(&self.path, "answered a line that is not the contract's")
-        }))
+        Err(serde_json::from_slice::<Error>(text)
+            .unwrap_or_else(|_| self.wire.unavailable(Exchange::LineNotTheContract)))
     }
 }
 
@@ -537,7 +525,7 @@ impl Stream for Commits {
             }
             if this.buf.len() > this.wire.cap {
                 this.done = true;
-                return Poll::Ready(Some(Err(this.wire.too_long(&this.path))));
+                return Poll::Ready(Some(Err(this.wire.too_long())));
             }
             if this.ended {
                 this.done = true;
@@ -577,13 +565,8 @@ impl Stream for Commits {
                                 continue;
                             }
                             this.done = true;
-                            let e = this.wire.unavailable(
-                                &this.path,
-                                format_args!(
-                                    "took nothing and answered nothing for {} seconds while records were being sent",
-                                    this.wire.silence.as_secs()
-                                ),
-                            );
+                            let secs = this.wire.silence.as_secs();
+                            let e = this.wire.unavailable(Exchange::Stalled { secs });
                             return Poll::Ready(Some(Err(e)));
                         }
                     }
@@ -596,13 +579,8 @@ impl Stream for Commits {
                         return Poll::Pending;
                     }
                     this.done = true;
-                    let e = this.wire.unavailable(
-                        &this.path,
-                        format_args!(
-                            "sent nothing for {} seconds after the records ended",
-                            this.wire.silence.as_secs()
-                        ),
-                    );
+                    let secs = this.wire.silence.as_secs();
+                    let e = this.wire.unavailable(Exchange::SilentAfter { secs });
                     return Poll::Ready(Some(Err(e)));
                 }
                 Poll::Ready(None) => this.ended = true,
@@ -615,9 +593,9 @@ impl Stream for Commits {
                 }
                 Poll::Ready(Some(Err(e))) => {
                     this.done = true;
-                    let e = this
-                        .wire
-                        .unavailable(&this.path, format_args!("cut its answer off: {e}"));
+                    let e = this.wire.unavailable(Exchange::CutOff {
+                        detail: Detail::scrubbed(e),
+                    });
                     return Poll::Ready(Some(Err(e)));
                 }
             }
@@ -736,13 +714,15 @@ mod tests {
             .expect("the ingest starts");
         let out = lakelands_mock::stream::collect(&mut commits).await;
         let waited = asked.elapsed();
-        let [Err(Error::Unavailable { message })] = out.as_slice() else {
+        let [Err(Error::Unavailable { situation })] = out.as_slice() else {
             panic!("expected one unavailable, got {out:?}");
         };
+        let message = situation.to_string();
         assert!(
-            message.contains(&format!("{addr}/lakes/finance/ingest/bank")),
+            message.contains("the REST door of lake `finance`"),
             "{message}"
         );
+        assert!(!message.contains(&addr.to_string()), "{message}");
         assert!(message.contains("after the records ended"), "{message}");
         assert!(
             waited >= SILENCE && waited < Duration::from_secs(5),
@@ -796,13 +776,15 @@ mod tests {
             .expect("the ingest starts");
         let out = lakelands_mock::stream::collect(&mut commits).await;
         let waited = asked.elapsed();
-        let [Err(Error::Unavailable { message })] = out.as_slice() else {
+        let [Err(Error::Unavailable { situation })] = out.as_slice() else {
             panic!("expected one unavailable, got {out:?}");
         };
+        let message = situation.to_string();
         assert!(
-            message.contains(&format!("{addr}/lakes/finance/ingest/bank")),
+            message.contains("the REST door of lake `finance`"),
             "{message}"
         );
+        assert!(!message.contains(&addr.to_string()), "{message}");
         assert!(
             message.contains("while records were being sent"),
             "{message}"

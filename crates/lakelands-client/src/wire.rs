@@ -4,7 +4,6 @@
 
 use std::collections::BTreeMap;
 use std::error::Error as _;
-use std::fmt;
 use std::io;
 use std::time::Duration;
 
@@ -16,7 +15,9 @@ use hyper::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use hyper::{Method, Request, Response, Uri};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
-use lakelands_api::error::{Error, Refusal, Result};
+use lakelands_api::error::{
+    Case, Detail, Error, Exchange, Refusal, Remote, Result, Segment, Situation,
+};
 use lakelands_api::id::{LakeId, Position};
 use lakelands_api::principal::Principal;
 use lakelands_api::read::POSITION_HEADER;
@@ -34,10 +35,9 @@ pub(crate) struct Wire {
     client: Client<Connector, Body>,
     /// `<scheme>://<authority><prefix>/lakes/<lake>`.
     base: String,
-    /// The host and port, as a failure names them.
+    /// The host and port, for the handle's `Debug` only: a failure names
+    /// the lake's REST door, never its address.
     pub(crate) place: String,
-    /// The URL's path before `/lakes/`, as a failure names it.
-    prefix: String,
     pub(crate) lake: LakeId,
     keys: BTreeMap<String, ApiKey>,
     feed_key: Option<String>,
@@ -132,24 +132,12 @@ pub(crate) fn query_of(v: &Value) -> String {
         .join("&")
 }
 
-/// A request that does not fit REST, refused before anything is sent.
-pub(crate) fn invalid(message: impl Into<String>) -> Error {
-    Error::Refused {
-        field: None,
-        reason: Refusal::Invalid {
-            message: message.into(),
-        },
-    }
-}
-
 /// One path segment, encoded. An empty one would name another route
 /// (the server drops empty segments: `get` would become `find`), so it is
 /// refused before anything is sent.
-pub(crate) fn seg(value: &str, what: &str) -> Result<String> {
+pub(crate) fn seg(value: &str, part: Segment) -> Result<String> {
     if value.is_empty() {
-        return Err(invalid(format!(
-            "{what} is empty; over REST it is a path segment, and an empty one names another route"
-        )));
+        return Err(Error::invalid(Case::SegmentEmpty { part }));
     }
     Ok(enc(value))
 }
@@ -235,7 +223,6 @@ impl Wire {
                 enc(config.lake.as_str())
             ),
             place: format!("{host}:{port}"),
-            prefix,
             lake: config.lake.clone(),
             keys: config.keys.clone(),
             feed_key: config.feed_key.clone(),
@@ -260,21 +247,17 @@ impl Wire {
         self.keys.get(id).ok_or_else(not_granted)
     }
 
-    /// A failure below the contract, naming where and what, never a key
-    /// or a body.
-    pub(crate) fn unavailable(&self, path: &str, what: impl fmt::Display) -> Error {
-        Error::Unavailable {
-            message: format!(
-                "the REST door at {}{}/lakes/{}/{path} {what}",
-                self.place, self.prefix, self.lake
-            ),
-        }
+    /// A failure below the contract, naming the lake and what, never its
+    /// address, a path, a key or a body.
+    pub(crate) fn unavailable(&self, exchange: Exchange) -> Error {
+        let lake = self.lake.to_string();
+        let remote = Remote::Door { lake };
+        Error::unavailable(Situation::Remote { remote, exchange })
     }
 
     /// Send one call and wait for the head of its answer, within the
     /// exchange's timeout.
     pub(crate) async fn send(&self, key: &ApiKey, call: Call) -> Result<Response<Incoming>> {
-        let path = call.path.clone();
         let mut uri = format!("{}/{}", self.base, call.path);
         if !call.query.is_empty() {
             uri.push('?');
@@ -286,7 +269,7 @@ impl Wire {
         }
         // Every key was checked at `connect`.
         let mut bearer = HeaderValue::from_str(&format!("Bearer {}", key.expose()))
-            .map_err(|_| self.unavailable(&path, "cannot be sent its key"))?;
+            .map_err(|_| self.unavailable(Exchange::KeyNotSent))?;
         bearer.set_sensitive(true);
         req = req.header(AUTHORIZATION, bearer);
         let body = match call.body {
@@ -298,14 +281,14 @@ impl Wire {
         };
         let req = req
             .body(body)
-            .map_err(|_| self.unavailable(&path, "cannot be sent this request"))?;
+            .map_err(|_| self.unavailable(Exchange::NotSent))?;
         match tokio::time::timeout(self.timeout, self.client.request(req)).await {
             Ok(Ok(r)) => Ok(r),
-            Ok(Err(e)) => Err(self.unavailable(&path, failed(&e))),
-            Err(_) => Err(self.unavailable(
-                &path,
-                format_args!("gave no answer within {} seconds", self.timeout.as_secs()),
-            )),
+            Ok(Err(e)) => Err(self.unavailable(failed(&e))),
+            Err(_) => {
+                let secs = self.timeout.as_secs();
+                Err(self.unavailable(Exchange::TimedOut { secs }))
+            }
         }
     }
 
@@ -316,67 +299,57 @@ impl Wire {
         key: &ApiKey,
         call: Call,
     ) -> Result<T> {
-        let path = call.path.clone();
         let r = self.send(key, call).await?;
         let status = r.status();
-        let bytes = self.whole(&path, r.into_body()).await?;
+        let bytes = self.whole(r.into_body()).await?;
         if status.is_success() {
             serde_json::from_slice(&bytes).map_err(|_| {
-                self.unavailable(
-                    &path,
-                    format_args!("answered {status} with a body that is not the contract's"),
-                )
+                let status = Some(status.as_u16());
+                self.unavailable(Exchange::NotTheContract { status })
             })
         } else {
-            Err(self.error_of(&path, status, &bytes))
+            Err(self.error_of(status, &bytes))
         }
     }
 
     /// A whole answer's body: at most `cap` bytes, within the exchange's
     /// timeout.
-    pub(crate) async fn whole(&self, path: &str, body: Incoming) -> Result<Bytes> {
+    pub(crate) async fn whole(&self, body: Incoming) -> Result<Bytes> {
         let read = Limited::new(body, self.cap).collect();
         match tokio::time::timeout(self.timeout, read).await {
             Ok(Ok(b)) => Ok(b.to_bytes()),
-            Ok(Err(e)) if e.is::<LengthLimitError>() => Err(self.too_long(path)),
-            Ok(Err(e)) => Err(self.unavailable(path, format_args!("cut its answer off: {e}"))),
-            Err(_) => Err(self.unavailable(
-                path,
-                format_args!(
-                    "gave no whole answer within {} seconds",
-                    self.timeout.as_secs()
-                ),
-            )),
+            Ok(Err(e)) if e.is::<LengthLimitError>() => Err(self.too_long()),
+            Ok(Err(e)) => {
+                let detail = Detail::scrubbed(e);
+                Err(self.unavailable(Exchange::CutOff { detail }))
+            }
+            Err(_) => {
+                let secs = self.timeout.as_secs();
+                Err(self.unavailable(Exchange::NoWholeAnswer { secs }))
+            }
         }
     }
 
     /// An answer, an event or a line longer than the cap.
-    pub(crate) fn too_long(&self, path: &str) -> Error {
-        self.unavailable(
-            path,
-            format_args!(
-                "answered more than {} bytes at once; raise `max_answer_bytes` if the lake's records are that large",
-                self.cap
-            ),
-        )
+    pub(crate) fn too_long(&self) -> Error {
+        let cap = self.cap as u64;
+        self.unavailable(Exchange::TooLarge { cap })
     }
 
     /// The contract's error a failed answer carries, read whole.
-    pub(crate) async fn failure(&self, path: &str, r: Response<Incoming>) -> Error {
+    pub(crate) async fn failure(&self, r: Response<Incoming>) -> Error {
         let status = r.status();
-        match self.whole(path, r.into_body()).await {
-            Ok(bytes) => self.error_of(path, status, &bytes),
+        match self.whole(r.into_body()).await {
+            Ok(bytes) => self.error_of(status, &bytes),
             Err(e) => e,
         }
     }
 
     /// The contract's error a failed answer carries.
-    pub(crate) fn error_of(&self, path: &str, status: hyper::StatusCode, bytes: &[u8]) -> Error {
+    pub(crate) fn error_of(&self, status: hyper::StatusCode, bytes: &[u8]) -> Error {
         serde_json::from_slice::<Error>(bytes).unwrap_or_else(|_| {
-            self.unavailable(
-                path,
-                format_args!("answered {status}, which is not the contract's"),
-            )
+            let status = status.as_u16();
+            self.unavailable(Exchange::UnexpectedStatus { status })
         })
     }
 
@@ -390,7 +363,7 @@ impl Wire {
         {
             return Ok(p);
         }
-        Err(self.failure(&path, r).await)
+        Err(self.failure(r).await)
     }
 }
 
@@ -407,24 +380,25 @@ pub(crate) fn position_of<B>(r: &Response<B>) -> Option<Position> {
 }
 
 /// What failed below HTTP, in words that carry no key and no body.
-fn failed(e: &hyper_util::client::legacy::Error) -> String {
+fn failed(e: &hyper_util::client::legacy::Error) -> Exchange {
     let mut source = e.source();
     while let Some(s) = source {
         if let Some(io) = s.downcast_ref::<io::Error>() {
             return match io.kind() {
-                io::ErrorKind::ConnectionRefused => "refused the connection".into(),
-                io::ErrorKind::InvalidData => match io.get_ref() {
-                    Some(inner) => format!("failed TLS: {inner}"),
-                    None => "failed TLS".into(),
+                io::ErrorKind::ConnectionRefused => Exchange::ConnectionRefused,
+                io::ErrorKind::InvalidData => Exchange::TlsBroke {
+                    detail: io.get_ref().map(Detail::scrubbed),
                 },
-                _ => format!("cannot be reached: {io}"),
+                _ => Exchange::Unreachable {
+                    detail: Some(Detail::io(io)),
+                },
             };
         }
         source = s.source();
     }
     if e.is_connect() {
-        "cannot be reached".into()
+        Exchange::Unreachable { detail: None }
     } else {
-        "closed the connection".into()
+        Exchange::Closed
     }
 }

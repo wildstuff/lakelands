@@ -12,9 +12,10 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 
+use lakelands_api::error::{Case, Place};
 use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Walk};
 use lakelands_api::record::StoredRecord;
-use lakelands_api::{Params, RecordKey, RelationName, Result, Value};
+use lakelands_api::{Cursor, Params, RecordKey, RelationName, Result, Value};
 use lakelands_core::graph::{self, Components, Node};
 
 use super::{CursorState, Reader, Visible, encode, invalid};
@@ -30,38 +31,30 @@ pub(super) fn is_measure(p: &Projection) -> bool {
 /// What a measure refuses: a member it would otherwise ignore, so that an
 /// answer never looks like more than it is.
 pub(super) fn check(p: &Pattern) -> Result<()> {
-    let what = match p.project {
+    let measure = match p.project {
         Projection::Degree => "degree",
         _ => "components",
-    };
-    let refuse = |member: &str| {
-        Err(invalid(format!(
-            "`{what}` is a measure over the steps' relations and takes no {member}"
-        )))
-    };
+    }
+    .to_owned();
     if p.to.is_some() {
-        return refuse("`to`");
+        return Err(invalid(Case::MeasureNoTo { measure }));
     }
     if !p.order_by.is_empty() {
-        return refuse("`order_by`: its rows come in the measure's own order");
+        return Err(invalid(Case::MeasureNoOrder { measure }));
     }
     if p.steps.is_empty() {
-        return Err(invalid(format!(
-            "`{what}` walks the relations its steps name; name at least one"
-        )));
+        return Err(invalid(Case::MeasureNoSteps { measure }));
     }
     for step in &p.steps {
         if step.depth != Depth::default() {
-            return refuse("step `depth`: it reads each record's links, not hops");
+            return Err(invalid(Case::MeasureNoDepth { measure }));
         }
         if step.filter.is_some() {
-            return refuse("step `where`");
+            return Err(invalid(Case::MeasureNoWhere { measure }));
         }
         if p.project == Projection::Components && step.walk != Walk::Both {
-            return Err(invalid(format!(
-                "`components` takes every link both ways; the step over `{}` must walk `both`",
-                step.relation
-            )));
+            let relation = step.relation.clone();
+            return Err(invalid(Case::ComponentsBothWays { relation }));
         }
     }
     Ok(())
@@ -152,26 +145,30 @@ impl Reader<'_> {
         limit: usize,
         params: Params,
     ) -> QueryResult {
-        let next_cursor = (all.len() > offset + limit).then(|| {
-            encode(&CursorState {
-                at: self.position,
-                after: None,
-                offset: (offset + limit) as u64,
-                params,
-                door: "query".into(),
-                ty: Some(p.start.ty.clone()),
-                of: super::pattern_read(p),
-            })
-        });
+        let next_cursor =
+            (all.len() > offset + limit).then(|| self.page_cursor(p, offset + limit, params));
         let rows = all.into_iter().skip(offset).take(limit).collect();
         QueryResult::Rows { rows, next_cursor }
+    }
+
+    /// The cursor that continues a pattern's answer at `offset`.
+    pub(super) fn page_cursor(&self, p: &Pattern, offset: usize, params: Params) -> Cursor {
+        encode(&CursorState {
+            at: self.position,
+            after: None,
+            offset: offset as u64,
+            params,
+            door: "query".into(),
+            ty: Some(p.start.ty.clone()),
+            of: super::pattern_read(p),
+        })
     }
 
     /// Hands every seed of the pattern's start to `each`, in key order: the
     /// one record a key names, what a search finds, or the records a filter
     /// (or none) selects, read a page at a time.
     fn seeds(&self, p: &Pattern, mut each: impl FnMut(Node) -> Result<()>) -> Result<()> {
-        let decl = self.visible_type(&p.start.ty)?.clone();
+        let decl = self.named_type(&p.start.ty)?.clone();
         let ty = decl.name.clone();
         if let Some(key) = &p.start.key {
             return if self.start_found(p, key)? {
@@ -188,7 +185,11 @@ impl Reader<'_> {
             }
             return Ok(());
         }
-        let filter = self.record_filter(&decl, p.start.filter.as_ref(), "start where")?;
+        let filter = self.record_filter(
+            &decl,
+            p.start.filter.as_ref(),
+            &[Place::Start, Place::Where],
+        )?;
         let seed = |r: &StoredRecord| each((r.ty.clone(), r.key.clone()));
         self.each_member(&decl, filter.as_ref(), PAGE, seed)
     }

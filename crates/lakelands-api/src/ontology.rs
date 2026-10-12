@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::expr::Condition;
+use crate::error::{Case, Place, Said};
+use crate::expr::{Condition, Func};
 use crate::id::{
     FieldName, ParamName, RelationName, TriggerName, TypeName, ValueTypeName, VerbName,
 };
@@ -61,11 +62,14 @@ pub enum StorageKind {
     Vector,
     /// A GeoJSON geometry.
     Geo,
+    /// A calendar date, `YYYY-MM-DD`: an instant at a UTC midnight, kept
+    /// in the form a person writes it.
+    Date,
 }
 
 impl StorageKind {
     /// Every kind, in declaration order.
-    pub const ALL: [StorageKind; 10] = [
+    pub const ALL: [StorageKind; 11] = [
         StorageKind::Text,
         StorageKind::Number,
         StorageKind::Decimal,
@@ -76,7 +80,35 @@ impl StorageKind {
         StorageKind::Reference,
         StorageKind::Vector,
         StorageKind::Geo,
+        StorageKind::Date,
     ];
+}
+
+/// Whether `v` is a component of a vector value: a number whose `f32`
+/// is finite. A search reads a vector as `f32`s, so a number beyond their
+/// range would be infinite there and score every hit `NaN`. Every vector
+/// that enters a lake goes through this, written or computed.
+pub fn is_vector_component(v: &serde_json::Value) -> bool {
+    v.as_f64().is_some_and(|x| (x as f32).is_finite())
+}
+
+/// The kind as a declaration names it: `text`, `date_time`.
+impl std::fmt::Display for StorageKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            StorageKind::Text => "text",
+            StorageKind::Number => "number",
+            StorageKind::Decimal => "decimal",
+            StorageKind::Boolean => "boolean",
+            StorageKind::DateTime => "date_time",
+            StorageKind::Bytes => "bytes",
+            StorageKind::Json => "json",
+            StorageKind::Reference => "reference",
+            StorageKind::Vector => "vector",
+            StorageKind::Geo => "geo",
+            StorageKind::Date => "date",
+        })
+    }
 }
 
 /// A value type: what a value means and what it must satisfy, declared
@@ -179,6 +211,18 @@ pub enum OnInputChange {
     Clear,
 }
 
+/// When a computed field is computed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputedAt {
+    /// By the fold, at each write that changes its inputs: the value is
+    /// stored, and the clock it reads is the write's.
+    Write,
+    /// At every read, from the record as stored and the read's clock: the
+    /// value is never stored, so a log, a feed and an export hold none.
+    Read,
+}
+
 /// One field of a type or of a relation.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -203,6 +247,10 @@ pub struct FieldDecl {
     /// any derived expression.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function: Option<String>,
+    /// For a computed field: when it is computed. Left out, at the write,
+    /// and an expression that reads the clock is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computed_at: Option<ComputedAt>,
     /// The fields this one depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<FieldName>,
@@ -249,6 +297,11 @@ impl FieldDecl {
             ..FieldDecl::default()
         }
     }
+
+    /// Whether it is computed at every read ([`ComputedAt::Read`]).
+    pub fn at_read(&self) -> bool {
+        self.computed_at == Some(ComputedAt::Read)
+    }
 }
 
 /// The members of a field's declaration that say what it is computed
@@ -272,7 +325,7 @@ macro_rules! unread {
         }
     };
 }
-unread! { derived, function, depends_on, initial, searchable, description, label, embed, annotations }
+unread! { derived, function, computed_at, depends_on, initial, searchable, description, label, embed, annotations }
 
 /// What a vector field is the embedding of
 /// (`docs/decisions/022-functions-are-declarations.md`, extended).
@@ -288,6 +341,80 @@ pub struct EmbedDecl {
 }
 
 impl TypeDecl {
+    /// The fields a record of the type is keyed by: its `key`, or, of a
+    /// grouped view, its `group_by`, which its records carry whatever
+    /// `key` says (lakelands#782).
+    pub fn key_fields(&self) -> &[FieldName] {
+        match &self.view {
+            Some(v) if !v.group_by.is_empty() => &v.group_by,
+            _ => &self.key,
+        }
+    }
+
+    /// Of a view, where its key's values come from: its source and the
+    /// fields it groups by, then each merge source and the fields it
+    /// groups by, which line up with them position by position (018).
+    /// None of a stored type.
+    pub fn key_sources(&self) -> Vec<(&TypeName, &[FieldName])> {
+        let Some(v) = &self.view else {
+            return Vec::new();
+        };
+        let merged = v.merge.iter().map(|m| (&m.source, m.group_by.as_slice()));
+        std::iter::once((&v.source, v.group_by.as_slice()))
+            .chain(merged)
+            .collect()
+    }
+
+    /// Of a view, the view fields the measure making `field` reads by
+    /// name, its own or a merged source's: a field is built from them as a
+    /// derived field from its `depends_on`, so one built from a measure its
+    /// reader may not know of is not known either (024, lakelands#782).
+    /// None of a stored type.
+    pub fn measure_reads(&self, field: &FieldName) -> Vec<FieldName> {
+        let Some(v) = &self.view else {
+            return Vec::new();
+        };
+        let mut measures = (v.measures.iter()).chain(v.merge.iter().flat_map(|s| &s.measures));
+        let expr = measures.find(|m| &m.name == field).map(|m| m.expr.typed());
+        let Some(Ok(expr)) = expr else {
+            return Vec::new();
+        };
+        let reads = expr.fields_read_by_name().into_iter();
+        reads.filter(|n| *n != field).cloned().collect()
+    }
+
+    /// The types this declared shape names against the one in force,
+    /// `held` (lakelands#762): itself and, of a view, its sources; and the
+    /// target of each relation and reference field it adds, changes or
+    /// drops. Both are compared completed, as a lake keeps a type (each
+    /// computed field's `depends_on` filled), so a relation or a field
+    /// restated as it stands names nothing the type in force does not. The
+    /// store and the mock judge a proposal's types by it.
+    pub fn names_against(&self, held: Option<&TypeDecl>) -> Vec<TypeName> {
+        let (rels, fields) = held.map_or((&[][..], &[][..]), |h| (&h.relations[..], &h.fields[..]));
+        let moved = |a: &[RelationDecl], b: &[RelationDecl]| {
+            let moved = a.iter().filter(|r| !b.contains(r));
+            moved.map(|r| r.target.clone()).collect::<Vec<_>>()
+        };
+        let refs = |a: &[FieldDecl], b: &[FieldDecl]| {
+            let moved = a.iter().filter(|f| !b.contains(f));
+            moved
+                .filter_map(|f| f.ty.target.clone())
+                .collect::<Vec<_>>()
+        };
+        let view = self
+            .view
+            .iter()
+            .flat_map(|v| std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source)));
+        std::iter::once(self.name.clone())
+            .chain(view.cloned())
+            .chain(moved(&self.relations, rels))
+            .chain(moved(rels, &self.relations))
+            .chain(refs(&self.fields, fields))
+            .chain(refs(fields, &self.fields))
+            .collect()
+    }
+
     /// A type with no field yet, every other member at its default:
     /// build one as `TypeDecl { fields: …, ..TypeDecl::named(name) }`, so a
     /// member added later does not break the literal.
@@ -299,72 +426,192 @@ impl TypeDecl {
     }
 
     /// The first of this type's embeddings declared against the rules,
-    /// with why: an embedding is a `derived` vector with dimensions,
-    /// neither derived from an expression nor computed by a function,
-    /// with no `depends_on` beside its `from`; `from` names, each once,
-    /// text fields of the type other than itself, sensitive only where
-    /// the embedding is; and it names its model. `None` when every
-    /// embedding keeps them. Every door checks this before it asks
-    /// whether a backend is bound.
-    pub fn embedding_problem(&self) -> Option<(FieldName, String)> {
+    /// with why, said at the type and the field: an embedding is a
+    /// `derived` vector with dimensions, neither derived from an
+    /// expression nor computed by a function, with no `depends_on` beside
+    /// its `from`; `from` names, each once, text fields of the type other
+    /// than itself, sensitive only where the embedding is; and it names
+    /// its model. `None` when every embedding keeps them. Every door
+    /// checks this before it asks whether a backend is bound.
+    pub fn embedding_problem(&self) -> Option<(FieldName, Said)> {
         self.fields.iter().find_map(|f| {
-            let why = embedding_problem(self, f)?;
-            Some((
-                f.name.clone(),
-                format!("type `{}`, field `{}`: {why}", self.name, f.name),
-            ))
+            let case = embedding_problem(self, f)?;
+            let field = Place::Field {
+                name: f.name.clone(),
+            };
+            let ty = Place::Type {
+                name: self.name.clone(),
+            };
+            Some((f.name.clone(), Said::from(case).within(field).within(ty)))
+        })
+    }
+
+    /// The first of this type's fields that says when it is computed
+    /// against the rules, with why, said at the type, the relation if a
+    /// link's, and the field. A computed field whose expression, or
+    /// `expr` function, reads the clock says when. One computed at the
+    /// read is computed at every read from the record as stored, so no
+    /// write gives it and nothing that reads stored records names it: it
+    /// has the authority `derived`, an expression computes it, and it is
+    /// not required, sensitive by itself, cleared or searched; it is no
+    /// key, validity bound, `via` or derived relation's match, no field of
+    /// a view or of a link; and no field computed at the write reads it.
+    /// `None` when every field keeps them. Every door checks this.
+    pub fn computed_at_problem<'f>(
+        &self,
+        function: impl Fn(&str) -> Option<&'f crate::write::FunctionDecl>,
+    ) -> Option<(FieldName, Said)> {
+        let ty = || Place::Type {
+            name: self.name.clone(),
+        };
+        let said = |at: &[Place], f: &FieldDecl, case: Case| {
+            let mut said = Said::from(case).within(Place::Field {
+                name: f.name.clone(),
+            });
+            for place in at.iter().rev() {
+                said = said.within(place.clone());
+            }
+            Some((f.name.clone(), said))
+        };
+        let view = self
+            .view
+            .as_ref()
+            .and(self.fields.iter().find(|f| f.computed_at.is_some()));
+        if let Some(f) = view {
+            return said(&[ty()], f, Case::ComputedAtInView);
+        }
+        for r in &self.relations {
+            let relation = Place::Relation {
+                name: r.name.clone(),
+            };
+            let at = [ty(), relation];
+            for f in &r.fields {
+                if f.at_read() {
+                    return said(&at, f, Case::LinkFieldAtRead);
+                }
+                if let Some(case) = computed_at_problem(&r.fields, f, &function) {
+                    return said(&at, f, case);
+                }
+            }
+        }
+        let pairs = self
+            .relations
+            .iter()
+            .flat_map(|r| r.derived.iter().flat_map(|d| &d.pairs));
+        let named = (self.key.iter().map(|n| (n, Case::AtReadKey)))
+            .chain(self.valid_from.iter().map(|n| (n, Case::AtReadValidFrom)))
+            .chain(self.valid_to.iter().map(|n| (n, Case::AtReadValidTo)))
+            .chain(
+                self.relations
+                    .iter()
+                    .filter_map(|r| Some((r.via.as_ref()?, Case::AtReadVia))),
+            )
+            .chain(pairs.map(|p| (&p.from, Case::AtReadMatch)));
+        for (n, case) in named {
+            if let Some(f) = self.fields.iter().find(|f| &f.name == n && f.at_read()) {
+                return said(&[ty()], f, case);
+            }
+        }
+        self.fields.iter().find_map(|f| {
+            let case = computed_at_problem(&self.fields, f, &function)?;
+            said(&[ty()], f, case)
         })
     }
 }
 
-fn embedding_problem(t: &TypeDecl, f: &FieldDecl) -> Option<String> {
+/// What of `computed_at_problem` one field of `fields` breaks by itself.
+fn computed_at_problem<'f>(
+    fields: &[FieldDecl],
+    f: &FieldDecl,
+    function: &dyn Fn(&str) -> Option<&'f crate::write::FunctionDecl>,
+) -> Option<Case> {
+    let called = f.function.as_deref().and_then(function);
+    let backed = called.is_some_and(|func| func.backing != "expr");
+    let expr = match (&f.derived, called) {
+        (Some(c), _) => c.typed().ok(),
+        (None, Some(func)) => func.expr.as_ref().and_then(|c| c.typed().ok()),
+        _ => None,
+    };
+    let reads: Vec<&FieldName> = match (&expr, called, &f.embed) {
+        (Some(e), _, _) => e.fields_read().into_iter().collect(),
+        (None, Some(func), _) => func.inputs.iter().map(|i| &i.name).collect(),
+        (_, _, Some(embed)) => embed.from.iter().collect(),
+        _ => Vec::new(),
+    };
+    let at_read = |n: &&FieldName| fields.iter().any(|d| &d.name == *n && d.at_read());
+    match f.computed_at {
+        Some(_) if f.derived.is_none() && f.function.is_none() => {
+            return Some(Case::ComputedAtUncomputed);
+        }
+        None if expr.as_ref().is_some_and(crate::expr::Expr::reads_clock) => {
+            return Some(Case::ClockUnsaid);
+        }
+        Some(ComputedAt::Read) => {}
+        _ => {
+            let field = reads.into_iter().find(at_read)?.clone();
+            return Some(Case::AtWriteReadsAtRead { field });
+        }
+    }
+    let write = expr.is_some_and(|e| e.calls(&[Func::Previous, Func::Changed]));
+    Some(if f.authority != Authority::Derived {
+        Case::AtReadAuthority
+    } else if backed {
+        Case::AtReadBacked
+    } else if write {
+        Case::AtReadPrevious
+    } else if f.required {
+        Case::AtReadRequired
+    } else if f.sensitive {
+        Case::AtReadSensitive
+    } else if f.on_input_change == OnInputChange::Clear {
+        Case::AtReadCleared
+    } else if f.searchable {
+        Case::AtReadSearchable
+    } else {
+        return None;
+    })
+}
+
+fn embedding_problem(t: &TypeDecl, f: &FieldDecl) -> Option<Case> {
     let e = f.embed.as_ref()?;
     if f.ty.kind != StorageKind::Vector || f.ty.dimensions.is_none() {
-        return Some("only a vector with dimensions is the embedding of text".into());
+        return Some(Case::EmbedNotVector);
     }
     if f.derived.is_some() || f.function.is_some() {
-        return Some(
-            "a field is an embedding, derived from an expression or computed by a function, \
-             only one"
-                .into(),
-        );
+        return Some(Case::EmbedAlsoComputed);
     }
     if f.authority != Authority::Derived {
-        return Some("an embedding has the authority `derived`".into());
+        return Some(Case::EmbedNotDerived);
     }
     if !f.depends_on.is_empty() {
-        return Some(
-            "an embedding depends on its `from` fields; `depends_on` is not written beside it"
-                .into(),
-        );
+        return Some(Case::EmbedDependsOn);
     }
     if e.from.is_empty() {
-        return Some("an embedding names the fields it is made `from`".into());
+        return Some(Case::EmbedNoFrom);
     }
     if e.model.trim().is_empty() {
-        return Some("an embedding names its model".into());
+        return Some(Case::EmbedNoModel);
     }
     let mut seen = std::collections::BTreeSet::new();
     for name in &e.from {
+        let field = name.clone();
         if !seen.insert(name) {
-            return Some(format!("it names `{name}` in `from` twice"));
+            return Some(Case::EmbedFromTwice { field });
         }
         if name == &f.name {
-            return Some("it cannot be made from itself".into());
+            return Some(Case::EmbedFromItself);
         }
+        // Not one of the type's fields: as one it does not have.
         let Some(source) = t.fields.iter().find(|d| &d.name == name) else {
-            return Some(format!(
-                "it is made from `{name}`, which is not one of its fields"
-            ));
+            let ty = t.name.clone();
+            return Some(Case::UnknownField { ty, field });
         };
         if source.ty.kind != StorageKind::Text {
-            return Some(format!("it is made from `{name}`, which is not text"));
+            return Some(Case::EmbedFromNotText { field });
         }
         // A vector gives its text away to whoever may read it.
         if source.sensitive && !f.sensitive {
-            return Some(format!(
-                "it is made from the sensitive field `{name}` and is not sensitive itself"
-            ));
+            return Some(Case::EmbedFromSensitive { field });
         }
     }
     None
@@ -492,6 +739,18 @@ pub struct ViewDecl {
     pub merge: Vec<ViewSource>,
 }
 
+impl ViewDecl {
+    /// The definition without each measure, its own or a merged source's,
+    /// whose view field `known` does not answer: shown beside a type's
+    /// fields, it names none that they leave out (lakelands#782).
+    pub fn keep_measures(&mut self, known: impl Fn(&FieldName) -> bool) {
+        self.measures.retain(|m| known(&m.name));
+        for s in &mut self.merge {
+            s.measures.retain(|m| known(&m.name));
+        }
+    }
+}
+
 /// A further source of a view: its records, filtered by its `where`,
 /// grouped by its `group_by`, whose fields line up with the view's
 /// `group_by` by position, and measured by its own aggregates. Its groups
@@ -518,7 +777,8 @@ pub struct ViewSource {
 pub struct ViewParam {
     /// Its name.
     pub name: ParamName,
-    /// Its kind: `text`, `number`, `decimal`, `boolean` or `date_time`.
+    /// Its kind: `text`, `number`, `decimal`, `boolean`, `date_time` or
+    /// `date`.
     pub kind: StorageKind,
 }
 
@@ -552,11 +812,13 @@ pub struct TypeDecl {
     /// few types are views and a view is the largest member.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view: Option<Box<ViewDecl>>,
-    /// The field that holds a record's business start time, if the type
-    /// is valid-timed; `valid_to` is its end, if declared.
+    /// The `date_time` or `date` field that holds a record's business
+    /// start time, if the type is valid-timed; `valid_to` is its end, if
+    /// declared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_from: Option<FieldName>,
-    /// The field that holds a record's business end time.
+    /// The `date_time` or `date` field that holds a record's business end
+    /// time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_to: Option<FieldName>,
     /// The language of the type's searchable text, as a BCP-47 tag
@@ -675,6 +937,33 @@ pub struct VerbDecl {
     /// What the verb does, for people and agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+impl VerbDecl {
+    /// The record's fields the verb reads: those its `requires` reads, and
+    /// those its set values read but for `payload.<name>`, a member of the
+    /// call's payload. `None` where one of them does not parse.
+    pub fn fields_read(&self) -> Option<std::collections::BTreeSet<FieldName>> {
+        let set = match &self.effect {
+            VerbEffect::Write { set } => set.as_slice(),
+            VerbEffect::External { .. } => &[],
+        };
+        let mut read = std::collections::BTreeSet::new();
+        if let Some(r) = &self.requires {
+            read.extend(r.typed().ok()?.fields_read().into_iter().cloned());
+        }
+        for a in set {
+            read.extend(
+                a.value
+                    .typed()
+                    .ok()?
+                    .record_fields_read()
+                    .into_iter()
+                    .cloned(),
+            );
+        }
+        Some(read)
+    }
 }
 
 /// A verb as it is read: the effect's members beside the verb's own, each

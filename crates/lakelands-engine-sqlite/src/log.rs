@@ -95,7 +95,9 @@ use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::Position;
 use sha2::{Digest as _, Sha256};
 
-use crate::{invalid, io_error, unavailable};
+use lakelands_api::error::{Case, Detail, Doing, Error, Flaw, Left, Part, Situation};
+
+use crate::{damaged as damaged_at, invalid, io_error};
 
 /// How much of an index file's end is read at once.
 const BLOCK: u64 = 64 * 1024;
@@ -153,16 +155,22 @@ impl Segment {
 }
 
 /// An index line that does not say what it must: the index is damaged.
-fn damaged(path: &Path, what: impl std::fmt::Display) -> lakelands_api::Error {
-    unavailable(format!(
-        "the log index {} is damaged: {what}",
-        path.display()
-    ))
+/// The path is the operator's, not the answer's.
+fn damaged(_: &Path, flaw: Flaw) -> lakelands_api::Error {
+    damaged_at(Part::LogIndex, None, flaw)
 }
 
 /// One index line: an event (`Some`) or a commit line (`None`).
 fn parse_line(path: &Path, line: &[u8]) -> Result<Option<Entry>> {
-    let parsed: serde_json::Value = serde_json::from_slice(line).map_err(|e| damaged(path, e))?;
+    let not_json = |e| {
+        damaged(
+            path,
+            Flaw::NotJson {
+                detail: Detail::json(&e),
+            },
+        )
+    };
+    let parsed: serde_json::Value = serde_json::from_slice(line).map_err(not_json)?;
     match parsed.as_array().map(Vec::as_slice) {
         Some([kind]) if kind == "c" => Ok(None),
         Some([kind, rest @ ..]) if kind == "e" => {
@@ -175,7 +183,7 @@ fn parse_line(path: &Path, line: &[u8]) -> Result<Option<Entry>> {
                 String,
                 String,
             ) = serde_json::from_value(serde_json::Value::Array(rest.to_vec()))
-                .map_err(|e| damaged(path, e))?;
+                .map_err(not_json)?;
             Ok(Some(Entry {
                 position,
                 fence,
@@ -186,7 +194,7 @@ fn parse_line(path: &Path, line: &[u8]) -> Result<Option<Entry>> {
                 hash,
             }))
         }
-        _ => Err(damaged(path, "it holds a line it does not know")),
+        _ => Err(damaged(path, Flaw::UnknownLine)),
     }
 }
 
@@ -194,10 +202,10 @@ fn parse_line(path: &Path, line: &[u8]) -> Result<Option<Entry>> {
 /// a segment is never held whole.
 fn digest_of(dir: &Path, segment: &Segment) -> Result<Digest> {
     let path = segment_path(dir, segment.first);
-    let file = File::open(&path).map_err(|e| io_error("reading", &path, e))?;
+    let file = File::open(&path).map_err(|e| io_error(Doing::Read, Part::Log, e))?;
     let mut hash = Sha256::new();
     let read = std::io::copy(&mut file.take(segment.end), &mut hash)
-        .map_err(|e| io_error("reading", &path, e))?;
+        .map_err(|e| io_error(Doing::Read, Part::Log, e))?;
     if read != segment.end {
         return Err(short(&path));
     }
@@ -205,23 +213,17 @@ fn digest_of(dir: &Path, segment: &Segment) -> Result<Digest> {
 }
 
 /// A file of the log that ends before what is committed in it.
-fn short(path: &Path) -> lakelands_api::Error {
-    unavailable(format!(
-        "{} ends before its committed events do; the log is damaged",
-        path.display()
-    ))
+fn short(_: &Path) -> lakelands_api::Error {
+    damaged_at(Part::Segment, None, Flaw::Truncated)
 }
 
 /// One index line, an event line checked to name `expected`.
 fn parse_at(path: &Path, line: &[u8], expected: u64) -> Result<Option<Entry>> {
     match parse_line(path, line)? {
-        Some(e) if e.position != expected => Err(damaged(
-            path,
-            format!(
-                "a line names position {} where position {expected} belongs",
-                e.position
-            ),
-        )),
+        Some(e) if e.position != expected => {
+            let (expected, found) = (Position(expected), Some(Position(e.position)));
+            Err(damaged(path, Flaw::Position { expected, found }))
+        }
         entry => Ok(entry),
     }
 }
@@ -253,7 +255,7 @@ fn last_of(mut file: &File, mut end: u64, wanted: &[u8], step: u64) -> io::Resul
 /// after it are read as a later append's are. An index that holds no
 /// commit line says nothing.
 fn read_end(path: &Path, mut file: &File, segment: &mut Segment) -> Result<()> {
-    let reading = |e| io_error("reading", path, e);
+    let reading = |e| io_error(Doing::Read, Part::Log, e);
     let len = file.metadata().map_err(reading)?.len();
     let Some(feed) = last_of(file, len, COMMITTED, BLOCK).map_err(reading)? else {
         return Ok(());
@@ -266,7 +268,7 @@ fn read_end(path: &Path, mut file: &File, segment: &mut Segment) -> Result<()> {
         .map_err(reading)?;
     let last = parse_line(path, &line)?
         .filter(|e| e.position >= segment.first)
-        .ok_or_else(|| damaged(path, "its last commit line follows no event of its segment"))?;
+        .ok_or_else(|| damaged(path, Flaw::CommitWithoutEvent))?;
     segment.count = last.position - segment.first + 1;
     segment.end = last.offset + last.len + 1;
     segment.last_hash = Some(last.hash);
@@ -286,7 +288,7 @@ fn line_near(path: &Path, mut file: &File, segment: &Segment, start: u64) -> Res
     while end - found.1 > NEAR {
         let middle = found.1 + (end - found.1) / 2;
         file.seek(SeekFrom::Start(middle))
-            .map_err(|e| io_error("reading", path, e))?;
+            .map_err(|e| io_error(Doing::Read, Part::Log, e))?;
         let mut lines = std::io::BufReader::new(file);
         let (mut at, mut line) = (middle, Vec::new());
         let landed = loop {
@@ -294,7 +296,7 @@ fn line_near(path: &Path, mut file: &File, segment: &Segment, start: u64) -> Res
             line.clear();
             at += lines
                 .read_until(b'\n', &mut line)
-                .map_err(|e| io_error("reading", path, e))? as u64;
+                .map_err(|e| io_error(Doing::Read, Part::Log, e))? as u64;
             if at == begins || begins > end {
                 break None;
             }
@@ -337,7 +339,7 @@ fn index_path(dir: &Path, first: u64) -> PathBuf {
 /// segment passed over would be read as absent, and its index removed.
 fn names(dir: &Path) -> Result<Vec<String>> {
     let read = fs::read_dir(dir).and_then(Iterator::collect::<io::Result<Vec<_>>>);
-    let entries = read.map_err(|e| io_error("reading", dir, e))?;
+    let entries = read.map_err(|e| io_error(Doing::Read, Part::Log, e))?;
     let names = entries.iter().map(|e| e.file_name().into_string().ok());
     Ok(names.flatten().collect())
 }
@@ -388,7 +390,7 @@ impl Log {
         if create {
             for sub in ["log", "index"] {
                 let d = dir.join(sub);
-                fs::create_dir_all(&d).map_err(|e| io_error("creating", &d, e))?;
+                fs::create_dir_all(&d).map_err(|e| io_error(Doing::Create, Part::Log, e))?;
             }
             if log.files()?.is_empty() {
                 log.start_segment(0)?;
@@ -406,11 +408,11 @@ impl Log {
                 .append(true)
                 .open(&path)
                 .and_then(|f| f.sync_all())
-                .map_err(|e| io_error("creating", &path, e))?;
+                .map_err(|e| io_error(Doing::Create, Part::Log, e))?;
         }
         ["log", "index"].iter().try_for_each(|sub| {
             let dir = self.dir.join(sub);
-            sync_dir(&dir).map_err(|e| io_error("syncing", &dir, e))
+            sync_dir(&dir).map_err(|e| io_error(Doing::Sync, Part::Log, e))
         })
     }
 
@@ -443,13 +445,13 @@ impl Log {
             let mut file = match File::open(&path) {
                 Ok(f) => f,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(io_error("reading", &path, e)),
+                Err(e) => return Err(io_error(Doing::Read, Part::Log, e)),
             };
             if segment.index_read == 0 {
                 read_end(&path, &file, segment)?;
             }
             file.seek(SeekFrom::Start(segment.index_read))
-                .map_err(|e| io_error("reading", &path, e))?;
+                .map_err(|e| io_error(Doing::Read, Part::Log, e))?;
             // What follows is read a line at a time, never whole: after a
             // crash it can be most of the active segment.
             let mut tail = std::io::BufReader::new(file);
@@ -464,7 +466,7 @@ impl Log {
                 line.clear();
                 let n = tail
                     .read_until(b'\n', &mut line)
-                    .map_err(|e| io_error("reading", &path, e))?;
+                    .map_err(|e| io_error(Doing::Read, Part::Log, e))?;
                 if n == 0 || line.last() != Some(&b'\n') {
                     break;
                 }
@@ -518,10 +520,10 @@ impl Log {
                 .create(true)
                 .truncate(false)
                 .open(&path)
-                .map_err(|e| io_error("opening", &path, e))?;
+                .map_err(|e| io_error(Doing::Open, Part::Log, e))?;
             let now = file
                 .metadata()
-                .map_err(|e| io_error("reading", &path, e))?
+                .map_err(|e| io_error(Doing::Read, Part::Log, e))?
                 .len();
             if now < len {
                 return Err(short(&path));
@@ -529,7 +531,7 @@ impl Log {
             if now > len {
                 file.set_len(len)
                     .and_then(|()| file.sync_all())
-                    .map_err(|e| io_error("truncating", &path, e))?;
+                    .map_err(|e| io_error(Doing::Truncate, Part::Log, e))?;
             }
         }
         Ok(())
@@ -553,7 +555,9 @@ impl Log {
             return Ok(());
         }
         let active = self.segments.last().ok_or_else(|| {
-            unavailable("the lake's log has no segment; it was not created by this engine")
+            Error::unavailable(Situation::Unmade {
+                part: Part::Segment,
+            })
         })?;
         let (segment_path, index_path) = (
             segment_path(&self.dir, active.first),
@@ -562,11 +566,8 @@ impl Log {
         // An active segment holding nothing is named by the position its
         // first event takes; one named otherwise is not this log's.
         if active.count == 0 && events[0].position.0 != active.first {
-            return Err(invalid(format!(
-                "the active segment is named for position {}, and the event to append is at \
-                 position {}; nothing was appended",
-                active.first, events[0].position
-            )));
+            let (named, position) = (Position(active.first), events[0].position);
+            return Err(invalid(Case::ActiveSegmentNamed { named, position }));
         }
         let (lines, index) = lines_of(events, active.end);
         let written = [(&segment_path, &lines), (&index_path, &index)]
@@ -601,29 +602,26 @@ impl Log {
         lakelands_core::engines::append_fault(events, first, prev, fence, floor)
     }
 
-    /// The error of an append of `events` whose write to `path` failed
-    /// with `e`. What it left is read, then cut, before the error is
+    /// The error of an append of `events` whose write to a file of the
+    /// log failed with `e`; the file's path is the operator's, not the
+    /// answer's. What it left is read, then cut, before the error is
     /// answered: a group whose commit line is whole stays, and its outcome
     /// is not known. Where the cut fails, the next append or seal cuts
     /// before it writes, or is refused.
     fn failed(
         &mut self,
         events: &[CanonicalEvent],
-        path: &Path,
+        _: &Path,
         e: &io::Error,
     ) -> lakelands_api::Error {
         let last = events.last().map(|e| (e.position, e.hash.clone()));
-        let more = match self.recover() {
-            Ok(()) if self.tip() == last => "; its events are in the log's files and their \
-                 sync failed: every handle reads them, and the outcome is not known"
-                .to_owned(),
-            Ok(()) => String::new(),
-            Err(cut) => format!(
-                "; what it wrote may still lie past the committed end, and the next append or \
-                 seal cuts it before it writes, or is refused ({cut})"
-            ),
+        let (left, cut) = match self.recover() {
+            Ok(()) if self.tip() == last => (Left::Unsure, None),
+            Ok(()) => (Left::Nothing, None),
+            Err(cut) => (Left::Uncut, Some(Box::new(cut))),
         };
-        unavailable(format!("appending to {} failed: {e}{more}", path.display()))
+        let detail = Detail::io(e);
+        Error::unavailable(Situation::AppendFailed { detail, left, cut })
     }
 
     /// The fence of the event at `position`.
@@ -631,7 +629,12 @@ impl Log {
         self.read(Position(position), 1)?
             .first()
             .map(|e| e.fence)
-            .ok_or_else(|| unavailable(format!("the log holds no event at position {position}")))
+            .ok_or_else(|| {
+                let flaw = Flaw::NoEvent {
+                    position: Position(position),
+                };
+                damaged_at(Part::Log, None, flaw)
+            })
     }
 
     /// At most `limit` events from `from` on, as appended.
@@ -649,19 +652,16 @@ impl Log {
             let wanted =
                 Self::entries_of(&self.dir, segment, start, limit as u64 - out.len() as u64)?;
             let path = segment_path(&self.dir, segment.first);
-            let mut file = File::open(&path).map_err(|e| io_error("reading", &path, e))?;
+            let mut file = File::open(&path).map_err(|e| io_error(Doing::Read, Part::Log, e))?;
             for e in wanted {
                 let mut bytes = vec![0; e.len as usize];
                 file.seek(SeekFrom::Start(e.offset))
                     .and_then(|_| file.read_exact(&mut bytes))
                     .map_err(|err| match err.kind() {
-                        std::io::ErrorKind::UnexpectedEof => unavailable(format!(
-                            "{} ends before the committed event at position {}; the log is \
-                             damaged",
-                            path.display(),
-                            e.position
-                        )),
-                        _ => io_error("reading", &path, err),
+                        std::io::ErrorKind::UnexpectedEof => {
+                            damaged_at(Part::Segment, Some(Position(e.position)), Flaw::Truncated)
+                        }
+                        _ => io_error(Doing::Read, Part::Log, err),
                     })?;
                 out.push(CanonicalEvent {
                     position: Position(e.position),
@@ -686,13 +686,13 @@ impl Log {
     fn entries_of(dir: &Path, segment: &mut Segment, start: u64, n: u64) -> Result<Vec<Entry>> {
         let path = index_path(dir, segment.first);
         let last = segment.last().unwrap_or(segment.first);
-        let mut file = File::open(&path).map_err(|e| io_error("reading", &path, e))?;
+        let mut file = File::open(&path).map_err(|e| io_error(Doing::Read, Part::Log, e))?;
         let (mut expected, mut at) = match segment.resume {
             resume if resume.0 == start => resume,
             _ => line_near(&path, &file, segment, start)?,
         };
         file.seek(SeekFrom::Start(at))
-            .map_err(|e| io_error("reading", &path, e))?;
+            .map_err(|e| io_error(Doing::Read, Part::Log, e))?;
         let mut lines = std::io::BufReader::new(file);
         let mut line = Vec::new();
         let mut out = Vec::new();
@@ -700,12 +700,10 @@ impl Log {
             line.clear();
             let read = lines
                 .read_until(b'\n', &mut line)
-                .map_err(|e| io_error("reading", &path, e))?;
+                .map_err(|e| io_error(Doing::Read, Part::Log, e))?;
             if read == 0 || line.last() != Some(&b'\n') {
-                return Err(damaged(
-                    &path,
-                    format!("it ends before the committed position {expected}"),
-                ));
+                let position = Position(expected);
+                return Err(damaged(&path, Flaw::EndsBefore { position }));
             }
             at += read as u64;
             let Some(e) = parse_at(&path, &line, expected)? else {
@@ -751,19 +749,19 @@ impl Log {
             index_path(&self.dir, last + 1),
         );
         let partial = segment.with_extension(PARTIAL);
-        let write = |path: &Path, bytes: &[u8]| {
+        let write = |path: &Path, part: Part, bytes: &[u8]| {
             File::create(path)
                 .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
-                .map_err(|e| io_error("writing", path, e))
+                .map_err(|e| io_error(Doing::Write, part, e))
         };
         let (log, beside) = (self.dir.join("log"), self.dir.join("index"));
         // The index and its name are durable before the segment's name
         // exists: a segment that is listed has its events committed.
-        let written = write(&index_path, &index)
-            .and_then(|()| sync_dir(&beside).map_err(|e| io_error("syncing", &beside, e)))
-            .and_then(|()| write(&partial, &lines))
+        let written = write(&index_path, Part::LogIndex, &index)
+            .and_then(|()| sync_dir(&beside).map_err(|e| io_error(Doing::Sync, Part::LogIndex, e)))
+            .and_then(|()| write(&partial, Part::Segment, &lines))
             .and_then(|()| {
-                fs::rename(&partial, &segment).map_err(|e| io_error("renaming", &partial, e))
+                fs::rename(&partial, &segment).map_err(|e| io_error(Doing::Rename, Part::Log, e))
             });
         if let Err(e) = written {
             let _ = fs::remove_file(&partial);
@@ -773,17 +771,12 @@ impl Log {
         self.segments.last_mut().expect("checked above").digest = Some(digest);
         // The rename was the step: an error from here on says so.
         sync_dir(&log).map_err(|e| {
-            unavailable(format!(
-                "syncing {} failed: {e}; the next segment is in the log's files and its name's \
-                 sync failed: every handle reads it, and the outcome is not known",
-                log.display()
-            ))
+            let detail = Detail::io(&e);
+            Error::unavailable(Situation::SealUnsure { detail })
         })?;
         self.refresh().map_err(|e| {
-            unavailable(format!(
-                "the segment through position {last} is sealed and the next one is in the \
-                 log's files, synced; this handle then failed to read on: {e}"
-            ))
+            let (last, cause) = (Position(last), Box::new(e));
+            Error::unavailable(Situation::SealedNotRead { last, cause })
         })?;
         Ok(Some(sealed))
     }

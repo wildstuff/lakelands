@@ -22,6 +22,17 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
+- `v13.json`: version 13's additions after `v12.json`'s position 33: a
+  `write_proposed` upsert that carries `pinned`; a `declared` type with a
+  field of the kind `date`, a `declared` value type over it, and a
+  `record_upserted` holding a date, written in the lake's version though
+  it needs none of its own; and `negatives`, the proposal and the two
+  declarations written as version 12, which a reader refuses.
+- `v12.json`: version 12's additions after `v11.json`'s position 30: a
+  `declared` function that carries `with_the_set`, a `value_type_migrated`
+  that renames a value, and a proposed `migrate_value_type` that carries
+  `renames`; and `negatives`, each line written as version 11, which a
+  reader refuses.
 - `v11.json`: version 11's additions after `v10.json`'s position 22, one
   line each: a `declared` type whose derived field calls `floor`, one
   whose derived field calls `date_bucket` by a width, an object set

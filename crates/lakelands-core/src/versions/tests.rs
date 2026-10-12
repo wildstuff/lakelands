@@ -10,6 +10,7 @@ fn declared(declaration: Declaration) -> EventBody {
         declaration,
         schema_hash: None,
         version: 1,
+        with_the_set: false,
     }
 }
 
@@ -48,7 +49,8 @@ fn upstream_belongs_to_record_ingested_alone() {
     };
     let retired = line(json!({"kind": "record_retired", "type": "t", "key": "k", "version": 2}));
     let why = misplaced(&retired).expect("refused");
-    assert!(why.contains("`record_retired`"), "{why}");
+    let kind = "record_retired".to_owned();
+    assert_eq!(why, lakelands_api::error::Flaw::UpstreamOn { kind });
     let ingested = line(json!({"kind": "record_ingested", "type": "t", "key": "k",
                                    "version": 1, "patch": {"f": 1}}));
     assert_eq!(misplaced(&ingested), None);
@@ -120,6 +122,7 @@ fn annotations_anywhere_in_a_declaration_need_format_5() {
             proposal: "p".into(),
             write,
             why: String::new(),
+            pinned: false,
         };
         assert_eq!(needed(&proposed, false), 5);
     }
@@ -130,6 +133,7 @@ fn annotations_anywhere_in_a_declaration_need_format_5() {
         })),
         schema_hash: None,
         version: 1,
+        with_the_set: false,
     };
     assert_eq!(needed(&plain, false), 1, "an empty map is no annotation");
 }
@@ -177,11 +181,12 @@ fn a_declaration_calling_retired_needs_format_7_and_says_so_below_it() {
             declarations: vec![guard("retired()")],
         },
         why: String::new(),
+        pinned: false,
     };
     assert_eq!(needed(&proposed, false), 7, "a proposal keeps it too");
     let event = declared_event(6, guard("retired()"));
     assert_eq!(
-        below(&event).as_deref(),
+        below(&event).map(|f| f.to_string()).as_deref(),
         Some("a format 6 event declares a call of `retired`, which format 7 added")
     );
 }
@@ -209,7 +214,7 @@ fn a_view_with_parameters_needs_format_8_and_says_so_below_it() {
     );
     let event = declared_event(7, anchored);
     assert_eq!(
-        below(&event).as_deref(),
+        below(&event).map(|f| f.to_string()).as_deref(),
         Some("a format 7 event declares a view's parameters, which format 8 added")
     );
 }
@@ -242,6 +247,7 @@ fn a_verb_on_its_type_needs_format_8_declared_called_or_proposed() {
             opts: Default::default(),
         },
         why: String::new(),
+        pinned: false,
     };
     assert_eq!(needed(&proposed(None), false), 8);
     assert_eq!(needed(&proposed(Some("k")), false), 1);
@@ -254,11 +260,15 @@ fn a_verb_on_its_type_needs_format_8_declared_called_or_proposed() {
         e
     };
     assert_eq!(
-        below(&event(declared(verb(Some("type"))))).as_deref(),
+        below(&event(declared(verb(Some("type")))))
+            .map(|f| f.to_string())
+            .as_deref(),
         Some("a format 7 event declares a verb on its type, which format 8 added")
     );
     assert_eq!(
-        below(&event(called(None))).as_deref(),
+        below(&event(called(None)))
+            .map(|f| f.to_string())
+            .as_deref(),
         Some("a format 7 event calls a verb with no key, which format 8 added")
     );
 }
@@ -282,7 +292,7 @@ fn a_view_that_merges_sources_needs_format_9_and_says_so_below_it() {
     assert_eq!(needed(&declared(view(json!([]))), false), 1);
     let event = declared_event(8, merged);
     assert_eq!(
-        below(&event).as_deref(),
+        below(&event).map(|f| f.to_string()).as_deref(),
         Some("a format 8 event declares a view that merges sources, which format 9 added")
     );
 }
@@ -297,7 +307,9 @@ fn a_proposed_tightening_of_a_value_type_needs_format_10_and_says_so_below_it() 
     let need = |v, body: &serde_json::Value| needed(&event_json(v, body.clone()).body, false);
     assert_eq!((need(10, &narrower), need(4, &declared)), (10, 4));
     assert_eq!(
-        below(&event_json(9, narrower)).as_deref(),
+        below(&event_json(9, narrower))
+            .map(|f| f.to_string())
+            .as_deref(),
         Some("a format 9 event proposes a value type's tightening, which format 10 added")
     );
 }
@@ -313,7 +325,9 @@ fn a_declared_call_of_floor_needs_format_11_and_says_so_below_it() {
     let need = |d: &serde_json::Value| needed(&declared_event(11, d).body, false);
     assert_eq!((need(&whole), need(&exact)), (11, 1));
     assert_eq!(
-        below(&declared_event(10, &whole)).as_deref(),
+        below(&declared_event(10, &whole))
+            .map(|f| f.to_string())
+            .as_deref(),
         Some("a format 10 event declares a call of `floor`, which format 11 added")
     );
     // A bucket by a width is format 11's; by a calendar unit it stays 3's.
@@ -323,7 +337,9 @@ fn a_declared_call_of_floor_needs_format_11_and_says_so_below_it() {
     );
     assert_eq!((need(&window), need(&month)), (11, 3));
     assert_eq!(
-        below(&declared_event(10, &window)).as_deref(),
+        below(&declared_event(10, &window))
+            .map(|f| f.to_string())
+            .as_deref(),
         Some(
             "a format 10 event declares a call of `date_bucket` by a width, which format 11 added"
         )
@@ -333,7 +349,9 @@ fn a_declared_call_of_floor_needs_format_11_and_says_so_below_it() {
                         "where": "in_set('open')"});
     assert_eq!(need(&urgent), 11);
     assert_eq!(
-        below(&declared_event(10, &urgent)).as_deref(),
+        below(&declared_event(10, &urgent))
+            .map(|f| f.to_string())
+            .as_deref(),
         Some("a format 10 event declares a call of `in_set`, which format 11 added")
     );
 }
@@ -351,7 +369,9 @@ fn a_record_event_that_carries_made_needs_format_11_and_says_so_below_it() {
     for kind in ["record_upserted", "record_ingested"] {
         assert_eq!(needed(&event_json(11, record(kind, true)).body, false), 11);
         assert_eq!(
-            below(&event_json(10, record(kind, true))).as_deref(),
+            below(&event_json(10, record(kind, true)))
+                .map(|f| f.to_string())
+                .as_deref(),
             Some("a format 10 event carries `made`, which format 11 added")
         );
         // A change says nothing, needs nothing, and is written without it.
@@ -390,7 +410,9 @@ fn a_declared_initial_value_needs_format_11_and_says_so_below_it() {
             "{without}"
         );
         assert_eq!(
-            below(&declared_event(10, with)).as_deref(),
+            below(&declared_event(10, with))
+                .map(|f| f.to_string())
+                .as_deref(),
             Some("a format 10 event declares an `initial` value, which format 11 added")
         );
     }
@@ -422,7 +444,9 @@ fn a_write_of_a_view_kept_setting_needs_format_11_and_says_so_below_it() {
     ] {
         assert_eq!(need(body.clone()), 11, "{body}");
         assert_eq!(
-            below(&event_json(10, body)).as_deref(),
+            below(&event_json(10, body))
+                .map(|f| f.to_string())
+                .as_deref(),
             Some("a format 10 event writes a `view_kept.` setting, which format 11 added")
         );
     }
@@ -448,7 +472,9 @@ fn a_proposed_migration_whose_report_restates_needs_format_11_and_says_so_below_
     let restates = event_json(11, proposed(Some(mark.clone())));
     assert_eq!(needed(&restates.body, false), 11);
     assert_eq!(
-        below(&event_json(10, proposed(Some(mark)))).as_deref(),
+        below(&event_json(10, proposed(Some(mark))))
+            .map(|f| f.to_string())
+            .as_deref(),
         Some(
             "a format 10 event proposes a migration whose report holds `restated`, which format \
              11 added"
@@ -458,4 +484,81 @@ fn a_proposed_migration_whose_report_restates_needs_format_11_and_says_so_below_
     let plain = event_json(4, proposed(None));
     let written = serde_json::to_string(&plain).unwrap();
     assert!(needed(&plain.body, false) == 4 && !written.contains("restated"));
+}
+
+#[test]
+fn a_declaration_with_the_set_needs_format_12_and_says_so_below_it() {
+    let f = json!({"declare": "function", "name": "f", "backing": "expr", "expr": "n * 2",
+                   "inputs": [{"name": "n", "type": {"kind": "number"}}]});
+    let body = |set: bool| {
+        json!({"kind": "declared", "declaration": f, "version": 1,
+                                  "with_the_set": set})
+    };
+    let alone = json!({"kind": "declared", "declaration": f, "version": 1});
+    assert_eq!(needed(&event_json(12, body(true)).body, false), 12);
+    assert_eq!(needed(&event_json(12, alone).body, false), 1);
+    assert_eq!(
+        below(&event_json(11, body(true)))
+            .map(|f| f.to_string())
+            .as_deref(),
+        Some("a format 11 event declares `with_the_set`, which format 12 added")
+    );
+}
+
+#[test]
+fn a_value_type_rename_needs_format_12_and_says_so_below_it() {
+    let vt = json!({"name": "s", "kind": "text", "one_of": ["b"]});
+    let migrated = json!({"kind": "value_type_migrated", "declaration": vt, "version": 2,
+                          "renames": [["a", "b"]], "report_id": "r", "types": ["t"]});
+    let proposed = |renames: serde_json::Value| {
+        json!({"kind": "write_proposed", "proposal": "p", "why": "w",
+               "write": {"write": "migrate_value_type", "to": vt, "renames": renames}})
+    };
+    let renames = event_json(12, proposed(json!([["a", "b"]])));
+    assert_eq!(needed(&event_json(12, migrated.clone()).body, false), 12);
+    assert_eq!(needed(&renames.body, false), 12);
+    // A proposal that renames nothing needs what a tightening did.
+    assert_eq!(needed(&event_json(10, proposed(json!([]))).body, false), 10);
+    assert_eq!(
+        below(&event_json(11, migrated))
+            .map(|f| f.to_string())
+            .as_deref(),
+        Some("a format 11 event renames a value type's values, which format 12 added")
+    );
+    assert_eq!(
+        below(&event_json(11, proposed(json!([["a", "b"]]))))
+            .map(|f| f.to_string())
+            .as_deref(),
+        Some(
+            "a format 11 event proposes a value type's migration that renames values, which \
+             format 12 added"
+        )
+    );
+}
+
+#[test]
+fn the_kind_date_needs_format_13_and_says_so_below_it() {
+    let date = json!({"name": "on", "type": {"kind": "date"}});
+    let view = json!({"declare": "type", "name": "w", "fields": [],
+                      "view": {"source": "t", "measures": [], "params": [{"name": "p", "kind": "date"}]}});
+    for with in [
+        json!({"declare": "type", "name": "t", "fields": [date]}),
+        view,
+        json!({"declare": "value_type", "name": "day", "kind": "date"}),
+    ] {
+        assert_eq!(needed(&declared_event(13, &with).body, false), 13, "{with}");
+        assert_eq!(
+            below(&declared_event(12, &with))
+                .map(|f| f.to_string())
+                .as_deref(),
+            Some("a format 12 event declares the kind `date`, which format 13 added")
+        );
+    }
+    let to = json!({"name": "t", "fields": [date]});
+    let migrated = json!({"kind": "migrated", "migration": {"to": to}, "version": 2,
+                          "schema_hash": "0", "report_id": "r"});
+    assert_eq!(needed(&event_json(13, migrated).body, false), 13);
+    let time = json!({"declare": "type", "name": "t",
+                      "fields": [{"name": "on", "type": {"kind": "date_time"}}]});
+    assert_eq!(needed(&declared_event(1, time).body, false), 1);
 }

@@ -11,21 +11,22 @@ use lakelands_api::{Error, LakeStore, Principal, Refusal};
 use serde_json::json;
 
 use super::search::{doc_search, keys, masking, refused};
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, doors, embedding, field, owner, searchable, type_decl, vector,
 };
+use crate::conformance::{Failure, Reopen, backing};
 
 check!(
     /// Named fields narrow the match and the ranking.
     FIELDS_NARROW_THE_MATCH = a_search_limited_to_named_fields_matches_and_ranks_in_those_only,
-    "024 and 025: a lexical or hybrid search that names `fields` matches, scores and ties over those searchable fields only, the same on every engine; without `fields` it searches every searchable field"
+    "024 and 025: a lexical or hybrid search that names `fields` matches, scores and ties over those searchable fields only, the same on every engine; without `fields` it searches every searchable field; a hybrid search without a vector or a backend, over a field a model fills, falls back to its text in those fields",
+    reopens
 );
 
 check!(
     /// Named fields lift the probe of the fields not named.
     FIELDS_LIFT_THE_PROBE = a_search_limited_to_readable_fields_is_answered_beside_a_masked_one,
-    "024: a search that names `fields` probes only those, so a searchable field the principal may not read no longer refuses it when it is not named; the field stays masked in every hit"
+    "024: a search that names `fields` probes only those, and one that names none searches the searchable fields its principal reads, so a searchable field the principal may not read neither refuses nor ranks a search that does not name it; the field stays masked in every hit"
 );
 
 check!(
@@ -117,6 +118,7 @@ async fn answer(
 
 async fn a_search_limited_to_named_fields_matches_and_ranks_in_those_only(
     store: Arc<dyn LakeStore>,
+    reopen: Reopen,
 ) -> Result<(), Failure> {
     accounts(store.as_ref()).await?;
     let own = owner(store.as_ref());
@@ -157,10 +159,30 @@ async fn a_search_limited_to_named_fields_matches_and_ranks_in_those_only(
         "searching \"harbour quayside\" in `secret` answered {:?}",
         scored(&secret)
     );
+    // Without a vector, over `e`, the embedding of `note`: declared where
+    // the suite's backend is bound, searched where none is (lakelands#743).
+    use super::embeddings::{reopen_failed, with_embedder};
+    let store = reopen(store, with_embedder(Some(backing::embedder())))
+        .await
+        .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
+    let e = embedding("e", 2, &["note"], backing::EMBED_MODEL);
+    let fields = vec![
+        searchable("note"),
+        searchable("secret"),
+        field("label", StorageKind::Text),
+        vector("w", 2),
+        e,
+    ];
+    Lake::of(store.as_ref())
+        .declare(type_decl("doc", fields))
+        .await?;
+    let store = reopen(store, with_embedder(None))
+        .await
+        .map_err(|e| reopen_failed("with no embedding backend", e))?;
     let fallback = answer(
         store.as_ref(),
         &own,
-        hybrid_in("harbour quayside", "w", None, &["note"]),
+        hybrid_in("harbour quayside", "e", None, &["note"]),
         "a hybrid search in `note` without a vector",
     )
     .await?;
@@ -179,12 +201,11 @@ async fn a_search_limited_to_readable_fields_is_answered_beside_a_masked_one(
 ) -> Result<(), Failure> {
     accounts(store.as_ref()).await?;
     let reader = masking(store.as_ref(), "secret");
-    refused(
+    let every = answer(
         store.as_ref(),
         &reader,
-        doc_search(SearchMode::lexical("harbour quayside")),
-        "secret",
-        "a search in every searchable field, by a reader who sees `secret` only masked,",
+        SearchMode::lexical("harbour quayside"),
+        "the reader's search naming no field",
     )
     .await?;
     let note = answer(
@@ -198,6 +219,11 @@ async fn a_search_limited_to_readable_fields_is_answered_beside_a_masked_one(
         scored(&note) == [("b", 2.0), ("a", 1.0)],
         "the reader's search in `note` answered {:?}; it must answer as the owner's does",
         scored(&note)
+    );
+    ensure!(
+        scored(&every) == scored(&note),
+        "a search naming no field, by a reader who sees `secret` only masked, searches          `note` alone; it answered {:?}",
+        scored(&every)
     );
     let a = &note.hits[1].record;
     ensure!(
@@ -233,7 +259,7 @@ async fn invalid(
     match doors(store).search(who, doc_search(mode)).await {
         Err(Error::Refused {
             field: f,
-            reason: Refusal::Invalid { .. },
+            reason: Refusal::Invalid(..),
         }) if f.as_ref().map(|f| f.as_str()) == field => Ok(()),
         Err(e) => Err(Failure::new(format!(
             "{what} must be refused as invalid, naming {field:?}; it failed with {e:?}"

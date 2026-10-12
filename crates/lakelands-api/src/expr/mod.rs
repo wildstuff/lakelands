@@ -327,6 +327,64 @@ pub fn children(e: &Expr) -> impl Iterator<Item = &Expr> {
     pair.into_iter().flatten().chain(list)
 }
 
+impl Expr {
+    /// Whether it calls one of `funcs`, anywhere in it.
+    pub fn calls(&self, funcs: &[Func]) -> bool {
+        matches!(self, Expr::Call { func, .. } if funcs.contains(func))
+            || children(self).any(|c| c.calls(funcs))
+    }
+
+    /// Whether it reads the clock: calls `now()` or `today()`.
+    pub fn reads_clock(&self) -> bool {
+        self.calls(&[Func::Now, Func::Today])
+    }
+
+    /// The fields it reads: the first segment of every path.
+    pub fn fields_read(&self) -> std::collections::BTreeSet<&FieldName> {
+        let here = match self {
+            Expr::Path { path } => path.first(),
+            _ => None,
+        };
+        (here.into_iter())
+            .chain(children(self).flat_map(Expr::fields_read))
+            .collect()
+    }
+
+    /// The record's fields a verb's value reads: as [`Expr::fields_read`],
+    /// but for `payload.<name>`, which reads the call's payload.
+    pub fn record_fields_read(&self) -> std::collections::BTreeSet<&FieldName> {
+        let here = match self {
+            Expr::Path { path } if !matches!(&path[..], [p, _] if p.as_str() == "payload") => {
+                path.first()
+            }
+            _ => None,
+        };
+        (here.into_iter())
+            .chain(children(self).flat_map(Expr::record_fields_read))
+            .collect()
+    }
+
+    /// The fields it reads outside every aggregate: of a view's measure,
+    /// the measures it reads by name (018).
+    pub fn fields_read_by_name(&self) -> std::collections::BTreeSet<&FieldName> {
+        match self {
+            Expr::Call { func, .. } if func.is_aggregate() => Default::default(),
+            Expr::Path { path } => path.first().into_iter().collect(),
+            _ => children(self).flat_map(Expr::fields_read_by_name).collect(),
+        }
+    }
+}
+
+impl Condition {
+    /// The typed form: the text parsed, the typed form as it is.
+    pub fn typed(&self) -> Result<Expr, ParseError> {
+        match self {
+            Condition::Text(t) => parse(t),
+            Condition::Expr(e) => Ok(e.clone()),
+        }
+    }
+}
+
 impl Func {
     /// Whether the function folds a set of records rather than reading
     /// one.

@@ -25,7 +25,10 @@ choose their tools, so they have to stay cheap to change.
 
 The hash is also half of an as-of address: a schema hash with a log
 position identifies exactly what shape a reader saw. For that it must
-change when and only when the shape does.
+change when and only when the shape does. The hash a reader is answered
+covers the shape it is shown, and the stored hash the whole
+(`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+extended).
 
 ## What it is not
 

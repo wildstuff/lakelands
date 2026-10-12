@@ -9,18 +9,21 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use lakelands_api::location::Limits;
 use lakelands_api::ontology::StorageKind;
+use lakelands_api::query::{Projection, QueryResult};
 use lakelands_api::read::{After, AggFunc, Aggregate, Direction, Found, Order, OrderBy};
+use lakelands_api::seam::Seams;
 use lakelands_api::{
     Access, Catalog, Cursor, Find, Grants, LakeStore, Principal, PrincipalKind, Record, Refusal,
 };
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, agg, all_found, count_view, is_invalid, limits, order, principal, refused_on,
-    type_of, value,
+    Lake, Must, agg, all_found, count_view, is_invalid, limits, order, pattern, principal,
+    refused_on, type_of, value,
 };
+use crate::conformance::{Failure, Given};
 
 check!(
     /// Walking the cursor visits each record once.
@@ -38,6 +41,13 @@ check!(
     /// Records without the sort value come last, both ways.
     MISSING_SORT_VALUES_LAST = records_without_the_sort_field_are_listed_last_in_either_direction,
     "the read contract: records without a value for a sort key sort last in either direction; ordering never drops them"
+);
+
+check!(
+    /// A read that names no limit is not refused for it (lakelands#679).
+    UNNAMED_LIMIT = a_read_that_names_no_limit_takes_the_smaller_bound,
+    "the location's limits: a read that names no `limit` takes `default_limit`, or `max_limit` where that is smaller, so it is never refused for a bound it did not ask for; a `limit` the caller names above `max_limit` is still refused as invalid",
+    given
 );
 
 async fn counter(store: &dyn LakeStore) -> Result<Lake, Failure> {
@@ -336,6 +346,58 @@ async fn a_page_answers_its_total_and_an_offset_jumps_to_the_walks_slice(
         matches!(refused_on(&r), Some(("offset", Refusal::TooLarge { max: m })) if *m == max),
         "an offset past the lake's {max} is refused as too_large, naming `offset`; it answered \
          {r:?}"
+    );
+    Ok(())
+}
+
+async fn a_read_that_names_no_limit_takes_the_smaller_bound(
+    store: Arc<dyn LakeStore>,
+    given: Given,
+) -> Result<(), Failure> {
+    let l = counter(store.as_ref()).await?;
+    for i in 0..7 {
+        l.upsert("counter", &format!("k{i}"), json!({"n": i}))
+            .await?;
+    }
+    let max = Limits {
+        max_limit: 5,
+        ..limits()
+    };
+    let reopened = (given.relimit)(store, Seams::default(), max).await;
+    let store = reopened.map_err(|e| Failure::new(format!("reopening at max_limit 5: {e}")))?;
+    let Lake { cat, own } = Lake::of(store.as_ref());
+    let (rows, next, _) = one_page(cat.as_ref(), &own, "counter", Find::default()).await?;
+    ensure!(
+        rows.len() == 5 && next.is_some(),
+        "a `find` naming no limit under `max_limit` 5 must answer a page of 5 and a cursor; \
+         it answered {rows:?}, cursor {next:?}"
+    );
+    let p = pattern("counter", None, Vec::new(), Projection::default());
+    let QueryResult::Rows { rows, next_cursor } = cat
+        .query(&own, p.clone())
+        .await
+        .must("a `query` naming no limit")?
+        .data
+    else {
+        return Err(Failure::new("a `query` of rows answered another shape"));
+    };
+    ensure!(
+        rows.len() == 5 && next_cursor.is_some(),
+        "a `query` naming no limit under `max_limit` 5 must answer 5 rows and a cursor; it \
+         answered {} rows, cursor {next_cursor:?}",
+        rows.len()
+    );
+    let six = Find {
+        limit: Some(6),
+        ..Find::default()
+    };
+    let err = cat
+        .find(&own, &"counter".into(), six)
+        .await
+        .must_fail("a `find` naming a limit of 6 under `max_limit` 5")?;
+    ensure!(
+        is_invalid(&err),
+        "a `limit` of 6 above `max_limit` 5 must be refused as invalid; it failed with {err:?}"
     );
     Ok(())
 }

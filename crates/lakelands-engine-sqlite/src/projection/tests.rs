@@ -6,8 +6,8 @@ use rusqlite::{Connection, StatementStatus};
 use super::{Kept, SCHEMA, put_record};
 
 /// A source's record and its view's kept record are put in turn at every
-/// event: each type's declaration is read once in the transaction, not
-/// again at every turn (lakelands#575). The read is counted where SQLite
+/// event: each type's declaration, a kept name's its view's, is read once
+/// in the transaction, not again at every turn (lakelands#575). The read is counted where SQLite
 /// counts it: the times its cached statement ran.
 #[test]
 fn two_types_put_in_turn_are_each_read_once() {

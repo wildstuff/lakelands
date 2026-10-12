@@ -36,6 +36,7 @@ fn end(field: &str, target: &TypeName, r: &RelationDecl) -> FieldDecl {
         authority: r.authority,
         derived: None,
         function: None,
+        computed_at: None,
         depends_on: vec![],
         on_input_change: Default::default(),
         initial: None,

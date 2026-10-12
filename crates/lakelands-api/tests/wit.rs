@@ -1,5 +1,5 @@
 //! The drift check between this crate and the WIT package in `wit/`
-//! (`lakelands:data@0.10.0`). The crate is the source; the WIT mirrors it,
+//! (`lakelands:data@0.12.0`). The crate is the source; the WIT mirrors it,
 //! and this test fails as soon as the two disagree.
 //!
 //! Three things are compared:
@@ -28,14 +28,14 @@ use lakelands_api::describe::{
 use lakelands_api::expr::Condition;
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
-    Assignment, Authority, Cardinality, EmbedDecl, FieldDecl, FieldType, Measure, OnInputChange,
-    RelationDecl, Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
-    VerbScope, ViewDecl, ViewParam, ViewSource,
+    Assignment, Authority, Cardinality, ComputedAt, EmbedDecl, FieldDecl, FieldType, Measure,
+    OnInputChange, RelationDecl, Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl,
+    VerbEffect, VerbScope, ViewDecl, ViewParam, ViewSource,
 };
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{
-    Depth, Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Start, Step,
-    VectorTerm, Walk,
+    Axis, Depth, Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Start,
+    Step, VectorTerm, Walk,
 };
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy};
 use lakelands_api::seam::{FeedBatch, FeedFilter};
@@ -43,7 +43,7 @@ use lakelands_api::write::{
     AgeReport, Carried, Carrier, CompactReport, Declaration, FieldConversion, FunctionDecl,
     Migration, MigrationReport, Misfit, ObjectSetDecl, Proposal, ProposalFilter, ProposalState,
     ProposedWrite, PurgeReport, RecordRef, ReferenceRewrite, Rekeyed, RelationRename, Restated,
-    RuleRun, TypeRetired, ValueTypeReport, ValueTypeUse,
+    RuleRun, TypeRetired, ValueRenamed, ValueTypeMigration, ValueTypeReport, ValueTypeUse,
 };
 use lakelands_api::{
     Access, After, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, Missing, Origin,
@@ -197,10 +197,14 @@ fn every_door_of_the_crate_is_a_function_of_the_wit_and_no_other() {
         trait_methods(catalog_rs, "Catalog"),
         "the catalog's doors: the `catalog` resource with `query` and `schema`, against `Catalog`"
     );
+    // A door that binds a seam is the host's: the host binds the seams,
+    // as at `open`, and nothing a guest holds can be one.
+    let mut store = trait_methods(catalog_rs, "LakeStore");
+    store.retain(|door| !["bind_embed"].contains(&door.as_str()));
     assert_eq!(
         fns("lake_store"),
-        trait_methods(catalog_rs, "LakeStore"),
-        "the `lake-store` resource against `LakeStore`"
+        store,
+        "the `lake-store` resource against `LakeStore`, less the doors that bind a seam"
     );
     assert_eq!(
         fns("change_feed"),
@@ -242,6 +246,7 @@ fn field_decl() -> FieldDecl {
         authority: Authority::Shared,
         derived: Some(cond()),
         function: Some("g".into()),
+        computed_at: Some(ComputedAt::Read),
         depends_on: vec!["e".into()],
         on_input_change: OnInputChange::Clear,
         initial: Some(serde_json::json!("new")),
@@ -340,6 +345,20 @@ fn read_at() -> ReadAt {
         as_of: Some(Position(1)),
         valid_at: Some(t()),
     }
+}
+
+/// A case said at places, as a refusal of `invalid`, `constraint`,
+/// `precondition` or `unanswered` carries it.
+fn said() -> Box<lakelands_api::error::Said> {
+    use lakelands_api::error::{Case, Place, Said};
+    let case = Case::UnknownField {
+        ty: "invoice".into(),
+        field: "f".into(),
+    };
+    let at = Place::Type {
+        name: "invoice".into(),
+    };
+    Box::new(Said::from(case).within(at))
 }
 
 fn order() -> Order {
@@ -503,6 +522,7 @@ fn field_description() -> FieldDescription {
         access: Access::Read,
         derived: Some(cond()),
         function: Some("g".into()),
+        computed_at: Some(ComputedAt::Read),
         depends_on: vec!["e".into()],
         on_input_change: OnInputChange::Keep,
         initial: Some(serde_json::json!("new")),
@@ -548,6 +568,14 @@ fn type_description() -> TypeDescription {
             indexed: vec!["embedding".into()],
             kept: Some(Kept::Kept),
         },
+    }
+}
+
+fn value_renamed() -> ValueRenamed {
+    ValueRenamed {
+        from: "open".into(),
+        to: "active".into(),
+        records: 1,
     }
 }
 
@@ -626,6 +654,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     TypeGrants {
                         default: Some(Access::Read),
                         fields: [("f".into(), Access::Write)].into(),
+                        only: [("o".into(), json!("a"))].into(),
                     },
                 )]
                 .into(),
@@ -641,6 +670,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 members(&TypeGrants {
                     default: Some(Access::Read),
                     fields: [("f".into(), Access::Write)].into(),
+                    only: [("o".into(), json!("a"))].into(),
                 }),
                 &[],
                 &["type"],
@@ -713,6 +743,13 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             }),
         ),
         ("migration_report", members(&migration_report())),
+        // A case is flattened into its object: its parameters (here `type`
+        // and `field`) are members beside `at`, `code` and `message`, and
+        // the WIT carries them as one JSON text, `params`.
+        (
+            "said",
+            adjusted(members(&said()), &["type", "field"], &["params"]),
+        ),
         (
             "field_conversion",
             members(&migration_report().fields[0].clone()),
@@ -931,6 +968,16 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 hits: vec![],
                 next_cursor: Some(Cursor("c".into())),
                 ranked_by: "lexical".into(),
+                axes: vec![],
+            }),
+        ),
+        (
+            "axis",
+            members(&Axis {
+                axis: "vector".into(),
+                field: Some("v".into()),
+                candidates: Some(5),
+                weight: Some(0.5),
             }),
         ),
         (
@@ -945,6 +992,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             "type_rights",
             members(&TypeRights {
                 link: vec!["r".into()],
+                only: [("o".into(), json!("a"))].into(),
                 ..TypeRights::default()
             }),
         ),
@@ -1066,6 +1114,8 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 }],
                 fits: false,
                 report_id: "r".into(),
+                conditions: vec!["the object_set declaration `open`".into()],
+                conditions_unshown: true,
             }),
         ),
         (
@@ -1075,6 +1125,15 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 field: "net".into(),
                 values_scanned: 2,
                 misfits: 1,
+                renamed: vec![value_renamed()],
+            }),
+        ),
+        ("value_renamed", members(&value_renamed())),
+        (
+            "value_type_migration",
+            members(&ValueTypeMigration {
+                to: serde_json::from_value(json!({"name": "v", "kind": "text"})).unwrap(),
+                renames: vec![("open".into(), "active".into())],
             }),
         ),
         (
@@ -1204,6 +1263,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     }
     units!("authority", Authority, [Authored, Source, Shared, Derived]);
     units!("on_input_change", OnInputChange, [Keep, Clear]);
+    units!("computed_at", ComputedAt, [Write, Read]);
     units!(
         "cardinality",
         Cardinality,
@@ -1234,7 +1294,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     units!("walk", Walk, [Out, In, Both]);
     units!("carrier", Carrier, [Via, Links, Derived]);
 
-    fn kept(k: &Kept) -> [NotKept; 4] {
+    fn kept(k: &Kept) -> [NotKept; 5] {
         match k {
             Kept::Kept | Kept::Computed { .. } => {}
         }
@@ -1244,11 +1304,12 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             NotKept::CannotBeKept { reason },
             NotKept::NotWhole { not_exact },
             NotKept::NotKeptHere,
+            NotKept::OnlySome,
         ];
         for why in &all {
             match why {
                 NotKept::NotAsked | NotKept::CannotBeKept { .. } => {}
-                NotKept::NotWhole { .. } | NotKept::NotKeptHere => {}
+                NotKept::NotWhole { .. } | NotKept::NotKeptHere | NotKept::OnlySome => {}
             }
         }
         all
@@ -1293,6 +1354,9 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Error::Conflict { .. }
             | Error::Unbound { .. }
             | Error::Unavailable { .. } => {}
+            // A newer lake's kind, which a component built against this
+            // WIT cannot be sent.
+            Error::Unknown(_) => {}
         }
     }
     let _ = errors;
@@ -1312,10 +1376,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     expected: Version(1),
                     actual: Version(2),
                 },
-                Error::Unbound { seam: "s".into() },
-                Error::Unavailable {
-                    message: "m".into(),
-                },
+                Error::unbound(lakelands_api::error::Seam::VectorIndex),
+                Error::unavailable(lakelands_api::error::Situation::Moved),
             ],
             Some("error"),
         ),
@@ -1335,10 +1397,12 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Refusal::Decided
             | Refusal::Unanswered { .. }
             | Refusal::OutOfRange { .. } => {}
+            // A newer lake's refusal, which a component built against this
+            // WIT cannot be sent.
+            Refusal::Unknown(_) => {}
         }
     }
     let _ = refusals;
-    let message = || "m".to_owned();
     checks.push((
         "refusal",
         case_names(
@@ -1346,16 +1410,16 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 Refusal::NotGranted,
                 Refusal::WrongDoor,
                 Refusal::Reserved,
-                Refusal::Invalid { message: message() },
-                Refusal::Constraint { message: message() },
-                Refusal::Precondition { message: message() },
+                Refusal::Invalid(said()),
+                Refusal::Constraint(said()),
+                Refusal::Precondition(said()),
                 Refusal::TooDeep { max: 1 },
                 Refusal::TooLarge { max: 1 },
                 Refusal::Migration {
                     report: Box::new(migration_report()),
                 },
                 Refusal::Decided,
-                Refusal::Unanswered { message: message() },
+                Refusal::Unanswered(said()),
                 Refusal::OutOfRange { head: Position(1) },
             ],
             Some("refusal"),
@@ -1369,6 +1433,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Missing::Verb { .. }
             | Missing::Function { .. }
             | Missing::Proposal { .. } => {}
+            // A newer lake's kind, said by its error's message.
+            Missing::Unknown(_) => {}
         }
     }
     let _ = missings;
@@ -1434,6 +1500,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 },
                 ProposedWrite::MigrateValueType {
                     to: serde_json::from_value(json!({"name": "v", "kind": "text"})).unwrap(),
+                    renames: Vec::new(),
                     report: Default::default(),
                 },
             ],
@@ -1480,6 +1547,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     nodes: vec![],
                     edges: vec![],
                     truncated: false,
+                    next_cursor: None,
                 },
                 QueryResult::Groups { rows: vec![] },
             ],

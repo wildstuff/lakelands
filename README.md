@@ -76,42 +76,50 @@ of changes without polling, `propose`, `proposals`, `accept` and
 (stdio and HTTP) and REST from one catalog. Agents never write a query
 language.
 
-> **Status: `0.10.0`.** Lakelands `0.10.0` is the `lakelands` CLI, its
+> **Status: `0.12.0`.** Lakelands `0.12.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
-> SQLite, in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (411 checks through the doors and 63 through the
-> engine seam), with 50 decision records and the event log at format
-> version 11, installable from the release. Its budgets: the store
-> facade and engine traits hold 56 of 110 methods, the core crates'
-> product code 42 499 of 42 500 lines and their specification 53 431 of
-> 53 500, and 2 of 20 `cfg(feature)` sites. A ceiling rises only by a
-> recorded rule (decision 047): the product's rose to 42 500 and the
-> specification's to 53 500, row by row, each for a remedy or a rule
-> this release needed, after diets took lines out first. Beside what
-> `0.9.1` held, a view can be kept: the fold keeps its records as its
-> sources are written, a read answers them, and `describe` says whether
-> it is kept. A migration renames a relation and keeps its edges, its
-> report says every difference between the declaration in force and its
-> `to` and counts what it drops beside `lossless`, and a grant by name
-> holds a field through its renames. A field declares its initial value;
-> a record event says whether it made the record (log format 11);
-> `recompute` computes again what a declaration in force computes, a
-> declaration or a migration already in force appends nothing, and a
-> purge may name one type. An expression counts the days between two
-> instants, `floor`s them and buckets by a width from an origin; an
-> object set names other sets; what an expression can never compute is
-> refused where it is declared. A proposal, a migration's report, a
-> computed field, a declaration, a setting and a type, a view's or a
-> link type's included, each answer only what their reader may know: a
-> field computed with `changed()` or `previous()` is read at its inputs'
-> grant, and a pattern names no type its reader is not shown. A
-> migration, a recomputation and a value type's preflight hold a page of
-> a type, not the type; opening a SQLite lake reads the end of its
-> index, and a fold of the log makes no call due. A failed append or
-> seal leaves the log as it was, a writer that is behind catches up
-> before it decides a write, the fold refuses a log that names what only
-> the store keeps, and a retried call of an external verb answers only
-> an answer its executor recorded.
+> SQLite, in-memory and PostgreSQL engines, all three passing the
+> whole conformance suite (486 checks through the doors and 65 through
+> the engine seam), with 52 decision records and the event log at
+> format version 13, installable from the release. Its budgets: the
+> store facade and engine traits hold 58 of 110 methods, the core
+> crates' product code 50 299 of 50 500 lines and their specification
+> 66 309 of 66 500, and 2 of 20 `cfg(feature)` sites. A ceiling rises
+> only by a recorded rule (decision 047): for this round the operator
+> set both as a reserve, to 50 000 and 64 000, sized to its pull
+> requests, and the round's last rights fixes raised the
+> specification's five times, to 66 500, and the product's once, to
+> 50 500, row by row. Beside what `0.11.0` held, every refusal names
+> its case: one closed catalog of cases, each with its code, its
+> parameters and its sentence (`docs/refusals.md`, held to its rules
+> by the `refusals` gate), and an outage names its situation and a
+> missing seam its seam. A holder of `only` writes its own records and
+> proposes writes to them, and a field can hold a calendar date (log
+> format 13). A query vector has a direction, a vector ranking reads a
+> vector field, and a hybrid search without a vector reads a field a
+> model fills. A kept view is paged by the order index its setting
+> asks for and read a page at a time, and one that is not kept names
+> no index. A pattern's aggregate reads its rows by their paths, and a
+> valid time is a date-time or a date field. An author's hidden name
+> is judged at the step an absent one is, and a valid time over a
+> field it may not know of answers as on a type with none. A tools
+> change is owed to a session's next stream until the session lists
+> its tools, and an end touches only its own head-only name. The round
+> ends with a sweep of rights. A reference to a type its reader is not
+> shown is a field the reader does not know of, and `describe` names
+> no verb or function on such a type. A proposal on it is not there to
+> that reader, nor one whose verb reads a field the reader may not
+> read, and an accept's refusal names only what the reviewer's listing
+> shows. A verb is callable only by a caller who may read what it
+> reads, and an `only` that cannot be applied admits no record on any
+> path. A view's key is judged where its values come from, at its
+> sources, and a view shown to a reader names no measure of a field
+> the reader may not know of. A restricted record is not there to a
+> writer without the grant, nor a link with a held end to a reader
+> without it, and a record held now is not there to such a reader as
+> of any earlier position; an accept is judged by every record its
+> write reaches, a high-risk call runs its whole write at the door,
+> and a host can hold a retired record.
 
 ## Try it
 

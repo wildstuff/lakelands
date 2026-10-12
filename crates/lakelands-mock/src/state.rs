@@ -11,10 +11,10 @@ use lakelands_api::Version;
 use lakelands_api::event::{Event, EventBody, EventId};
 use lakelands_api::id::{FieldName, IdempotencyKey, ProposalId, RecordKey, TypeName, VerbName};
 use lakelands_api::ontology::{
-    Authority, FieldDecl, OnInputChange, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl,
+    Authority, FieldDecl, OnInputChange, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
 };
 use lakelands_api::principal::{Access, Principal};
-use lakelands_api::record::{FieldMeta, Origin, Record, StoredRecord};
+use lakelands_api::record::{FieldMeta, Origin, Record, StoredRecord, Value};
 use lakelands_api::write::{
     Declaration, FunctionDecl, ObjectSetDecl, Outcome, Proposal, ProposalState,
 };
@@ -79,6 +79,7 @@ impl State {
                 declaration,
                 schema_hash,
                 version,
+                ..
             } => {
                 if let Some(k) = decl_key(declaration) {
                     self.decl_versions.insert(k, *version);
@@ -128,6 +129,40 @@ impl State {
                 }
                 let to = Declaration::Type(migration.to.clone());
                 self.declare(&to, Some(schema_hash.clone()), *version);
+            }
+            EventBody::ValueTypeMigrated {
+                declaration,
+                version,
+                renames,
+                types,
+                ..
+            } => {
+                // As the store: every field of the value type but one a
+                // backed function computes takes the new value, at the
+                // event's position, its version and provenance as they are.
+                let reached: BTreeMap<TypeName, Vec<FieldName>> = (types.iter())
+                    .filter_map(|t| self.types.get(t).map(|d| (t.clone(), d)))
+                    .map(|(t, d)| {
+                        let fields =
+                            crate::valuetypes::renamed_fields(self, &d.decl, &declaration.name);
+                        (t, fields)
+                    })
+                    .collect();
+                for ((t, _), rec) in self.records.iter_mut() {
+                    for f in reached.get(t).into_iter().flatten() {
+                        let old = rec.fields.get(f).and_then(|v| v.as_str());
+                        let new = old.and_then(|o| renames.iter().find(|(from, _)| from == o));
+                        if let Some((_, new)) = new {
+                            rec.fields.insert(f.clone(), new.as_str().into());
+                            rec.position = e.position;
+                        }
+                    }
+                }
+                let decl = Declaration::ValueType(declaration.clone());
+                if let Some(k) = decl_key(&decl) {
+                    self.decl_versions.insert(k, *version);
+                }
+                self.declare(&decl, None, *version);
             }
             EventBody::RecordUpserted {
                 ty,
@@ -237,6 +272,7 @@ impl State {
                 proposal,
                 write,
                 why,
+                ..
             } => {
                 self.proposals.insert(
                     proposal.clone(),
@@ -399,21 +435,37 @@ impl State {
     /// field's raise not among them. Anything else is absent, not
     /// forbidden. As the store (006, extended), a type made of another is
     /// shown only with it: a link type with the type that declares its
-    /// relation and a view with each of its sources, whatever a grant on
-    /// its own name says.
+    /// relation and that relation's target, and a view with each of its
+    /// sources, whatever a grant on its own name says.
     pub fn visible(&self, who: &Principal, ty: &TypeName) -> Option<&DeclaredType> {
+        // As the store: a type keyed by a field its principal may not know
+        // of is not shown, a view's key judged where its values come from
+        // too (lakelands#782).
+        let known = |d: &TypeDecl, key: &[FieldName]| {
+            let mut key = d.fields.iter().filter(|f| key.contains(&f.name));
+            key.all(|f| access(who, d, f) != Access::None)
+        };
         let own = |t: &&DeclaredType| {
             let d = &t.decl;
             let given = |f| built_from(who, d, f, &mut Vec::new()).0 != Access::None;
-            type_default(who, &d.name) != Access::None || d.fields.iter().any(given)
+            let source = |s: &TypeName| self.types.get(s).map(|s| &s.decl);
+            let mut sources = d.key_sources().into_iter();
+            known(d, d.key_fields())
+                && sources.all(|(s, key)| source(s).is_none_or(|s| known(s, key)))
+                && (type_default(who, &d.name) != Access::None || d.fields.iter().any(given))
         };
         let shown = self.types.get(ty).filter(own)?;
         let (mut asked, mut next) = (vec![ty.clone()], vec![shown]);
         while let Some(t) = next.pop() {
             let owner = crate::links::parts(&t.decl.name).map(|p| p.0);
+            // A link type's `to` names its relation's target.
+            let to = (owner.iter())
+                .flat_map(|_| &t.decl.fields)
+                .find(|f| f.name.as_str() == "to");
+            let target = to.and_then(|f| f.ty.target.as_ref());
             let sources = (t.decl.view.iter())
                 .flat_map(|v| std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source)));
-            for n in owner.iter().chain(sources) {
+            for n in owner.iter().chain(target).chain(sources) {
                 let Some(o) = self.types.get(n).filter(|_| !asked.contains(n)) else {
                     continue;
                 };
@@ -423,6 +475,122 @@ impl State {
             }
         }
         Some(shown)
+    }
+
+    /// As the store (051): whether `who`'s grants admit a stored record:
+    /// it holds every pair of the grant's `only` on its type, a grant that
+    /// cannot be applied there admitting nothing, and a link's end whose
+    /// type the grant holds `only` on is admitted by its pairs too. The
+    /// mock computes no view, so a view's `only` never reaches a record.
+    pub fn admitted(&self, who: &Principal, r: &StoredRecord) -> bool {
+        self.admits_fields(who, &r.ty, &r.fields)
+    }
+
+    /// As the store's `rights::admits`: whether `who`'s `only` on `ty`
+    /// admits a record holding `fields`, one that cannot be applied
+    /// admitting none (lakelands#771). A link's ends are not judged.
+    pub fn only_admits(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        fields: &BTreeMap<FieldName, Value>,
+    ) -> bool {
+        (self.types.get(ty)).is_some_and(|t| only_applies(who, &t.decl)) && admits(who, ty, fields)
+    }
+
+    /// [`Self::admitted`] for a record of `ty` holding `fields`, as a
+    /// write would leave it.
+    pub fn admits_fields(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        fields: &BTreeMap<FieldName, Value>,
+    ) -> bool {
+        let Some(t) = self.types.get(ty) else {
+            return true;
+        };
+        let pairs = |d: &TypeDecl, fields: &BTreeMap<FieldName, Value>| {
+            only_applies(who, d) && admits(who, &d.name, fields)
+        };
+        pairs(&t.decl, fields)
+            && held_ends(who, &t.decl).into_iter().all(|(f, end)| {
+                let at = fields.get(f).and_then(Value::as_str);
+                let e = at.and_then(|k| self.records.get(&(end.clone(), RecordKey::from(k))));
+                e.zip(self.types.get(end))
+                    .is_some_and(|(e, d)| pairs(&d.decl, &e.fields))
+            })
+    }
+
+    /// Whether a view is answered to `who` from only some records (051):
+    /// the grant holds `only` on it, or on what it reads, a link type's end
+    /// type included.
+    pub fn only_some(&self, who: &Principal, v: &TypeDecl, seen: &mut Vec<TypeName>) -> bool {
+        let Some(view) = v.view.as_deref().filter(|_| !seen.contains(&v.name)) else {
+            return only_holder(who, v);
+        };
+        seen.push(v.name.clone());
+        let sources = std::iter::once(&view.source).chain(view.merge.iter().map(|m| &m.source));
+        let mut sources = sources.filter_map(|s| self.types.get(s));
+        let held = !own_only(who, &v.name).is_empty()
+            || sources.any(|s| self.only_some(who, &s.decl, seen));
+        seen.pop();
+        held
+    }
+
+    /// As the store (024 and 051, extended): `who` with each reference to
+    /// a type it is not shown held at `none`, a type's own fields and its
+    /// relations' link fields alike, to a fixed point. A field its type's
+    /// `only` names stays as granted, and so does a view's group field the
+    /// `only` of its one source names.
+    pub fn hidden(&self, who: &Principal) -> Principal {
+        let mut who = who.clone();
+        if !crate::doors::hides_some(&who) {
+            return who;
+        }
+        loop {
+            let unshown =
+                |ty: &TypeName| self.types.contains_key(ty) && self.visible(&who, ty).is_none();
+            let mut more = Vec::new();
+            for d in self.types.values().map(|t| &t.decl) {
+                let only = |f: &FieldName| {
+                    own_only(&who, &d.name).contains_key(f)
+                        || d.view.as_deref().is_some_and(|v| {
+                            v.merge.is_empty()
+                                && v.group_by.contains(f)
+                                && own_only(&who, &v.source).contains_key(f)
+                        })
+                };
+                let links = (d.relations.iter())
+                    .map(|r| (crate::links::name(&d.name, &r.name), &r.fields[..], false));
+                for (ty, fields, own) in
+                    std::iter::once((d.name.clone(), &d.fields[..], true)).chain(links)
+                {
+                    let held = |f: &FieldName| {
+                        let none = who.grants.types.get(&ty).and_then(|g| g.fields.get(f));
+                        none == Some(&Access::None) || own && only(f)
+                    };
+                    let refers = fields
+                        .iter()
+                        .filter(|f| f.ty.target.as_ref().is_some_and(unshown));
+                    more.extend(
+                        refers
+                            .filter(|f| !held(&f.name))
+                            .map(|f| (ty.clone(), f.name.clone())),
+                    );
+                }
+            }
+            if more.is_empty() {
+                return who;
+            }
+            for (ty, f) in more {
+                who.grants
+                    .types
+                    .entry(ty)
+                    .or_default()
+                    .fields
+                    .insert(f, Access::None);
+            }
+        }
     }
 
     /// A record as one principal may read it.
@@ -516,10 +684,11 @@ fn built_from<'d>(
     let mut a = who.grants.access(&decl.name, &f.name);
     let mut from_source = false;
     seen.push(&f.name);
-    let sources = f
-        .depends_on
-        .iter()
-        .chain(f.embed.iter().flat_map(|e| &e.from));
+    // As the store: a view field is built from the measures its own reads.
+    let measured = decl.measure_reads(&f.name);
+    let sources = (f.depends_on.iter())
+        .chain(f.embed.iter().flat_map(|e| &e.from))
+        .chain(&measured);
     for name in sources {
         if seen.contains(&name) {
             continue;
@@ -528,7 +697,8 @@ fn built_from<'d>(
             a = match access_seen(who, decl, source, seen) {
                 s if s.reads() => a,
                 // Its value stays hidden; its write stays the principal's.
-                _ if a.writes() => Access::WriteOnly,
+                // As the store: a view's fields are never written.
+                _ if a.writes() && decl.view.is_none() => Access::WriteOnly,
                 Access::Masked if a.reads() => Access::Masked,
                 Access::Masked => a,
                 _ => {
@@ -540,6 +710,85 @@ fn built_from<'d>(
     }
     seen.pop();
     (a, from_source)
+}
+
+/// The pairs `who`'s grant on `ty` admits records by: its `only`, empty
+/// where it admits every record (051).
+pub(crate) fn own_only<'a>(who: &'a Principal, ty: &TypeName) -> &'a BTreeMap<FieldName, Value> {
+    static EVERY: BTreeMap<FieldName, Value> = BTreeMap::new();
+    who.grants.types.get(ty).map_or(&EVERY, |t| &t.only)
+}
+
+/// Whether `fields` hold every pair of `who`'s `only` on `ty`.
+pub(crate) fn admits(who: &Principal, ty: &TypeName, fields: &BTreeMap<FieldName, Value>) -> bool {
+    (own_only(who, ty).iter()).all(|(f, v)| fields.get(f) == Some(v))
+}
+
+/// Whether `who`'s `only` on `decl` can be applied: each pair a text
+/// value of a `text` or `reference` field the type declares, `who` may
+/// read and no read computes.
+pub(crate) fn only_applies(who: &Principal, decl: &TypeDecl) -> bool {
+    use lakelands_api::ontology::StorageKind;
+    own_only(who, &decl.name).iter().all(|(f, v)| {
+        field(decl, f).is_some_and(|d| {
+            matches!(d.ty.kind, StorageKind::Text | StorageKind::Reference)
+                && v.is_string()
+                && access(who, decl, d).reads()
+                && !d.at_read()
+        })
+    })
+}
+
+/// The ends of a link type `decl` whose type `who` holds `only` on, with
+/// the link field that names each.
+fn held_ends<'d>(who: &Principal, decl: &'d TypeDecl) -> Vec<(&'d FieldName, &'d TypeName)> {
+    if !crate::links::is_link_type(&decl.name) {
+        return Vec::new();
+    }
+    let ends = (decl.fields.iter())
+        .filter(|f| [crate::links::FROM, crate::links::TO].contains(&f.name.as_str()));
+    let ends = ends.filter_map(|f| Some((&f.name, f.ty.target.as_ref()?)));
+    ends.filter(|(_, t)| !own_only(who, t).is_empty()).collect()
+}
+
+/// Whether `who`'s grant holds `only` on `decl`, or on an end type of a
+/// link type: its writes reach those records alone, and none waits for
+/// review.
+pub(crate) fn only_holder(who: &Principal, decl: &TypeDecl) -> bool {
+    !own_only(who, &decl.name).is_empty() || !held_ends(who, decl).is_empty()
+}
+
+/// As the store (051): whether a holder of `only` on `decl` may propose a
+/// write there, or a call of `verb`: no field its `only` names is
+/// computed, and the verb assigns none.
+pub(crate) fn pinnable(who: &Principal, decl: &TypeDecl, verb: Option<&VerbDecl>) -> bool {
+    let computed = |d: &FieldDecl| {
+        d.authority == Authority::Derived || d.function.is_some() || d.embed.is_some()
+    };
+    let assigned = |f: &FieldName| match verb.map(|v| &v.effect) {
+        Some(VerbEffect::Write { set }) => set.iter().any(|a| &a.field == f),
+        _ => false,
+    };
+    own_only(who, &decl.name)
+        .keys()
+        .all(|f| !assigned(f) && !field(decl, f).is_some_and(computed))
+}
+
+/// As the store (051): whether `who` can make a record of `decl` that its
+/// grant admits, writing every field its `only` names at the authored door.
+pub(crate) fn creates(who: &Principal, decl: &TypeDecl) -> bool {
+    own_only(who, &decl.name).iter().all(|(f, _)| {
+        field(decl, f).is_some_and(|d| {
+            matches!(d.authority, Authority::Authored | Authority::Shared)
+                && access(who, decl, d).writes()
+        })
+    })
+}
+
+/// Whether `who`'s grant holds `only` on any type: such a principal
+/// changes no shape.
+pub(crate) fn holds_only(who: &Principal) -> bool {
+    who.grants.types.values().any(|t| !t.only.is_empty())
 }
 
 /// The access a principal has to a type as a whole.

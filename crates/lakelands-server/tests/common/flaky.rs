@@ -93,9 +93,10 @@ fn fail(n: &AtomicUsize) -> Result<()> {
     if !take(n) {
         return Ok(());
     }
-    Err(Error::Unavailable {
-        message: "the lake is busy for a moment".into(),
-    })
+    let lake = "flaky".to_owned();
+    Err(Error::unavailable(lakelands_api::error::Situation::Busy {
+        lake,
+    }))
 }
 
 pub struct Store {
@@ -171,6 +172,9 @@ impl LakeStore for Store {
     }
     async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
         self.inner.compact().await
+    }
+    fn bind_embed(&self, backend: Arc<dyn lakelands_api::seam::EmbedBackend>) -> Result<()> {
+        self.inner.bind_embed(backend)
     }
     async fn vector_coverage(
         &self,
@@ -330,14 +334,14 @@ impl Catalog for Doors {
     async fn migrate_value_type(
         &self,
         who: &Principal,
-        to: lakelands_api::ontology::ValueTypeDecl,
+        to: lakelands_api::write::ValueTypeMigration,
     ) -> Result<Reply<lakelands_api::write::ValueTypeReport>> {
         self.inner.migrate_value_type(who, to).await
     }
     async fn migrate_value_type_apply(
         &self,
         who: &Principal,
-        to: lakelands_api::ontology::ValueTypeDecl,
+        to: lakelands_api::write::ValueTypeMigration,
         report_id: &str,
     ) -> Result<Outcome> {
         self.inner

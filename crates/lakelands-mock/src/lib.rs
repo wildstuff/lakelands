@@ -22,7 +22,10 @@
 //!   the whole write, a field of another authority is refused as the
 //!   wrong door, declaring a `sys.` type is reserved (its records are
 //!   written under grants like any other), and what the principal may
-//!   not see is absent from `describe`, the tools and every read;
+//!   not see is absent from `describe`, the tools and every read; a
+//!   grant's `only` admits its holder the records whose fields hold its
+//!   values alone and refuses it every write that reaches the type or any
+//!   shape (051);
 //! - `declare` refuses a reference to a type the lake does not hold;
 //!   `apply` checks a set as one (a reference may point forward within
 //!   it, tool names are checked over all of it), appends it in one append
@@ -61,7 +64,8 @@
 //! declares them at every writer's open), re-keys no type (a migration
 //! that changes a type's key fields is refused as invalid), binds no verb executor
 //! (an external verb is refused as `unbound` when called), does not aggregate,
-//! walks relations one hop over reference fields only, ranks search by
+//! walks relations one hop over reference fields only and answers them as
+//! rows (never a graph or a path), ranks search by
 //! word count or cosine, and evaluates the expression functions listed in
 //! its `expr` module and no others (so `setting()` in an aging rule's
 //! `when` is refused here, though the store takes it). Its clock is deterministic: an event's
@@ -88,7 +92,7 @@ use lakelands_api::id::{IdempotencyKey, LakeId, Position, ProposalId, SourceId};
 use lakelands_api::location::{Limits, Location};
 use lakelands_api::principal::{Principal, WriteContext};
 use lakelands_api::record::Origin;
-use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter};
+use lakelands_api::seam::{ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter};
 use lakelands_api::time::Timestamp;
 use lakelands_api::{Catalog, LakeStore, Verification};
 
@@ -167,6 +171,7 @@ impl MockLake {
                 ),
                 declaration: lakelands_api::write::Declaration::Type(t),
                 version: 1,
+                with_the_set: false,
             }));
         }
         mock.shared
@@ -421,6 +426,11 @@ impl LakeStore for MockLake {
         Ok(Vec::new())
     }
 
+    fn bind_embed(&self, _: Arc<dyn lakelands_api::seam::EmbedBackend>) -> Result<()> {
+        // The mock refuses every embedding field, so it has nothing to bind.
+        Err(not_offered("bind_embed"))
+    }
+
     async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
         // The mock keeps no storage beside its log: nothing to reclaim.
         Ok(lakelands_api::write::CompactReport {
@@ -452,9 +462,7 @@ impl LakeStore for MockLake {
     ) -> Result<Position> {
         // Retention holds are a host operation the doors never call; the
         // mock keeps none and says so.
-        Err(lakelands_api::Error::Unbound {
-            seam: "retention holds (the mock keeps none)".into(),
-        })
+        Err(not_offered("restrict"))
     }
 
     async fn unrestrict(
@@ -462,9 +470,7 @@ impl LakeStore for MockLake {
         _ty: &lakelands_api::TypeName,
         _key: &lakelands_api::RecordKey,
     ) -> Result<Position> {
-        Err(lakelands_api::Error::Unbound {
-            seam: "retention holds (the mock keeps none)".into(),
-        })
+        Err(not_offered("unrestrict"))
     }
 
     async fn close(&self) -> Result<()> {
@@ -484,7 +490,9 @@ impl ChangeFeed for Feed {
         let head = Shared::head(&log);
         let mut events = Vec::new();
         let mut next = from;
-        for e in log.events.iter().skip(from.0 as usize) {
+        // As the store: at most `FEED_EXAMINED` events examined a poll.
+        let examined = log.events.iter().skip(from.0 as usize);
+        for e in examined.take(FEED_EXAMINED as usize) {
             if events.len() >= limit as usize {
                 break;
             }
@@ -499,6 +507,10 @@ impl ChangeFeed for Feed {
                 lakelands_api::event::EventBody::Migrated { migration, .. } => {
                     let mut pairs = doors::moved(migration).into_iter();
                     &migration.to.name == t || pairs.any(|(old, new)| &old == t || &new == t)
+                }
+                // And a `value_type_migrated` about every type it rewrites.
+                lakelands_api::event::EventBody::ValueTypeMigrated { types, .. } => {
+                    types.contains(t)
                 }
                 _ => false,
             };
@@ -517,4 +529,11 @@ impl ChangeFeed for Feed {
     async fn ack(&self, _consumer: &str, _through: Position) -> Result<()> {
         Ok(())
     }
+}
+
+/// A host operation the mock does not offer: it keeps no retention hold
+/// and refuses every embedding field.
+fn not_offered(op: &str) -> lakelands_api::Error {
+    let op = op.to_owned();
+    lakelands_api::Error::unbound(lakelands_api::error::Seam::Operation { op })
 }

@@ -3,13 +3,15 @@
 //! rights, actions, lineage and lifecycle — as one principal may see it.
 //! The tool catalog is generated from this answer and nothing else.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::expr::Condition;
 use crate::id::{FieldName, LakeId, RelationName, TypeName, VerbName};
 use crate::ontology::{
-    Annotations, Authority, EmbedDecl, FieldDecl, FieldType, OnInputChange, RelationDecl, Risk,
-    TriggerDecl, ValueTypeDecl, VerbScope, ViewDecl,
+    Annotations, Authority, ComputedAt, EmbedDecl, FieldDecl, FieldType, OnInputChange,
+    RelationDecl, Risk, TriggerDecl, ValueTypeDecl, VerbScope, ViewDecl,
 };
 use crate::principal::Access;
 use crate::write::{FunctionDecl, ObjectSetDecl};
@@ -80,7 +82,8 @@ pub struct TypeDescription {
     pub view: Option<ViewDecl>,
     /// Structure: the fields this principal may see, and the relations.
     pub fields: Vec<FieldDescription>,
-    /// Structure: relations to other types.
+    /// Structure: relations to other types, those this principal is
+    /// shown: both their ends and, of a derived one, every matched field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relations: Vec<RelationDecl>,
     /// Access: how records are addressed and read.
@@ -118,6 +121,9 @@ pub struct FieldDescription {
     /// For a derived field: the declared function that computes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function: Option<String>,
+    /// For a computed field: when it is computed, as declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computed_at: Option<ComputedAt>,
     /// The fields it depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<FieldName>,
@@ -169,6 +175,7 @@ impl FieldDescription {
             access,
             derived: decl.derived,
             function: decl.function,
+            computed_at: decl.computed_at,
             depends_on: decl.depends_on,
             on_input_change: decl.on_input_change,
             initial: decl.initial,
@@ -191,16 +198,20 @@ impl FieldDescription {
 /// How records of a type are addressed and read.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TypeAccess {
-    /// The fields that form the key; empty when the writer gives it.
+    /// The fields that form the key its records carry, a grouped view's
+    /// `group_by`; empty when the writer gives it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub key: Vec<FieldName>,
-    /// The field holding business start time, if valid-timed.
+    /// The `date_time` or `date` field holding business start time, if
+    /// valid-timed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_from: Option<FieldName>,
-    /// The field holding business end time, if declared.
+    /// The `date_time` or `date` field holding business end time, if
+    /// declared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_to: Option<FieldName>,
-    /// Whether `search` covers the type lexically.
+    /// Whether `search` covers the type lexically for this principal: a
+    /// searchable field among those it reads.
     pub searchable: bool,
     /// Whether per-field provenance is kept (`with: meta`).
     pub field_meta: bool,
@@ -223,12 +234,18 @@ pub struct TypeRights {
     /// links the principal may write through those doors.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub link: Vec<RelationName>,
+    /// The principal's grant admits only the records whose fields hold
+    /// these values; every other record of the type is, to it, a record
+    /// that does not exist, and it writes nothing that reaches the type.
+    /// Left out where it admits every record.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub only: BTreeMap<FieldName, crate::Value>,
 }
 
 /// Where a type's records come from.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TypeLineage {
-    /// Whether any field is fed by a source.
+    /// Whether any field this principal is described is fed by a source.
     pub sourced: bool,
     /// For a view type: the type it is computed from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -236,11 +253,14 @@ pub struct TypeLineage {
 }
 
 /// A type's version and shape.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TypeLifecycle {
     /// The declaration's version: one more for every change to it.
     pub version: u32,
-    /// Identifies the shape (`docs/decisions/007-schema-hash-covers-shape.md`).
+    /// Identifies the shape (`docs/decisions/007-schema-hash-covers-shape.md`)
+    /// as its reader is shown it: a reader kept from a field is answered
+    /// the hash without it, so a hash compares only between readers shown
+    /// the same shape.
     pub schema_hash: String,
     /// The fields the lake keeps an order index for, by its
     /// `sort_index.<type>` setting: a `find` ordered first by one of them
@@ -263,7 +283,7 @@ pub struct TypeLifecycle {
 
 /// Whether a view's records are kept as its sources are written, or
 /// computed at each read.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Kept {
     /// The view's records are kept and answer its reads.
@@ -276,32 +296,50 @@ pub enum Kept {
 }
 
 /// Why a view is computed at each read.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "because", rename_all = "snake_case")]
 pub enum NotKept {
     /// No `view_kept.<type>` setting holds.
     NotAsked,
     /// The view cannot be kept.
     CannotBeKept {
-        /// Which measure, which call and why: the sentence the setting's
+        /// Which measure, which call and why: the case the setting's
         /// refusal says. It names what the view reads, so it is given to
         /// a principal who is shown the view as declared, and to no other.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        reason: Option<String>,
+        reason: Option<Box<crate::error::Said>>,
     },
     /// Its records are not whole.
     NotWhole {
         /// The groups whose kept record is not exact, for this reader: a
-        /// measure fails over the group, which mends when its cause
-        /// leaves, or an extreme was given up, which only what makes the
-        /// view again mends.
+        /// measure fails over the group, or a member's argument does not
+        /// fold, which mends when its cause leaves.
         not_exact: u64,
     },
     /// Its records are not kept at this position, or by this lake.
     NotKeptHere,
+    /// Its reader is admitted only some records of the view, or of a type
+    /// it reads: its records are computed from those alone. A read may
+    /// still be served from kept records where the groups carry the
+    /// grant's fields; that is a speed, not something this promises.
+    OnlySome,
 }
 
 impl Kept {
+    /// Whether a view so described names its order index
+    /// (`sort_index.<view>`): where its records are kept, or asked to be
+    /// and can be, as told to its reader. One that computes for want of the
+    /// setting, or that cannot be kept, has no records to index, and to a
+    /// holder of `only` an index would say what is kept from it (051).
+    pub fn names_its_index(&self) -> bool {
+        !matches!(
+            self,
+            Kept::Computed {
+                why: NotKept::NotAsked | NotKept::CannotBeKept { .. } | NotKept::OnlySome
+            }
+        )
+    }
+
     /// What a view's lifecycle says by its declaration and its
     /// `view_kept.<type>` setting alone, where nothing keeps it: not asked
     /// for, unable to be kept and why, or not kept here. `shown` is
@@ -316,7 +354,7 @@ impl Kept {
         let why = match crate::expr::keepable(view, declared) {
             _ if !crate::seam::view_kept(setting) => NotKept::NotAsked,
             Err(reason) => NotKept::CannotBeKept {
-                reason: shown.then_some(reason),
+                reason: shown.then(|| Box::new(reason)),
             },
             Ok(()) => NotKept::NotKeptHere,
         };

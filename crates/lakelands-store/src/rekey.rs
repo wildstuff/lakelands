@@ -23,6 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::ProjectionView;
+use lakelands_api::error::Case;
 use lakelands_api::ontology::{StorageKind, TypeDecl};
 use lakelands_api::write::{RecordRef, ReferenceRewrite, Rekey, Rekeyed};
 use lakelands_api::{FieldName, RecordKey, Result, TypeName, Value};
@@ -190,16 +191,12 @@ pub fn plan(
         }
         let (name, decl) = (name.clone(), decl.clone());
         if decl.view.is_some() {
-            return Err(invalid(format!(
-                "re-keying `{migrated}` would re-key the view `{name}`, which is keyed by it; a \
-                 view's rows are computed and cannot be moved, so that is not supported"
-            )));
+            let (ty, view) = (migrated.clone(), name);
+            return Err(invalid(Case::RekeyView { ty, view }));
         }
         if name.as_str().starts_with("sys.") && !links::is_link_type(&name) {
-            return Err(invalid(format!(
-                "re-keying `{migrated}` would re-key the system type `{name}`, which is keyed \
-                 by it; that is not supported"
-            )));
+            let (ty, system) = (migrated.clone(), name);
+            return Err(invalid(Case::RekeySystem { ty, system }));
         }
         let mut keyed = Vec::new();
         crate::lake::walk(view, &name, true, |r| {
@@ -221,12 +218,8 @@ pub fn plan(
         ring.extend(waiting);
     }
     if !ring.is_empty() {
-        let ring: Vec<String> = ring.iter().map(|n| format!("`{n}`")).collect();
-        return Err(invalid(format!(
-            "re-keying `{migrated}` would move keys that are made of keys it moves, in {}; no \
-             order makes them, so that is not supported",
-            ring.join(", ")
-        )));
+        let (ty, ring) = (migrated.clone(), ring.into_iter().collect());
+        return Err(invalid(Case::RekeyRing { ty, ring }));
     }
     // The reference fields, in any type, that hold a moved key.
     for (name, entry) in &after.types {

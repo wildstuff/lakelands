@@ -11,19 +11,25 @@
 //! each text was sent; each check uses texts of its own.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use lakelands_api::error::Seam;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{Authority, FieldDecl, FieldType, StorageKind};
+use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{Search, SearchMode};
 use lakelands_api::seam::Seams;
-use lakelands_api::{Error, LakeStore};
+use lakelands_api::{Access, Error, Grants, LakeStore, Outcome, Principal, PrincipalKind, Refusal};
 use serde_json::{Value, json};
 
 use super::search::doc_search;
-use crate::conformance::backing::{EMBED_MODEL, embedded, plug_text, unplug_text};
+use crate::conformance::backing::{
+    EMBED_MODEL, UNREACHABLE, embedded, plug_text, release, unplug_text,
+};
 use crate::conformance::fixture::{
-    Lake, Must, derived, doors, embedding, field, head_unmoved, owner, read, recorded_outputs,
-    refused_on, source_record, sourced, type_decl, value,
+    Caller, Lake, Must, derived, doors, embedding, field, field_access, get_at, head_unmoved,
+    join_all, migration, owner, principal, read, recorded_outputs, refused_on, source_record,
+    sourced, type_decl, value,
 };
 use crate::conformance::{Failure, Reopen, backing};
 
@@ -274,7 +280,7 @@ async fn an_embedding_without_a_backend_is_refused_at_declare(
     let l = Lake::of(store.as_ref());
     let got = l.try_declare(notes_by(&["title"], EMBED_MODEL, 2)).await;
     ensure!(
-        matches!(&got, Err(Error::Unbound { seam }) if seam.contains(EMBED_MODEL)),
+        matches!(got.as_ref().err().and_then(Error::seam), Some(Seam::Embedding { model, .. }) if model == EMBED_MODEL),
         "with no embedding backend bound, declaring an embedding must be refused as \
          unbound, naming the model `{EMBED_MODEL}`; it answered {}",
         answered(&got)
@@ -415,7 +421,220 @@ async fn an_embedded_vector_recomputes_the_derived_fields_that_read_it(
     Ok(())
 }
 
-fn with_embedder(embed: Option<Arc<dyn lakelands_api::seam::EmbedBackend>>) -> Seams {
+check!(
+    /// A write beside a backlog waits for its own calls only.
+    EMBED_BESIDE_BACKLOG = a_write_beside_a_backlog_waits_for_the_batch_in_flight_and_its_own,
+    "022, extended, and 008: while the embeddings a declaration made due over a type are being made, a write that owes nothing answers at once, and one that owes a call answers after the batch in flight and its own, its field visible from its answer, while the rest is still being made; the declaration answers once all of it is made, each text once",
+    embedding
+);
+
+check!(
+    /// An abandoned sweep advances a batch with each later write.
+    EMBED_ORPHAN_SWEEP = an_abandoned_sweep_advances_one_batch_with_each_write_that_owes,
+    "022, extended: the embeddings a declaration whose caller went away left due wait for no one; a later write that owes a call answers after its own batch and one batch of them, and each such write advances them by a batch",
+    embedding
+);
+
+check!(
+    /// A re-key during a sweep embeds every record once.
+    EMBED_SWEEP_REKEYED = a_rekey_while_a_type_is_embedded_leaves_every_record_embedded_once,
+    "022, extended, and 027: a re-key that lands while the embeddings a declaration made due over its type are being made answers at once, and every record is then embedded under its new key, each text once",
+    embedding
+);
+
+/// `doc`, keyed by the writer, with `code` and `body`, holding `N` records
+/// fed before it has an embedding: `m000` on, `code` `a000` on. Answers
+/// their texts; the text of each record in `held` starts `held-`, and the
+/// suite's backend holds the request carrying it until it is released.
+async fn backlog(l: &Lake, tag: &str, held: &[usize]) -> Result<Vec<String>, Failure> {
+    l.declare(coded()).await?;
+    let text = |i: usize| match held.contains(&i) {
+        true => format!("held-{tag}-{i}"),
+        false => format!("{tag} {i}"),
+    };
+    let texts: Vec<String> = (0..N).map(text).collect();
+    let record = |(i, t): (usize, &String)| {
+        source_record(
+            "doc",
+            &format!("m{i:03}"),
+            json!({"code": format!("a{i:03}"), "body": t}),
+        )
+    };
+    l.ingest("feed", texts.iter().enumerate().map(record).collect())
+        .await
+        .must("feeding the records")?;
+    Ok(texts)
+}
+
+/// `doc` with `code`, which every record holds, and `body`.
+fn coded() -> lakelands_api::ontology::TypeDecl {
+    let code = FieldDecl {
+        required: true,
+        ..sourced("code", StorageKind::Text)
+    };
+    type_decl("doc", vec![code, sourced("body", StorageKind::Text)])
+}
+
+/// Records [`backlog`] holds: four batches of the store's.
+const N: usize = 200;
+
+/// Whether `done` comes to hold within five seconds.
+async fn came<F: std::future::Future<Output = bool>>(done: impl Fn() -> F) -> bool {
+    for _ in 0..1_000 {
+        if done().await {
+            return true;
+        }
+        crate::conformance::fixture::pause(std::time::Duration::from_millis(5)).await;
+    }
+    false
+}
+
+/// The embedding of `body` added to `doc`, setting `done` once answered.
+fn embedded_over<'a>(l: &'a Lake, done: &'a AtomicBool) -> Caller<'a, Result<(), Failure>> {
+    Box::pin(async move {
+        let vec = embedding("vec", 2, &["body"], EMBED_MODEL);
+        let added = l.cat.add_field(&l.own, &"doc".into(), vec).await;
+        done.store(true, Ordering::Release);
+        added.must("adding `vec` over `doc`").map(drop)
+    })
+}
+
+/// Every record of `doc` holds a vector, and each text was sent once.
+async fn each_once(store: &dyn LakeStore, texts: &[String]) -> Result<(), Failure> {
+    let c = store.vector_coverage(&"doc".into()).await;
+    let c = c.must("asking vector_coverage of `doc`")?;
+    let twice: Vec<&String> = texts.iter().filter(|t| embedded(t) != 1).collect();
+    ensure!(
+        matches!(c.as_slice(), [one] if one.embedded == N as u64 && one.due == 0)
+            && twice.is_empty(),
+        "every one of the {N} records holds its vector and each text was sent once; \
+         vector_coverage answered {c:?}, and these texts were not sent once: {twice:?}"
+    );
+    Ok(())
+}
+
+async fn a_write_beside_a_backlog_waits_for_the_batch_in_flight_and_its_own(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let token = "beside_a_backlog";
+    let l =
+        super::backings::places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
+    l.declare(type_decl("memo", vec![field("text", StorageKind::Text)]))
+        .await?;
+    let texts = backlog(&l, "beside", &[0, 150]).await?;
+    let done = AtomicBool::new(false);
+    let beside: Caller<'_, Result<(), Failure>> = Box::pin(async {
+        ensure!(
+            came(|| async { embedded(&texts[0]) == 1 }).await,
+            "the first request of `vec`'s backlog never reached the backend"
+        );
+        l.upsert("memo", "m", json!({"text": "aside"})).await?;
+        ensure!(
+            !done.load(Ordering::Acquire) && embedded(&texts[N - 1]) == 0,
+            "a write that owes nothing answers while the backlog's first request is held: \
+             the backlog's last text must not be sent yet, and was sent {} times",
+            embedded(&texts[N - 1])
+        );
+        let before = store.head().await.must("reading the head")?;
+        let own: Caller<'_, Result<Option<Outcome>, Failure>> = Box::pin(async {
+            l.upsert("place", "p1", json!({"code": "AT"}))
+                .await
+                .map(Some)
+        });
+        let freed: Caller<'_, Result<Option<Outcome>, Failure>> = Box::pin(async {
+            let moved = || async { store.head().await.is_ok_and(|h| h > before) };
+            ensure!(came(moved).await, "the write of `p1` was never appended");
+            release(&texts[0]);
+            Ok(None)
+        });
+        let [own, released] = <[_; 2]>::try_from(join_all(vec![own, freed]).await)
+            .map_err(|_| Failure::new("two callers answer two outcomes"))?;
+        let (at, _) = (own?.map(|o| o.position()), released?);
+        let got = l.cat.get(&l.own, &"place".into(), get_at("p1", at)).await;
+        let name = got
+            .must("reading `p1` at its answer")?
+            .data
+            .fields
+            .get("name")
+            .cloned();
+        ensure!(
+            name == Some(json!("AT")) && !done.load(Ordering::Acquire),
+            "a write whose own call is due answers after the batch in flight and its own, \
+             while the backlog waits at its held request: as of its answer {at:?} `name` \
+             reads {name:?}, and the declaration had answered: {}",
+            done.load(Ordering::Acquire)
+        );
+        release(&texts[150]);
+        Ok(())
+    });
+    for r in join_all(vec![embedded_over(&l, &done), beside]).await {
+        r?;
+    }
+    each_once(store.as_ref(), &texts).await
+}
+
+async fn an_abandoned_sweep_advances_one_batch_with_each_write_that_owes(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let token = "abandoned_sweep";
+    let config = json!({"token": token, "echo": "code"});
+    let l = super::backings::places(store.as_ref(), config).await?;
+    let texts = backlog(&l, "abandoned", &[0]).await?;
+    // The declaration's caller goes away while its first request is held.
+    let done = AtomicBool::new(false);
+    let mut declared = embedded_over(&l, &done);
+    std::future::poll_fn(|cx| match declared.as_mut().poll(cx) {
+        _ if embedded(&texts[0]) == 1 => std::task::Poll::Ready(()),
+        std::task::Poll::Ready(_) => std::task::Poll::Ready(()),
+        std::task::Poll::Pending => std::task::Poll::Pending,
+    })
+    .await;
+    drop(declared);
+    release(&texts[0]);
+    let mut covered = Vec::new();
+    for code in ["AT", "BE"] {
+        l.upsert("place", code, json!({"code": code})).await?;
+        let c = store.vector_coverage(&"doc".into()).await;
+        covered.push(c.must("asking vector_coverage of `doc`")?[0].embedded);
+    }
+    ensure!(
+        !done.load(Ordering::Acquire) && covered == [64, 128],
+        "the declaration's caller went away; each later write that owes a call makes its own \
+         and one batch of the 64 records the declaration left, so `doc` holds 64 vectors and \
+         then 128; it held {covered:?}"
+    );
+    Ok(())
+}
+
+async fn a_rekey_while_a_type_is_embedded_leaves_every_record_embedded_once(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let texts = backlog(&l, "rekeyed", &[0]).await?;
+    let done = AtomicBool::new(false);
+    let rekey: Caller<'_, Result<(), Failure>> = Box::pin(async {
+        ensure!(
+            came(|| async { embedded(&texts[0]) == 1 }).await,
+            "the first request of `vec`'s backlog never reached the backend"
+        );
+        let mut to = coded();
+        to.fields.push(embedding("vec", 2, &["body"], EMBED_MODEL));
+        to.key = vec!["code".into()];
+        l.migrate(to).await?;
+        ensure!(
+            !done.load(Ordering::Acquire),
+            "the re-key answers while the backlog's first request is held"
+        );
+        release(&texts[0]);
+        Ok(())
+    });
+    for r in join_all(vec![embedded_over(&l, &done), rekey]).await {
+        r?;
+    }
+    each_once(store.as_ref(), &texts).await
+}
+
+pub(super) fn with_embedder(embed: Option<Arc<dyn lakelands_api::seam::EmbedBackend>>) -> Seams {
     Seams {
         backings: backing::backings(),
         embed,
@@ -423,14 +642,14 @@ fn with_embedder(embed: Option<Arc<dyn lakelands_api::seam::EmbedBackend>>) -> S
     }
 }
 
-fn reopen_failed(what: &str, e: Error) -> Failure {
+pub(super) fn reopen_failed(what: &str, e: Error) -> Failure {
     Failure::new(format!("opening the lake again {what} failed: {e} ({e:?})"))
 }
 
 check!(
     /// A hybrid search through a backend of another model is unbound.
     EMBED_SEARCH_OTHER_BACKEND = a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_unbound,
-    "seams, EmbedBackend: a hybrid search over an embed field whose model or dimensions are not the bound backend's is refused as unbound when it is made, not ranked with vectors of another space",
+    "seams, EmbedBackend: a hybrid search over an embed field whose model or dimensions are not the bound backend's is refused as unbound when it is made, not ranked with vectors of another space; a search as of an earlier position is held to the head's declaration, whose vectors the engines index",
     reopens
 );
 
@@ -444,6 +663,7 @@ async fn a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_un
     let l = notes(store.as_ref()).await?;
     l.upsert("note", "n1", json!({"title": "Quayside crane"}))
         .await?;
+    let before = store.head().await.must("reading the head")?;
     for (model, dimensions) in [("another-model", 2), (EMBED_MODEL, 3)] {
         store = reopen(
             store,
@@ -451,27 +671,14 @@ async fn a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_un
         )
         .await
         .map_err(|e| reopen_failed(&format!("with a backend of `{model}`/{dimensions}"), e))?;
-        let got = doors(store.as_ref())
-            .search(
-                &owner(store.as_ref()),
-                Search {
-                    ty: "note".into(),
-                    ..doc_search(SearchMode::Hybrid {
-                        text: "quayside".into(),
-                        field: "vec".into(),
-                        vector: None,
-                        fields: None,
-                        weight: None,
-                        text_weight: None,
-                    })
-                },
-            )
-            .await;
+        let got = quay(store.as_ref(), None).await;
         // The refusal names both: what the field was declared with, and
         // what is bound.
-        let names_both = |seam: &str| {
-            seam.contains(&format!("`{EMBED_MODEL}` with 2"))
-                && seam.contains(&format!("`{model}` with {dimensions}"))
+        let names_both = |seam: &Seam| {
+            let model = model.to_owned();
+            let bound = Some(lakelands_api::error::Bound { model, dimensions });
+            matches!(seam, Seam::Embedding { model: m, dimensions: 2, bound: b, .. }
+                if m == EMBED_MODEL && *b == bound)
         };
         ensure!(
             matches!(&got, Err(Error::Unbound { seam }) if names_both(seam)),
@@ -479,6 +686,152 @@ async fn a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_un
              `{model}` and {dimensions} dimensions bound, a hybrid search over it must be \
              refused as unbound, naming both; it answered {}",
             answered(&got)
+        );
+    }
+    // The engines index the head's vectors only: `vec` declared again with
+    // `another-model`, a search as of before is embedded by the head's
+    // declaration, not by the one it reads.
+    let other = || with_embedder(Some(backing::embedder_as("another-model", 2)));
+    store = reopen(store, other())
+        .await
+        .map_err(|e| reopen_failed("with a backend of `another-model`", e))?;
+    let l = Lake::of(store.as_ref());
+    l.declare(notes_by(&["title", "body"], "another-model", 2))
+        .await?;
+    recomputed(&l).await?;
+    let ranked = quay(store.as_ref(), Some(before)).await;
+    store = reopen(store, with_embedder(Some(backing::embedder())))
+        .await
+        .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
+    let old = quay(store.as_ref(), Some(before)).await;
+    ensure!(
+        ranked.as_ref().is_ok_and(|h| h.ranked_by == "hybrid")
+            && matches!(&old, Err(Error::Unbound { seam })
+                if matches!(&**seam, Seam::Embedding { model, dimensions: 2, .. } if model == "another-model")),
+        "`vec`, declared again with `another-model`, holds its vectors at the head: a search \
+         as of before ranks `hybrid` with that backend bound and is unbound, naming it, with \
+         `{EMBED_MODEL}` bound; they answered {} and {}",
+        format!("{:?}", ranked.map(|h| h.ranked_by)),
+        answered(&old)
+    );
+    Ok(())
+}
+
+check!(
+    /// A hybrid search is judged before it embeds.
+    EMBED_SEARCH_JUDGED_FIRST = a_hybrid_search_is_judged_for_its_caller_before_its_model_or_its_text,
+    "024 and seams, EmbedBackend: a hybrid search without a vector is judged for its caller before its field's model is compared with the bound backend's and before its text is embedded: whatever backend is bound, a type not shown answers as one not declared, a field the caller may not know of, or one its vector is embedded from, as one not declared, and a masked one as not granted; a refused search calls nothing, the owner's over a type or field not declared or with a `where` on one included",
+    reopens
+);
+
+/// A hybrid search for `text` over `ty.field` by `who`, with `filter` as
+/// its `where`: how it ranked, or its error's words, and how often `text`
+/// was embedded.
+async fn judged(
+    store: &dyn LakeStore,
+    who: &Principal,
+    (ty, field, filter): (&str, &str, Option<&str>),
+    text: &str,
+) -> (Result<String, String>, usize) {
+    let mode = SearchMode::Hybrid {
+        text: text.into(),
+        field: field.into(),
+        vector: None,
+        fields: None,
+        weight: None,
+        text_weight: None,
+    };
+    let search = Search {
+        ty: ty.into(),
+        filter: filter.map(Into::into),
+        ..doc_search(mode)
+    };
+    let got = doors(store).search(who, search).await;
+    let got = got.map(|r| r.data.ranked_by).map_err(|e| format!("{e:?}"));
+    (got, embedded(text))
+}
+
+async fn a_hybrid_search_is_judged_for_its_caller_before_its_model_or_its_text(
+    store: Arc<dyn LakeStore>,
+    reopen: Reopen,
+) -> Result<(), Failure> {
+    let mut store = reopen(store, with_embedder(Some(backing::embedder())))
+        .await
+        .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
+    let l = notes(store.as_ref()).await?;
+    l.upsert("note", "n1", json!({"title": "Judged quay"}))
+        .await?;
+    let (s, own) = (store.as_ref(), l.own.clone());
+    let mut grants = Grants {
+        default: Access::Read,
+        ..Grants::default()
+    };
+    let none = TypeGrants {
+        default: Some(Access::None),
+        ..TypeGrants::default()
+    };
+    grants.types.insert("note".into(), none);
+    let held = |id: &str, f: &str, a| field_access(s, id, "note", &[(f, a)]);
+    // Each caller, and what its answer names: the type, or the field.
+    let cast = [
+        (
+            principal(s, PrincipalKind::Agent, "unshown", grants),
+            "note",
+        ),
+        (held("vec-none", "vec", Access::None), "vec"),
+        (held("body-none", "body", Access::None), "body"),
+        (held("vec-masked", "vec", Access::Masked), "masked"),
+    ];
+    let masked = Error::Refused {
+        field: Some("vec".into()),
+        reason: Refusal::NotGranted,
+    };
+    let backends = [None, Some(("another-model", 2)), Some((EMBED_MODEL, 3))];
+    for (round, backend) in backends.into_iter().enumerate() {
+        if let Some((model, dimensions)) = backend {
+            let embed = backing::embedder_as(model, dimensions);
+            store = reopen(store, with_embedder(Some(embed)))
+                .await
+                .map_err(|e| reopen_failed(&format!("with a backend of `{model}`"), e))?;
+        }
+        let (s, text) = (store.as_ref(), |of: &str| format!("Judged {round} {of}"));
+        let (ghost, ghost_calls) = judged(s, &own, ("zz", "vec", None), &text("zz")).await;
+        let (nope, nope_calls) = judged(s, &own, ("note", "zz", None), &text("note.zz")).await;
+        let filter = Some("zz = 1");
+        let (bad, bad_calls) = judged(s, &own, ("note", "vec", filter), &text("where")).await;
+        for (who, named) in &cast {
+            let (got, calls) = judged(s, who, ("note", "vec", None), &text(&who.id)).await;
+            let want = match *named {
+                "masked" => Err(format!("{masked:?}")),
+                "note" => ghost.clone().map_err(|e| e.replace("zz", "note")),
+                field => nope.clone().map_err(|e| e.replace("zz", field)),
+            };
+            ensure!(
+                got == want && calls == 0,
+                "with {backend:?} bound, `{}`'s search over `note.vec` answers {want:?} \
+                 and calls nothing; it answered {got:?} after {calls} calls",
+                who.id
+            );
+        }
+        ensure!(
+            ghost.is_err()
+                && nope.is_err()
+                && bad.is_err()
+                && ghost_calls + nope_calls + bad_calls == 0,
+            "with {backend:?} bound, the owner's search over `zz`, over `note.zz` and \
+             `where zz = 1` is refused and calls nothing; they answered {ghost:?}, {nope:?} \
+             and {bad:?} after {ghost_calls}, {nope_calls} and {bad_calls} calls"
+        );
+        let (got, calls) = judged(s, &own, ("note", "vec", None), &text("quay")).await;
+        let fits = match backend {
+            None => got.as_deref() == Ok("hybrid") && calls == 1,
+            Some(_) => got.as_ref().is_err_and(|e| e.starts_with("Unbound")) && calls == 0,
+        };
+        ensure!(
+            fits,
+            "the owner's hybrid search over `note.vec` ranks `hybrid` after one call with \
+             the suite's backend bound and is unbound, calling nothing, with another; with \
+             {backend:?} it answered {got:?} after {calls} calls"
         );
     }
     Ok(())
@@ -561,6 +914,214 @@ async fn a_due_embedding_waits_while_no_backend_makes_it(
         "`recompute` of `note`, its backend bound, makes every waiting `vec`; `other` \
          and `wider` read {other:?} and {wider:?}"
     );
+    Ok(())
+}
+
+check!(
+    /// A backend bound after open serves from then on.
+    EMBED_BOUND_LATE = a_backend_bound_after_open_is_read_from_then_on,
+    "lakelands#641 and seams, EmbedBackend: `bind_embed` on an open lake appends nothing, and from then on a declaration of its model is admitted, a write's embedding is made and a hybrid search embeds its text; a vector that fell due while none was bound waits until `recompute` names its type; a later bind replaces the backend, whatever its model",
+    reopens
+);
+
+check!(
+    /// An embedding kept as it is needs no backend.
+    EMBED_UNBOUND_KEPT = a_declaration_that_keeps_an_embedding_needs_no_backend,
+    "022, extended, and lakelands#641: with no backend bound, a declaration that keeps a type's embedding as in force is admitted (restated, alone or in a set, with a relation whose link type embeds; a field added beside it; a migration), while one that adds an embedding or changes its model, dimensions or `from` is refused as unbound, naming the field, and so is `recompute` of the type",
+    reopens
+);
+
+/// A hybrid search over `note.vec` for "quay", as the owner, as of `as_of`.
+async fn quay(
+    store: &dyn LakeStore,
+    as_of: Option<lakelands_api::Position>,
+) -> lakelands_api::Result<lakelands_api::query::Hits> {
+    let mode = SearchMode::Hybrid {
+        text: "quay".into(),
+        field: "vec".into(),
+        vector: None,
+        fields: None,
+        weight: None,
+        text_weight: None,
+    };
+    let search = Search {
+        ty: "note".into(),
+        at: lakelands_api::ReadAt {
+            as_of,
+            ..Default::default()
+        },
+        ..doc_search(mode)
+    };
+    doors(store)
+        .search(&owner(store), search)
+        .await
+        .map(|r| r.data)
+}
+
+/// `berth`, whose `moors` to `note` carries `near`, the embedding of its
+/// link's `memo`.
+fn berths() -> lakelands_api::ontology::TypeDecl {
+    let mut ty = type_decl("berth", vec![]);
+    let fields = vec![
+        field("memo", StorageKind::Text),
+        embedding("near", 2, &["memo"], EMBED_MODEL),
+    ];
+    ty.relations = vec![lakelands_api::ontology::RelationDecl {
+        fields,
+        ..lakelands_api::ontology::RelationDecl::to("moors", "note")
+    }];
+    ty
+}
+
+/// `note` and `berths` declared with the suite's backend, and the lake
+/// opened again with none bound.
+async fn unbound_notes(
+    store: Arc<dyn LakeStore>,
+    reopen: &Reopen,
+) -> Result<Arc<dyn LakeStore>, Failure> {
+    let store = reopen(store, with_embedder(Some(backing::embedder())))
+        .await
+        .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
+    notes(store.as_ref()).await?.declare(berths()).await?;
+    reopen(store, with_embedder(None))
+        .await
+        .map_err(|e| reopen_failed("with no embedding backend", e))
+}
+
+async fn a_backend_bound_after_open_is_read_from_then_on(
+    store: Arc<dyn LakeStore>,
+    reopen: Reopen,
+) -> Result<(), Failure> {
+    let store = unbound_notes(store, &reopen).await?;
+    let l = Lake::of(store.as_ref());
+    let early = "Bound late early quay";
+    l.upsert("note", "early", json!({"title": early})).await?;
+    let before = quay(store.as_ref(), None)
+        .await
+        .must("a hybrid search with none bound")?;
+    let head = store.head().await.must("reading the head")?;
+    store
+        .bind_embed(backing::embedder())
+        .must("binding the suite's backend")?;
+    let after = store.head().await.must("reading the head")?;
+    ensure!(
+        after == head,
+        "a bind appends nothing; the head moved from {head} to {after}"
+    );
+    l.upsert("note", "late", json!({"title": "Bound late later quay"}))
+        .await?;
+    let searched = quay(store.as_ref(), None)
+        .await
+        .must("a hybrid search once bound")?;
+    let (late, waits) = (
+        vec_of(store.as_ref(), "late").await?,
+        vec_of(store.as_ref(), "early").await?,
+    );
+    ensure!(
+        before.ranked_by.starts_with("lexical")
+            && searched.ranked_by.starts_with("hybrid")
+            && is_east(&late)
+            && waits.is_none(),
+        "a hybrid search ranks lexically with none bound and embeds its text once bound \
+         (they said {:?} and {:?}), and a write's `vec` is made then while `early`, due \
+         before the bind, waits: `late` reads {late:?}, `early` {waits:?}",
+        before.ranked_by,
+        searched.ranked_by
+    );
+    recomputed(&l).await?;
+    let made = vec_of(store.as_ref(), "early").await?;
+    ensure!(
+        is_east(&made) && embedded(early) == 1,
+        "`recompute` of `note` after the bind makes `early`'s `vec` once; it reads \
+         {made:?}, its text sent {} times",
+        embedded(early)
+    );
+    store
+        .bind_embed(backing::embedder_as("another-model", 2))
+        .must("binding a backend of another model")?;
+    let search = quay(store.as_ref(), None).await;
+    let other = l
+        .try_declare(notes_by(&["title", "body"], "another-model", 2))
+        .await;
+    ensure!(
+        other.is_ok() && is_unbound(&search),
+        "a second bind replaces the first: a search over `note.vec`, of `{EMBED_MODEL}`, \
+         is unbound and `vec` declared with `another-model` is admitted; they answered {} \
+         and {}",
+        answered(&search),
+        answered(&other)
+    );
+    Ok(())
+}
+
+async fn a_declaration_that_keeps_an_embedding_needs_no_backend(
+    store: Arc<dyn LakeStore>,
+    reopen: Reopen,
+) -> Result<(), Failure> {
+    let store = unbound_notes(store, &reopen).await?;
+    let l = Lake::of(store.as_ref());
+    let kept = notes_by(&["title", "body"], EMBED_MODEL, 2);
+    l.declare(kept.clone()).await?;
+    l.declare(berths()).await?;
+    let set = vec![lakelands_api::write::Declaration::Type(kept.clone())];
+    l.cat
+        .apply(&l.own, set)
+        .await
+        .must("applying `note` as in force")?;
+    // Other dimensions reshape the field: a migration, checked the same way.
+    let wider = migration(notes_by(&["title", "body"], EMBED_MODEL, 3));
+    let report = l.cat.migrate(&l.own, wider.clone()).await;
+    let id = report
+        .must("the preflight of `vec` with 3 dimensions")?
+        .data
+        .report_id;
+    let added = notes_with(
+        kept.fields[2].clone(),
+        vec![embedding("vec2", 2, &["body"], EMBED_MODEL)],
+    );
+    let recompute = lakelands_api::write::Recompute::Type("note".into());
+    for (got, named, what) in [
+        (
+            l.try_declare(notes_by(&["title"], EMBED_MODEL, 2)).await,
+            "vec",
+            "`note` with its `from` changed",
+        ),
+        (
+            l.try_declare(notes_by(&["title", "body"], "another-model", 2))
+                .await,
+            "vec",
+            "`note` with its model changed",
+        ),
+        (
+            l.try_declare(added).await,
+            "vec2",
+            "`note` with an embedding added",
+        ),
+        (
+            l.cat.migrate_apply(&l.own, wider, &id).await,
+            "vec",
+            "`vec` migrated to 3 dimensions",
+        ),
+        (
+            l.cat.recompute(&l.own, recompute).await,
+            "vec",
+            "`recompute` of `note`",
+        ),
+    ] {
+        ensure!(
+            matches!(got.as_ref().err().and_then(Error::seam), Some(Seam::Embedding { ty, field, .. })
+                if ty.as_str() == "note" && field == named),
+            "with none bound, {what} must be refused as unbound, naming `note.{named}`; it \
+             answered {}",
+            answered(&got)
+        );
+    }
+    let tagged = notes_with(
+        kept.fields[2].clone(),
+        vec![field("tag", StorageKind::Text)],
+    );
+    l.declare(tagged).await?;
+    l.migrate(kept).await?;
     Ok(())
 }
 
@@ -658,7 +1219,7 @@ async fn an_embedding_that_is_not_a_derived_vector_of_its_own_text_fields_is_ref
         ensure!(
             matches!(
                 refused_on(&got),
-                Some(("vec", lakelands_api::Refusal::Invalid { .. }))
+                Some(("vec", lakelands_api::Refusal::Invalid(..)))
             ),
             "declaring `vec` as {what} must be refused as invalid, naming `vec`; it answered {}",
             answered(&got)
@@ -724,6 +1285,118 @@ async fn no_request_carries_more_than_sixty_four_texts(
         sizes.iter().all(|n| *n <= 64) && sizes.iter().sum::<usize>() == 150,
         "declaring the embedding made 150 distinct texts due at once; every request carries at most 64 of them and \
          all 150 are sent once; the requests carried {sizes:?}"
+    );
+    Ok(())
+}
+
+check!(
+    /// A refused text fails alone.
+    EMBED_REFUSED_ALONE = a_text_the_backend_refuses_fails_alone_in_its_batch,
+    "lakelands#658 and seams, EmbedBackend: a request the backend refuses for what it carries is asked again in halves, so only the text refused alone records the refusal and the others in its batch are embedded; a later record with one of their texts reads its vector, and `recompute` sends the refused text alone",
+    embedding
+);
+
+check!(
+    /// Weather is not narrowed.
+    EMBED_WEATHER = weather_fails_every_text_its_request_had_not_answered,
+    "lakelands#658 and seams, EmbedBackend: a failure that is not a refusal ends the asking and is recorded for every text not answered yet, while the texts answered before it keep their vectors and a text refused alone its refusal",
+    embedding
+);
+
+/// Declare `pier` with records of `titles` (`p0`, `p1`, …), then its
+/// embedding, which makes every title due in one batch: the requests made.
+async fn piers(l: &Lake, titles: &[String]) -> Result<usize, Failure> {
+    let title = || sourced("title", StorageKind::Text);
+    l.declare(type_decl("pier", vec![title()])).await?;
+    let records = titles.iter().enumerate();
+    let records =
+        records.map(|(n, t)| source_record("pier", &format!("p{n}"), json!({"title": t})));
+    l.ingest("piers", records.collect())
+        .await
+        .must("ingesting piers")?;
+    let before = backing::embed_calls();
+    let vec = embedding("vec", 2, &["title"], EMBED_MODEL);
+    l.declare(type_decl("pier", vec![title(), vec])).await?;
+    Ok(backing::embed_calls() - before)
+}
+
+/// What each pier's `vec` reads: `east`, or the error its metadata carries.
+async fn pier_vecs(store: &dyn LakeStore, n: usize) -> Result<Vec<String>, Failure> {
+    let mut out = Vec::new();
+    for key in (0..n).map(|n| format!("p{n}")) {
+        let r = read(doors(store).as_ref(), &owner(store), "pier", &key).await?;
+        let east = is_east(&value(&r, "vec").cloned()).then(|| "east".to_owned());
+        out.push(
+            r.meta
+                .get("vec")
+                .and_then(|m| m.error.clone())
+                .or(east)
+                .unwrap_or_default(),
+        );
+    }
+    Ok(out)
+}
+
+async fn a_text_the_backend_refuses_fails_alone_in_its_batch(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let mut titles: Vec<String> = (0..8).map(|n| format!("Refusal pier {n}")).collect();
+    titles[5] = format!("{UNREACHABLE} pier");
+    let calls = piers(&l, &titles).await?;
+    let got = pier_vecs(store.as_ref(), 8).await?;
+    let failed: Vec<_> = got.iter().map(|g| g != "east").collect();
+    ensure!(
+        calls == 7 && failed == [false, false, false, false, false, true, false, false],
+        "of eight texts in one batch the backend refuses `p5`'s: halving takes 1 + 2 × 3 = 7 \
+         requests, `p5` holds the refusal and the other seven a vector; {calls} requests, \
+         and the piers read {got:?}"
+    );
+    let before = backing::embed_calls();
+    let again = source_record("pier", "p8", json!({"title": titles[0]}));
+    l.ingest("piers", vec![again])
+        .await
+        .must("ingesting `p8`")?;
+    let p8 = pier_vecs(store.as_ref(), 9).await?.pop();
+    let sent = embedded(&titles[5]);
+    let what = lakelands_api::write::Recompute::Type("pier".into());
+    l.cat
+        .recompute(&l.own, what)
+        .await
+        .must("computing `pier` again")?;
+    let calls = backing::embed_calls() - before;
+    ensure!(
+        p8.as_deref() == Some("east") && calls == 1 && embedded(&titles[5]) == sent + 1,
+        "a later record with `p0`'s text reads its vector without a call, and `recompute` \
+         sends the refused text alone: one request in all, not {calls}; `p8` reads {p8:?}"
+    );
+    Ok(())
+}
+
+async fn weather_fails_every_text_its_request_had_not_answered(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use crate::conformance::backing::WEATHER;
+    let l = Lake::of(store.as_ref());
+    let titles = ["Weather pier 0", UNREACHABLE, WEATHER, "Weather pier 3"];
+    let titles = titles.map(|t| format!("{t} quay"));
+    let calls = piers(&l, &titles).await?;
+    let got = pier_vecs(store.as_ref(), 4).await?;
+    // The weather as its case says it: the backend answered 503.
+    let remote = lakelands_api::error::Remote::Embedding {
+        model: EMBED_MODEL.to_owned(),
+    };
+    let exchange = lakelands_api::error::Exchange::Status { status: 503 };
+    let down = lakelands_api::error::Situation::Remote { remote, exchange }.to_string();
+    ensure!(
+        calls == 5
+            && got[0] == "east"
+            && got[1].contains("refused the texts")
+            && got[2..].iter().all(|g| *g == down),
+        "`p1`'s text is refused and `p2`'s meets weather: the halves are asked, `p0` is \
+         embedded, `p1` holds its refusal, and the weather of `p2`'s request is recorded for \
+         `p2` and `p3` without narrowing it, in 5 requests; {calls} requests, and the piers \
+         read {got:?}"
     );
     Ok(())
 }

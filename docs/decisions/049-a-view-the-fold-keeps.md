@@ -36,7 +36,8 @@ would have to reproduce one.
   for each source of the view: counts, sums by scale as integers, an
   extreme with its holder's key. The fold changes a group by the member
   that arrives, leaves or changes, and never reads the group's other
-  members, with one exception that is bounded (below).
+  members: an extreme whose holder leaves reads the next one from an
+  order the fold keeps beside (below).
 - **Two faces.** A restricted record is a member for a reader with the
   `restricted` grant and for no other. A group keeps its folds for both:
   the record's own fields are the open face's; where the whole face
@@ -59,10 +60,10 @@ would have to reproduce one.
   order are always the computation's own.
 - **What is not exact is counted, never returned.** A measure that
   fails over a group (a division by zero), a member whose argument does
-  not fold, a sum outside what exact arithmetic holds, an extreme given
-  up (below): the group is flagged and counted, its other folds go on,
-  and it is exact again when the cause leaves; a group given up, when
-  the view is made or the group ends. Noting a member, putting a group
+  not fold, a sum outside what exact arithmetic holds, an extreme over
+  a number and an instant: the group is flagged and counted, its other
+  folds go on, and it is exact again when the cause leaves. Noting a
+  member, putting a group
   and making a view return no error but the engine's, so no view can
   stop the lake.
 - **Made by noting from nothing.** A view becomes kept in the fold of
@@ -80,24 +81,42 @@ would have to reproduce one.
   setting that an expression of the view names. The view is ended and
   made in that event's fold. Nothing is noted from inside a migration's
   step.
-- **An extreme whose holder left is read again in the fold of that
-  event, within a bound.** Before the event's groups are put, each group
-  an extreme of which lost its holder is read again by the engine's
-  lookup on its group's values, over 8 192 live records at most, and is
-  exact before the next event is folded. A member that is a view's
-  record is found by its own fields, and for the whole face by a mark
-  where that face reads otherwise. The bound is one for the group over
-  all the view's sources: a record the view's `where` leaves out counts
-  in it, and so does a marked record of another group. After a
-  migration's step in the same transaction the lookup is a walk of the
-  type as the step leaves it, to its end.
-- **Past the bound a group is given up.** Its extreme is not the
-  computation's own from then on: the group is counted as not exact on
-  the faces it concerns, the view computes for their readers, and
-  nothing reads the group again, not even a later holder's leaving.
-  What mends it is what makes the view, or the group's own end: a group
-  whose last member leaves starts from nothing when one returns, in the
-  same transaction as in a later one.
+- **An extreme is held by the first member of its order.** A `min` or
+  a `max` orders its members by their value's sort key (a number before
+  an instant), the greatest first for a `max`, and equal values by the
+  least key; its holder is the first. So the holder is a function of the
+  members, whatever the order they came in.
+- **The fold keeps that order, and the next holder is its first entry.**
+  Beside the kept records, under `sys:order.<view>`, the fold keeps an
+  entry for each member of each extreme, put in the fold of the event
+  that moves the member. Its key is the source and the call, a digest of
+  the group's key, the face, the member's place in the order and its
+  key; it holds the value as the fold read it. On the open face every
+  member has one under `o`. On the whole face a member has one under `w`
+  where its `o` entry would not serve: a restricted record of a source,
+  and every member that is a view's record, whose faces may read
+  otherwise. Where a holder leaves, the next is read in that event's
+  fold: the first entry from where the holder stood, the transaction's
+  own entries laid over the engine's. That reads one entry, and one
+  batch more for each run of entries the transaction ended ahead of it;
+  never a member, at any size. A whole face whose folds are the open
+  one's has no restricted member and takes the open face's holder.
+- **An order is read at the head only.** An engine keeps one state for
+  each key of an order name and no row beside it: a put replaces the
+  key's state and an end deletes it (`docs/seams.md`). Only the fold
+  reads it, at the head, by the key-ordered page every engine has. A
+  log that names a type beginning `sys:` comes from no door and is not
+  folded past that event, so no event writes into an order.
+- **An order ends as a whole.** Where a view ends, its order ends in
+  one call to the engine (`end_head_only`), whatever its size, and the
+  transaction marks the name ended: a seek after that in the same
+  transaction reads only the entries put since, never the engine's. So a
+  view ended and made again in one event holds nothing for each entry it
+  ended, and its next holder comes from the entries the make put.
+- **An order that has lost its entries is not trusted.** Where a seek
+  finds no entry while the extreme still counts members (an entry deleted
+  under the view), the group is not exact and is computed: never an
+  exact `null`.
 - **Every decision is one event's, but one.** What the fold does to a
   kept view it does in the fold of one event, on what the lake holds at
   that event: nothing waits past its event, and nothing depends on where
@@ -137,16 +156,22 @@ is above zero the computation answers, with its own refusal.
 A setting and not a declaration, because whether a view is kept changes
 no answer: it is the lake's configuration, as an order index is (041).
 
-A group is read again in its event's own fold, and not at the end of
+The next holder is read in its event's own fold, and not at the end of
 the transaction, because a transaction is what the fold commits: an
-append when live, a page of events in a rebuild. A group given up at a
-transaction's end would be given up by what the group held there, which
-a lake and its rebuild do not share, and given up is for good. And it
-is given up past a bound, not walked on over the appends that follow,
-because a walk that goes on is a second state beside the folds, and
-keeps the writer reading a group for as long as its holders leave. What
-makes a large group's extreme cheap is the engine's own order for the
-new holder, which is lakelands#629.
+append when live, a page of events in a rebuild, which a lake and its
+rebuild do not share. Before the order, a group was read again over a
+bound of 8 192 records and given up past it: at 100 000 members a page
+of 10 then took 291 ms against 0.5 ms, for every reader, until the view
+was made again. The engine's lookup with an order, ordered by the
+argument, reads the whole group as well (256 ms at 100 000), and an
+index of the engine on a type's group fields and argument would serve
+only a stored source and an argument that is a field: a source that is
+a view, an expression and the whole face are the fold's own values. So
+the fold keeps the order, and asks of the engine only the first record
+after a key, which every engine answers by a seek. An entry costs one
+put of a small record for each member of each extreme, and an end and
+a put when its value or group moves: about 6 % more on a write the view
+reads, on SQLite at 100 000 members.
 
 A migration makes the view again because a step moves keys, types and
 values under every group at once; noting it record by record from
@@ -156,17 +181,62 @@ that already walks the type.
 
 ## What it is not
 
-- **Not the engine's page for every reader.** For a reader without the
-  `restricted` grant, and for one with it while no group reads otherwise
-  on the whole face, the page, the count and the single record of a
-  kept view are the engine's, as a stored type's are; the filter, the
-  order and the masking are the read's own. Once one group's faces
-  differ, a reader with the grant is answered from every kept record of
-  the view at each call, read once and once more for a total: the whole
-  face's fields are inside the record, where the engine neither filters
-  nor orders.
-- **Not kept at any size.** A view with an extreme over groups larger
-  than the bound, or whose holders leave in bulk, is not worth keeping:
-  each event that takes a holder reads its group under the writer.
+- **Not the engine's page alone for every reader.** For a reader
+  without the `restricted` grant, and for one with it while no group
+  reads otherwise on the whole face, the page, the count and the single
+  record of a kept view are the engine's, as a stored type's are; the
+  filter, the order and the masking are the read's own. Once groups'
+  faces differ, the reader with the grant is answered the engine's page
+  of the others merged with those groups (below).
+- **Not sub-linear in every read.** A page in another order than the
+  key's reads the whole view for every reader, unless `sort_index.<view>`
+  asks for an order index on its field (lakelands#668, 041). An
+  aggregate other than a count and a pattern's start read every group,
+  a page of the kept records at a time, and the records a pattern
+  reaches are read by their keys: their time goes with the view, their
+  memory with a page (lakelands#731). A later page of a cursor walk, read as
+  of its first page's position, finds the differing groups by scanning
+  the kept type in key order: its memory is bounded by them, its time
+  goes with the view; the text index that finds them serves the head.
+- **Not free to make.** Making a view with a `min` or `max` holds
+  about 270 bytes for each member of each extreme until the make
+  commits, and writes one row for each; making the view again writes as
+  many, and ending it deletes its order in one statement. On SQLite, a
+  `max` over 10⁶ members in 1 000 groups was made in 28 s at a peak of
+  549 MB more (5.5 s and 281 MB without its entries) and ended in 7 s,
+  holding nothing more; a source declared again ends and makes the view
+  in one event, about 35 s under the writer.
 - **Not for every view.** An extreme over a text, a sum over what may
   be a text, a view with a parameter or the clock compute, as before.
+
+## Extended: the whole face is paged by the engine too
+
+A kept record's own fields are its open face. Where the whole face
+reads otherwise, the record holds that face inside its folds and bears
+the mark `sys:differs`; the state counts those groups. So the reader with
+the `restricted` grant reads the whole face as two streams. The engine
+pages the kept records without the mark, restricted ones included,
+under the reader's filter and order: their whole face is their own
+fields. The few with the mark are found by it, each taken whole (a group
+on the open face alone is dropped), filtered and placed by the store,
+and merged into the page by the engines' one ordering. A cursor and an
+`offset` walk the merge. A count is the engine's count of the kept
+records less those with the mark whose own fields pass the filter, plus
+their whole faces that pass. A single record takes its face from its
+own folds.
+
+A page in key order holds its rows and the differing groups; a count is
+the engine's and those groups. The groups that differ are those with a
+restricted member whose faces then read otherwise, which is the rare
+case the counter is kept for; where most groups differ, the merge holds
+most of the view, which is no more than the read held before.
+
+**Why.** Before, once one group's faces differed, the reader with the
+grant was answered from every kept record at each call: at 100 000
+groups a page of 10 took 408 ms and 321 MB on SQLite, and `get` of one
+group 324 ms and 321 MB, against under a millisecond for every other
+reader. That reader is most often the lake's owner. A second stored type
+holding the differing groups' whole faces, paged by the engine as well,
+was weighed and left out: it adds a kept name whose records the fold,
+a rebuild, an import and a purge must put and remove whenever a group
+starts or stops differing, for a set the counter says is small.

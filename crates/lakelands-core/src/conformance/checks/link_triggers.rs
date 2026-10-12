@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::ontology::{Authority, Cardinality, FieldDecl, RelationDecl, StorageKind};
 use lakelands_api::write::WriteOpts;
@@ -210,17 +211,20 @@ async fn a_trigger_on_the_link_type_of_a_reference_relation_is_refused(
         .expect_err("a trigger on the link type of a reference relation is refused");
     let Error::Refused {
         field,
-        reason: Refusal::Invalid { message },
+        reason: Refusal::Invalid(said),
     } = &e
     else {
         return Err(Failure::new(format!(
             "a trigger on `{on}` was refused as {e:?}, not as invalid"
         )));
     };
+    // The case whose sentence says to watch `invoice` with `changed(billed)`.
+    let watch = matches!(&said.case, Case::WatchesViaLinks { via, owner, .. }
+        if via == "billed" && **owner == "invoice");
     ensure!(
-        field.as_ref().map(|f| f.as_str()) == Some("on") && message.contains("changed(billed)"),
+        field.as_ref().map(|f| f.as_str()) == Some("on") && watch,
         "a trigger on `{on}` is refused on `on`, saying to watch `invoice` with \
-         `changed(billed)`; it was refused on {field:?}: {message}"
+         `changed(billed)`; it was refused on {field:?}: {said:?}"
     );
     Ok(())
 }

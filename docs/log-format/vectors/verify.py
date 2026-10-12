@@ -494,6 +494,51 @@ def main():
         check(sha(canonical(body)) == negative["hash"], "v11.json: a negative line's hash is its own")
         check(negative["v"] == 10 and any(added(negative) for added in eleventh),
               "v11.json: a negative line carries in format 10 what format 11 added, which a reader refuses")
+    v12 = json.loads((HERE / "v12.json").read_text("utf-8"))
+    goes_on = lambda e: e["body"].get("kind") == "declared" and e["body"].get("with_the_set") is True
+    renames = lambda e: e["body"].get("kind") == "value_type_migrated" or (
+        e["body"].get("kind") == "write_proposed"
+        and e["body"]["write"].get("write") == "migrate_value_type"
+        and bool(e["body"]["write"].get("renames")))
+    twelfth = lambda e: goes_on(e) or renames(e)
+    for line, want in zip(v12["lines"], v12["hashes"]):
+        event = json.loads(line)
+        check(canonical(event) == line.encode("utf-8"), f"v12.json: position {event['position']} is canonical")
+        check(event["v"] == 12 and twelfth(event),
+              f"v12.json: position {event['position']} is format 12 and carries what it added")
+        body = {k: v for k, v in event.items() if k != "hash"}
+        check(sha(canonical(body)) == event["hash"] == want, f"v12.json: hash {want[:12]}…")
+        check(event["prev"] == prev, f"v12.json: position {event['position']} follows the one before it")
+        prev = event["hash"]
+    for line in v12["negatives"]:
+        negative = json.loads(line)
+        body = {k: v for k, v in negative.items() if k != "hash"}
+        check(sha(canonical(body)) == negative["hash"], "v12.json: a negative line's hash is its own")
+        check(negative["v"] == 11 and twelfth(negative),
+              "v12.json: a negative line carries in format 11 what format 12 added, which a reader refuses")
+    v13 = json.loads((HERE / "v13.json").read_text("utf-8"))
+    pinned = lambda e: e["body"].get("kind") == "write_proposed" and e["body"].get("pinned") is True
+    declaration = lambda e: e["body"].get("declaration", {}) if e["body"].get("kind") == "declared" else {}
+    names_a_date = lambda e: declaration(e).get("kind") == "date" or any(
+        f["type"]["kind"] == "date" for f in declaration(e).get("fields", []))
+    thirteenth = lambda e: pinned(e) or names_a_date(e)
+    for line, want in zip(v13["lines"], v13["hashes"]):
+        event = json.loads(line)
+        check(canonical(event) == line.encode("utf-8"), f"v13.json: position {event['position']} is canonical")
+        # A record holding a date is written in the lake's version; a pinned
+        # proposal and a declaration that names the kind need it.
+        check(event["v"] == 13 and (thirteenth(event) or event["body"]["kind"] == "record_upserted"),
+              f"v13.json: position {event['position']} is format 13 and carries what it added")
+        body = {k: v for k, v in event.items() if k != "hash"}
+        check(sha(canonical(body)) == event["hash"] == want, f"v13.json: hash {want[:12]}…")
+        check(event["prev"] == prev, f"v13.json: position {event['position']} follows the one before it")
+        prev = event["hash"]
+    for line in v13["negatives"]:
+        negative = json.loads(line)
+        body = {k: v for k, v in negative.items() if k != "hash"}
+        check(sha(canonical(body)) == negative["hash"], "v13.json: a negative line's hash is its own")
+        check(negative["v"] == 12 and thirteenth(negative),
+              "v13.json: a negative line carries in format 12 what format 13 added, which a reader refuses")
     for name in ("negative_verb", "negative_call"):
         negative = json.loads(v8[name])
         body = {k: v for k, v in negative.items() if k != "hash"}

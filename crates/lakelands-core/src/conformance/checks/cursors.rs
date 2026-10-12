@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::ontology::{FieldDecl, StorageKind};
 use lakelands_api::query::{Projection, QueryResult, Search, SearchMode};
 use lakelands_api::read::{Direction, OrderBy};
@@ -11,7 +12,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, count_view, field, invalid_naming, is_invalid, order, pattern, type_decl,
+    Lake, Must, count_view, field, invalid_case, order, pattern, type_decl,
 };
 
 check!(
@@ -194,29 +195,40 @@ async fn a_cursor_continues_only_the_answer_it_was_handed_out_for(
             cat.find(own, &beta, find(Some(of_find.clone())))
                 .await
                 .map(drop),
+            ("find", "find", &beta),
         ),
         (
             "`query`, with a cursor of `find`",
             cat.query(own, query(Some(of_find.clone()))).await.map(drop),
+            ("find", "query", &alpha),
         ),
         (
             "`search`, with a cursor of `find`",
             cat.search(own, search(Some(of_find))).await.map(drop),
+            ("find", "search", &alpha),
         ),
         (
             "`find`, with a cursor of `query`",
             cat.find(own, &alpha, find(Some(of_query))).await.map(drop),
+            ("query", "find", &alpha),
         ),
         (
             "`find`, with a cursor of `search`",
             cat.find(own, &alpha, find(Some(of_search))).await.map(drop),
+            ("search", "find", &alpha),
         ),
     ];
-    for (what, r) in refused {
+    for (what, r, (was, door, ty)) in refused {
+        let belongs = Case::CursorOtherDoor {
+            was: was.into(),
+            was_ty: Some(Box::new(alpha.clone())),
+            door: door.into(),
+            ty: Some(Box::new(ty.clone())),
+        };
         ensure!(
-            is_invalid(&r) && format!("{r:?}").contains("handed out for"),
+            invalid_case(&r) == Some(&belongs),
             "{what} continues another answer, so it is refused as invalid, naming where the \
-             cursor belongs; it answered {r:?}"
+             cursor belongs ({belongs}); it answered {r:?}"
         );
     }
     Ok(())
@@ -271,7 +283,7 @@ async fn a_cursor_handed_to_a_find_of_another_order_length_is_refused(
                 then.len()
             );
             let answer = cat.find(own, &ty, page(then, Some(cursor))).await;
-            if let Err(f) = invalid_naming(&what, answer, &["another order", "order_by"]) {
+            if let Err(f) = refused_as!(&what, answer, Case::CursorOtherOrder) {
                 wrong.push(f.to_string());
             }
         }
@@ -421,7 +433,7 @@ async fn a_cursor_continues_only_the_read_it_was_handed_out_for(
         ),
     ];
     let wrong: Vec<String> = (refused.into_iter())
-        .filter(|(_, r)| !(is_invalid(r) && format!("{r:?}").contains("handed out for another")))
+        .filter(|(_, r)| !matches!(invalid_case(r), Some(Case::CursorOtherRead { .. })))
         .map(|(what, r)| format!("{what} answered {r:?}"))
         .collect();
     ensure!(

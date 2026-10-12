@@ -48,6 +48,7 @@ fn watcher() -> Principal {
                             ("note".into(), Access::Masked),
                         ]
                         .into(),
+                        ..Default::default()
                     },
                 ),
                 (
@@ -55,6 +56,7 @@ fn watcher() -> Principal {
                     TypeGrants {
                         default: Some(Access::None),
                         fields: Default::default(),
+                        ..Default::default()
                     },
                 ),
             ]
@@ -547,7 +549,6 @@ impl Stream {
         }
     }
 
-    /// The next change, skipping `tools/list_changed`.
     /// The next change, skipping `tools/list_changed` and keep-alives.
     /// One deadline covers the whole wait: a stream that only keeps
     /// itself alive does not hold a lost change open forever.
@@ -807,6 +808,71 @@ async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_who
     }
 }
 
+/// A principal who reads every field of `invoice` but is not shown
+/// `partner` may not know of `invoice.partner`, which refers to it
+/// (lakelands#718): it is told of the write, never of the firing or the
+/// set change, as one who may not read a field is (024, extended).
+#[tokio::test]
+async fn a_condition_is_not_told_to_one_kept_from_a_type_a_field_refers_to() {
+    for backend in [Backend::Memory, Backend::Sqlite] {
+        let store = common::lake_on(backend).await;
+        declare(
+            store.as_ref(),
+            json!({"declare": "trigger", "name": "paid", "on": "invoice", "when": "status = 'paid'"}),
+        )
+        .await;
+        let mut grants = Grants {
+            default: Access::Read,
+            ..Grants::default()
+        };
+        let read = TypeGrants {
+            fields: [("note".into(), Access::Read)].into(),
+            ..Default::default()
+        };
+        let none = TypeGrants {
+            default: Some(Access::None),
+            ..Default::default()
+        };
+        grants
+            .types
+            .extend([("invoice".into(), read), ("partner".into(), none)]);
+        let who = Principal {
+            kind: PrincipalKind::Agent,
+            id: "unbilled".into(),
+            lake: "finance".into(),
+            grants,
+        };
+        let mut s = Stdio::open(store.clone(), who).await;
+        s.call(
+            "subscribe",
+            json!({"kinds": ["trigger_fired", "record_upserted"]}),
+        )
+        .await;
+        let p = write(
+            store.as_ref(),
+            "invoice",
+            "INV-1",
+            json!({"status": "paid"}),
+        )
+        .await;
+        let m = s.change().await;
+        assert_eq!(
+            (&m["params"]["kind"], &m["params"]["position"]),
+            (&json!("record_upserted"), &json!(p)),
+            "{backend:?}: {m}"
+        );
+        let later = write(
+            store.as_ref(),
+            "invoice",
+            "INV-2",
+            json!({"status": "open"}),
+        )
+        .await;
+        let m = s.change().await;
+        assert_eq!(m["params"]["position"], json!(later), "{backend:?}: {m}");
+    }
+}
+
 /// The write that made a record changed every field the fold filled with
 /// its `initial` value (050): a principal granted `state` alone is told
 /// of the create whose patch named another field, and not of a later
@@ -836,6 +902,7 @@ async fn a_create_is_told_as_a_change_of_each_field_it_filled() {
                     TypeGrants {
                         default: None,
                         fields: [("state".into(), access)].into(),
+                        ..Default::default()
                     },
                 )]
                 .into(),
@@ -1226,6 +1293,77 @@ async fn a_tools_change_a_closing_stream_missed_opens_the_next_one() {
             (id, &first["method"]),
             (None, &json!("notifications/tools/list_changed")),
             "{backend:?}: {first}"
+        );
+        task.abort();
+    }
+}
+
+/// A stream that took a tools change is no receipt for it: the stream may
+/// close before its client reads the change. The change stays owed to
+/// every next stream until the session lists its tools again
+/// (lakelands#744). Each step waits on a message that must come, bounded
+/// by [`WAIT`] as a whole, since keep-alives would hold a read open; none
+/// waits on a sleep.
+#[tokio::test]
+async fn a_tools_change_is_owed_to_the_next_stream_until_the_session_lists_its_tools() {
+    for backend in BACKENDS {
+        let store = common::lake_on(backend).await;
+        let (addr, task) = serve(store.clone()).await;
+        let sid = http_session(addr, true).await;
+        let (_, a) = Stream::open(addr, &sid, None).await;
+        let mut a = a.unwrap();
+        declare_memo(store.as_ref()).await;
+        let (_, m) = tokio::time::timeout(WAIT, a.next())
+            .await
+            .expect("the tools change comes within the bound")
+            .expect("the stream is open");
+        assert_eq!(
+            m["method"], "notifications/tools/list_changed",
+            "{backend:?}: {m}"
+        );
+        drop(a);
+
+        // Sent, even read, but not listed: the next stream opens with it.
+        let (_, b) = Stream::open(addr, &sid, None).await;
+        let mut b = b.unwrap();
+        let (id, first) = tokio::time::timeout(WAIT, b.next())
+            .await
+            .expect("the owed tools change comes within the bound")
+            .expect("the stream is open");
+        assert_eq!(
+            (id, &first["method"]),
+            (None, &json!("notifications/tools/list_changed")),
+            "{backend:?}: a tools change a stream took is owed until listed: {first}"
+        );
+
+        // Listed: the stream after opens with the next change instead. The
+        // record is written once that stream is open, so the stream it
+        // replaced cannot take the change.
+        let (status, _, r) = post(
+            addr,
+            Some(&sid),
+            json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}),
+        )
+        .await;
+        assert_eq!(status, 200, "{r}");
+        drop(b);
+        let (_, c) = Stream::open(addr, &sid, None).await;
+        let mut c = c.unwrap();
+        let p = write(
+            store.as_ref(),
+            "invoice",
+            "INV-1",
+            json!({"status": "paid"}),
+        )
+        .await;
+        let (id, first) = tokio::time::timeout(WAIT, c.next())
+            .await
+            .expect("the change comes within the bound")
+            .expect("the stream is open");
+        assert_eq!(
+            (id, &first["method"]),
+            (Some(p), &json!("notifications/lakelands/changed")),
+            "{backend:?}: a tools change listed is not owed again: {first}"
         );
         task.abort();
     }

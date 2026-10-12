@@ -6,24 +6,34 @@
 //! names — and [`run`] calls the catalog. So the two can never read an
 //! argument differently, and a door's answer is the same JSON on both.
 
-use lakelands_api::error::{Error, Refusal};
-use lakelands_api::id::{FieldName, ProposalId, RecordKey, RelationName, TypeName};
-use lakelands_api::ontology::{FieldDecl, TypeDecl, ValueTypeDecl};
+use std::fmt;
+
+use lakelands_api::error::{Case, Error, Naming, Place, Refusal, Said};
+use lakelands_api::id::{ProposalId, RecordKey, RelationName, TypeName};
+use lakelands_api::ontology::{FieldDecl, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl};
 use lakelands_api::query::{Pattern, Search};
 use lakelands_api::read::{Find, Get, ReadAt};
 use lakelands_api::record::Patch;
 use lakelands_api::tools::{Door, ToolSpec};
-use lakelands_api::write::{Declaration, Migration, ProposalFilter, ProposedWrite, WriteOpts};
+use lakelands_api::write::{
+    Declaration, FunctionDecl, Migration, ObjectSetDecl, ProposalFilter, ProposedWrite,
+    ValueTypeMigration, WriteOpts,
+};
 use lakelands_api::{Catalog, Principal};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::de::value::StringDeserializer;
+use serde::de::{
+    DeserializeSeed, Deserializer, EnumAccess, IntoDeserializer, MapAccess, SeqAccess,
+    VariantAccess, Visitor,
+};
 use serde_json::{Map, Value};
 
 /// Why a door failed: the contract's closed set, or arguments that do
-/// not fit the door (what happened, what to do).
+/// not fit the door, refused before it runs.
 pub(crate) enum Fault {
     Contract(Error),
-    Arguments(String, String),
+    Arguments(Box<Said>),
 }
 
 impl From<Error> for Fault {
@@ -32,53 +42,356 @@ impl From<Error> for Fault {
     }
 }
 
+impl Fault {
+    /// Arguments that do not fit, refused with this case.
+    pub(crate) fn arguments(said: impl Into<Said>) -> Fault {
+        Fault::Arguments(Box::new(said.into()))
+    }
+}
+
 /// The arguments, read as `T`; `door` names the door in the refusal, and
 /// the refusal names where among the arguments it failed, such as
-/// `declarations[2]`.
+/// `declarations[2]`, and inside a declaration where in it.
 pub(crate) fn args<T: DeserializeOwned>(door: &str, a: &Map<String, Value>) -> Result<T, Fault> {
-    read(door, a, false)
-}
-
-/// The arguments of a door that declares, read as `T`: a member a
-/// declaration does not take, at any depth, is the caller's to remove.
-fn declaring<T: DeserializeOwned>(door: &str, a: &Map<String, Value>) -> Result<T, Fault> {
-    read(door, a, true)
-}
-
-fn read<T: DeserializeOwned>(
-    door: &str,
-    a: &Map<String, Value>,
-    declares: bool,
-) -> Result<T, Fault> {
-    serde_path_to_error::deserialize(Value::Object(a.clone())).map_err(|e| {
-        let inner = e.inner().to_string();
-        // An unknown member is named by the error; the path says where it
-        // sits, so it ends at the member's parent.
-        let mut path = e.path().to_string();
-        if let Some(member) = inner
-            .strip_prefix("unknown field `")
-            .and_then(|rest| rest.split_once('`'))
-            .map(|(member, _)| member)
-            && let Some(parent) = path.strip_suffix(member)
+    let v = Value::Object(a.clone());
+    serde_path_to_error::deserialize(v.clone()).map_err(|e| {
+        let at = path(&e);
+        let mut said = misfit::<T>(v.clone());
+        if said.is_none()
+            && let Some((within, inner)) =
+                located(&v, &e).and_then(|d| in_declaration(d, String::new()))
         {
-            path = match parent.trim_end_matches('.') {
-                "" => ".".into(),
-                parent => parent.into(),
-            };
+            let at = join(at.as_deref().unwrap_or(""), &within);
+            said = Some(((!at.is_empty()).then_some(at), inner));
         }
-        let what = if path == "." {
-            format!("the arguments do not fit `{door}`: {inner}")
-        } else {
-            format!("the arguments do not fit `{door}` at `{path}`: {inner}")
+        let (at, said) = said.unwrap_or_else(|| {
+            let fault = e.inner().into();
+            (at, Case::ArgumentsUnfit { fault }.into())
+        });
+        let said = match at {
+            Some(path) => said.within(Place::Member { path }),
+            None => said,
         };
-        let unknown = inner.starts_with("unknown field `") || inner.contains(" has no member `");
-        let todo = if declares && unknown {
-            "remove the member or correct its name, then call again; nothing was declared"
-        } else {
-            "correct them against the tool's input schema and call it again"
-        };
-        Fault::Arguments(what, todo.into())
+        Fault::arguments(said.within(Place::Arguments { tool: door.into() }))
     })
+}
+
+/// Where a read failed, as its path says it; `None` at the root.
+fn path(e: &serde_path_to_error::Error<serde_json::Error>) -> Option<String> {
+    let path = e.path().to_string();
+    (path != ".").then_some(path)
+}
+
+/// `inner` under `outer`, as a path says it; `""` is the root.
+fn join(outer: &str, inner: &str) -> String {
+    match (outer, inner) {
+        ("", inner) => inner.to_owned(),
+        (outer, "") => outer.to_owned(),
+        (outer, inner) if inner.starts_with('[') => [outer, inner].concat(),
+        (outer, inner) => [outer, ".", inner].concat(),
+    }
+}
+
+/// Why `v` does not read as `T`, when it is a member taken or needed or a
+/// variant: read once more by [`Probe`], whose errors say so as data. The
+/// path is where it sits.
+fn misfit<T: DeserializeOwned>(v: Value) -> Option<(Option<String>, Said)> {
+    let probed = T::deserialize(Probe(v, String::new())).err()?;
+    let at = probed.at.clone().filter(|a| !a.is_empty());
+    Some((at, probed.case()?.into()))
+}
+
+/// The value at the place a read failed.
+fn located<'v>(
+    v: &'v Value,
+    e: &serde_path_to_error::Error<serde_json::Error>,
+) -> Option<&'v Value> {
+    use serde_path_to_error::Segment;
+    e.path().iter().try_fold(v, |v, s| match s {
+        Segment::Seq { index } => v.get(index),
+        Segment::Map { key } | Segment::Enum { variant: key } => v.get(key.as_str()),
+        Segment::Unknown => None,
+    })
+}
+
+/// A declaration at or under `v` that does not read, at `at` below where
+/// `v` sits: a declaration is read by hand, by its kind, so a failure
+/// inside it is found by reading it again as that kind.
+fn in_declaration(v: &Value, at: String) -> Option<(String, Said)> {
+    match v {
+        Value::Object(m) => {
+            if let Some(Value::String(kind)) = m.get("declare") {
+                let mut members = m.clone();
+                members.remove("declare");
+                let name = m.get("name").and_then(Value::as_str).map(str::to_owned);
+                let (what, said) = declared(kind, Value::Object(members))?;
+                return Some((at, said.within(Place::Declaration { what, name })));
+            }
+            m.iter().find_map(|(k, v)| in_declaration(v, join(&at, k)))
+        }
+        Value::Array(items) => items.iter().enumerate().find_map(|(i, v)| {
+            let mut at = at.clone();
+            at.push('[');
+            at.push_str(&i.to_string());
+            at.push(']');
+            in_declaration(v, at)
+        }),
+        _ => None,
+    }
+}
+
+/// Why the members of a declaration of `kind` do not read, if they do not.
+fn declared(kind: &str, members: Value) -> Option<(Naming, Said)> {
+    fn one<T: DeserializeOwned>(v: Value) -> Option<Said> {
+        let e = serde_path_to_error::deserialize::<_, T>(v.clone()).err()?;
+        let (at, said) = misfit::<T>(v).unwrap_or_else(|| {
+            let fault = e.inner().into();
+            (path(&e), Case::ArgumentsUnfit { fault }.into())
+        });
+        Some(match at {
+            Some(path) => said.within(Place::Member { path }),
+            None => said,
+        })
+    }
+    let (what, said) = match kind {
+        "type" => (Naming::Type, one::<TypeDecl>(members)),
+        "value_type" => (Naming::ValueType, one::<ValueTypeDecl>(members)),
+        "verb" => (Naming::Verb, one::<VerbDecl>(members)),
+        "trigger" => (Naming::Trigger, one::<TriggerDecl>(members)),
+        "object_set" => (Naming::ObjectSet, one::<ObjectSetDecl>(members)),
+        "function" => (Naming::Function, one::<FunctionDecl>(members)),
+        _ => return None,
+    };
+    Some((what, said?))
+}
+
+// ------------------------------------------------------------- the probe
+
+/// A JSON value read as a parser reads it, whose errors are data: a
+/// member a struct does not take, one it needs, a variant an enum does
+/// not have, and where. It is a second reading of what the parser
+/// refused, only to say why without its words.
+struct Probe(Value, String);
+
+/// Why the probe failed, and where, as the path of the value (`""` the
+/// root).
+#[derive(Debug)]
+struct Probed {
+    at: Option<String>,
+    why: Why,
+}
+
+#[derive(Debug)]
+enum Why {
+    NoMember(String, &'static [&'static str]),
+    Missing(&'static str),
+    Variant(String, &'static [&'static str]),
+    Other,
+}
+
+impl Probed {
+    fn of(why: Why) -> Probed {
+        Probed { at: None, why }
+    }
+
+    /// The same, at `at` unless it was said deeper.
+    fn at(mut self, at: &str) -> Probed {
+        self.at.get_or_insert_with(|| at.to_owned());
+        self
+    }
+
+    fn case(self) -> Option<Case> {
+        Some(match self.why {
+            Why::NoMember(member, takes) => {
+                let takes = (!takes.is_empty()).then(|| takes.iter().collect());
+                Case::NoMember { member, takes }
+            }
+            Why::Missing(member) => Case::MemberMissing {
+                member: member.into(),
+            },
+            Why::Variant(value, takes) => Case::NotOneOf {
+                value: Value::String(value),
+                allowed: takes.iter().collect(),
+            },
+            Why::Other => return None,
+        })
+    }
+}
+
+impl fmt::Display for Probed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the arguments do not read")
+    }
+}
+
+impl std::error::Error for Probed {}
+
+impl serde::de::Error for Probed {
+    fn custom<T: fmt::Display>(_: T) -> Probed {
+        Probed::of(Why::Other)
+    }
+
+    fn unknown_field(field: &str, expected: &'static [&'static str]) -> Probed {
+        Probed::of(Why::NoMember(field.into(), expected))
+    }
+
+    fn missing_field(field: &'static str) -> Probed {
+        Probed::of(Why::Missing(field))
+    }
+
+    fn unknown_variant(variant: &str, expected: &'static [&'static str]) -> Probed {
+        Probed::of(Why::Variant(variant.into(), expected))
+    }
+}
+
+fn text(s: String) -> StringDeserializer<Probed> {
+    s.into_deserializer()
+}
+
+impl<'de> Deserializer<'de> for Probe {
+    type Error = Probed;
+
+    fn deserialize_any<V: Visitor<'de>>(self, v: V) -> Result<V::Value, Probed> {
+        let Probe(value, at) = self;
+        match value {
+            Value::Null => v.visit_unit(),
+            Value::Bool(b) => v.visit_bool(b),
+            Value::Number(n) => match (n.as_u64(), n.as_i64()) {
+                (Some(u), _) => v.visit_u64(u),
+                (None, Some(i)) => v.visit_i64(i),
+                _ => v.visit_f64(n.as_f64().unwrap_or_default()),
+            },
+            Value::String(s) => v.visit_string(s),
+            Value::Array(a) => v.visit_seq(Items(a.into_iter().enumerate(), at)),
+            Value::Object(m) => v.visit_map(Members(m.into_iter(), None, at)),
+        }
+    }
+
+    fn deserialize_option<V: Visitor<'de>>(self, v: V) -> Result<V::Value, Probed> {
+        match self.0 {
+            Value::Null => v.visit_none(),
+            _ => v.visit_some(self),
+        }
+    }
+
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        _: &'static str,
+        _: &'static [&'static str],
+        v: V,
+    ) -> Result<V::Value, Probed> {
+        let Probe(value, at) = self;
+        match value {
+            Value::String(name) => v.visit_enum(Variant(name, None, at)),
+            Value::Object(m) if m.len() == 1 => {
+                let (name, value) = m.into_iter().next().expect("one member");
+                let at = join(&at, &name);
+                v.visit_enum(Variant(name, Some(value), at))
+            }
+            value => Probe(value, at).deserialize_any(v),
+        }
+    }
+
+    fn deserialize_newtype_struct<V: Visitor<'de>>(
+        self,
+        _: &'static str,
+        v: V,
+    ) -> Result<V::Value, Probed> {
+        v.visit_newtype_struct(self)
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf unit unit_struct seq tuple tuple_struct map struct
+        identifier ignored_any
+    }
+}
+
+struct Items(std::iter::Enumerate<std::vec::IntoIter<Value>>, String);
+
+impl<'de> SeqAccess<'de> for Items {
+    type Error = Probed;
+
+    fn next_element_seed<T: DeserializeSeed<'de>>(
+        &mut self,
+        seed: T,
+    ) -> Result<Option<T::Value>, Probed> {
+        let Some((i, v)) = self.0.next() else {
+            return Ok(None);
+        };
+        let mut at = self.1.clone();
+        at.push('[');
+        at.push_str(&i.to_string());
+        at.push(']');
+        let read = seed.deserialize(Probe(v, at.clone()));
+        read.map(Some).map_err(|e| e.at(&at))
+    }
+}
+
+struct Members(serde_json::map::IntoIter, Option<(String, Value)>, String);
+
+impl<'de> MapAccess<'de> for Members {
+    type Error = Probed;
+
+    fn next_key_seed<K: DeserializeSeed<'de>>(
+        &mut self,
+        seed: K,
+    ) -> Result<Option<K::Value>, Probed> {
+        let Some((k, v)) = self.0.next() else {
+            return Ok(None);
+        };
+        // A member refused by its name is refused where its struct sits.
+        let read = seed
+            .deserialize(text(k.clone()))
+            .map_err(|e| e.at(&self.2))?;
+        self.1 = Some((k, v));
+        Ok(Some(read))
+    }
+
+    fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Probed> {
+        let (k, v) = self.1.take().ok_or_else(|| Probed::of(Why::Other))?;
+        let at = join(&self.2, &k);
+        seed.deserialize(Probe(v, at.clone()))
+            .map_err(|e| e.at(&at))
+    }
+}
+
+/// An enum's variant: its name, its value (none for a unit variant
+/// written as a string) and where the value sits.
+struct Variant(String, Option<Value>, String);
+
+impl<'de> EnumAccess<'de> for Variant {
+    type Error = Probed;
+    type Variant = Variant;
+
+    fn variant_seed<T: DeserializeSeed<'de>>(self, seed: T) -> Result<(T::Value, Variant), Probed> {
+        let name = seed.deserialize(text(self.0.clone()))?;
+        Ok((name, self))
+    }
+}
+
+impl<'de> VariantAccess<'de> for Variant {
+    type Error = Probed;
+
+    fn unit_variant(self) -> Result<(), Probed> {
+        Ok(())
+    }
+
+    fn newtype_variant_seed<T: DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value, Probed> {
+        seed.deserialize(Probe(self.1.unwrap_or_default(), self.2))
+    }
+
+    fn tuple_variant<V: Visitor<'de>>(self, _: usize, v: V) -> Result<V::Value, Probed> {
+        Probe(self.1.unwrap_or_default(), self.2).deserialize_any(v)
+    }
+
+    fn struct_variant<V: Visitor<'de>>(
+        self,
+        _: &'static [&'static str],
+        v: V,
+    ) -> Result<V::Value, Probed> {
+        Probe(self.1.unwrap_or_default(), self.2).deserialize_any(v)
+    }
 }
 
 /// An argument the catalog checks itself, before it reads anything, even
@@ -106,13 +419,10 @@ pub(crate) fn unknown_argument(spec: &ToolSpec, arguments: &Map<String, Value>) 
     let key = arguments.keys().find(|k| {
         !catalog_answers(&spec.door, k) && !listed.is_some_and(|p| p.contains_key(k.as_str()))
     })?;
-    Some(Fault::Arguments(
-        format!(
-            "`{}` takes no argument `{key}`; nothing was done",
-            spec.name
-        ),
-        "use only the arguments the tool's input schema lists, then call it again".into(),
-    ))
+    Some(Fault::arguments(Case::NoArgument {
+        tool: spec.name.clone(),
+        argument: key.clone(),
+    }))
 }
 
 /// Run one catalog door with its arguments, as `who`. `label` names the
@@ -194,16 +504,12 @@ pub(crate) async fn run(
             }
         }
         Door::Pin => {
-            return Err(Fault::Arguments(
-                format!("`{label}` pins an MCP session; there is none here"),
-                "name `as_of` on each read instead".into(),
-            ));
+            let tool = label.into();
+            return Err(Fault::arguments(Case::NoSessionToPin { tool }));
         }
         Door::Subscribe | Door::Unsubscribe => {
-            return Err(Fault::Arguments(
-                format!("`{label}` belongs to an MCP session; there is none here"),
-                "read the change feed instead".into(),
-            ));
+            let tool = label.into();
+            return Err(Fault::arguments(Case::NoSession { tool }));
         }
         Door::Query => to_json(&c.query(who, args::<Pattern>(label, &a)?).await?),
         Door::Search => to_json(&c.search(who, args::<Search>(label, &a)?).await?),
@@ -213,7 +519,7 @@ pub(crate) async fn run(
                 write: ProposedWrite,
                 why: String,
             }
-            let p: P = declaring(label, &a)?;
+            let p: P = args(label, &a)?;
             to_json(&c.propose(who, p.write, p.why).await?)
         }
         Door::Proposals => to_json(&c.proposals(who, args::<ProposalFilter>(label, &a)?).await?),
@@ -237,7 +543,7 @@ pub(crate) async fn run(
                 #[serde(rename = "type")]
                 ty: TypeDecl,
             }
-            let d: D = declaring(label, &a)?;
+            let d: D = args(label, &a)?;
             to_json(&c.declare(who, Declaration::Type(d.ty)).await?)
         }
         Door::Declare => {
@@ -248,7 +554,7 @@ pub(crate) async fn run(
             struct D {
                 declaration: Declaration,
             }
-            let d: D = declaring(label, &a)?;
+            let d: D = args(label, &a)?;
             to_json(&c.declare(who, d.declaration).await?)
         }
         Door::Apply => {
@@ -259,11 +565,11 @@ pub(crate) async fn run(
             struct D {
                 declarations: Vec<Declaration>,
             }
-            let d: D = declaring(label, &a)?;
+            let d: D = args(label, &a)?;
             to_json(&c.apply(who, d.declarations).await?)
         }
         Door::Recompute => {
-            let what: lakelands_api::write::Recompute = declaring(label, &a)?;
+            let what: lakelands_api::write::Recompute = args(label, &a)?;
             to_json(&c.recompute(who, what).await?)
         }
         Door::AddField => {
@@ -273,7 +579,7 @@ pub(crate) async fn run(
                 ty: TypeName,
                 field: FieldDecl,
             }
-            let d: D = declaring(label, &a)?;
+            let d: D = args(label, &a)?;
             to_json(&c.add_field(who, &d.ty, d.field).await?)
         }
         Door::Migrate => {
@@ -283,27 +589,27 @@ pub(crate) async fn run(
                 to: Option<TypeDecl>,
                 #[serde(default)]
                 value_type: Option<ValueTypeDecl>,
+                // A type's fields, or a value type's values.
                 #[serde(default)]
-                renames: Vec<(FieldName, FieldName)>,
+                renames: Vec<(String, String)>,
                 #[serde(default)]
                 relation_renames: Vec<(RelationName, RelationName)>,
                 #[serde(default)]
                 report_id: Option<String>,
             }
-            let m: M = declaring(label, &a)?;
-            let wrong = |field: &str, message: &str| {
+            let m: M = args(label, &a)?;
+            let wrong = |field: &str, case: Case| {
                 Fault::Contract(Error::Refused {
                     field: Some(field.into()),
-                    reason: Refusal::Invalid {
-                        message: message.into(),
-                    },
+                    reason: Refusal::Invalid(Box::new(case.into())),
                 })
             };
             match (m.to, m.value_type) {
                 (Some(to), None) => {
+                    let renames = m.renames.into_iter();
                     let migration = Migration {
                         to,
-                        renames: m.renames,
+                        renames: renames.map(|(a, b)| (a.into(), b.into())).collect(),
                         relation_renames: m.relation_renames,
                     };
                     match m.report_id {
@@ -312,28 +618,23 @@ pub(crate) async fn run(
                     }
                 }
                 (None, Some(vt)) => {
-                    if !m.renames.is_empty() {
-                        return Err(wrong(
-                            "renames",
-                            "a value type has no fields to rename; `renames` belongs to `to`",
-                        ));
+                    if !m.relation_renames.is_empty() {
+                        return Err(wrong("relation_renames", Case::ValueTypeNoRelations));
                     }
+                    let vm = ValueTypeMigration {
+                        to: vt,
+                        renames: m.renames,
+                    };
                     match m.report_id {
-                        Some(r) => to_json(&c.migrate_value_type_apply(who, vt, &r).await?),
-                        None => to_json(&c.migrate_value_type(who, vt).await?),
+                        Some(r) => to_json(&c.migrate_value_type_apply(who, vm, &r).await?),
+                        None => to_json(&c.migrate_value_type(who, vm).await?),
                     }
                 }
                 (Some(_), Some(_)) => {
-                    return Err(wrong(
-                        "value_type",
-                        "a migration names a type (`to`) or a value type (`value_type`), not both",
-                    ));
+                    return Err(wrong("value_type", Case::MigrationBoth));
                 }
                 (None, None) => {
-                    return Err(wrong(
-                        "to",
-                        "a migration names a type (`to`) or a value type (`value_type`)",
-                    ));
+                    return Err(wrong("to", Case::MigrationNeither));
                 }
             }
         }
@@ -393,9 +694,9 @@ mod tests {
     }
 
     /// The `migrate` tool names a type (`to`) or a value type
-    /// (`value_type`), one of the two, and a value type takes no renames:
-    /// anything else is refused as invalid, naming the argument, on the
-    /// mock and on the store alike.
+    /// (`value_type`), one of the two, and a value type renames values,
+    /// never relations: anything else is refused as invalid, naming the
+    /// argument, on the mock and on the store alike.
     #[tokio::test(flavor = "multi_thread")]
     async fn migrate_takes_a_type_or_a_value_type_never_both_and_never_neither() {
         let vt = json!({"name": "status_code", "kind": "text", "one_of": ["open", "late"]});
@@ -418,15 +719,15 @@ mod tests {
                 (json!({}), "to"),
                 (json!({"report_id": "r"}), "to"),
                 (
-                    json!({"value_type": vt, "renames": [["a", "b"]]}),
-                    "renames",
+                    json!({"value_type": vt, "relation_renames": [["a", "b"]]}),
+                    "relation_renames",
                 ),
             ] {
                 let answer = call(args.clone()).await;
                 assert!(
                     matches!(
                         &answer,
-                        Err(Fault::Contract(Error::Refused { field: Some(f), reason: Refusal::Invalid { .. } }))
+                        Err(Fault::Contract(Error::Refused { field: Some(f), reason: Refusal::Invalid(_) }))
                             if f.as_str() == field
                     ),
                     "on {name}, {args} was not refused as invalid naming `{field}`"
@@ -436,6 +737,11 @@ mod tests {
             assert!(
                 matches!(&report, Ok(v) if v["data"]["fits"] == json!(true)),
                 "on {name}, the value type's preflight did not answer"
+            );
+            let renamed = call(json!({"value_type": vt, "renames": [["void", "late"]]})).await;
+            assert!(
+                matches!(&renamed, Ok(v) if v["data"]["fits"] == json!(true)),
+                "on {name}, the value type's preflight with renames did not answer"
             );
         }
     }

@@ -29,24 +29,33 @@ pub mod valid_time;
 pub mod value;
 pub mod versions;
 
-use lakelands_api::{Error, Refusal};
+use lakelands_api::error::{Detail, Doing, Flaw, Part, Said, Situation};
+use lakelands_api::{Error, Position};
 
 /// A refusal of what the caller asked for as not well-formed, naming no
 /// field.
-pub fn invalid(message: impl Into<String>) -> Error {
-    Error::Refused {
-        field: None,
-        reason: Refusal::Invalid {
-            message: message.into(),
-        },
-    }
+pub fn invalid(said: impl Into<Said>) -> Error {
+    Error::invalid(said)
 }
 
-/// The lake cannot answer now; `message` says why.
-pub fn unavailable(message: impl Into<String>) -> Error {
-    Error::Unavailable {
-        message: message.into(),
-    }
+/// Stored or exported events, or the files that hold them, are damaged:
+/// `part`, at `position` if one, by `flaw`.
+pub fn damaged(part: Part, position: Option<Position>, flaw: Flaw) -> Error {
+    Error::unavailable(Situation::Damaged {
+        part,
+        position,
+        flaw,
+    })
+}
+
+/// The storage failed `doing` to `part`, in the operating system's words.
+pub fn io_failed(doing: Doing, part: Part, e: &std::io::Error) -> Error {
+    let detail = Detail::io(e);
+    Error::unavailable(Situation::Storage {
+        doing,
+        part,
+        detail,
+    })
 }
 
 /// Locks a mutex, carrying on past a panic in another holder: a caller

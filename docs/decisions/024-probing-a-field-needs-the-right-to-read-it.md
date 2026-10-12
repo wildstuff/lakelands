@@ -12,17 +12,25 @@ type's `valid_from` and `valid_to`, so it probes them as a filter on
 them would: `find`, `get`, `search`, a pattern's start and every type a
 walk reaches (lakelands#372).
 
-A search probes every searchable field of its type, in every mode, and
-the vector field it names. A vector embedded from text encodes that
+A search probes the searchable fields of its type it searches, in every
+mode, and the vector field it names. One that names no fields searches
+the searchable fields its principal reads (lakelands#662): a field it
+sees masked or may not know of is not searched, so it neither refuses
+nor ranks the search, and where every searchable field is hidden from
+it the search answers no hits. A vector embedded from text encodes that
 text, so a vector or hybrid search also probes every field its vector
 is embedded from, even when the principal may read the vector itself.
 A hybrid search that one of these refuses is refused whole, never
 answered from its other half. This tightened in 0.5.0 (lakelands#242).
+A hybrid search the store embeds the text of is judged so before its
+field's embedding model is compared with the bound backend's and before
+the text is sent (lakelands#741): the model is said only to a caller who
+may make the search, and a search refused calls no backend.
 
 A lexical or hybrid search may name the searchable fields it matches in
-(`fields`). It then probes those fields instead of every searchable one,
-so a searchable field the principal may not read no longer refuses a
-search that does not name it. Only the text half narrows: the vector of
+(`fields`). It then probes those fields instead of the searchable ones
+it reads, so it may match in a field its reader may not read only by
+naming it, and is then refused. Only the text half narrows: the vector of
 a hybrid search still encodes every field it is embedded from, and is
 probed as above. A named field the principal may not read is refused as
 not granted before its searchability is judged, so the refusal never
@@ -336,12 +344,14 @@ migration and a proposal of either:
   granted on it**, wherever the declaration reads its value. A verb may
   still set such a field: a call is held to its caller's right to write
   each field the verb sets, so the declaration grants nothing.
-- **What a type's shape names stands as declared.** A key field, a
-  valid time and a relation's `via` are named by the shape, not read by
-  it. An author who may not know of such a field still names it, or
-  sends the relation `describe` shows it, and declares its type again or
-  migrates it as before: the reads are held to its view, the shape is
-  not.
+- **What a type's shape names stands as declared.** A valid time and a
+  relation's `via` are named by the shape, not read by it. An author who
+  may not know of such a field still names it, or sends the relation
+  `describe` shows it, and declares its type again or migrates it as
+  before: the reads are held to its view, the shape is not. A key field
+  is different: an author who may not know of one is not shown the type
+  (006, lakelands#715), so its declaration of the type is not granted
+  and a migration of it finds no type.
 - **Only what its author adds or changes is its author's.** A type that
   holds another's derived field over a field its author sees masked is
   declared again as it stands; a field of the author's own over the same
@@ -440,3 +450,171 @@ field it does not read stays as it is; the list clears a declaration
 only where one is handed out. An author with a field masked is
 therefore answered of its own migration the shape and `more`, not the
 members it never saw.
+
+## Extended: a schema hash is that of the shape its reader is shown (lakelands#644)
+
+A reader rebuilds the declaration it is described (each field's name,
+type and `required`, which `describe` gives even of a masked one, the
+key, the relations and the view) and hashes it with the public
+`schema_hash`. Were it answered the stored hash, the two would differ
+exactly when the type has a field it may not know of, and hashing
+candidate fields would name it.
+
+**The hash is the shown shape's.** Wherever a schema hash is answered,
+it is that of the declaration as its reader is shown it: without the
+fields and link fields it may not know of, and without a view it is not
+described. A masked or write-only field hashes as declared, since the
+hash covers only what its shape alone keeps. Where nothing is left out,
+the answer is the stored hash, byte for byte, so the owner and the host
+see no change. This holds in `describe`, as of a position too, and in a
+migration's report: its preview, its refusal and its proposal's
+listing. In a report, `from` is the shape of the type the report was
+made from, so a proposal made before the type changed is not shown as
+current, and `to` is judged with the grants held through the
+migration's own renames, as its listed `to` is. A listed proposal is
+judged with its reader's grants followed to the proposal's position
+(006), so a field renamed since and hidden under its new name is in
+neither hash. `more` is decided
+before the hashes are set, so it says nothing the hash would.
+
+**The id is made over what is shown.** A report's id names the report
+and the head it was made at, and it is computed over the report as its
+reader is shown it, so the reader can compute it from what it holds and
+learns nothing from it. `migrate_apply` compares the caller's own id;
+an accept compares no id, and a listed proposal's id is made at the
+head before the proposal.
+
+**What stays whole.** The stored report, the accept's comparison (a
+type changed since the proposal, in a hidden field too, refuses it),
+the log's `declared` and `migrated` events and the feed hold the whole
+hash. One version of a type may therefore have several hashes, one per
+shown shape, and a hash compares only between readers shown the same
+shape and across one reader's answers over time; the version moves on
+every change, a hidden one included, which a description already does
+without the hash.
+
+The rest of a type's description is computed over the same shown shape
+(lakelands#662). Whether the type is searchable and whether it is
+sourced are said of the fields its reader is described: a field it sees
+masked is described without `searchable` and is searchable to it no
+more, and one it may not know of says nothing. A relation is described
+only to a reader shown both its ends, the field that carries it where
+it is carried by a reference field, and, for a derived relation, every
+field its match pairs
+(`docs/decisions/006-grants-not-roles.md`, extended). What remains
+says a hidden thing exists, and remains on purpose:
+
+- the version, which moves on every change, as above;
+- the key, the valid times and a relation's `via`, which are the shape
+  and are given of a masked field too. A key field the reader may not
+  know of hides the type instead (006, lakelands#715), since the key
+  would give its value. A valid time naming such a field is not named
+  (lakelands#726): `describe`, `describe_type`, a listed proposal and a
+  migration's report give the type without that bound. A read at a
+  `valid_at` filters by the bounds the reader is shown and probes only
+  those: with both hidden it answers as for a type with no valid time,
+  with one hidden as for a type declared with the other alone, word for
+  word. A refusal, or a filter by the hidden bound, would tell the reader
+  that a valid time it is not shown exists;
+- a valid time sent where one the author may not know of stands, which
+  is refused as taken, as a field named like a hidden one is (027,
+  lakelands#692). A name no field has, or a hidden one, sent there
+  answers as on a type with no valid time: only a field the author may
+  name tells it, as only a taken name does;
+- `may.retire`, which says every field is writable.
+
+## Extended: a relation carried by a field is walked by its reader only (lakelands#727)
+
+A relation carried by a reference field (`via`) answers that field's
+value with every edge: a walk out of a record reaches the record the
+field names. So the relation is read as its field is. To a reader who
+may not know of the field the relation is not shown: `describe_type`
+does not list it, and a walk over it, out, in or as a graph, is answered
+as over a relation the type does not declare. To a reader who sees the
+field masked the relation is shown, and a walk over it is refused as not
+granted, naming the field, as a walk over a derived relation's masked
+pair is. Every hop is probed so, a derived relation's matched fields
+too, around the type it reached, not only a step's first: a walk of two
+hops, a graph or `components` that meets such a relation or pair past
+its first hop is refused alike. A walk reaches no edge of a relation its
+reader is not shown, whatever step asked for it, so a step over another
+type's relation of the same name walks only that one. An author with
+`schema` who may not know of the field now sends a type whose target it
+is shown, so a relation it sends under the hidden relation's name is
+refused as one declared twice, in the words any type declaring a
+relation twice gets, and the type in force does not change (027,
+extended).
+
+This is a change for a host: a reader held from such a field, which
+walked the relation before, is now told it is not there.
+
+## Extended: a database's error quotes no row (lakelands#735)
+
+An engine's error reaches the caller as `unavailable`, and the network
+doors answer it whole. PostgreSQL adds a `DETAIL` to many errors, and
+for a failed constraint it quotes the failing row: a record's key and
+its values, which the caller may not be shown. So the PostgreSQL engine
+answers only the severity, the SQLSTATE and the server's primary
+message, which names a table, a constraint or a column and no value;
+`DETAIL`, `HINT`, `WHERE` and the statement position stay out of the
+answer. SQLite's own messages name the columns of a failed constraint,
+or the schema's own check, and never a row's values, so the SQLite
+engine answers a failure SQLite reports by its extended code and that
+message. Its driver's own errors do quote: a statement that does not
+parse is answered with its text, and a stored value that does not fit
+its type with the value. Of any such error the SQLite engine answers
+only its kind (lakelands#739).
+
+## Extended: a reference to a type not shown is a field not known of (lakelands#718)
+
+A reference field's target was kept shown on purpose: hiding it would
+make a field's access depend on another type. A host that hid a type
+had to grant `none` on every reference to it, or the reader was
+described the target and read its keys through the field. That advice
+is now the rule. To a principal not shown a type, every reference to it
+is a field it may not know of, whatever its grant says of the field:
+read, `masked`, `write-only` or `sensitive`. It is left out of
+`describe`, answered as a field the type does not have by every probe,
+read and write, and so are a type keyed by it (006), a relation carried
+by it (lakelands#727) and a valid time over it (lakelands#726). One step
+does this at every place a principal enters: it holds such a field at
+`none` in the principal's grants, judged by the types the call reads,
+and repeats until nothing more is hidden, since a field so hidden can
+hide a type in turn. A field the effective `only` of its type names is
+the one exception (051): its value is the one the host wrote into the
+grant. The field's access now depends on another type, which is the
+price of the rule; a host that wants the reference read grants its
+target type, the key fields at least masked.
+
+
+## Extended: a verb reads only what its caller may read (lakelands#779)
+
+A verb was judged by the fields it writes alone. Its `requires` and the
+values it sets read the record too, and a caller who may not read a
+field they read learned it all the same: a verb that requires
+`secret = 'x'` runs on one record and is refused `requires_unmet` on
+another, and a verb that sets `copy := secret` copies the value to a
+field its caller reads. So a verb is callable, and described, only to a
+caller who may read every field its `requires` and its set values read,
+each judged as a filter on that field is. `payload.<name>` reads the
+call's payload, which is the caller's own. To any other caller the verb
+answers `not_granted`, as one whose fields it may not write does, before
+the record is read, and `describe` names it neither on its type nor
+among the lake's verbs. This holds for a direct call, a call its risk
+proposes and a call proposed through `propose`. An accept judges the
+record again, so its reviewer is held to the same rule. A call is
+proposed only where its `requires` held, so a call proposal tells what
+the verb reads as well. Its `why`, when the store wrote it, names the
+verb, which `describe` withholds from that reader, as it withholds a type
+the reader is not shown. So a call proposal of such a verb is not there
+to a reader who may not read what the verb reads, as a proposal on a
+hidden type is not
+(`docs/decisions/013-verbs-run-by-declared-risk.md`, lakelands#762).
+`proposals` leaves it out, so its count does not tell either. `accept`
+and `reject` answer as for an id no proposal holds, before anything else
+of the proposal is judged. So a reviewer is not told that the verb was
+declared again since, which would name it. The verb is the one the lake
+declares when the proposal is read or decided. A field derived from one the caller may not read, a
+write-only field and a reference to a type the caller is not shown are
+judged the same way, since a filter on them is. A verb that reads no
+such field is unchanged.

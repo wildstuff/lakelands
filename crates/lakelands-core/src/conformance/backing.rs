@@ -17,18 +17,23 @@
 //!
 //! The suite's embedding backend, [`embedder`], is bound in the lakes of
 //! the checks that ask for it. Its model is [`EMBED_MODEL`], its vectors
-//! have two dimensions, and every text becomes `(1, 0)`. A call fails
+//! have two dimensions, and every text becomes `(1, 0)`, but one starting
+//! with [`NOWHERE`], which becomes the vector of zeros. A call fails
 //! when one of its texts starts with [`UNREACHABLE`], or was unplugged
-//! ([`unplug_text`], until [`plug_text`]). It fails with a refusal, not
-//! `Unavailable`: whatever a backend answers as a failure, the store makes
-//! a search unavailable and records a failure for each text. It counts its
-//! calls ([`embed_calls`]) and how often each text was sent
-//! ([`embedded`]); a check uses texts of its own.
+//! ([`unplug_text`], until [`plug_text`]): it refuses the request as
+//! `Invalid`, so the store asks again in halves until the text is alone.
+//! A request with a text starting with [`WEATHER`] and none refused is
+//! `Unavailable`, which the store records for every text it had not
+//! answered. A search fails on either. A request with a text starting
+//! with `held-` is counted and held until [`release`] of that text, five
+//! seconds at most. It counts its calls ([`embed_calls`]) and how often
+//! each text was sent ([`embedded`]); a check uses texts of its own.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use async_trait::async_trait;
+use lakelands_api::error::{Case, Exchange, Remote, Situation};
 use lakelands_api::seam::{EmbedBackend, FunctionBacking, FunctionCall};
 use lakelands_api::{Error, Result, Value};
 
@@ -54,8 +59,10 @@ fn calls() -> &'static Mutex<Calls> {
 /// The scripted backing.
 struct Scripted;
 
-fn fail(message: String) -> Error {
-    Error::Unavailable { message }
+/// A remote end that answered 503.
+fn fail(remote: Remote) -> Error {
+    let exchange = Exchange::Status { status: 503 };
+    Error::unavailable(Situation::Remote { remote, exchange })
 }
 
 #[async_trait]
@@ -70,13 +77,15 @@ impl FunctionBacking for Scripted {
             let mut c = lock(calls());
             *c.made.entry(token.clone()).or_default() += 1;
             if c.unplugged.contains(&token) {
-                return Err(fail(format!("the backing for `{token}` is unplugged")));
+                let function = call.function.clone();
+                return Err(fail(Remote::Function { function }));
             }
         }
         let input = call.config["echo"].as_str().unwrap_or_default();
         let value = call.inputs[input].clone();
         if call.config.get("fail_on") == Some(&value) {
-            return Err(fail(format!("`{}` cannot take {value}", call.function)));
+            let function = call.function.clone();
+            return Err(fail(Remote::Function { function }));
         }
         Ok(value)
     }
@@ -105,8 +114,14 @@ pub fn plug(token: &str) {
 /// The model the suite's embedding backend names.
 pub const EMBED_MODEL: &str = "conformance-embed";
 
-/// A text the suite's embedding backend fails on.
+/// A text the suite's embedding backend refuses.
 pub const UNREACHABLE: &str = "unreachable";
+
+/// A text the suite's embedding backend answers `Unavailable` for.
+pub const WEATHER: &str = "weather";
+
+/// A text the suite's embedding backend makes the vector of zeros.
+pub const NOWHERE: &str = "nowhere";
 
 #[derive(Default)]
 struct Embeds {
@@ -139,32 +154,35 @@ impl EmbedBackend for Embedder {
     }
 
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        let mut e = lock(embeds());
-        e.calls += 1;
-        e.sizes
-            .entry(self.model.clone())
-            .or_default()
-            .push(texts.len());
-        for t in texts {
-            *e.texts.entry(t.clone()).or_default() += 1;
+        let refused = {
+            let mut e = lock(embeds());
+            e.calls += 1;
+            e.sizes
+                .entry(self.model.clone())
+                .or_default()
+                .push(texts.len());
+            for t in texts {
+                *e.texts.entry(t.clone()).or_default() += 1;
+            }
+            (texts.iter()).any(|t| t.starts_with(UNREACHABLE) || e.unplugged.contains(t))
+        };
+        if let Some(held) = texts.iter().find(|t| t.starts_with("held-")) {
+            hold(held).await;
         }
-        if texts
-            .iter()
-            .any(|t| t.starts_with(UNREACHABLE) || e.unplugged.contains(t))
-        {
-            return Err(Error::Refused {
-                field: None,
-                reason: lakelands_api::Refusal::Invalid {
-                    message: format!("`{}` cannot be reached", self.model),
-                },
-            });
+        if refused {
+            let (model, status) = (self.model.clone(), None);
+            return Err(Error::invalid(Case::EmbeddingRefused { model, status }));
+        }
+        if texts.iter().any(|t| t.starts_with(WEATHER)) {
+            let model = self.model.clone();
+            return Err(fail(Remote::Embedding { model }));
         }
         let dimensions = self.dimensions as usize;
         Ok(texts
             .iter()
-            .map(|_| {
+            .map(|t| {
                 let mut v = vec![0.0; dimensions];
-                if let Some(first) = v.first_mut() {
+                if let (Some(first), false) = (v.first_mut(), t.starts_with(NOWHERE)) {
                     *first = 1.0;
                 }
                 v
@@ -268,9 +286,20 @@ fn released() -> &'static Mutex<BTreeSet<String>> {
     RELEASED.get_or_init(Mutex::default)
 }
 
-/// Let the executor answer the call it holds on the record `key`.
+/// Let the executor answer the call it holds on the record `key`, or the
+/// embedding backend the request it holds for the text `key`.
 pub fn release(key: &str) {
     lock(released()).insert(key.to_owned());
+}
+
+/// Wait until [`release`] of `key`, five seconds at most.
+async fn hold(key: &str) {
+    for _ in 0..1_000 {
+        if lock(released()).contains(key) {
+            break;
+        }
+        crate::conformance::fixture::pause(std::time::Duration::from_millis(5)).await;
+    }
 }
 
 #[async_trait]
@@ -291,18 +320,14 @@ impl lakelands_api::seam::VerbExecutor for Executor {
             )
             .or_default() += 1;
         if let Some(held) = key.as_deref().filter(|k| k.starts_with("held-")) {
-            for _ in 0..1_000 {
-                if lock(released()).contains(held) {
-                    break;
-                }
-                crate::conformance::fixture::pause(std::time::Duration::from_millis(5)).await;
-            }
+            hold(held).await;
         }
         if invocation.payload.get("null") == Some(&Value::Bool(true)) {
             return Ok(Value::Null);
         }
         if invocation.payload.get("fail") == Some(&Value::Bool(true)) {
-            return Err(fail(format!("`{}` was asked to fail", invocation.verb)));
+            let name = invocation.verb.to_string();
+            return Err(fail(Remote::Executor { name }));
         }
         Ok(serde_json::json!({"done": invocation.verb.as_str(), "record": key}))
     }

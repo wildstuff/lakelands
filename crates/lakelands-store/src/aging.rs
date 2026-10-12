@@ -20,6 +20,7 @@
 
 use std::collections::BTreeMap;
 
+use lakelands_api::error::{Case, Naming, Place as ErrorPlace, Said};
 use lakelands_api::event::Procedure;
 use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::Authority;
@@ -54,83 +55,77 @@ pub struct Rule {
     pub when: Expr,
 }
 
-/// Check a rule's fields against the ontology: the rule, or the rule field
-/// at fault and why.
+/// The rule field at fault, and why.
+type Fault = (FieldName, Box<Said>);
+
+/// Check a rule's fields against the ontology: the rule, or its fault.
 pub fn check(
     ontology: &Ontology,
     fields: &BTreeMap<FieldName, Value>,
-) -> std::result::Result<Rule, (FieldName, String)> {
-    let text = |name: &str| -> std::result::Result<String, (FieldName, String)> {
-        match fields.get(name) {
+) -> std::result::Result<Rule, Fault> {
+    let wrong = |member: &str, case: Case| -> Fault { (member.into(), Box::new(case.into())) };
+    let text = |member: &str| -> std::result::Result<String, Fault> {
+        match fields.get(member) {
             Some(Value::String(s)) => Ok(s.clone()),
-            _ => Err((name.into(), format!("an aging rule's `{name}` is text"))),
+            _ => Err(wrong(
+                member,
+                Case::AgingNotText {
+                    member: member.into(),
+                },
+            )),
         }
     };
     let name = text("name")?;
-    if let Some(m) = names::fault("aging rule", &name) {
-        return Err(("name".into(), m));
+    if let Some(c) = names::fault(Naming::AgingRule, &name) {
+        return Err(wrong("name", c));
     }
     let on = TypeName::from(text("on")?.as_str());
+    let ty = on.clone();
     if on.as_str().starts_with("sys.") {
-        return Err((
-            "on".into(),
-            format!("`{on}` is a system type; aging never moves it"),
-        ));
+        return Err(wrong("on", Case::AgingSystemType { ty }));
     }
     let Ok(decl) = ontology.ty(&on) else {
-        return Err(("on".into(), format!("`{on}` is not a declared type")));
+        return Err(wrong("on", Case::Undeclared { ty }));
     };
     if decl.view.is_some() {
-        return Err((
-            "on".into(),
-            format!("`{on}` is a view; it is never written"),
-        ));
+        return Err(wrong("on", Case::IsAView { ty }));
     }
     let field = FieldName::from(text("field")?.as_str());
     let Some(f) = decl.fields.iter().find(|f| f.name == field) else {
-        return Err(("field".into(), format!("`{on}` has no field `{field}`")));
+        return Err(wrong("field", Case::UnknownField { ty, field }));
     };
     if !matches!(f.authority, Authority::Authored | Authority::Shared) {
-        return Err((
-            "field".into(),
-            format!(
-                "`{on}`.`{field}` is not `authored` or `shared`; aging writes it as `upsert` does"
-            ),
-        ));
+        return Err(wrong("field", Case::AgingAuthority { ty, field }));
     }
     if decl.key.contains(&field) {
-        return Err((
-            "field".into(),
-            format!("`{on}`.`{field}` is part of the key; aging never moves a key"),
-        ));
+        return Err(wrong("field", Case::AgingKey { ty, field }));
     }
-    let value = |name: &str| -> std::result::Result<Value, (FieldName, String)> {
-        let v = fields.get(name).filter(|v| !v.is_null()).ok_or_else(|| {
-            (
-                name.into(),
-                format!("an aging rule's `{name}` holds a value"),
-            )
-        })?;
+    let value = |member: &str| -> std::result::Result<Value, Fault> {
+        let Some(v) = fields.get(member).filter(|v| !v.is_null()) else {
+            return Err(wrong(
+                member,
+                Case::AgingNoValue {
+                    member: member.into(),
+                },
+            ));
+        };
         let patch: Patch = [(field.clone(), v.clone())].into();
-        let checked = writes::check_values(ontology, decl, &patch, &decl.fields)
-            .map_err(|e| (name.into(), format!("not a value of `{on}`.`{field}`: {e}")))?;
+        let checked = writes::check_values(ontology, decl, &patch, &decl.fields).map_err(|e| {
+            let (ty, field, cause) = (on.clone(), field.clone(), Box::new(e));
+            wrong(member, Case::AgingNotAValue { ty, field, cause })
+        })?;
         Ok(checked[&field].clone())
     };
     let from = value("from")?;
     let to = value("to")?;
     if canonical::to_vec(&from) == canonical::to_vec(&to) {
-        return Err((
-            "to".into(),
-            "`to` equals `from`; a rule moves a value to another".into(),
-        ));
+        return Err(wrong("to", Case::AgingSameValue));
     }
     let when = text("when")?;
-    let when = declare::condition(
-        &Condition::Text(when),
-        Place::Record,
-        "an aging rule's `when`",
-    )
-    .map_err(|e| ("when".into(), crate::backed::why(&e)))?;
+    let when = declare::condition(&Condition::Text(when), Place::Record, &[]).map_err(|e| {
+        let said = e.case().cloned().expect("a condition's refusal");
+        ("when".into(), Box::new(said))
+    })?;
     Ok(Rule {
         on,
         field,
@@ -148,6 +143,8 @@ pub fn check(
 /// Refused as not granted, naming the field of `on`.
 pub fn check_authority(who: &Principal, ontology: &Ontology, rule: &Rule) -> Result<()> {
     let decl = ontology.ty(&rule.on)?;
+    // A rule moves every owner's records: never one a holder of `only` writes (051).
+    crate::writes::granted(!rights::only_holder(who, decl))?;
     let patch: Patch = [(rule.field.clone(), rule.to.clone())].into();
     rights::check_write(who, decl, Door::Authored, &patch)?;
     rights::check_probe(who, decl, derive::reads(&rule.when).iter())
@@ -158,10 +155,8 @@ pub fn check_authority(who: &Principal, ontology: &Ontology, rule: &Rule) -> Res
 pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
     // `today` is a date: a time other than UTC midnight is refused.
     if today.0.rem_euclid(MICROS_PER_DAY) != 0 {
-        return Err(declare::invalid_field(
-            &"today".into(),
-            format!("`today` is a date, at UTC midnight; `{today}` is not"),
-        ));
+        let case = Case::AgingNotADate { today };
+        return Err(declare::invalid_field(&"today".into(), case));
     }
     let system = lake.system("lakelands");
     let call = Call {
@@ -173,6 +168,7 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
             depth: 0,
         },
         followed: None,
+        shown: None,
     };
     let all = every(false);
     let mut w = lake.for_write()?;
@@ -199,7 +195,8 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
         let rule = match check(&w.ontology, &r.fields) {
             Ok(rule) => rule,
             Err((field, why)) => {
-                ran.skipped = Some(format!("`{field}`: {why}"));
+                let why = why.within(ErrorPlace::Field { name: field });
+                ran.skipped = Some(why.to_string());
                 report.rules.push(ran);
                 continue;
             }

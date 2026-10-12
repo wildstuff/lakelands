@@ -95,7 +95,7 @@ async fn a_step_over_a_relation_the_type_does_not_declare_is_refused(
         .await
         .must_fail("walking the undeclared relation `audited_by`")?;
     ensure!(
-        matches!(reason(&err), Some(Refusal::Invalid { .. })),
+        matches!(reason(&err), Some(Refusal::Invalid(..))),
         "a step over the undeclared relation `audited_by` must be refused as invalid; \
          it failed with {err:?}"
     );

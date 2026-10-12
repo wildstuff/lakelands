@@ -329,7 +329,7 @@ async fn a_patch_with_an_undeclared_field_is_refused_whole(
         ensure!(
             matches!(
                 &err,
-                Error::Refused { reason: Refusal::Invalid { .. }, field }
+                Error::Refused { reason: Refusal::Invalid(..), field }
                     if field.as_ref().is_none_or(|f| f.as_str() == "remark")
             ),
             "a patch carrying `remark`, which `memo` does not declare, must be refused as \

@@ -11,8 +11,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use lakelands_api::error::{Case, Flaw, Situation};
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind::{Number, Text};
+use lakelands_api::principal::PrincipalKind;
 use lakelands_api::{Error, LakeStore, Position, Refusal};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -21,7 +23,7 @@ use super::rekey;
 use crate::canonical;
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, count_view, doors, find_at, log_events, owner, reason, type_of,
+    Lake, Must, count_view, doors, find_at, invalid_case, log_events, owner, reason, type_of,
 };
 use crate::export::{self, Manifest};
 
@@ -56,7 +58,7 @@ check!(
 check!(
     /// A directory holding anything is refused.
     NOT_EMPTY = an_export_into_a_directory_that_holds_anything_is_refused,
-    "030: an export writes only into an empty or absent directory; into any other it is refused as a failed precondition naming the directory, and writes nothing",
+    "030: an export writes only into an empty or absent directory; into any other it is refused as a failed precondition, the export's directory not empty (no path on the host is named), and writes nothing",
     scratch
 );
 
@@ -70,7 +72,7 @@ check!(
 check!(
     /// An imported export is the lake it came from.
     IMPORT_IS_THE_LAKE = an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from,
-    "030 and log-format §4: an export imported into a fresh lake of the engine holds every event unchanged at its position, of every format version the lake wrote (annotations included), so the lake answers as the one exported (the head, verify, the feed from position 0, every type's records with provenance at the head and at an earlier position, describe) and exports the same files byte for byte; its next writer takes a lease greater than every fence in the log and continues it",
+    "030 and log-format §4: an export imported into a fresh lake of the engine holds every event unchanged at its position, of every format version the lake wrote (annotations included), a value type's renames among them, so the lake answers as the one exported (the head, verify, the feed from position 0, every type's records with provenance at the head and at an earlier position, describe) and exports the same files byte for byte; its next writer takes a lease greater than every fence in the log and continues it",
     given
 );
 
@@ -372,11 +374,10 @@ async fn an_export_into_a_directory_that_holds_anything_is_refused(
     fs::write(dir.join("notes.txt"), b"kept\n")
         .map_err(|e| Failure::new(format!("writing into {dir:?}: {e}")))?;
     let said = export::write(store.as_ref(), &dir).await;
-    let named = dir.display().to_string();
     ensure!(
-        matches!(reason(&said), Some(Refusal::Precondition { message }) if message.contains(&named)),
-        "an export into {named}, which holds a file, is refused as a failed precondition naming \
-         it, and it answered {said:?}"
+        matches!(reason(&said), Some(Refusal::Precondition(said)) if said.case == Case::ExportNotEmpty),
+        "an export into {dir:?}, which holds a file, is refused as a failed precondition, the \
+         export's directory not empty, and it answered {said:?}"
     );
     let left: Vec<String> = fs::read_dir(&dir)
         .map_err(|e| Failure::new(format!("listing {dir:?}: {e}")))?
@@ -393,9 +394,9 @@ async fn an_export_into_a_directory_that_holds_anything_is_refused(
 /// Fails unless verifying `dir` is refused naming `position`.
 fn refused_at(dir: &Path, position: Position, damage: &str) -> Result<(), Failure> {
     let said = export::verify(dir);
-    let at = format!("at position {position}:");
     ensure!(
-        matches!(&said, Err(Error::Unavailable { message }) if message.contains(&at)),
+        matches!(said.as_ref().err().and_then(Error::situation), Some(Situation::Damaged { position: Some(p), .. })
+            if *p == position),
         "verifying an export with {damage} is refused naming position {position}, and it \
          answered {said:?}"
     );
@@ -596,8 +597,9 @@ fn import_seams() -> lakelands_api::seam::Seams {
 /// called on its type (version 8), a view that merges a second source
 /// (version 9), a proposed tightening of a value type (version 10), a
 /// derived field calling `floor` (version 11), a
-/// record ingested with an upstream,
-/// a second checkpoint and more invoices.
+/// record ingested with an upstream, a set of declarations and a value
+/// type's renames, applied and proposed (version 12), a date written
+/// (version 13), a second checkpoint and more invoices.
 /// Answers the
 /// second writer's handle and a position before the second checkpoint.
 async fn exported_lake(
@@ -681,16 +683,28 @@ async fn exported_lake(
         .must("declaring `stamp_state`")?;
     let narrower = lakelands_api::write::ProposedWrite::MigrateValueType {
         to: serde_json::from_value(state(json!(["new"]))).expect("a value type"),
+        renames: Vec::new(),
         report: Default::default(),
     };
     let proposed = cat.propose(own, narrower, "one state".into()).await;
     proposed.must("proposing a narrower `stamp_state`")?;
-    // Format version 11: a derived field calling `floor`.
+    // Format version 11: a derived field calling `floor`; 12: one that
+    // says when it is computed.
     let days = json!({"name": "days", "type": {"kind": "number"}, "authority": "derived",
-                      "derived": "floor((now() - at) / 1d)"});
+                      "derived": "floor((now() - at) / 1d)", "computed_at": "write"});
     let days = serde_json::from_value(days).expect("a field");
     let added = cat.add_field(own, &"stamp".into(), days).await;
     added.must("adding `days` to `stamp`")?;
+    // Format version 13: a proposal pinned to its proposer's own record.
+    l.declare(type_of("chore", &[("by", Text)])).await?;
+    l.upsert("chore", "c1", json!({"by": "kim"})).await?;
+    let kim = json!({"default": "write", "types": {"chore": {"only": {"by": "kim"}}}});
+    let kim = serde_json::from_value(kim).expect("grants");
+    let kim = crate::conformance::fixture::principal(store, PrincipalKind::Agent, "kim", kim);
+    let done = json!({"write": "retire", "type": "chore", "key": "c1"});
+    let done = serde_json::from_value(done).expect("a write");
+    let proposed = cat.propose(&kim, done, "done".into()).await;
+    proposed.must("kim's proposal to retire her `c1`")?;
     // Format version 8 too: a verb on its type, called with no key.
     l.declare_json(json!({
         "declare": "verb", "name": "print_stamp", "on": "stamp", "scope": "type",
@@ -718,7 +732,53 @@ async fn exported_lake(
     crate::conformance::fixture::ingest(cat.as_ref(), own, "mirror", vec![read_from])
         .await
         .must("ingesting `s1` with an upstream")?;
+    // Format version 12: a set that computes records again, a function
+    // and the type in force whose field it computes, appended as one.
+    let set = [
+        json!({"declare": "function", "name": "tick_at", "backing": "expr", "expr": "at",
+               "inputs": [{"name": "at", "type": {"kind": "date_time"}}]}),
+        json!({"declare": "type", "name": "tick", "fields": [
+            {"name": "at", "type": {"kind": "date_time"}},
+            {"name": "again", "type": {"kind": "date_time"}, "authority": "derived",
+             "function": "tick_at", "depends_on": ["at"]}]}),
+    ];
+    let set = set.map(|d| serde_json::from_value(d).expect("a declaration"));
+    let applied = cat.apply(own, set.into()).await;
+    applied.must("applying `tick_at` and `tick`")?;
     crate::conformance::fixture::two_makes(&l).await?;
+    // Format version 12 too: a value type's values renamed in a record,
+    // and a rename proposed.
+    l.declare_json(json!({
+        "declare": "type", "name": "stamp_mark",
+        "fields": [{"name": "state", "type": {"kind": "text", "value_type": "stamp_state"}}]
+    }))
+    .await?;
+    l.upsert("stamp_mark", "m1", json!({"state": "seen"}))
+        .await?;
+    let renamed = |one_of: Value, old: &str, new: &str| lakelands_api::write::ValueTypeMigration {
+        to: serde_json::from_value(state(one_of)).expect("a value type"),
+        renames: vec![(old.into(), new.into())],
+    };
+    let m = renamed(json!(["new", "checked"]), "seen", "checked");
+    let report = cat.migrate_value_type(own, m.clone()).await;
+    let id = report.must("the preflight of a rename")?.data.report_id;
+    let applied = cat.migrate_value_type_apply(own, m, &id).await;
+    applied.must("renaming `seen`")?;
+    let back = renamed(json!(["new", "seen"]), "checked", "seen");
+    let proposed = lakelands_api::write::ProposedWrite::MigrateValueType {
+        to: Box::new(back.to),
+        renames: back.renames,
+        report: Default::default(),
+    };
+    let proposed = cat.propose(own, proposed, "back".into()).await;
+    proposed.must("proposing a rename")?;
+    // Format version 13: a field of the kind `date`, and a date written.
+    l.declare(type_of(
+        "due",
+        &[("on", lakelands_api::ontology::StorageKind::Date)],
+    ))
+    .await?;
+    l.upsert("due", "d1", json!({"on": "2026-07-05"})).await?;
     let earlier = store.head().await.must("reading the head")?;
     store.checkpoint().await.must("checkpointing")?;
     invoices(store, 3, 2).await?;
@@ -878,7 +938,7 @@ async fn an_import_is_refused_for_a_damaged_export_another_lake_or_a_lake_holdin
     // answer later.
     let precondition = |e: &Error, what: &str| {
         ensure!(
-            matches!(reason(&e), Some(Refusal::Precondition { .. })),
+            matches!(reason(&e), Some(Refusal::Precondition(..))),
             "{what} must be refused as a failed precondition; it was refused as {e:?}"
         );
         Ok(())
@@ -902,10 +962,9 @@ async fn an_import_is_refused_for_a_damaged_export_another_lake_or_a_lake_holdin
     let why = refused(
         (given.import)(damaged, lake.clone(), None, import_seams()).await,
         "an export with a byte changed at position 2",
-    )?
-    .to_string();
+    )?;
     ensure!(
-        why.contains("position 2"),
+        matches!(why.situation(), Some(Situation::Damaged { position: Some(p), .. }) if p.0 == 2),
         "an export with a byte changed at position 2 must be refused naming that position; it \
          was refused with: {why}"
     );
@@ -915,11 +974,11 @@ async fn an_import_is_refused_for_a_damaged_export_another_lake_or_a_lake_holdin
         "the export imported as another lake",
     )?;
     precondition(&e, "the export imported as another lake")?;
-    let why = e.to_string();
     ensure!(
-        why.contains(lake.as_str()) && why.contains("another-lake"),
+        matches!(e.case().map(|s| &s.case), Some(Case::ImportOtherLake { held, lake: to, .. })
+            if **held == lake && to.as_str() == "another-lake"),
         "an export imported as another lake must be refused naming both lakes; it was refused \
-         with: {why}"
+         with: {e:?}"
     );
     let head = store.head().await.must("reading the head")?;
     let e = refused(
@@ -927,11 +986,10 @@ async fn an_import_is_refused_for_a_damaged_export_another_lake_or_a_lake_holdin
         "an import into the lake the export came from, which holds events",
     )?;
     precondition(&e, "an import into a lake that holds events")?;
-    let why = e.to_string();
     ensure!(
-        why.contains(&format!("position {head}")),
+        matches!(e.case().map(|s| &s.case), Some(Case::ImportNotEmpty { head: h, .. }) if *h == head),
         "an import into a lake holding events through {head} must be refused naming its head; \
-         it was refused with: {why}"
+         it was refused with: {e:?}"
     );
     Ok(())
 }
@@ -960,11 +1018,15 @@ async fn an_import_refuses_a_declaration_member_it_does_not_know_naming_it(
     rewrite(&from, &file, &lines)?;
     let imported = (given.import)(from, store.lake().clone(), None, import_seams()).await;
     let what = "an export whose declaration of `invoice` carries `icon`";
-    let why = refused(imported, what)?.to_string();
+    let why = refused(imported, what)?;
+    // No event: the parser's own words, the flaw's foreign detail, name the
+    // member and the declaration; words compared on purpose, no case holds them.
+    let named = matches!(damaged(&why), Some(Flaw::NotAnEvent { detail })
+        if ["`icon`", "`invoice`"].iter().all(|n| detail.to_string().contains(n)));
     ensure!(
-        why.contains("`icon`") && why.contains("`invoice`"),
+        named,
         "an export whose declaration of `invoice` carries `icon` must be refused naming the \
-         member and the declaration; it was refused with: {why}"
+         member and the declaration; it was refused with: {why:?}"
     );
     Ok(())
 }
@@ -991,10 +1053,13 @@ async fn an_import_refuses_a_context_carrying_cause_naming_it(
         upserted.cause
     );
     let cases = [
-        "`context` carries `cause`",
-        "the envelope carries the origin `initial`",
+        ("`context` carries `cause`", Flaw::CauseInContext),
+        (
+            "the envelope carries the origin `initial`",
+            Flaw::InitialOrigin,
+        ),
     ];
-    for (n, said) in cases.into_iter().enumerate() {
+    for (n, (said, flaw)) in cases.into_iter().enumerate() {
         let from = scratch.dir(&format!("from{n}"));
         write(store.as_ref(), &from).await?;
         let file = files(&from)?.remove(0);
@@ -1006,13 +1071,25 @@ async fn an_import_refuses_a_context_carrying_cause_naming_it(
         })?;
         rewrite(&from, &file, &lines)?;
         let imported = (given.import)(from, store.lake().clone(), None, import_seams()).await;
-        let why = refused(imported, &format!("an export whose line {said}"))?.to_string();
+        let why = refused(imported, &format!("an export whose line {said}"))?;
         ensure!(
-            why.contains(said),
-            "an export whose line {said} must be refused naming it; it was refused with: {why}"
+            damaged(&why) == Some(&flaw),
+            "an export whose line {said} must be refused naming it; it was refused with: {why:?}"
         );
     }
     Ok(())
+}
+
+/// The flaw an error says the log is damaged by, itself or as the cause
+/// an import's fold or its stop names.
+fn damaged(e: &Error) -> Option<&Flaw> {
+    match e.situation()? {
+        Situation::Damaged { flaw, .. } => Some(flaw),
+        Situation::ImportNotFolded { cause } | Situation::ImportStopped { cause, .. } => {
+            damaged(cause)
+        }
+        _ => None,
+    }
 }
 
 /// The error an import was refused with, or a failure naming `what` if
@@ -1095,7 +1172,8 @@ async fn a_cycle_of_views_from_an_imported_log_is_refused_on_read(
             .find(&own, &view.into(), lakelands_api::read::Find::default())
             .await;
         ensure!(
-            matches!(reason(&r), Some(Refusal::Invalid { message }) if message.contains("`view_a`") && message.contains("`view_b`")),
+            matches!(invalid_case(&r), Some(Case::ViewReadsItself { chain, .. })
+                if ["view_a", "view_b"].iter().all(|v| chain.0.iter().any(|c| c == v))),
             "`{view}` reads itself through the other view in the imported log, so a read of it \
              must be refused as invalid, naming both; it answered {r:?}"
         );

@@ -215,6 +215,8 @@ jobs:
           - dco
           - no-external-decisions
           - doc-heads-its-item
+          - detail-sources
+          - refusals
     name: gate (${{ matrix.gate }})
     steps:
       - uses: actions/checkout@v4

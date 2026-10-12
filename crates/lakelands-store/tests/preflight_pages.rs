@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use lakelands_api::engine::OpenMode;
+use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::location::Limits;
 use lakelands_api::seam::{FeedFilter, Seams};
@@ -207,9 +208,10 @@ async fn the_report_and_its_id_are_what_a_whole_read_made() {
          name a moved key"
     );
     assert_eq!(
-        report.report_id, "b4de3170d8a672a94f56ae7e9b670de01b2640c68650b94294ee89b7dba7e166",
+        report.report_id, "f965663fbe9d3f2d1c82b14243017432b6326c3a4d93f4ad1bb78022ad0639bc",
         "the report's id, as the preflight that read the type whole made it, of the report \
-         with what the migration restates (lakelands#554)"
+         with what the migration restates (lakelands#554), and of it and the head alone \
+         (lakelands#644)"
     );
 }
 
@@ -350,7 +352,7 @@ async fn a_page_that_cannot_be_read_fails_the_preflight() {
     *probe.fail.lock().unwrap() = Some(("item".into(), 2));
     let failed = l.cat.migrate(&l.own, m).await;
     assert!(
-        matches!(&failed, Err(Error::Unavailable { message }) if message.contains("planted")),
+        matches!(&failed, Err(Error::Unavailable { situation }) if situation.to_string().contains("planted")),
         "the preflight answers the failed read: {failed:?}"
     );
 }
@@ -400,8 +402,8 @@ async fn a_narrowed_relation_counts_live_links_across_pages() {
     probe.most.store(0, Ordering::SeqCst);
     let refused = l.cat.migrate(&l.own, narrowed.clone()).await;
     assert!(
-        matches!(&refused, Err(Error::Refused { reason: Refusal::Constraint { message }, .. })
-            if message.contains("would break the links of 1 record(s)")),
+        matches!(&refused, Err(Error::Refused { reason: Refusal::Constraint(said), .. })
+            if matches!(said.case, Case::NarrowingBreaksLinks { count: 1, .. })),
         "two live links to `q`, a page apart, break the narrower rule: {refused:?}"
     );
     assert!(probe.most.load(Ordering::SeqCst) <= 1_024);
@@ -442,9 +444,15 @@ async fn a_value_types_preflight_lists_its_misfits_by_field_across_pages() {
             .await
             .unwrap();
     }
-    let to = serde_json::from_value(kind(false, &["new"])).unwrap();
+    let to: lakelands_api::ontology::ValueTypeDecl =
+        serde_json::from_value(kind(false, &["new"])).unwrap();
     probe.most.store(0, Ordering::SeqCst);
-    let report = l.cat.migrate_value_type(&l.own, to).await.unwrap().data;
+    let report = l
+        .cat
+        .migrate_value_type(&l.own, to.into())
+        .await
+        .unwrap()
+        .data;
     let fields: Vec<_> = (report.fields.iter())
         .map(|u| (u.field.as_str(), u.values_scanned, u.misfits))
         .collect();

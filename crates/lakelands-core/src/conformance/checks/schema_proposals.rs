@@ -18,12 +18,12 @@ use lakelands_api::write::{
     Declaration, ProposalFilter, ProposalKind, ProposalState, ProposedWrite,
 };
 use lakelands_api::{LakeStore, Outcome, ProposalId, Refusal, TypeName};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, events_after, field_access, field_writer, head_unmoved, migration, reason,
-    reviewer, type_of,
+    Lake, Must, doors, events_after, field_access, field_writer, head_unmoved, invalid_like,
+    migration, reason, reviewer, type_of,
 };
 
 check!(
@@ -349,7 +349,7 @@ async fn a_proposed_migration_is_accepted_only_on_the_shape_it_was_proposed_on(
     let refused = cat.accept(&architect, &drop_title).await;
     let a = l.read("memo", "a").await?;
     ensure!(
-        matches!(reason(&refused), Some(Refusal::Invalid { .. }))
+        matches!(reason(&refused), Some(Refusal::Invalid(..)))
             && pending(store.as_ref(), true, &drop_title).await?
             && crate::conformance::fixture::value(&a, "owner") == Some(&json!("ada")),
         "a migration proposed before `owner` was added must be refused as invalid when accepted \
@@ -417,6 +417,7 @@ async fn propose_states(
 ) -> lakelands_api::Result<Outcome> {
     let write = ProposedWrite::MigrateValueType {
         to: Box::new(states(one_of)),
+        renames: Vec::new(),
         report: Default::default(),
     };
     l.cat.propose(who, write, "fewer states".into()).await
@@ -472,17 +473,18 @@ async fn a_tightening_is_refused_while_a_value_would_not_fit_or_the_value_type_c
 ) -> Result<(), Failure> {
     let (l, clerk) = tickets(store.as_ref()).await?;
     let architect = reviewer(store.as_ref(), true);
-    // Whether an answer is refused as invalid saying `says`, never `t3`.
-    let held = |answer: &lakelands_api::Result<Outcome>, says: &str| {
-        matches!(reason(answer), Some(Refusal::Invalid { message })
-            if message.contains(says) && !message.contains("t3"))
+    // Refused as `says`, and nothing of its wire form names `t3`.
+    let held = |answer: &lakelands_api::Result<Outcome>, says: Value| {
+        let wire = answer.as_ref().err().map(|e| json!(e).to_string());
+        invalid_like(answer, &says) && !wire.unwrap_or_default().contains("t3")
     };
     let narrowed = ProposedWrite::Declare {
         declarations: vec![Declaration::ValueType(states(&["open", "paid"]))],
     };
     let pointed = l.cat.propose(&clerk, narrowed, "fewer".into()).await;
     ensure!(
-        held(&pointed, "propose it as a value type's migration"),
+        // The case whose sentence says to propose it as a value type's migration.
+        held(&pointed, json!({"code": "value_type_tightens"})),
         "a narrowed declaration's refusal must point to the proposal; it answered {pointed:?}"
     );
     // Proposed while it fits; then a `void` is written, a second proposal
@@ -491,12 +493,13 @@ async fn a_tightening_is_refused_while_a_value_would_not_fit_or_the_value_type_c
     let waiting = proposed(&o.must("proposing while every value fits")?)?;
     l.upsert("ticket", "t3", json!({"state": "void"})).await?;
     let before = store.head().await.must("reading the head")?;
+    let misfit = json!({"code": "value_type_not_tightened", "misfits": 1, "first": []});
     let (late, again) = (
         l.cat.accept(&architect, &waiting).await,
         propose_states(&l, &clerk, &["open", "paid"]).await,
     );
     ensure!(
-        held(&late, "1 stored value(s)") && held(&again, "1 stored value(s)"),
+        held(&late, misfit.clone()) && held(&again, misfit),
         "with one `void` stored, the accept and a new proposal must each be refused as invalid, \
          saying the count and naming no record; they answered {late:?} and {again:?}"
     );
@@ -506,7 +509,8 @@ async fn a_tightening_is_refused_while_a_value_would_not_fit_or_the_value_type_c
     let before = store.head().await.must("reading the head")?;
     let stale = l.cat.accept(&architect, &waiting).await;
     ensure!(
-        held(&stale, "changed since") && pending(store.as_ref(), true, &waiting).await?,
+        held(&stale, json!({"code": "value_type_changed_since_proposed"}))
+            && pending(store.as_ref(), true, &waiting).await?,
         "a tightening proposed before `held` was added must be refused as invalid when accepted \
          after, and stay pending; the accept answered {stale:?}"
     );

@@ -53,6 +53,7 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
         authority: Authority::Authored,
         derived: None,
         function: None,
+        computed_at: None,
         depends_on: vec![],
         on_input_change: Default::default(),
         initial: None,
@@ -279,7 +280,7 @@ fn a_fence_raised_in_the_lease_file_refuses_the_holders_next_append_and_seal() {
     let more = chain(2, 1, &events[1].hash, &lease);
     let refused = engine.append(&lease, &more);
     assert!(
-        matches!(&refused, Err(lakelands_api::Error::Unavailable { message }) if message.contains("another")),
+        matches!(&refused, Err(lakelands_api::Error::Unavailable { situation }) if situation.to_string().contains("another")),
         "{refused:?}"
     );
     assert!(matches!(
@@ -393,9 +394,9 @@ fn an_index_line_naming_another_position_is_a_damaged_index() {
     std::fs::write(&index, damaged).unwrap();
 
     let refused = |what: &str, answer: lakelands_api::Result<Vec<_>>| match answer {
-        Err(lakelands_api::Error::Unavailable { message }) => assert!(
-            message.contains("damaged") && message.contains("300"),
-            "{what}: {message}"
+        Err(lakelands_api::Error::Unavailable { situation }) => assert!(
+            situation.to_string().contains("damaged") && situation.to_string().contains("300"),
+            "{what}: {situation}"
         ),
         other => panic!("{what}: a damaged index is refused, and it answered {other:?}"),
     };

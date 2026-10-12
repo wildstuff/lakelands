@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::{Aimless, Case};
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::query::{Hits, Search, SearchMode, VectorTerm};
 use lakelands_api::{LakeStore, Principal};
@@ -14,7 +15,8 @@ use serde_json::json;
 use super::search::doc_search;
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field, field_writer, invalid_naming, restrict, searchable, type_decl, vector,
+    Lake, Must, field, field_writer, refused_like, refused_on, restrict, searchable, type_decl,
+    vector,
 };
 
 check!(
@@ -44,13 +46,13 @@ check!(
 check!(
     /// A weight that weighs nothing is refused.
     WEIGHTS_REFUSED = a_weight_that_cannot_weigh_or_a_field_named_twice_is_refused_naming_it,
-    "046, extended: a weight of 0, below 0 or above 1 000 000, a `weight` on a vector search that names no other field, and a vector field named twice are each refused as invalid, naming the field or `text_weight`, before the principal's rights to the field are looked at"
+    "046, extended: a weight of 0, below 0 or above 1 000 000, a `weight` on a vector search that names no other field, a vector field named twice, and a query vector in `vector`, in `also` or in a hybrid search whose components are all 0 or one is not a finite number once read as an `f32` (`(0, 0)`, `(1e-200, 0)`, `(1e300, 0)`) are each refused as invalid, naming the field or `text_weight`, before the principal's rights to the field are looked at"
 );
 
 /// A lake of `doc`s: each a key, a text, a unit vector that many degrees
 /// from the query's `(1, 0)`, and a number `n`. A second vector field,
 /// `w`, is left empty.
-async fn docs(
+pub(super) async fn docs(
     store: &dyn LakeStore,
     rows: impl IntoIterator<Item = (String, &str, u32, u32)>,
 ) -> Result<Lake, Failure> {
@@ -333,21 +335,55 @@ async fn a_weight_that_cannot_weigh_or_a_field_named_twice_is_refused_naming_it(
         weight: Some(2.0),
         also: Vec::new(),
     };
-    for (mode, names) in [
-        (lone, ["on `v`", "`also`"]),
-        (along(Some(0.0), "w", None), ["on `v`", "weight of `v`"]),
-        (along(None, "w", Some(-1.0)), ["on `w`", "weight of `w`"]),
-        (
-            along(None, "w", Some(1_000_001.0)),
-            ["on `w`", "weight of `w`"],
-        ),
-        (along(None, "v", None), ["on `v`", "named twice"]),
-        (weighed(Some(0.0), None), ["`text_weight`", "above 0"]),
-        (weighed(None, Some(-2.0)), ["on `v`", "weight of `v`"]),
+    let range = |f: &str| json!({"code": "weight_range", "field": f});
+    let (twice, text) = (
+        json!({"code": "vector_field_twice"}),
+        json!({"code": "text_weight_range"}),
+    );
+    for (mode, on, case) in [
+        (lone, Some("v"), json!({"code": "weight_alone"})),
+        (along(Some(0.0), "w", None), Some("v"), range("v")),
+        (along(None, "w", Some(-1.0)), Some("w"), range("w")),
+        (along(None, "w", Some(1_000_001.0)), Some("w"), range("w")),
+        (along(None, "v", None), Some("v"), twice),
+        (weighed(Some(0.0), None), None, text),
+        (weighed(None, Some(-2.0)), Some("v"), range("v")),
     ] {
         let what = format!("{mode:?}, by a reader who sees `v` only masked,");
         let answer = l.cat.search(&reader, doc_search(mode)).await;
-        invalid_naming(&what, answer.map(|r| scored(&r.data)), &names)?;
+        let field = refused_on(&answer).map(|(f, _)| f);
+        ensure!(
+            on.is_none_or(|on| field == Some(on)),
+            "{what} must be refused on {on:?}; it answered {answer:?}"
+        );
+        refused_like(&what, answer.map(|r| scored(&r.data)), &case)?;
+    }
+    // A query vector read from JSON as a caller's is: `1e-200` is 0 as an
+    // `f32`, and `1e300` is infinite.
+    for (written, why) in [
+        (json!([0, 0]), Aimless::Zero),
+        (json!([1e-200, 0]), Aimless::Zero),
+        (json!([1e300, 0]), Aimless::NotFinite),
+    ] {
+        let aimless: Vec<f32> = serde_json::from_value(written.clone())
+            .map_err(|e| Failure::new(format!("{written} does not read as `f32`s: {e}")))?;
+        let (mut also, mut hybrid) = (along(None, "w", None), weighed(None, None));
+        if let SearchMode::Vector { also: terms, .. } = &mut also {
+            terms[0].vector = aimless.clone();
+        }
+        if let SearchMode::Hybrid { vector, .. } = &mut hybrid {
+            *vector = Some(aimless.clone());
+        }
+        let lone = SearchMode::vector("v", aimless);
+        for (mode, on) in [(lone, "v"), (also, "w"), (hybrid, "v")] {
+            let what = format!("{mode:?}, its vector written {written},");
+            let answer = l.cat.search(&reader, doc_search(mode)).await;
+            refused_as!(
+                &what,
+                answer.map(|r| scored(&r.data)),
+                Case::VectorAimless { field, why: w } if field.as_str() == on && *w == why
+            )?;
+        }
     }
     Ok(())
 }

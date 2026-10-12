@@ -45,8 +45,8 @@ fn type_names_may_be_dotted() {
     for bad in ["", ".a", "a.", "a..b", "Invoice-Line"] {
         assert!(!is_type_name(bad), "{bad}");
     }
-    assert!(fault("type", "sys.source").is_none());
-    assert!(fault("field", "sys.source").is_some());
+    assert!(fault(Naming::Type, "sys.source").is_none());
+    assert!(fault(Naming::Field, "sys.source").is_some());
 }
 
 #[test]

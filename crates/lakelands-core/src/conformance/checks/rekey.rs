@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::query::{Projection, QueryResult, Walk};
 use lakelands_api::write::{Declaration, Migration, MigrationReport};
@@ -20,7 +21,7 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all, events_after, field_access, get_at, head_unmoved, invalid_naming, log_events,
+    Lake, Must, all, events_after, field_access, get_at, head_unmoved, invalid_case, log_events,
     migration, patch, pattern, reason, restrict, step,
 };
 
@@ -531,7 +532,7 @@ async fn an_old_key_is_ended_and_a_new_write_follows_the_new_rule(
         .await
         .must_fail("writing at the old key `1` with `iban` DE9")?;
     ensure!(
-        matches!(reason(&e), Some(Refusal::Invalid { message }) if message.contains("DE9")),
+        matches!(invalid_case(&e), Some(Case::KeyDisagrees { derived, .. }) if derived == "DE9"),
         "a write at an old key whose key field makes `DE9` was answered {e:?}; invalid, naming \
          the key the key fields make, was expected"
     );
@@ -649,7 +650,7 @@ async fn a_migration_that_takes_every_key_field_away_is_refused(
         .await
         .must_fail("migrating `account` to no key fields")?;
     ensure!(
-        matches!(reason(&e), Some(Refusal::Invalid { .. })),
+        matches!(reason(&e), Some(Refusal::Invalid(..))),
         "taking every key field away was refused as {e:?}; invalid was expected"
     );
     // A key field that is not required, and one of a kind no key is made of.
@@ -662,7 +663,7 @@ async fn a_migration_that_takes_every_key_field_away_is_refused(
             .await
             .must_fail(&format!("migrating `account` to {what}"))?;
         ensure!(
-            matches!(reason(&e), Some(Refusal::Invalid { .. })),
+            matches!(reason(&e), Some(Refusal::Invalid(..))),
             "{what} was refused as {e:?}; invalid was expected"
         );
     }
@@ -682,7 +683,7 @@ async fn a_migration_that_takes_every_key_field_away_is_refused(
         .await
         .must_fail("re-keying `account` under a view keyed by it")?;
     ensure!(
-        matches!(reason(&e), Some(Refusal::Invalid { message }) if message.contains("per_account")),
+        matches!(invalid_case(&e), Some(Case::RekeyView { view, .. }) if view == "per_account"),
         "a re-key under a view keyed by the type was answered {e:?}; invalid, naming the \
          view, was expected"
     );
@@ -703,7 +704,7 @@ async fn a_rekey_report_from_before_a_write_is_refused(
         .await
         .must_fail("applying a re-key report from before a write")?;
     ensure!(
-        matches!(reason(&e), Some(Refusal::Invalid { .. })),
+        matches!(reason(&e), Some(Refusal::Invalid(..))),
         "a stale re-key report was answered {e:?}; invalid was expected"
     );
     head_unmoved(store.as_ref(), before, "a stale re-key report").await
@@ -779,7 +780,7 @@ async fn a_rekeyed_type_migrates_again(store: Arc<dyn LakeStore>) -> Result<(), 
     )
     .expect("a value type");
     let v = cat
-        .migrate_value_type(own, kind.clone())
+        .migrate_value_type(own, kind.clone().into())
         .await
         .must("a value type's preflight")?
         .data;
@@ -787,7 +788,7 @@ async fn a_rekeyed_type_migrates_again(store: Arc<dyn LakeStore>) -> Result<(), 
         v.fits && v.records_scanned == 4,
         "the four accounts, and no ended key, are scanned: {v:?}"
     );
-    cat.migrate_value_type_apply(own, kind, &v.report_id)
+    cat.migrate_value_type_apply(own, kind.into(), &v.report_id)
         .await
         .must("tightening `account_kind` after a re-key")?;
     // A second re-key, back to `number`, over the ended keys `1` to `4`.
@@ -937,15 +938,19 @@ async fn a_rekey_of_keys_made_of_keys_it_moves_is_refused(
         (
             "re-keying `bush` by a reference to itself",
             bush(json!(["parent", "code"]), true),
-            vec!["`bush`"],
+            vec!["bush"],
         ),
         (
             "re-keying `acct`, which `p` and `q` are keyed by",
             ty(acct("tag", json!([]))),
-            vec!["`p`", "`q`"],
+            vec!["p", "q"],
         ),
     ] {
-        invalid_naming(what, cat.migrate(own, migration(to)).await, &names)?;
+        refused_as!(
+            what,
+            cat.migrate(own, migration(to)).await,
+            Case::RekeyRing { ring, .. } if names.iter().all(|n| ring.0.iter().any(|r| r == n))
+        )?;
     }
     head_unmoved(store.as_ref(), before, "a re-key of a ring of keys").await
 }
@@ -992,9 +997,9 @@ async fn a_rekeys_report_counts_a_reference_field_the_migration_renames(
     hid.grants.schema = true;
     let shown = report(&l, &hid, &m).await?;
     ensure!(
-        shown.references.is_empty() && shown.more && shown.report_id == r.report_id,
-        "a reader kept from `up` is shown no entry for it, and that there is more; it was \
-         shown {:?}, more: {}",
+        shown.references.is_empty() && shown.more && shown.report_id != r.report_id,
+        "a reader kept from `up` is shown no entry for it, that there is more, and the id of \
+         what it is shown; it was shown {:?}, more: {}",
         shown.references,
         shown.more
     );

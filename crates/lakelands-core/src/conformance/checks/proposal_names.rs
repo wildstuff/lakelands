@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::write::{Declaration, Migration, Proposal, ProposalFilter, ProposedWrite};
 use lakelands_api::{Access, LakeStore, Principal, WriteOpts};
@@ -16,19 +17,20 @@ use serde_json::{Value, json};
 use super::rekey::{IBANS, lake, to_iban};
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field_access, invalid_naming, object_set_on, patch, reviewer, trigger_on,
+    Lake, Must, field_access, invalid_case, object_set_on, patch, refused_like, reviewer,
+    trigger_on,
 };
 
 check!(
     /// A proposed shape names only what its reader may know of.
     NAMES_AS_THE_READERS_VIEW = a_proposed_shape_names_only_what_its_reader_may_know_of,
-    "013, 024 and 027, extended (lakelands#499): `proposals` shows of a proposed migration the renames, the dropped fields and link fields, the re-keyed types and the rewritten references only where its reader may see the type and know of the field, the totals whole; of a proposed bundle each declaration `describe` would show its reader once in force, a verb by the fields it names; an entry that holds more says `more` and names nothing else, and a bundle with nothing left shows no write"
+    "013, 024 and 027, extended (lakelands#499): `proposals` shows of a proposed migration the renames, the dropped fields and link fields, the re-keyed types and the rewritten references only where its reader may see the type and know of the field, the totals whole; of a proposed bundle each declaration `describe` would show its reader once in force, a verb by the fields it names; an entry that holds more says `more` and names nothing else, and a bundle with nothing left shows no write; a migration or a bundle that names a type its reader may not see is not listed (lakelands#762); a valid time over a field its reader may not know of is named neither in a listed declaration nor in a migration's `to` and report (lakelands#726)"
 );
 
 check!(
     /// A listing is filtered on what it shows, and an accept names no hidden field.
     LISTED_AS_SHOWN = a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_field,
-    "013 and 024, extended (lakelands#499): a proposal on a type its reader may not see, or on a restricted record without the grant, is listed without its write and says `more`; `type` and `kind` are answered on the entry as shown, so a hidden type answers what an undeclared one answers and an entry without a write is of no kind, while the unfiltered listing and `state` hold it; an accept refused because a declaration reads a field the migration takes away names neither to an accepter who may not know of the field"
+    "013 and 024, extended (lakelands#499): a proposal on a restricted record without the grant is listed without its write and says `more`, and one on a type its reader may not see is not listed (lakelands#762); `type` and `kind` are answered on the entry as shown, so a hidden type answers what an undeclared one answers and an entry without a write is of no kind, while the unfiltered listing and `state` hold it; an accept refused because a declaration reads a field the migration takes away names neither to an accepter who may not know of the field"
 );
 
 /// The lake of the re-key checks with a type `doc`, and the proposals of
@@ -95,7 +97,18 @@ async fn proposed(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let mut renamed = doc(&["title", "hidden", "added"], &[]);
     renamed["fields"][1]["type"]["kind"] = json!("number");
     let renamed = migrate(renamed, &[("secret", "hidden")]);
+    // `doc` valid from `signed_on`, which `hid` may not know of.
+    let mut timed = doc(&["title", "secret"], &["ok"]);
+    let signed_on = json!({"name": "signed_on", "type": {"kind": "date_time"}});
+    timed["fields"]
+        .as_array_mut()
+        .expect("fields")
+        .push(signed_on);
+    timed["valid_from"] = json!("signed_on");
+    let timed_bundle = vec![serde_json::from_value(timed.clone()).expect("a type")];
     for (why, write) in [
+        ("timed", migrate(timed, &[])),
+        ("timed bundle", declare(timed_bundle)),
         ("rekey", migrate(json!(to_iban().to), &[])),
         ("rename", renamed),
         ("drop", migrate(doc(&["title"], &["ok"]), &[])),
@@ -119,6 +132,7 @@ fn readers(store: &dyn LakeStore) -> [Principal; 3] {
     let none = |fields: &[&str]| TypeGrants {
         default: fields.is_empty().then_some(Access::None),
         fields: fields.iter().map(|f| ((*f).into(), Access::None)).collect(),
+        ..Default::default()
     };
     let reviewer = |id: &str, types: &[(&str, &[&str])]| {
         let mut who = field_access(store, id, "account", &[("holder", Access::None)]);
@@ -130,7 +144,12 @@ fn readers(store: &dyn LakeStore) -> [Principal; 3] {
     let link = ("sys.link.doc.signed_by", &["ok"][..]);
     let mut hid = reviewer(
         "hid",
-        &[("payment", &[]), ("entry", &[]), ("doc", &["secret"]), link],
+        &[
+            ("payment", &[]),
+            ("entry", &[]),
+            ("doc", &["secret", "signed_on"]),
+            link,
+        ],
     );
     hid.grants.schema = true;
     [
@@ -179,7 +198,7 @@ async fn a_proposed_shape_names_only_what_its_reader_may_know_of(
     let all = all.map(|n| format!("\"name\":\"{n}\""));
     let all: Vec<&str> = all.iter().map(String::as_str).collect();
     let gone = [all[0], all[2], all[3], all[4], "holder"];
-    let rows: [Row; 8] = [
+    let rows: [Row; 9] = [
         (&reads, "rekey", &rekey, &[], false),
         (&hid, "rekey", &["\"sys.link.account.owner\""], &rekey, true),
         (&reads, "rename", &rename, &[], false),
@@ -187,7 +206,22 @@ async fn a_proposed_shape_names_only_what_its_reader_may_know_of(
         (&hid, "drop", &["\"title\""], &["\"secret\""], true),
         (&hid, "bundle", &all, &[], false),
         (&plain, "bundle", &[all[1], all[5]], &gone, true),
-        (&unseeing, "bundle", &[all[5]], &["account"], true),
+        // A valid time over a field its reader may not know of is not
+        // named (lakelands#726).
+        (
+            &hid,
+            "timed",
+            &["\"title\""],
+            &["valid_from", "signed_on"],
+            true,
+        ),
+        (
+            &hid,
+            "timed bundle",
+            &["\"title\""],
+            &["valid_from", "signed_on"],
+            true,
+        ),
     ];
     let mut red = Vec::new();
     for (who, why, shows, hides, more) in rows {
@@ -199,16 +233,21 @@ async fn a_proposed_shape_names_only_what_its_reader_may_know_of(
             red.push(format!("`{who}` must read of `{why}` {shows:?} and not {hides:?}, `more` {more}; it reads `more` {says} and {write}"));
         }
     }
-    for (who, why) in [
-        (&plain, "hidden"),
-        (&unseeing, "rekey"),
-        (&unseeing, "hidden"),
-    ] {
+    for (who, why) in [(&plain, "hidden")] {
         let got = entry(&l, who, why).await?;
         if got != (None, true) {
             let who = &who.id;
             red.push(format!(
                 "`{who}` must read no write of `{why}`, and `more`; it reads {got:?}"
+            ));
+        }
+    }
+    // One that names `account` is not there to `unseeing` (lakelands#762).
+    let theirs = listed(&l, &unseeing, json!({})).await?;
+    for why in ["bundle", "rekey", "hidden"] {
+        if theirs.iter().any(|p| p.why == why) {
+            red.push(format!(
+                "`unseeing` must not be listed `{why}`, which names `account`"
             ));
         }
     }
@@ -231,7 +270,6 @@ async fn a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_fi
         (&plain, "restricted", false),
         (&plain, "retire restricted", false),
         (&l.own, "restricted", true),
-        (&unseeing, "upsert", false),
     ] {
         let (write, more) = entry(&l, who, why).await?;
         let (who, with) = (&who.id, if shown { "with" } else { "without" });
@@ -240,6 +278,16 @@ async fn a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_fi
             "`{who}` must list `{why}` {with} its write; it reads {write:?}, `more` {more}"
         );
     }
+    // A proposal on a type its reader may not see is not listed at all
+    // (lakelands#762).
+    let theirs = listed(&l, &unseeing, json!({})).await?;
+    let named = ["upsert", "restricted", "retire restricted"];
+    let listed_to = |why: &&str| theirs.iter().any(|p| p.why == *why);
+    ensure!(
+        !named.iter().any(listed_to),
+        "`unseeing` must list no proposal on `account`; it lists {:?}",
+        theirs.iter().map(|p| &p.why).collect::<Vec<_>>()
+    );
     // The filters are answered on the entry as its reader is shown it.
     let mut counts = Vec::new();
     for (who, filter) in [
@@ -253,10 +301,11 @@ async fn a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_fi
         counts.push(listed(&l, who, filter).await?.len());
     }
     ensure!(
-        counts == [0, 0, 0, 8, 6, 2],
+        counts == [0, 0, 0, 4, 6, 2],
         "`type` and `kind` are answered on what the reader is shown: one who may not see \
-         `account` must list nothing by it, as by an undeclared type, no upsert, and all eight \
-         by state, and the owner six by the type and two upserts; they list {counts:?}"
+         `account` must list nothing by it, as by an undeclared type, no upsert, and by state \
+         the four that name no `account`, and the owner six by the type and two upserts; they \
+         list {counts:?}"
     );
     // The accept: a trigger declared since reads the field the migration drops.
     let watch = trigger_on("watch", "doc", Some("secret = 'x'"));
@@ -265,16 +314,18 @@ async fn a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_fi
     let drop = all.into_iter().find(|p| p.why == "drop").map(|p| p.id);
     let drop = drop.ok_or_else(|| Failure::new("the owner lists `drop`".to_owned()))?;
     let told = l.cat.accept(&hid, &drop).await;
-    let said = told.as_ref().err().map(ToString::to_string);
-    let said = said.unwrap_or_default();
-    let names = said.contains("secret") || said.contains("watch");
+    // Neither name in any member of its wire form, its sentence among them.
+    let wire = told.as_ref().err().map(|e| json!(e).to_string());
+    let wire = wire.unwrap_or_default();
+    let names = wire.contains("secret") || wire.contains("watch");
     ensure!(
-        said.contains("a declaration reads a field") && !names,
+        matches!(invalid_case(&told), Some(Case::ReadsTakenAway)) && !names,
         "an accepter who may not know of `secret` is told that a declaration reads a field \
          the migration takes away, and neither name; it answered {told:?}"
     );
-    let names = ["trigger declaration `watch`", "reads `secret`"];
     let told = l.cat.accept(&l.own, &drop).await;
-    invalid_naming("the owner accepting it", told, &names)?;
+    let case = json!({"code": "migration_takes_read", "unnamed": false, "field": "secret",
+                      "at": [{"code": "trigger", "name": "watch"}]});
+    refused_like("the owner accepting it", told, &case)?;
     Ok(())
 }

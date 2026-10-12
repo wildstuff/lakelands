@@ -7,9 +7,10 @@
 # The fixture's rows: a type written by a shorter path, in a trait
 # method, a function, a method and a field, which is not reported; a path
 # that becomes another path of the same last name, and a type that
-# changes, which are; a renamed parameter and a private field, which are
-# not; and `Self::Out` becoming `Out`, which the rule reads as one and
-# the script's head names as a miss.
+# changes, which are, in a struct and a variant each written on one line
+# too; a renamed parameter and a private field, which are not; and
+# `Self::Out` becoming `Out`, which the rule reads as one and the
+# script's head names as a miss.
 # Usage: scripts/release/host-changes-test.sh
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"

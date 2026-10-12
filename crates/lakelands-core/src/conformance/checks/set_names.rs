@@ -19,8 +19,9 @@ use lakelands_api::{LakeStore, Outcome, Position, Principal, Refusal, TypeName};
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, derived, events_from, field, field_access, find_at, head_unmoved, invalid_naming,
-    limits, migration, object_set_on, reference, refused_on, trigger_on, type_decl, type_of,
+    Lake, Must, alike_renamed, derived, events_from, field, field_access, find_at, head_unmoved,
+    limits, migration, object_set_on, reference, refused_like, refused_on, trigger_on, type_decl,
+    type_of,
 };
 use crate::conformance::{Failure, Given};
 
@@ -196,38 +197,42 @@ async fn a_set_that_cannot_be_named_and_a_path_that_cannot_be_walked_are_refused
     let noted = set("noted", "meta is not null and in_set('open')");
     l.declare_as(noted, "noted").await?;
     let before = s.head().await.must("the head")?;
-    let walk = "steps into `partner`, which is a reference";
+    let walk = json!({"code": "steps_into_reference", "field": "partner"});
+    let undeclared = json!({"code": "set_undeclared", "set": "ghost"});
+    let ghost = json!({"code": "unknown_field", "field": "ghost"});
     let through = trigger_on("t", TYPE, Some("partner.name = 'x'"));
-    for (d, names) in [
-        (set("s", "in_set('ghost')"), "is not declared"),
-        (set("s", "in_set('named')"), "a set of `partner`, not of"),
-        (set("open", "in_set('both')"), "names it in turn"),
-        (set("s", "in_set(open)"), "in_set"),
-        (set("s", "partner.name = 'x'"), walk),
-        (set("s", "partner.name is null"), walk),
-        (through, walk),
-        (set("s", "ghost = 1 and in_set('big')"), "reads `ghost`"),
-        (
-            trigger_on("t", TYPE, Some("ghost = 1 and in_set('big')")),
-            "reads `ghost`",
-        ),
-        (set("s", "status.x = 'open'"), "is no `json` field"),
+    let other = json!({"code": "set_of_other_type", "set": "named", "of": "partner", "type": TYPE});
+    let cycle = json!({"code": "set_cycle", "set": "both"});
+    let quoted = json!({"code": "call_takes_quoted", "name": "in_set"});
+    let scalar = json!({"code": "steps_into_scalar", "field": "status"});
+    let guard = trigger_on("t", TYPE, Some("ghost = 1 and in_set('big')"));
+    for (d, case) in [
+        (set("s", "in_set('ghost')"), &undeclared),
+        (set("s", "in_set('named')"), &other),
+        (set("open", "in_set('both')"), &cycle),
+        (set("s", "in_set(open)"), &quoted),
+        (set("s", "partner.name = 'x'"), &walk),
+        (set("s", "partner.name is null"), &walk),
+        (through, &walk),
+        (set("s", "ghost = 1 and in_set('big')"), &ghost),
+        (guard, &ghost),
+        (set("s", "status.x = 'open'"), &scalar),
     ] {
         let what = format!("declaring {d:?}");
-        invalid_naming(&what, cat.declare(own, d).await, &[names])?;
+        refused_like(&what, cat.declare(own, d).await, case)?;
     }
     let ty = TypeName::from(TYPE);
-    let nowhere = "has meaning in an object set's `where`";
-    for (expr, names) in [("in_set('open')", nowhere), ("partner.name", walk)] {
+    let nowhere = json!({"code": "in_set_here"});
+    for (expr, case) in [("in_set('open')", &nowhere), ("partner.name", &walk)] {
         let added = cat.add_field(own, &ty, derived("d", Text, expr, &[])).await;
-        invalid_naming(&format!("a derived field `{expr}`"), added, &[names])?;
+        refused_like(&format!("a derived field `{expr}`"), added, case)?;
     }
-    for (filter, names) in [
-        ("partner.name = 'x'", walk),
-        ("in_set('ghost')", "is not declared"),
+    for (filter, case) in [
+        ("partner.name = 'x'", &walk),
+        ("in_set('ghost')", &undeclared),
     ] {
         let read = found(&l, own, filter, None).await;
-        invalid_naming(&format!("a read where `{filter}`"), read, &[names])?;
+        refused_like(&format!("a read where `{filter}`"), read, case)?;
     }
     // A migration keeps what a set reads beside the sets it names.
     let mut without = type_decl(
@@ -236,15 +241,16 @@ async fn a_set_that_cannot_be_named_and_a_path_that_cannot_be_walked_are_refused
     );
     without.fields.push(field("amount", Number));
     let taken = cat.migrate(own, migration(without)).await;
-    invalid_naming(
+    refused_like(
         "a migration that takes `meta` away",
         taken,
-        &["noted", "meta"],
+        &json!({"code": "migration_takes_read", "field": "meta",
+                "at": [{"code": "object_set", "name": "noted"}]}),
     )?;
     let other = object_set_on("open", "partner", "name = 'x'");
     let other = cat.declare(own, other).await;
     ensure!(
-        matches!(refused_on(&other), Some(("of", Refusal::Invalid { .. }))),
+        matches!(refused_on(&other), Some(("of", Refusal::Invalid(..)))),
         "`open` declared again for `partner` is refused on `of`; it answered {other:?}"
     );
     head_unmoved(s, before, "each refused declaration").await?;
@@ -287,18 +293,13 @@ async fn a_named_set_is_read_by_the_right_to_read_what_its_filter_reads(
     // `kept` reads everything of an invoice but `status`, and writes `amount`.
     let grants = [("status", Access::None), ("amount", Access::Write)];
     let kept = field_access(s, "kept", TYPE, &grants);
-    let said = |r: lakelands_api::Result<String>, name: &str| {
-        r.err().map(|e| e.to_string().replace(name, "ghost"))
-    };
-    let ghost = said(found(&l, &kept, "in_set('ghost')", None).await, "ghost");
+    let ghost = found(&l, &kept, "in_set('ghost')", None).await;
+    let ghost = ghost.must_fail("a read naming the set `ghost`")?;
     for name in ["open", "both"] {
         let read = found(&l, &kept, &format!("in_set('{name}')"), None).await;
-        let hidden = said(read, name);
-        ensure!(
-            hidden.is_some() && hidden == ghost,
-            "`{name}` reads `status`, which `kept` is kept from: a read naming it answers as \
-             for a set that is not declared, {ghost:?}; it answered {hidden:?}"
-        );
+        let what = format!("`{name}` reads `status`, which `kept` is kept from: a read naming it");
+        let hidden = read.must_fail(&what)?;
+        alike_renamed(&what, &hidden, &ghost, ("ghost", name))?;
     }
     let big = found(&l, &kept, "in_set('big')", None).await;
     let described = l.cat.describe(&kept, Default::default()).await;

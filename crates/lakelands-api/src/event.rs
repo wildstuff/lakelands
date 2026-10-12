@@ -28,8 +28,10 @@ use crate::write::{Declaration, Migration, ProposedWrite};
 /// declaration; version 8 a view's `params` and a call of `param`, and a
 /// verb on its type; version 9 a view's `merge`; version 10 a proposed
 /// tightening of a value type; version 11 a call of `floor` in a
-/// declaration (`docs/log-format.md` §6).
-pub const LOG_FORMAT_VERSION: u32 = 11;
+/// declaration; version 12 a declaration `with_the_set`; version 13 a
+/// proposal `pinned` to the record it writes, and the kind `date`
+/// (`docs/log-format.md` §6).
+pub const LOG_FORMAT_VERSION: u32 = 13;
 
 /// The version a lake is created with and writes until it needs a newer
 /// one: a lake that never re-keys a type stays at version 1, byte for
@@ -144,6 +146,11 @@ pub enum EventBody {
         schema_hash: Option<String>,
         /// The declaration's version after this event (1 for new).
         version: u32,
+        /// Whether another declaration of the same set follows in this
+        /// append: the records the set computes again are computed once,
+        /// at its last declaration (format version 12).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        with_the_set: bool,
     },
     /// A type changed shape; its stored records follow in the fold.
     Migrated {
@@ -159,6 +166,22 @@ pub enum EventBody {
         /// re-keys (format version 2); empty when no key changes.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         rekeyed: Vec<crate::write::Rekey>,
+    },
+    /// A value type's migration that renames values: its declaration is
+    /// put in force and every stored record that holds an old value takes
+    /// the new one in the fold (format version 12).
+    ValueTypeMigrated {
+        /// The value type's new declaration.
+        declaration: crate::ontology::ValueTypeDecl,
+        /// Its version after this event.
+        version: u32,
+        /// The values renamed: old value to new value.
+        renames: Vec<(String, String)>,
+        /// The preflight report it was applied against.
+        report_id: String,
+        /// The types whose fields use the value type, which the fold
+        /// rewrites: every one the ontology names, in name order.
+        types: Vec<TypeName>,
     },
     /// An authored write: `upsert`, a verb's effect, an accepted
     /// proposal.
@@ -245,6 +268,11 @@ pub enum EventBody {
         write: ProposedWrite,
         /// Why it waits.
         why: String,
+        /// Whether its proposer's grant admits only some records of the
+        /// type it writes: its accept is refused once the record or the
+        /// type changed after it (format version 13).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pinned: bool,
     },
     /// A proposal was accepted. Its write follows, caused by this event.
     WriteAccepted {
@@ -335,6 +363,7 @@ kinds! {
     LeaseTaken => "lease_taken",
     Declared => "declared",
     Migrated => "migrated",
+    ValueTypeMigrated => "value_type_migrated",
     RecordUpserted => "record_upserted",
     RecordIngested => "record_ingested",
     RecordRetired => "record_retired",

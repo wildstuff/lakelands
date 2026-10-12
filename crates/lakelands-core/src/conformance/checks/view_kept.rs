@@ -30,7 +30,7 @@ use lakelands_api::describe::{Kept, NotKept};
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{Projection, Walk};
 use lakelands_api::read::{AggFunc, Direction, OrderBy};
-use lakelands_api::seam::{SETTING_TYPE, Seams, VIEW_KEPT_SETTING};
+use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING, Seams, VIEW_KEPT_SETTING};
 use lakelands_api::write::Declaration;
 use lakelands_api::{
     Access, Catalog, Find, Found, LakeStore, Position, Principal, ReadAt, Record, Reply, SourceId,
@@ -55,7 +55,7 @@ check!(
 check!(
     /// A kept measure is its twin's whatever it folds.
     KEPT_VALUES = a_kept_measure_answers_as_its_twin_whatever_values_it_folds,
-    "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: an extreme whose holder leaves, equal values at two keys and an equal value written over the holder, which reads as written; a group's values under a number and a decimal group field, written and fed, where `1.0` and `1.00` are two groups of a decimal and one of a number; the holder of an outer view's extreme leaving a group whose other member is in it on the whole face alone; a sum whose large member leaves, and sums of `5` and `0.00` in both key orders; a setting written over a group whose measure divides by zero, after which the next write is accepted and the view is refused as its twin is until the member changes; and `max(known_at(n))`, null in both",
+    "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: an extreme whose holder leaves, equal values at two keys and an equal value written over the holder, which reads as written; a maximum whose holder `1.5` leaves for `1`, whose sort key begins its own; a group's values under a number and a decimal group field, written and fed, where `1.0` and `1.00` are two groups of a decimal and one of a number; the holder of an outer view's extreme leaving a group whose other member is in it on the whole face alone; a sum whose large member leaves, and sums of `5` and `0.00` in both key orders; a setting written over a group whose measure divides by zero, after which the next write is accepted and the view is refused as its twin is until the member changes; and `max(known_at(n))`, null in both",
     given
 );
 
@@ -69,7 +69,14 @@ check!(
 check!(
     /// A kept extreme is its twin when its holders are moved in one event.
     KEPT_RUNS = a_kept_extreme_answers_as_its_twin_when_a_run_or_a_re_key_moves_its_holders,
-    "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: a kept `min` and `max` answer as their twins after one aging run takes the holders of nine groups out of the view's `where`, after a purge retires the holders of nine groups, and after a re-key moves a holder to a greater key and the keys of the records that refer to it in the same event, `describe_type` saying `kept` after each, since every group is read again in the fold of the event that took its holder; and after the appends that follow each",
+    "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: a kept `min` and `max` answer as their twins after one aging run takes the holders of nine groups out of the view's `where`, after a purge retires the holders of nine groups, and after a re-key moves a holder to a greater key and the keys of the records that refer to it in the same event, `describe_type` saying `kept` after each, since every group's next holder is read from its extreme's order in the fold of the event that took the holder; and after the appends that follow each",
+    given
+);
+
+check!(
+    /// A kept view's order index answers every page its twin computes.
+    KEPT_ORDER = a_kept_view_answers_every_ordered_page_from_its_order_index_as_its_twin_computes,
+    "041 and lakelands#668: a `sort_index.<view>` setting asks for an order index of a kept view's records, and every page in an order it keeps answers as the same view computed, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: pages of two by the group field and by each measure, both ways, and by the last measure below 100, each continued by its cursor to its last page, for the owner, a reader without the `restricted` grant, readers kept from a field of the view (refused alike where an order names it), of its source and of a merged source, and one holding `only` on the source by the group field, a kept page handing out a cursor where its twin's does; for the owner as of the row before and, at the table's end, after a rebuild, a compact and an import, as of every row's end; while the index is asked for before its view is kept and after, of a merged view too, members arrive, change, move to another group and leave, a group is restricted whole and another reads otherwise on its whole face, the view is declared again, and the setting is retired and asked for again",
     given
 );
 
@@ -127,6 +134,7 @@ const SHAPES: &str = r#"
     row a restricted member under an outer where
     put line m1 {"g": "m", "n": "150"}
     put line m2 {"g": "m", "n": "-100"}
+    put line t {"g": "t", "n": "4"}
     hold line m2
     read sums large
     row the restriction is lifted
@@ -181,12 +189,18 @@ const VALUES: &str = r#"
     is ends v 1.0,1.0; w 8,8
     put line k1 {"n": "1.00"}
     is ends v 1.00,1.00; w 8,8
+    row a maximum's holder leaves for a value whose key begins its own
+    put line o1 {"g": "o", "n": "1.5"}
+    put line o2 {"g": "o", "n": "1"}
+    put line o3 {"g": "o", "n": "0.9"}
+    retire line o1
+    is ends o 0.9,1; v 1.00,1.00; w 8,8
     row a sum whose large member leaves
     put line big {"g": "u", "n": "10000000000000000000"}
     put line small {"g": "u", "n": "0.0000000000000000001"}
     retire line big
     read sums
-    is sums u 1,0.0000000000000000001,0.0000000000000000001; v 2,2.00,1.00; w 1,8,8
+    is sums o 2,1.9,0.950; u 1,0.0000000000000000001,0.0000000000000000001; v 2,2.00,1.00; w 1,8,8
     row a sum reads at the largest scale in both key orders
     put line s1 {"g": "p", "n": "5"}
     put line s2 {"g": "p", "n": "0.00"}
@@ -399,6 +413,59 @@ const RUNS: &str = r#"
     put acct k9 {"n": "3"}
 "#;
 
+const ORDERS: &str = r#"
+    type line g:text n:decimal
+    type credit g:text n:decimal
+    view sums = line by g:text | c:number=count(); total:decimal=sum(n)
+    view some = line by g:text | c:number=count(); total:decimal=sum(n) | {"where": "n > 0"}
+    view net = line by g:text | total:decimal=sum(n); credited:decimal; left:decimal=total - credited | {"merge": [{"source": "credit", "group_by": ["g"], "measures": [{"name": "credited", "expr": "sum(n)"}]}]}
+    row an order index is asked for before its view is kept
+    set sort_index.sums ["g", "c", "total"]
+    put line a {"g": "x", "n": "1.5"}
+    put line b {"g": "x", "n": "2.5"}
+    put line c {"g": "y", "n": "-3"}
+    put line d {"g": "z", "n": "7"}
+    put credit r {"g": "x", "n": "1"}
+    set view_kept.sums true
+    says sums kept
+    read sums
+    row a write moves a group's place in every order
+    put line c {"n": "30"}
+    read sums
+    row a group ends, another begins and a member moves to it
+    retire line d
+    put line e {"g": "w", "n": "0.5"}
+    put line b {"g": "w"}
+    read sums
+    row a group restricted whole, and one that reads otherwise on its whole face
+    put line f {"g": "v", "n": "100"}
+    hold line f
+    put line m1 {"g": "m", "n": "150"}
+    put line m2 {"g": "m", "n": "-100"}
+    hold line m2
+    read sums
+    row the index is asked for after its view is kept, and of a merged view
+    set view_kept.some true
+    set sort_index.some ["total", "c"]
+    set view_kept.net true
+    set sort_index.net ["left", "g"]
+    read some net
+    row the view is declared again
+    view sums = line by g:text | c:number=count(); total:decimal=sum(n) | {"where": "n > 1"}
+    says sums kept
+    read sums
+    row the setting is retired and asked for again
+    retire sys.setting sort_index.sums
+    read sums
+    set sort_index.sums ["total"]
+    read sums
+    then
+    row the lake goes on after it
+    put line a {"n": "9"}
+    lift line f
+    put line g {"g": "x", "n": "4"}
+"#;
+
 /// Each check's function: its table, run by [`twin`].
 macro_rules! tables {
     ($($run:ident = $table:ident,)*) => {$(
@@ -412,6 +479,7 @@ tables! {
     a_kept_measure_answers_as_its_twin_whatever_values_it_folds = VALUES,
     a_kept_view_answers_as_its_twin_at_every_position_and_under_every_setting = POSITIONS,
     a_kept_extreme_answers_as_its_twin_when_a_run_or_a_re_key_moves_its_holders = RUNS,
+    a_kept_view_answers_every_ordered_page_from_its_order_index_as_its_twin_computes = ORDERS,
 }
 
 /// A view of a table, declared as `name` and as `name_twin`.
@@ -436,6 +504,9 @@ struct Pair {
     /// Whether a `view_kept.` setting has named it: it is read from then
     /// on, a view no setting has named being its twin by its declaration.
     asked: bool,
+    /// Whether a `sort_index.` setting has named it: each door of it is
+    /// read in every order too ([`paged`]).
+    indexed: bool,
 }
 
 /// A table as far as it has run.
@@ -479,11 +550,16 @@ async fn twin(store: Arc<dyn LakeStore>, given: Given, table: &str) -> Result<()
     let imported = (given.import)(from, s.lake().clone(), None, Seams::default()).await;
     let opened = |e| Failure::new(format!("importing the export, or opening it to write: {e}"));
     let imported: ImportedLake = imported.map_err(opened)?;
+    // Every door of the owner's continues a cursor after a write, so it
+    // reads the import once it is open to write.
     let read = imported.store.as_ref();
-    let (when, depth) = ("in the imported lake", [2, 1, 1]);
-    copy.everywhere(read, when, depth).await;
+    copy.everywhere(read, "in the imported lake", [1, 1, 1])
+        .await;
     let written = (imported.writer)(imported.store, Seams::default()).await;
-    copy.run(written.map_err(opened)?.as_ref(), then).await;
+    let written = written.map_err(opened)?;
+    let when = "in the imported lake open to write";
+    copy.everywhere(written.as_ref(), when, [2, 0, 0]).await;
+    copy.run(written.as_ref(), then).await;
     let more = copy.red.iter().skip(before);
     let red: Vec<&str> = t.red.iter().chain(more).map(String::as_str).collect();
     ensure!(
@@ -618,6 +694,9 @@ impl Twin {
                 let view = p[0].strip_prefix(VIEW_KEPT_SETTING).unwrap_or_default();
                 let named = self.pairs.iter_mut().find(|v| v.name == view);
                 named.into_iter().for_each(|v| v.asked = true);
+                let view = p[0].strip_prefix(SORT_INDEX_SETTING).unwrap_or_default();
+                let named = self.pairs.iter_mut().find(|v| v.name == view);
+                named.into_iter().for_each(|v| v.indexed = true);
                 l.set(p[0], json(p[1])?).await?;
             }
             ("hold", Ok(p), _) => drop(restrict(store, p[0], p[1], "held").await?),
@@ -711,9 +790,9 @@ impl Twin {
         if !self.pairs.iter().any(|p| p.name == name) {
             let (name, source, by) = (name.to_owned(), source.to_owned(), keys.first().cloned());
             let measures = measures.iter().map(|(f, _)| called(f)).collect();
-            let (seen, keys, asked) = Default::default();
+            let (seen, keys, asked, indexed) = Default::default();
             #[rustfmt::skip]
-            self.pairs.push(Pair { name, source, over, reads, by, seen, merged, measures, keys, asked });
+            self.pairs.push(Pair { name, source, over, reads, by, seen, merged, measures, keys, asked, indexed });
         }
         Ok(declared)
     }
@@ -743,8 +822,10 @@ impl Twin {
     /// view's records, or every door. They are the owner, a reader
     /// without the `restricted` grant, one kept from each view's first
     /// measure and, reading as far as that one, one kept from the field
-    /// a view groups by in each stored type that is a view's source and
-    /// one kept from the first group field of each merged source.
+    /// a view groups by in each stored type that is a view's source, one
+    /// kept from the first group field of each merged source and one
+    /// holding `only` on each stored source by that field, to a value a
+    /// view's record has there.
     async fn same(
         &mut self,
         store: &dyn LakeStore,
@@ -774,8 +855,23 @@ impl Twin {
             let hidden = hidden.map(|m| (m, Access::None));
             let (default, fields) = (None, hidden.into_iter().collect());
             let ty = format!("{}{end}", p.name);
-            let grants = TypeGrants { default, fields };
+            let grants = TypeGrants {
+                default,
+                fields,
+                ..Default::default()
+            };
             partial.grants.types.insert(ty.as_str().into(), grants);
+        }
+        let mut only = reads_all(store, "only");
+        for p in self.pairs.iter().filter(|p| !p.over) {
+            let Some((by, seen)) = p.by.as_ref().zip(p.seen.as_ref()) else {
+                continue;
+            };
+            let source = only.grants.types.entry(p.source.as_str().into());
+            source
+                .or_default()
+                .only
+                .insert(by.as_str().into(), json!(seen));
         }
         let readers = [
             ("the owner", owner(store)),
@@ -783,8 +879,11 @@ impl Twin {
             ("a reader kept from a field of it", partial),
             ("a reader kept from a field of its source", blind),
             ("a reader kept from a field of a merged source", apart),
+            ("a reader holding `only` on its source", only),
         ];
-        let depth = [depth[0], depth[1], depth[2], depth[2], depth[2]];
+        let [own, plain, rest] = depth;
+        let depth = [own, plain, rest, rest, rest, rest];
+        let own = owner(store);
         let mut differs = None;
         let valid = self.valid_at.as_ref().filter(|_| as_of.is_none());
         for valid in [None].into_iter().chain(valid.map(Some)) {
@@ -794,8 +893,14 @@ impl Twin {
             for ((reader, who), deep) in readers.iter().zip(depth).filter(|r| r.1 > 0) {
                 let deep = deep == 2;
                 for p in views.iter().filter_map(|i| self.pairs.get(*i)).filter(read) {
-                    let kept = said(cat.as_ref(), who, p, "", at, deep).await;
-                    let twin = said(cat.as_ref(), who, p, "_twin", at, deep).await;
+                    let both = (who, &own);
+                    let kept = said(cat.as_ref(), both, p, "", at, deep).await;
+                    let twin = said(cat.as_ref(), both, p, "_twin", at, deep).await;
+                    // A write `said` makes that fails is a door the twin lacks.
+                    let (kept, twin) = match (kept, twin) {
+                        (Ok(kept), Ok(twin)) => (kept, twin),
+                        (Err(f), _) | (_, Err(f)) => (vec![("a write".into(), f.message)], vec![]),
+                    };
                     let doors = 0..kept.len().max(twin.len());
                     let Some(i) = doors.into_iter().find(|i| kept.get(*i) != twin.get(*i)) else {
                         continue;
@@ -819,9 +924,10 @@ impl Twin {
     async fn named(&mut self, store: &dyn LakeStore) {
         self.row = "a write that names the view".to_owned();
         let l = Lake::of(store);
+        // A refusal by its wire form, its sentence among its members.
         let heard = |answer: lakelands_api::Result<()>| match answer {
             Ok(()) => "taken".to_owned(),
-            Err(e) => e.to_string(),
+            Err(e) => json!(e).to_string(),
         };
         for p in self.pairs.clone() {
             let Some(key) = p.keys.first().filter(|_| p.asked) else {
@@ -918,6 +1024,7 @@ async fn says(l: &Lake, view: &str, want: &str) -> Result<(), Failure> {
             NotKept::CannotBeKept { .. } => "cannot be kept",
             NotKept::NotWhole { .. } => "not whole",
             NotKept::NotKeptHere => "not kept here",
+            NotKept::OnlySome => "only some",
         },
         None => "nothing",
     };
@@ -934,18 +1041,21 @@ async fn says(l: &Lake, view: &str, want: &str) -> Result<(), Failure> {
 
 /// What `who` is answered by the view, or by its twin (`end`), door by
 /// door, with the twin's names read as the view's: `find`; and, `deep`,
-/// a count and `find` by a value of its first group field, two pages by
-/// its last measure, an aggregate of that measure, `get` of a key and of
-/// none, a pattern started on that group, and a walk to it from its
-/// source's records over its derived relation.
+/// a count and `find` by a value of its first group field, every page by
+/// its last measure, the owner writing a setting before each page a
+/// cursor continues, a page of two past an `offset`, `find` by that
+/// measure below 100, an aggregate of it, `get` of a key and of none, a
+/// pattern started on that group, and a walk to it from its source's
+/// records over its derived relation; and, where a `sort_index.` setting
+/// names it, its pages in every order ([`paged`]).
 async fn said(
     cat: &dyn Catalog,
-    who: &Principal,
+    (who, own): (&Principal, &Principal),
     p: &Pair,
     end: &str,
     at: ReadAt,
     deep: bool,
-) -> Vec<(String, String)> {
+) -> Result<Vec<(String, String)>, Failure> {
     let name = format!("{}{end}", p.name);
     let ty = TypeName::from(name.as_str());
     let narrow = p.by.as_ref().zip(p.seen.as_ref());
@@ -954,7 +1064,7 @@ async fn said(
     let last = p.measures.last().map(String::as_str).unwrap_or_default();
     let folds = [AggFunc::Min, AggFunc::Max, AggFunc::Sum, AggFunc::Avg];
     let folds = folds.map(|f| agg(&format!("{f:?}"), f, Some(last)));
-    let mut finds = vec![("`find`", Find::default()); 5];
+    let mut finds = vec![("`find`", Find::default()); 7];
     finds[1] = ("a count", aggregate(vec![agg("n", AggFunc::Count, None)]));
     finds[1].1.filter = narrow();
     finds[2].0 = "a page by its last measure";
@@ -962,17 +1072,34 @@ async fn said(
     (finds[2].1.limit, finds[2].1.total) = (Some(1), true);
     (finds[3].0, finds[3].1.filter) = ("`find` by its group", narrow());
     finds[4] = ("an aggregate", aggregate(folds.to_vec()));
+    finds[5] = ("a page past an offset", finds[2].1.clone());
+    (finds[5].1.limit, finds[5].1.offset) = (Some(2), Some(1));
+    finds[6].0 = "`find` by its last measure";
+    finds[6].1.filter = Some(lakelands_api::expr::Condition::Text(format!(
+        "{last} < 100"
+    )));
     let mut out = Vec::new();
-    for (door, mut find) in finds.into_iter().take(if deep { 5 } else { 1 }) {
-        find.at = at;
-        let reply = cat.find(who, &ty, find.clone()).await;
-        if let Ok(Found::Records { next_cursor, .. }) = reply.as_ref().map(|r| &r.data) {
-            find.cursor = next_cursor.clone().filter(|_| find.limit.is_some());
-        }
-        out.push((door.to_owned(), told(reply)));
-        if find.cursor.is_some() {
-            let next = cat.find(who, &ty, find).await;
-            out.push(("its next page".to_owned(), told(next)));
+    for (door, mut find) in finds.into_iter().take(if deep { 7 } else { 1 }) {
+        (find.at, find.offset) = (at, find.offset.filter(|_| find.cursor.is_none()));
+        let mut door = door.to_owned();
+        for _ in 0..32 {
+            let reply = cat.find(who, &ty, find.clone()).await;
+            let next = match reply.as_ref().map(|r| &r.data) {
+                Ok(Found::Records { next_cursor, .. }) => next_cursor.clone(),
+                _ => None,
+            };
+            out.push((
+                std::mem::replace(&mut door, "its next page".into()),
+                told(reply),
+            ));
+            let Some(next) = next.filter(|_| find.limit == Some(1)) else {
+                break;
+            };
+            (find.cursor, find.offset) = (Some(next), None);
+            let setting = json!({"key": "twin.walk", "value": out.len()});
+            let (ty, key) = (SETTING_TYPE.into(), "twin.walk".into());
+            let wrote = cat.upsert(own, &ty, &key, patch(setting), WriteOpts::default());
+            wrote.await.must("the owner writing `twin.walk`")?;
         }
     }
     let keys = p.keys.iter().take(1).map(String::as_str);
@@ -996,16 +1123,61 @@ async fn said(
         asked.at = at;
         out.push((door.to_owned(), told(cat.query(who, asked).await)));
     }
+    if p.indexed {
+        out.extend(paged(cat, who, &ty, p, at).await);
+    }
     let read = |(door, answer): (String, String)| (door, answer.replace("_twin", ""));
-    out.into_iter().map(read).collect()
+    Ok(out.into_iter().map(read).collect())
 }
 
-/// An answer as a text, or its refusal. A cursor is read as whether there
-/// is one: a view's and its twin's need not be the same text.
+/// Every page `who` is answered by `ty`, the view or its twin, two
+/// records a page, each order continued by its cursor to its last page:
+/// by its first group field and by each measure, both ways, and by its
+/// last measure among the records holding less than 100 there.
+async fn paged(
+    cat: &dyn Catalog,
+    who: &Principal,
+    ty: &TypeName,
+    p: &Pair,
+    at: ReadAt,
+) -> Vec<(String, String)> {
+    let both = |f| [(f, Direction::Asc, None), (f, Direction::Desc, None)];
+    let below = p
+        .measures
+        .last()
+        .map(|m| (m, Direction::Asc, Some(format!("{m} < 100"))));
+    let mut out = Vec::new();
+    for (field, dir, filter) in p.by.iter().chain(&p.measures).flat_map(both).chain(below) {
+        let mut find = Find {
+            order_by: vec![order(field, OrderBy::Value, dir)],
+            limit: Some(2),
+            filter: filter.clone().map(lakelands_api::expr::Condition::Text),
+            at,
+            ..Find::default()
+        };
+        for n in 0..32 {
+            let reply = cat.find(who, ty, find.clone()).await;
+            find.cursor = match reply.as_ref().map(|r| &r.data) {
+                Ok(Found::Records { next_cursor, .. }) => next_cursor.clone(),
+                _ => None,
+            };
+            let door = format!("pages by `{field}` {dir:?} {filter:?}, page {n}");
+            out.push((door, told(reply)));
+            if find.cursor.is_none() {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// An answer as a text, or its refusal by its wire form (its code, places
+/// and parameters and its sentence). A cursor is read as whether there is
+/// one: a view's and its twin's need not be the same text.
 fn told<T: serde::Serialize>(answer: lakelands_api::Result<Reply<T>>) -> String {
     let mut told = match answer {
         Ok(reply) => json!(reply.data),
-        Err(e) => return format!("refused: {e}"),
+        Err(e) => return format!("refused: {}", json!(e)),
     };
     told["next_cursor"] = json!(told.get("next_cursor").is_some_and(|c| !c.is_null()));
     told.to_string()

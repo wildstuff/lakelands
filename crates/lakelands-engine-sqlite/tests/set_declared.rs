@@ -85,7 +85,7 @@ async fn declaring_a_set_over_a_hundred_thousand_records() {
                 ..FeedFilter::default()
             };
             let b = store.feed().poll(next, &only, 10_000).await.unwrap();
-            if b.events.is_empty() {
+            if b.events.is_empty() && b.next > b.head {
                 break;
             }
             let join =

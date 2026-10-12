@@ -48,29 +48,47 @@ mod vector_index;
 mod view;
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
-use lakelands_api::error::{Error, Result};
+use lakelands_api::error::{Case, Detail, Doing, Error, Part, Result, Situation};
 use lakelands_api::location::{EngineConfig, Location};
 
 pub use connect::MIN_SERVER_VERSION;
 pub use handle::{ANALYZE_AFTER, PgLake, export};
 #[doc(hidden)]
-pub use view::read_statements;
+pub use view::{holding_statements, read_statements};
 
 /// The name the engine answers to, in [`LakeEngine::name`] and for
 /// `EngineConfig::Postgres`.
 pub const NAME: &str = "pg";
 
-pub(crate) use lakelands_core::{invalid, lock, unavailable};
+pub(crate) use lakelands_core::{invalid, lock};
 
-/// A failed statement, for the host, with every cause the driver gives.
+/// A failed statement, for the host. Of an error the server sends, only
+/// its severity, SQLSTATE and primary message: its `DETAIL`, `HINT`,
+/// `WHERE` and statement position can quote a record's key or values,
+/// which the answer carries to a caller who may not be shown that record
+/// (024). Any other failure says every cause the driver gives.
 pub(crate) fn sql(e: postgres::Error) -> Error {
-    let mut message = format!("the database failed: {e}");
-    let mut source = std::error::Error::source(&e);
-    while let Some(s) = source {
-        message.push_str(&format!(": {s}"));
-        source = s.source();
-    }
-    unavailable(message)
+    let detail = match e.as_db_error() {
+        Some(db) => {
+            let (severity, code) = (db.severity(), db.code().code());
+            Detail::scrubbed(format_args!("{severity} {code}: {}", db.message()))
+        }
+        None => {
+            let mut said = e.to_string();
+            let mut source = std::error::Error::source(&e);
+            while let Some(s) = source {
+                said.push_str(&format!(": {s}"));
+                source = s.source();
+            }
+            Detail::scrubbed(said)
+        }
+    };
+    let (doing, part) = (Doing::Query, Part::Projection);
+    Error::unavailable(Situation::Storage {
+        doing,
+        part,
+        detail,
+    })
 }
 
 /// Finds the PostgreSQL engine by name and opens lakes kept by it.
@@ -104,11 +122,13 @@ pub(crate) fn target(location: &Location) -> Result<connect::Target> {
         tuning,
     } = &location.engine
     else {
-        return Err(invalid(format!(
-            "the {NAME} engine opens only postgres locations, and lake `{}` is configured for \
-             another engine",
-            location.lake
-        )));
+        let (engine, kind) = (NAME.to_owned(), "postgres".to_owned());
+        let lake = Box::new(location.lake.clone());
+        return Err(invalid(Case::EngineOtherLocation {
+            engine,
+            location: kind,
+            lake,
+        }));
     };
     Ok(connect::Target {
         url: url.clone(),

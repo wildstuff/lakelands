@@ -13,16 +13,18 @@
 use std::iter::Peekable;
 use std::str::Chars;
 
+use lakelands_api::error::Regexp;
+
 /// Translate an I-Regexp into an anchored pattern for the `regex` crate,
 /// or say why it is not an I-Regexp.
-pub fn translate(pattern: &str) -> Result<String, String> {
+pub fn translate(pattern: &str) -> Result<String, Regexp> {
     let mut p = Parser {
         chars: pattern.chars().peekable(),
         out: String::from("^(?:"),
     };
     p.regexp()?;
     if let Some(c) = p.chars.next() {
-        return Err(format!("unexpected `{c}` (an unmatched `)`?)"));
+        return Err(Regexp::Unmatched { c });
     }
     p.out.push_str(")$");
     Ok(p.out)
@@ -87,7 +89,7 @@ fn in_class(c: char) -> String {
 }
 
 impl Parser<'_> {
-    fn regexp(&mut self) -> Result<(), String> {
+    fn regexp(&mut self) -> Result<(), Regexp> {
         self.branch()?;
         while self.chars.peek() == Some(&'|') {
             self.chars.next();
@@ -97,7 +99,7 @@ impl Parser<'_> {
         Ok(())
     }
 
-    fn branch(&mut self) -> Result<(), String> {
+    fn branch(&mut self) -> Result<(), Regexp> {
         while let Some(&c) = self.chars.peek() {
             if c == '|' || c == ')' {
                 return Ok(());
@@ -108,14 +110,14 @@ impl Parser<'_> {
         Ok(())
     }
 
-    fn atom(&mut self) -> Result<(), String> {
+    fn atom(&mut self) -> Result<(), Regexp> {
         let c = self.chars.next().expect("caller peeked");
         match c {
             '(' => {
                 self.out.push_str("(?:");
                 self.regexp()?;
                 if self.chars.next() != Some(')') {
-                    return Err("a group is not closed with `)`".into());
+                    return Err(Regexp::GroupUnclosed);
                 }
                 self.out.push(')');
             }
@@ -126,32 +128,32 @@ impl Parser<'_> {
                 self.out.push_str(&e);
             }
             c if is_normal(c) => self.out.push_str(&regex::escape(&c.to_string())),
-            c => return Err(format!("`{c}` must be escaped")),
+            c => return Err(Regexp::MustEscape { c }),
         }
         Ok(())
     }
 
     /// After a `\`: a single-character escape or a category escape, as it
     /// is written outside a class.
-    fn escape(&mut self) -> Result<String, String> {
+    fn escape(&mut self) -> Result<String, Regexp> {
         match self.chars.next() {
             Some(p @ ('p' | 'P')) => {
                 if self.chars.next() != Some('{') {
-                    return Err(format!("`\\{p}` must be followed by `{{`"));
+                    return Err(Regexp::CategoryBrace { p });
                 }
                 let name: String = self.chars.by_ref().take_while(|c| *c != '}').collect();
                 if !is_category(&name) {
-                    return Err(format!("`{name}` is not a Unicode general category"));
+                    return Err(Regexp::NotCategory { name });
                 }
                 Ok(format!("\\{p}{{{name}}}"))
             }
             Some(c) if is_single_escape(c) => Ok(escaped(c)),
-            Some(c) => Err(format!("`\\{c}` is not an I-Regexp escape")),
-            None => Err("the pattern ends with `\\`".into()),
+            Some(c) => Err(Regexp::BadEscape { c }),
+            None => Err(Regexp::EndsInBackslash),
         }
     }
 
-    fn quantifier(&mut self) -> Result<(), String> {
+    fn quantifier(&mut self) -> Result<(), Regexp> {
         match self.chars.peek() {
             Some(&q @ ('*' | '+' | '?')) => {
                 self.chars.next();
@@ -166,13 +168,13 @@ impl Parser<'_> {
                 };
                 let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
                 if !digits(lo) || hi.is_some_and(|h| !h.is_empty() && !digits(h)) {
-                    return Err(format!("`{{{body}}}` is not a repetition"));
+                    return Err(Regexp::NotRepetition { body });
                 }
                 if let Some(h) = hi.filter(|h| !h.is_empty()) {
                     let (a, b): (u64, u64) =
                         (lo.parse().unwrap_or(u64::MAX), h.parse().unwrap_or(0));
                     if a > b {
-                        return Err(format!("`{{{body}}}` repeats at least more than at most"));
+                        return Err(Regexp::RepeatsBackwards { body });
                     }
                 }
                 self.out.push('{');
@@ -182,14 +184,14 @@ impl Parser<'_> {
             _ => return Ok(()),
         }
         if matches!(self.chars.peek(), Some('*' | '+' | '?' | '{')) {
-            return Err("a quantifier cannot follow a quantifier".into());
+            return Err(Regexp::QuantifierTwice);
         }
         Ok(())
     }
 
     /// One character of a class, or `None` for a category escape (written
     /// to `out` directly).
-    fn class_char(&mut self, out: &mut String) -> Result<Option<char>, String> {
+    fn class_char(&mut self, out: &mut String) -> Result<Option<char>, Regexp> {
         match self.chars.next() {
             Some('\\') => match self.chars.peek() {
                 Some('p' | 'P') => {
@@ -204,17 +206,17 @@ impl Parser<'_> {
                         't' => '\t',
                         c => c,
                     })),
-                    Some(c) => Err(format!("`\\{c}` is not an I-Regexp escape")),
-                    None => Err("the pattern ends with `\\`".into()),
+                    Some(c) => Err(Regexp::BadEscape { c }),
+                    None => Err(Regexp::EndsInBackslash),
                 },
             },
-            Some(c @ ('[' | ']')) => Err(format!("`{c}` must be escaped inside a class")),
+            Some(c @ ('[' | ']')) => Err(Regexp::MustEscapeInClass { c }),
             Some(c) => Ok(Some(c)),
-            None => Err("a class is not closed with `]`".into()),
+            None => Err(Regexp::ClassUnclosed),
         }
     }
 
-    fn class(&mut self) -> Result<(), String> {
+    fn class(&mut self) -> Result<(), Regexp> {
         let mut out = String::from("[");
         if self.chars.peek() == Some(&'^') {
             self.chars.next();
@@ -223,7 +225,7 @@ impl Parser<'_> {
         let mut first = true;
         loop {
             match self.chars.peek() {
-                None => return Err("a class is not closed with `]`".into()),
+                None => return Err(Regexp::ClassUnclosed),
                 Some(']') if !first => {
                     self.chars.next();
                     break;
@@ -232,7 +234,7 @@ impl Parser<'_> {
                     // A `-` stands for itself only first or last.
                     self.chars.next();
                     if !first && self.chars.peek() != Some(&']') {
-                        return Err("`-` inside a class must be first, last or escaped".into());
+                        return Err(Regexp::DashInClass);
                     }
                     out.push_str("\\-");
                 }
@@ -245,10 +247,10 @@ impl Parser<'_> {
                     if look.next() == Some('-') && !matches!(look.peek(), Some(']') | None) {
                         self.chars.next();
                         let Some(hi) = self.class_char(&mut String::new())? else {
-                            return Err("a range cannot end in a category".into());
+                            return Err(Regexp::CategoryRange);
                         };
                         if lo > hi {
-                            return Err(format!("the range `{lo}-{hi}` runs backwards"));
+                            return Err(Regexp::RangeBackwards { lo, hi });
                         }
                         out.push_str(&format!("{}-{}", in_class(lo), in_class(hi)));
                     } else {

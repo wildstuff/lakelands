@@ -25,27 +25,33 @@ use std::fmt;
 use serde_json::{Value, json};
 
 use crate::canonical;
+use crate::error::{Place, Said};
 use crate::expr::{Condition, ParseError};
 use crate::id::{FieldName, TypeName};
 use crate::ontology::{FieldDecl, Measure, RelationDecl, TypeDecl, ViewDecl};
 
 /// A condition inside a view that does not parse, so its typed form (the
 /// form the schema hash covers) does not exist.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ViewConditionError {
-    /// Where the condition sits: `view.where` or `view.measures.<name>`.
-    pub at: String,
+    /// Where the condition sits, outermost first: the `where`, a measure,
+    /// either inside a merged source.
+    pub at: Vec<Place>,
     /// Why it does not parse.
     pub error: ParseError,
 }
 
+/// Its parse case, said where the condition sits.
+impl From<ViewConditionError> for Said {
+    fn from(e: ViewConditionError) -> Said {
+        let case = e.error.case;
+        Said { at: e.at, case }
+    }
+}
+
 impl fmt::Display for ViewConditionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "the condition at `{}` does not parse: {}",
-            self.at, self.error
-        )
+        Said::from(self.clone()).fmt(f)
     }
 }
 
@@ -82,7 +88,7 @@ pub fn view_shape(view: &ViewDecl) -> Result<Value, ViewConditionError> {
         view.r#where.as_ref(),
         &view.group_by,
         &view.measures,
-        "view".to_owned(),
+        &[],
     )?;
     // Parameters and merged sources join the shape only when declared, so
     // a view without them keeps the hash it had before views could take
@@ -95,8 +101,10 @@ pub fn view_shape(view: &ViewDecl) -> Result<Value, ViewConditionError> {
             .merge
             .iter()
             .map(|m| {
-                let at = format!("view.merge.{}", m.source);
-                source_shape(&m.source, m.r#where.as_ref(), &m.group_by, &m.measures, at)
+                let at = [Place::MergedSource {
+                    name: m.source.clone(),
+                }];
+                source_shape(&m.source, m.r#where.as_ref(), &m.group_by, &m.measures, &at)
             })
             .collect::<Result<Vec<_>, ViewConditionError>>()?;
         shape["merge"] = json!(merge);
@@ -111,16 +119,18 @@ fn source_shape(
     filter: Option<&Condition>,
     group_by: &[FieldName],
     measures: &[Measure],
-    at: String,
+    at: &[Place],
 ) -> Result<Value, ViewConditionError> {
+    let within = |place| [at, &[place]].concat();
     let filter = match filter {
-        Some(c) => typed(c, || format!("{at}.where"))?,
+        Some(c) => typed(c, || within(Place::Where))?,
         None => Value::Null,
     };
     let measures = measures
         .iter()
         .map(|m| {
-            let expr = typed(&m.expr, || format!("view.measures.{}", m.name))?;
+            let name = m.name.clone();
+            let expr = typed(&m.expr, || within(Place::Measure { name }))?;
             Ok(json!({ "name": m.name, "expr": expr }))
         })
         .collect::<Result<Vec<_>, ViewConditionError>>()?;
@@ -159,7 +169,7 @@ fn relations(list: &[RelationDecl]) -> Vec<Value> {
 
 /// A condition in its typed form, so that the same expression written as
 /// text or as a typed tree hashes the same.
-fn typed(c: &Condition, at: impl FnOnce() -> String) -> Result<Value, ViewConditionError> {
+fn typed(c: &Condition, at: impl FnOnce() -> Vec<Place>) -> Result<Value, ViewConditionError> {
     let parsed;
     let expr = match c {
         Condition::Expr(e) => e,

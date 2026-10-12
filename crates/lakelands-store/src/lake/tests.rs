@@ -228,6 +228,7 @@ fn declared_at(at: u64) -> Event {
         declaration: declaration(json!({"declare": "function", "name": "f", "backing": "expr"})),
         schema_hash: None,
         version: 2,
+        with_the_set: false,
     };
     let draft = Draft::system(Timestamp(5), body);
     log::seal_at(1, &"l".into(), Position(at), &Digest::zero(), 1, draft).0
@@ -269,6 +270,7 @@ fn the_entries_of_a_recomputation_mirror_the_writers_ontology() {
             staged: None,
             before: None,
             due: None,
+            waiting: false,
         };
         record::rederive(o, &r, &event, &BTreeMap::new(), &mut outputs).unwrap()
     };
@@ -306,4 +308,46 @@ fn the_entries_of_a_recomputation_mirror_the_writers_ontology() {
         (entries.functions["f"].version, o.functions["f"].version),
         (1, 2)
     );
+}
+
+/// A value type's step renames an old value in every field of the value
+/// type but one a backed function computes, at its position, and leaves
+/// the version, the flags, the provenance and every other value as they
+/// were; a record that holds no old value is untouched.
+#[test]
+fn a_value_step_renames_every_field_but_a_backed_one_and_nothing_else() {
+    let mut o = Ontology::default();
+    for d in [
+        json!({"declare": "value_type", "name": "s", "kind": "text", "one_of": ["b", "c"]}),
+        json!({"declare": "function", "name": "far", "backing": "remote",
+               "inputs": [{"name": "x", "type": {"kind": "text"}}]}),
+        json!({"declare": "type", "name": "t", "fields": [
+            {"name": "x", "type": {"kind": "text", "value_type": "s"}},
+            {"name": "y", "type": {"kind": "text", "value_type": "s"}, "authority": "derived",
+             "derived": "x", "depends_on": ["x"]},
+            {"name": "z", "type": {"kind": "text", "value_type": "s"}, "authority": "derived",
+             "function": "far", "depends_on": ["x"]},
+            {"name": "w", "type": {"kind": "text"}}]}),
+    ] {
+        o.put(declaration(d), 1, None);
+    }
+    let renames = [("a", "b"), ("b", "c")].map(|(o, n)| (o.to_owned(), n.to_owned()));
+    let step = Values::new(&o, Position(9), &"s".into(), &renames);
+    let mut r = record("t", "k", json!({"x": "a", "y": "b", "z": "a", "w": "a"}), 3);
+    r.retired = true;
+    let meta = json!({"origin": "authored", "known_at": "2026-10-07T00:00:00Z", "position": 3,
+                      "writer": "agent:a"});
+    r.meta
+        .insert("x".into(), serde_json::from_value(meta).unwrap());
+    let after = step.apply(r.clone());
+    let fields = serde_json::to_value(&after.fields).unwrap();
+    assert_eq!(fields, json!({"x": "b", "y": "c", "z": "a", "w": "a"}));
+    assert_eq!(
+        (after.position, after.version, after.retired, &after.meta),
+        (Position(9), r.version, true, &r.meta)
+    );
+    let none = record("t", "n", json!({"x": "c", "w": "a"}), 4);
+    assert_eq!(step.apply(none.clone()), none);
+    let other = record("u", "k", json!({"x": "a"}), 4);
+    assert_eq!(step.apply(other.clone()), other);
 }

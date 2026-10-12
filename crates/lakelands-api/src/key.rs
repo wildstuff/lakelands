@@ -87,7 +87,7 @@ pub fn keyable(kind: StorageKind) -> bool {
     use StorageKind as K;
     matches!(
         kind,
-        K::Text | K::Reference | K::Decimal | K::Number | K::Boolean | K::DateTime
+        K::Text | K::Reference | K::Decimal | K::Number | K::Boolean | K::DateTime | K::Date
     )
 }
 

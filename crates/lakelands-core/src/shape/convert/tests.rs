@@ -1,4 +1,5 @@
 use super::*;
+use lakelands_api::error::Case;
 use serde_json::json;
 
 fn kind(k: StorageKind) -> FieldType {
@@ -158,6 +159,13 @@ fn vectors_and_geometries_are_never_made_only_kept() {
     );
     assert_eq!(convert(&json!([1, 2]), &json_ty, &three), Conversion::Lossy);
     assert_eq!(convert(&json!(["a"]), &json_ty, &three), Conversion::Lossy);
+    // An element no `f32` holds finite is no vector's; zeros are.
+    let huge = json!([1e300, 0, 0]);
+    assert_eq!(convert(&huge, &json_ty, &three), Conversion::Lossy);
+    assert!(matches!(
+        convert(&json!([0, 0, 0]), &json_ty, &three),
+        Conversion::Exact(_)
+    ));
     assert_eq!(
         convert(&json!("1,2,3"), &json_ty, &three),
         Conversion::Lossy
@@ -493,25 +501,25 @@ fn a_malformed_migration_is_refused() {
             relation_renames: Vec::new(),
         }
     };
-    let err = |m: Migration| preflight(&before, &m, vec![]).unwrap_err();
+    let err = |m: Migration| preflight(&before, &m, vec![]).unwrap_err().case;
     assert!(matches!(
         err(renamed("ghost", "total", "total")),
-        ShapeError::RenameFromUnknown { .. }
+        Case::RenameFromUnknown { .. }
     ));
     assert!(matches!(
         err(renamed("amount", "ghost", "total")),
-        ShapeError::RenameToUnknown { .. }
+        Case::RenameToUnknown { .. }
     ));
     assert!(matches!(
         err(renamed("amount", "note", "total")),
-        ShapeError::RenameCollides { .. }
+        Case::RenameCollides { .. }
     ));
     let mut twice = renamed("amount", "total", "total");
     twice.renames.push(("amount".into(), "total".into()));
-    assert!(matches!(err(twice), ShapeError::RenameRepeated { .. }));
+    assert!(matches!(err(twice), Case::RenameRepeated { .. }));
     let mut other = retype();
     other.to.name = "receipt".into();
-    assert!(matches!(err(other), ShapeError::OtherType { .. }));
+    assert!(matches!(err(other), Case::MigrationOtherType { .. }));
 }
 
 #[test]

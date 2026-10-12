@@ -17,7 +17,7 @@ use crate::event::Digest;
 use crate::id::{
     LakeId, Position, ProposalId, RecordKey, RelationName, SourceId, TypeName, VerbName,
 };
-use crate::ontology::{FieldDecl, ValueTypeDecl};
+use crate::ontology::FieldDecl;
 use crate::principal::{Principal, WriteContext};
 use crate::query::{Hits, Pattern, QueryResult, Search};
 use crate::read::{Find, Found, Get, ReadAt, Reply};
@@ -25,7 +25,7 @@ use crate::record::{Patch, Record, SourceRecord};
 use crate::seam::ChangeFeed;
 use crate::write::{
     Committed, Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter,
-    ProposedWrite, Recompute, ValueTypeReport, WriteOpts,
+    ProposedWrite, Recompute, ValueTypeMigration, ValueTypeReport, WriteOpts,
 };
 
 /// A stream of records from one source, as `ingest` takes it.
@@ -154,7 +154,9 @@ pub trait Catalog: Send + Sync {
     /// grants as they were when it was proposed: the write was checked
     /// whole then, and a reviewer applies exactly what was checked. At
     /// acceptance the store checks again only what can have moved since —
-    /// the type's shape and the record's version. An accepted external
+    /// the type's shape and the record's version; a call is accepted only
+    /// by a reviewer who may read every field its verb reads (024). An
+    /// accepted external
     /// verb answers its executor's recorded `output`, as `call` does, and
     /// so does the accept sent again; any other accept sent again is
     /// `decided`.
@@ -227,25 +229,29 @@ pub trait Catalog: Send + Sync {
         report_id: &str,
     ) -> Result<Outcome>;
 
-    /// The preflight of tightening a value type: every value stored under
-    /// it, over every type and field that uses it, history included,
-    /// checked against the new declaration. Appends nothing. A loosening is
-    /// declared; a change of `kind` or `scale` is not a value-type migration
+    /// The preflight of a value type's migration: every value stored under
+    /// it, over every type and field that uses it, retired and restricted
+    /// records included (not earlier versions), renamed as the migration
+    /// renames it and checked against the new declaration. Appends nothing.
+    /// A loosening without renames is declared; a change of `kind` or
+    /// `scale` is not a value-type migration
     /// (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
     async fn migrate_value_type(
         &self,
         who: &Principal,
-        to: ValueTypeDecl,
+        migration: ValueTypeMigration,
     ) -> Result<Reply<ValueTypeReport>>;
 
-    /// Put a tightened value type in force against the preflight the caller
-    /// was shown. Refused if the lake moved since, or while any stored value
-    /// would not fit; otherwise one `declared` at the next version, and no
-    /// record changes.
+    /// Put a value type's migration in force against the preflight the
+    /// caller was shown. Refused if the lake moved since, or while any
+    /// stored value would not fit; otherwise, without renames, one
+    /// `declared` at the next version, and no record changes; with them,
+    /// one `value_type_migrated`, and every record holding an old value
+    /// holds the new one.
     async fn migrate_value_type_apply(
         &self,
         who: &Principal,
-        to: ValueTypeDecl,
+        migration: ValueTypeMigration,
         report_id: &str,
     ) -> Result<Outcome>;
 
@@ -417,6 +423,15 @@ pub trait LakeStore: Send + Sync {
     /// compacts; writes wait while it runs
     /// (`docs/decisions/040-maintenance-never-changes-an-answer.md`).
     async fn compact(&self) -> Result<crate::write::CompactReport>;
+
+    /// Bind the embedding backend the lake's declarations, writes and
+    /// searches read from now on, in place of the one bound at open or
+    /// by an earlier bind, whatever its model. Nothing is recorded: the
+    /// binding is the host's configuration, not a fact of the log. What
+    /// fell due while none was bound waits until its record is written
+    /// again or `recompute` names its type
+    /// (`docs/decisions/022-functions-are-declarations.md`, extended).
+    fn bind_embed(&self, backend: Arc<dyn crate::seam::EmbedBackend>) -> Result<()>;
 
     /// Release the lease and flush. The lake is closed when the last
     /// handle is dropped; this makes it explicit.

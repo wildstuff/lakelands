@@ -114,9 +114,10 @@ fn a_second_open_of_a_lake_sees_the_same_log_and_lease() {
     let reader = open(&name, OpenMode::Read).unwrap();
     assert_eq!(reader.read(Position(0), 10).unwrap(), e);
     let second = open(&name, OpenMode::Write).unwrap();
-    let Err(Error::Unavailable { message }) = second.take_lease("another writer") else {
+    let Err(Error::Unavailable { situation }) = second.take_lease("another writer") else {
         panic!("a second writer took a held lease");
     };
+    let message = situation.to_string();
     assert!(message.contains("the writer"), "{message}");
 }
 
@@ -133,10 +134,15 @@ fn a_lake_that_was_never_created_is_unavailable_to_read_and_write() {
 #[test]
 fn a_location_for_another_engine_is_refused() {
     let at = Location::sqlite("elsewhere", "/nowhere");
-    assert!(matches!(
-        MemoryOpener::new().open(&at, OpenMode::Create),
-        Err(Error::Refused { .. })
-    ));
+    let Err(e @ Error::Refused { .. }) = MemoryOpener::new().open(&at, OpenMode::Create) else {
+        panic!("a location for another engine is refused");
+    };
+    let case = lakelands_api::error::Case::EngineOtherLocation {
+        engine: "memory".into(),
+        location: "memory".into(),
+        lake: Box::new("elsewhere".into()),
+    };
+    assert_eq!(e.case().map(|said| &said.case), Some(&case));
 }
 
 #[test]

@@ -12,14 +12,16 @@
 use std::sync::Arc;
 
 use lakelands_api::engine::{EngineOpener, OpenMode};
+use lakelands_api::error::Case;
 use lakelands_api::event::{Digest, EventBody, LOG_FORMAT_BASE};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::seam::{Seams, setting_type};
 use lakelands_api::write::Declaration;
 use lakelands_api::{
-    Error, Grants, LakeStore, Location, Position, Principal, PrincipalKind, Refusal, Timestamp,
-    WriteContext, WriteOpts,
+    Grants, LakeStore, Location, Position, Principal, PrincipalKind, Timestamp, WriteContext,
+    WriteOpts,
 };
+use lakelands_core::conformance::fixture::invalid_case;
 use lakelands_engine_mem::MemoryOpener;
 use lakelands_store::log::{Draft, seal};
 use serde_json::json;
@@ -44,6 +46,7 @@ async fn a_set_in_force_through_a_reference_stays_and_is_judged_when_declared_ag
         schema_hash,
         declaration,
         version: 1,
+        with_the_set: false,
     };
     let of = |t: TypeDecl| {
         let hash = lakelands_core::shape::schema_hash(&t).ok();
@@ -117,8 +120,7 @@ async fn a_set_in_force_through_a_reference_stays_and_is_judged_when_declared_ag
     // refused; with one over the reference's key it is taken.
     let refused = cat.declare(&owner, set("partner.name = 'y'")).await;
     assert!(
-        matches!(&refused, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
-            if message.contains("steps into `partner`")),
+        matches!(invalid_case(&refused), Some(Case::StepsIntoReference { field, .. }) if field == "partner"),
         "{refused:?}"
     );
     cat.declare(&owner, set("partner = 'p1'"))

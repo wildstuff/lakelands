@@ -14,8 +14,6 @@ use std::collections::BTreeMap;
 use lakelands_api::error::Result;
 use lakelands_api::id::{RecordKey, TypeName};
 
-use crate::invalid;
-
 /// Every indexed vector, by type and field, then by record key.
 #[derive(Debug, Default)]
 pub(crate) struct Vectors(BTreeMap<(TypeName, String), BTreeMap<RecordKey, Vec<f32>>>);
@@ -50,12 +48,8 @@ impl Vectors {
         let mut top = lakelands_core::engines::TopK::new(k);
         for (key, v) in vectors {
             if v.len() != query.len() {
-                return Err(invalid(format!(
-                    "the query vector has {} dimensions, but `{ty}.{field}` holds vectors of {} \
-                     (record `{key}`)",
-                    query.len(),
-                    v.len()
-                )));
+                let (query, held) = (query.len(), v.len());
+                return Err(lakelands_core::engines::dimensions(query, held, ty, field));
             }
             top.push(key, lakelands_api::query::cosine(query, v));
         }

@@ -23,14 +23,14 @@ use std::io::Write as _;
 use std::path::Path;
 
 use lakelands_api::engine::{CanonicalEvent, Lease};
-use lakelands_api::error::Result;
+use lakelands_api::error::{Act, Case, Doing, Error, Part, Result, Situation};
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::Position;
 use sha2::{Digest as _, Sha256};
 
 use crate::connect::Db;
+use crate::invalid;
 use crate::projection::Names;
-use crate::{invalid, unavailable};
 
 /// Create the first, empty segment of a new lake.
 pub(crate) fn create(db: &mut Db, names: &Names) -> Result<()> {
@@ -68,13 +68,17 @@ fn active(db: &mut Db, names: &Names) -> Result<i64> {
         &[],
     )?
     .get::<_, Option<i64>>(0)
-    .ok_or_else(|| unavailable("the lake's log has no segment; it was not created by this engine"))
+    .ok_or_else(|| {
+        Error::unavailable(Situation::Unmade {
+            part: Part::Segment,
+        })
+    })
 }
 
 /// Refuse, inside the caller's transaction, a lease whose fence the lease
 /// row no longer records. The row is locked until the transaction ends, so
 /// no takeover commits between this check and what the transaction writes.
-fn fenced(db: &mut Db, names: &Names, lease: &Lease, what: &str) -> Result<()> {
+fn fenced(db: &mut Db, names: &Names, lease: &Lease, undone: Act) -> Result<()> {
     let row = db.query_opt(
         &format!(
             "SELECT fence, holder FROM {} WHERE one = 1 FOR UPDATE",
@@ -83,18 +87,17 @@ fn fenced(db: &mut Db, names: &Names, lease: &Lease, what: &str) -> Result<()> {
         &[],
     )?;
     let recorded = row.map(|r| (r.get::<_, i64>(0), r.get::<_, String>(1)));
-    let why = match recorded {
+    let (holder, current) = match recorded {
         Some((fence, _)) if fence == lease.fence as i64 => return Ok(()),
-        Some((fence, holder)) if !holder.is_empty() => {
-            format!("`{holder}` holds the lake's writer lease with fence {fence}")
-        }
-        Some((fence, _)) => format!("the lease row records fence {fence} and no holder"),
-        None => "the lake's lease row is gone".to_owned(),
+        Some((fence, holder)) => ((!holder.is_empty()).then_some(holder), Some(fence as u64)),
+        None => (None, None),
     };
-    Err(unavailable(format!(
-        "the lease with fence {} is stale: {why}; nothing was {what}",
-        lease.fence
-    )))
+    Err(Error::unavailable(Situation::LeaseStale {
+        fence: lease.fence,
+        holder,
+        current,
+        undone: Some(undone),
+    }))
 }
 
 /// Append `events` under `lease`, in one transaction that checks the
@@ -114,7 +117,7 @@ pub(crate) fn append(
         return Ok(());
     }
     db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
-        fenced(db, names, lease, "appended")?;
+        fenced(db, names, lease, Act::Appended)?;
         add(db, names, lease, events, imported)
     })
 }
@@ -143,11 +146,7 @@ fn add(
             &[&(at.0 as i64)],
         )?;
         if row.get::<_, Option<i64>>(0) != Some(at.0 as i64) {
-            return Err(invalid(format!(
-                "the lake's log holds events up to position {at} that were not imported; \
-                 an import goes only into a lake that holds nothing else, and nothing was \
-                 appended"
-            )));
+            return Err(invalid(Case::ImportIntoHeld { tip: *at }));
         }
         floor = row.get::<_, Option<i64>>(1).unwrap_or(0) as u64;
     }
@@ -284,7 +283,7 @@ pub(crate) fn seal(
     first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
 ) -> Result<Option<SegmentDigest>> {
     db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
-        fenced(db, names, lease, "sealed")?;
+        fenced(db, names, lease, Act::Sealed)?;
         let active = active(db, names)?;
         let Some((from, to)) = span(db, names, active)? else {
             return Ok(None);
@@ -347,7 +346,7 @@ pub(crate) fn segments(db: &mut Db, names: &Names) -> Result<Vec<SegmentDigest>>
 pub(crate) fn export(db: &mut Db, names: &Names, dir: &Path) -> Result<()> {
     let log = dir.join("log");
     std::fs::create_dir_all(&log)
-        .map_err(|e| unavailable(format!("creating {} failed: {e}", log.display())))?;
+        .map_err(|e| lakelands_core::io_failed(Doing::Create, Part::Export, &e))?;
     let firsts: Vec<i64> = db.column(
         &format!("SELECT first FROM {} ORDER BY first", names.t("segments")),
         &[],
@@ -358,8 +357,7 @@ pub(crate) fn export(db: &mut Db, names: &Names, dir: &Path) -> Result<()> {
         // no file short of its segment. A segment with no line has none.
         let path = log.join(format!("{first:020}.jsonl"));
         let partial = log.join(format!("{first:020}.jsonl.partial"));
-        let failed =
-            |e: std::io::Error| unavailable(format!("writing {} failed: {e}", path.display()));
+        let failed = |e: std::io::Error| lakelands_core::io_failed(Doing::Write, Part::Export, &e);
         let mut file: Option<std::io::BufWriter<std::fs::File>> = None;
         each_line(db, names, first, |line| {
             if file.is_none() {

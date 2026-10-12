@@ -39,6 +39,7 @@ fn sums_are_exact_and_skip_nulls() {
             ],
             group_by: vec![],
         },
+        &BTreeMap::new(),
         Timestamp(0),
     )
     .unwrap();
@@ -61,6 +62,7 @@ fn groups_come_in_canonical_key_order_with_null_as_a_group() {
             measures: vec![m("total", AggFunc::Sum, Some("amount"))],
             group_by: vec!["debtor".into()],
         },
+        &BTreeMap::new(),
         Timestamp(0),
     )
     .unwrap();
@@ -83,6 +85,7 @@ fn no_records_still_answer_one_ungrouped_row() {
             ],
             group_by: vec![],
         },
+        &BTreeMap::new(),
         Timestamp(0),
     )
     .unwrap();
@@ -102,6 +105,7 @@ fn a_sum_over_text_that_is_not_a_number_is_an_error() {
                 measures: vec![m("s", AggFunc::Sum, Some("x"))],
                 group_by: vec![]
             },
+            &BTreeMap::new(),
             Timestamp(0)
         )
         .is_err()
@@ -137,7 +141,7 @@ fn measured(rows: &[Value], expr: &str) -> std::result::Result<Value, String> {
     let named = [(FieldName::from("m"), parse(expr).unwrap())];
     folded(&rows, &named)
         .map(|mut row| row.remove("m").unwrap())
-        .map_err(|e| e.0)
+        .map_err(|e| e.to_string())
 }
 
 /// One group's `named` measures over `rows`, folded in one at a time.
@@ -161,7 +165,7 @@ fn a_group_folded_a_record_at_a_time_answers_what_folding_it_at_once_did() {
     let tie = [json!({"x": 1}), json!({"x": "1.0"}), json!({"x": "1.00"})];
     let text = "sum() met the text 'abc', which is not a number";
     let zero = "division by zero";
-    let over = "the sum is too large for exact arithmetic";
+    let over = &lakelands_api::error::Case::Overflow.to_string();
     let cases: [(&[Value], &str, std::result::Result<&str, &str>); 21] = [
         // An argument that fails on a later record comes before a value
         // that is not a number on an earlier one, for every aggregate.

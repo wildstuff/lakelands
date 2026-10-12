@@ -39,10 +39,8 @@ mod log;
 mod projection;
 mod view;
 
-use std::path::Path;
-
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
-use lakelands_api::error::{Error, Result};
+use lakelands_api::error::{Case, Detail, Doing, Error, Part, Result, Situation};
 use lakelands_api::location::{EngineConfig, Location};
 
 pub use handle::SqliteLake;
@@ -53,16 +51,39 @@ pub use view::{first_page_statements, read_statements, seek_statements};
 /// [`LakeEngine::name`].
 pub const NAME: &str = "sqlite";
 
-pub(crate) use lakelands_core::{invalid, lock, unavailable};
+pub(crate) use lakelands_core::{damaged, invalid, lock};
 
 /// A failed file operation, for the host.
-pub(crate) fn io_error(doing: &str, path: &Path, e: std::io::Error) -> Error {
-    unavailable(format!("{doing} {} failed: {e}", path.display()))
+pub(crate) fn io_error(doing: Doing, part: Part, e: std::io::Error) -> Error {
+    lakelands_core::io_failed(doing, part, &e)
 }
 
-/// A failed projection operation, for the host.
+/// A failed projection operation, for the host, as [`told`] says it.
 pub(crate) fn sql(e: rusqlite::Error) -> Error {
-    unavailable(format!("the projection failed: {e}"))
+    let detail = Detail::scrubbed(told(&e));
+    let (doing, part) = (Doing::Query, Part::Projection);
+    Error::unavailable(Situation::Storage {
+        doing,
+        part,
+        detail,
+    })
+}
+
+/// What a SQLite error says to the host: of a failure SQLite reports, its
+/// extended code and message, which name a failed constraint's columns or
+/// the schema's own check, never a row's values; of any other error, only
+/// its kind. The driver's own errors quote the statement's text
+/// (`SqlInputError`) or a stored value (`IntegralValueOutOfRange`, a
+/// failed conversion), which the answer would carry to a caller who may
+/// not be shown them (024).
+pub(crate) fn told(e: &rusqlite::Error) -> String {
+    if let rusqlite::Error::SqliteFailure(f, message) = e {
+        let message = message.clone().unwrap_or_else(|| f.to_string());
+        return format!("SQLite {}: {message}", f.extended_code);
+    }
+    let kind = format!("{e:?}");
+    let kind = kind.split(|c: char| !c.is_alphanumeric()).next();
+    kind.unwrap_or_default().to_owned()
 }
 
 /// Finds the SQLite engine by name and opens lakes kept by it.
@@ -79,11 +100,13 @@ impl EngineOpener for SqliteOpener {
     /// directory holding no lake answer `Unavailable`.
     fn open(&self, location: &Location, mode: OpenMode) -> Result<Box<dyn LakeEngine>> {
         let EngineConfig::Sqlite { dir, tuning } = &location.engine else {
-            return Err(invalid(format!(
-                "the {NAME} engine opens only sqlite locations, and lake `{}` is configured for \
-                 another engine",
-                location.lake
-            )));
+            let lake = Box::new(location.lake.clone());
+            let (engine, location) = (NAME.to_owned(), "sqlite".to_owned());
+            return Err(invalid(Case::EngineOtherLocation {
+                engine,
+                location,
+                lake,
+            }));
         };
         Ok(Box::new(SqliteLake::open(
             location.lake.clone(),
@@ -93,3 +116,6 @@ impl EngineOpener for SqliteOpener {
         )?))
     }
 }
+
+#[cfg(test)]
+mod tests;

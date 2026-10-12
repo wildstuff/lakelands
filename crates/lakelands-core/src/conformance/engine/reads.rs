@@ -63,13 +63,13 @@ engine_check!(
 engine_check!(
     /// A field-ordered scan walks page by page as one scan.
     FIELD_ORDER_WALK = a_field_ordered_scan_walks_page_by_page_as_one_scan,
-    "seams §scan and lakelands#137: a scan ordered by fields, walked page by page from `after`, answers what one scan over every state answers, whatever its directions, its filter and its flags, after later puts, a redeclaration and a change of the `sort_index.<type>` setting, at the head and at an earlier position"
+    "seams §scan and lakelands#137: a scan ordered by fields, walked page by page from `after`, answers what one scan over every state answers, whatever its directions, its filter (an exact text among them, which many or few records hold, lakelands#587) and its flags, after later puts (of keys first put after the position among them), a redeclaration and a change of the `sort_index.<type>` setting, at the head and at an earlier position"
 );
 
 engine_check!(
     /// A page ordered by an indexed field reads its page.
     SORTED_PAGE = a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it,
-    "041 and lakelands#137: a page of 10 ordered by a field the `sort_index.<type>` setting names reads its page and at most three rows more, not the type, the first page and one continued after a value longer than the index keeps alike; the setting's write switches the same page from sorting the type to the index and back, and the answer stays what one scan over every state answers"
+    "041 and lakelands#137: a page of 10 ordered by a field the `sort_index.<type>` setting names reads its page and at most three rows more, not the type, the first page and one continued after a value longer than the index keeps alike; the setting's write switches the same page from sorting the type to the index and back, and the answer stays what one scan over every state answers; and so for a view's kept records, whose index its `sort_index.<view>` setting asks for of the fields the view declares (lakelands#668)"
 );
 
 engine_check!(
@@ -1334,7 +1334,7 @@ fn a_zero_vector_scores_zero_and_a_wrong_length_is_invalid(
     );
     let wrong = index.nearest(&ty, "emb", &[1.0, 0.0, 0.0], 5);
     ensure!(
-        matches!(reason(&wrong), Some(Refusal::Invalid { .. })),
+        matches!(reason(&wrong), Some(Refusal::Invalid(..))),
         "a query of three dimensions against vectors of two answered {wrong:?}; it must be \
          refused as invalid"
     );
@@ -1775,6 +1775,9 @@ fn a_field_ordered_scan_walks_page_by_page_as_one_scan(
     engine: &dyn LakeEngine,
 ) -> Result<(), Failure> {
     const N: u64 = 160;
+    // Twenty-one more keys are first put at position 2, among the rows of
+    // every order: a page at position 1 passes them over.
+    const NEW: u64 = 21;
     let declare = |fields: &[&str]| -> Result<Declaration, Failure> {
         let fields: Vec<Value> = fields
             .iter()
@@ -1786,6 +1789,7 @@ fn a_field_ordered_scan_walks_page_by_page_as_one_scan(
     // `v` is missing from every fifth record, `w` has three values, and
     // `x` is carried before any declaration names it.
     let state = |i: u64, at: u64| {
+        let at = if i >= N { at.max(2) } else { at };
         let mut fields = serde_json::Map::new();
         let v = if at >= 2 && i.is_multiple_of(4) {
             order_value(i + 5)
@@ -1832,10 +1836,11 @@ fn a_field_ordered_scan_walks_page_by_page_as_one_scan(
                 again.position = Position(2);
                 p.put_record(&again)?;
                 p.put_record(&state(i, 2))
-            })
+            })?;
+        (N..N + NEW).try_for_each(|i| p.put_record(&state(i, 2)))
     })?;
     let after_the_setting = "at the head, before the type is declared again";
-    walk_field_orders(engine, None, &two, 2, N, &state, after_the_setting)?;
+    walk_field_orders(engine, None, &two, 2, N + NEW, &state, after_the_setting)?;
     fold(engine, 3, |p| {
         p.put_declaration(&three, 2, None, Position(3))
     })?;
@@ -1844,11 +1849,11 @@ fn a_field_ordered_scan_walks_page_by_page_as_one_scan(
         Some(Position(1)),
         &two,
         1,
-        N,
+        N + NEW,
         &state,
         "at position 1",
     )?;
-    walk_field_orders(engine, None, &three, 2, N, &state, "at the head")?;
+    walk_field_orders(engine, None, &three, 2, N + NEW, &state, "at the head")?;
     fold(engine, 4, |p| {
         p.put_record(&sort_setting(json!(["w", "x"]), 4))
     })?;
@@ -1857,7 +1862,7 @@ fn a_field_ordered_scan_walks_page_by_page_as_one_scan(
         None,
         &three,
         2,
-        N,
+        N + NEW,
         &state,
         "at the head, the setting without `v`",
     )
@@ -1912,11 +1917,16 @@ fn walk_field_orders(
 ) -> Result<(), Failure> {
     let ty = TypeName::from("t");
     let by = |field: &str, dir| order(field, OrderBy::Value, dir);
-    let filter = crate::expr::parse("w != 'b'").expect("the check's filter parses");
+    let filters =
+        ["w != 'b'", "w = 'a'"].map(|f| crate::expr::parse(f).expect("the check's filter parses"));
     let Declaration::Type(decl) = decl else {
         unreachable!("the check declares types")
     };
-    let states: Vec<StoredRecord> = (0..n).map(|i| state(i, pos)).collect();
+    // A record first put after `pos` is not among its states there.
+    let states: Vec<StoredRecord> = (0..n)
+        .map(|i| state(i, pos))
+        .filter(|r| r.position.0 <= pos)
+        .collect();
     let view_at = view(engine, at)?;
     for order_by in [
         vec![by("v", Direction::Asc)],
@@ -1925,11 +1935,11 @@ fn walk_field_orders(
         vec![by("x", Direction::Desc), by("w", Direction::Asc)],
         vec![by("x", Direction::Asc)],
     ] {
-        for filtered in [false, true] {
+        for filtered in [None, Some(&filters[0]), Some(&filters[1])] {
             for flags in [false, true] {
                 for limit in [1, 7, 50] {
                     let scan = Scan {
-                        filter: filtered.then(|| filter.clone()),
+                        filter: filtered.cloned(),
                         order_by: order_by.clone(),
                         limit,
                         retired: flags,
@@ -1965,7 +1975,7 @@ fn walk_field_orders(
                         .unwrap_or(got.len().min(expected.len()));
                     ensure!(
                         got == expected,
-                        "walking {order_by:?} {when} (filter {filtered}, flags {flags}) in \
+                        "walking {order_by:?} {when} (filter {filtered:?}, flags {flags}) in \
                          pages of {limit} answered {} rows, one scan over every state {}; they \
                          part at row {first_wrong}: {:?} against {:?}",
                         got.len(),
@@ -1983,13 +1993,34 @@ fn walk_field_orders(
 fn a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it(
     engine: &dyn LakeEngine,
 ) -> Result<(), Failure> {
+    // A stored type, then the records a view's fold keeps, put under its
+    // kept name, at positions after the type's.
+    sorted_page_reads(engine, "t", false, 0)?;
+    sorted_page_reads(engine, "w", true, 10)
+}
+
+/// [`a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it`]
+/// for the type `name`, declared from `from` on, a view of `t` if `kept`,
+/// whose records are put under its kept name.
+fn sorted_page_reads(
+    engine: &dyn LakeEngine,
+    name: &str,
+    kept: bool,
+    from: u64,
+) -> Result<(), Failure> {
     const N: u64 = 1000;
     const LIMIT: u32 = 10;
-    let decl: Declaration = serde_json::from_value(json!({
-        "declare": "type", "name": "t",
+    let mut declared = json!({
+        "declare": "type", "name": name,
         "fields": [{"name": "v", "type": {"kind": "text"}}]
-    }))
-    .map_err(|e| Failure::new(format!("the check's declaration does not read: {e}")))?;
+    });
+    let mut ty = TypeName::from(name);
+    if kept {
+        declared["view"] = json!({"source": "t", "group_by": ["v"], "measures": []});
+        ty = lakelands_api::seam::kept_name(&ty);
+    }
+    let decl: Declaration = serde_json::from_value(declared)
+        .map_err(|e| Failure::new(format!("the check's declaration does not read: {e}")))?;
     let Declaration::Type(t) = &decl else {
         unreachable!("the check declares a type")
     };
@@ -1999,18 +2030,17 @@ fn a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it
     let states: Vec<StoredRecord> = (0..N)
         .map(|i| {
             record(
-                "t",
+                ty.as_str(),
                 &format!("k{i:04}"),
                 json!({"v": format!("v{:04} {}", (i * 7919) % N, "past the cut ".repeat(3))}),
-                1,
+                from + 1,
             )
         })
         .collect();
-    fold(engine, 1, |p| {
-        p.put_declaration(&decl, 1, None, Position(0))?;
+    fold(engine, from + 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(from))?;
         states.iter().try_for_each(|r| p.put_record(r))
     })?;
-    let ty = TypeName::from("t");
     // The rows the engine handed the rulebook for one page, and the page:
     // the first page, or the one after the first's last row.
     let page = |dir, continued: bool| -> Result<(u64, bool), Failure> {
@@ -2039,7 +2069,7 @@ fn a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it
         ))
     };
     // No setting; the setting on `v`; retired; on `v` again; on nothing.
-    let mut at = 1;
+    let mut at = from + 1;
     for (asked, index) in [
         (None, false),
         (Some(json!(["v"])), true),
@@ -2049,9 +2079,22 @@ fn a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it
     ] {
         if let Some(fields) = &asked {
             at += 1;
-            let mut state = sort_setting(fields.clone(), at);
+            let key = format!("sort_index.{name}");
+            let setting = |fields| json!({"key": key, "value": fields});
+            let mut state = record(
+                lakelands_api::seam::SETTING_TYPE,
+                &key,
+                setting(fields.clone()),
+                at,
+            );
             if fields.is_null() {
-                state.fields = sort_setting(json!(["v"]), at).fields;
+                state.fields = record(
+                    lakelands_api::seam::SETTING_TYPE,
+                    &key,
+                    setting(json!(["v"])),
+                    at,
+                )
+                .fields;
                 state.retired = true;
             }
             fold(engine, at, |p| p.put_record(&state))?;
@@ -2075,7 +2118,7 @@ fn a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it
             };
             ensure!(
                 right,
-                "with {asked}, {which} of {LIMIT} ordered by `v` {dir:?} is not what one scan \
+                "with {asked}, {which} of {LIMIT} of `{ty}` ordered by `v` {dir:?} is not what one scan \
                  over every state answers"
             );
             if index {
@@ -2083,13 +2126,13 @@ fn a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it
                 // run, and the rows that close the page's last run.
                 ensure!(
                     read <= u64::from(LIMIT) + 3,
-                    "with {asked}, {which} of {LIMIT} ordered by `v` {dir:?} read {read} of the \
-                     type's {N} records; the order index reads its page and at most three more"
+                    "with {asked}, {which} of {LIMIT} of `{ty}` ordered by `v` {dir:?} read {read} of the \
+                     {N} records; the order index reads its page and at most three more"
                 );
             } else {
                 ensure!(
                     read >= N,
-                    "with {asked}, {which} of {LIMIT} ordered by `v` {dir:?} read {read} rows; \
+                    "with {asked}, {which} of {LIMIT} of `{ty}` ordered by `v` {dir:?} read {read} rows; \
                      with no index on `v` it sorts all {N} records, so the index answered \
                      what the lake did not ask it for"
                 );

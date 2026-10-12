@@ -33,7 +33,10 @@ impl Shape {
 
 pub struct Pair(pub Decl, pub u16);
 
+pub struct One { pub a: u64, pub path: Decl, b: u64 }
+
 pub enum Write {
+    Braced { a: u64 },
     Upsert {
         decl: Decl,
         count: u64,

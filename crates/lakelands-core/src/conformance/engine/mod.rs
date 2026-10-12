@@ -120,6 +120,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     log::READ_ONLY_OPEN,
     log::DROPPED_WRITER,
     log::READ_ONLY_HANDLE,
+    log::UNLEASED_HANDLE,
     projection::VIEW_AT_A_POSITION,
     projection::PAST_THE_FOLD,
     projection::ROLLBACK,
@@ -127,6 +128,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     projection::EDGES_OF_MANY_KEYS,
     projection::GET_MANY,
     projection::MUCH_WRITTEN_KEY,
+    projection::HEAD_ONLY_NAME,
     projection::EDGES_TO_RETIRED,
     projection::EDGES_FOLLOW_THE_LATEST_STATE,
     projection::COMMIT_INVALID,
@@ -269,9 +271,10 @@ mod tests {
         }
 
         fn fresh(&self) -> lakelands_api::Result<Box<dyn LakeEngine>> {
-            Err(lakelands_api::Error::Unavailable {
-                message: "no lake on purpose".into(),
-            })
+            let lake = "broken".to_owned();
+            Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::NoLake { lake, schema: None },
+            ))
         }
 
         fn reopen(&self, _: &LakeId, _: OpenMode) -> lakelands_api::Result<Box<dyn LakeEngine>> {
@@ -301,7 +304,7 @@ mod tests {
         assert_eq!(report.harness, "broken");
         assert!(report.passed.is_empty());
         assert_eq!(report.failed.len(), ENGINE_CHECKS.len());
-        assert!(report.failed[0].1.message.contains("no lake on purpose"));
+        assert!(report.failed[0].1.message.contains("no lake `broken`"));
     }
 
     #[test]

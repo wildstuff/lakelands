@@ -1,14 +1,16 @@
 //! Values against their declared types, and the mock's stable ids.
 
+use lakelands_api::error::{Case, Shape};
 use lakelands_api::id::{IdempotencyKey, Position};
-use lakelands_api::ontology::{FieldType, StorageKind, ValueTypeDecl};
+use lakelands_api::ontology::{FieldType, StorageKind, ValueTypeDecl, is_vector_component};
 use lakelands_api::principal::Principal;
 use lakelands_api::record::Value;
 use lakelands_api::time::Timestamp;
 use sha2::{Digest as _, Sha256};
 
-/// Why a value does not fit its field, for a person; `None` when it fits.
-pub(crate) fn misfit(ty: &FieldType, v: &Value, value_types: &[ValueTypeDecl]) -> Option<String> {
+/// Why a value does not fit its field, as the store says it; `None` when
+/// it fits.
+pub(crate) fn misfit(ty: &FieldType, v: &Value, value_types: &[ValueTypeDecl]) -> Option<Case> {
     let is_decimal = |s: &str| {
         let s = s.strip_prefix('-').unwrap_or(s);
         let mut parts = s.splitn(2, '.');
@@ -18,24 +20,52 @@ pub(crate) fn misfit(ty: &FieldType, v: &Value, value_types: &[ValueTypeDecl]) -
             && whole.bytes().all(|b| b.is_ascii_digit())
             && frac.is_none_or(|f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()))
     };
-    let fits = match ty.kind {
-        StorageKind::Text | StorageKind::Reference | StorageKind::Bytes => v.is_string(),
-        StorageKind::Number => v.is_number(),
-        StorageKind::Decimal => v.as_str().is_some_and(is_decimal),
-        StorageKind::Boolean => v.is_boolean(),
-        StorageKind::DateTime => v.as_str().is_some_and(|s| Timestamp::parse(s).is_ok()),
-        StorageKind::Json => true,
-        StorageKind::Vector => v.as_array().is_some_and(|a| {
-            a.iter().all(Value::is_number) && ty.dimensions.is_none_or(|d| a.len() == d as usize)
-        }),
-        StorageKind::Geo => v.get("type").is_some_and(Value::is_string),
+    let shape = |shape| {
+        Some(Case::ValueShape {
+            kind: ty.kind,
+            shape,
+        })
     };
-    if !fits {
-        let kind = serde_json::to_value(ty.kind).unwrap_or_default();
-        return Some(format!(
-            "the value is not a valid {}",
-            kind.as_str().unwrap_or("value")
-        ));
+    let text = || v.as_str().map(|s| s.escape_debug().to_string());
+    match ty.kind {
+        StorageKind::Text | StorageKind::Reference if !v.is_string() => return shape(Shape::Text),
+        StorageKind::Bytes if !v.is_string() => return shape(Shape::Base64),
+        StorageKind::Number if !v.is_number() => return shape(Shape::Number),
+        StorageKind::Boolean if !v.is_boolean() => return shape(Shape::Boolean),
+        StorageKind::Decimal => match v.as_str() {
+            None => return shape(Shape::Digits),
+            Some(s) if !is_decimal(s) => return text().map(|value| Case::NotDecimal { value }),
+            Some(_) => {}
+        },
+        StorageKind::DateTime => match v.as_str() {
+            None => return shape(Shape::DateTime),
+            Some(s) if Timestamp::parse(s).is_err() => {
+                return text().map(|value| Case::NotDateTime { value });
+            }
+            Some(_) => {}
+        },
+        StorageKind::Date => match v.as_str() {
+            None => return shape(Shape::Date),
+            Some(s) if Timestamp::parse(s).ok().and_then(Timestamp::day).is_none() => {
+                return text().map(|value| Case::NotDate { value });
+            }
+            Some(_) => {}
+        },
+        StorageKind::Vector => {
+            let numbers = v.as_array().filter(|a| a.iter().all(is_vector_component));
+            let Some(items) = numbers else {
+                return shape(Shape::Numbers);
+            };
+            if let Some(expected) = ty.dimensions.filter(|d| items.len() != *d as usize) {
+                let found = items.len();
+                return Some(Case::VectorLength { found, expected });
+            }
+        }
+        StorageKind::Geo if !v.is_object() => return Some(Case::GeoNotObject),
+        StorageKind::Geo if !v.get("type").is_some_and(Value::is_string) => {
+            return Some(Case::GeoNoType);
+        }
+        _ => {}
     }
     let vt = ty
         .value_type
@@ -43,19 +73,29 @@ pub(crate) fn misfit(ty: &FieldType, v: &Value, value_types: &[ValueTypeDecl]) -
         .and_then(|n| value_types.iter().find(|d| &d.name == n))?;
     match v.as_str() {
         Some(s) if !vt.one_of.is_empty() && !vt.one_of.iter().any(|o| o == s) => {
-            Some(format!("`{s}` is not one of {}", vt.one_of.join(", ")))
+            Some(Case::NotOneOf {
+                value: v.clone(),
+                allowed: vt.one_of.iter().collect(),
+            })
         }
         _ => None,
     }
 }
 
 /// A stored value converted to a new field type; `None` when it would
-/// lose information.
+/// lose information. A text becomes an instant or a date only in UTC: a
+/// non-zero offset is lost.
 pub(crate) fn convert(v: &Value, to: &FieldType) -> Option<Value> {
-    if misfit(to, v, &[]).is_none() {
-        return Some(v.clone());
-    }
+    let utc = |s: &str| {
+        let offset = s.len() > 10
+            && matches!(s.as_bytes()[s.len() - 6], b'+' | b'-')
+            && !s.ends_with("00:00");
+        Timestamp::parse(s).ok().filter(|_| !offset)
+    };
     let c = match (to.kind, v) {
+        (StorageKind::DateTime, Value::String(s)) => Value::String(utc(s)?.to_string()),
+        (StorageKind::Date, Value::String(s)) => Value::String(utc(s)?.day()?),
+        _ if misfit(to, v, &[]).is_none() => return Some(v.clone()),
         (StorageKind::Text | StorageKind::Decimal, Value::Number(n)) => {
             Value::String(n.to_string())
         }
@@ -131,7 +171,8 @@ fn canonical_number(v: &Value) -> Value {
 }
 
 /// A checked value in its one form: numbers as §1.2 writes them, inside
-/// vectors and JSON values too, and a date-time in the one form of §1.3.
+/// vectors and JSON values too, a date-time in the one form of §1.3 and a
+/// date as `YYYY-MM-DD`.
 /// Every value the mock stores, keys and hashes is in this form, as the
 /// store's are.
 pub(crate) fn canonical(ty: &FieldType, v: &Value) -> Value {
@@ -149,6 +190,10 @@ pub(crate) fn canonical(ty: &FieldType, v: &Value) -> Value {
         (StorageKind::DateTime, Value::String(s)) => Timestamp::parse(s)
             .map(|t| Value::String(t.to_string()))
             .unwrap_or_else(|_| v.clone()),
+        (StorageKind::Date, Value::String(s)) => Timestamp::parse(s)
+            .ok()
+            .and_then(Timestamp::day)
+            .map_or_else(|| v.clone(), Value::String),
         (StorageKind::Number | StorageKind::Vector | StorageKind::Json | StorageKind::Geo, _) => {
             numbers(v)
         }

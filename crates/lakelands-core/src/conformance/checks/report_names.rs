@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::write::{Migration, MigrationReport, ProposalFilter, ProposedWrite};
-use lakelands_api::{Access, LakeStore, Outcome, Principal, Refusal, WriteOpts};
+use lakelands_api::{Access, Error, LakeStore, Missing, Outcome, Principal, Refusal, WriteOpts};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
@@ -18,7 +18,7 @@ use crate::conformance::fixture::{Lake, Must, field_access, patch, reason, restr
 check!(
     /// A report is trimmed for its reader wherever it is answered.
     REPORT_AS_ITS_READERS_VIEW = a_migrations_report_is_answered_as_its_reader_may_know_it,
-    "013, 024 and 027, extended (lakelands#531): a migration's report names a conversion, a dropped field, a re-keyed type, a rewritten reference and a colliding key only where its reader may see the type and know of the field, and a sample key only of a record it is answered, in the refusal of an accept, of `migrate_apply` and of `propose` and in a preview, an author's own too; `more` says that the report holds more, and one who may see everything reads it whole without it; the id stays the whole report's, so a preview read trimmed is applied by it; a relation the migration removes is listed as dropped to one who sees the type"
+    "013, 024 and 027, extended (lakelands#531): a migration's report names a conversion, a dropped field, a re-keyed type, a rewritten reference and a colliding key only where its reader may see the type and know of the field, and a sample key only of a record it is answered, in the refusal of an accept, of `migrate_apply` and of `propose` and in a preview, an author's own too; `more` says that the report holds more, and one who may see everything reads it whole without it; the id is made over what the reader is shown, so a preview read trimmed is applied by it (lakelands#644); a relation the migration removes is listed as dropped to one who sees the type and is shown the relation (lakelands#662); to an accepter who may not see the type the proposal is one that does not exist (lakelands#762)"
 );
 
 /// `account` keyed by `key`, with `holder` and, when given, `score` of
@@ -128,6 +128,7 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(
     let unseen = || TypeGrants {
         default: Some(Access::None),
         fields: [].into(),
+        ..Default::default()
     };
     hid.grants
         .types
@@ -172,7 +173,9 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(
     let whole = preview(&l, &l.own, account("iban", "text", Some("text"), true)).await?;
     let read = preview(&l, &hid, view.clone()).await?;
     let boolean = preview(&l, &hid, account("number", "boolean", None, true)).await?;
-    let (id, boolean) = (whole.report_id, json!(boolean).to_string());
+    // The author's id is of what it is shown, never the owner's.
+    let (id, owners) = (read.report_id.clone(), whole.report_id);
+    let boolean = json!(boolean).to_string();
     let (migration, report) = (Box::new(view.clone()), Default::default());
     let again = ProposedWrite::Migrate { migration, report };
     let scored = refused(l.cat.accept(&hid, &ids[0]).await)?;
@@ -186,7 +189,7 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(
     let since_whole = refused(l.cat.accept(&l.own, &ids[4]).await)?;
     let read = json!(read).to_string();
     // Per row: the report, the names it must show and those it must not.
-    let (more, id) = ("\"more\":true", id.as_str());
+    let (more, id, owners) = ("\"more\":true", id.as_str(), owners.as_str());
     let (one, both) = ("\"sample_keys\":[\"2\"]", "\"sample_keys\":[\"2\",\"4\"]");
     let collision = "{\"key\":\"DE1\",\"type\":\"account\"}";
     let what = [
@@ -209,8 +212,8 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(
         (&held_whole, &[both], &["more"]),
         (&rekeyed, &[more, collision], &["entry"]),
         (&rekeyed_whole, &["entry", "DE1:1"], &["more"]),
-        (&read, &[more, id], &["entry"]),
-        (&applied, &[more, id], &["entry"]),
+        (&read, &[more, id], &["entry", owners]),
+        (&applied, &[more, id], &["entry", owners]),
         (&proposed, &[more], &["entry"]),
         (&boolean, &[more, visible], &["\"4\""]),
         (&since, &[more, "kept_by.since"], &["b1:x"]),
@@ -231,19 +234,16 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(
         "a report is answered as its reader may know it: {red}"
     );
 
-    // One who may not see the type is refused without its name.
+    // To one who may not see the type, the proposal is not there
+    // (lakelands#762): no report, and no name.
     let mut blank = reviewer(s, true);
     blank.grants.default = Access::None;
-    let unnamed = l.cat.accept(&blank, &ids[1]).await;
-    let said = unnamed.as_ref().err().map(ToString::to_string);
-    let report = refused(unnamed)?;
-    let names = ["account", "holder", "\"2\""]
-        .iter()
-        .any(|n| report.contains(n));
+    let unnamed = l.cat.accept(&blank, &ids[1]).await.map(|_| ());
+    let missing = Missing::Proposal { id: ids[1].clone() };
     ensure!(
-        said.as_deref() == Some("refused: the migration would lose information") && !names,
-        "one who may not see `account` is refused as a migration without a name, in the \
-         sentence and in the report; it is told {said:?} with {report}"
+        unnamed == Err(Error::NotFound { missing }),
+        "one who may not see `account` accepting its migration is answered as for a proposal \
+         that does not exist; it is told {unnamed:?}"
     );
     // A relation the migration removes is listed as dropped, with its links.
     let listed = l.cat.proposals(&l.own, ProposalFilter::default()).await;

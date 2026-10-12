@@ -48,8 +48,8 @@ absent from answers, from the masked list and from metadata, from
 it gets the answer for a field the type does not declare: the same
 kind, the same sentence, the same field named. Any other answer would
 let a single refusal reveal what every answer hides. A search that
-names no fields reads only the searchable fields the principal knows
-of.
+names no fields reads only the searchable fields the principal reads
+(lakelands#662), so a masked one neither refuses nor ranks it.
 
 `sensitive` raises only an *inherited* `none`, from the type's or the
 lake's default for a field the grants do not name, to `masked`, so a
@@ -130,11 +130,14 @@ position before the rename.
   the last of the list: a proposed rename is listed to a reader kept
   from the old name with neither the pair nor the new name, and a
   migration's answer names in `renamed` each rename the one answered may
-  know of. A proposal that waited while the lake renamed the same field,
-  or the same relation, otherwise is judged from the names its old ones
-  bear now: each of its renames begins at the name in force, so a reader
-  kept from the field or from the relation's link type under that name
-  is listed neither the pair nor the proposed name (lakelands#594).
+  know of. A proposal that waited while the lake renamed a field or a
+  relation is listed by the names it was written with, the reader's
+  grants followed to the proposal's position: a restriction on a name
+  taken since reaches the name the field bore then. So a reader kept
+  from the field, or from the relation's link type, under the name in
+  force is listed neither the pair, nor the proposed name, nor a field
+  the proposal keeps under its old name, in its shape or in its hashes
+  (lakelands#594, lakelands#644).
 
 **Two costs, taken with the rule.**
 
@@ -202,8 +205,9 @@ described `sys.link.invoice.approved_by`, read its records, wrote and
 retired its links, and read through a view how many invoices there are.
 
 **A type made of another is shown to a principal only where that other
-type is**: a link type where the type that declares its relation is, a
-view where its source and every merged source is. One who is told a type
+type is**: a link type where the type that declares its relation and
+that relation's target are (lakelands#662), a view where its source and
+every merged source is. One who is told a type
 does not exist is told the same of what is made of it.
 
 - **One function decides it**, the one that decides whether a type is
@@ -243,9 +247,23 @@ does not exist is told the same of what is made of it.
   step from the target by the inverse, or by the relation's own name
   walked in, is answered one who is not shown the owner as a relation
   the target does not have, for a relation carried by links and by a
-  reference field alike. A step forward from a type the principal is
-  shown to a target it is not is as before: the relation is declared
-  where the principal reads it, and the target is not found.
+  reference field alike.
+- **A relation is declared to a principal only where it is shown both
+  its ends (lakelands#662)**, and, for a derived relation, may know of
+  every field its match pairs, on both sides. A relation to a target
+  that is not declared was already left out; describing one to a target
+  the principal is not shown would tell it the target exists, and the
+  link type's description and its `to` field name it. One it is not
+  shown is answered at every door as a relation the type does not
+  have, naming only what the caller sent: `describe` and `may.link`, a
+  step out, in, either way or by the inverse name, a graph and a
+  measure, whose edges leave it out, `link` and `unlink` after a retry
+  is answered, a proposal's listing and its report, and the hash of the
+  shape shown. A match over a field the principal sees masked stays
+  shown: the field is known, and a walk over it is refused as not
+  granted, naming it. An author who declares a type again from its view
+  keeps such a relation as declared, at its place, as it keeps a hidden
+  field (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
 - **A pattern's probes ask it too (lakelands#653, lakelands#654).** An
   order, a measure or a grouping over a path `type.field` on a type the
   principal is not shown reads nothing and is left alone, as a path on
@@ -255,12 +273,13 @@ does not exist is told the same of what is made of it.
   the principal is shown. A relation a hidden type derives under the
   same name reaches no record the principal is shown and is not probed,
   so no refusal names it.
-- **The other end is not asked.** A link's `to` is a key of the target
-  type, read by a principal kept from the target as it reads a reference
-  field's value in any record.
+- **A link type is made of its relation's target too (lakelands#662).**
+  It was made of its owner alone, and a principal kept from the target
+  read the links and their `to` keys. Its `to` names the target, so it
+  is followed as a view's source is.
 
 For a host: a principal that reads or writes a type's links is granted
-something of the type, and a principal that reads a view is granted
+something of the type and of its relation's target, and a principal that reads a view is granted
 something of each of its sources.
 
 ## Extended: `sensitive` shows a field, never a type (lakelands#608)
@@ -321,12 +340,85 @@ read nor named the type in the pattern, search and subscribe tools.
   or a search over a field the principal does not read is not granted
   (024), so `may.find` promises the door, not every question.
 - **A key is shown to whoever is shown the record.** A key made of
-  fields holds their values, whatever is granted on those fields. A host
-  does not key a type by a field it hides.
+  fields holds their values. So a type keyed by a field its principal
+  may not know of is not shown to it (lakelands#715): it answers as a
+  type that is not declared, and so does every type made of it, a link
+  type of its relations and a view over it. A key field the principal
+  sees masked or may only write still gives its value through the key:
+  the field is known, and only its value is withheld elsewhere. A grouped
+  view's records are keyed by its `group_by`, whatever its `key` says,
+  and that key is judged at its sources too: each key field on the
+  view, on its source and on each merge source by position, since the
+  key holds their values (lakelands#782). It is also the key `describe`,
+  the tools and a listed declaration name. A view's definition shown to
+  a principal names no measure of a field it may not know of, as its
+  fields do not. A measure that reads such a measure by name, directly
+  or through another, is not known either, as a field derived from one
+  is not: its value would give the hidden one away. This holds for a
+  principal who may write as for one who reads, since a view's fields
+  are never written.
 - **A step walks a relation by its owner.** A relation is declared on
   the type the principal is shown, so a step over it is answered the
   other end's key also where the principal's grants keep it from the
   relation's link type; it is then shown no link field.
 
 For a host: a principal that is not to list a type's records is granted
-nothing of the type.
+nothing of the type. Holding a key field at `none` now hides the type;
+before lakelands#715 it hid the field and answered its value as the
+key.
+
+## Extended: a type kept from a principal hides what refers to it (lakelands#718)
+
+A reference to a type its principal is not shown is a field it may not
+know of (024, extended), so the made-of rule follows it: a type keyed by
+such a reference is not shown (lakelands#715), nor a view grouped by one,
+nor a type keyed by a reference to either, to a fixed point, and a
+relation carried by one is not shown (lakelands#727). A host that keeps
+an agent from a type keeps it, by that alone, from every type made of
+it through a key. To show such a type, it grants the target type, its
+key fields at least masked; an unkeyed type can be granted with nothing
+else.
+
+
+## Extended: nothing beside a type names it to one it is kept from (lakelands#770)
+
+A type its principal is not shown is not named by what is declared
+beside it either. A verb on such a type is not described and no tool
+is made of it, even where the principal could write every field the
+verb sets: `call` and `propose` already answer it as a verb that is
+not declared, and `describe` now agrees with them. A function is shown
+to a principal only where `describe` lists it (every type that computes
+a field by it is shown to the principal, which reads that field and each
+input, or it holds `schema`). The conditions of a value type's rename name
+such a function only to a reviewer shown it; to any other it is told
+only as one there may be (`conditions_unshown`), as a set or a trigger
+it is not shown is.
+
+## Extended: a hold now hides a record at every position (lakelands#790)
+
+A retention hold is about the record, not the moment. To a principal
+without the `restricted` grant, a record held at the head is not there
+at any position: a read as of an earlier position answers it as a record
+that never existed, at `get`, `find` (its rows, `total` and aggregates),
+a view computed or kept, a walk, a pattern and a search, lexical, by
+vector or both, whose candidates, ranks and counts leave it out. A
+record held then and released since is answered there as any record is,
+since the hold that stands now is the one that governs.
+
+A read as of a position by such a principal reads through a view that
+gives each record its hold at the head, asked of the head one page of
+keys at a time. A record is found at the head by the name and the key
+it bears there, after each rename of its link type and each re-key
+since, and one the head does not hold keeps the hold it had: a record
+is never released by not being found. Every door then judges the hold as it does at the head.
+A page the engine fills with records held now is read on until it is
+full, a total is counted in pages, and a kept view, folded as it stood
+then, is computed instead, and `describe` says it is not kept here. A
+read at the head, or by a principal with
+the grant, is unchanged.
+
+**Why.** A hold withholds a record from those without the grant. A read
+as of the moment before the hold would hand it back whole, so a hold
+that cut only the head would withhold nothing. A record released from a
+hold is one its readers may see, and the history before its release is
+part of it.

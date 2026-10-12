@@ -7,7 +7,6 @@ use lakelands_api::ontology::{
 use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl};
 use lakelands_api::{FieldName, RelationName, TypeName, ValueTypeName, VerbName};
 
-use super::lower::kind_name;
 use super::{Bundle, BundleError, Problem, load_dir, parse};
 
 fn files(files: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -695,7 +694,7 @@ fn the_documented_examples_load() {
 fn the_documented_kinds_are_the_storage_kinds() {
     let doc = include_str!("mod.rs");
     for k in StorageKind::ALL {
-        assert!(doc.contains(&format!("`{}`", kind_name(k))), "{k:?}");
+        assert!(doc.contains(&format!("`{k}`")), "{k:?}");
     }
 }
 
@@ -1353,12 +1352,12 @@ fn a_views_parameters_arrive_in_the_order_they_were_written() {
 fn a_view_parameter_of_no_storage_kind_is_refused_naming_it() {
     let view = (
         "types/window.yaml",
-        "name: window\nview:\n  source: invoice\n  params:\n    until: date\n  \
+        "name: window\nview:\n  source: invoice\n  params:\n    until: day\n  \
          where: \"due_on <= param('until')\"\n  measures:\n    invoices: \"count()\"\n",
     );
     let e = one(&[INVOICE, view], Problem::BadFieldType);
     assert!(
-        e.message.contains("`until`") && e.message.contains("`date`"),
+        e.message.contains("`until`") && e.message.contains("`day`"),
         "{e}"
     );
 }

@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::Case;
 use crate::expr::Condition;
 use crate::id::{Cursor, FieldName, ParamName, Position, RecordKey};
 use crate::record::{Record, Value};
@@ -72,6 +73,7 @@ pub enum OrderBy {
 /// One sort key. Records without a value for it sort last in either
 /// direction; the record key breaks ties.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Order {
     /// The field sorted on; empty, and absent on the wire, for `latest`.
     #[serde(default, skip_serializing_if = "is_no_field")]
@@ -95,21 +97,14 @@ fn is_no_field(field: &FieldName) -> bool {
 impl Order {
     /// Whether a key names its field as its `by` asks: `latest` none,
     /// every other a field. The fault, with the field it names if any.
-    pub fn misfit(&self) -> Option<(Option<FieldName>, String)> {
+    pub fn misfit(&self) -> Option<(Option<FieldName>, Case)> {
         match (self.by, self.field.as_str().is_empty()) {
-            (OrderBy::Latest, false) => Some((
-                Some(self.field.clone()),
-                format!(
-                    "`latest` orders by the position of each record's latest change and takes \
-                     no field, and `{}` was given",
-                    self.field
-                ),
-            )),
+            (OrderBy::Latest, false) => {
+                let field = self.field.clone();
+                Some((Some(field.clone()), Case::LatestTakesNoField { field }))
+            }
             (OrderBy::Latest, true) | (_, false) => None,
-            (_, true) => Some((
-                None,
-                "an order by a value, `known_at` or `seen_at` names its field".into(),
-            )),
+            (_, true) => Some((None, Case::OrderNamesNoField)),
         }
     }
 }
@@ -132,6 +127,7 @@ pub enum AggFunc {
 
 /// One aggregate an answer carries.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AggMeasure {
     /// The name the result is reported under.
     pub name: FieldName,
@@ -144,6 +140,7 @@ pub struct AggMeasure {
 
 /// An aggregation: measures, optionally per group.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Aggregate {
     /// The measures.
     pub measures: Vec<AggMeasure>,
@@ -157,8 +154,8 @@ pub struct Aggregate {
 /// field's value, as it is written: `"partner"`. A named expression
 /// groups by its value per record, answered under `name` in the group's
 /// `by`: `{"name": "month", "expr": "date_bucket(due_on, 'month')"}`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(untagged, deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(untagged)]
 pub enum GroupKey {
     /// A field's value.
     Field(FieldName),
@@ -169,6 +166,36 @@ pub enum GroupKey {
         /// The expression, evaluated per record as a `where` is.
         expr: crate::expr::Condition,
     },
+}
+
+impl<'de> Deserialize<'de> for GroupKey {
+    /// A text is a field; anything else is read as a named key, so that a
+    /// member it does not take is named, which an untagged enum's error
+    /// does not do. A named key is an object: a list is no key, though a
+    /// struct reads from one.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<GroupKey, D::Error> {
+        const EXPECTING: &str = "a field's name, or an object with `name` and `expr`";
+        #[derive(Deserialize)]
+        #[serde(
+            deny_unknown_fields,
+            expecting = "a field's name, or an object with `name` and `expr`"
+        )]
+        struct Named {
+            name: FieldName,
+            expr: Condition,
+        }
+        let named = match Value::deserialize(d)? {
+            Value::String(field) => return Ok(GroupKey::Field(field.into())),
+            Value::Array(_) => {
+                let seq = serde::de::Unexpected::Seq;
+                return Err(serde::de::Error::invalid_type(seq, &EXPECTING));
+            }
+            other => serde_json::from_value::<Named>(other),
+        };
+        let named = named.map_err(serde::de::Error::custom)?;
+        let (name, expr) = (named.name, named.expr);
+        Ok(GroupKey::Named { name, expr })
+    }
 }
 
 impl GroupKey {
@@ -197,6 +224,7 @@ impl From<FieldName> for GroupKey {
 /// aggregated. It subsumes listing, counting, summing, ranges and
 /// grouping; a view type is found like any other type.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Find {
     /// Which records, in the one expression grammar.
     #[serde(default, rename = "where", skip_serializing_if = "Option::is_none")]
@@ -290,6 +318,7 @@ pub struct Group {
 
 /// `get`: one record by key.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Get {
     /// The record's key.
     pub key: RecordKey,

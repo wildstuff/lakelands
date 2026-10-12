@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::id::ProposalId;
 use lakelands_api::ontology::{FieldDecl, RelationDecl, TypeDecl};
 use lakelands_api::principal::TypeGrants;
@@ -18,7 +19,7 @@ use super::report_names::{preview, refused};
 use crate::conformance::Failure;
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
-    Lake, Must, describe_type, field_access, is_invalid, log_events,
+    Lake, Must, describe_type, field_access, invalid_case, is_invalid, log_events,
 };
 use crate::links::link_type_name;
 
@@ -59,7 +60,7 @@ type Kind = (&'static str, Vec<&'static str>, fn(&str) -> bool);
 fn kinds() -> [Kind; 3] {
     [
         ("the type", members!(TypeDecl { name, key, fields, relations, view, valid_from, valid_to, language, field_meta, description, label, annotations }), |t| t == "-"),
-        ("a field", members!(FieldDecl { name, ty, required, authority, derived, function, depends_on, on_input_change, initial, sensitive, searchable, description, label, embed, annotations }), |t| t != "-" && !RELATIONS.contains(&t)),
+        ("a field", members!(FieldDecl { name, ty, required, authority, derived, function, computed_at, depends_on, on_input_change, initial, sensitive, searchable, description, label, embed, annotations }), |t| t != "-" && !RELATIONS.contains(&t)),
         ("a relation", members!(RelationDecl { name, target, cardinality, inverse, via, fields, authority, description, annotations, derived }), |t| RELATIONS.contains(&t)),
     ]
 }
@@ -88,6 +89,7 @@ secret required null restated
 secret authority "authored" restated
 loud derived "lower(title)" restated
 loud depends_on null nothing
+loud computed_at "write" restated
 made function "hush" restated
 verdict depends_on ["body"] restated
 verdict on_input_change "keep" restated
@@ -452,7 +454,11 @@ async fn what_a_migration_restates_is_shown_as_its_fields_are_and_holds_at_the_a
         let mut who = field_access(s, &id, "person", &fields);
         (who.grants.review, who.grants.schema) = (true, true);
         let (default, fields) = (None, [("seen".into(), access)].into());
-        let seen = TypeGrants { default, fields };
+        let seen = TypeGrants {
+            default,
+            fields,
+            ..Default::default()
+        };
         who.grants.types.insert(link.clone(), seen);
         let own = json!(preview(&l, &who, own.clone()).await?).to_string();
         reports.push(("the preview of one who does not read `secret`", own));
@@ -561,11 +567,11 @@ async fn what_a_migration_restates_is_shown_as_its_fields_are_and_holds_at_the_a
     sensitive["sensitive"] = json!(true);
     declare(memo(text("title"), sensitive)).await?;
     let stale = l.cat.accept(&l.own, &ids[2]).await;
-    let said = stale.as_ref().err().map(ToString::to_string);
-    let said = said.unwrap_or_default().contains("changed since");
+    let said =
+        matches!(invalid_case(&stale), Some(Case::ChangedSinceProposed { ty }) if ty == "memo");
     let after = json!(describe_type(l.cat.as_ref(), &l.own, "memo").await?).to_string();
     ensure!(
-        is_invalid(&stale) && said && after.contains("\"sensitive\":true"),
+        said && after.contains("\"sensitive\":true"),
         "the accept of a migration proposed before `note` was declared sensitive is refused \
          as one of a type changed since, and the mark stays; it answered {stale:?}, and \
          `memo` is {after}"

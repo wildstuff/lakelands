@@ -21,11 +21,13 @@ use lakelands_api::describe::{
 };
 use lakelands_api::engine::Declared;
 use lakelands_api::expr::{Condition, Expr};
-use lakelands_api::ontology::{Authority, RelationDecl, TypeDecl, VerbDecl, VerbEffect, ViewDecl};
+use lakelands_api::ontology::{
+    Authority, RelationDecl, Risk, TypeDecl, VerbDecl, VerbEffect, ViewDecl,
+};
 use lakelands_api::write::{Declaration, FunctionDecl};
 use lakelands_api::{Access, FieldName, LakeId, Principal, TypeName};
 
-use crate::rights::{field_access, granted_access, type_access};
+use crate::rights::{field_access, granted_access, only_holder, pinnable, type_access};
 
 /// The lake as `who` may see it.
 pub fn lake(lake: &LakeId, declared: &[Declared], who: &Principal) -> LakeDescription {
@@ -177,7 +179,8 @@ pub fn shown(d: &Declaration, declared: &[Declared], who: &Principal) -> bool {
         Declaration::Verb(v) => seen.verbs.iter().any(|s| s.name == v.name),
         Declaration::Trigger(t) => seen.triggers.iter().any(|s| s.name == t.name),
         Declaration::ObjectSet(o) => seen.object_sets.iter().any(|s| s.name == o.name),
-        _ => true,
+        Declaration::Function(f) => seen.functions.iter().any(|s| s.name == f.name),
+        Declaration::ValueType(_) => true,
     }
 }
 
@@ -387,9 +390,9 @@ pub(crate) fn parsed(c: &Condition) -> Option<Expr> {
 }
 
 /// Whether a function may be shown to `who`: it computes at least one
-/// field, and on every type where it does, `who` reads that field and
-/// every input, which the function reads from the fields of the same
-/// names.
+/// field, and every type where it does is shown to `who`, which reads
+/// that field and every input, which the function reads from the fields
+/// of the same names.
 fn function_visible(f: &FunctionDecl, declared: &[Declared], who: &Principal) -> bool {
     if who.grants.schema {
         return true;
@@ -409,12 +412,13 @@ fn function_visible(f: &FunctionDecl, declared: &[Declared], who: &Principal) ->
         .peekable();
     uses.peek().is_some()
         && uses.all(|(t, x)| {
-            reads_all(
-                std::iter::once(&x.name).chain(f.inputs.iter().map(|i| &i.name)),
-                &t.name,
-                declared,
-                who,
-            )
+            type_shown(t, &|n| find_type(declared, n), who)
+                && reads_all(
+                    std::iter::once(&x.name).chain(f.inputs.iter().map(|i| &i.name)),
+                    &t.name,
+                    declared,
+                    who,
+                )
         })
 }
 
@@ -434,9 +438,10 @@ fn find_type<'a>(declared: &'a [Declared], ty: &TypeName) -> Option<&'a TypeDecl
 /// or to one of its fields, a `sensitive` field's raise not among them,
 /// and it is shown every type that `t` is made of
 /// (`docs/decisions/006-grants-not-roles.md`, extended): a link type is
-/// its owner's edges and a view is its sources' records computed, so one
-/// who is told the other does not exist is told the same of what is made
-/// of it, whatever a grant on its own name says. Each type is asked once,
+/// the edges from its owner to its relation's target, and a view is its
+/// sources' records computed, so one who is told the other does not exist
+/// is told the same of what is made of it, whatever a grant on its own
+/// name says. Each type is asked once,
 /// so views an imported log holds in a cycle are judged by their grants
 /// and the read that refuses the cycle is reached. `find` answers a type
 /// by its name; the description and every door that asks before it names
@@ -446,17 +451,32 @@ pub fn type_shown<'a>(
     find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
     who: &Principal,
 ) -> bool {
+    // A type keyed by a field its principal may not know of is not shown:
+    // every record key would hand out that field's value. A view's key is
+    // judged where its values come from too (lakelands#782).
+    let known = |t: &TypeDecl, key: &[FieldName]| {
+        let mut key = t.fields.iter().filter(|f| key.contains(&f.name));
+        key.all(|f| field_access(who, t, f) != Access::None)
+    };
     let own = |t: &TypeDecl| {
         let fields = &mut t.fields.iter();
-        type_access(who, &t.name) != Access::None
-            || fields.any(|f| granted_access(who, t, f) != Access::None)
+        let mut sources = t.key_sources().into_iter();
+        known(t, t.key_fields())
+            && sources.all(|(s, key)| find(s).is_none_or(|s| known(s, key)))
+            && (type_access(who, &t.name) != Access::None
+                || fields.any(|f| granted_access(who, t, f) != Access::None))
     };
     let (mut asked, mut next) = (vec![&t.name], vec![t]);
     while let Some(t) = next.pop() {
         let owner = crate::links::link_type_parts(&t.name).map(|p| p.0);
+        // A link type's `to` names its relation's target.
+        let target = (owner.iter())
+            .flat_map(|_| &t.fields)
+            .find(|f| f.name.as_str() == crate::links::TO)
+            .and_then(|f| f.ty.target.as_ref());
         let sources = (t.view.iter())
             .flat_map(|v| std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source)));
-        for o in owner.iter().chain(sources).filter_map(find) {
+        for o in owner.iter().chain(target).chain(sources).filter_map(find) {
             if asked.contains(&&o.name) {
                 continue;
             }
@@ -470,13 +490,42 @@ pub fn type_shown<'a>(
     own(t)
 }
 
+/// Whether `who` is shown relation `r` of `owner` (006, extended): it is
+/// shown both ends, it may know of the reference field that carries it,
+/// and of a derived relation it may know of every field the match pairs,
+/// on both sides. A relation it is not shown is, to it, one the type does
+/// not declare, at every door. A field it knows of and may not read leaves
+/// the relation shown; a walk over it is refused (024, extended).
+pub fn relation_shown<'a>(
+    owner: &TypeDecl,
+    r: &RelationDecl,
+    find: crate::rights::Find<'_, 'a>,
+    who: &Principal,
+) -> bool {
+    let Some(target) = find(&r.target) else {
+        return false;
+    };
+    let known = |t: &TypeDecl, n: &FieldName| {
+        let f = t.fields.iter().find(|f| &f.name == n);
+        f.is_some_and(|f| field_access(who, t, f) != Access::None)
+    };
+    let pairs = r.derived.iter().flat_map(|d| &d.pairs);
+    type_shown(owner, &|n| find(n), who)
+        && type_shown(target, find, who)
+        && r.via.iter().all(|v| known(owner, v))
+        && pairs
+            .into_iter()
+            .all(|p| known(owner, &p.from) && known(target, &p.to))
+}
+
 fn type_description(
     t: &TypeDecl,
     d: &Declared,
     declared: &[Declared],
     who: &Principal,
 ) -> Option<TypeDescription> {
-    if !type_shown(t, &|n| find_type(declared, n), who) {
+    let find = &|n: &TypeName| find_type(declared, n);
+    if !type_shown(t, find, who) {
         return None;
     }
     let fields: Vec<FieldDescription> = t
@@ -490,10 +539,16 @@ fn type_description(
     // A link type's records are written through its relation's link
     // doors, never through `upsert` or `retire`.
     let is_link = crate::links::is_link_type(&t.name);
+    // A holder of `only` writes its own records, and makes one only where
+    // it writes every field its `only` names (051).
+    let held = only_holder(who, t);
     let may = TypeRights {
         find: true,
         get: true,
-        upsert: !is_view && !is_link && fields.iter().any(FieldDescription::authored_writable),
+        upsert: crate::rights::creates(who, t)
+            && !is_view
+            && !is_link
+            && fields.iter().any(FieldDescription::authored_writable),
         retire: !is_link && crate::rights::may_retire(who, t),
         link: t
             .relations
@@ -501,7 +556,7 @@ fn type_description(
             .filter(|r| {
                 crate::links::carried_by_links(r)
                     && r.authority == Authority::Authored
-                    && find_type(declared, &r.target).is_some()
+                    && relation_shown(t, r, find, who)
             })
             .filter(|r| {
                 let lt = crate::links::link_type(&t.name, r);
@@ -514,47 +569,65 @@ fn type_description(
             })
             .map(|r| r.name.clone())
             .collect(),
+        // Told only where it applies, so it names no field its reader may
+        // not read (024).
+        only: match crate::rights::check_only(who, t) {
+            Ok(()) => crate::rights::own_only(who, &t.name).into_iter().collect(),
+            Err(_) => Default::default(),
+        },
     };
     let verbs = each(declared, |d| match &d.declaration {
-        Declaration::Verb(v) if v.on == t.name && verb_callable(v, t, who) => Some(v.name.clone()),
+        Declaration::Verb(v)
+            if v.on == t.name
+                && verb_callable(v, t, who)
+                && (!held || v.risk == Risk::Low || pinnable(who, t, Some(v))) =>
+        {
+            Some(v.name.clone())
+        }
         _ => None,
     });
+    let view = (t.view.clone()).filter(|v| view_visible(v, declared, who));
+    // The hash of the shape as it is shown (024, extended).
+    let whole = d.schema_hash.as_deref().unwrap_or_default();
+    let schema_hash = crate::rights::shown_hash(who, t, view.is_some(), whole, find);
     Some(TypeDescription {
         name: t.name.clone(),
         description: t.description.clone(),
         label: t.label.clone(),
         language: t.language.clone(),
-        view: t
-            .view
-            .clone()
-            .filter(|v| view_visible(v, declared, who))
-            .map(|v| *v),
+        view: view.map(|mut v| {
+            v.keep_measures(|n| fields.iter().any(|f| &f.name == n));
+            *v
+        }),
         annotations: t.annotations.clone(),
         relations: t
             .relations
             .iter()
-            .filter(|r| find_type(declared, &r.target).is_some())
+            .filter(|r| relation_shown(t, r, find, who))
             .map(|r| relation_description(&t.name, r, who))
             .collect(),
         access: TypeAccess {
-            key: t.key.clone(),
-            valid_from: t.valid_from.clone(),
-            valid_to: t.valid_to.clone(),
-            searchable: t.fields.iter().any(|f| f.searchable),
+            // The key its records carry (lakelands#782).
+            key: t.key_fields().to_vec(),
+            // A valid time over a field its reader may not know of is not
+            // named (024, extended).
+            valid_from: (t.valid_from.clone()).filter(|v| fields.iter().any(|f| &f.name == v)),
+            valid_to: (t.valid_to.clone()).filter(|v| fields.iter().any(|f| &f.name == v)),
+            // Over the fields as shown: a masked field is not searchable
+            // to its reader, nor is one it may not know of sourced (024).
+            searchable: fields.iter().any(|f| f.searchable),
             field_meta: t.field_meta,
         },
         may,
         verbs,
         lineage: TypeLineage {
-            sourced: t
-                .fields
-                .iter()
+            sourced: (fields.iter())
                 .any(|f| matches!(f.authority, Authority::Source | Authority::Shared)),
             view_of: t.view.as_ref().map(|v| v.source.clone()),
         },
         lifecycle: TypeLifecycle {
             version: d.version,
-            schema_hash: d.schema_hash.clone().unwrap_or_default(),
+            schema_hash,
             sorted: vec![],
             indexed: vec![],
             kept: None,
@@ -583,17 +656,19 @@ fn relation_description(t: &TypeName, r: &RelationDecl, who: &Principal) -> Rela
 
 /// A verb is callable when every field its effect writes is granted to the
 /// principal, or — for a verb that reaches outside the lake — when the
-/// principal may write the type as a whole.
+/// principal may write the type as a whole; and it reads no field the
+/// principal may not read (024, extended).
 fn verb_callable(v: &VerbDecl, t: &TypeDecl, who: &Principal) -> bool {
-    match &v.effect {
-        VerbEffect::Write { set } => {
-            !set.is_empty()
-                && set
-                    .iter()
-                    .all(|a| who.grants.access(&t.name, &a.field).writes())
+    crate::rights::reads_what_verb_reads(who, t, v)
+        && match &v.effect {
+            VerbEffect::Write { set } => {
+                !set.is_empty()
+                    && set
+                        .iter()
+                        .all(|a| who.grants.access(&t.name, &a.field).writes())
+            }
+            VerbEffect::External { .. } => type_access(who, &t.name).writes(),
         }
-        VerbEffect::External { .. } => type_access(who, &t.name).writes(),
-    }
 }
 
 fn verb_description(
@@ -602,7 +677,12 @@ fn verb_description(
     who: &Principal,
 ) -> Option<VerbDescription> {
     let t = find_type(declared, &v.on)?;
-    if !verb_callable(v, t, who) {
+    // A verb that waits for review is proposed, and a holder of `only`
+    // proposes none that could move its pairs (051). One on a type not
+    // shown would name it.
+    let held = only_holder(who, t) && !pinnable(who, t, Some(v));
+    let shown = type_shown(t, &|n| find_type(declared, n), who);
+    if !shown || !verb_callable(v, t, who) || (held && v.risk != Risk::Low) {
         return None;
     }
     Some(VerbDescription {

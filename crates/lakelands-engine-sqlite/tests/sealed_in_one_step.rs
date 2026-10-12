@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
+use lakelands_api::error::{Part, Situation};
 use lakelands_api::event::Digest;
 use lakelands_api::id::Position;
 use lakelands_api::seam::Seams;
@@ -187,14 +188,17 @@ async fn cut_short() {
         setrlimit(Resource::Fsize, Rlimit { current, maximum }).unwrap();
         let failed = store.checkpoint().await;
         setrlimit(Resource::Fsize, was).unwrap();
-        let failed = failed.unwrap_err().to_string();
-        assert!(failed.contains("File too large"), "{cut}: {failed}");
+        let failed = failed.unwrap_err();
         let part = if cut == "the index" {
-            ".idx"
+            Part::LogIndex
         } else {
-            ".partial"
+            Part::Segment
         };
-        assert!(failed.contains(part), "{cut}: {failed}");
+        assert!(
+            matches!(failed.situation(), Some(Situation::Storage { part: p, detail, .. })
+                if *p == part && detail.as_str().contains("File too large")),
+            "{cut}: {failed}"
+        );
         assert_eq!(
             (names(&dir, "log"), names(&dir, "index")),
             held,

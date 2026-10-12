@@ -14,7 +14,7 @@ use super::computed_inputs::told;
 use super::export::Scratch;
 use crate::conformance::fixture::{
     Lake, Must, field_access, get_at, ingest, log_events, no_such_field, read_at, recorded_outputs,
-    reviewer, source_record, try_upsert, write_verb,
+    refused_alike, reviewer, source_record, try_upsert, write_verb,
 };
 use crate::conformance::{Failure, Given, ImportedLake};
 
@@ -263,6 +263,10 @@ async fn a_grant_holds_a_field_under_every_name_it_has_borne(
          call {called:?}",
         got.masked
     );
+    // Member for member as `nosuch`, which `account` does not have.
+    let x = json!({"nosuch": "x"});
+    let nosuch = try_upsert(l.cat.as_ref(), &writer, "account", "1", x).await;
+    refused_alike("an upsert of `owner`", &wrote, nosuch, ("nosuch", "owner"))?;
 
     // A name taken again by another field, and a swap: two fields that
     // have borne one name are restricted together by it.
@@ -461,5 +465,8 @@ async fn a_grant_holds_a_field_under_every_name_it_has_borne(
         "an ingest of a field its principal is kept from under its old name is answered as \
          for a field the type does not have; it is answered {fed:?}"
     );
+    let record = vec![source_record("fed", "1", json!({"k": "1", "nosuch": "x"}))];
+    let nosuch = ingest(l.cat.as_ref(), &feeder, "src", record).await;
+    refused_alike("an ingest of `w`", &fed, nosuch, ("nosuch", "w"))?;
     Ok(())
 }

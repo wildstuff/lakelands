@@ -82,7 +82,9 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   embeds the text after the write, records each vector in the log
   (`output_recorded`) and reads it back on replay, one call per text and
   model. Such a field is declared only where the bound backend names its
-  model and dimensions. Change the model or the fields it is made from by
+  model and dimensions, unless the type in force holds it unchanged. A
+  backend that comes up after the open is bound then with
+  `LakeStore::bind_embed`. Change the model or the fields it is made from by
   declaring the type again. Every live record is then embedded again, and
   a declaration also retries recorded failures. See `docs/seams.md`
   §`EmbedBackend`.
@@ -91,7 +93,8 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   as events. A verb that writes authored fields runs in the store; a
   verb that reaches outside the lake runs through the executor the host
   bound for it, with the lake and the position that made it due as the
-  dedup key. The executor gets the record unmasked; a host that wants it
+  dedup key. The executor gets the record unmasked, as it stood at that
+  position, where the call was judged; a host that wants it
   to see only what the caller may see applies the caller's grants there. The executor's answer is recorded in the log; a failure is
   recorded as `{"error": …}`, the write that made the verb due stands,
   and the caller gets the recorded answer either way. Without a bound
@@ -99,7 +102,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `docs/decisions/013-verbs-run-by-declared-risk.md`.
 - **`ChangeFeed`.** The host reads the store's feed: the log, filtered
   by kind and type, from a position; each poll answers at once with the
-  position to poll from next. It acknowledges on its own side. The host keeps the
+  position to poll from next. A poll examines at most `FEED_EXAMINED`
+  (4 096) events, so it may answer none short of the head: the host is
+  caught up when `next` is past `head`, not when a batch is empty. It
+  acknowledges on its own side. The host keeps the
   position it has read up to; the store keeps no consumer state. A relay onto a message bus is the
   host's code, never Lakelands'; the dedup key of a change is
   `{lake}:{position}`. For webhooks, `lakelands serve` has a consumer of
@@ -117,7 +123,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   connection stands and why a type stopped (`docs/seams.md`, the
   mirror). An agent on MCP is told of changes without polling:
   every session receives `notifications/tools/list_changed` when the
-  lake's declarations change. After the `subscribe` tool, it also
+  lake's declarations change. Until the session lists its tools again,
+  each stream it opens begins with that notification, so one taken by a
+  stream that closed before its client read it is not lost
+  (lakelands#744). After the `subscribe` tool, it also
   receives `notifications/lakelands/changed` for each change of a record
   its principal may read. Without a list of types, the types are the ones
   it may read when each change happens, so a type declared later is
@@ -160,7 +169,13 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `lakelands age --today <YYYY-MM-DD>` is the same call from the CLI, and
   `lakelands serve` makes it daily when the root's `lakelands.json` has an
   `aging` section: the date at its `utc_offset`, once at start and at each
-  rollover (`docs/seams.md` §aging).
+  rollover (`docs/seams.md` §aging). A rule moves the records whose field
+  holds its `from` to its `to`, and both are values, written as they are:
+  a `to` of `concat('over', 'due')` is that text, never evaluated. A
+  record whose field is null holds no `from`, so no rule moves it and the
+  report does not count it. A host that wants such records aged gives the
+  field a value: a declared `initial` at the write, or a verb that sets
+  it.
   A source that should be taken back is purged with
   `LakeStore::purge_source(source, None, None)`
   (`lakelands purge --source <id>`):
@@ -179,6 +194,19 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   report names the source's records in other types that still refer
   into what went, and the id is of that purge alone. A view, and a type
   that keeps no per-field provenance, are refused there.
+  Rows that one act should remove, such as samples seeded beside a
+  lake's own data, are written through `ingest` under a source id of
+  their own, into fields declared `shared` (lakelands#611). An authored
+  field refuses an ingest, and no write option, idempotency key or
+  principal puts a source on an authored write. An authored field
+  becomes `shared` by a declaration, with no migration; the values
+  written before stay authored and outside the purge. `shared` means the
+  later position wins: a source that delivers a record again after an
+  author changed it writes over the change, so a host that lets people
+  edit seeded rows stops feeding them. An author's later write makes the
+  record co-owned while a value from the source remains in it, and the
+  purge is refused whole; once none remains, the record is the author's
+  and the purge leaves it.
   A lake's log is exported with `lakelands_store::export::write(store,
   dir)` (`lakelands export --to <dir>`) as files that verify without
   Lakelands (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`);
@@ -220,8 +248,9 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   does not own, and the compact reclaims nothing there; connect as the
   role that owns the lake's schema.
   After a bulk load into PostgreSQL the engine analyses its tables
-  itself, once every 5 000 records a writer puts, so the planner knows
-  their size; a host that loads a lake's schema by another path runs
+  itself, once every 5 000 records a writer puts or order index rows a
+  `sort_index.<type>` setting rebuilds, so the planner knows their size;
+  a host that loads a lake's schema by another path runs
   `ANALYZE` on it itself.
   A vector field the lake asks an index for (`vector_index.<type>`,
   `docs/decisions/043-an-index-asked-for-answers-its-set.md`) is indexed on
@@ -339,6 +368,17 @@ A host that already has a store of its own moves in four steps.
   `schema` to a principal it keeps from a field or a type. See
   `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
   extended.
+- **A schema hash is that of the shape its reader is shown.** A principal
+  kept from a field is answered, by `describe` and in a migration's
+  report, the hash of the type without that field, not the stored one,
+  and so is a host that declares as such a principal. Nothing breaks: a
+  declaration identical to the one in force appends nothing. A hash
+  compares only between readers shown the same shape; the host's own
+  comparison before it applies describes as one shown everything, and
+  the log and the feed carry the whole hash. A report's id is made over
+  the report as its reader is shown it. See
+  `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+  extended (lakelands#644).
 - **A grant by name holds a field through its renames.** A field's
   access is the lowest of what a principal's grants say under every name
   the field has borne. A restriction follows the field, at the head and
@@ -353,6 +393,17 @@ A host that already has a store of its own moves in four steps.
   from the declarations it keeps, not from its log; until a writer has
   opened it once, each read-only open finds them again. See
   `docs/decisions/006-grants-not-roles.md`, extended.
+- **A grant may admit only some records.** `only` on a type, pairs of a
+  text or reference field the principal may read and a text value,
+  admits the records that hold every pair at every read door. That
+  principal writes those records alone, another's being to its write a
+  key that is free; a proposal, a verb above low risk and every change
+  of shape still go through the host. `only` is a function
+  of `Principal.id` within a lake: give each owner its own id, and never
+  give one id `only` on some calls and not on others, since a retry is
+  answered its first outcome before the grants are asked. A grant whose
+  pairs cannot be applied refuses the reads that name the type until it
+  is fixed. See `docs/decisions/051-a-grant-may-admit-only-some-records.md`.
 - **What a host reads before it applies a migration.** The preflight's
   report says, each in one member: whether the apply is admitted
   (`lossless`: every value the migration keeps converts, and every
@@ -467,6 +518,25 @@ A host that already has a store of its own moves in four steps.
   for each record: 41 s with one set and 74 to 79 s with three on
   PostgreSQL, 9 to 15 s on SQLite. Bringing the migration's own cost
   down further is lakelands#480.
+- **A value is renamed by its value type's migration (lakelands#553).**
+  `migrate_value_type` takes a `ValueTypeMigration`: the new declaration
+  and `renames`, old and new text values (a bare declaration converts with
+  `.into()` and renames nothing). One `value_type_migrated` renames the
+  value in every record of every type that uses the value type, retired
+  and restricted ones included, with no record event, no new version and
+  no trigger: a host that kept its own copy of the values reads the feed's
+  `value_type_migrated` (it is about each type it rewrites), and a mirror
+  copies those types again. The preflight lists what may still name an
+  old value (`conditions`): the host changes those, and the filters it
+  holds itself, which the lake cannot see. A key field that holds the old
+  value refuses it; re-key the type through its migration first. A field
+  computed by a function with a backing keeps what its backing answered:
+  widen the value type, change the function so that it answers the new
+  value, and rename then. Renaming one value of 50 000 of 100 000 records holds the writer
+  2.1 s on SQLite and 8.2 s on PostgreSQL, at a peak of 3 MB and 6 MB
+  (`tests/value_renamed.rs` in both engines, by hand); widening, writing
+  the 50 000 records again and tightening took 17.1 s and 49.1 s, at
+  39 MB.
 - **A host may state its declarations at every start.** A declaration
   that is the one in force is answered `applied` at the head and appends
   nothing, by `declare` and by `apply`: a type, a value type, a function,
@@ -474,6 +544,35 @@ A host that already has a store of its own moves in four steps.
   the inputs `describe` shows or without them. A declaration's version
   counts its changes. See
   `docs/decisions/027-shape-changes-are-declared-or-migrated.md`.
+- **A read costs the same however much the lake declares
+  (lakelands#557).** A handle builds what the lake declares once for a
+  range of positions over which nothing was declared, migrated or set,
+  and every read in the range shares it. A declaration, a migration or a
+  setting written starts a new range, and the next read builds again,
+  once. A read as of an earlier position, and a read-only handle beside
+  another process's writer, build once per position. On a lake of 300
+  types, release build, one read at the head took on SQLite 0.03 to
+  0.09 ms (before: 6.7 to 6.8 ms), on PostgreSQL 0.15 to 0.73 ms
+  (before: 11.5 to 12.2 ms), and in memory 0.03 ms (before: 1.1 ms). A
+  value that changes at every write belongs in a type of its own, not in
+  `sys.setting`: each change of a setting makes the next read build.
+- **A model that comes up after the open is bound then (lakelands#641).**
+  A host whose embedding model answers later than it opens its lakes (a
+  sidecar loading, a model downloading) opens them without one and
+  calls `LakeStore::bind_embed` once the model answers; no reopen. Until
+  then a due embedding waits, a hybrid search ranks lexically and says
+  so, and a declaration that adds an embedding, or changes one's
+  `from`, model or dimensions, is refused as `Unbound`; a type stated
+  again as in force, or grown beside its embedding, is admitted, and one
+  grown turns the embedding's recorded failures into waiting fields,
+  their `error` gone, until the bind and `recompute`. The
+  bind appends nothing and makes nothing due: after it, call `recompute`
+  for each type whose `vector_coverage` shows records due, which also
+  calls again for a failure recorded while the model was away. A second
+  bind replaces the first, whatever its model; a field of the old model
+  then waits, and a search over it is refused as `Unbound`, until its
+  type is declared with the new one. Over the network doors `bind_embed`
+  answers `Unbound`: binding is the host's.
 - **`recompute` is how a host computes again.** It names a function, or
   a type with an embedding or a field of a function with a backing, and
   does three things a declaration in force no longer does: it calls
@@ -487,21 +586,37 @@ A host that already has a store of its own moves in four steps.
   is not computed does not, since it computes nothing. From a shell: `lakelands recompute --function
   <name>` or `--type <name>`. See
   `docs/decisions/022-functions-are-declarations.md`.
-- **One text the embedding backend refuses fails its whole batch
-  (lakelands#658).** The store sends the texts due for one model in
-  batches of up to 64, and when a request fails it records the failure
-  for every text the request carried. So a backend that refuses a whole
-  request for one input (an HTTP 400 for one text over its length
-  limit, say) fails the good texts sent beside it. The failure is
-  recorded for each of those texts, and an output is read back for its
-  text lake-wide: a later record that writes one of them is answered
-  the failure without a call. `get` shows the backend's message in the
-  field's `error`, and `vector_coverage` counts each such record as
-  due. `recompute`, and a declaration that walks the type, batch the
-  refused text with the others again and fail them again. A host
-  recovers by changing the refused text in its record, then calling
-  `recompute` of the type; a record whose own text changes is embedded
-  on that write.
+- **A write waits for its own calls, not for a backlog (lakelands#642).**
+  A declaration that makes embeddings or calls due over a type answers
+  once its sweep has made them all. A write made meanwhile that makes
+  nothing due answers at once; one that makes a call due waits for the
+  batch in flight and its own (a batch of up to 64 texts, one request or,
+  where the backend refuses texts, up to 127 by its halving; or one
+  function call; and their recordings), and one batch more of what no
+  write waits for any more, not for the backlog. What a declaration
+  whose caller went away (or whose drain failed) still owes advances by
+  one batch with each later write that owes a call, or is made by a
+  `recompute` of the type. A change of an embedding's
+  `model` clears every vector of the type: until the sweep has embedded
+  them again, the type's records are out of vector search, and
+  `vector_coverage` counts them due.
+- **A text the embedding backend refuses fails alone (lakelands#658).**
+  The store sends the texts due for one model in batches of up to 64.
+  A backend that answers `Invalid` refuses the request for what it
+  carries, and the store asks again in halves until the refused text is
+  alone: only that text records the refusal, and the texts beside it are
+  embedded. Any other error is weather and is recorded for every text
+  not answered yet; `recompute` retries them. The shipped client answers
+  `400`, `413` and `422` as `Invalid`. A host's own backend that answers
+  everything `Unavailable` keeps the old behaviour, a whole batch failed
+  for one text. An endpoint that answers `400` to every request (a
+  model name it does not know, say) costs 127 requests per batch of 64,
+  each text recorded as failed alone; fix the configuration, then
+  `recompute`. Two limits of the client remain: it splits a batch by its
+  own `max_batch`, so a halving sends again the requests that had
+  succeeded; and a fault in one item of a `2xx` reply (wrong dimensions,
+  a value that is not finite, a wrong count) is `Unavailable` and still
+  fails the texts beside it.
 - **A write that changes nothing is still a write.** An upsert of the
   values a record already holds appends an event and raises the version:
   it says who vouches for the values and when, a trigger reacts to it,
@@ -512,6 +627,22 @@ A host that already has a store of its own moves in four steps.
   Opening a lake for writing appends one `lease_taken`, which carries
   the token every later event of that writer bears; a reader appends
   none.
+- **A request names only what it takes.** `Find`, `Get`, a pattern, a
+  search, the write options, a proposed write, a proposal filter and a
+  feed filter refuse a member they do not take, at any depth, naming it,
+  as a declaration does (lakelands#563): `find {"set": "open"}` is
+  refused, where before it answered every record. A host that reads JSON
+  into them, or sends a member a newer store would take, is told so
+  instead of being answered a request without it. An answer that carries
+  a proposed write or write options (a proposal listing, the feed, an
+  export) is read as strictly by a client, so a client older than its
+  server refuses a member the server added, as it refuses a new variant.
+- **A write one level too deep is refused whole.** A reaction at a depth
+  past `max_reactive_depth` appends nothing, the write included
+  (`docs/decisions/021-the-write-context-belongs-to-the-host.md`). A host
+  that comes from a store which landed such a write and dropped only its
+  reaction raises `max_reactive_depth` at the lake's location, or sends
+  the write outside the chain, at depth 0 with its `cause`.
 - **A required field a source does not write takes `initial`.** A type
   a source feeds may hold a field the source knows nothing of, such as a
   state the lake's own users move. Declared `required` alone, no door
@@ -561,6 +692,48 @@ A host that already has a store of its own moves in four steps.
   the lake's description to name it to its writer: where that read
   fails, the write is answered the read's error. Each is in the log and
   folded, and a write sent again under its key is answered its position.
+  An executor's answer whose append fails `unavailable`, or that a
+  writer which cannot catch up cannot append, is held by the handle that
+  ran it and recorded by its next write; the call's answer says so, and
+  the retry under its key answers it. It is lost when the handle is
+  closed or dropped before a write records it (the server ends so), and
+  on PostgreSQL when a lost connection loses the lease: a retry is then
+  `unanswered`, and the first answer carried the output. A host that
+  needs more gives the executor its own record of what it did, keyed by
+  the call's position (`VerbInvocation.position`). See
+  `docs/decisions/013-verbs-run-by-declared-risk.md`, extended.
+- **An outage and a missing seam are cases, not sentences
+  (lakelands#650).** `unavailable` carries a `Situation` and `unbound` a
+  `Seam`: a code and its parameters (which lease and who holds it, which
+  part of the log is damaged and how, which remote end failed and in
+  what exchange), with the English sentence beside them for logs. A host
+  renders the case in its users' language from its own catalog, and
+  acts on it without reading words: a call of a verb that reaches
+  outside the lake failed around its hand-out is `Situation::Executor`
+  (not handed, with a `retry` that says how to send it again),
+  `AnswerHeld` or `AnswerLost`. Over REST and MCP the error's
+  JSON carries `code`, the parameters and `message`, and the error its
+  own `message`; a code the host does not know yet, from a newer lake, is
+  read as `Unknown` and shown by its message, and a plain name it does
+  not know is shown as itself in backticks. A client and a lake on either
+  side of this change cannot read each other's errors: move both
+  together. The only free text is a `Detail`, an operating system's,
+  database's or library's own words, scrubbed where they arise: never a
+  record's key or values, and never a path on the host. See
+  `docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
+  extended.
+- **A refusal is a case too (lakelands#650).** A refusal of `invalid`,
+  `constraint`, `precondition` or `unanswered` carries its case as data:
+  `code`, its parameters, `at` (the places it is said at, outermost
+  first: a type, a field, a verb, …) and `message`. The catalog of every
+  code, its parameters and its English sentence is
+  [`docs/refusals.md`](refusals.md), generated from the code; a host
+  renders from it, matches codes rather than words, and shows a code it
+  does not know by its `message`. A code a release has shipped keeps its
+  meaning and its parameters. A thing the caller may not see is refused
+  exactly as an absent one, case and parameters alike. See
+  `docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
+  extended.
 - **A declaration that recomputes a type is a step for a quiet moment.**
   A function declared again with a change, or a type declared again with
   another derived expression, computes the derived fields of every live record
@@ -569,21 +742,28 @@ A host that already has a store of its own moves in four steps.
   record it changes and keeps none: it holds the declaration, not the
   records, so what it holds does not grow with the type
   (`docs/decisions/048-the-fold-keeps-the-event-not-the-records-it-changed.md`).
-  A bundle that declares several functions of one type again reads the
-  type once and computes each record once for each of them. At 100 000
+  A set that declares several functions of one type again, applied or
+  accepted as a proposal, reads the type once and computes and puts each
+  record once, at the set's last declaration (log format 12): at 2 000
+  records of 52 fields, a set of 50 such functions takes 0.56 ms a
+  record on SQLite, where computing it again at each declaration took
+  24.6 ms (lakelands#605). A read at a position inside the set finds
+  the records as before it. At 100 000
   records of four small fields, one of them derived
   (`tests/recomputed.rs` in the SQLite and PostgreSQL engines, by
   hand), the writer is held 4.1 to 4.5 s on SQLite and 13.3 to 14 s on
   PostgreSQL, whichever of the two is declared again, and about 20 s
   and 51 to 56 s at 400 000; the peak of the append is 3 MB on SQLite
-  and 9 MB on PostgreSQL at both sizes. A bundle of two changed
-  functions holds the writer 12 s on SQLite and 21 s on PostgreSQL at
-  100 000 records (50 s and 99 s at 400 000), at 4 MB and 11 MB. The
-  time grows with the type's records; the peak does not. Two things
-  still grow with them: the calls an embedding or a function computed outside the lake
-  makes due on that append, one for every record whose output is not
-  recorded, held until they are made; and what the engine holds of an open transaction, which on the
-  memory engine is every put. A rebuild, or an open that catches up,
+  and 9 MB on PostgreSQL at both sizes. Before format 12, a bundle of
+  two changed functions held the writer 12 s on SQLite and 21 s on
+  PostgreSQL at 100 000 records (50 s and 99 s at 400 000), at 4 MB and
+  11 MB. The time grows with the type's records; the peak does not. One
+  thing still grows with them: what the engine holds of an open
+  transaction, which on the memory engine is every put. The calls an
+  embedding or a function computed outside the lake makes due on that
+  append do not: the declaration owes one sweep over the type, read
+  after the append a page of 64 records at a time, the writer released
+  between pages (lakelands#609). A rebuild, or an open that catches up,
   commits inside a page of the log after such a declaration, so there
   too each record is computed once for each declaration. Such a fold of
   the log makes no call due and holds none: a rebuild of 100 000
@@ -625,51 +805,44 @@ A host that already has a store of its own moves in four steps.
   - **A read computes, as before,** when it names a valid time, when it
     is as of a position before the view was made, and while a group of
     the view is not exact for its reader: a measure that fails over it,
-    or an extreme that was given up (below). `describe_type` then says
+    or a member whose argument does not fold. `describe_type` then says
     `not_whole` with the number of such groups, to a principal the
     view's read would answer.
-  - **A write that takes an extreme's holder away reads its group
-    again,** in its own append and under the writer: the live records
-    that hold the group's values, 8 192 at most. The bound is one for
-    the group over all the view's sources, and a record the view's
-    `where` leaves out counts in it. An append whose n events each take
-    a holder away reads up to n times that: an aging run that moves the
-    oldest record of 1 000 groups of 5 000 under `min(date)` reads 5
-    million records in its append. Such a step is one for a quiet
-    moment, as a migration is. Three reads cost more than the bound
-    lets one expect:
-    - **A view over a kept view** reads, beside the inner records of
-      the group's values, every inner record whose whole face reads
-      otherwise than its own (a restricted member of its group makes it
-      so), whatever its group, and each counts in the bound: an outer
-      group of three members is given up once the inner view has about
-      8 190 such records, and until then every such reread reads them
-      all.
-    - **A view grouped by more than one field** is looked up by its
-      first text field alone: a view grouped by `country, city` reads
-      every record of the country for a reread of one city, on the
-      memory engine every record of the source. Those are read and not
-      handed to the fold, and the bound does not count them.
-    - **After a migration's step in the same append** every lookup
-      walks the source whole.
-  - **A group past that bound is given up:** its extreme is kept no
-    more, the view computes for the readers it concerns, and
-    `describe_type` says `not_whole` with the group counted. Nothing
-    mends it by itself, and the fold goes on keeping the view's other
-    records meanwhile, at a state for each write: a reader whose face
-    of the group is exact, one without the `restricted` grant where the
-    group was given up on the whole face alone, is answered from them.
-    What mends it is what makes the view again
-    (above), or writing its setting `false` and then `true`; or the
-    group's own end. A view with a `min` or `max` over groups larger
-    than the bound, or whose holders leave in bulk, is not worth
-    keeping today (lakelands#629).
-  - **A reader with the `restricted` grant** is answered from every
-    kept record of a view at each call, read once and once more for a
-    total, as soon as one group of it reads otherwise for that reader
-    (a restricted record is a member of it). For every other reader,
-    and for that one while no group differs, the page and the count are
-    the engine's.
+  - **A write that takes an extreme's holder away reads the next one**
+    from the extreme's order, in its own append: one entry, whatever
+    the group's size, and a batch more for each run of entries the same
+    append ended ahead of it. For a view with a `min` or `max`, the fold
+    keeps that order beside the kept records, an entry for each member
+    of each extreme, and every write to a member puts its entry again
+    where its value or group moves. Making the view writes one entry for
+    each member of each extreme and holds about 270 bytes for each until
+    it commits; making it again writes as many, and ending it deletes
+    its order in one statement. On SQLite a `max` over 10⁶ members was
+    made in 28 s at a peak of 549 MB more and ended in 7 s, and a
+    declaration of a source, which does both in one event, holds the
+    writer about 35 s: declare in a quiet moment.
+  - **A reader with the `restricted` grant** reads the groups whose
+    faces differ (a restricted record is a member of each) beside the
+    engine's page of the others (lakelands#628): a page in key order
+    holds its rows and those groups, a count is the engine's and those
+    groups, and `get` reads its one record. For every other reader, and
+    for that one while no group differs, the page and the count are the
+    engine's alone. A page in another order reads the engine's page too
+    where `sort_index.<view>` asks for an order index on that field,
+    below; without it, it reads the whole view for every reader
+    (lakelands#668). An aggregate other than a count and a pattern's
+    start read every group a page of kept records at a time, holding a
+    page, not the view (lakelands#731).
+  - **A kept view is indexed by its setting:** `sort_index.<view>`
+    names fields the view declares, and a page ordered by one of them
+    reads its page (lakelands#668). At 100 000 groups a page of 10 by a
+    measure took 0.2 ms on SQLite and 1 ms on PostgreSQL where it took
+    about 400 and 500 ms and held some 465 MB without the index. Each
+    write that changes a kept group writes its rows too: some 5 to 8 %
+    more on an ingest. The setting's write builds the index in one pass,
+    0.8 s and 3.9 s at that size. A view that computes has no records
+    to index, so `describe_type` names no indexed field for it
+    (lakelands#748).
   - **Not every view can be kept:** only counts, sums and averages of
     what is certainly a number, and a `min` or `max` of a number or an
     instant under text or reference group fields. The setting's write is

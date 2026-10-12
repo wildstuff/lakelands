@@ -8,10 +8,15 @@
 //! to key and a seek of each key's state there. A read by keys seeks each
 //! key's state, and a recorded output is read by a seek. The engine check
 //! holds the answers. Here each statement's plan is read, as the engine
-//! itself writes it, on tables the planner has no statistics of and on
-//! analysed ones, and what the reads cost is counted where the server
-//! counts it: the tuples of `records` and of `outputs` it fetched
-//! (`pg_stat_user_tables`), which a backend reports when it ends.
+//! itself writes it, on a small lake the planner may or may not hold
+//! statistics of (the server's autoanalyze decides that, not the test),
+//! on that lake analysed, and on a large one the writer analysed; and
+//! what the reads cost is counted where the server counts it: the tuples
+//! of `records` and of `outputs` it fetched (`pg_stat_user_tables`),
+//! which a backend reports when it ends. An order name
+//! (`lakelands_api::seam::ORDER_PREFIX`, lakelands#629) keeps one state
+//! for each key and is read by the statements of a stored type, its page
+//! after a key a seek into `records_key_c`; nothing indexes it.
 
 mod common;
 
@@ -20,7 +25,7 @@ use lakelands_api::event::Digest;
 use lakelands_api::id::{Position, RecordKey, TypeName, Version};
 use lakelands_api::read::{Direction, Order};
 use lakelands_api::record::StoredRecord;
-use lakelands_api::seam::kept_name;
+use lakelands_api::seam::{kept_name, order_name};
 use lakelands_engine_pg::{PgOpener, read_statements};
 use postgres::types::ToSql;
 use serde_json::json;
@@ -56,17 +61,23 @@ fn state(ty: &TypeName, key: &str, at: u64) -> StoredRecord {
 /// binds, and as the server ran it (a plan not run does not show how the
 /// next key is found): the pages of the name with many keys, the count
 /// of the one with few (a count of most of a table is rightly planned as
-/// a read of the table).
+/// a read of the table). Under `analyse` the tables read are analysed
+/// first.
 fn plans(
     url: &str,
     schema: &str,
     names: &[TypeName; 2],
     (last, at): (u64, u64),
+    analyse: bool,
 ) -> Vec<(bool, Vec<String>)> {
     let (url, schema, names) = (url.to_owned(), schema.to_owned(), names.clone());
     let [many, few] = names.clone();
     std::thread::spawn(move || {
         let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        if analyse {
+            let tables = format!("ANALYZE {schema}.records, {schema}.outputs");
+            client.batch_execute(&tables).unwrap();
+        }
         // As the engine's sessions plan: each run for its values.
         client
             .batch_execute("SET plan_cache_mode = force_custom_plan")
@@ -98,7 +109,7 @@ fn plans(
 }
 
 /// What every plan of a kept name's statements must be, the planner
-/// knowing the tables (`analysed`) or not.
+/// knowing the tables (`analysed`) or not: the same seeks either way.
 fn seeks(plans: &[(bool, Vec<String>)], analysed: bool) {
     for (i, (head, plan)) in plans.iter().enumerate() {
         let has = |step: &str| plan.iter().any(|line| line.contains(step));
@@ -218,8 +229,9 @@ fn a_kept_name_is_read_by_seeks_with_statistics_and_without() {
     let engine = open(OpenMode::Create);
     // Six hundred keys written once, then two thousand states of `a`
     // under both names: fewer records than the writer analyses its tables
-    // after, so the planner has no statistics of them. Then the other
-    // keys and the rest of `a`'s states, which it analyses as it loads.
+    // after, so the planner holds statistics of them only if the server's
+    // autoanalyze took them. Then the other keys and the rest of `a`'s
+    // states, which the writer analyses as it loads.
     // The output is recorded at every position.
     let (early, last) = (600, MANY + STATES);
     let key = |at: u64| match at {
@@ -247,16 +259,12 @@ fn a_kept_name_is_read_by_seeks_with_statistics_and_without() {
         }
     };
     load(1..=early + UNANALYSED);
-    let unknown = common::settled(
+    let known = common::settled(
         &url,
         &schema,
         "SELECT reltuples::bigint FROM pg_class WHERE relname = 'records' \
          AND relnamespace = $1::text::regnamespace",
-    );
-    assert_eq!(
-        unknown, -1,
-        "the planner has statistics of a lake below the threshold"
-    );
+    ) >= 0;
     // The index of the head is over the kept names alone, as the server
     // prints its condition: a stored type's put does not maintain it.
     let narrowed = common::settled(
@@ -270,20 +278,16 @@ fn a_kept_name_is_read_by_seeks_with_statistics_and_without() {
         narrowed, 1,
         "`records_head` is not over the kept names alone"
     );
-    seeks(
-        &plans(
-            &url,
-            &schema,
-            &names,
-            (early + UNANALYSED, early + UNANALYSED / 2),
-        ),
-        false,
-    );
+    // The small lake as the planner holds it, then analysed: the plans
+    // are seeks whether autoanalyze ran before them or not.
+    let small = (early + UNANALYSED, early + UNANALYSED / 2);
+    seeks(&plans(&url, &schema, &names, small, false), known);
+    seeks(&plans(&url, &schema, &names, small, true), true);
     load(early + UNANALYSED + 1..=last);
     drop(engine);
     // The writer analysed its tables as it loaded them.
     let middle = last - (STATES - UNANALYSED) / 2;
-    seeks(&plans(&url, &schema, &names, (last, middle)), true);
+    seeks(&plans(&url, &schema, &names, (last, middle), false), true);
     let before = ["records", "outputs"].map(|table| common::fetched(&url, &schema, table));
     let engine = open(OpenMode::Read);
     for _ in 0..20 {
@@ -308,5 +312,64 @@ fn a_kept_name_is_read_by_seeks_with_statistics_and_without() {
         "two pages, three keys, a count, a page in a field's order and the view's state, read at the head \
          and in the middle of the states of a key with {STATES} of them, fetched {each:?} \
          tuples of `records` and of `outputs`; `records_head` was read {through_head} times"
+    );
+}
+
+#[test]
+fn an_order_name_is_read_by_a_seek_and_indexed_nowhere() {
+    let Some(url) = common::url_or_skip("the pg test of an order name") else {
+        return;
+    };
+    let schema = common::fresh_schema();
+    let engine = PgOpener
+        .open(&common::location(&url, "order", &schema), OpenMode::Create)
+        .unwrap();
+    let name = order_name(&TypeName::from("v"));
+    // Twenty thousand keys, and the first two thousand of them put again.
+    let (keys, last) = (20_000, 22_000);
+    for first in (1..=last).step_by(1_000) {
+        let p = engine.projection();
+        p.begin().unwrap();
+        for at in first..first + 1_000 {
+            let mut entry = state(&name, &format!("k{:05}", (at - 1) % keys), at);
+            entry.fields =
+                serde_json::from_value(json!({"sys:entry": {"v": {"text": "1"}}, "t": "word"}))
+                    .unwrap();
+            p.put_record(&entry).unwrap();
+        }
+        p.commit(Position(first + 999)).unwrap();
+    }
+    drop(engine);
+    let rows = ["records", "text_index", "sort_index", "full_text"].map(|table| {
+        let query =
+            format!("SELECT count(*) FROM {schema}.{table} WHERE ty = 'sys:order.v' AND $1 <> ''");
+        common::settled(&url, &schema, &query)
+    });
+    assert_eq!(
+        rows,
+        [keys as i64, 0, 0, 0],
+        "one state for each key, no other row"
+    );
+    let (u, sc, n) = (url.clone(), schema.clone(), name.clone());
+    let plan: Vec<String> = std::thread::spawn(move || {
+        let mut client = postgres::Client::connect(&u, postgres::NoTls).unwrap();
+        client
+            .batch_execute(&format!(
+                "ANALYZE {sc}.records; SET plan_cache_mode = force_custom_plan"
+            ))
+            .unwrap();
+        let [_, later, ..] = read_statements(&sc, &n, true);
+        let (ty, at, limit, after) = (n.as_str(), last as i64, 1_i64, "k10000");
+        let explain = format!("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) {later}");
+        let rows = client.query(&explain, &[&ty, &at, &limit, &after]).unwrap();
+        rows.iter().map(|row| row.get(0)).collect()
+    })
+    .join()
+    .unwrap();
+    common::drop_schema(&url, &schema);
+    let has = |step: &str| plan.iter().any(|line| line.contains(step));
+    assert!(
+        has("records_key_c") && !has("Sort") && !has("Seq Scan") && !has("records_head"),
+        "an order name's page after a key is not a seek into `records_key_c`: {plan:#?}"
     );
 }

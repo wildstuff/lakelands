@@ -15,6 +15,8 @@
 //! | number → decimal | an integer, or an integral float within ±2^53, as its digits |
 //! | text → boolean | exactly `"true"` or `"false"` |
 //! | text → date-time | a date, or a date-time in UTC, rewritten in the one form of §1.3; a non-zero offset is lossy |
+//! | text or date-time → date | a date, or a date-time in UTC at a midnight, as its date; any other instant, or a non-zero offset, is lossy |
+//! | date → date-time | its midnight |
 //! | anything → json | kept as it is |
 //!
 //! Deliberately lossy: a fractional number into a decimal (a binary
@@ -34,12 +36,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl};
+use lakelands_api::error::{Case, Said};
+use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl, is_vector_component};
 use lakelands_api::write::{FieldConversion, Migration, MigrationReport};
 use lakelands_api::{FieldName, RecordKey, Timestamp};
 use serde_json::Value;
 
-use super::{ShapeError, schema_hash};
+use super::schema_hash;
 use crate::canonical;
 use crate::value::{check_geo, is_decimal};
 
@@ -73,7 +76,10 @@ pub fn convert(value: &Value, from: &FieldType, to: &FieldType) -> Conversion {
             "false" => Some(Value::Bool(false)),
             _ => None,
         },
-        (StorageKind::DateTime, Value::String(s)) => utc_instant(s).map(Value::String),
+        (StorageKind::DateTime, Value::String(s)) => utc_instant(s).map(|t| t.to_string().into()),
+        (StorageKind::Date, Value::String(s)) => {
+            utc_instant(s).and_then(Timestamp::day).map(Value::String)
+        }
         _ => None,
     };
     match out {
@@ -101,10 +107,13 @@ pub fn fits(ty: &FieldType, value: &Value) -> bool {
             .as_str()
             .is_some_and(|s| !s.is_empty() && !s.contains('\0')),
         StorageKind::Vector => value.as_array().is_some_and(|items| {
-            items.iter().all(Value::is_number)
+            items.iter().all(is_vector_component)
                 && ty.dimensions.is_none_or(|d| items.len() == d as usize)
         }),
         StorageKind::Geo => check_geo(value).is_ok(),
+        StorageKind::Date => value.as_str().is_some_and(|s| {
+            Timestamp::parse(s).ok().and_then(Timestamp::day).as_deref() == Some(s)
+        }),
     }
 }
 
@@ -129,7 +138,7 @@ pub fn preflight(
     before: &TypeDecl,
     migration: &Migration,
     records: impl IntoIterator<Item = (RecordKey, BTreeMap<FieldName, Value>)>,
-) -> Result<MigrationReport, ShapeError> {
+) -> Result<MigrationReport, Said> {
     let plan = Plan::new(before, migration)?;
     let mut tallies: Vec<Tally> = plan.checked().map(|_| Tally::default()).collect();
     // Fields of the old declaration no step of the new one reads from:
@@ -209,7 +218,7 @@ pub fn migrate_record(
     before: &TypeDecl,
     migration: &Migration,
     fields: &BTreeMap<FieldName, Value>,
-) -> Result<Option<BTreeMap<FieldName, Value>>, ShapeError> {
+) -> Result<Option<BTreeMap<FieldName, Value>>, Said> {
     let plan = Plan::new(before, migration)?;
     let mut out = BTreeMap::new();
     for step in &plan.steps {
@@ -245,40 +254,20 @@ struct Step<'a> {
 }
 
 impl<'a> Plan<'a> {
-    fn new(before: &'a TypeDecl, migration: &'a Migration) -> Result<Plan<'a>, ShapeError> {
+    fn new(before: &'a TypeDecl, migration: &'a Migration) -> Result<Plan<'a>, Case> {
         let after = &migration.to;
         if after.name != before.name {
-            return Err(ShapeError::OtherType {
+            return Err(Case::MigrationOtherType {
                 from: before.name.clone(),
                 to: after.name.clone(),
             });
         }
         let old: BTreeMap<&FieldName, &FieldDecl> =
             before.fields.iter().map(|f| (&f.name, f)).collect();
-        let new: BTreeSet<&FieldName> = after.fields.iter().map(|f| &f.name).collect();
-        let mut sources: BTreeMap<&FieldName, &FieldName> = BTreeMap::new();
-        let mut renamed: BTreeSet<&FieldName> = BTreeSet::new();
-        for (from, to) in &migration.renames {
-            if !old.contains_key(from) {
-                return Err(ShapeError::RenameFromUnknown { from: from.clone() });
-            }
-            if !new.contains(to) {
-                return Err(ShapeError::RenameToUnknown { to: to.clone() });
-            }
-            if !renamed.insert(from) {
-                return Err(ShapeError::RenameRepeated {
-                    field: from.clone(),
-                });
-            }
-            if sources.insert(to, from).is_some() {
-                return Err(ShapeError::RenameRepeated { field: to.clone() });
-            }
-        }
-        for to in sources.keys() {
-            if old.contains_key(to) && !renamed.contains(to) {
-                return Err(ShapeError::RenameCollides { to: (*to).clone() });
-            }
-        }
+        let pairs = migration.renamed_fields(before)?;
+        let sources: BTreeMap<&FieldName, &FieldName> =
+            pairs.iter().map(|(f, t)| (*t, *f)).collect();
+        let renamed: BTreeSet<&FieldName> = pairs.iter().map(|(f, _)| *f).collect();
         let mut steps: Vec<Step<'a>> = after
             .fields
             .iter()
@@ -405,11 +394,11 @@ fn integral_digits(n: &serde_json::Number) -> Option<String> {
 
 /// A date, or a date-time in UTC, in the one form of log format §1.3. A
 /// date-time with a non-zero offset is refused: the offset would be lost.
-fn utc_instant(s: &str) -> Option<String> {
+fn utc_instant(s: &str) -> Option<Timestamp> {
     let t = Timestamp::parse(s).ok()?;
     let offset =
         s.len() > 10 && matches!(s.as_bytes()[s.len() - 6], b'+' | b'-') && !s.ends_with("00:00");
-    (!offset).then(|| t.to_string())
+    (!offset).then_some(t)
 }
 
 /// A decimal numeral, `-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?`, reduced to

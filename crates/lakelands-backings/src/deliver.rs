@@ -193,8 +193,8 @@ impl DeliverConfig {
             if !names.insert(name) {
                 return Err(format!("the endpoint name `{name}` is used twice"));
             }
-            let target =
-                Target::parse(&e.url).map_err(|why| format!("endpoint `{name}`: the url {why}"))?;
+            let target = Target::parse(&e.url)
+                .map_err(|why| format!("endpoint `{name}`: the url is {why}"))?;
             if target.user_info {
                 return Err(format!(
                     "endpoint `{name}`: the url carries user information, which is never sent; \
@@ -293,7 +293,8 @@ pub fn deliverers(
         .filter(|e| e.lakes.iter().any(|l| l == lake.as_str()))
     {
         let name = &e.name;
-        let target = Target::parse(&e.url).map_err(|why| format!("endpoint `{name}`: {why}"))?;
+        let target =
+            Target::parse(&e.url).map_err(|why| format!("endpoint `{name}`: the url is {why}"))?;
         let secret = match &e.secret_file {
             None => None,
             Some(file) => {
@@ -402,8 +403,8 @@ impl Deliverer {
 
     /// One round: read the feed from the position and deliver or refuse
     /// every matching event, in order, retrying transient failures until
-    /// they pass. Answers whether the round read a full batch, so more
-    /// may be waiting.
+    /// they pass. Answers whether the round stopped short of the head,
+    /// so more may be waiting.
     pub async fn round(&mut self, store: &dyn LakeStore) -> Result<bool, String> {
         let feed = store.feed();
         let filter = FeedFilter {
@@ -430,7 +431,9 @@ impl Deliverer {
             .poll(from, &filter, self.batch)
             .await
             .map_err(|e| format!("the feed failed: {e}"))?;
-        let full = batch.events.len() >= self.batch as usize;
+        // A poll may stop short of the head with no events: read on, unless
+        // it did not move.
+        let more = batch.next <= batch.head && batch.next > from;
         for event in &batch.events {
             if self.wanted(event) {
                 self.deliver(event).await;
@@ -440,7 +443,7 @@ impl Deliverer {
         if batch.next > from {
             self.keep(batch.next)?;
         }
-        Ok(full)
+        Ok(more)
     }
 
     /// Whether the endpoint receives an event: its kind, and the trigger
@@ -543,9 +546,8 @@ impl Deliverer {
             Err(Failure::TimedOut(t)) => {
                 Answer::Retry(format!("it did not answer within {}s", t.as_secs()))
             }
-            Err(Failure::Failed(why) | Failure::Refused(why) | Failure::Tls(why)) => {
-                Answer::Retry(why)
-            }
+            Err(Failure::Failed(why) | Failure::Refused(why)) => Answer::Retry(why.to_string()),
+            Err(Failure::Tls(why)) => Answer::Retry(why),
         }
     }
 

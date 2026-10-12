@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use lakelands_api::engine::{EngineOpener, OpenMode};
+use lakelands_api::error::Case;
 use lakelands_api::event::{Digest, EventBody, SegmentDigest};
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
@@ -16,6 +17,7 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::query::{Search, SearchMode};
 use lakelands_api::seam::{FeedFilter, Seams};
+use lakelands_api::tools::NameProblem;
 use lakelands_api::write::{
     Declaration, FunctionDecl, Migration, Outcome, ProposalFilter, ProposedWrite,
 };
@@ -23,6 +25,7 @@ use lakelands_api::{
     Error, Get, Grants, LakeStore, Location, Patch, Position, Principal, PrincipalKind, ReadAt,
     Refusal, SourceRecord, WriteContext, WriteOpts,
 };
+use lakelands_core::conformance::fixture::invalid_case;
 use lakelands_engine_mem::MemoryOpener;
 use serde_json::json;
 
@@ -67,6 +70,7 @@ fn field(name: &str, kind: StorageKind) -> FieldDecl {
         authority: Authority::Authored,
         derived: None,
         function: None,
+        computed_at: None,
         depends_on: vec![],
         on_input_change: Default::default(),
         initial: None,
@@ -146,7 +150,8 @@ async fn a_read_only_handle_refuses_compact_and_the_writer_compacts_in_place() {
             ("checkpoint", store.checkpoint().await.map(|_| ())),
         ] {
             match answer {
-                Err(Error::Unavailable { message }) => {
+                Err(Error::Unavailable { situation }) => {
+                    let message = situation.to_string();
                     assert_eq!(message, "this lake is open read-only here", "{who}, {op}");
                 }
                 other => panic!("{who}, {op}: expected unavailable, got {other:?}"),
@@ -585,7 +590,7 @@ async fn the_door_refuses_what_this_release_does_not_hold() {
         )
         .await;
     assert!(
-        matches!(&remote, Err(Error::Unbound { seam }) if seam.contains("`http`")),
+        matches!(remote.as_ref().err().and_then(Error::seam), Some(lakelands_api::error::Seam::FunctionBacking { kind }) if kind == "http"),
         "{remote:?}"
     );
     let empty = cat
@@ -679,9 +684,9 @@ async fn a_migration_covers_retired_records_and_keeps_the_key() {
         matches!(
             &r,
             Err(Error::Refused {
-                reason: Refusal::Invalid { message },
+                reason: Refusal::Invalid(said),
                 ..
-            }) if message.contains("key")
+            }) if matches!(said.case, Case::KeyFieldRequired { .. })
         ),
         "a migration that changes the key is refused: {r:?}"
     );
@@ -740,7 +745,7 @@ async fn a_tampered_checkpoint_is_reported_by_verify() {
     })
     .await;
     assert!(
-        matches!(&r, Err(Error::Unavailable { message }) if message.contains("checkpoint")),
+        matches!(&r, Err(Error::Unavailable { situation }) if situation.to_string().contains("checkpoint")),
         "{r:?}"
     );
 }
@@ -765,8 +770,8 @@ async fn a_segment_that_begins_with_no_checkpoint_is_reported_by_verify() {
     })
     .await;
     assert!(
-        matches!(&r, Err(Error::Unavailable { message })
-            if message.contains("a segment begins there") && message.contains("no checkpoint")),
+        matches!(&r, Err(Error::Unavailable { situation })
+            if matches!(**situation, lakelands_api::error::Situation::Damaged { flaw: lakelands_api::error::Flaw::NoCheckpoint, .. })),
         "{r:?}"
     );
 }
@@ -823,8 +828,8 @@ async fn verify_refuses_a_format_version_that_goes_down() {
     let reader = open(&lake, OpenMode::Read).await.unwrap();
     let r = reader.verify(None, None).await;
     assert!(
-        matches!(&r, Err(Error::Unavailable { message })
-            if message.contains("format 1") && message.contains("format 2")),
+        matches!(&r, Err(Error::Unavailable { situation })
+            if matches!(**situation, lakelands_api::error::Situation::Damaged { flaw: lakelands_api::error::Flaw::FormatBack { v: 1, before: 2 }, .. })),
         "{r:?}"
     );
 }
@@ -1030,7 +1035,16 @@ async fn a_hybrid_search_embeds_its_text_through_the_bound_backend() {
     body.searchable = true;
     let mut v = field("v", StorageKind::Vector);
     v.ty.dimensions = Some(2);
-    cat.declare(&o, Declaration::Type(ty("doc", vec![body, v])))
+    // A hybrid search without a vector reads a field a model fills
+    // (lakelands#743): `e`, the embedding of `body` by `axis`.
+    let mut e = field("e", StorageKind::Vector);
+    e.ty.dimensions = Some(2);
+    e.authority = lakelands_api::ontology::Authority::Derived;
+    e.embed = Some(lakelands_api::ontology::EmbedDecl {
+        from: vec!["body".into()],
+        model: "axis".into(),
+    });
+    cat.declare(&o, Declaration::Type(ty("doc", vec![body, v, e])))
         .await
         .unwrap();
     cat.upsert(
@@ -1049,7 +1063,7 @@ async fn a_hybrid_search_embeds_its_text_through_the_bound_backend() {
                 ty: "doc".into(),
                 mode: SearchMode::Hybrid {
                     text: "apple".into(),
-                    field: "v".into(),
+                    field: "e".into(),
                     vector: None,
                     fields: None,
                     weight: None,
@@ -1226,9 +1240,13 @@ impl lakelands_api::seam::VerbExecutor for Bank {
     ) -> lakelands_api::Result<serde_json::Value> {
         match invocation.record.as_ref().map(|r| r.key.as_str()) {
             Some("i1") => Ok(json!({"paid": true})),
-            _ => Err(Error::Unavailable {
-                message: "the bank is closed".into(),
-            }),
+            _ => Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed("the bank is closed"),
+                },
+            )),
         }
     }
 }
@@ -1445,7 +1463,7 @@ async fn apply_takes_a_set_whole_and_refuses_duplicates_and_readers() {
         .apply(&o, vec![forward[1].clone(), forward[1].clone()])
         .await;
     assert!(
-        matches!(&twice, Err(Error::Refused { reason: Refusal::Invalid { message }, .. }) if message.contains("more than once")),
+        matches!(invalid_case(&twice), Some(Case::SetDeclaresTwice)),
         "{twice:?}"
     );
     let head = store.head().await.unwrap();
@@ -1646,16 +1664,13 @@ async fn a_declaration_names_every_tool_name_problem_at_once() {
     let r = cat
         .declare(&owner(&lake), Declaration::Type(ty(&long, vec![])))
         .await;
-    let Err(Error::Refused {
-        reason: Refusal::Invalid { message },
-        ..
-    }) = r
-    else {
+    let Some(Case::ToolNames { problems }) = invalid_case(&r) else {
         panic!("{r:?}")
     };
+    let long = |p: &&NameProblem| matches!(p, NameProblem::TooLong { .. });
     assert!(
-        message.matches("is longer than").count() > 1,
-        "every too-long tool name is named: {message}"
+        problems.iter().filter(long).count() > 1,
+        "every too-long tool name is named: {problems:?}"
     );
 }
 
@@ -2036,9 +2051,13 @@ impl lakelands_api::seam::EmbedBackend for Counting {
     async fn embed(&self, texts: &[String]) -> lakelands_api::Result<Vec<Vec<f32>>> {
         self.calls.lock().unwrap().push(texts.len());
         if self.fail {
-            return Err(Error::Unavailable {
-                message: "the endpoint timed out".into(),
-            });
+            return Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed("the endpoint timed out"),
+                },
+            ));
         }
         Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
     }
@@ -2110,7 +2129,8 @@ async fn a_backfill_sends_each_distinct_text_once_in_batches_of_at_most_sixty_fo
     }
 }
 
-/// A request that fails records a failure for each text it carried.
+/// A request that fails with weather (`Unavailable`) is not halved: it
+/// records the failure for each text it carried.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_failed_request_records_a_failure_for_each_text() {
     let lake = name();
@@ -2139,11 +2159,12 @@ async fn a_failed_request_records_a_failure_for_each_text() {
         .await
         .unwrap();
     assert_eq!(*backend.calls.lock().unwrap(), [2]);
+    let timed_out = "the storage failed while writing the projection: the endpoint timed out";
     for k in ["a", "b"] {
         let r = cat.get(&o, &"doc".into(), get(k)).await.unwrap().data;
         let why = r.meta.get("vec").and_then(|m| m.error.clone());
         assert!(
-            !r.fields.contains_key("vec") && why.as_deref() == Some("the endpoint timed out"),
+            !r.fields.contains_key("vec") && why.as_deref() == Some(timed_out),
             "{k}: {r:?}"
         );
     }
@@ -2202,8 +2223,14 @@ async fn another_model_bound_later_is_unbound_for_search_and_makes_no_embedding(
         )
         .await;
     match got {
-        Err(Error::Unbound { seam }) => {
-            assert!(seam.contains("`m`") && seam.contains("`n`"), "{seam}");
+        Err(e) if e.seam().is_some() => {
+            let Some(lakelands_api::error::Seam::Embedding { model, bound, .. }) = e.seam() else {
+                panic!("{e:?}");
+            };
+            assert!(
+                model == "m" && bound.as_ref().is_some_and(|b| b.model == "n"),
+                "{model} {bound:?}"
+            );
         }
         other => panic!("expected unbound, got {other:?}"),
     }
@@ -2235,7 +2262,14 @@ async fn another_model_bound_later_is_unbound_for_search_and_makes_no_embedding(
         )
         .await;
     assert!(
-        matches!(&got, Err(Error::Unbound { seam }) if seam.contains("2 dimensions") && seam.contains("with 3")),
+        matches!(
+            got.as_ref().err().and_then(Error::seam),
+            Some(lakelands_api::error::Seam::Embedding {
+                dimensions: 2,
+                bound: Some(lakelands_api::error::Bound { dimensions: 3, .. }),
+                ..
+            })
+        ),
         "{got:?}"
     );
     assert!(wider.calls.lock().unwrap().is_empty());
@@ -2328,29 +2362,42 @@ async fn an_embedding_declared_wrongly_is_refused_naming_the_field() {
             ],
         )
     };
-    let cases: Vec<(&str, TypeDecl)> = vec![
-        ("not text", with(&["n"], |_| {})),
-        ("not one of its fields", with(&["nowhere"], |_| {})),
-        ("from itself", with(&["vec"], |_| {})),
-        ("twice", with(&["body", "body"], |_| {})),
-        ("names the fields", with(&[], |_| {})),
-        ("sensitive", with(&["secret"], |_| {})),
+    let (n, nowhere, body, secret) = ("n".into(), "nowhere".into(), "body".into(), "secret".into());
+    let cases: Vec<(Case, TypeDecl)> = vec![
+        (Case::EmbedFromNotText { field: n }, with(&["n"], |_| {})),
         (
-            "authority",
+            Case::UnknownField {
+                ty: "doc".into(),
+                field: nowhere,
+            },
+            with(&["nowhere"], |_| {}),
+        ),
+        (Case::EmbedFromItself, with(&["vec"], |_| {})),
+        (
+            Case::EmbedFromTwice { field: body },
+            with(&["body", "body"], |_| {}),
+        ),
+        (Case::EmbedNoFrom, with(&[], |_| {})),
+        (
+            Case::EmbedFromSensitive { field: secret },
+            with(&["secret"], |_| {}),
+        ),
+        (
+            Case::EmbedNotDerived,
             with(&["body"], |v| v.authority = Authority::Authored),
         ),
         (
-            "`depends_on`",
+            Case::EmbedDependsOn,
             with(&["body"], |v| v.depends_on = vec!["body".into()]),
         ),
         (
-            "only a vector",
+            Case::EmbedNotVector,
             with(&["body"], |v| {
                 v.ty = FieldType::kind(StorageKind::Text);
             }),
         ),
         (
-            "only one",
+            Case::EmbedAlsoComputed,
             with(&["body"], |v| v.derived = Some(Condition::from("body"))),
         ),
     ];
@@ -2359,10 +2406,10 @@ async fn an_embedding_declared_wrongly_is_refused_naming_the_field() {
         match got {
             Err(Error::Refused {
                 field: Some(f),
-                reason: Refusal::Invalid { message },
+                reason: Refusal::Invalid(said),
             }) => {
-                assert_eq!(f.as_str(), "vec", "{why}: {message}");
-                assert!(message.contains(why), "{why}: {message}");
+                assert_eq!(f.as_str(), "vec", "{why}: {said}");
+                assert_eq!(said.case, why, "{said}");
             }
             other => panic!("{why}: expected invalid, got {other:?}"),
         }
@@ -2465,8 +2512,8 @@ async fn retry_far_behind() {
         .await;
     assert!(
         matches!(&running, Err(lakelands_api::Error::Refused {
-            reason: lakelands_api::Refusal::Unanswered { message }, ..
-        }) if message.contains("is still running")),
+            reason: lakelands_api::Refusal::Unanswered(said), ..
+        }) if matches!(said.case, Case::Unanswered { accepted: false, .. })),
         "a retry while the executor runs is `unanswered`: {running:?}"
     );
     // The lake takes more than the old reach of other events while the
@@ -2550,9 +2597,10 @@ async fn verify_refuses_a_known_at_that_goes_back_naming_its_position() {
 
     let store = open("vectors", OpenMode::Read).await.unwrap();
     match store.verify(None, None).await {
-        Err(Error::Unavailable { message }) => assert!(
-            message.contains("at position 6") && message.contains("known_at"),
-            "{message}"
+        Err(Error::Unavailable { situation }) => assert!(
+            situation.to_string().contains("at position 6")
+                && situation.to_string().contains("known_at"),
+            "{situation}"
         ),
         other => {
             panic!("a known_at going back is refused at position 6, and it answered {other:?}")

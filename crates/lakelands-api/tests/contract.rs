@@ -24,6 +24,7 @@ fn intent(e: &Error) -> &'static str {
             Refusal::Decided => "the proposal is already decided",
             Refusal::Unanswered { .. } => "an external call has no recorded answer; nothing ran",
             Refusal::OutOfRange { .. } => "the position is past the head",
+            Refusal::Unknown(_) => "a refusal a newer lake knows: its message says it",
         },
         Error::NotFound { missing } => match missing {
             Missing::Type { .. } => "no such type at the position read",
@@ -31,10 +32,12 @@ fn intent(e: &Error) -> &'static str {
             Missing::Verb { .. } => "no such verb",
             Missing::Function { .. } => "no such function",
             Missing::Proposal { .. } => "no such proposal",
+            Missing::Unknown(_) => "a thing a newer lake knows: its message says it",
         },
         Error::Conflict { .. } => "the record moved: retry against its version",
         Error::Unbound { .. } => "the host bound no seam for this",
         Error::Unavailable { .. } => "the lake cannot answer now; retrying may help",
+        Error::Unknown(_) => "an error of a kind a newer lake knows: its message says it",
     }
 }
 

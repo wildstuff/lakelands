@@ -51,7 +51,9 @@ Two further rules follow from the tree:
   retention hold through `restrict` only when the principal holds the
   `restricted` grant. What the principal cannot see, a withheld record or
   a hold without that grant, does not cross, and the copy keeps its last
-  state.
+  state. A held record's copy is held, so a mirror whose source principal
+  holds `restricted` is refused at the start unless its target writer
+  holds it too (lakelands#772): it writes with the grants it is given.
 
 The mirror reads the feed for order and position only. The feed is the
 log unmasked, not filtered per principal

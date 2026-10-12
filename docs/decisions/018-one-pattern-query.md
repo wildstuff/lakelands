@@ -48,6 +48,51 @@ would look complete when it is not, and the caller could not tell. A
 `subgraph` pattern's steps are one walk over any of their relations,
 not a chain of steps.
 
+## Extended: a graph answers what its steps say (lakelands#556)
+
+A graph pattern whose steps all start at depth 0 is a neighbourhood:
+one walk from its start over any of its steps' relations, each walked
+in its own step's direction to its own step's `max`. A record reached
+over a step's relation is kept, and walked on from, only where that
+step's `type` and `where` hold of it. Since a neighbourhood walks into
+types its start does not declare, a step may name a relation any type
+declares. Its `where` is read against the type that relation reaches,
+wherever it is declared: its target walked out, its owner walked in. A
+step that may reach several types (walked both ways, or a relation
+several types declare) and reads a `where` is refused as invalid unless
+it names its `type`. Any other graph pattern is a chain, walked as its rows are:
+each step from the records the step before it kept, with its own
+relation, direction, depth range, `type` and `where`, and a step over a
+relation its type does not declare is refused. A chain's graph is the
+start, every record a match binds, the records each was walked through
+from the record before it, and the links walked, so no link has an end
+outside the graph. Several starts are one walk: each record is at the
+fewest hops any start reaches it in. A step that names no depth is
+`1..1`, so a graph of several such steps is a chain; a neighbourhood
+names `0..` on each step.
+
+A graph cut by `limit` says `truncated` and carries a `next_cursor`,
+exactly as a page of rows does. The next page is the next `limit`
+records of the one order (depth, type, key), with every link between a
+record of that page and one of this or an earlier page, so the pages
+together are the graph, each record and link once. Each page walks
+again, at the cursor's position, as deep as its last record.
+
+A pattern with `to` is a path: the shortest walk to that record, over
+its steps' relations as a neighbourhood walks them, each in its step's
+direction and only through records its step's `type` and `where` keep.
+A path has one start, so a pattern whose start names several records
+is refused as invalid, as is one with a step that does not start at
+depth 0. A path is a graph, and a pattern with `to` that asks for rows
+or an aggregate is refused as invalid: an answer that ignored what it
+was asked would look like more than it is. Where no path is, the answer
+is an empty graph. A path and an aggregate answer in one page and hand
+out no cursor, so a cursor handed to either is another read's, and is
+refused as such. A path or a neighbourhood with no steps walks no
+relation: the neighbourhood is its start alone, and a path reaches no
+other record. (Before lakelands#556 a path with no steps walked every
+relation one hop.)
+
 ## Extended: views are computed on read
 
 A view type's records are computed when they are read: the source's
@@ -208,3 +253,30 @@ it was before. A lake declared before 0.8.0 may still hold a verb on a
 record of a view, since replay does not judge a declaration again; a
 call of it is refused at the door as above.
 
+## Extended: a pattern's aggregate reads its rows by their paths (lakelands#720)
+
+A pattern's row holds each value under its path, `<type>.<field>` or
+`<type>.key`, for every type the pattern binds: its start and the type
+each step reaches. A measure's field already named a path whole. A
+group key did not. A named key read `bill.amount` as the field `bill`
+and then its member `amount`, found nothing, and grouped every row
+under null. A field key by its path was refused by the rule for a named
+key's name. So a pattern could group only by a setting or a constant,
+and a name that named nothing answered quietly: a field key `zz`, a
+sum of `zz` as 0.
+
+Every name in a pattern's aggregate is now read against the paths the
+rows hold. A field key and a measure's field name one whole. Each path
+in a named key's expression is read as the longest type the pattern
+binds, then one of its fields or `key`, then members by 028's rule for a
+path. A field key answers under its path in the group's `by`. A name
+that no bound type starts is refused, as a step over an undeclared
+relation is and for the same reason: it reads nothing, and an answer
+built on it looks like one that read something. The refusal is the same
+for a type that does not exist and one its reader is not shown.
+
+A named key is held to what `find` holds it to. Each field it reads is
+probed before a value is read (024), so a field its reader may not know
+of is answered as one the type does not have, as a field key on it is.
+An operation it can never compute is refused (028), checked over the
+row's shape: one field for each path, of its declared kind.

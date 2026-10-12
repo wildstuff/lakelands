@@ -14,6 +14,8 @@
 //! so a canonical form can never depend on which one an implementation
 //! picked.
 
+use lakelands_api::error::{Case, Naming};
+
 /// Whether a name can name a lake: 1 to 63 characters of lower-case
 /// ASCII letters, digits, `-` and `_`, starting with a letter or a
 /// digit. A lake id names files and directories, so it is narrower than
@@ -40,23 +42,19 @@ pub fn is_type_name(name: &str) -> bool {
     !name.is_empty() && name.split('.').all(is_identifier)
 }
 
-/// Why a name of this kind cannot be declared, if it cannot. `what` is
-/// the kind of thing named (`type`, `field`, …), for the message.
-pub fn fault(what: &str, name: &str) -> Option<String> {
-    let (ok, rule) = if what == "type" {
-        (is_type_name(name), "ASCII identifiers joined by `.`")
-    } else {
-        let rule = "an ASCII identifier: a letter or `_`, then letters, digits or `_`";
-        (is_identifier(name), rule)
+/// Why a name of this kind cannot be declared, if it cannot.
+pub fn fault(what: Naming, name: &str) -> Option<Case> {
+    let ok = match what {
+        Naming::Type => is_type_name(name),
+        _ => is_identifier(name),
     };
-    if ok {
-        return None;
+    let name = name.escape_debug().to_string();
+    match what {
+        _ if ok => None,
+        _ if name.is_empty() => Some(Case::NameEmpty { what }),
+        Naming::Type => Some(Case::TypeNameForm { name }),
+        _ => Some(Case::NameNotIdentifier { what, name }),
     }
-    Some(if name.is_empty() {
-        format!("a {what} name must not be empty")
-    } else {
-        format!("{what} name `{}` is not {rule}", name.escape_debug())
-    })
 }
 
 #[cfg(test)]

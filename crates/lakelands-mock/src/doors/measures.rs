@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::error::{Refusal, Result};
+use lakelands_api::error::{Case, Refusal, Result};
 use lakelands_api::id::{RecordKey, RelationName, TypeName};
 use lakelands_api::principal::Principal;
 use lakelands_api::query::{Depth, Pattern, Projection, Walk};
@@ -19,17 +19,33 @@ use crate::state::State;
 type Node = (TypeName, RecordKey);
 type EdgeId = (Node, RelationName, Node);
 
-/// What a measure refuses, as the store does.
+/// What a measure refuses, as the store does: a member it would otherwise
+/// ignore.
 pub(super) fn check(p: &Pattern) -> Result<()> {
-    if p.to.is_some() || !p.order_by.is_empty() || p.steps.is_empty() {
-        return Err(invalid("a measure takes steps, no `to` and no `order_by`"));
+    let measure = match p.project {
+        Projection::Degree => "degree",
+        _ => "components",
+    }
+    .to_owned();
+    if p.to.is_some() {
+        return Err(invalid(Case::MeasureNoTo { measure }));
+    }
+    if !p.order_by.is_empty() {
+        return Err(invalid(Case::MeasureNoOrder { measure }));
+    }
+    if p.steps.is_empty() {
+        return Err(invalid(Case::MeasureNoSteps { measure }));
     }
     for s in &p.steps {
-        if s.depth != Depth::default() || s.filter.is_some() {
-            return Err(invalid("a measure's steps take no `depth` and no `where`"));
+        if s.depth != Depth::default() {
+            return Err(invalid(Case::MeasureNoDepth { measure }));
+        }
+        if s.filter.is_some() {
+            return Err(invalid(Case::MeasureNoWhere { measure }));
         }
         if p.project == Projection::Components && s.walk != Walk::Both {
-            return Err(invalid("`components` walks every step `both`"));
+            let relation = s.relation.clone();
+            return Err(invalid(Case::ComponentsBothWays { relation }));
         }
     }
     Ok(())
@@ -85,12 +101,29 @@ impl<'a> Seen<'a> {
                     .relations
                     .iter()
                     .filter(|r| &r.name == relation)
+                    .filter(|r| super::relation_shown(self.st, self.who, &o.decl, r))
                     .map(|r| (o.decl.name.clone(), r.clone()))
             })
             .collect();
         for (owner, r) in decls {
             let out = matches!(walk, Walk::Out | Walk::Both) && owner == near.0;
             let inn = matches!(walk, Walk::In | Walk::Both) && r.target == near.0;
+            if !(out || inn) {
+                continue;
+            }
+            // As the store: every hop probes the field that carries the
+            // relation, and a derived one's matched fields on both sides
+            // (024, 044).
+            let (o, t) = (&self.st.types[&owner], self.st.types.get(&r.target));
+            if let Some(v) = &r.via {
+                super::readable(self.st, self.who, o, v)?;
+            }
+            if let (Some(d), Some(t)) = (&r.derived, t) {
+                for p in &d.pairs {
+                    super::readable(self.st, self.who, o, &p.from)?;
+                    super::readable(self.st, self.who, t, &p.to)?;
+                }
+            }
             if let Some(d) = &r.derived {
                 let Some(here) = self.st.live(&near.0, &near.1) else {
                     continue;
@@ -143,9 +176,12 @@ impl<'a> Seen<'a> {
                 None => {
                     let lt = links::name(&owner, &r.name);
                     for rec in self.st.records.values() {
+                        // A link its walker's `only` does not admit is
+                        // not walked (051).
                         if rec.ty != lt
                             || rec.retired
                             || (rec.restricted && !self.who.grants.restricted)
+                            || !self.st.admitted(self.who, rec)
                         {
                             continue;
                         }

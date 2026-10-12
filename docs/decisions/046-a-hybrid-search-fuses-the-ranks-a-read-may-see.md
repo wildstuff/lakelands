@@ -108,3 +108,129 @@ relative, so it takes nothing a caller needs.
 
 A hybrid search does not take `also`: its text is embedded by one
 model, and several fields may have several.
+
+## Extended: a search says what each axis brought (lakelands#560)
+
+A hybrid search whose text matched nothing answered as one whose text
+matched, only its scores lower. A host could tell the two apart only by
+running each half again on its own. So every answer lists the axes that
+ranked it, `axes`, in the order the fusion sums them, a vector axis
+naming its field.
+
+- **Where a search fuses, each axis is counted.** The count is of the
+  candidates the axis handed the fusion *for this reader*: after the
+  search's `where` and the rights that decide a hit, and up to the
+  lake's `max_limit`. It is never a count of the lake's matches, and a
+  host must not read it as one; `total` stays unknown.
+- **A fused list is read to its window.** Where hidden candidates leave
+  a list short of `max_limit` when the first page could already be
+  ranked, the list is read on to its window or its end. So every page
+  of a search answers the same counts, as it answers one ranking. The
+  reads it adds fall only there.
+- **A search of one axis lists it without a count.** It reads no further
+  than its page and one more, so a count would change with the page.
+  Its hits and its cursor say what it found.
+- **A page continued by a cursor computes its counts again.** A search's
+  cursor holds an offset and the first page's position, and each page
+  ranks again there, so the cursor carries no count.
+
+A hit's score by axis is not given: that answers why a hit ranks where
+it does, a question of its own.
+
+## Extended: a type weighs its searches by a setting (lakelands#561)
+
+A search could weigh its rankings, and only a search could, so a host
+that always wanted one field to count more said so in every request. The
+setting `search_weights.<type>` says it once:
+
+```
+{"fields": {"va": 0.9, "vb": 0.1}, "text_weight": 0.5}
+```
+
+- **It weighs what a search does not.** A fused search that gives a
+  vector field no `weight` takes the setting's `fields` weight, and a
+  hybrid search with no `text_weight` takes the setting's; a weight the
+  search gives wins, and a ranking neither names weighs 1. Each fused
+  axis names the weight it ranked by. A search of one axis is not fused,
+  and the setting changes nothing there. A restricted setting's value
+  shows only as the weight of an axis its reader is shown, as any
+  computation uses a restricted setting's value (`docs/seams.md`).
+- **It is a setting, not a member of the field,** because a weight is how
+  a host wants its searches ranked today, not what the field is: it
+  changes without a migration, and a read as of a position before it
+  ranks without it.
+- **It says nothing a search cannot say.** It names declared vector
+  fields the writer is shown, and every weight is one a search may give,
+  above 0 and at most 1 000 000. Anything else, an unknown member, an
+  empty object or empty `fields`, is refused when it is written, naming
+  the member.
+- **It is harmless when the type changes.** A field it names that a
+  migration removed, or that is no longer a vector, is named by no
+  search and weighs nothing; the setting is not rewritten, so a field
+  declared again under that name takes its weight again. The rule that
+  carries a grant through a field's rename (lakelands#527) does not reach
+  a setting: a host that renames a weighed field writes the setting
+  again.
+
+## Extended: a query vector has a direction (lakelands#696)
+
+A vector search along `(0, 0)` answered every record at a score of 0,
+in key order, and a hybrid search fused that key order as if it were a
+ranking. Near a vector of no direction is nothing. And a query vector
+of `(1e300, 0)` is infinite once read as the 32-bit floats a search
+ranks by, so every hit scored `NaN`.
+
+- **Every query vector a search names has a direction:** each component
+  a finite 32-bit float, and one at least not 0. That holds for
+  `vector`, each entry of `also`, and a hybrid search's vector. A JSON
+  number is read as a 32-bit float first, so `1e-200` is 0 and `1e300`
+  is not finite.
+- **Anything else is refused as invalid, naming the field,** with the
+  other faults of the mode above, before the principal's rights: "`v`'s
+  vector has no direction: every component is 0", or "has a component
+  that is not a finite number".
+- **A vector the embedding backend makes for a hybrid search is held to
+  the same rule,** and one without a direction makes the search
+  unavailable, as a backend that fails does: the caller did not write
+  it.
+
+A query vector is always the caller's: the store makes no model call of
+its own accord, and a hybrid search without one falls back to its text
+or to the bound backend. So a vector with no direction is the caller's
+mistake, and a refusal that names the field says so. An axis that
+ranked nothing would answer no hits for a lone search, which reads as
+"nothing is near". The rule is exact: a cosine over finite 32-bit
+floats, summed in doubles, neither overflows nor underflows.
+
+A record's vector is not held to a direction. A record may have nothing
+to say along a field, and a vector of zeros scores 0 against every
+query. Its components must be finite 32-bit floats, as every value's
+JSON form says (`docs/log-format.md` §5).
+
+## Extended: a vector ranking reads a vector field (lakelands#743)
+
+A vector search over a text or a number field answered no hits and said
+nothing, and so did an `also` term over one. A hybrid search over such a
+field ranked by its text alone, yet said `hybrid`. A hybrid search
+without a vector over a vector field no model fills had its text
+embedded by whatever backend was bound, and ranked the result against
+vectors its writers made, in a space the lake knows nothing of; over
+one of other dimensions it spent the call and was then refused.
+
+- **A vector ranking reads a vector field.** A vector search, each
+  `also` term and a hybrid search, with a vector or without, whose field
+  is not of kind `vector` is refused as invalid on that field, naming
+  its kind (`search_not_vector`). The caller named a ranking, and an
+  answer that drops it says something the store did not do.
+- **A hybrid search without a vector reads a field a model fills.** Over
+  a vector field without `embed` it is refused as invalid on that field
+  (`search_needs_vector`), whether or not a backend is bound: the fault
+  is in the request read against the declaration, not in the host's
+  configuration, and the mock, which binds none, says the same. Its
+  writers chose the space; the search brings its own vector there.
+- **Both come after the caller's rights and before any embedding
+  call.** A hidden field answers as an absent one and a masked one as
+  not granted, as lakelands#741 orders them; a refused search costs no
+  call. A field declared with `embed` keeps its comparison with the
+  bound backend and its fallback to the text where none is bound, and a
+  caller's vector over a plain vector field is ranked as before.

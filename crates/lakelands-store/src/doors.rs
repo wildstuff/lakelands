@@ -5,6 +5,7 @@
 //! holds no grant here. Engine work goes through [`crate::exec::run`], and
 //! nowhere else.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -13,13 +14,16 @@ use lakelands_api::describe::{LakeDescription, TypeDescription};
 use lakelands_api::engine::OpenMode;
 use lakelands_api::event::EventBody;
 use lakelands_api::location::Location;
-use lakelands_api::ontology::{FieldDecl, ValueTypeDecl};
+use lakelands_api::ontology::FieldDecl;
 use lakelands_api::principal::WriteContext;
-use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
-use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter, Seams, VerbInvocation};
+use lakelands_api::query::{Hits, Pattern, QueryResult, Search, SearchMode};
+use lakelands_api::seam::{
+    ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter, Seams, VerbInvocation,
+};
 use lakelands_api::write::{
     AgeReport, CompactReport, Declaration, Migration, MigrationReport, Outcome, Proposal,
-    ProposalFilter, ProposedWrite, PurgeReport, Recompute, ValueTypeReport, WriteOpts,
+    ProposalFilter, ProposedWrite, PurgeReport, Recompute, ValueTypeMigration, ValueTypeReport,
+    WriteOpts,
 };
 use lakelands_api::{
     Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
@@ -27,11 +31,12 @@ use lakelands_api::{
     VerbName, Verification,
 };
 
-use lakelands_core::{invalid, unavailable};
+use lakelands_api::error::{Exchange, Remote, Seam, Situation};
+use lakelands_core::{invalid, rights};
 
 use crate::exec;
 use crate::ingest;
-use crate::lake::Lake;
+use crate::lake::{Lake, owing};
 use crate::reads::Reader;
 use crate::writes::{self, Call, External, MadeDue};
 
@@ -84,9 +89,29 @@ impl Doors {
             // The list comes from the view the read reads, so that a rename
             // is in its shape and in its grants, or in neither.
             let view = lake.engine.view(at.as_of)?;
-            let head = at.as_of.is_none().then_some(view.as_ref());
+            let shape = lake.shape(view.as_ref())?;
+            // A record held now is not there at any position to a reader
+            // without the grant, and one released since is (006, extended).
+            let held_now = at.as_of.is_some() && !who.grants.restricted;
+            let view = match held_now {
+                true => Box::new(crate::reads::HeldNow::new(&lake, view)?),
+                false => view,
+            };
+            let head = at.as_of.is_none().then_some(&shape.renames[..]);
+            // A holder's search as of a position judges at the head too,
+            // its grants followed through the head's shape.
+            let to_head = at.as_of.is_some() && rights::holds_only(&who);
+            let head_who = to_head.then(|| {
+                let head = lake.shape(lake.engine.view(None)?.as_ref())?;
+                let (who, _) = lake.followed(who.clone(), None, Some(&head.renames))?;
+                Ok::<_, Error>(Lake::hidden(who, &head.ontology).0)
+            });
+            // A reference to a type it is not shown is a field it may not
+            // know of, by the types the read reads (024, extended).
             let (who, _) = lake.followed(who, at.as_of, head)?;
-            let r = Reader::open(&lake, &who, at, view)?;
+            let who = Lake::hidden(who, &shape.ontology).0;
+            let mut r = Reader::open(&lake, &who, at, view, shape)?;
+            (r.head_who, r.held_now) = (head_who.transpose()?, held_now);
             let data = f(&r)?;
             Ok(Reply {
                 position: r.position,
@@ -105,19 +130,34 @@ impl Doors {
         let (lake, who, context) = (self.lake.clone(), who.clone(), self.context);
         exec::run(move || {
             let (who, followed) = lake.followed(who, None, None)?;
+            // A reference to a type it is not shown is a field it may not
+            // know of, by the head's types; the writer judges it again
+            // under its lock (024, extended).
+            let (who, shown) = match rights::hides_some(&who) {
+                false => (who, None),
+                true => {
+                    let head = lake.shape(lake.engine.view(None)?.as_ref())?;
+                    let (hid, hidden) = Lake::hidden(who.clone(), &head.ontology);
+                    let versions = head.ontology.versions();
+                    (
+                        hid,
+                        Some(writes::Shown {
+                            asked: who,
+                            versions,
+                            hidden,
+                        }),
+                    )
+                }
+            };
             f(&Call {
                 lake: &lake,
                 who: &who,
                 context,
                 followed,
+                shown,
             })
         })
         .await
-    }
-
-    /// How often the lake's due calls were drained, read before a write.
-    fn seen(&self) -> u64 {
-        self.lake.drains.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Make the calls of backed functions the write made due, and answer
@@ -132,11 +172,10 @@ impl Doors {
     async fn handed(
         &self,
         who: &Principal,
-        (mut outcome, external): (Outcome, Option<External>),
-        seen: u64,
+        ((mut outcome, external), own): ((Outcome, Option<External>), BTreeSet<Position>),
         by: MadeDue,
     ) -> Result<Outcome> {
-        let last = crate::backed::settle(&self.lake, seen).await;
+        let last = crate::backed::settle(&self.lake, &own).await;
         let last = match &external {
             Some(_) => last.map_err(|e| writes::not_handed(e, true, by))?,
             None => last.unwrap_or(None),
@@ -174,12 +213,10 @@ impl Doors {
     {
         let (doors, who) = (self.clone(), who.clone());
         let task = tokio::spawn(async move {
-            let seen = doors.seen();
-            let made = doors.write(&who, f).await?;
-            doors.handed(&who, made, seen, by).await
+            let made = doors.write(&who, |c| owing(|| f(c))).await?;
+            doors.handed(&who, made, by).await
         });
-        let stopped = |e| unavailable(format!("the store's work on this call stopped: {e}"));
-        task.await.unwrap_or_else(|e| Err(stopped(e)))
+        task.await.unwrap_or_else(|e| Err(exec::stopped(&e)))
     }
 
     /// A write whose outcome is [`Doors::handed`]'s.
@@ -187,10 +224,9 @@ impl Doors {
     where
         F: FnOnce(&Call<'_>) -> Result<Outcome> + Send + 'static,
     {
-        let seen = self.seen();
-        let outcome = self.write(who, f).await?;
+        let (outcome, own) = self.write(who, |c| owing(|| f(c))).await?;
         let by = MadeDue::Call { keyed: false };
-        self.handed(who, (outcome, None), seen, by).await
+        self.handed(who, ((outcome, None), own), by).await
     }
 
     /// Hand an external verb to its executor and record the answer; the
@@ -201,15 +237,20 @@ impl Doors {
         let executor = writes::bound_executor(&self.lake, &ext.executor).map_err(not_handed)?;
         let executor = executor.clone();
         // The executor is the host's own code: it receives the record whole,
-        // unmasked by the grants of whoever made the verb due. The caller
-        // sees only the outcome and the recorded output. A verb on its type
-        // has no record to hand it.
+        // unmasked by the grants of whoever made the verb due, as it stood
+        // at the position that made it due, where its call was judged: a
+        // later write, a retirement included, does not reach it (013). The
+        // caller sees only the outcome and the recorded output. A verb on
+        // its type has no record to hand it.
         let record = match &ext.key {
             Some(key) => {
                 let get = Get {
                     key: key.clone(),
                     with_meta: false,
-                    at: ReadAt::default(),
+                    at: ReadAt {
+                        as_of: Some(ext.position),
+                        valid_at: None,
+                    },
                     params: Default::default(),
                 };
                 let host = self.lake.system("host");
@@ -239,15 +280,21 @@ impl Doors {
         };
         let lake = self.lake.clone();
         let recorded = output.clone();
-        let at = exec::run(move || writes::record_output(&lake, &ext, &input, output)).await;
-        // The executor ran: where its answer reached the log, a retry
-        // answers it; where it did not, it is lost but for this sentence.
-        let at = at.map_err(|e| match e {
-            Error::Unavailable { message } => unavailable(format!(
-                "{} answered this call with {recorded}, and recording its answer failed: \
-                 {message}",
-                lakelands_api::error::THE_EXECUTOR
-            )),
+        let at = exec::run(move || Ok(writes::record_output(&lake, &ext, &input, output))).await?;
+        // The executor ran: where its answer reached the log or is held, a
+        // retry answers it; where neither, it is lost but for this sentence.
+        let at = at.map_err(|(e, held)| match e {
+            e @ Error::Unavailable { .. } => {
+                let (answered, cause) = (recorded.clone(), Box::new(e));
+                Error::unavailable(match held {
+                    true => Situation::AnswerHeld {
+                        answered,
+                        retry: by.retry().resent(),
+                        cause,
+                    },
+                    false => Situation::AnswerLost { answered, cause },
+                })
+            }
             e => e,
         })?;
         Ok((at, recorded))
@@ -363,65 +410,94 @@ impl Catalog for Doors {
     }
 
     async fn search(&self, who: &Principal, mut search: Search) -> Result<Reply<Hits>> {
+        let at = cursor_at(search.at, search.cursor.as_ref())?;
         // A hybrid search without a caller's vector embeds its text through
         // the bound embedding backend, if the host bound one. This is a
-        // read: nothing is recorded.
+        // read: nothing is recorded. It is judged for its caller first, by
+        // the read's shape, as the read below judges it again: one refused
+        // calls nothing and names no model.
+        let unvectored = matches!(search.mode, SearchMode::Hybrid { vector: None, .. });
+        let (embed, mut judged) = (self.lake.embed().filter(|_| unvectored), None);
+        if embed.is_some() {
+            let s = search.clone();
+            // The engines index the head's vectors only, so a search at any
+            // position embeds by the head's declaration (`Reader::indexed`).
+            let head = move |r: &Reader<'_>| {
+                r.searched(&s)?;
+                let shape = match r.at_head {
+                    true => r.shape.clone(),
+                    false => r.lake.shape(r.lake.engine.view(None)?.as_ref())?,
+                };
+                Ok(shape.ontology.ty(&s.ty).ok().cloned())
+            };
+            judged = Some(self.read(who, at, head).await?.data);
+        }
         if let (
-            lakelands_api::query::SearchMode::Hybrid {
+            SearchMode::Hybrid {
                 text,
                 field,
                 vector: vector @ None,
                 ..
             },
             Some(embed),
-        ) = (&mut search.mode, &self.lake.seams.embed)
+            Some(decl),
+        ) = (&mut search.mode, embed, judged)
         {
             // A field declared as the embedding of a model is searched with
             // that model's vectors only: another bound model, or one making
             // vectors of other dimensions, is a configuration to fix, not
             // weather.
-            let declared = {
-                let w = self.lake.writer();
-                w.ontology.ty(&search.ty).ok().and_then(|t| {
-                    let f = t.fields.iter().find(|f| &f.name == field)?;
-                    let e = f.embed.as_ref()?;
-                    Some((e.model.clone(), f.ty.dimensions.unwrap_or(0)))
-                })
-            };
+            let declared = decl
+                .iter()
+                .flat_map(|t| &t.fields)
+                .find(|f| &f.name == field);
+            let declared = declared.and_then(|f| {
+                let e = f.embed.as_ref()?;
+                Some((e.model.clone(), f.ty.dimensions.unwrap_or(0)))
+            });
             if let Some((model, dimensions)) = declared
                 && (model != embed.model() || dimensions != embed.dimensions())
             {
-                return Err(Error::Unbound {
-                    seam: format!(
-                        "the embedding model `{model}` with {dimensions} dimensions that \
-                         `{}.{field}` is declared with (the bound one is `{}` with {})",
-                        search.ty,
-                        embed.model(),
-                        embed.dimensions()
-                    ),
+                let bound = Some(lakelands_api::error::Bound {
+                    model: embed.model().to_owned(),
+                    dimensions: embed.dimensions(),
                 });
+                let (ty, field) = (search.ty.clone(), field.to_string());
+                return Err(Error::unbound(Seam::Embedding {
+                    model,
+                    dimensions,
+                    ty,
+                    field,
+                    bound,
+                }));
             }
             let mut vectors =
                 embed
                     .embed(std::slice::from_ref(text))
                     .await
                     .map_err(|e| match e {
-                        Error::Unavailable { message } => Error::Unavailable { message },
-                        other => unavailable(format!(
-                            "the embedding backend `{}` failed: {other}",
-                            embed.model()
-                        )),
+                        e @ Error::Unavailable { .. } => e,
+                        other => {
+                            let cause = Box::new(other);
+                            backend_failed(embed.model(), Exchange::Failed { cause })
+                        }
                     })?;
-            if vectors.len() != 1 {
-                return Err(unavailable(format!(
-                    "the embedding backend `{}` answered {} vectors for one text",
-                    embed.model(),
-                    vectors.len()
-                )));
+            // A vector the backend made with no direction is its fault, not
+            // the caller's: weather, as a wrong count of vectors is.
+            let exchange = match &vectors[..] {
+                [one] => {
+                    lakelands_api::query::no_direction(one).map(|why| Exchange::NoDirection { why })
+                }
+                _ => {
+                    let (answered, asked) = (vectors.len() as u64, 1);
+                    Some(Exchange::Vectors { answered, asked })
+                }
+            };
+            if let Some(exchange) = exchange {
+                return Err(backend_failed(embed.model(), exchange));
             }
             *vector = vectors.pop();
         }
-        let at = cursor_at(search.at, search.cursor.as_ref())?;
         self.read(who, at, move |r| r.search(&search)).await
     }
 
@@ -450,7 +526,10 @@ impl Catalog for Doors {
         who: &Principal,
         filter: ProposalFilter,
     ) -> Result<Reply<Vec<Proposal>>> {
-        self.read(who, filter.at, move |r| r.proposals(&filter))
+        // A proposed migration is judged with the grants as they stood
+        // where it was proposed: the listing follows them there.
+        let asked = who.clone();
+        self.read(who, filter.at, move |r| r.proposals(&filter, &asked))
             .await
     }
 
@@ -504,16 +583,17 @@ impl Catalog for Doors {
     async fn migrate_value_type(
         &self,
         who: &Principal,
-        to: ValueTypeDecl,
+        m: ValueTypeMigration,
     ) -> Result<Reply<ValueTypeReport>> {
         self.write(who, move |c| {
-            crate::writes::granted(c.who.grants.schema)?;
+            crate::writes::granted(c.who.grants.schema && !rights::holds_only(c.who))?;
             let w = c.writer()?;
             let view = c.lake.engine.view(None)?;
+            let report = c.preflight_value_type(&w, view.as_ref(), &m, None)?.report;
+            c.renames_shown(&w.ontology, &m, &report)?;
             Ok(Reply {
                 position: view.position().unwrap_or(Position::GENESIS),
-                data: c
-                    .shown_value_type(&w.ontology, c.preflight_value_type(&w, view.as_ref(), &to)?),
+                data: c.shown_value_type(&w.ontology, report),
             })
         })
         .await
@@ -522,11 +602,11 @@ impl Catalog for Doors {
     async fn migrate_value_type_apply(
         &self,
         who: &Principal,
-        to: ValueTypeDecl,
+        m: ValueTypeMigration,
         report_id: &str,
     ) -> Result<Outcome> {
         let id = report_id.to_owned();
-        self.write_settled(who, move |c| c.migrate_value_type_apply(to, &id))
+        self.write_settled(who, move |c| c.migrate_value_type_apply(m, &id))
             .await
     }
 
@@ -569,7 +649,7 @@ fn cursor_at(mut at: ReadAt, cursor: Option<&lakelands_api::Cursor>) -> Result<R
         .collect();
     let a = bytes.and_then(|b| serde_json::from_slice::<At>(&b).ok());
     at.as_of = Some(
-        a.ok_or_else(|| invalid("the cursor is not one this lake handed out"))?
+        a.ok_or_else(|| invalid(lakelands_api::error::Case::CursorForeign))?
             .at,
     );
     Ok(at)
@@ -632,11 +712,11 @@ impl LakeStore for Store {
 
     async fn age(&self, today: Timestamp) -> Result<AgeReport> {
         let lake = self.lake.clone();
-        let seen = lake.drains.load(std::sync::atomic::Ordering::Acquire);
-        let mut report = exec::run(move || crate::aging::run(&lake, today)).await?;
+        let (mut report, own) =
+            exec::run(move || owing(|| crate::aging::run(&lake, today))).await?;
         // The moves' backed fields settle like any write's; the report
         // names the position from which what they filled is visible.
-        if let Some(last) = crate::backed::settle_after(&self.lake, seen).await {
+        if let Some(last) = crate::backed::settle_after(&self.lake, &own).await {
             report.position = report.position.max(last);
         }
         Ok(report)
@@ -658,14 +738,11 @@ impl LakeStore for Store {
         id: Option<&str>,
     ) -> Result<PurgeReport> {
         let (lake, source, id) = (self.lake.clone(), source.clone(), id.map(str::to_owned));
-        let (ty, seen) = (
-            ty.cloned(),
-            lake.drains.load(std::sync::atomic::Ordering::Acquire),
-        );
+        let ty = ty.cloned();
         let purge = move || crate::purge::run(&lake, &source, ty.as_ref(), id.as_deref());
-        let mut report = exec::run(purge).await?;
+        let (mut report, own) = exec::run(move || owing(purge)).await?;
         // The retirements' backed fields settle like any write's.
-        if let Some(last) = crate::backed::settle_after(&self.lake, seen).await {
+        if let Some(last) = crate::backed::settle_after(&self.lake, &own).await {
             report.position = report.position.max(last);
         }
         Ok(report)
@@ -687,6 +764,11 @@ impl LakeStore for Store {
     async fn compact(&self) -> Result<CompactReport> {
         let lake = self.lake.clone();
         exec::run(move || lake.compact()).await
+    }
+
+    fn bind_embed(&self, backend: Arc<dyn lakelands_api::seam::EmbedBackend>) -> Result<()> {
+        self.lake.bind_embed(backend);
+        Ok(())
     }
 
     async fn checkpoint(&self) -> Result<Position> {
@@ -730,10 +812,15 @@ fn about(body: &EventBody) -> (Option<&TypeName>, Option<&RecordKey>) {
 
 /// Whether a `migrated` event is also about one of `types`: the link
 /// types its renamed relations move records between, old and new, so a
-/// consumer that follows either hears of the move (035, extended).
+/// consumer that follows either hears of the move (035, extended). A
+/// `value_type_migrated` is about every type whose records it rewrites.
 fn moves(body: &EventBody, types: &[TypeName]) -> bool {
-    let EventBody::Migrated { migration, .. } = body else {
-        return false;
+    let migration = match body {
+        EventBody::Migrated { migration, .. } => migration,
+        EventBody::ValueTypeMigrated { types: of, .. } => {
+            return of.iter().any(|t| types.contains(t));
+        }
+        _ => return false,
     };
     let moved = lakelands_core::links::moved(migration);
     (moved.iter()).any(|(old, new)| types.contains(old) || types.contains(new))
@@ -748,15 +835,17 @@ impl ChangeFeed for Feed {
             let want = limit.max(1) as usize;
             let mut events = Vec::new();
             let mut next = from;
-            // Read in batches, and stop at `limit` matches or the head:
-            // nothing past the last position examined is read or verified.
-            'read: while next <= head && events.len() < want {
-                let batch = lake.read_events(next, want.clamp(64, 1024) as u32)?;
+            // Read in batches to `limit` matches or to `last`, the head or the
+            // bound: nothing past the last position examined is read or verified.
+            let last = Position(from.0.saturating_add(u64::from(FEED_EXAMINED) - 1)).min(head);
+            'read: while next <= last && events.len() < want {
+                let room = (last.0 - next.0 + 1).min(want.clamp(64, 1024) as u64);
+                let batch = lake.read_events(next, room as u32)?;
                 if batch.is_empty() {
                     break;
                 }
                 for e in batch {
-                    if e.position > head {
+                    if e.position > last {
                         break 'read;
                     }
                     next = e.position.next();
@@ -790,3 +879,11 @@ impl ChangeFeed for Feed {
 
 #[cfg(test)]
 mod tests;
+
+/// An exchange with the embedding backend of `model` that failed.
+fn backend_failed(model: &str, exchange: Exchange) -> Error {
+    let remote = Remote::Embedding {
+        model: model.to_owned(),
+    };
+    Error::unavailable(Situation::Remote { remote, exchange })
+}

@@ -36,7 +36,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use lakelands_api::engine::{After, CanonicalEvent, Scan};
-use lakelands_api::error::{Error, Refusal, Result};
+use lakelands_api::error::{Case, Detail, Error, Flaw, Part, Place as At, Refusal, Result, Said};
 use lakelands_api::event::SegmentDigest;
 use lakelands_api::expr::Expr;
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
@@ -54,6 +54,16 @@ use crate::invalid;
 /// The clock an engine evaluates a filter with. The store hands an engine
 /// only filters that do not read the clock, so any fixed instant will do.
 const NO_CLOCK: Timestamp = Timestamp(0);
+
+/// `name`, when it is a head-only name ([`lakelands_api::seam::is_head_only`])
+/// an engine may end whole; otherwise a refusal. Ending a stored type's
+/// name would delete its rows and leave its indexes behind.
+pub fn head_only(name: &TypeName) -> Result<()> {
+    match lakelands_api::seam::is_head_only(name) {
+        true => Ok(()),
+        false => Err(invalid(Case::NotHeadOnly { ty: name.clone() })),
+    }
+}
 
 /// A declaration's identity: its kind and its name. A later declaration
 /// with the same identity supersedes an earlier one.
@@ -132,7 +142,7 @@ pub fn sort_value(record: &StoredRecord, order: &Order) -> Option<Value> {
 
 /// One sort key's order between two optional values: missing last in
 /// either direction.
-fn cmp_key(a: Option<&Value>, b: Option<&Value>, dir: Direction) -> Ordering {
+pub fn cmp_key(a: Option<&Value>, b: Option<&Value>, dir: Direction) -> Ordering {
     match (a, b) {
         (None, None) => Ordering::Equal,
         (None, Some(_)) => Ordering::Greater,
@@ -345,29 +355,48 @@ pub fn order_key(value: &Value) -> Vec<u8> {
     key
 }
 
-/// The fields of `decl` whose order index a lake keeps, by `setting`, the
-/// value of its `sort_index.<type>` setting at the head: those it names
-/// that the type declares with a kind the index keeps
+/// The fields of `ty` whose order index a lake keeps, by `decl`, the
+/// declaration of `ty` (of its [`kept_view`] for a kept name) at the head,
+/// and `setting`, the value of its [`sort_index_key`] setting there: those
+/// it names that the type declares with a kind the index keeps
 /// ([`lakelands_api::seam::sortable`]), once each, in the setting's order.
-/// A setting the store would refuse keeps what it can; none keeps none.
-pub fn sorted_fields(decl: &TypeDecl, setting: Option<&Value>) -> Vec<FieldName> {
-    index_fields(decl, setting, lakelands_api::seam::sortable)
+/// A view keeps none of its own; its kept records are ordered by the
+/// fields it declares. A setting the store would refuse keeps what it
+/// can; none keeps none.
+pub fn sorted_fields(ty: &TypeName, decl: &TypeDecl, setting: Option<&Value>) -> Vec<FieldName> {
+    let kept = kept_view(ty).is_some();
+    index_fields(decl, setting, kept, lakelands_api::seam::sortable)
+}
+
+/// The view a kept name (`sys:kept.<view>`) holds the records of. They are
+/// ordered as the view declares them, by the order index its
+/// `sort_index.<view>` setting asks for.
+pub fn kept_view(ty: &TypeName) -> Option<TypeName> {
+    let view = ty.as_str().strip_prefix(lakelands_api::seam::KEPT_PREFIX)?;
+    Some(TypeName::from(view))
+}
+
+/// The names whose order index the setting `sort_index.<ty>` asks for:
+/// `ty`'s own, and its kept name's where it is a view.
+pub fn ordered_names(ty: &TypeName) -> [TypeName; 2] {
+    [ty.clone(), lakelands_api::seam::kept_name(ty)]
 }
 
 /// The vector fields of `decl` a lake asks an index for, by `setting`, the
 /// value of its `vector_index.<type>` setting: those it names that the
 /// type declares as vectors, once each, in the setting's order.
 pub fn indexed_fields(decl: &TypeDecl, setting: Option<&Value>) -> Vec<FieldName> {
-    index_fields(decl, setting, lakelands_api::seam::indexable)
+    index_fields(decl, setting, false, lakelands_api::seam::indexable)
 }
 
 fn index_fields(
     decl: &TypeDecl,
     setting: Option<&Value>,
+    kept: bool,
     keeps: fn(&lakelands_api::ontology::StorageKind) -> bool,
 ) -> Vec<FieldName> {
     let mut out: Vec<FieldName> = Vec::new();
-    if decl.view.is_some() {
+    if decl.view.is_some() != kept {
         return out;
     }
     for name in setting
@@ -407,8 +436,10 @@ fn setting_for(r: &StoredRecord, prefix: &str) -> Option<TypeName> {
         .map(TypeName::from)
 }
 
-/// The key of the setting that asks for `ty`'s order index.
+/// The key of the setting that asks for `ty`'s order index: a kept name's
+/// is its view's.
 pub fn sort_index_key(ty: &TypeName) -> String {
+    let ty = kept_view(ty).unwrap_or_else(|| ty.clone());
     format!("{}{ty}", lakelands_api::seam::SORT_INDEX_SETTING)
 }
 
@@ -448,13 +479,8 @@ pub fn order_rows<'a>(
 /// Whether an order index kept by [`order_rows`] for `fields` can answer
 /// `scan`: it is ordered, first by the value of one of them. What the
 /// index cannot answer (an order by `known_at` or `seen_at`, a field the
-/// lake does not index, a view type) is sorted whole by [`scan`].
-pub fn by_order_index<'a>(
-    decl: Option<&TypeDecl>,
-    fields: &[FieldName],
-    scan: &'a Scan,
-) -> Option<&'a Order> {
-    decl.filter(|d| d.view.is_none())?;
+/// lake does not index) is sorted whole by [`scan`].
+pub fn by_order_index<'a>(fields: &[FieldName], scan: &'a Scan) -> Option<&'a Order> {
     let first = scan.order_by.first()?;
     (first.by == OrderBy::Value && fields.contains(&first.field)).then_some(first)
 }
@@ -462,6 +488,15 @@ pub fn by_order_index<'a>(
 thread_local! {
     static ROWS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static LINKS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static BATCHES_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The batches of index rows [`scan_in_field_order`] asked for on this
+/// thread. An engine may read more than a batch to answer one (the text's
+/// every holder, sorted), so the engine checks count by it that a page
+/// whose filter rejects rows asks for few batches, not one per row.
+pub fn batches_read() -> u64 {
+    BATCHES_READ.with(|n| n.get())
 }
 
 /// The rows the scans and counts on this thread were handed: the whole
@@ -554,6 +589,57 @@ pub struct Changed {
 /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`).
 pub fn changed_ceiling(limit: u32) -> usize {
     (limit as usize).saturating_mul(10).min(4096)
+}
+
+/// The records a page at the head in a field's order is read from, in the
+/// order index's order (`docs/decisions/041-a-sorted-page-reads-its-page.md`,
+/// extended): the type's, or those whose field holds exactly the scan's
+/// [`text_lookup`]. When many hold it, the order index is read in its
+/// order and a row kept where the text index holds its key; when at most
+/// [`FEW_HOLDERS`] do, the text index's rows are sorted by their order
+/// rows. Either way the rulebook admits each record.
+#[derive(Clone, Copy)]
+pub enum Holders<'a> {
+    /// The type's records: the scan holds no exact text.
+    All,
+    /// More than [`FEW_HOLDERS`] hold the text in the field.
+    Many(&'a FieldName, &'a str),
+    /// At most [`FEW_HOLDERS`] hold it.
+    Few(&'a FieldName, &'a str),
+}
+
+/// The most records holding a page's exact text that the page reads from
+/// the text index and orders, rather than walk the order index: a batch
+/// so read reads at most this many index rows, and a page that walks the
+/// order index for more holders spread through it reads about
+/// `limit × N / 4 096` of a type of N
+/// (`docs/decisions/041-a-sorted-page-reads-its-page.md`, extended).
+pub const FEW_HOLDERS: u64 = 4096;
+
+impl<'a> Holders<'a> {
+    /// The holders of `lookup`'s text, `count(field, text, n)` answering
+    /// how many records hold it, counted up to `n`.
+    pub fn of<E>(
+        lookup: Option<&'a (FieldName, String)>,
+        count: impl FnOnce(&FieldName, &str, u64) -> Result<u64, E>,
+    ) -> Result<Holders<'a>, E> {
+        let Some((field, text)) = lookup else {
+            return Ok(Holders::All);
+        };
+        Ok(if count(field, text, FEW_HOLDERS + 1)? > FEW_HOLDERS {
+            Holders::Many(field, text)
+        } else {
+            Holders::Few(field, text)
+        })
+    }
+
+    /// The field and text the records hold, unless they are the type's.
+    pub fn text(&self) -> Option<(&'a str, &'a str)> {
+        match *self {
+            Holders::All => None,
+            Holders::Many(f, t) | Holders::Few(f, t) => Some((f.as_str(), t)),
+        }
+    }
 }
 
 /// [`scan_in_field_order`] at an earlier position, over the head's order
@@ -731,8 +817,13 @@ fn in_field_order<E>(
     let batch = key_batch(scan);
     // After the first batch, what the page still lacks and one more: a
     // page continued inside a run read the rows up to `after` again, and a
-    // whole further batch would hold twice the page.
-    let rest = |have: usize| (limit.saturating_sub(have) + 1).min(batch as usize) as u32;
+    // whole further batch would hold twice the page. Each further one is
+    // at least twice the one before, up to 1 024: a page whose filter
+    // rejects rows asks for a handful of batches, not one per row.
+    let rest = |have: usize, before: u32| {
+        ((limit.saturating_sub(have) + 1).min(batch as usize) as u32)
+            .max(before.saturating_mul(2).min(1024))
+    };
     let after = scan
         .after
         .as_ref()
@@ -767,10 +858,11 @@ fn in_field_order<E>(
         };
         let mut run: Vec<StoredRecord> = Vec::new();
         let mut run_key: Option<Vec<u8>> = None;
-        let mut n = batch;
+        let (mut n, mut refill) = (batch, 0);
         loop {
             let rows = sorted(from.as_ref().map(|(k, r)| (k.as_slice(), r.as_str())), n)?;
             count(rows.len());
+            BATCHES_READ.with(|c| c.set(c.get() + 1));
             let read_all = rows.len() < n as usize;
             for (k, r) in rows {
                 from = Some((k.clone(), r.key.to_string()));
@@ -801,7 +893,8 @@ fn in_field_order<E>(
                 }
                 break;
             }
-            n = rest(out.len());
+            refill = rest(out.len(), refill);
+            n = refill;
         }
     }
     // The records without a value for the first field, last.
@@ -810,7 +903,7 @@ fn in_field_order<E>(
         _ => None,
     };
     let mut run = Vec::new();
-    let mut n = batch;
+    let (mut n, mut refill) = (batch, 0);
     loop {
         let rows = missing(from.as_deref(), n)?;
         count(rows.len());
@@ -830,7 +923,8 @@ fn in_field_order<E>(
             break;
         }
         if !multi {
-            n = rest(out.len());
+            refill = rest(out.len(), refill);
+            n = refill;
         }
     }
     if multi {
@@ -1024,27 +1118,19 @@ pub fn fence_fault(
     event: &lakelands_api::engine::CanonicalEvent,
     lease: Option<u64>,
     floor: u64,
-) -> Option<String> {
-    let fence = event.fence;
-    let at = event.position;
-    match lease {
-        _ if at.0 == 0 => (fence != 0).then(|| {
-            format!(
-                "the event at position 0 carries fence {fence}, and it must carry fence 0; \
-                 nothing was appended"
-            )
+) -> Option<Case> {
+    let (fence, position) = (event.fence, event.position);
+    let wanted = if position.0 == 0 { Some(0) } else { lease };
+    match wanted {
+        Some(wanted) => (fence != wanted).then_some(Case::FenceWrong {
+            position,
+            fence,
+            wanted,
         }),
-        Some(wanted) => (fence != wanted).then(|| {
-            format!(
-                "the event at position {at} carries fence {fence}, and it must carry fence \
-                 {wanted}; nothing was appended"
-            )
-        }),
-        None => (fence < floor).then(|| {
-            format!(
-                "the event at position {at} carries fence {fence}, below the fence {floor} of \
-                 the event before it; fences never fall, and nothing was appended"
-            )
+        None => (fence < floor).then_some(Case::FenceFalls {
+            position,
+            fence,
+            floor,
         }),
     }
 }
@@ -1066,26 +1152,21 @@ pub fn append_fault(
             return Err(invalid(why));
         }
         floor = event.fence;
-        if event.position.0 != expected {
-            return Err(invalid(format!(
-                "the event at position {} does not continue the log, whose next position \
-                 is {expected}; nothing was appended",
-                event.position
-            )));
+        let position = event.position;
+        if position.0 != expected {
+            let next = expected;
+            return Err(invalid(Case::AppendNotNext { position, next }));
         }
         if event.prev != prev {
-            return Err(invalid(format!(
-                "the event at position {} names `{}` as the hash before it, but that hash \
-                 is `{}`; nothing was appended",
-                event.position, event.prev.0, prev.0
-            )));
+            let (named, hash) = (event.prev.0.clone(), prev.0.clone());
+            return Err(invalid(Case::AppendPrev {
+                position,
+                named,
+                hash,
+            }));
         }
         if event.bytes.contains(&b'\n') {
-            return Err(invalid(format!(
-                "the event at position {} holds a line feed in its bytes, which canonical \
-                 bytes never do; nothing was appended",
-                event.position
-            )));
+            return Err(invalid(Case::AppendLineFeed { position }));
         }
         prev = event.hash.clone();
     }
@@ -1101,11 +1182,8 @@ pub fn first_of_next(
 ) -> Result<Vec<CanonicalEvent>> {
     let events = first(sealed)?;
     if events.is_empty() {
-        return Err(invalid(format!(
-            "a seal begins the next segment with its first event, and none was handed for the \
-             one after position {}; nothing was sealed",
-            sealed.last
-        )));
+        let after = sealed.last;
+        return Err(invalid(Case::SealNoFirst { after }));
     }
     Ok(events)
 }
@@ -1113,19 +1191,19 @@ pub fn first_of_next(
 /// The refusal of the writer lease to a taker while `holder` holds it
 /// under `fence`.
 pub fn lease_held(holder: &str, fence: u64) -> Error {
-    crate::unavailable(format!(
-        "the lake's writer lease is held by `{holder}` (fence {fence}); it must be released \
-         before another writer can take it"
-    ))
+    let holder = holder.to_owned();
+    Error::unavailable(lakelands_api::error::Situation::LeaseHeld { holder, fence })
 }
 
-/// The refusal of a query vector of `query` dimensions where the vector
-/// `ty.field` holds for the record `key` has `held`.
-pub fn dimensions(query: usize, held: usize, ty: &TypeName, field: &str, key: &str) -> Error {
-    invalid(format!(
-        "the query vector has {query} dimensions, but `{ty}.{field}` holds vectors of {held} \
-         (record `{key}`)"
-    ))
+/// The refusal of a query vector of `query` dimensions where `ty.field`
+/// holds vectors of `held`. It names no record: the store refuses it
+/// by the declaration before any engine reads a vector, and an engine's
+/// guard that meets a stored vector of another length says the same.
+pub fn dimensions(query: usize, held: usize, ty: &TypeName, field: &str) -> Error {
+    let case = Case::QueryDimensions { query, held };
+    let (name, field) = (ty.clone(), field.into());
+    let at = Said::from(case).within(At::Field { name: field });
+    invalid(at.within(At::Type { name }))
 }
 
 /// Best first by score, ties by key, at most `k`.
@@ -1278,8 +1356,10 @@ pub fn proposals<'a>(
 /// A state an engine's projection stored as JSON, read back; `what`
 /// names it (`a record`) in the fault of one that cannot be read.
 pub fn decode<T: serde::de::DeserializeOwned>(state: &str, what: &str) -> Result<T> {
-    serde_json::from_str(state)
-        .map_err(|e| crate::unavailable(format!("the projection holds {what} it cannot read: {e}")))
+    serde_json::from_str(state).map_err(|e| {
+        let (what, detail) = (what.to_owned(), Detail::json(&e));
+        crate::damaged(Part::Projection, None, Flaw::Unreadable { what, detail })
+    })
 }
 
 /// A vector as an index stores it: its components as little-endian
@@ -1323,21 +1403,15 @@ pub fn commit_refusal(
     through: Position,
 ) -> Option<Error> {
     if let Some(folded) = folded.filter(|f| *f > through) {
-        return Some(invalid(format!(
-            "the projection reflects the log through position {folded}; a transaction \
-             cannot commit through the earlier position {through}"
-        )));
+        return Some(invalid(Case::CommitBehind { folded, through }));
     }
     let late = late.filter(|p| *p > through)?;
-    Some(invalid(format!(
-        "a state valid from position {late} cannot be committed through the earlier \
-         position {through}"
-    )))
+    Some(invalid(Case::CommitLate { late, through }))
 }
 
 /// The refusal of a put made outside a transaction of the fold.
 pub fn unstaged() -> Error {
-    invalid("the projection is written inside a transaction: call `begin` first")
+    invalid(Case::NotStaged)
 }
 
 #[cfg(test)]

@@ -40,7 +40,8 @@ A value type that accepts everything it did (`one_of` gains values or is
 removed, a `constraint` or `format` is removed) is declared: no stored
 value can stop fitting it. One that may accept less goes through its own
 preflight: every value stored under it, in every field of every type that
-uses it, history included, is checked against the new declaration as a
+uses it, retired and restricted records included (not earlier versions),
+is checked against the new declaration as a
 write would check it. The change is refused while any value would not
 fit, and applied only against the report it was shown. Since a tightening
 every stored value fits reshapes nothing, it enters as the ordinary
@@ -54,7 +55,83 @@ them. A trigger's `when`, an aging rule's `from` or `to`, or an object
 set's `where` that compares with a value the type no longer admits is not
 checked; it simply never holds afterwards. For an aging rule the run's own
 check applies instead: a rule whose `from` or `to` the type no longer
-admits is skipped by `age` and named in its report.
+admits is skipped by `age` and named in its report. A migration that
+renames values lists, in its report, what may name one (next section).
+
+## Extended: a value type's migration renames values (lakelands#553)
+
+A host that wants `open` to read `active` everywhere could only widen the
+value type, write every record, and tighten it again: one append per
+record, each a new version the host wrote, and a retired record still at
+the old value either held the tightening back or had to be brought back
+to life to be changed. Renaming a value is a change of the shape, not of
+the records, so it is made where shape changes are made.
+
+- **The migration takes `renames`,** pairs of an old and a new value of
+  a text value type, beside the new declaration. Each old value is one
+  the declaration in force accepts, each new one one the new declaration
+  accepts, and no value is renamed twice or to itself. Every pair maps a
+  value as it stood before the migration, so a chain and a swap need no
+  order; two old values may take one new one, which the lake cannot undo,
+  as it cannot bring back a removed field. Numbers and instants are not
+  renamed: each would need its one written form under the declaration,
+  and no host has asked for it. Without renames the migration is the
+  tightening above, byte for byte.
+- **The preflight counts through the renames.** Each stored value is
+  renamed first and then checked; the report counts, per field, how many
+  values each pair rewrites. It refuses a rename of a value a key field
+  holds: the record would keep a key its fields no longer make, and the
+  next write of the new value would make a second record; a re-key goes
+  through the type's migration first. It refuses a field the lake
+  computes from an expression that holds an old value, which would bring
+  the old value back at its next computation. A field computed outside
+  the lake is not renamed, since the lake does not write what a backing
+  answers: an old value there is a misfit, and the way through is to
+  widen the value type, change the function, and rename then.
+- **It is one event of its own kind, `value_type_migrated`,** not a
+  `declared`, so that a consumer of the feed sees a change of stored
+  values for what it is, under each type it rewrites. The fold applies it
+  as a step, as it applies a type's migration: every record of every type
+  that uses the value type, retired and restricted ones included, takes
+  the new value at the event's position, with its version, its flags and
+  each field's provenance as they were. What reads a renamed value, a
+  derived field, a field computed by a function, an embedding, is computed
+  again as of the event, and what it owes a backing is owed to it. A field's
+  `initial` that names an old value is declared again by the lake with the
+  new one, after the event, as one set: a type's own field cannot name a
+  value before the value type in force accepts it. Such a declaration of a
+  type with a field computed outside the lake settles that type's records
+  again, as every declaration of such a type does. A page of a fold may
+  end between the event and those declarations, and nothing differs: the
+  fold never reads `initial`, only a write that makes a record does. The
+  sets decide their members again in the same append, under the lake's
+  `max_set_changes`, over the records as the step and that computation
+  leave them, with the new declaration in force.
+- **What may name an old value is listed, not changed.** A set's
+  `where`, a trigger's `when`, a verb, a view, an expression of a function
+  that holds an old value as a literal, and an aging rule on a type that
+  uses the value type that moves from or to one, are listed in the report by
+  their kind and name, to a reader shown them; another is told that there
+  may be one. A declaration is shown as `describe` shows it, and an aging
+  rule as a read of its record answers it, with its `on`, `from` and `to`.
+  A proposal's report is listed to each reader as that reader is shown the
+  lake as it stood before the proposal, its grants followed there through
+  the renames since, not as its proposer was. The list
+  is the reader's, so the report's id, which names the whole report, is
+  too: two readers shown otherwise are given two ids for one lake. A
+  literal is listed wherever it stands, so the list may name
+  more than reads the field: it says what may name one. Grants' `only`
+  pairs and filters a host or a source holds are not in the lake's
+  declarations and cannot be listed. Changing them is the author's, as
+  the section above says of a value no longer admitted.
+- **Renames write every field that uses the value type,** so a caller not
+  shown one of them is not granted the preflight, the apply or the
+  proposal, and nothing is named to it. Its counts stay whole, as 024's
+  totals do: a field's count per pair holds the hidden and restricted
+  records too, so it tells a caller how many records it is not answered
+  hold a value. A proposal is accepted only over
+  the fields its report named: one that came to use the value type since
+  would be rewritten unseen by the proposer and the reviewer.
 
 ## Extended: a type is re-keyed by a migration
 
@@ -269,8 +346,45 @@ No refusal on the way names a field its author may not know of. A shape
 that names one declares it twice, which is how a taken name is refused.
 A rename from one is a rename from no field. A shape that removes a
 field a hidden one is built from is refused on the field it removes,
-saying only that another field reads it. A masked or a write-only field
-is shown to the principal, and stays its to remove.
+saying only that another part of the type reads it. A relation its
+author is not shown is kept the same way (lakelands#662): put back as
+declared, a field its `via` or its match reads refused on that field
+alone, a rename from it a rename from no relation, and a shape that
+sends a relation of its name declares that relation twice, refused in
+the words any type that declares a relation twice is (lakelands#727).
+Each is said where the same fault of a name the lake does not have is
+said (lakelands#750): the migration as its author sent it is judged
+against the type as its author is shown it, by the rule and at the step
+that judge the type's own names, so a second fault in the migration
+comes first or after alike, and the order tells nothing. A reference
+field to a type its author is not shown is a field it may not know of
+(024, extended, lakelands#718), kept the same way; one the author sends
+names a type it is not shown, and is refused as one that is not
+declared, so naming its target in force answers as naming any other
+hidden type or no type, and the author learns nothing of the target
+(lakelands#716). A masked or a write-only field is shown to the
+principal, and stays its to remove.
+
+What a type's shape names stands as declared only where it stands
+(lakelands#726). A valid time left out where the one in force names a
+field outside the author's view, which `describe` does not name to it
+(024), stays as declared: it is left out of the author check and
+checked whole at apply, so no new member can name that field through
+it, and it is put back with the hidden fields. One the author sends,
+the one in force restated too, is judged by its name first, as on a
+type with no valid time: a name no field has, or a field the author may
+not know of, answers word for word as there (lakelands#692). A field
+the author may name is refused at the type: the bound is taken, as a
+name a hidden field holds is, and it stands. A key and a relation's
+`via` never name such a field: a type keyed by one is not shown (006),
+nor a relation carried by one (lakelands#727), and since lakelands#718
+nor is a reference to a type the author is not shown known to it. A key
+or a `via` its author gives anew is read against the author's view,
+where such a field is no field. A hidden field's name is therefore
+answered word for word as a name no field has, by `declare` and by
+`migrate`, and the type in force is not changed. Before, such a member
+was taken because the field existed in the lake, and the difference
+told the author the name.
 
 ## Extended: a proposed migration is listed as its reader may know it (lakelands#499)
 
@@ -362,10 +476,14 @@ memberships it changes are within the lake's `max_set_changes`
 (`unbound`).
 
 **`migrate_value_type_apply`**: the `schema` grant; the value type is
-declared, accepts something other than it does, and keeps its `kind`
-and `scale` (`invalid` each); its own checks; the report id
-(`invalid`); every stored value fits (`invalid`, naming the value
-type).
+declared, accepts something other than it does or renames a value, and
+keeps its `kind` and `scale` (`invalid` each); its renames (`invalid`,
+naming the pair); its own checks; no key field holds a renamed value and
+no computed expression holds one (`invalid`, naming the field); the report
+id (`invalid`); with renames, every field that uses the value type is shown
+to the caller (`not_granted`); every stored value fits (`invalid`, naming
+the value type); then, with renames, the set memberships they change are
+within the lake's `max_set_changes` (`too_large`, naming the set).
 
 The preflight's own steps answer one kind with the type's name, or
 exclude each other (a migration that takes every key field away names
@@ -584,3 +702,63 @@ was proposed; propose it again".
 A report's id names the whole report, so it differs from the id the
 same migration had before this: a preview is taken again, as after any
 change of the lake.
+
+## Extended: a read shares the shape of its range (lakelands#557)
+
+A shape changes only where the log says so. Between two events that
+declare, migrate or set something, it is one shape. Yet a read built its
+own: it decoded every declaration in force, and asked for them a second
+time to find the settings. So each read cost as much as the lake
+declared, about 20 µs per declared type on SQLite, for a `get` as for a
+`describe_type`.
+
+So a handle keeps what a read builds. That is the ontology, the
+declarations as `describe` lists them, the settings and the lake's list
+of renames, kept for a range of positions over which no event changed
+them. Every read at a position in that range shares it. A handle keeps
+two: one at the head, and one at the last other position read.
+
+- **What ends a range is one function, `ends_a_range`.** These end one:
+  - a `declared` of any kind: a type, its view, a value type, a
+    function, a verb, a trigger, an object set, and `recompute`;
+  - a `migrated`, which also renames;
+  - a write, an ingest, a retirement, or a recorded output of a
+    `sys.setting` record.
+
+  A restriction does not end a range: a setting's value holds while it is
+  restricted. The function names every kind of event, so a new kind does
+  not compile until it says whether it ends a range. One that changes what
+  a read is shown must.
+- **Nothing of a reader is in it.** What is shared is what the lake
+  declares, before any rule of who is shown what (024). A principal's
+  grants, its renames followed and its `only` are applied per read, as
+  before.
+- **A range grows only from where it stands, after the commit.** Once an
+  append's fold has committed, a range that ends just before the append
+  is carried to its last event, unless an event of the append ends a
+  range. A fold that begins anywhere else carries nothing:
+  - the first fold after an open;
+  - the fold that catches up after a failed fold;
+  - a fold after another process wrote.
+
+  There the next read builds its own. A handle takes the lease only at
+  its open, so no two handles write a lake in turn.
+- **Anywhere else, a read builds for its position.** This holds for a
+  read `as_of` an earlier position, a page of a walk at its cursor's
+  position, and a read-only handle beside another process's writer.
+  Each builds once for its position, and keeps what it built as the
+  second.
+- **A shape is kept only from a whole projection.** A rebuild clears the
+  projection and folds the log again, so a read beside it may read the
+  declarations cleared or half folded. That read answers with what it
+  read, as any read beside a rebuild does, but its shape is not kept.
+  A built shape is kept only where no rebuild began or ended while it was
+  built, and the projection is folded through its position. A rebuild
+  drops every shape the handle kept, when it begins and when it ends.
+  A read-only handle in another process sees no count of the writer's
+  rebuilds, only the projection: a build there that began before the
+  rebuild cleared it and ended after the refold passed its position is
+  kept, until a declaration, a migration or a setting ends its range.
+
+Nothing a read answers changes. The rows in
+`crates/lakelands-store/tests/read_shape.rs` count the builds.

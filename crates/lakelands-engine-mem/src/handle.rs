@@ -4,7 +4,8 @@
 //! Handles to one lake share its state; each handle keeps only its open
 //! mode, its own open transaction and the lease it took, which it gives
 //! up when it is dropped. A handle opened read-only refuses the lease,
-//! every append and every write to the projection.
+//! every append and every write to the projection; one opened for writing
+//! appends and seals only under the lease it took itself.
 
 use std::sync::{Arc, Mutex};
 
@@ -12,7 +13,7 @@ use lakelands_api::engine::{
     CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
     Reclaimed, VectorIndex,
 };
-use lakelands_api::error::Result;
+use lakelands_api::error::{Act, Case, Error, Result, Situation};
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::record::{StoredRecord, Value};
@@ -20,7 +21,7 @@ use lakelands_api::write::{Declaration, Proposal};
 
 use crate::projection::Put;
 use crate::view::MemView;
-use crate::{Lake, NAME, invalid, lock, unavailable};
+use crate::{Lake, NAME, invalid, lock};
 
 /// One handle onto a lake held in memory.
 pub struct MemoryLake {
@@ -47,13 +48,25 @@ impl MemoryLake {
     /// Refuses a write to the log through a handle opened read-only.
     fn writable(&self) -> Result<()> {
         match self.mode {
-            OpenMode::Read => Err(unavailable(format!(
-                "lake `{}` is open read-only here; open it for writing to take the lease or \
-                 append",
-                self.lake
-            ))),
+            OpenMode::Read => Err(Error::unavailable(Situation::ReadOnly {
+                lake: Some(self.lake.to_string()),
+                leased_elsewhere: false,
+            })),
             OpenMode::Write | OpenMode::Create => Ok(()),
         }
+    }
+
+    /// Refuses an append, an import or a seal through a handle that does
+    /// not hold `lease`: a copy of another handle's lease writes nothing.
+    fn holding(&self, lease: &Lease, undone: Act) -> Result<()> {
+        self.writable()?;
+        if lock(&self.held).as_ref() == Some(lease) {
+            return Ok(());
+        }
+        Err(Error::unavailable(Situation::LeaseNotHeld {
+            fence: Some(lease.fence),
+            undone: Some(undone),
+        }))
     }
 
     /// Holds a put for the open transaction.
@@ -64,9 +77,7 @@ impl MemoryLake {
                 puts.push(put);
                 Ok(())
             }
-            None => Err(invalid(
-                "the projection is written inside a transaction: call `begin` first",
-            )),
+            None => Err(lakelands_core::engines::unstaged()),
         }
     }
 }
@@ -101,12 +112,12 @@ impl LakeEngine for MemoryLake {
     }
 
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        self.writable()?;
+        self.holding(lease, Act::Appended)?;
         lock(&self.shared).log.append(lease, events)
     }
 
     fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        self.writable()?;
+        self.holding(lease, Act::Imported)?;
         lock(&self.shared).log.import(lease, events)
     }
 
@@ -120,7 +131,7 @@ impl LakeEngine for MemoryLake {
         imported: bool,
         first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
     ) -> Result<Option<SegmentDigest>> {
-        self.writable()?;
+        self.holding(lease, Act::Sealed)?;
         lock(&self.shared).log.seal(lease, imported, first)
     }
 
@@ -169,7 +180,7 @@ impl ProjectionStore for MemoryLake {
     fn commit(&self, through: Position) -> Result<()> {
         let puts = lock(&self.pending)
             .take()
-            .ok_or_else(|| invalid("there is no transaction to commit: call `begin` first"))?;
+            .ok_or_else(|| invalid(Case::CommitUnbegun))?;
         lock(&self.shared).projection.commit(puts, through)
     }
 
@@ -197,7 +208,16 @@ impl ProjectionStore for MemoryLake {
     }
 
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
-        self.stage(Put::Record(record.clone()))
+        match lakelands_api::seam::is_head_only(&record.ty) {
+            true => self.stage(Put::Head(record.clone())),
+            false => self.stage(Put::Record(record.clone())),
+        }
+    }
+
+    fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
+        lakelands_core::engines::head_only(name)?;
+        let ty = name.clone();
+        self.stage(Put::HeadsEnded { ty, at })
     }
 
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {

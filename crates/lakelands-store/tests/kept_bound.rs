@@ -1,9 +1,10 @@
-//! What a kept view costs where it costs (lakelands#575): a group whose
-//! extreme lost its holder is read again in the fold of that event, over
-//! 8 192 records at most, and past them it is given up, by the event and
-//! so alike on every path that folds it; an append reads the state of the
-//! views that read what it wrote and of no other, and a lake that keeps
-//! no view reads none. Counted at the memory engine behind `probed`.
+//! What a kept view costs where it costs (lakelands#575, lakelands#629):
+//! a group whose extreme lost its holder reads its next holder from the
+//! extreme's order, an entry or a few, and never its members, whatever
+//! their number, and so alike on every path that folds the event; an
+//! append reads the state of the views that read what it wrote and of no
+//! other, and a lake that keeps no view reads none. Counted at the memory
+//! engine behind `probed`.
 
 mod probed;
 
@@ -168,6 +169,27 @@ impl Peaks {
         rows.remove(ty).unwrap_or(0)
     }
 
+    /// Forget the rows the engine handed out so far.
+    fn forget(&self) {
+        self.probe.rows.lock().unwrap().clear();
+    }
+
+    /// The entries of the order of `view` the engine handed out since the
+    /// last call.
+    fn entries_read(&self, view: &str) -> usize {
+        self.read_of(lakelands_api::seam::order_name(&view.into()).as_str())
+    }
+
+    /// The entries of the orders of `view` the engine holds, each its key
+    /// and what it holds.
+    fn entries(&self, view: &str) -> Vec<String> {
+        let name = lakelands_api::seam::order_name(&view.into());
+        let orders = self.probe.orders.lock().unwrap();
+        let of = orders.iter().filter(|((ty, _), _)| *ty == name);
+        of.map(|((_, key), r)| format!("{key} {}", json!(r.fields)))
+            .collect()
+    }
+
     /// Writes of a setting no view names until the next event lands `at`
     /// events into a page of a rebuild (1 024 events, from position 0).
     async fn pad(&self, at: u64) {
@@ -183,35 +205,31 @@ impl Peaks {
 }
 
 const KEPT: &str = r#"{"state":"kept"}"#;
-const ONE: &str = r#"{"state":"computed","why":{"because":"not_whole","not_exact":1}}"#;
 
-/// The event that takes a holder reads its group again: a group within
-/// the bound is exact after it, and it read the records the view held
-/// of that group and no more; a group past the bound, 8 193 live records,
-/// is given up in that event. Nothing reads it again: not a write to the
-/// stale holder, not a member that beats it and leaves, not a member more,
-/// another site or another type; and a make mends it.
+/// A holder that leaves reads one entry of its group's order, small or
+/// past any bound the members would set, 8 193 live records: the source is
+/// not read, the group stays kept, and so does every later write to it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_group_past_the_bound_is_given_up_in_the_event_that_took_its_holder() {
+async fn a_holder_that_leaves_reads_one_entry_whatever_its_group() {
     let t = Peaks::new("kept-bound").await;
     t.feed("small", 0, 100).await;
     t.top("small").await;
-    t.feed("big", 0, 8_192).await;
+    t.feed("big", 0, 8_193).await;
     t.top("big").await;
     t.keep(true).await;
     assert_eq!(t.says().await, (KEPT.to_owned(), "same".to_owned()));
-    t.read();
+    t.forget();
     t.l.retire("reading", "small-top").await.expect("retiring");
     assert_eq!(
-        t.read(),
-        101,
-        "the small group, read once: its hundred and the one that left"
+        (t.read(), t.entries_read("peak")),
+        (0, 1),
+        "the small group"
     );
     assert_eq!(t.says().await, (KEPT.to_owned(), "same".to_owned()));
-    t.read();
+    t.forget();
     t.at("big-top", "big", "5").await;
-    assert_eq!(t.read(), 8_193, "the walk ends past the bound");
-    assert_eq!(t.says().await, (ONE.to_owned(), "same".to_owned()));
+    assert_eq!((t.read(), t.entries_read("peak")), (0, 1), "the big group");
+    assert_eq!(t.says().await, (KEPT.to_owned(), "same".to_owned()));
     t.read();
     t.at("big-top", "big", "6").await;
     t.at("big-beat", "big", "10").await;
@@ -219,17 +237,97 @@ async fn a_group_past_the_bound_is_given_up_in_the_event_that_took_its_holder() 
     t.feed("big", 9_000, 1).await;
     t.feed("small", 200, 1).await;
     t.put("other", "o", json!({"x": "y"})).await;
-    assert_eq!(t.read(), 0, "no later append reads a record of it");
-    assert_eq!(t.says().await, (ONE.to_owned(), "same".to_owned()));
+    assert_eq!(t.read(), 0, "no later append reads a record of the source");
+    assert_eq!(t.says().await, (KEPT.to_owned(), "same".to_owned()));
+    let live = t.entries("peak");
+    assert_eq!(live.len(), 8_193 + 3 + 101, "one entry for each member");
     t.keep(false).await;
+    assert!(t.entries("peak").is_empty(), "ended with the view");
     t.keep(true).await;
+    assert_eq!(
+        (t.says().await, t.entries("peak")),
+        ((KEPT.to_owned(), "same".to_owned()), live)
+    );
+}
+
+/// Holders that leave in turn read one entry each: an aging run, where
+/// each reading leaves from the top, and a holder written a thousand times
+/// to a lesser value that still holds, each time read from the order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn holders_that_leave_in_turn_read_one_entry_each() {
+    let t = Peaks::new("kept-aging").await;
+    let run = (0..200).map(|i| {
+        let value = format!("{}", 1_000 + i);
+        source_record(
+            "reading",
+            &format!("run-{i:03}"),
+            json!({"site": "run", "value": value}),
+        )
+    });
+    t.l.ingest("meter", run.collect()).await.expect("feeding");
+    t.feed("last", 0, 10).await;
+    t.at("last-top", "last", "5000").await;
+    t.keep(true).await;
+    t.forget();
+    for i in (0..200).rev() {
+        t.l.retire("reading", &format!("run-{i:03}"))
+            .await
+            .expect("retiring");
+    }
+    assert_eq!(
+        t.entries_read("peak"),
+        199,
+        "one entry for each departure, none for the last"
+    );
+    for v in (2..1_002).rev() {
+        t.at("last-top", "last", &format!("{v}")).await;
+    }
+    assert_eq!(
+        t.entries_read("peak"),
+        1_000,
+        "one entry for each lesser value"
+    );
+    assert_eq!(t.read(), 0, "no member read");
     assert_eq!(t.says().await, (KEPT.to_owned(), "same".to_owned()));
 }
 
-/// A group that fits the bound when its holder leaves, 8 192 live
-/// records, and grows past it later is exact on every path: after the live appends, after a rebuild
-/// whose page holds the event and the growth together, and where the fold
-/// was behind and one transaction caught up with both.
+/// The holder and the next leave in one append, in either order: where the
+/// next left first, the seek passes over its entry, which the append ended
+/// before the engine knows it, and reads the next batch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_holder_and_the_next_leave_in_one_append() {
+    let t = Peaks::new("kept-two").await;
+    for site in ["one", "two"] {
+        t.feed(site, 0, 20).await;
+        t.at(&format!("{site}-top"), site, "9").await;
+        t.at(&format!("{site}-next"), site, "8").await;
+        t.at(&format!("{site}-third"), site, "7").await;
+    }
+    t.keep(true).await;
+    let away = |site: &str, end: &str| {
+        let key = format!("{site}-{end}");
+        source_record("reading", &key, json!({"site": "away", "value": "1"}))
+    };
+    t.entries_read("peak");
+    t.l.ingest("meter", vec![away("one", "top"), away("one", "next")])
+        .await
+        .expect("moving");
+    assert_eq!(t.entries_read("peak"), 2, "the next, then the third");
+    t.l.ingest("meter", vec![away("two", "next"), away("two", "top")])
+        .await
+        .expect("moving");
+    assert_eq!(
+        t.entries_read("peak"),
+        3,
+        "the next, passed over, then the third"
+    );
+    assert_eq!(t.says().await, (KEPT.to_owned(), "same".to_owned()));
+}
+
+/// A group whose holders leave on a live fold, in a rebuild whose page
+/// holds the events and the growth together, and where the fold was behind
+/// and one transaction caught up with both, is kept with the same entries
+/// on every path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_live_fold_a_rebuild_and_a_catch_up_decide_alike() {
     let t = Peaks::new("kept-alike").await;
@@ -239,32 +337,58 @@ async fn a_live_fold_a_rebuild_and_a_catch_up_decide_alike() {
     t.pad(5).await;
     t.l.retire("reading", "big-top").await.expect("retiring");
     t.feed("big", 9_000, 300).await;
-    let live = t.says().await;
-    assert_eq!(live, (KEPT.to_owned(), "same".to_owned()));
+    let live = (t.says().await, t.entries("peak"));
+    assert_eq!(live.0, (KEPT.to_owned(), "same".to_owned()));
     t.store.rebuild().await.expect("rebuilding");
-    assert_eq!(t.says().await, live, "rebuilt");
+    assert_eq!((t.says().await, t.entries("peak")), live, "rebuilt");
     // The fold of the next holder's retirement is left behind, and the
-    // feed's first append folds both: the group is past the bound at that
-    // event on every path, and is given up on each.
+    // feed's first append folds both.
     t.top("big").await;
     *t.probe.refuse_commit.lock().unwrap() = Some(1);
     let _ = t.l.retire("reading", "big-top").await;
     let refused = t.probe.refuse_commit.lock().unwrap().is_none();
     assert!(refused, "the fold of the retirement was left behind");
     t.feed("big", 10_000, 10).await;
-    let caught_up = t.says().await;
-    assert_eq!(caught_up, (ONE.to_owned(), "same".to_owned()));
+    let caught_up = (t.says().await, t.entries("peak"));
+    assert_eq!(caught_up.0, (KEPT.to_owned(), "same".to_owned()));
     t.store.rebuild().await.expect("rebuilding");
-    assert_eq!(t.says().await, caught_up, "rebuilt after the catch-up");
+    assert_eq!(
+        (t.says().await, t.entries("peak")),
+        caught_up,
+        "rebuilt after the catch-up"
+    );
 }
 
-/// A group is read again as a migration earlier in the same transaction
-/// leaves its members: a rebuild's page that holds a re-key of the view's
-/// source and then the events that take two holders reads the records of
-/// the pages before through that step, under the keys it gave them, as
-/// the live appends found them.
+/// A view ended and made again in one transaction reads its next holder
+/// from the entries the make put, never from those the engine held before
+/// the end: a rebuild's page that stops keeping the view, moves a member
+/// from 4 to 3, keeps it again and takes the holder, holds the moved
+/// member at 3, as the live appends did.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_group_is_read_again_through_a_migration_of_the_same_page() {
+async fn a_view_ended_and_made_again_in_one_transaction_reads_only_its_new_entries() {
+    let t = Peaks::new("kept-again").await;
+    t.feed("s", 0, 3).await;
+    t.top("s").await;
+    t.at("s-moved", "s", "4").await;
+    t.keep(true).await;
+    t.pad(0).await;
+    t.keep(false).await;
+    t.at("s-moved", "s", "3").await;
+    t.keep(true).await;
+    t.l.retire("reading", "s-top").await.expect("retiring");
+    let live = (t.says().await, t.entries("peak"));
+    assert_eq!(live.0, (KEPT.to_owned(), "same".to_owned()));
+    t.store.rebuild().await.expect("rebuilding");
+    assert_eq!((t.says().await, t.entries("peak")), live, "rebuilt");
+}
+
+/// The next holder is read from the order as a migration earlier in the
+/// same transaction leaves the members: a rebuild's page that holds a
+/// re-key of the view's source and then the events that take two holders
+/// reads the entries under the keys the step gave the members, as the live
+/// appends found them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_holder_is_read_from_the_order_through_a_migration_of_the_same_page() {
     let t = Peaks::new("kept-stepped").await;
     let field = |n: &str, kind: &str| json!({"name": n, "type": {"kind": kind}, "required": true});
     let acct = |key: &str| {
@@ -292,19 +416,24 @@ async fn a_group_is_read_again_through_a_migration_of_the_same_page() {
     t.pad(5).await;
     let by_tag = serde_json::from_value(acct("tag")).expect("a type");
     t.l.migrate(by_tag).await.expect("re-keying the source");
-    // The holder leaves, and then the one the group was read again to.
+    // The holder leaves, and then the next one.
     t.l.retire("acct", "t9").await.expect("retiring");
     t.l.retire("acct", "t2").await.expect("retiring");
     let live = t.says_of("peak_of").await;
     assert_eq!(live.1, "same");
     assert!(live.0.contains("kept"), "{live:?}");
+    let live = (live, t.entries("peak_of"));
     t.store.rebuild().await.expect("rebuilding");
-    assert_eq!(t.says_of("peak_of").await, live, "rebuilt");
+    assert_eq!(
+        (t.says_of("peak_of").await, t.entries("peak_of")),
+        live,
+        "rebuilt"
+    );
 }
 
 /// A group that ends leaves nothing behind for a member that arrives
-/// after it in the same transaction: a group given up whose members all
-/// leave and a new one that arrives, the last leaving and the arrival in
+/// after it in the same transaction: a group whose members all leave and
+/// a new one that arrives, the last leaving and the arrival in
 /// one transaction, in two, and in one page of a rebuild, leave the same
 /// record and the same state. An ingest commits a window of 32 events at
 /// a time, and a stream in hand fills each: 8 194 events are 256 windows
@@ -352,77 +481,114 @@ async fn a_group_that_ends_and_returns_starts_from_nothing_on_every_path() {
     );
 }
 
-/// A group given up on the whole face alone, where its extreme's holder
-/// was a restricted record: the reader with the `restricted` grant is
-/// answered by the computation, and the one without it, whose face is
-/// exact, from the kept records.
+/// The open face and the whole one read their own orders: when the holder
+/// leaves, a restricted member holds the whole face, and the open face's
+/// next holder is the next open member. Then the restricted holder leaves
+/// too, and the whole face reads the open one's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_group_given_up_on_the_whole_face_alone_is_kept_for_the_open_one() {
+async fn each_face_reads_its_own_next_holder() {
     let t = Peaks::new("kept-whole").await;
     t.feed("big", 0, 8_193).await;
     t.top("big").await;
-    let held = restrict(t.store.as_ref(), "reading", "big-top", "held").await;
-    held.expect("restricting the holder");
+    t.at("big-held", "big", "8").await;
+    t.at("big-open", "big", "7").await;
+    let held = restrict(t.store.as_ref(), "reading", "big-held", "held").await;
+    held.expect("restricting");
     t.keep(true).await;
-    t.l.retire("reading", "big-top").await.expect("retiring");
     let reads = Grants {
         default: Access::Read,
         ..Grants::default()
     };
     let plain = principal(t.store.as_ref(), PrincipalKind::Human, "plain", reads);
-    let same = "same".to_owned();
-    assert_eq!(t.says().await, (ONE.to_owned(), same.clone()));
-    assert_eq!(t.says_to(&plain, "peak").await, (KEPT.to_owned(), same));
+    let kept = (KEPT.to_owned(), "same".to_owned());
+    for leaves in ["big-top", "big-held"] {
+        t.read();
+        t.l.retire("reading", leaves).await.expect("retiring");
+        assert_eq!(t.read(), 0, "{leaves}: no member read");
+        assert_eq!(t.says().await, kept, "{leaves}: the whole face");
+        assert_eq!(
+            t.says_to(&plain, "peak").await,
+            kept,
+            "{leaves}: the open face"
+        );
+    }
+    let whole = t.kept("peak", "big");
+    assert!(
+        !whole.contains("lost") && !whole.contains("waits"),
+        "{whole}"
+    );
 }
 
-/// A group given up on the whole face alone whose open face's holder
-/// leaves next: nothing is read, and the open face is given up too, for
-/// good: the record keeps nothing that waits, and a later member finds
-/// both faces given up.
+/// A view over a view reads its members' entries on each face: the inner
+/// group's record moving between groups in one event, where the outer
+/// holder's group falls and another rises past it, and an inner group whose
+/// faces hold equal values written otherwise, `1` and `1.0`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_group_given_up_on_one_face_gives_the_other_up_unread() {
-    let t = Peaks::new("kept-both").await;
-    t.feed("big", 0, 8_193).await;
-    t.top("big").await;
-    t.at("big-open", "big", "8").await;
-    let held = restrict(t.store.as_ref(), "reading", "big-top", "held").await;
-    held.expect("restricting the holder");
-    t.keep(true).await;
-    t.l.retire("reading", "big-top").await.expect("retiring");
+async fn a_view_over_a_view_reads_the_next_holder_on_each_face() {
+    let t = Peaks::new("kept-nested").await;
+    let field = |n: &str, kind: &str| json!({"name": n, "type": {"kind": kind}});
+    let measure = |n: &str, e: &str| json!({"name": n, "expr": e});
+    for end in ["", "_twin"] {
+        // Every inner group is in the one outer group `all`.
+        let zone = json!({"declare": "type", "name": format!("zone{end}"), "key": ["site"],
+            "fields": [field("site", "text"), field("peak", "decimal"), field("band", "text")],
+            "view": {"source": "reading", "group_by": ["site"],
+                     "measures": [measure("peak", "max(value)"),
+                                  measure("band", "if(count() > 0, 'all', 'none')")]}});
+        let crest = json!({"declare": "type", "name": format!("crest{end}"), "key": ["band"],
+            "fields": [field("band", "text"), field("high", "decimal")],
+            "view": {"source": format!("zone{end}"), "group_by": ["band"],
+                     "measures": [measure("high", "max(peak)")]}});
+        for d in [zone, crest] {
+            t.l.declare_json(d).await.expect("declaring");
+        }
+    }
+    for (key, site, value) in [
+        ("a1", "a", "10"),
+        ("a2", "a", "3"),
+        ("b1", "b", "5"),
+        ("c1", "c", "8"),
+    ] {
+        t.at(key, site, value).await;
+    }
+    t.keep_of("zone", true).await;
+    t.keep_of("crest", true).await;
+    let kept = (KEPT.to_owned(), "same".to_owned());
+    assert_eq!(t.says_of("crest").await, kept);
+    // `a`'s peak falls from 10 to 3 and `b`'s rises from 5 to 12, in one
+    // event: the holder `b` took stays, past `c`'s 8.
+    t.at("a1", "b", "12").await;
+    assert_eq!(t.says_of("crest").await, kept, "moved");
+    // An inner group whose whole face holds `1.0` and whose open face `1`.
+    t.at("b2", "d", "1").await;
+    t.at("b0", "d", "1.0").await;
+    let held = restrict(t.store.as_ref(), "reading", "b0", "held").await;
+    held.expect("restricting");
     let reads = Grants {
         default: Access::Read,
         ..Grants::default()
     };
     let plain = principal(t.store.as_ref(), PrincipalKind::Human, "plain", reads);
-    let same = "same".to_owned();
-    assert_eq!(
-        t.says_to(&plain, "peak").await,
-        (KEPT.to_owned(), same.clone())
-    );
-    t.read();
-    t.l.retire("reading", "big-open").await.expect("retiring");
-    assert_eq!(t.read(), 0, "a group given up is read no more");
-    let kept = t.kept("peak", "big");
-    assert!(kept.contains("lost") && !kept.contains("waits"), "{kept}");
-    assert_eq!(t.says().await, (ONE.to_owned(), same.clone()));
-    assert_eq!(
-        t.says_to(&plain, "peak").await,
-        (ONE.to_owned(), same.clone())
-    );
-    // Given up for good, not left to wait: a later member finds it so.
-    t.feed("big", 9_000, 1).await;
-    assert_eq!(t.says().await, (ONE.to_owned(), same.clone()));
-    assert_eq!(t.says_to(&plain, "peak").await, (ONE.to_owned(), same));
+    for gone in ["a1", "c1", "b1", "a2"] {
+        t.l.retire("reading", gone).await.expect("retiring");
+        assert_eq!(t.says_of("crest").await, kept, "{gone}: the whole face");
+        assert_eq!(
+            t.says_to(&plain, "crest").await,
+            kept,
+            "{gone}: the open face"
+        );
+    }
+    let live = t.entries("crest");
+    t.store.rebuild().await.expect("rebuilding");
+    assert_eq!(t.entries("crest"), live, "rebuilt");
 }
 
-/// The bound is one for a group over all its sources and both lookups: a
-/// group of 4 100 records in each of two sources is given up when its
-/// holder leaves, though each source's would fit; a view over a view
-/// reads every record of the inner view that bears the mark, whatever its
-/// group, so an outer group of two members is given up by 8 193 of them;
-/// and a walk that passes the bound in the first source ends there.
+/// Two sources and a view over a view keep their extremes when a holder
+/// leaves, whatever the number of their members: a group of 4 100 records
+/// in each of two sources, and an outer group over 8 193 inner groups that
+/// read otherwise on their whole face.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_bound_is_one_for_a_group_over_its_sources_and_the_marks() {
+async fn sources_and_views_of_any_size_keep_their_extremes() {
     let t = Peaks::new("kept-shared").await;
     let field = |n: &str, kind: &str| json!({"name": n, "type": {"kind": kind}});
     let from =
@@ -482,7 +648,10 @@ async fn the_bound_is_one_for_a_group_over_its_sources_and_the_marks() {
         (KEPT.to_owned(), "same".to_owned())
     );
     t.l.retire("reading", "big-top").await.expect("retiring");
-    assert_eq!(t.says_of("pair").await, (ONE.to_owned(), "same".to_owned()));
+    assert_eq!(
+        t.says_of("pair").await,
+        (KEPT.to_owned(), "same".to_owned())
+    );
     // An outer group of two, `high`, and 8 193 inner groups that differ.
     t.at("a-top", "a", "9").await;
     t.at("b-top", "b", "7").await;
@@ -511,9 +680,9 @@ async fn the_bound_is_one_for_a_group_over_its_sources_and_the_marks() {
     t.at("a-top", "a", "6").await;
     assert_eq!(
         t.says_of("bands").await,
-        (ONE.to_owned(), "same".to_owned())
+        (KEPT.to_owned(), "same".to_owned())
     );
-    // A walk past the bound in the view's own source reads nothing of the
+    // A holder that leaves in the view's own source reads nothing of the
     // merged one.
     t.feed("huge", 0, 8_193).await;
     t.at("huge-top", "huge", "3").await;
@@ -524,11 +693,13 @@ async fn the_bound_is_one_for_a_group_over_its_sources_and_the_marks() {
     t.l.ingest("meter", spares.collect())
         .await
         .expect("feeding");
-    t.read_of("spare");
+    t.forget();
     t.l.retire("reading", "huge-top").await.expect("retiring");
-    assert_eq!(t.read_of("spare"), 0, "the walk ends at the bound");
-    let two = ONE.replace("\"not_exact\":1", "\"not_exact\":2");
-    assert_eq!(t.says_of("pair").await, (two, "same".to_owned()));
+    assert_eq!((t.read_of("spare"), t.read()), (0, 0), "no member read");
+    assert_eq!(
+        t.says_of("pair").await,
+        (KEPT.to_owned(), "same".to_owned())
+    );
 }
 
 /// A lake that keeps no view reads no view's state, in a read of a view

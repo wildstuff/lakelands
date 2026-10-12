@@ -6,7 +6,7 @@ A field's type has two layers.
 
 The **storage kind** says how an engine stores, compares and indexes the
 value. The set is closed and small: text, number, decimal, boolean,
-date-time, bytes, json, reference, vector, geo. Each kind has one codec
+date-time, bytes, json, reference, vector, geo, date. Each kind has one codec
 per engine.
 
 The **value type** says what the value means and what it must satisfy.
@@ -75,3 +75,22 @@ than the 28 digits a decimal holds between them) the sum is what adding in
 key order gives, rounded or refused as before. The rule is the
 evaluator's (`lakelands_core::expr::aggregate`), so `find`'s aggregate, a
 pattern's rows and a view's measures read the same.
+
+## Extended: a kind also exists where its one form must differ
+
+A calendar date is a kind, `date`, written `YYYY-MM-DD`. No engine
+compares or indexes it differently: engines order and compare values by
+their one form, and a date reads as the instant at its UTC midnight, so
+it sorts and compares with a `date_time` at that midnight. That alone
+would make it a value type over `date_time`. But the store reads a
+value's form from its kind alone: whether a value fits its field, the
+key a key field makes, what a migration converts. A value type that set
+the form would give one kind two forms, and changing a field's value
+type would rewrite its stored values, which a value type's change never
+does. So a kind also exists where its one form must differ from every
+other kind's, and such a kind costs no engine code.
+
+A date takes a date or an instant at a UTC midnight, written as its
+date; any other instant is refused, naming the field. A derived value
+lands in a date only at a midnight. A date is a valid time, as a
+`date_time` is (028).

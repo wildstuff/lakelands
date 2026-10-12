@@ -559,6 +559,7 @@ async fn the_number_of_groups_not_exact_is_the_readers_faces_and_behind_the_prob
     let line = lakelands_api::principal::TypeGrants {
         default: None,
         fields: none,
+        ..Default::default()
     };
     blind.grants.types.insert("line".into(), line);
     let said = [&t.owner, &t.plain, &blind].map(|who| t.kept_to(who, "book"));
@@ -751,18 +752,25 @@ async fn not_folded(bodies: &[(Value, &str)]) {
     }
 }
 
-/// A log that declares a type under a kept name, writes a record of one or
-/// moves one into a set is not folded: no door appends any, and the second
-/// would change a view's kept record behind its state.
+/// A log that declares a type under a name of the store's own, writes a
+/// record of one or moves one into a set is not folded: no door appends
+/// any, and it would change a view's kept record, or an extreme's order,
+/// behind the fold.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_event_that_names_a_kept_name_is_not_folded() {
-    let k = "sys:kept.book";
-    let named = "`sys:kept.book`: a name that begins `sys:kept.`";
-    let declared = json!({"kind": "declared", "declaration": stored(k, &[]), "version": 1});
-    let retired = json!({"kind": "record_retired", "type": k, "key": "k", "version": 2});
-    let set =
-        json!({"kind": "object_set_changed", "set": "s", "type": k, "key": "k", "joined": true});
-    not_folded(&[(declared, named), (retired, named), (set, named)]).await;
+async fn an_event_that_names_a_name_of_the_stores_own_is_not_folded() {
+    let mut bodies = Vec::new();
+    for k in ["sys:kept.book", "sys:order.book", "sys:else"] {
+        let named = format!("`{k}`: a name that begins `sys:`");
+        let declared = json!({"kind": "declared", "declaration": stored(k, &[]), "version": 1});
+        let retired = json!({"kind": "record_retired", "type": k, "key": "k", "version": 2});
+        let set = json!({"kind": "object_set_changed", "set": "s", "type": k, "key": "k", "joined": true});
+        bodies.extend([declared, retired, set].map(|b| (b, named.clone())));
+    }
+    let bodies: Vec<(Value, &str)> = bodies
+        .iter()
+        .map(|(b, n)| (b.clone(), n.as_str()))
+        .collect();
+    not_folded(&bodies).await;
 }
 
 /// An output under a seam of the store's own is not folded: no door
@@ -939,4 +947,46 @@ async fn a_setting_a_measure_names_makes_the_view_again() {
     assert!(thrice.contains("3.75"), "{thrice}");
     t.retire("sys.setting", "fx").await;
     t.same("book", "the setting is retired").await;
+}
+
+/// A `value_type_migrated` that names other types than those that use the
+/// value type is not folded: only an imported or damaged log carries one,
+/// and its records would be renamed in types the ontology does not name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_value_rename_that_names_other_types_is_not_folded() {
+    for (types, folds) in [
+        (json!([]), false),
+        (json!(["other"]), false),
+        (json!(["line", "other"]), false),
+        (json!(["line"]), true),
+    ] {
+        let vt = json!({"declare": "value_type", "name": "kinds", "kind": "text",
+                        "one_of": ["k", "j"]});
+        let line = json!({"declare": "type", "name": "line", "fields": [
+            {"name": "kind", "type": {"kind": "text", "value_type": "kinds"}}]});
+        let t = Kept::new(vec![vt, line]).await;
+        t.put("line", "a", json!({"kind": "k"})).await;
+        let was = t.read(&t.owner, "line").await;
+        let body = json!({"kind": "value_type_migrated", "renames": [["k", "j"]],
+                          "report_id": "r", "version": 2, "types": types,
+                          "declaration": {"name": "kinds", "kind": "text", "one_of": ["j"]}});
+        let folded = {
+            let mut w = t.lake.writer();
+            let body = serde_json::from_value(body).expect("an event");
+            let draft = crate::log::Draft::system(t.lake.clock(&mut w), body);
+            t.lake.append(&mut w, vec![draft]).map(drop)
+        };
+        let now = t.read(&t.owner, "line").await;
+        match folds {
+            true => assert!(folded.is_ok() && now.contains(r#"{"kind":"j"}"#), "{now}"),
+            false => {
+                let why = folded.expect_err("not folded").to_string();
+                assert!(
+                    why.contains("in other types than those that use it"),
+                    "{types}: {why}"
+                );
+                assert_eq!(now, was, "{types}: as it was");
+            }
+        }
+    }
 }

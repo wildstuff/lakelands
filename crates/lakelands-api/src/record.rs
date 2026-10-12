@@ -8,8 +8,8 @@ use crate::id::{FieldName, Position, RecordKey, SourceId, TypeName, Version};
 use crate::time::Timestamp;
 
 /// A field's value. Every storage kind has one JSON form: text, numbers,
-/// booleans and JSON as themselves; decimals, date-times, bytes (base64)
-/// and references as strings; vectors as arrays of numbers; geo as a
+/// booleans and JSON as themselves; decimals, date-times, dates, bytes
+/// (base64) and references as strings; vectors as arrays of numbers; geo as a
 /// GeoJSON object.
 pub type Value = serde_json::Value;
 

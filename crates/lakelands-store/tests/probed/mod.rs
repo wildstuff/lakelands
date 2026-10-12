@@ -6,7 +6,8 @@
 //! that hands another digest than the engine took or asks twice; and it
 //! counts the rows its scans hand out by type and the reads of a kept
 //! view's state, and keeps the last record put under each kept name and
-//! key.
+//! key, and the entries of the kept views' orders since the last clear.
+//! [`calls`] reads what a lake owes as the drain would.
 
 #![allow(dead_code)]
 
@@ -50,6 +51,12 @@ pub struct Probe {
     pub asked: Mutex<Vec<Asked>>,
     /// A commit to refuse: the n-th from now, counted from 1.
     pub refuse_commit: Mutex<Option<usize>>,
+    /// An append to refuse: the n-th from now, counted from 1, as invalid
+    /// where `refuse_as_invalid`.
+    pub refuse_append: Mutex<Option<usize>>,
+    /// Whether a refused append lands first: the engine holds its events
+    /// and answers a failure.
+    pub lands: std::sync::atomic::AtomicBool,
     /// A `begin` to refuse: the n-th from now, counted from 1.
     pub refuse_begin: Mutex<Option<usize>>,
     /// Whether a refused `begin` is answered as invalid, not unavailable.
@@ -66,6 +73,9 @@ pub struct Probe {
     pub states: AtomicUsize,
     /// The last record put under each kept name and key.
     pub kept: Mutex<std::collections::BTreeMap<(TypeName, RecordKey), StoredRecord>>,
+    /// The entries of the kept views' orders put since the last clear, by
+    /// name and key, an ended one left out.
+    pub orders: Mutex<std::collections::BTreeMap<(TypeName, RecordKey), StoredRecord>>,
     /// Called before each commit reaches the engine, with the position it
     /// commits through: its transaction is still open.
     pub before_commit: Mutex<Option<Look>>,
@@ -73,6 +83,13 @@ pub struct Probe {
     pub another_digest: std::sync::atomic::AtomicBool,
     /// How many events the log's reads handed out.
     pub events_read: AtomicUsize,
+    /// How often a view was asked for the declarations in force.
+    pub declarations: AtomicUsize,
+    /// How often a view was asked for the lake's list of renames.
+    pub renames: AtomicUsize,
+    /// A reader to park inside the next `declarations`: it says so on the
+    /// first and waits on the second before it reads.
+    pub park: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
 impl Probe {
@@ -114,6 +131,12 @@ impl ProjectionView for ProbedView<'_> {
         self.inner.position()
     }
     fn declarations(&self) -> Result<Vec<Declared>> {
+        self.probe.declarations.fetch_add(1, Ordering::SeqCst);
+        let park = self.probe.park.lock().unwrap().take();
+        if let Some((parked, go)) = park {
+            parked.send(()).unwrap();
+            go.recv().unwrap();
+        }
         self.inner.declarations()
     }
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
@@ -129,7 +152,13 @@ impl ProjectionView for ProbedView<'_> {
             if *left == 0 {
                 let message = format!("the scan of `{failing}` failed (planted)");
                 *fail = None;
-                return Err(Error::Unavailable { message });
+                return Err(lakelands_api::Error::unavailable(
+                    lakelands_api::error::Situation::Storage {
+                        doing: lakelands_api::error::Doing::Write,
+                        part: lakelands_api::error::Part::Projection,
+                        detail: lakelands_api::error::Detail::scrubbed(message),
+                    },
+                ));
             }
         }
         drop(fail);
@@ -185,6 +214,9 @@ impl ProjectionView for ProbedView<'_> {
         if seam == "sys:kept" {
             self.probe.states.fetch_add(1, Ordering::SeqCst);
         }
+        if seam == "sys:renames" {
+            self.probe.renames.fetch_add(1, Ordering::SeqCst);
+        }
         self.inner.output(seam, input)
     }
 }
@@ -206,6 +238,22 @@ impl LakeEngine for Probed {
         self.inner.tip()
     }
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
+        if Probe::refused(&self.probe.refuse_append) {
+            if self.probe.lands.load(Ordering::SeqCst) {
+                self.inner.append(lease, events)?;
+            }
+            let message = "the append was refused (planted)".to_owned();
+            if self.probe.refuse_as_invalid.load(Ordering::SeqCst) {
+                return Err(planted());
+            }
+            return Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed(message),
+                },
+            ));
+        }
         self.inner.append(lease, events)
     }
     fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
@@ -242,7 +290,13 @@ impl LakeEngine for Probed {
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
         if Probe::refused(&self.probe.refuse_view) {
             let message = "the view was refused (planted)".to_owned();
-            return Err(Error::Unavailable { message });
+            return Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed(message),
+                },
+            ));
         }
         Ok(Box::new(ProbedView {
             inner: self.inner.view(as_of)?,
@@ -263,13 +317,15 @@ impl ProjectionStore for Probed {
         if Probe::refused(&self.probe.refuse_begin) {
             let message = "the `begin` was refused (planted)".to_owned();
             if self.probe.refuse_as_invalid.load(Ordering::SeqCst) {
-                let reason = lakelands_api::Refusal::Invalid { message };
-                return Err(Error::Refused {
-                    field: None,
-                    reason,
-                });
+                return Err(planted());
             }
-            return Err(Error::Unavailable { message });
+            return Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed(message),
+                },
+            ));
         }
         self.inner.projection().begin()
     }
@@ -280,7 +336,13 @@ impl ProjectionStore for Probed {
         }
         if Probe::refused(&self.probe.refuse_commit) {
             let message = format!("the commit through {through} was refused (planted)");
-            return Err(Error::Unavailable { message });
+            return Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed(message),
+                },
+            ));
         }
         self.inner.projection().commit(through)
     }
@@ -310,8 +372,19 @@ impl ProjectionStore for Probed {
                 .lock()
                 .unwrap()
                 .insert((ty, key), record.clone());
+        } else if lakelands_api::seam::is_head_only(&ty) {
+            let mut orders = self.probe.orders.lock().unwrap();
+            match record.is_ended() {
+                true => drop(orders.remove(&(ty, key))),
+                false => drop(orders.insert((ty, key), record.clone())),
+            }
         }
         self.inner.projection().put_record(record)
+    }
+    fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
+        let mut orders = self.probe.orders.lock().unwrap();
+        orders.retain(|(ty, _), _| ty != name);
+        self.inner.projection().end_head_only(name, at)
     }
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         self.inner.projection().put_proposal(proposal, at)
@@ -334,6 +407,7 @@ impl ProjectionStore for Probed {
         self.inner.projection().mark_applied(id, at)
     }
     fn clear(&self) -> Result<()> {
+        self.probe.orders.lock().unwrap().clear();
         self.inner.projection().clear()
     }
     fn compact(&self) -> Result<Reclaimed> {
@@ -351,4 +425,32 @@ impl EngineOpener for ProbedOpener {
             probe: self.1.clone(),
         }))
     }
+}
+
+/// The calls the lake owes now, entry by entry, a sweep's over every
+/// page; the entries taken.
+pub fn calls(lake: &lakelands_store::lake::Lake) -> Vec<lakelands_store::backed::Due> {
+    use lakelands_store::backed::{Of, page};
+    let owed = std::mem::take(&mut lake.writer().owed);
+    let mut calls = Vec::new();
+    for mut o in owed {
+        loop {
+            let (rows, end) = page(lake, &o).expect("a page");
+            if let (Of::Sweep { after, .. }, Some((key, _))) = (&mut o.of, rows.last()) {
+                *after = Some(key.clone());
+            }
+            calls.extend(rows.into_iter().flat_map(|(_, c)| c).map(|(d, _)| d));
+            if end {
+                break;
+            }
+        }
+    }
+    calls
+}
+
+/// The refusal as invalid a probe plants: of a type named `planted`.
+fn planted() -> Error {
+    Error::invalid(lakelands_api::error::Case::Undeclared {
+        ty: "planted".into(),
+    })
 }

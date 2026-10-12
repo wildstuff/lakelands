@@ -17,13 +17,14 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use lakelands_api::engine::OpenMode;
+use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::ontology::{Authority, Risk, TypeDecl, VerbDecl, VerbEffect};
 use lakelands_api::seam::{
     EmbedBackend, FeedFilter, FunctionBacking, FunctionCall, Seams, VerbExecutor, VerbInvocation,
 };
-use lakelands_api::write::{Declaration, Outcome, WriteOpts};
+use lakelands_api::write::{Declaration, Outcome, Recompute, WriteOpts};
 use lakelands_api::{Error, LakeStore, Location, Position, Refusal, Timestamp, Version};
 use lakelands_core::conformance::fixture::{
     Lake, computed_by, derived, embedding, field, get_at, patch, source_record, type_decl,
@@ -44,6 +45,8 @@ struct Counting {
     /// What the next call does to the engine when it is handed, once.
     arm: Mutex<Option<Box<dyn Fn() + Send>>>,
     gate: Option<tokio::sync::Notify>,
+    /// The next function call fails, once.
+    fails: std::sync::atomic::AtomicBool,
 }
 
 impl Counting {
@@ -103,7 +106,16 @@ impl FunctionBacking for Counting {
 
     async fn call(&self, _: &FunctionCall) -> lakelands_api::Result<Value> {
         self.hand().await;
-        Ok(json!(7))
+        match self.fails.swap(false, Ordering::SeqCst) {
+            true => Err(lakelands_api::Error::unavailable(
+                lakelands_api::error::Situation::Storage {
+                    doing: lakelands_api::error::Doing::Write,
+                    part: lakelands_api::error::Part::Projection,
+                    detail: lakelands_api::error::Detail::scrubbed("the backing is down"),
+                },
+            )),
+            false => Ok(json!(7)),
+        }
     }
 }
 
@@ -191,7 +203,7 @@ fn applied(outcome: lakelands_api::Result<Outcome>) -> (Position, Option<Version
 /// The sentence of a write answered `unavailable`.
 fn unavailable<T: std::fmt::Debug>(outcome: lakelands_api::Result<T>) -> String {
     match outcome {
-        Err(Error::Unavailable { message }) => message,
+        Err(Error::Unavailable { situation }) => situation.to_string(),
         other => panic!("the write must be answered `unavailable`: {other:?}"),
     }
 }
@@ -328,8 +340,8 @@ async fn a_write_after_a_failed_fold_is_decided_over_what_the_log_holds() {
     );
     let sentence = format!(
         "what was appended is in the log from position {} and is not folded yet; the next \
-         write folds it, and a write is sent again only under its idempotency key (the commit \
-         through {} was refused (planted))",
+         write folds it, and a write is sent again only under its idempotency key (the storage \
+         failed while writing the projection: the commit through {} was refused (planted))",
         at.0, at.0
     );
     assert_eq!(told, sentence);
@@ -436,7 +448,7 @@ async fn a_write_that_cannot_catch_up_is_unavailable_whatever_the_fold_answered(
     *probe.refuse_begin.lock().unwrap() = Some(1);
     let told = unavailable(write(&l, "c", 3, None).await);
     let sentence = "the lake's projection is behind its log and could not catch up; nothing was \
-                    appended (the `begin` was refused (planted))";
+                    appended (`planted` is not a declared type)";
     assert_eq!(told, sentence);
     let (c, _) = applied(write(&l, "c", 3, None).await);
     assert_eq!(log(&store, "c").await.0, [c.0], "`c` is in the log once");
@@ -560,8 +572,13 @@ async fn pay_verb(l: &Lake, risk: Risk) {
 
 /// A call of `pay` on `a` under the key `k1`, its answer as it came.
 async fn pay(l: &Lake) -> lakelands_api::Result<Outcome> {
+    pay_under(l, "k1").await
+}
+
+/// A call of `pay` on `a` under `key`, its answer as it came.
+async fn pay_under(l: &Lake, key: &str) -> lakelands_api::Result<Outcome> {
     let opts = WriteOpts {
-        idempotency_key: Some("k1".into()),
+        idempotency_key: Some(key.into()),
         ..WriteOpts::default()
     };
     let (pay, a) = ("pay".into(), "a".into());
@@ -580,25 +597,24 @@ fn ran(outcome: lakelands_api::Result<Outcome>) -> (u64, Option<Value>) {
     }
 }
 
-/// The sentence of a retry refused as `unanswered`.
-fn unanswered<T: std::fmt::Debug>(outcome: lakelands_api::Result<T>) -> String {
+/// The case of a retry refused as `unanswered`.
+fn unanswered<T: std::fmt::Debug>(outcome: lakelands_api::Result<T>) -> Case {
     match outcome {
         Err(Error::Refused {
-            reason: Refusal::Unanswered { message },
+            reason: Refusal::Unanswered(said),
             ..
-        }) => message,
+        }) => said.case,
         other => panic!("the retry must be refused as `unanswered`: {other:?}"),
     }
 }
 
-/// What the store says of an external verb whose executor it did not hand
-/// the call: by a call under a key, and by an acceptance.
-const NOT_HANDED: &str = "the verb's executor was not handed this call, and sending it again \
-                          under its key will not run it: call the verb again under another key \
-                          or with none";
-const NOT_HANDED_ACCEPTED: &str = "the verb's executor was not handed this call, and the \
-                                   proposal is decided, so accepting it again will not run it: \
-                                   propose the call again";
+/// How the store's sentence of an external verb whose executor it did not
+/// hand the call ends, after its cause: by a call under a key, and by an
+/// acceptance.
+const NOT_HANDED: &str = "); sending it again under its key will not run it: call the verb \
+                          again under another key or with none";
+const NOT_HANDED_ACCEPTED: &str = "); the proposal is decided, so accepting it again will not \
+                                   run it: propose the call again";
 
 /// Row 10. The call of an external verb whose fold failed is in the log
 /// and its executor was not handed it: the store's sentence says so, that
@@ -622,9 +638,9 @@ async fn a_call_of_an_external_verb_whose_fold_failed_says_its_executor_was_not_
         .split("from position ")
         .nth(1)
         .and_then(|s| s.split(' ').next());
-    let at = format!(
-        "at position {},",
-        at.expect("the sentence names the position")
+    let at = Position(
+        at.and_then(|at| at.parse().ok())
+            .expect("the sentence names the position"),
     );
     let (doc, a) = ("doc".into(), "a".into());
     let k1 = WriteOpts {
@@ -637,8 +653,14 @@ async fn a_call_of_an_external_verb_whose_fold_failed_says_its_executor_was_not_
         l.cat.retire(&l.own, &doc, &a, k1).await,
     ] {
         let said = unanswered(again);
-        let what = "call the verb again under another key or with none";
-        assert!(said.contains(&at) && said.ends_with(what), "{said}");
+        let accepted = false;
+        assert_eq!(
+            said,
+            Case::Unanswered {
+                position: at,
+                accepted
+            }
+        );
     }
     *probe.refuse_commit.lock().unwrap() = Some(1);
     let (pay_verb, unkeyed) = ("pay".into(), WriteOpts::default());
@@ -646,7 +668,7 @@ async fn a_call_of_an_external_verb_whose_fold_failed_says_its_executor_was_not_
         .cat
         .call(&l.own, &pay_verb, Some(&a), patch(json!({})), unkeyed);
     let said = unavailable(called.await);
-    let not_handed = "the verb's executor was not handed this call: call the verb again";
+    let not_handed = "); call the verb again";
     assert!(said.ends_with(not_handed), "a call without a key: {said}");
 
     let (store, probe, _) = bound("behind-accept", counting.clone()).await;
@@ -659,7 +681,10 @@ async fn a_call_of_an_external_verb_whose_fold_failed_says_its_executor_was_not_
     let said = unavailable(l.cat.accept(&l.own, &proposal).await);
     assert!(said.ends_with(NOT_HANDED_ACCEPTED), "an acceptance: {said}");
     let said = unanswered(l.cat.accept(&l.own, &proposal).await);
-    assert!(said.ends_with("propose the call again"), "{said}");
+    assert!(
+        matches!(said, Case::Unanswered { accepted: true, .. }),
+        "{said}"
+    );
     assert_eq!(
         counting.handed.load(Ordering::SeqCst),
         0,
@@ -770,6 +795,92 @@ async fn an_answer_whose_recording_failed_is_recorded_without_a_second_call() {
         let fields = got.unwrap().data.fields;
         assert_eq!(fields.get("vec"), Some(&json!([1, 0])), "`{key}`");
     }
+}
+
+/// Row 12a (the review of lakelands#612). A failure whose recording failed
+/// is held, and does not outlive a declaration that calls failures again,
+/// whether its recording failed at the commit, the failure in the log, or
+/// at the view, before anything was appended: the sweep calls again, once,
+/// and its answer fills the record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_failure_is_called_again_by_a_declaration_that_retries() {
+    for at in ["commit", "view"] {
+        let counting = Arc::new(Counting::default());
+        let (store, probe, _) = bound(&format!("behind-held-{at}"), counting.clone()).await;
+        let l = Lake::of(store.as_ref());
+        summed(&l).await;
+        counting.fails.store(true, Ordering::SeqCst);
+        let refuse = move || match at {
+            "commit" => *probe.refuse_commit.lock().unwrap() = Some(1),
+            _ => *probe.refuse_view.lock().unwrap() = Some(1),
+        };
+        *counting.arm.lock().unwrap() = Some(Box::new(refuse));
+        applied(write(&l, "a", 1, None).await);
+        let f = Recompute::Function("f".into());
+        l.cat.recompute(&l.own, f).await.expect("the recompute");
+        let handed = counting.handed.load(Ordering::SeqCst);
+        assert_eq!(handed, 2, "at the {at}: called again once");
+        assert_eq!(
+            state(&l, "a", None).await[0],
+            json!({"n": 1, "sum": 7}),
+            "{at}"
+        );
+    }
+}
+
+/// Row 12c (the review of pull request 673, point 1). A write whose own
+/// call is recorded answers a head where its field is visible, though the
+/// orphan batch it makes after it fails: that failure is the drain's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failing_orphan_batch_is_not_the_failure_of_a_write_whose_calls_are_done() {
+    let counting = Arc::new(Counting::default());
+    let (store, probe, _) = bound("behind-orphan-fails", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    summed(&l).await;
+    // `a`'s answer is held, not recorded: an orphan once its write is done.
+    let view = probe.clone();
+    let plant = move || *view.refuse_view.lock().unwrap() = Some(1);
+    *counting.arm.lock().unwrap() = Some(Box::new(plant));
+    applied(write(&l, "a", 1, None).await);
+    // `b`'s recording commits; the orphan's, the next, is refused.
+    let commit = probe.clone();
+    let plant = move || *commit.refuse_commit.lock().unwrap() = Some(2);
+    *counting.arm.lock().unwrap() = Some(Box::new(plant));
+    let (at, _) = applied(write(&l, "b", 2, None).await);
+    let left = *probe.refuse_commit.lock().unwrap();
+    assert_eq!(
+        (left, state(&l, "b", Some(at)).await[0].clone()),
+        (None, json!({"n": 2, "sum": 7})),
+        "the orphan's recording refused, and `b`'s field at the head it answered"
+    );
+}
+
+/// Row 12b (lakelands#609). A declaration over a type leaves one sweep
+/// owed, not a call per record: records sharing 64 texts are embedded by
+/// one request of the 64, and every record is filled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn records_sharing_texts_are_embedded_by_one_request() {
+    let counting = Arc::new(Counting::default());
+    let (store, _, _) = bound("behind-shared-texts", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    let mut plain = note(false);
+    plain.fields.retain(|f| f.embed.is_none());
+    l.declare(plain).await.unwrap();
+    let text = |i: usize| json!({"text": format!("shared {}", i % 64)});
+    let notes = (0..640).map(|i| source_record("note", &format!("n{i:03}"), text(i)));
+    l.ingest("feed", notes.collect()).await.unwrap();
+    l.declare(note(false)).await.unwrap();
+    let requests = counting.texts.lock().unwrap().clone();
+    let covered = store.vector_coverage(&"note".into()).await.unwrap();
+    assert_eq!(
+        (
+            requests.len(),
+            requests.first().map(Vec::len),
+            covered[0].embedded
+        ),
+        (1, Some(64), 640),
+        "one request of the 64 texts, and every record filled"
+    );
 }
 
 /// Row 13. An external verb's executor is handed nothing after a drain
@@ -888,78 +999,6 @@ async fn the_answer_of_a_call_whose_caller_went_away_is_recorded() {
     assert_eq!(counting.handed.load(Ordering::SeqCst), 1, "handed once");
 }
 
-/// Row 22. The record a call names is retired between the call's append
-/// and its hand-out (the call waits behind a neighbour's drain): the
-/// executor is handed nothing, the call is answered so, and sent again
-/// under its key it is `unanswered`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_call_whose_record_was_retired_before_its_hand_out_is_not_handed() {
-    let counting = Counting::gated();
-    let (store, _, _) = bound("behind-retired", counting.clone()).await;
-    let l = Arc::new(Lake::of(store.as_ref()));
-    summed(&l).await;
-    pay_verb(&l, Risk::Low).await;
-    let spawn = |what: &'static str| {
-        let l = l.clone();
-        tokio::spawn(async move {
-            let (doc, a) = ("doc".into(), "a".into());
-            match what {
-                "a" => write(&l, what, 1, None).await,
-                "b" => write(&l, what, 2, None).await,
-                "pay" => pay(&l).await,
-                _ => l.cat.retire(&l.own, &doc, &a, WriteOpts::default()).await,
-            }
-        })
-    };
-    // `a`'s drain holds the lane at the gate; `b`'s due waits behind it.
-    let drain = spawn("a");
-    counting.held().await;
-    let b = spawn("b");
-    until_async(|| async { state(&l, "b", None).await != json!("absent") }).await;
-    let called = spawn("pay");
-    until_async(|| async {
-        let all = FeedFilter::default();
-        let events = store
-            .feed()
-            .poll(Position(0), &all, 100)
-            .await
-            .unwrap()
-            .events;
-        events
-            .iter()
-            .any(|e| matches!(e.body, EventBody::VerbCalled { .. }))
-    })
-    .await;
-    let retired = spawn("retire");
-    until_async(|| async { state(&l, "a", None).await == json!("absent") }).await;
-    counting.gate.as_ref().unwrap().notify_one();
-    for done in [drain, b, retired] {
-        done.await.unwrap().expect("the neighbours' writes");
-    }
-    let said = unavailable(called.await.unwrap());
-    assert!(said.contains("there is no `doc` with key `a`"), "{said}");
-    assert!(said.ends_with(NOT_HANDED), "{said}");
-    let said = unanswered(pay(&l).await);
-    assert!(said.ends_with("under another key or with none"), "{said}");
-    assert_eq!(
-        counting.handed.load(Ordering::SeqCst),
-        2,
-        "the backing's two calls"
-    );
-}
-
-/// Wait until `done` answers true, for a row that needs another task to
-/// have got somewhere it can only read.
-async fn until_async<F: std::future::Future<Output = bool>>(done: impl Fn() -> F) {
-    for _ in 0..5_000 {
-        if done().await {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-    }
-    panic!("waited five seconds");
-}
-
 /// `note` with `text`, which either door writes, and `vec`, its embedding
 /// by the model `m`; `more` adds the field `m`.
 fn note(more: bool) -> TypeDecl {
@@ -1019,6 +1058,7 @@ async fn waiting(name: &str, dir: &std::path::Path) -> (Arc<Probe>, MemoryOpener
         schema_hash: Some(lakelands_core::shape::schema_hash(&note(more)).unwrap()),
         declaration: Declaration::Type(note(more)),
         version,
+        with_the_set: false,
     };
     let wrote = |key: &str| EventBody::RecordUpserted {
         ty: "note".into(),
@@ -1033,8 +1073,8 @@ async fn waiting(name: &str, dir: &std::path::Path) -> (Arc<Probe>, MemoryOpener
         let one = vec![Draft::system(lake.clock(&mut w), body)];
         lake.append(&mut w, one).expect("the append");
     }
-    let made = lake.writer().due.len();
-    assert_eq!(made, 6, "each write's call, and each again");
+    let made = lake.writer().owed.len();
+    assert_eq!(made, 4, "each write's record, and a sweep of the type");
     lake.close().expect("the writer closes");
     let store = lakelands_store::open(location.clone(), seams(), OpenMode::Read).await;
     let _ = std::fs::remove_dir_all(dir);
@@ -1067,9 +1107,9 @@ async fn a_fold_of_the_log_makes_no_call_due() {
     let location = Location::memory("behind-of-the-log");
     let lake = lakelands_store::lake::Lake::open(&location, seams(opener), OpenMode::Write);
     let lake = lake.expect("a writer folds the whole log");
-    assert_eq!(lake.writer().due.len(), 0, "opened");
+    assert_eq!(lake.writer().owed.len(), 0, "opened");
     lake.rebuild().expect("a rebuild");
-    assert_eq!(lake.writer().due.len(), 0, "rebuilt");
+    assert_eq!(lake.writer().owed.len(), 0, "rebuilt");
     lake.close().expect("the writer closes");
     let other = MemoryOpener::new();
     let imported = lakelands_store::import(location, seams(other.clone()), dir.clone()).await;
@@ -1219,7 +1259,7 @@ async fn a_fill_in_a_fold_of_the_log_makes_no_call_due() {
     store.close().await.expect("the handle closes");
     let lake = lakelands_store::lake::Lake::open(&location, seams(false), OpenMode::Write);
     let lake = lake.expect("a writer folds the whole log");
-    assert_eq!(lake.writer().due.len(), 0, "opened");
+    assert_eq!(lake.writer().owed.len(), 0, "opened");
 }
 
 /// Row 5. An append decided under a writer that is behind and was not
@@ -1247,6 +1287,7 @@ fn an_append_decided_by_a_writer_that_is_behind_is_refused() {
         schema_hash: Some(lakelands_core::shape::schema_hash(&doc("n + 1")).unwrap()),
         declaration: Declaration::Type(doc("n + 1")),
         version: 1,
+        with_the_set: false,
     };
     let mut w = lake.for_write().unwrap();
     let load = draft(&mut w, declared);
@@ -1268,4 +1309,225 @@ fn an_append_decided_by_a_writer_that_is_behind_is_refused() {
         let held = view.get(&"doc".into(), &key.into()).unwrap();
         assert!(held.is_some(), "`{key}` is folded");
     }
+}
+
+/// The executor's answers the log holds, by the position each answers.
+async fn outputs(store: &Arc<dyn LakeStore>) -> Vec<Option<Position>> {
+    let all = FeedFilter::default();
+    let polled = store.feed().poll(Position(0), &all, 1000).await.unwrap();
+    let answers = polled.events.iter();
+    let answers = answers.filter(|e| matches!(e.body, EventBody::OutputRecorded { .. }));
+    answers.map(|e| e.cause).collect()
+}
+
+/// The next call's executor refuses the engine's next append, its
+/// answer's, as `invalid` or after it landed where `probe` says so.
+fn refuses_its_append(counting: &Counting, probe: &Arc<Probe>) {
+    let probe = probe.clone();
+    let plant = move || *probe.refuse_append.lock().unwrap() = Some(1);
+    *counting.arm.lock().unwrap() = Some(Box::new(plant));
+}
+
+/// What a call whose answer is held says after the executor's answer.
+const HELD: &str = "the answer is held and recorded before the next write";
+
+/// Row 23 (lakelands#646). The executor answered and the append of its
+/// answer was refused: the call says the answer and that it is held. Sent
+/// again under its key, the call records the held answer and answers it;
+/// unkeyed, a neighbour's write records it, caused by the call; accepted,
+/// accepting again answers it. The executor is handed each call once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_answer_whose_append_was_refused_is_held_until_recorded() {
+    let counting = Arc::new(Counting::default());
+    let (store, probe, _) = bound("held-keyed", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::Low).await;
+    refuses_its_append(&counting, &probe);
+    let said = unavailable(pay(&l).await);
+    let again = "sent again under its key, the call answers it";
+    assert!(
+        said.contains("{\"ran\":1}") && said.ends_with(&format!("{HELD}; {again}")),
+        "{said}"
+    );
+    assert_eq!(ran(pay(&l).await).1, Some(json!({"ran": 1})), "the retry");
+
+    let (store, probe, _) = bound("held-unkeyed", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::Low).await;
+    refuses_its_append(&counting, &probe);
+    let (verb, a) = ("pay".into(), "a".into());
+    let called = l.cat.call(
+        &l.own,
+        &verb,
+        Some(&a),
+        patch(json!({})),
+        WriteOpts::default(),
+    );
+    let said = unavailable(called.await);
+    assert!(said.ends_with(HELD), "a call without a key: {said}");
+    let at = Position(store.head().await.unwrap().0);
+    applied(write(&l, "b", 2, None).await);
+    assert_eq!(
+        outputs(&store).await,
+        [Some(at)],
+        "recorded by the next write, caused by the call"
+    );
+
+    let (store, probe, _) = bound("held-accepted", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::High).await;
+    let Ok(Outcome::Proposed { proposal, .. }) = pay(&l).await else {
+        panic!("a high verb is proposed");
+    };
+    refuses_its_append(&counting, &probe);
+    let said = unavailable(l.cat.accept(&l.own, &proposal).await);
+    let again = "accepted again, the proposal answers it";
+    assert!(
+        said.ends_with(&format!("{HELD}; {again}")),
+        "an acceptance: {said}"
+    );
+    let accepted = l.cat.accept(&l.own, &proposal).await;
+    assert_eq!(ran(accepted).1, Some(json!({"ran": 3})), "accepted again");
+    assert_eq!(
+        counting.handed.load(Ordering::SeqCst),
+        3,
+        "each handed once"
+    );
+}
+
+/// Row 24. A held answer whose append is refused again stops no other
+/// write: the write goes on, and the answer goes in once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_answer_refused_again_stops_no_other_write() {
+    let counting = Arc::new(Counting::default());
+    let (store, probe, _) = bound("held-again", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::Low).await;
+    refuses_its_append(&counting, &probe);
+    unavailable(pay(&l).await);
+    *probe.refuse_append.lock().unwrap() = Some(1);
+    applied(write(&l, "b", 2, None).await);
+    assert_eq!(ran(pay(&l).await).1, Some(json!({"ran": 1})), "the retry");
+    assert_eq!(outputs(&store).await.len(), 1, "recorded once");
+}
+
+/// Row 25. An engine that holds the answer's append and answers a failure:
+/// the held answer, stamped at the tip the writer still stands on, is
+/// refused by the engine and not appended twice. Opened again, the lake
+/// holds the answer once, and the retry answers it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_answer_the_engine_already_holds_is_not_appended_twice() {
+    let counting = Arc::new(Counting::default());
+    let (store, probe, opener) = bound("held-landed", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::Low).await;
+    probe.lands.store(true, Ordering::SeqCst);
+    refuses_its_append(&counting, &probe);
+    unavailable(pay(&l).await);
+    let _ = write(&l, "b", 2, None).await;
+    drop((l, store));
+    let seams = Seams {
+        engines: vec![Arc::new(opener)],
+        ..Seams::default()
+    };
+    let store = lakelands_store::open(Location::memory("held-landed"), seams, OpenMode::Write);
+    let store = store.await.expect("the lake opened again");
+    assert_eq!(
+        outputs(&store).await.len(),
+        1,
+        "the answer is in the log once"
+    );
+    assert_eq!(
+        ran(pay(&Lake::of(store.as_ref())).await).1,
+        Some(json!({"ran": 1}))
+    );
+}
+
+/// Row 26. An append refused otherwise than `unavailable` holds nothing:
+/// the call is answered that refusal, later writes are their own, and a
+/// retry finds no answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_answer_refused_otherwise_is_not_held() {
+    let counting = Arc::new(Counting::default());
+    let (store, probe, _) = bound("held-invalid", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::Low).await;
+    probe.refuse_as_invalid.store(true, Ordering::SeqCst);
+    refuses_its_append(&counting, &probe);
+    let said = format!("{:?}", pay(&l).await);
+    assert!(
+        said.contains("Undeclared") && said.contains("planted") && !said.contains(HELD),
+        "{said}"
+    );
+    applied(write(&l, "b", 2, None).await);
+    unanswered(pay(&l).await);
+    assert!(
+        outputs(&store).await.is_empty(),
+        "nothing held, nothing recorded"
+    );
+}
+
+/// Row 27. The writer falls behind while the executor runs, and cannot
+/// catch up when the answer comes: the answer is held all the same, the
+/// call says so, and the retry under its key, which catches up, records it
+/// and answers it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_answer_is_held_when_the_writer_cannot_catch_up() {
+    let counting = Counting::gated();
+    let (store, probe, _) = bound("held-behind", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::Low).await;
+    let caller = Lake::of(store.as_ref());
+    let call = tokio::spawn(async move { pay(&caller).await });
+    counting.held().await;
+    *probe.refuse_commit.lock().unwrap() = Some(1);
+    unavailable(write(&l, "b", 2, None).await);
+    *probe.refuse_begin.lock().unwrap() = Some(1);
+    counting.gate.as_ref().unwrap().notify_one();
+    let said = unavailable(call.await.unwrap());
+    let again = "sent again under its key, the call answers it";
+    assert!(
+        said.contains("could not catch up") && said.ends_with(&format!("{HELD}; {again}")),
+        "{said}"
+    );
+    assert_eq!(ran(pay(&l).await).1, Some(json!({"ran": 1})), "the retry");
+    assert_eq!(counting.handed.load(Ordering::SeqCst), 1, "handed once");
+    // Stamped when it is appended, it is known no earlier than what precedes it.
+    let (feed, all) = (store.feed(), FeedFilter::default());
+    let events = feed.poll(Position(0), &all, 1000).await.unwrap().events;
+    let at = events
+        .iter()
+        .position(|e| matches!(e.body, EventBody::OutputRecorded { .. }));
+    let (before, answer) = (&events[at.unwrap() - 1], &events[at.unwrap()]);
+    assert!(
+        answer.known_at >= before.known_at,
+        "{answer:?} after {before:?}"
+    );
+}
+
+/// Row 28. The next write records a held answer and that answer's fold is
+/// refused: the write catches up before it is decided, so a call under
+/// another key goes on and runs once, and its retry answers what it ran.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_answer_whose_fold_fails_leaves_the_writer_caught_up() {
+    let counting = Arc::new(Counting::default());
+    let (store, probe, _) = bound("held-fold", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::Low).await;
+    refuses_its_append(&counting, &probe);
+    unavailable(pay(&l).await);
+    *probe.refuse_commit.lock().unwrap() = Some(1);
+    let first = ran(pay_under(&l, "k2").await);
+    assert_eq!(first.1, Some(json!({"ran": 2})), "the call under `k2` runs");
+    assert_eq!(ran(pay_under(&l, "k2").await), first, "its retry");
+    assert_eq!(
+        ran(pay(&l).await).1,
+        Some(json!({"ran": 1})),
+        "`k1`'s retry"
+    );
+    assert_eq!(
+        counting.handed.load(Ordering::SeqCst),
+        2,
+        "each handed once"
+    );
 }

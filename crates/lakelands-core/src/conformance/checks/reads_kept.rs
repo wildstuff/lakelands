@@ -6,18 +6,31 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::ontology::StorageKind::{self, Json, Text};
 use lakelands_api::ontology::{RelationDecl, TypeDecl};
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::write::{Declaration, Migration, ProposedWrite};
 use lakelands_api::{Access, LakeStore};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, derived, field, field_access, head_unmoved, invalid_naming, migration, reads_all,
-    type_decl,
+    Lake, Must, derived, field, field_access, head_unmoved, migration, reads_all, refused_like,
+    said_like, type_decl,
 };
+
+/// A place a case is said at, on the wire: a declaration by its kind
+/// (`type`, `object_set`, `trigger`, `verb`) and its name.
+fn at(kind: &str, name: &str) -> Value {
+    json!([{"code": kind, "name": name}])
+}
+
+/// Whether an error names `name` anywhere: in a parameter, a place or its
+/// sentence, on the wire.
+fn names(e: &lakelands_api::Error, name: &str) -> bool {
+    serde_json::to_string(e).is_ok_and(|w| w.contains(name))
+}
 
 check!(
     /// A migration keeps the fields a declaration reads.
@@ -52,31 +65,32 @@ async fn a_migration_keeps_the_fields_a_declaration_reads(
         l.declare_json(d).await?;
     }
     let readers = [
-        ("a", "type declaration `item`"),
-        ("b", "object_set declaration `s`"),
-        ("c", "trigger declaration `t`"),
-        ("d", "verb declaration `v`"),
-        ("e", "verb declaration `v`"),
-        ("f", "verb declaration `v`"),
-        ("g", "type declaration `other`"),
-        ("payload", "verb declaration `w`"),
+        ("a", "type", "item"),
+        ("b", "object_set", "s"),
+        ("c", "trigger", "t"),
+        ("d", "verb", "v"),
+        ("e", "verb", "v"),
+        ("f", "verb", "v"),
+        ("g", "type", "other"),
+        ("payload", "verb", "w"),
     ];
-    for (gone, reader) in readers {
+    for (gone, kind, reader) in readers {
         let kept: Vec<&str> = all.iter().copied().filter(|n| *n != gone).collect();
         let preflight = l.cat.migrate(&l.own, migration(item(&kept))).await;
         let what = format!("a migration dropping `{gone}`");
-        invalid_naming(&what, preflight, &[reader, &format!("reads `{gone}`")])?;
+        let case = json!({"code": "migration_takes_read", "unnamed": false, "field": gone,
+                          "type": "item", "at": at(kind, reader)});
+        refused_like(&what, preflight, &case)?;
     }
     let renamed = Migration {
         to: item(&["a", "b2", "c", "d", "e", "f", "g", "payload", "free"]),
         renames: vec![("b".into(), "b2".into())],
         relation_renames: Vec::new(),
     };
-    invalid_naming(
-        "a migration renaming `b`",
-        l.cat.migrate(&l.own, renamed).await,
-        &["object_set declaration `s`", "reads `b`", "renames to `b2`"],
-    )?;
+    let case = json!({"code": "migration_takes_read", "field": "b", "renamed": "b2",
+                      "at": at("object_set", "s")});
+    let renamed = l.cat.migrate(&l.own, renamed).await;
+    refused_like("a migration renaming `b`", renamed, &case)?;
     // A relation's fields are its link type's: a trigger on the link type
     // keeps the one it reads.
     let doc = |fields| {
@@ -91,13 +105,12 @@ async fn a_migration_keeps_the_fields_a_declaration_reads(
     let on_links = json!({"declare": "trigger", "name": "lt", "on": "sys.link.doc.signed_by",
                           "when": "ok = 'x'"});
     l.declare_json(on_links).await?;
-    invalid_naming(
+    let case = json!({"code": "migration_takes_read", "field": "ok",
+                      "type": "sys.link.doc.signed_by", "at": at("trigger", "lt")});
+    refused_like(
         "a migration dropping the relation's field `ok`",
         l.cat.migrate(&l.own, migration(doc(vec![]))).await,
-        &[
-            "trigger declaration `lt`",
-            "reads `ok` of `sys.link.doc.signed_by`",
-        ],
+        &case,
     )?;
     l.migrate(item(&all[..8])).await?;
     // A reader its author is not shown is not named to it: `audit` reads
@@ -120,23 +133,28 @@ async fn a_migration_keeps_the_fields_a_declaration_reads(
     };
     let why = || "no notes".to_owned();
     let refused = l.cat.propose(&partial, proposed.clone(), why()).await;
-    let named =
-        |e: &lakelands_api::Error| ["audit", "bonus"].iter().any(|n| e.to_string().contains(n));
+    let named = |e: &lakelands_api::Error| ["audit", "bonus"].iter().any(|n| names(e, n));
     let named = refused.as_ref().is_err_and(named);
     let what = "a migration dropping `note`, proposed by one not shown its reader";
-    invalid_naming(what, refused, &["a declaration reads `note`"])?;
+    refused_as!(
+        what,
+        refused,
+        Case::MigrationTakesRead { unnamed: true, field, ty, renamed: None }
+            if field == "note" && ty == "invoice"
+    )?;
     ensure!(
         !named,
         "{what}, must name neither `audit` nor the field `bonus`"
     );
     // One who reads every field is shown `audit` and told its name, with
     // the schema grant or without.
-    let shown = &["trigger declaration `audit`", "reads `bonus`"];
+    let shown = json!({"code": "migration_takes_read", "unnamed": false, "field": "bonus",
+                       "at": at("trigger", "audit")});
     let all = reads_all(store.as_ref(), "all");
     let refused = l.cat.propose(&all, proposed, why()).await;
-    invalid_naming("the same proposal by one shown its reader", refused, shown)?;
+    refused_like("the same proposal by one shown its reader", refused, &shown)?;
     let refused = l.cat.migrate(&l.own, m).await;
-    invalid_naming("the same migration by the owner", refused, shown)?;
+    refused_like("the same migration by the owner", refused, &shown)?;
     Ok(())
 }
 
@@ -170,6 +188,7 @@ async fn a_migration_names_a_view_only_to_an_author_who_is_shown_it(
     let none = TypeGrants {
         default: Some(Access::None),
         fields: Default::default(),
+        ..Default::default()
     };
     blind.grants.types.insert("by_team".into(), none);
     let partial = field_access(
@@ -183,37 +202,38 @@ async fn a_migration_names_a_view_only_to_an_author_who_is_shown_it(
         report: Default::default(),
     };
     let why = || "a change".to_owned();
-    let unnamed = |what: &str, refused: lakelands_api::Result<_>, says: &str| {
-        let named = |e: &lakelands_api::Error| e.to_string().contains("by_team");
+    let unnamed = |what: &str, refused: lakelands_api::Result<_>, says: Value| {
         ensure!(
-            !refused.as_ref().is_err_and(named),
+            !refused.as_ref().is_err_and(|e| names(e, "by_team")),
             "{what} must not name the view `by_team`; it answered {refused:?}"
         );
-        invalid_naming(what, refused, &[says])
+        refused_like(what, refused, &says)
     };
     // Each takes away what it knows of: `blind` both fields, `partial` `note`.
     for (who, gone) in [(&blind, "bonus"), (&partial, "note")] {
         let what = format!("a migration taking a field a view reads, by `{}`", who.id);
-        let says = format!("a declaration reads `{gone}` of `bill`");
+        let says = json!({"code": "migration_takes_read", "unnamed": true, "field": gone,
+                          "type": "bill"});
         let refused = l.cat.propose(who, proposed(bill(Text, &[])), why()).await;
-        unnamed(&what, refused, &says)?;
+        unnamed(&what, refused, says)?;
     }
     // A kind no view groups by: no field is gone, and no reason is given.
     let retyped = proposed(bill(Json, &["note", "bonus"]));
     unnamed(
         "a migration that changes the kind a view groups by, by `blind`",
         l.cat.propose(&blind, retyped, why()).await,
-        "a declaration over `bill` could no longer be declared",
+        json!({"code": "no_longer_declarable", "type": "bill"}),
     )?;
-    // One who is shown the view is told its name, in the sentence as it was.
-    let was = "refused: after the migration of `bill`, type `by_team`: its view reads `bonus` of \
-               `bill`, which `bill` does not have";
+    // One who is shown the view is told its name, as the owner is told it.
+    let at =
+        json!([{"code": "after_migration", "name": "bill"}, {"code": "type", "name": "by_team"}]);
+    let was = json!({"code": "unknown_field", "type": "bill", "field": "bonus", "at": at});
     let all = reads_all(store.as_ref(), "all");
     let told = l.cat.propose(&all, proposed(bill(Text, &[])), why()).await;
-    let said = told.as_ref().err().map(ToString::to_string);
+    let said = told.as_ref().err().and_then(|e| e.case());
     ensure!(
-        said.as_deref() == Some(was),
-        "an author shown the view is told, as before, {was:?}; it answered {told:?}"
+        said.is_some_and(|s| s.at.len() == 2 && said_like(s, &was)),
+        "an author shown the view is told, as the owner is, {was}; it answered {told:?}"
     );
     Ok(())
 }
@@ -242,40 +262,36 @@ async fn a_declaration_reads_only_fields_its_type_has(
         {"name": "loud", "type": {"kind": "text"}, "authority": "derived", "derived": "upper(ghost)"}]});
     let before = store.head().await.must("reading the head")?;
     for (reader, d) in [
-        ("type declaration `memo`", memo),
-        (
-            "verb declaration `close`",
-            verb("close", "ghost = 'x'", "'shut'"),
-        ),
-        (
-            "verb declaration `copy`",
-            verb("copy", "status = 'x'", "ghost"),
-        ),
-        ("trigger declaration `t`", trigger("ghost = 'x'")),
-        ("trigger declaration `t`", trigger("changed(ghost)")),
-        ("trigger declaration `t`", trigger("previous(ghost) = 'x'")),
-        ("object_set declaration `s`", set("ghost = 'x'")),
+        (("type", "memo"), memo),
+        (("verb", "close"), verb("close", "ghost = 'x'", "'shut'")),
+        (("verb", "copy"), verb("copy", "status = 'x'", "ghost")),
+        (("trigger", "t"), trigger("ghost = 'x'")),
+        (("trigger", "t"), trigger("changed(ghost)")),
+        (("trigger", "t"), trigger("previous(ghost) = 'x'")),
+        (("object_set", "s"), set("ghost = 'x'")),
     ] {
         let what = format!("declaring {d}");
         let d: Declaration = serde_json::from_value(d)
             .map_err(|e| Failure::new(format!("the check's declaration does not read: {e}")))?;
-        let names = [reader, "reads `ghost`"];
-        invalid_naming(&what, l.cat.declare(&l.own, d.clone()).await, &names)?;
-        invalid_naming(&what, l.cat.apply(&l.own, vec![d]).await, &names)?;
+        let (kind, name) = reader;
+        let case = json!({"code": "unknown_field", "field": "ghost", "at": at(kind, name)});
+        refused_like(&what, l.cat.declare(&l.own, d.clone()).await, &case)?;
+        refused_like(&what, l.cat.apply(&l.own, vec![d]).await, &case)?;
     }
     // In a verb's value only `payload.<name>` is the call's.
-    let reads = ["verb declaration `p`", "reads `payload`"];
-    for (value, names) in [
-        ("payload", reads),
-        ("payload.note.deep", reads),
-        ("concat(payload, '!')", reads),
-        ("payload.ghost", ["verb `p`", "`payload.ghost`"]),
+    let reads = json!({"code": "unknown_field", "field": "payload", "at": at("verb", "p")});
+    let ghost = json!({"code": "payload_no_member", "member": "ghost", "at": at("verb", "p")});
+    for (value, case) in [
+        ("payload", &reads),
+        ("payload.note.deep", &reads),
+        ("concat(payload, '!')", &reads),
+        ("payload.ghost", &ghost),
     ] {
         let d = verb("p", "status = 'x'", value);
         let d: Declaration = serde_json::from_value(d).expect("a verb");
         let what = format!("declaring a verb whose value is `{value}`");
-        invalid_naming(&what, l.cat.declare(&l.own, d.clone()).await, &names)?;
-        invalid_naming(&what, l.cat.apply(&l.own, vec![d]).await, &names)?;
+        refused_like(&what, l.cat.declare(&l.own, d.clone()).await, case)?;
+        refused_like(&what, l.cat.apply(&l.own, vec![d]).await, case)?;
     }
     head_unmoved(
         store.as_ref(),
@@ -285,10 +301,10 @@ async fn a_declaration_reads_only_fields_its_type_has(
     .await?;
     // A migration's own declaration is held to it too.
     let loud = invoice(derived("loud", Text, "upper(ghost)", &[]));
-    invalid_naming(
+    refused_like(
         "a migration to a type that reads `ghost`",
         l.cat.migrate(&l.own, migration(loud)).await,
-        &["type declaration `invoice`", "reads `ghost`"],
+        &json!({"code": "unknown_field", "field": "ghost", "at": at("type", "invoice")}),
     )?;
     // On a type that has a field `payload`, the bare name reads it.
     let fields = ["status", "old", "payload"].map(|n| field(n, Text));

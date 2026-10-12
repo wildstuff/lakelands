@@ -42,9 +42,7 @@ fn block_on<F: Future>(fut: F) -> F::Output {
 }
 
 fn down() -> Error {
-    Error::Unavailable {
-        message: "this lake fails every call on purpose".to_owned(),
-    }
+    Error::unavailable(lakelands_api::error::Situation::Moved)
 }
 
 type Answer<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
@@ -130,10 +128,10 @@ impl Catalog for DownCatalog {
         who: &'life1 Principal, migration: Migration, report_id: &'life2 str
     ) -> Outcome);
     refuse!(migrate_value_type<'life1>(
-        who: &'life1 Principal, to: lakelands_api::ontology::ValueTypeDecl
+        who: &'life1 Principal, to: lakelands_api::write::ValueTypeMigration
     ) -> Reply<lakelands_api::write::ValueTypeReport>);
     refuse!(migrate_value_type_apply<'life1, 'life2>(
-        who: &'life1 Principal, to: lakelands_api::ontology::ValueTypeDecl, report_id: &'life2 str
+        who: &'life1 Principal, to: lakelands_api::write::ValueTypeMigration, report_id: &'life2 str
     ) -> Outcome);
     refuse!(ingest<'life1, 'life2>(
         who: &'life1 Principal, source: &'life2 SourceId, records: SourceStream
@@ -166,6 +164,9 @@ impl LakeStore for DownStore {
     }
     fn feed(&self) -> Arc<dyn ChangeFeed> {
         Arc::new(DownFeed)
+    }
+    fn bind_embed(&self, _: Arc<dyn lakelands_api::seam::EmbedBackend>) -> Result<()> {
+        Err(down())
     }
     refuse!(head<>() -> Position);
     refuse!(verify<>(from: Option<Position>, through: Option<Position>) -> Verification);

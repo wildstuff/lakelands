@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use lakelands_api::error::Case;
 use lakelands_api::ontology::{FieldType, StorageKind, TypeDecl};
 use lakelands_api::write::{Migration, MigrationReport};
 use lakelands_api::{LakeStore, Refusal};
@@ -11,8 +12,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, count_view, declare, doors, field, head_unmoved, measure, migration, owner, reason,
-    type_decl, value,
+    Lake, Must, count_view, declare, doors, field, head_unmoved, invalid_case, invalid_like,
+    measure, migration, owner, reason, type_decl, value,
 };
 
 check!(
@@ -146,7 +147,7 @@ async fn a_migration_that_would_lose_information_is_refused_with_its_report(
     head_unmoved(store.as_ref(), before, "applying a lossy migration").await?;
     ensure!(
         matches!(reason(&err), Some(Refusal::Migration { report: r }) if !r.lossless)
-            && matches!(reason(&other), Some(Refusal::Invalid { .. })),
+            && matches!(reason(&other), Some(Refusal::Invalid(..))),
         "a lossy migration must be refused with its report, and under another report id \
          for that id first (027, extended); it failed with {err:?} and {other:?}"
     );
@@ -255,7 +256,9 @@ async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) -> Result<(), Failu
         let before = store.head().await.must("reading the head")?;
         let answer = migrated(&l, migration(to)).await;
         ensure!(
-            matches!(reason(&answer), Some(Refusal::Invalid { message }) if message.contains(ty)),
+            matches!(invalid_case(&answer),
+                Some(Case::MigrationToView { ty: t } | Case::MigrationViewToStored { ty: t })
+                    if t == ty),
             "a migration of `{ty}` across a view and a stored type must be refused as invalid, \
              naming `{ty}`; it answered {answer:?}"
         );
@@ -391,8 +394,11 @@ async fn a_migration_taking_a_field_a_view_reads_is_refused(
         let before = store.head().await.must("reading the head")?;
         let answer = migrated(m).await;
         ensure!(
-            matches!(reason(&answer), Some(Refusal::Invalid { message })
-                if message.contains("pt") && message.contains(read)),
+            invalid_like(
+                &answer,
+                &json!({"code": "unknown_field", "field": read,
+                                          "at": [{"code": "type", "name": "pt"}]})
+            ),
             "{what}, which the view `pt` reads, must be refused as invalid, naming `pt` and \
              `{read}`; it answered {answer:?}"
         );

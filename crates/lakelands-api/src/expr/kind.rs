@@ -6,12 +6,18 @@
 //! record (a `json` field, two kinds under `if`, a setting) nothing is said.
 //! A path that steps into a field that holds no members can never read.
 
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
+
 use super::{ArithOp, Expr, Func, Literal};
 use crate::FieldName;
+use crate::error::Case;
 use crate::ontology::StorageKind;
 
 /// What an expression certainly computes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Kind {
     /// True or false.
     Boolean,
@@ -45,9 +51,16 @@ impl Kind {
             S::Text | S::Reference | S::Json => true,
             S::Number | S::Decimal => matches!(self, Kind::Number | Kind::Text),
             S::Boolean => self == Kind::Boolean,
-            S::DateTime => matches!(self, Kind::Instant | Kind::Text),
+            S::DateTime | S::Date => matches!(self, Kind::Instant | Kind::Text),
             S::Bytes | S::Vector | S::Geo => false,
         }
+    }
+}
+
+/// The kind, for a person: "a number".
+impl fmt::Display for Kind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
     }
 }
 
@@ -57,10 +70,9 @@ impl Kind {
 pub fn of(
     e: &Expr,
     field: &dyn Fn(&FieldName) -> Option<StorageKind>,
-) -> Result<Option<Kind>, String> {
+) -> Result<Option<Kind>, Case> {
     use Kind::{Boolean, Duration, Instant, Number, Text};
-    // `<expression>` has no meaning: what its operands certainly are.
-    let no = |of: String| Err(format!("`{}` has no meaning: {of}", super::print(e)));
+    let expr = || super::print(e);
     Ok(match e {
         Expr::Lit { value } => match value {
             Literal::Null => None,
@@ -72,7 +84,7 @@ pub fn of(
         Expr::Path { path } => match (path.as_slice(), path.first().and_then(field)) {
             ([_], Some(StorageKind::Number | StorageKind::Decimal)) => Some(Number),
             ([_], Some(StorageKind::Boolean)) => Some(Boolean),
-            ([_], Some(StorageKind::DateTime)) => Some(Instant),
+            ([_], Some(StorageKind::DateTime | StorageKind::Date)) => Some(Instant),
             ([_], Some(StorageKind::Text | StorageKind::Reference)) => Some(Text),
             // A longer path walks into a `json` or `geo` value's members;
             // into anything else it reads nothing, whatever the record
@@ -81,17 +93,11 @@ pub fn of(
                 if !matches!(k, StorageKind::Json | StorageKind::Geo)
                     && first.as_str() != "payload" =>
             {
-                let into = match k {
-                    StorageKind::Reference => {
-                        "a reference: a condition reads the record's own fields. Compare the \
-                         reference's key, or walk to the record it names in a pattern"
-                    }
-                    _ => "no `json` field, and has no members",
-                };
-                return Err(format!(
-                    "`{}` steps into `{first}`, which is {into}",
-                    super::print(e)
-                ));
+                let (expr, field) = (expr(), first.clone());
+                return Err(match k {
+                    StorageKind::Reference => Case::StepsIntoReference { expr, field },
+                    _ => Case::StepsIntoScalar { expr, field },
+                });
             }
             _ => None,
         },
@@ -107,7 +113,9 @@ pub fn of(
         Expr::Not { arg } | Expr::IsNull { arg } => of(arg, field).map(|_| Some(Boolean))?,
         Expr::Neg { arg } => match of(arg, field)? {
             Some(k @ (Number | Duration)) => Some(k),
-            Some(k @ (Boolean | Instant)) => return no(format!("it negates {}", k.name())),
+            Some(kind @ (Boolean | Instant)) => {
+                return Err(Case::KindNegates { expr: expr(), kind });
+            }
             _ => None,
         },
         Expr::Arith { arith, lhs, rhs } => match (of(lhs, field)?, of(rhs, field)?) {
@@ -123,7 +131,13 @@ pub fn of(
                 (ArithOp::Div, Duration, Duration) => Number,
                 (ArithOp::Mul | ArithOp::Div, Duration, Number) => Duration,
                 (ArithOp::Mul, Number, Duration) => Duration,
-                (_, l, r) => return no(format!("its sides are {} and {}", l.name(), r.name())),
+                (_, left, right) => {
+                    return Err(Case::KindSides {
+                        expr: expr(),
+                        left,
+                        right,
+                    });
+                }
             }),
         },
         Expr::Call { func, args } => {
@@ -141,8 +155,8 @@ pub fn of(
                 Func::Replace => Some(Text),
                 Func::Len | Func::Count => Some(Number),
                 Func::Abs | Func::Round | Func::Floor | Func::Sum | Func::Avg => match first {
-                    Some(k @ (Boolean | Instant | Duration)) => {
-                        return no(format!("it takes a number, not {}", k.name()));
+                    Some(kind @ (Boolean | Instant | Duration)) => {
+                        return Err(Case::KindTakesNumber { expr: expr(), kind });
                     }
                     _ => Some(Number),
                 },

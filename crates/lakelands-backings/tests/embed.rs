@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use lakelands_api::Error;
+use lakelands_api::error::Case;
 use lakelands_api::seam::EmbedBackend;
 use lakelands_backings::{Embed, EmbedConfig};
 use serde_json::{Value, json};
@@ -150,7 +151,7 @@ fn texts(n: usize) -> Vec<String> {
 
 fn failure(r: lakelands_api::Result<Vec<Vec<f32>>>) -> String {
     match r {
-        Err(Error::Unavailable { message }) => message,
+        Err(Error::Unavailable { situation }) => situation.to_string(),
         other => panic!("expected the embedding to fail, got {other:?}"),
     }
 }
@@ -275,7 +276,7 @@ fn an_https_endpoint_is_refused_at_open_when_tls_cannot_be_set_up_for_it() {
 
 /// Each way an endpoint can answer wrongly, and what the failure says.
 #[tokio::test]
-async fn every_wrong_answer_is_unavailable_naming_the_host_and_the_kind_only() {
+async fn every_wrong_answer_is_unavailable_naming_the_model_and_the_kind_only() {
     type Case = (&'static str, Box<Answer>);
     let secret = "secret-query";
     let cases: Vec<Case> = vec![
@@ -289,9 +290,18 @@ async fn every_wrong_answer_is_unavailable_naming_the_host_and_the_kind_only() {
             }),
         ),
         ("redirect", Box::new(|_| Some(("302 Found", String::new())))),
-        ("within 1s", Box::new(|_| None)),
         (
-            "not an embeddings answer",
+            "401",
+            Box::new(|_| Some(("401 Unauthorized", String::new()))),
+        ),
+        ("404", Box::new(|_| Some(("404 Not Found", String::new())))),
+        (
+            "429",
+            Box::new(|_| Some(("429 Too Many Requests", String::new()))),
+        ),
+        ("within 1 seconds", Box::new(|_| None)),
+        (
+            "not the contract's",
             Box::new(|_| Some(("200 OK", "{\"echo\": \"secret-query\"}".into()))),
         ),
         (
@@ -346,11 +356,42 @@ async fn every_wrong_answer_is_unavailable_naming_the_host_and_the_kind_only() {
         let why = failure(e.embed(&[secret.to_owned()]).await);
         assert!(why.contains(kind), "{kind}: {why}");
         assert!(
-            why.contains(&format!("127.0.0.1:{}/v1/embeddings", f.port)),
+            why.contains("the embedding backend `tiny`"),
             "{kind}: {why}"
         );
+        assert!(!why.contains(&f.port.to_string()), "{kind}: {why}");
         assert!(!why.contains(secret), "{kind}: {why}");
         assert!(started.elapsed().as_secs() < 4, "{kind}: the timeout holds");
+    }
+}
+
+/// A request refused for what it carries is `Invalid`, so the store asks
+/// again in halves; it says no more than any other failure.
+#[tokio::test]
+async fn a_request_refused_for_what_it_carries_is_invalid() {
+    let secret = "secret-query";
+    for status in [
+        "400 Bad Request",
+        "413 Payload Too Large",
+        "422 Unprocessable Entity",
+    ] {
+        let f = fake(Box::new(move |_| {
+            Some((status, "{\"error\": \"secret-query\"}".into()))
+        }))
+        .await;
+        match client(config(f.endpoint()))
+            .embed(&[secret.to_owned()])
+            .await
+        {
+            Err(e @ Error::Refused { .. }) => {
+                let model = "tiny".to_owned();
+                let status = status[..3].parse().ok();
+                let case = Case::EmbeddingRefused { model, status };
+                assert_eq!(e.case().map(|said| &said.case), Some(&case), "{e}");
+                assert!(!e.to_string().contains(secret), "{e}");
+            }
+            other => panic!("{status}: expected `Invalid`, got {other:?}"),
+        }
     }
 }
 
@@ -378,7 +419,7 @@ async fn an_endpoint_nobody_listens_on_is_unavailable() {
     drop(listener);
     let e = client(config(format!("http://127.0.0.1:{port}/v1/embeddings")));
     let why = failure(e.embed(&texts(1)).await);
-    assert!(why.contains("cannot connect"), "{why}");
+    assert!(why.contains("cannot be connected to"), "{why}");
 }
 
 /// A memory lake with the client for `endpoint` bound, holding two
@@ -418,7 +459,10 @@ async fn lake_with(endpoint: String) -> Arc<dyn lakelands_api::LakeStore> {
         },
         ..field("v", StorageKind::Text)
     };
-    cat.declare(&own, Declaration::Type(type_decl("doc", vec![body, v])))
+    // A hybrid search without a vector reads a field a model fills
+    // (lakelands#743): `e`, the embedding of `body` by `tiny`.
+    let e = lakelands_core::conformance::fixture::embedding("e", 2, &["body"], "tiny");
+    cat.declare(&own, Declaration::Type(type_decl("doc", vec![body, v, e])))
         .await
         .unwrap();
     for (key, body, v) in [("a", "quayside", [0.0, 1.0]), ("b", "harbour", [1.0, 0.0])] {
@@ -450,7 +494,7 @@ fn search(mode: lakelands_api::query::SearchMode) -> lakelands_api::query::Searc
 fn hybrid(text: &str) -> lakelands_api::query::SearchMode {
     lakelands_api::query::SearchMode::Hybrid {
         text: text.into(),
-        field: "v".into(),
+        field: "e".into(),
         vector: None,
         fields: None,
         weight: None,
@@ -467,7 +511,8 @@ async fn a_store_ranks_a_hybrid_search_through_the_client() {
     use lakelands_api::query::SearchMode;
     use lakelands_core::conformance::fixture::owner;
 
-    // Every text is (1, 0), which only `b` points along.
+    // Every text is (1, 0), so both records' `e` point along it: `b`,
+    // whose text does not match, is a hit only by the vector.
     let f = fake(Box::new(|body| {
         let data: Vec<Value> = (0..body["input"].as_array().unwrap().len())
             .map(|i| json!({"index": i, "embedding": [1.0, 0.0]}))
@@ -478,6 +523,9 @@ async fn a_store_ranks_a_hybrid_search_through_the_client() {
     let store = lake_with(f.endpoint()).await;
     let cat = store.catalog(WriteContext::default());
     let own = owner(store.as_ref());
+    // The records' own `e` was embedded at their writes; the search's
+    // requests are the ones after.
+    let before = f.requests().len();
     let got = cat
         .search(&own, search(hybrid("quayside")))
         .await
@@ -487,7 +535,7 @@ async fn a_store_ranks_a_hybrid_search_through_the_client() {
     keys.sort();
     assert_eq!((keys, got.ranked_by.as_str()), (vec!["a", "b"], "hybrid"));
     assert_eq!(
-        f.bodies(),
+        f.bodies()[before..],
         [json!({"model": "tiny", "input": ["quayside"]})]
     );
     cat.search(
@@ -501,7 +549,11 @@ async fn a_store_ranks_a_hybrid_search_through_the_client() {
     )
     .await
     .unwrap();
-    assert_eq!(f.requests().len(), 1, "a vector search sends nothing");
+    assert_eq!(
+        f.requests().len(),
+        before + 1,
+        "a vector search sends nothing"
+    );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -510,8 +562,9 @@ async fn a_store_ranks_a_hybrid_search_through_the_client() {
     let cat = store.catalog(WriteContext::default());
     let own = owner(store.as_ref());
     match cat.search(&own, search(hybrid("quayside"))).await {
-        Err(Error::Unavailable { message }) => {
-            assert!(message.contains("cannot connect"), "{message}");
+        Err(Error::Unavailable { situation }) => {
+            let message = situation.to_string();
+            assert!(message.contains("cannot be connected to"), "{message}");
             assert!(!message.contains("quayside"), "{message}");
         }
         other => panic!("expected the search to be unavailable, got {other:?}"),

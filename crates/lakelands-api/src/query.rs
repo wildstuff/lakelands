@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::Case;
 use crate::expr::Condition;
 use crate::id::{Cursor, FieldName, RecordKey, RelationName, TypeName};
 use crate::read::{Aggregate, Order, Params, ReadAt};
@@ -36,6 +37,7 @@ pub enum Walk {
 /// `max_depth`, or a `min` above `max`, is refused as invalid, never
 /// silently shortened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Depth {
     /// The fewest hops.
     pub min: u32,
@@ -51,6 +53,7 @@ impl Default for Depth {
 
 /// Where a pattern starts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Start {
     /// The start's type.
     #[serde(rename = "type")]
@@ -71,6 +74,7 @@ pub struct Start {
 
 /// One step of a pattern.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Step {
     /// The relation walked; it must be declared on the type in scope, or
     /// be the `inverse` of one, which walks that relation the other way.
@@ -90,7 +94,7 @@ pub struct Step {
 }
 
 /// What a pattern returns.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "as", rename_all = "snake_case")]
 pub enum Projection {
     /// One row per match: the listed paths (`invoice.amount`), or every
@@ -123,6 +127,33 @@ pub enum Projection {
     Components,
 }
 
+impl<'de> Deserialize<'de> for Projection {
+    /// Serde reads a tagged unit variant and drops the rest of its map, so
+    /// a projection without members is read as an empty struct, which
+    /// refuses any member beside `as` (lakelands#563).
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Projection, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields, tag = "as", rename_all = "snake_case")]
+        enum Wire {
+            Rows {
+                #[serde(default)]
+                fields: Vec<String>,
+            },
+            Graph {},
+            Aggregate(Aggregate),
+            Degree {},
+            Components {},
+        }
+        Ok(match Wire::deserialize(d)? {
+            Wire::Rows { fields } => Projection::Rows { fields },
+            Wire::Graph {} => Projection::Graph,
+            Wire::Aggregate(a) => Projection::Aggregate(a),
+            Wire::Degree {} => Projection::Degree,
+            Wire::Components {} => Projection::Components,
+        })
+    }
+}
+
 impl Default for Projection {
     fn default() -> Self {
         Projection::Rows { fields: Vec::new() }
@@ -131,6 +162,7 @@ impl Default for Projection {
 
 /// The one pattern query.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Pattern {
     /// Where it starts.
     pub start: Start,
@@ -199,7 +231,9 @@ impl Pattern {
     /// graph. The steps it builds are one walk over any of the relations,
     /// not a chain: a planner reads a pattern whose projection is
     /// [`Projection::Graph`] and whose steps all start at depth 0 as one
-    /// multi-relation walk.
+    /// multi-relation walk, each relation in its own step's direction to
+    /// its own step's `max`; any other graph pattern is a chain, walked as
+    /// its rows are.
     pub fn subgraph(
         ty: TypeName,
         key: RecordKey,
@@ -220,7 +254,7 @@ impl Pattern {
     }
 
     /// The shortest walk from one record to another over the given
-    /// relations.
+    /// relations, walked both ways; none given walks none.
     pub fn path(
         from: (TypeName, RecordKey),
         to: (TypeName, RecordKey),
@@ -253,6 +287,9 @@ pub enum QueryResult {
         edges: Vec<Edge>,
         /// Whether the limit cut the graph short.
         truncated: bool,
+        /// Where the next page starts, exactly when `truncated`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_cursor: Option<Cursor>,
     },
     /// Aggregates over the matches.
     Groups {
@@ -277,13 +314,14 @@ pub struct Edge {
 
 /// How a search ranks.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
+#[serde(deny_unknown_fields, tag = "mode", rename_all = "snake_case")]
 pub enum SearchMode {
     /// Full text over the type's searchable fields, or the ones named.
     Lexical {
         /// The words searched for.
         text: String,
-        /// Match only in these searchable fields; absent, in every one.
+        /// Match only in these searchable fields; absent, in every one the
+        /// caller reads.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fields: Option<Vec<FieldName>>,
     },
@@ -312,7 +350,7 @@ pub enum SearchMode {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         vector: Option<Vec<f32>>,
         /// Match the text only in these searchable fields; absent, in
-        /// every one. The vector half is not narrowed.
+        /// every one the caller reads. The vector half is not narrowed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fields: Option<Vec<FieldName>>,
         /// The weight of the vector half; absent, 1.
@@ -326,6 +364,7 @@ pub enum SearchMode {
 
 /// One further vector field of a vector search.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VectorTerm {
     /// The vector field searched.
     pub field: FieldName,
@@ -398,32 +437,63 @@ impl SearchMode {
         }
     }
 
-    /// What the mode asks that no fusion can do: the fault, with the
+    /// What the mode asks that no ranking can do: the fault, with the
     /// field it names if any. A weight weighs one ranking against
     /// another, so it is above 0 and at most 1 000 000, a vector search
-    /// of one field takes none, and no field is named twice.
-    pub fn misfit(&self) -> Option<(Option<FieldName>, String)> {
+    /// of one field takes none, no field is named twice, and every query
+    /// vector has a direction ([`no_direction`]).
+    pub fn misfit(&self) -> Option<(Option<FieldName>, Case)> {
         let terms = self.vectors();
         let lone = matches!(self, SearchMode::Vector { also, .. } if also.is_empty());
-        let fits = |w: Option<f64>| w.is_none_or(|w| w > 0.0 && w <= 1e6);
-        let range = "must be above 0 and at most 1000000";
-        for (i, (field, _, weight)) in terms.iter().enumerate() {
-            let fault = if lone && weight.is_some() {
-                "`weight` weighs one vector field's ranking against another's, and the search \
-                 names no other in `also`"
-                    .into()
-            } else if terms[..i].iter().any(|t| t.0 == *field) {
-                format!("`{field}` is named twice; a search ranks a vector field once")
+        let fits = |w: Option<f64>| w.is_none_or(weight_fits);
+        for (i, (field, vector, weight)) in terms.iter().enumerate() {
+            let field = (*field).clone();
+            // An empty vector is a hybrid search's that brings none, or
+            // one of the wrong length, which the field's check names.
+            let aimless = no_direction(vector).filter(|_| !vector.is_empty());
+            let fault = if let Some(why) = aimless {
+                let field = field.clone();
+                Case::VectorAimless { field, why }
+            } else if lone && weight.is_some() {
+                Case::WeightAlone
+            } else if terms[..i].iter().any(|t| *t.0 == field) {
+                Case::VectorFieldTwice {
+                    field: field.clone(),
+                }
             } else if !fits(*weight) {
-                format!("the weight of `{field}` {range}")
+                Case::WeightRange {
+                    field: field.clone(),
+                }
             } else {
                 continue;
             };
-            return Some((Some((*field).clone()), fault));
+            return Some((Some(field), fault));
         }
         let text = matches!(self, SearchMode::Hybrid { text_weight, .. } if !fits(*text_weight));
-        text.then(|| (None, format!("`text_weight` {range}")))
+        text.then_some((None, Case::TextWeightRange))
     }
+}
+
+/// Why `vector` gives a search no direction to rank along, if it gives
+/// none: a component that is not a finite number, or every one 0. Near a
+/// vector of no direction is nothing, and its ranking would be every
+/// record tied. A cosine of finite `f32`s summed in `f64` neither
+/// overflows nor underflows, so this is the whole condition.
+pub fn no_direction(vector: &[f32]) -> Option<crate::error::Aimless> {
+    use crate::error::Aimless;
+    if !vector.iter().all(|x| x.is_finite()) {
+        Some(Aimless::NotFinite)
+    } else if vector.iter().all(|&x| x == 0.0) {
+        Some(Aimless::Zero)
+    } else {
+        None
+    }
+}
+
+/// Whether `w` weighs one ranking against another: above 0 and at most
+/// 1 000 000, in a search and in its type's `search_weights` alike.
+pub fn weight_fits(w: f64) -> bool {
+    w > 0.0 && w <= 1e6
 }
 
 /// `search`: ranked retrieval over one type. Unlike `find`, the answer
@@ -434,7 +504,7 @@ impl SearchMode {
 /// bound to the position of the first page. A caller who wants the
 /// matches in another order uses `find`, or a pattern query that starts
 /// from a search.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Search {
     /// The type searched.
     #[serde(rename = "type")]
@@ -463,6 +533,51 @@ fn default_k() -> u32 {
     20
 }
 
+/// A search's own members as it is read, apart from its mode's: serde
+/// refuses no unknown member beside a flattened enum, so each is read by
+/// itself and refuses what it does not take (lakelands#563).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchWire {
+    #[serde(rename = "type")]
+    ty: TypeName,
+    #[serde(default = "default_k")]
+    k: u32,
+    #[serde(default)]
+    cursor: Option<Cursor>,
+    #[serde(default, rename = "where")]
+    filter: Option<Condition>,
+    #[serde(default)]
+    with_meta: bool,
+    #[serde(default, flatten)]
+    at: ReadAt,
+}
+
+impl<'de> Deserialize<'de> for Search {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Search, D::Error> {
+        use serde::de::Error;
+        let mut own = serde_json::Map::deserialize(d)?;
+        let members = [
+            "mode", "text", "fields", "field", "vector", "weight", "also",
+        ];
+        let mode = (members.iter().chain(&["text_weight"])).filter_map(|m| own.remove_entry(*m));
+        let mode =
+            serde_json::from_value(Value::Object(mode.collect())).map_err(D::Error::custom)?;
+        let w: SearchWire = serde_json::from_value(Value::Object(own)).map_err(D::Error::custom)?;
+        let (ty, k, cursor, filter, with_meta, at) =
+            (w.ty, w.k, w.cursor, w.filter, w.with_meta, w.at);
+        Ok(Search {
+            ty,
+            mode,
+            k,
+            cursor,
+            filter,
+            with_meta,
+            at,
+        })
+    }
+}
+
 /// The answer to `search`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Hits {
@@ -476,6 +591,29 @@ pub struct Hits {
     /// `vector`, `hybrid`, or `index` and `hybrid (index)` when the vector
     /// field is one the lake asks an index for, whose set the hits are.
     pub ranked_by: String,
+    /// Each axis that ranked, in the order the fusion sums them.
+    #[serde(default)]
+    pub axes: Vec<Axis>,
+}
+
+/// One axis a search ranked by.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Axis {
+    /// `lexical` or `vector`.
+    pub axis: String,
+    /// The vector field it ranked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<FieldName>,
+    /// Where the search fuses, the candidates this axis handed the fusion
+    /// for this reader, after the search's `where` and the rights that
+    /// decide a hit, up to the lake's `max_limit`: never a count of the
+    /// lake's matches. A search of one axis gives none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidates: Option<u64>,
+    /// Where the search fuses, the weight this axis ranked by: the
+    /// search's own, else its type's `search_weights` setting's, else 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<f64>,
 }
 
 /// One search hit.

@@ -247,6 +247,14 @@ impl Ontology {
         self.object_sets.get(name).map(|e| &e.decl)
     }
 
+    /// Each type's name and version, which moves on every change of it.
+    pub fn versions(&self) -> Vec<(TypeName, u32)> {
+        self.types
+            .iter()
+            .map(|(n, e)| (n.clone(), e.version))
+            .collect()
+    }
+
     /// Every declaration, as the engine stores them.
     pub fn declared(&self) -> Vec<Declared> {
         fn each<T: Clone>(
