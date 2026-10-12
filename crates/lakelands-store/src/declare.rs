@@ -1188,7 +1188,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             // checked as a type's, with `t` in force (its `from` points
             // there). And it is classified too: a relation dropped by a
             // migration and declared again with another target, or with a
-            // field retyped, would reshape the links it kept.
+            // field retyped, would reshape the links it holds as history.
             let mut probe = o.clone();
             probe.put(d.clone(), 0, None);
             for lt in links::link_types_of(t) {

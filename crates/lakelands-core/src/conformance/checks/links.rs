@@ -59,8 +59,13 @@ check!(
 );
 
 check!(
+    REMOVED_RETIRES_LINKS = a_migration_that_removes_a_relation_retires_its_live_links,
+    "027 and 035, extended (lakelands#938): the migration that removes a relation carried by link records retires every live link of it in its own append, each by an event caused by the `migrated`, links a source brought and authored ones alike and a restricted one with them; its report lists the relation under `dropped` with that number, and an unlinked link is not in it; to an author without `restricted` the report is whole and the same whether a link is held or none is, and its apply retires the held link too; afterwards `get` answers no link at the head and `find` none with a total of none, and a read as of before the migration answers each; a removal proposed is applied by its accept, which retires the links live then, one linked since among them; the relation declared again starts with none"
+);
+
+check!(
     REMOVED_KEEPS_READERS = a_removed_relations_link_type_keeps_its_trigger_its_set_and_its_view,
-    "035, extended: a relation with a trigger, an object set and a view on its link type and no verb is removed by its migration; `describe` still lists the three and the link type, the set holds the members and the view answers the count it did, and `link` and `unlink` over the relation are refused; a trigger, a set and a view are still declared on the link type, a `retire` of one of its links is refused at the ordinary door, as for any link type, and a retired end sets nothing off and keeps its link; a purge of the source that fed the links then retires them, fires the trigger for each, caused by its retirement, takes them out of the set and out of the view's count"
+    "035, extended: a relation with a trigger, an object set and a view on its link type and no verb is removed by its migration, which retires the relation's live links in its own append, each by an event of its own caused by the migration: the trigger fires for each, caused by its retirement, the set holds none and the view counts none; `describe` still lists the three and the link type, and `link` and `unlink` over the relation are refused; a trigger, a set and a view are still declared on the link type, a `retire` of one of its links is refused at the ordinary door, as for any link type, and a retired end sets nothing off; a read as of before the migration answers the links, a purge of the source that fed them takes none, and the relation declared again starts with none"
 );
 
 check!(
@@ -110,7 +115,7 @@ check!(
 
 check!(
     REDECLARED_TARGET = a_relation_declared_again_with_another_target_is_a_migration,
-    "027 and 035, extended: a relation removed by migrate keeps its links, and the preflight lists it under `dropped` with the number of its live links, none when none is live (lakelands#554); declaring it again with another target would reshape them, and is refused, naming the link type"
+    "027 and 035, extended: a relation removed by migrate has its live links retired, and the preflight lists it under `dropped` with their number, none when none is live (lakelands#554); its link type stands with them as history, so declaring it again with another target would reshape them, and is refused, naming the link type"
 );
 
 check!(
@@ -1001,10 +1006,10 @@ async fn a_relation_declared_again_with_another_target_is_a_migration(store: Sto
          under `dropped` with its 2 live links, and with none while its only link is unlinked; \
          it listed {linked:?} and {unlinked:?}"
     );
-    // The relation removed: a migration, which keeps its links.
+    // The relation removed: a migration, which retires its links.
     l.migrate(invoice(vec![])).await?;
-    // Declared again, pointing at invoices now: the kept links would
-    // reshape.
+    // Declared again, pointing at invoices now: the link type's history
+    // would reshape.
     let mut retargeted = approved_by(vec![], Authority::Authored);
     retargeted.target = "invoice".into();
     let before = store.head().await.must("reading the head")?;
@@ -1012,7 +1017,7 @@ async fn a_relation_declared_again_with_another_target_is_a_migration(store: Sto
     ensure!(
         matches!(invalid_case(&answer), Some(Case::ReshapesLinks { links, .. }) if links == LT),
         "declaring `approved_by` again with another target would reshape the links \
-         `{LT}` keeps; it is refused naming it; it answered {answer:?}"
+         `{LT}` holds as history; it is refused naming it; it answered {answer:?}"
     );
     head_unmoved(
         store.as_ref(),
@@ -1301,11 +1306,185 @@ async fn a_set_declares_a_relation_and_what_stands_on_its_link_type(store: Store
     head_unmoved(store.as_ref(), before, what).await
 }
 
+async fn a_migration_that_removes_a_relation_retires_its_live_links(store: Store) -> Held {
+    use crate::conformance::fixture::{all_found, events_from, find_at, get_at};
+    use lakelands_api::event::EventBody;
+    const FED: &str = "sys.link.invoice.fed";
+    let l = lake(store.as_ref()).await?;
+    let Lake { cat, own } = &l;
+    // `approved_by`, authored, and `fed`, whose links a source brings.
+    let fed = || RelationDecl {
+        authority: Authority::Source,
+        ..RelationDecl::to("fed", "partner")
+    };
+    let with = |fed_too: bool, approved: bool| {
+        let relations = approved.then(dated).into_iter().chain(fed_too.then(fed));
+        invoice(relations.collect())
+    };
+    l.migrate(with(true, true)).await?;
+    l.upsert("invoice", "i3", json!({"amount": "10"})).await?;
+    // i2 was linked to p1 and is unlinked from it: that link is not counted.
+    for (from, to) in [("i1", "p1"), ("i2", "p1")] {
+        link_ok(&l, from, to, json!({})).await?;
+    }
+    unlink(&l, "i2", "p1").await.must("unlinking i2 from p1")?;
+    link_ok(&l, "i2", "p2", json!({})).await?;
+    let fed_link = |i: &str, p: &str| {
+        let ends = json!({"from": i, "to": p});
+        source_record(FED, link_key(&i.into(), &p.into()).as_str(), ends)
+    };
+    l.ingest("erp", vec![fed_link("i1", "p1"), fed_link("i2", "p2")])
+        .await
+        .must("ingesting two `fed` links")?;
+    // An author without `restricted`: its report before a link of each
+    // relation is held, and after.
+    let grants = json!({"default": "write", "schema": true});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let plain = principal(store.as_ref(), PrincipalKind::Agent, "plain", grants);
+    let report = |who: &Principal| {
+        let (cat, who) = (cat.clone(), who.clone());
+        let removal = migration(with(false, false));
+        async move {
+            let report = cat.migrate(&who, removal).await;
+            let mut report = json!(report.must("the preflight of removing both")?.data);
+            report["report_id"] = Value::Null;
+            Ok::<_, Failure>(report)
+        }
+    };
+    let none_held = report(&plain).await?;
+    let held = link_key(&"i1".into(), &"p1".into());
+    for lt in [LT, FED] {
+        restrict(store.as_ref(), lt, held.clone(), "hold").await?;
+    }
+    let (one_held, owners) = (report(&plain).await?, report(own).await?);
+    let dropped = json!([["approved_by", 2], ["fed", 2]]);
+    ensure!(
+        none_held == one_held && one_held["dropped"] == dropped && owners["dropped"] == dropped,
+        "the preflight of removing `approved_by` and `fed` lists each under `dropped` with its \
+         two live links, to an author without `restricted` as to the owner, and the same \
+         report whether a link of each is held or none is; it answered {none_held} and, with \
+         one held, {one_held}; the owner is listed {}",
+        owners["dropped"]
+    );
+    // What an apply after `before` appended: the retirements of `lt`
+    // caused by the `migrated`, by key, and whether any had another cause.
+    let retired = |before: Position, lt: &'static str| {
+        let store = store.clone();
+        async move {
+            let feed = events_from(store.as_ref(), before.next()).await?;
+            let migrated = feed.iter().find_map(|e| match &e.body {
+                EventBody::Migrated { .. } => Some(e.position),
+                _ => None,
+            });
+            let mut keys: Vec<_> = (feed.iter())
+                .filter_map(|e| match &e.body {
+                    EventBody::RecordRetired { ty, key, .. } if ty.as_str() == lt => {
+                        Some((key.to_string(), e.cause == migrated && migrated.is_some()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            keys.sort();
+            Ok::<_, Failure>(keys)
+        }
+    };
+    // `fed` removed by the author without `restricted`: the held link too.
+    let before = store.head().await.must("reading the head")?;
+    let removal = migration(with(false, true));
+    let seen = cat.migrate(&plain, removal.clone()).await;
+    let seen = seen.must("the preflight of removing `fed`")?.data;
+    let applied = cat.migrate_apply(&plain, removal, &seen.report_id).await;
+    applied.must("removing `fed`, by an author without `restricted`")?;
+    let gone = retired(before, FED).await?;
+    ensure!(
+        gone == [("i1:p1".to_owned(), true), ("i2:p2".to_owned(), true)],
+        "the migration that removes `fed` retires both links a source brought, the held one \
+         too, each caused by the `migrated`; it retired {gone:?}"
+    );
+    // `approved_by` removed by a proposal: a link written since is retired
+    // with the two.
+    let writer = json!({"default": "write"});
+    let writer = serde_json::from_value(writer).expect("grants read");
+    let writer = principal(store.as_ref(), PrincipalKind::Agent, "writer", writer);
+    let removal = ProposedWrite::Migrate {
+        migration: Box::new(migration(with(false, false))),
+        report: Default::default(),
+    };
+    let proposed = cat.propose(&writer, removal, "no approvals".into()).await;
+    let Outcome::Proposed { proposal, .. } = proposed.must("proposing the removal")? else {
+        return Err(Failure::new("a proposal answers `proposed`"));
+    };
+    link_ok(&l, "i3", "p1", json!({})).await?;
+    let before = store.head().await.must("reading the head")?;
+    let accepted = cat.accept(own, &proposal).await;
+    accepted.must("accepting the removal of `approved_by`")?;
+    let gone = retired(before, LT).await?;
+    let all_three = ["i1:p1", "i2:p2", "i3:p1"].map(|k| (k.to_owned(), true));
+    ensure!(
+        gone == all_three,
+        "the accept of the proposed removal retires the three links live at it, the one \
+         linked since the proposal and the held one among them, each caused by the \
+         `migrated`; it retired {gone:?}"
+    );
+    // No door answers one at the head; a read as of before answers each.
+    let mut red = Vec::new();
+    for lt in [LT, FED] {
+        let found = lakelands_api::read::Find {
+            total: true,
+            ..Default::default()
+        };
+        let page = cat.find(own, &lt.into(), found).await;
+        let page = page.must("finding the links of a removed relation")?.data;
+        let lakelands_api::Found::Records { rows, total, .. } = page else {
+            return Err(Failure::new("a `find` answered groups"));
+        };
+        let now = rows.len();
+        let was = all_found(cat.as_ref(), own, lt, find_at(Some(before))).await?;
+        let ty = lt.into();
+        let head = cat.get(own, &ty, get_at(held.as_str(), None)).await;
+        let earlier = cat.get(own, &ty, get_at(held.as_str(), Some(before)));
+        let earlier = earlier.await;
+        let want = if lt == LT { 3 } else { 0 };
+        let absent = matches!(head, Err(Error::NotFound { .. }));
+        if now != 0 || total != Some(0) || !absent || was.len() != want {
+            red.push(format!(
+                "`{lt}`: {now} found, total {total:?}, `get` {head:?}; as of before {} found",
+                was.len()
+            ));
+        }
+        if (lt == LT) != earlier.is_ok() {
+            red.push(format!(
+                "`{lt}` `{}` as of before: {earlier:?}",
+                held.as_str()
+            ));
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "with both relations removed no link is found or got at the head, and a read as of \
+         before the last removal answers the three of `approved_by` and none of `fed`, \
+         retired earlier: {}",
+        red.join("; ")
+    );
+    // Declared again, the relation starts with none.
+    l.migrate(with(false, true)).await?;
+    let out = walked(cat.as_ref(), own, "invoice", "i1", Walk::Out, None).await?;
+    let links = all(cat.as_ref(), own, LT).await?;
+    ensure!(
+        out.is_empty() && links.is_empty(),
+        "`approved_by` declared again starts with no link; the walk answers {:?} and the link \
+         type holds {}",
+        pairs(&out),
+        links.len()
+    );
+    Ok(())
+}
+
 async fn a_removed_relations_link_type_keeps_its_trigger_its_set_and_its_view(
     store: Store,
 ) -> Held {
     use crate::conformance::fixture::{
-        all_found, count_view, events_from, object_set_on, trigger_on,
+        all_found, count_view, events_from, get_at, object_set_on, trigger_on,
     };
     use lakelands_api::event::EventBody;
     use lakelands_api::write::Declaration;
@@ -1360,7 +1539,31 @@ async fn a_removed_relations_link_type_keeps_its_trigger_its_set_and_its_view(
         Ok::<_, Failure>(format!("{members:?} {counted:?}"))
     };
     let held = read().await?;
+    let before = store.head().await.must("reading the head")?;
     l.migrate(owner("deal", vec![])).await?;
+    // Its append retires the two links, each caused by the `migrated`,
+    // and the trigger fires for each, caused by its retirement.
+    let feed = events_from(store.as_ref(), before.next()).await?;
+    let migrated = feed.iter().find_map(|e| match &e.body {
+        EventBody::Migrated { migration, .. } if migration.to.name.as_str() == "deal" => {
+            Some(e.position)
+        }
+        _ => None,
+    });
+    let retirement = |p: Position| {
+        let at = feed.iter().find(|e| e.position == p);
+        at.filter(|e| matches!(&e.body, EventBody::RecordRetired { ty, .. } if ty.as_str() == FED))
+    };
+    let caused = |p: Position| retirement(p).is_some_and(|e| e.cause == migrated);
+    let mut fired: Vec<_> = (feed.iter())
+        .filter_map(|e| match &e.body {
+            EventBody::TriggerFired { trigger, key, .. } if trigger.as_str() == "fed_went" => {
+                Some((key.to_string(), e.cause.is_some_and(caused)))
+            }
+            _ => None,
+        })
+        .collect();
+    fired.sort();
     let described = cat.describe(own, Default::default()).await;
     let d = described.must("describing the lake")?.data;
     let typed = |n: &&str| d.types.iter().any(|t| t.name.as_str() == *n);
@@ -1369,9 +1572,14 @@ async fn a_removed_relations_link_type_keeps_its_trigger_its_set_and_its_view(
         && ["fed_by_state", FED].iter().all(typed);
     let kept = read().await?;
     ensure!(
-        listed && kept == held && held == r#"["d1:p1", "d2:p1"] ["a=2"]"#,
+        listed && held == r#"["d1:p1", "d2:p1"] ["a=2"]"# && kept == "[] []",
         "with `fed` removed, `describe` lists the trigger, the set, the view and `{FED}` \
-         ({listed}), and the set and the view read as before it, {held}; they read {kept}"
+         ({listed}); the set and the view read {held} before it and none after; they read {kept}"
+    );
+    ensure!(
+        fired == [("d1:p1".to_owned(), true), ("d2:p1".to_owned(), true)],
+        "the migration that removes `fed` retires both links of `{FED}`, each caused by the \
+         `migrated`, and `fed_went` fires for each, caused by its retirement; it fired {fired:?}"
     );
     let (ty, rel, from, to) = ("deal".into(), "fed".into(), "d1".into(), "p1".into());
     let linked = cat.link(
@@ -1415,32 +1623,32 @@ async fn a_removed_relations_link_type_keeps_its_trigger_its_set_and_its_view(
          `d2`, an end of one, is retired and sets nothing off; they answered {retired:?} and \
          {end:?}"
     );
-    // A purge still takes the source's links away, and the readers follow.
-    let before = store.head().await.must("reading the head")?;
+    // The links are read as of before; a purge of their source takes
+    // none; the relation declared again starts with none.
+    let (was, d1) = (
+        get_at(key.as_str(), Some(before)),
+        get_at(key.as_str(), None),
+    );
+    let (was, now) = (cat.get(own, &fed, was).await, cat.get(own, &fed, d1).await);
     let purged = store.purge_source(&"erp".into(), None, None).await;
-    purged.must("purging the source that fed the links")?;
-    let feed = events_from(store.as_ref(), before.next()).await?;
-    let retired = |p: Position| {
-        let cause = feed.iter().find(|e| e.position == p);
-        cause.is_some_and(
-            |e| matches!(&e.body, EventBody::RecordRetired { ty, .. } if ty.as_str() == FED),
-        )
+    let purged = purged
+        .must("purging the source that fed the links")?
+        .retired;
+    let again = RelationDecl {
+        fields: vec![sourced(field("state", StorageKind::Text))],
+        authority: Authority::Source,
+        ..RelationDecl::to("fed", "partner")
     };
-    let mut fired: Vec<_> = (feed.iter())
-        .filter_map(|e| match &e.body {
-            EventBody::TriggerFired { trigger, key, .. } if trigger.as_str() == "fed_went" => {
-                Some((key.to_string(), e.cause.is_some_and(retired)))
-            }
-            _ => None,
-        })
-        .collect();
-    fired.sort();
+    l.migrate(owner("deal", vec![again])).await?;
     let after = read().await?;
     ensure!(
-        fired == [("d1:p1".to_owned(), true), ("d2:p1".to_owned(), true)] && after == "[] []",
-        "a purge of `erp` retires both links of `{FED}`: `fed_went` fires for each, caused by \
-         its retirement, and the set and the view hold none; it fired {fired:?}, and they read \
-         {after}"
+        was.is_ok() && matches!(now, Err(Error::NotFound { .. })) && purged == 0,
+        "a link of the removed `fed` is read as of before the migration ({was:?}) and not at \
+         the head ({now:?}), and a purge of `erp` takes none; it took {purged}"
+    );
+    ensure!(
+        after == "[] []",
+        "`fed` declared again starts with no link; the set and the view read {after}"
     );
     Ok(())
 }

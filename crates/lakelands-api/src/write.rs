@@ -1039,11 +1039,11 @@ pub struct MigrationReport {
     pub fields: Vec<FieldConversion>,
     /// Fields the migration removes, and how many records hold a value
     /// that removing them discards; and each relation it removes, by the
-    /// relation's name, with the number of its live links, none for one
-    /// not carried by link records. Removal is the migration's intent,
-    /// named here before anything is applied; it does not make the report
-    /// lossy. The apply discards what the counts count: a host that tests
-    /// for that reads them, or their sum, [`MigrationReport::discards`].
+    /// relation's name, with the number of live links the apply retires,
+    /// none for one not carried by link records. Removal is the migration's
+    /// intent, named here before anything is applied; it does not make the
+    /// report lossy. The apply discards what the counts count: a host that
+    /// tests for that reads them, or their sum, [`MigrationReport::discards`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dropped: Vec<(FieldName, u64)>,
     /// The relations the migration renames, each with how its edges are

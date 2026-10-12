@@ -79,11 +79,12 @@ type Change = (String, TypeName, RecordKey, bool);
 type Held<'a> = Vec<(&'a ObjectSetDecl, BTreeSet<RecordKey>)>;
 
 /// What a migration's preflight finds: its report, the record keys it
-/// moves and, when it is applied, the set memberships it changes.
+/// moves and, applied, the set memberships it changes and the links it retires.
 pub(crate) struct MigrationPlan {
     report: MigrationReport,
     rekeyed: Vec<lakelands_api::write::Rekey>,
     members: Vec<Change>,
+    unlinked: Vec<StoredRecord>,
 }
 
 /// The record a call names, checked against the verb's scope before
@@ -3665,20 +3666,64 @@ impl Call<'_> {
             }
             let on = (w.ontology.verbs.values()).filter(|e| e.decl.on == ty);
             let mut on = on.map(|e| Declaration::Verb(e.decl.clone())).peekable();
-            if on.peek().is_none() {
-                continue;
+            if on.peek().is_some() {
+                let shown = on.find(|v| sees.shows(v));
+                let (unnamed, relation) = (shown.is_none(), r.name.clone());
+                let said = Said::from(Case::MigrationTakesLinkType {
+                    unnamed,
+                    relation,
+                    ty,
+                });
+                return Err(after_it(match shown {
+                    Some(verb) => said.within(verb.place()),
+                    None => said,
+                }));
             }
-            let shown = on.find(|v| sees.shows(v));
-            let (unnamed, relation) = (shown.is_none(), r.name.clone());
-            let said = Said::from(Case::MigrationTakesLinkType {
-                unnamed,
-                relation,
-                ty,
-            });
-            return Err(after_it(match shown {
-                Some(verb) => said.within(verb.place()),
-                None => said,
-            }));
+            // Nor while a relation or a reference field that stands after it
+            // refers to the link type, a link type's own `to` aside, which is
+            // its relation's: it would name the links of no relation (035);
+            // named to one shown it.
+            let types = after.types.values().map(|e| &e.decl);
+            let field = |t: &TypeDecl, f: &FieldDecl| {
+                let end = links::is_link_type(&t.name) && f.name.as_str() == links::TO;
+                !end && f.ty.target.as_ref() == Some(&ty)
+            };
+            let refers = |t: &&TypeDecl| {
+                let fields = t.fields.iter().any(|f| field(t, f));
+                t.relations.iter().any(|o| o.target == ty) || fields
+            };
+            let mut referring = types.filter(refers).peekable();
+            if referring.peek().is_some() {
+                let shown = referring.find_map(|t| {
+                    let related = |o: &&RelationDecl| o.target == ty && sees.relation(t, o);
+                    let known = |f: &&FieldDecl| {
+                        field(t, f) && rights::field_access(self.who, t, f) != Access::None
+                    };
+                    let place = match t.relations.iter().find(related) {
+                        Some(o) => Place::Relation {
+                            name: o.name.clone(),
+                        },
+                        None if sees.ty(&t.name).is_ok() => {
+                            let f = t.fields.iter().find(known)?;
+                            Place::Field {
+                                name: f.name.clone(),
+                            }
+                        }
+                        None => return None,
+                    };
+                    Some((t.name.clone(), place))
+                });
+                let (unnamed, relation) = (shown.is_none(), r.name.clone());
+                let said = Said::from(Case::MigrationTakesTarget {
+                    unnamed,
+                    relation,
+                    ty,
+                });
+                return Err(after_it(match shown {
+                    Some((of, place)) => said.within(place).within(Place::Type { name: of }),
+                    None => said,
+                }));
+            }
         }
         // And the type it migrates to reads only fields it has: `declare`'s
         // check above ends at the reshaping, before it comes to the reads.
@@ -3845,14 +3890,29 @@ impl Call<'_> {
             !m.to.relations.iter().any(|n| n.name == r.name)
                 && !pairs.iter().any(|(was, _)| was.name == r.name)
         };
+        let mut unlinked = Vec::new();
         for r in before.relations.iter().filter(removed) {
             let lt = links::link_type_name(&m.to.name, &r.name);
-            let live = match r.carried_by_links() {
-                true => view.count(&lt, &every(false))?,
-                false => 0,
+            let (carried, held) = (r.carried_by_links(), unlinked.len());
+            // A re-key would move the links its retirements name: one
+            // migration removes, another re-keys, as for a rename.
+            if carried && !plan.moves.is_empty() {
+                let name = r.name.clone();
+                let said = Said::from(Case::RemoveWhileRekeying);
+                return Err(invalid(said.within(Place::Relation { name })));
+            }
+            if carried && now.is_some() {
+                live(view, &lt, |l| {
+                    unlinked.push(l.clone());
+                    Ok(())
+                })?;
+            }
+            let links = match (carried, now) {
+                (true, None) => view.count(&lt, &every(false))?,
+                _ => (unlinked.len() - held) as u64, // the number it retires
             };
             let name = FieldName::from(r.name.as_str());
-            report.dropped.push((name, live));
+            report.dropped.push((name, links));
         }
         // What `to` states otherwise besides, each shape completed as one
         // in force is, so a `depends_on` left to the store restates nothing.
@@ -3950,6 +4010,7 @@ impl Call<'_> {
             report,
             rekeyed: listed,
             members,
+            unlinked,
         })
     }
 
@@ -3996,6 +4057,7 @@ impl Call<'_> {
             report,
             rekeyed,
             members,
+            unlinked,
         } = plan;
         if !report.lossless {
             return Err(self.lossy(w, &m, report));
@@ -4061,6 +4123,22 @@ impl Call<'_> {
             },
         );
         drafts.insert(0, d);
+        // The live links of a relation the migration removes are retired
+        // with it, each by its own event and with what a retirement sets
+        // off, as a purge retires them (035): caused by the `migrated`.
+        if !unlinked.is_empty() {
+            let view = self.lake.engine.view(None)?;
+            let mut d = self.decide(w, view.as_ref(), now, first + drafts.len());
+            for before in unlinked {
+                let body = retirement(&before.ty, &before.key, before.version);
+                let retired = Draft {
+                    cause: Some(migrated),
+                    context: self.context,
+                    ..Draft::system(now, body)
+                };
+                drafts.extend(d.retiring(&before, retired)?);
+            }
+        }
         Ok(drafts)
     }
 }

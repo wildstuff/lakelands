@@ -8435,7 +8435,8 @@ pub async fn a_migration_keeps_a_field_its_author_may_not_know_of(store: Arc<dyn
 }
 
 /// A relation carried by link records, dropped by a migration and
-/// declared again with another target, would reshape the links it kept:
+/// declared again with another target, would reshape the links its link
+/// type holds as history:
 /// the declaration is refused, naming the link type, as a migration
 /// (`docs/decisions/035-a-link-is-a-record.md`, extended).
 pub async fn a_relation_declared_again_with_another_target_reshapes_its_links(

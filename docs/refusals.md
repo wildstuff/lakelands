@@ -548,6 +548,7 @@ What a refusal is about.
 | `migration_stale` | — | the lake moved since that preflight report; run the preflight again | A migration applied against a report of another head. |
 | `migration_takes_key` | `type` (TypeName) | the migration takes every key field of `{type}` away, and leaves no rule to make its records' keys | A migration that takes every key field away. |
 | `migration_takes_link_type` | `unnamed` (bool), `relation` (RelationName), `type` (TypeName) | [{?unnamed}a declaration\|it] is declared on `{type}`, the link type of the relation `{relation}`, which the migration removes; declare it on another type first | A migration that removes a relation a verb is declared on the link type of. |
+| `migration_takes_target` | `unnamed` (bool), `relation` (RelationName), `type` (TypeName) | [{?unnamed}a declaration\|it] refers to `{type}`, the link type of the relation `{relation}`, which the migration removes; retarget or remove it first | A migration that removes a relation whose link type another relation or a reference field refers to. |
 | `migration_takes_read` | `unnamed` (bool), `field` (FieldName), `type` (TypeName), `renamed` (FieldName, optional) | [{?unnamed}a declaration\|it] reads `{field}` of `{type}`, which the migration [renames to `{renamed}`\|drops] | A migration that takes away a field a declaration reads. |
 | `migration_to_view` | `type` (TypeName) | the migration would turn the stored type `{type}` into a view; declare the view under another name, and the type keeps its name and its records | A migration that would make a stored type a view. |
 | `migration_view_to_stored` | `type` (TypeName) | `{type}` is a view, and it becomes a stored type by being declared as one, never by a migration | A migration that would make a view a stored type. |
@@ -567,6 +568,7 @@ What a refusal is about.
 | `rename_repeated` | `field` (FieldName) | the field `{field}` is renamed more than once | A field renamed from or to twice. |
 | `rename_to_unknown` | `to` (FieldName) | rename to `{to}`: no such field after the migration | A field renamed to one the new declaration does not have. |
 | `rename_while_rekeying` | — | the same migration re-keys records; rename in one migration and re-key in another | A relation rename in a migration that re-keys. |
+| `remove_while_rekeying` | — | the same migration re-keys records; remove the relation in one migration and re-key in another | A relation carried by link records removed by a migration that re-keys records. |
 | `reshapes` | `type` (TypeName), `reasons` (list of Revision) | `{type}` would reshape stored records ({reasons}); that is a migration | A declaration that reshapes stored records. |
 | `reshapes_links` | `type` (TypeName), `links` (TypeName), `reasons` (list of Revision) | `{type}` would reshape the links `{links}` holds ({reasons}); that is a migration | A declaration that reshapes stored links. |
 | `value_rename_new_refused` | — | the new value is one the new declaration accepts | A rename's new value the new declaration does not accept. |

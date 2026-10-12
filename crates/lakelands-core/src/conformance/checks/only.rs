@@ -1450,7 +1450,7 @@ async fn a_grant_that_cannot_be_applied_admits_no_record_at_any_door(store: Stor
 
 check!(
     ONLY_LINKS_OF_LINKS = a_link_whose_end_is_a_link_is_answered_where_that_link_is,
-    "051 and 006: a link whose end is a link is answered where that link is, by its own ends as deep as they go (lakelands#879). A holder of `only` on a type two links down, with `restricted` or without, is answered by `get`, `find`, `total`, a count, a view over the link type, a search and a walk only the links whose ends' ends are admitted, and `describe_type` says `only some` of the view; three links down, `find` and `total` answer it so too and `get` of another's is not found; one whose grant admits nothing counts none at either depth, and one who holds `restricted` and no `only` is answered every link and the view as kept. To the holder a reference to any other link, and a link onto it, answer as one to a link no record holds, a verb of low risk, one that reaches outside the lake and an `unlink` on it are not found, and a reference to its own is taken; a second link where one is allowed names the first only where its writer is answered it, at both depths; a call proposed on one is listed once, without its write, and is not its reviewer's to decide; its own proposal is pinned, accepted where nothing moved and no more once an end's end moved; a read and a search as of a position judge the ends as they stood then and at the head. One without `restricted` is not answered a link whose end's end is held, is named none by a second link while it is named another's, finds none by a low verb, an external verb or an `unlink`, and neither accepts nor rejects a call on one, while it decides another and a call proposed with `restricted` is applied. Two link types a migration made each other's end are each asked once: a link between them is answered, a second link names no end that no record holds, and the link is not answered once an end's end in the ring is held; with the inner link's relation removed and its link type standing, the outer link is still not answered to one without `restricted`, who decides no call on it, and a call proposed with `restricted` is still applied"
+    "051 and 006: a link whose end is a link is answered where that link is, by its own ends as deep as they go (lakelands#879). A holder of `only` on a type two links down, with `restricted` or without, is answered by `get`, `find`, `total`, a count, a view over the link type, a search and a walk only the links whose ends' ends are admitted, and `describe_type` says `only some` of the view; three links down, `find` and `total` answer it so too and `get` of another's is not found; one whose grant admits nothing counts none at either depth, and one who holds `restricted` and no `only` is answered every link and the view as kept. To the holder a reference to any other link, and a link onto it, answer as one to a link no record holds, a verb of low risk, one that reaches outside the lake and an `unlink` on it are not found, and a reference to its own is taken; a second link where one is allowed names the first only where its writer is answered it, at both depths; a call proposed on one is listed once, without its write, and is not its reviewer's to decide; its own proposal is pinned, accepted where nothing moved and no more once an end's end moved; a read and a search as of a position judge the ends as they stood then and at the head. One without `restricted` is not answered a link whose end's end is held, is named none by a second link while it is named another's, finds none by a low verb, an external verb or an `unlink`, and neither accepts nor rejects a call on one, while it decides another and a call proposed with `restricted` is applied. Two link types a migration made each other's end are each asked once: a link between them is answered, a second link names no end that no record holds, and the link is not answered once an end's end in the ring is held; the inner link's relation is not removed while the outer relation targets its link type (lakelands#920), and the outer link is still not answered to one without `restricted`, who decides no call on it, and a call proposed with `restricted` is still applied"
 );
 
 const DEEP: &str = r#"
@@ -1830,16 +1830,23 @@ async fn a_link_whose_end_is_a_link_is_answered_where_that_link_is(store: Store)
     let rows =
         r#"sys.link.ringa.r | a ring's link, an end's end held | {"total": true} |  total=0"#;
     held.push(finds(&l, &plain, rows, Position::GENESIS).await);
-    // The relation `s` removed, its link type stands for its links: a
-    // call on the link onto `b1`'s reaches the held `b1` still, so one
-    // proposed with `restricted` is applied.
+    // The relation `s` is not removed while `r` targets its link type
+    // (lakelands#920); a call on the link onto `b1`'s reaches the held
+    // `b1`, so one proposed with `restricted` is applied.
     let rung = json!({"declare": "verb", "name": "rung", "on": "sys.link.ringa.r",
         "risk": "high", "effect": "write", "set": [{"field": "mark", "value": "'x'"}]});
     l.declare_json(rung).await?;
-    migrated(type_decl("ringb", vec![field("name", Text)])).await?;
-    let rows =
-        r#"sys.link.ringa.r | the link, its end's relation removed | {"total": true} |  total=0"#;
-    held.push(finds(&l, &plain, rows, Position::GENESIS).await);
+    let removal =
+        crate::conformance::fixture::migration(type_decl("ringb", vec![field("name", Text)]));
+    let removal = cat.migrate(own, removal).await;
+    let refused = matches!(
+        crate::conformance::fixture::invalid_case(&removal),
+        Some(Case::MigrationTakesTarget { .. })
+    );
+    held.push(said(
+        refused,
+        format!("the removal of `s` while `r` targets its link type is refused: {removal:?}"),
+    ));
     let rung = call(free, "rung", "a1:b1%3At1").await?;
     let rejected = cat.reject(&plain, &rung, "no".into()).await;
     let accepted = cat.accept(&l.own, &rung).await;

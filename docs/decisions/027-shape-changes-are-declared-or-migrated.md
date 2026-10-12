@@ -117,21 +117,26 @@ A report's id is computed over the report as its reader is shown it,
 
 ### A removed relation is listed as a removed field is
 
-A relation carried by link records that a migration removes keeps its
-links as history, and takes them from the head: the walk follows only
-declared relations, and the link doors refuse a relation that is gone.
-That is what a removed field does to its values, so the preflight says
-it the same way: the relation is one entry in the report's `dropped`,
-named by the relation, with the number of its live links. A relation
-whose links are all unlinked removes nothing from the head; it is listed
-with none, as a field no record holds is, and so is a relation that is
-not carried by link records. The entry does not make the report lossy,
-as a removed field does not: removal is the migration's intent, named
-before it is applied.
+A relation carried by link records that a migration removes has its
+live links retired by the migration, in its own append: one
+`record_retired` a link, caused by the `migrated`, with what a
+retirement sets off, as a purge retires what it takes (035). The
+history keeps them and a read as of before answers them; at the head no
+door does. That is what a removed field does to its values, so the
+preflight says it the same way: the relation is one entry in the
+report's `dropped`, named by the relation, with the number of live
+links its apply retires, held ones among them, so the count is whole to
+every author. A relation whose links are all unlinked removes nothing
+from the head; it is listed with none, as a field no record holds is,
+and so is a relation that is not carried by link records. The entry
+does not make the report lossy, as a removed field does not: removal is
+the migration's intent, named before it is applied. No limit bounds the
+append, as none bounds a purge's.
 
 A relation removed and another added is that and nothing more: the old
 name is listed with its links, and the new relation starts with none. A
-rename of a relation is not inferred, as a field's is not.
+rename of a relation is not inferred, as a field's is not. A relation
+declared again later under a removed one's name starts with none too.
 
 ### A type is re-keyed by a migration
 
@@ -259,6 +264,20 @@ type do not refuse the removal. A caller who is not shown the verb is
 answered the same case without the verb: that a declaration is declared
 on the link type
 (`006 § Some things are still told, on purpose`).
+
+So is a migration that removes such a relation while a relation or a
+reference field that stands after it refers to the relation's link
+type, of another type or of its own: it would name the links of no
+relation (035). The refusal has a case of its own, names the relation
+and the link type, and names the relation or the field that refers,
+placed at its type, to an author shown it. One who is not, kept from
+its type or from the link type, is answered the same case without it:
+that a declaration refers to the link type. Removed in the same
+migration, the other relation refuses nothing.
+
+A migration that re-keys the type and removes such a relation is
+refused, naming the relation: the re-key moves the links the removal
+retires. The host makes them two migrations, as for a rename.
 
 The refusal names the reading declaration only to an author who is
 shown it, by the rule `describe` uses for that kind of declaration in
@@ -604,6 +623,7 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
 | the same refusal at an acceptance, to the one who accepts (lakelands#495) | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
 | a view is such a reader, shown only when its definition is, and what an author not shown the view is told (lakelands#504) | `006 § A declaration or a migration is its author's view` |
 | a relation's removal refused for a verb on its link type: what a caller not shown the verb is answered, and that it is told on purpose (lakelands#843) | `006 § Some things are still told, on purpose` |
+| a relation's removal refused for another relation or a reference field that refers to its link type: what a caller not shown it is answered, and that it is told on purpose (lakelands#920) | `006 § Some things are still told, on purpose` |
 | a value type's renames write every field that uses it: a caller not shown one of them is not granted the preflight, the apply or the proposal (lakelands#553) | `006 § A declaration or a migration is its author's view` |
 | the counts of a value type's renames stay whole, hidden and restricted records included (lakelands#553) | `006 § Some things are still told, on purpose` |
 | what may name an old value is listed to a reader shown it, a declaration as `describe` shows it and an aging rule as a read answers it, and another reader is told that there may be one (lakelands#553) | `006 § A report is answered as its reader may know it` |
@@ -704,6 +724,12 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
   (lakelands#801).
 - Added: a relation's removal is refused while a verb in force is
   declared on its link type (lakelands#843).
+- A migration that removes a relation retires its live links, and
+  `dropped` counts the links it retires; before, it took them from the
+  walk and the link doors alone, and they stayed live to every other
+  read (lakelands#938). Added: the removal is refused while another
+  relation or a reference field refers to its link type
+  (lakelands#920), and in a migration that re-keys (lakelands#938).
 - A rename owes a backing the call that carries a renamed value and no
   call that is as it was (lakelands#857).
 - An object set its proposer is not shown is not granted to propose

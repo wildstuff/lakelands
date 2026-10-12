@@ -2149,6 +2149,17 @@ What remains says a hidden thing exists, and remains on purpose:
   Since only a verb refuses a removal, the caller learns that a verb
   stands there; it learns neither the verb's name, nor how many there
   are, nor what one sets or requires;
+- a relation or a reference field that refers to a removed relation's
+  link type, to a caller who is not shown it, by the same rule: the
+  removal is refused
+  (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`) in a
+  case of its own that names the relation removed and its link type,
+  and names the relation or the field that refers, placed at its type,
+  to an author shown it. A caller kept from its type, or from the link
+  type and so not shown it, is answered the same case without it: that
+  a declaration refers to the link type. It learns that one stands
+  there, and neither its name, its type, nor how many there are
+  (lakelands#920);
 - `may.retire`, which says every field is writable.
 
 **What stays.** A principal with `schema` is shown every definition, and
@@ -2593,3 +2604,6 @@ Of `only`:
 - A verb whose path steps through a relation's link is its caller's
   only where the caller holds `restricted` and no `only` on the link
   type or its end types (lakelands#567).
+- 027 added: what a caller not shown a relation or a reference field
+  that refers to a removed relation's link type is told of it, among
+  what is told on purpose (lakelands#920).

@@ -1410,6 +1410,12 @@
    "unnamed": true
   },
   {
+   "code": "migration_takes_target",
+   "relation": "r",
+   "type": "t",
+   "unnamed": true
+  },
+  {
    "code": "migration_takes_read",
    "field": "f",
    "renamed": "f",
@@ -1489,6 +1495,9 @@
   },
   {
    "code": "rename_while_rekeying"
+  },
+  {
+   "code": "remove_while_rekeying"
   },
   {
    "code": "reshapes",
