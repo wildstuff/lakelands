@@ -1253,7 +1253,7 @@ async fn a_derived_relation_of_a_mirrored_type_is_the_targets_own_reading() {
         };
         let pattern = q::Pattern {
             start: q::Start {
-                ty: "customer".into(),
+                ty: Some("customer".into()),
                 key: Some("c1".into()),
                 filter: None,
                 search: None,

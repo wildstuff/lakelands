@@ -731,7 +731,7 @@ pub fn step(relation: &str, walk: Walk) -> Step {
 pub fn pattern(ty: &str, key: Option<&str>, steps: Vec<Step>, project: Projection) -> Pattern {
     Pattern {
         start: Start {
-            ty: ty.into(),
+            ty: Some(ty.into()),
             key: key.map(Into::into),
             filter: None,
             search: None,

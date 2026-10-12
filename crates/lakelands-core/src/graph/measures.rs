@@ -64,6 +64,9 @@ pub struct Components<'a, S: EdgeSource + ?Sized> {
     source: &'a S,
     relations: Vec<RelationName>,
     max_nodes: u32,
+    /// Whether a seed with no link it may see is a component of one, or
+    /// no component at all and never counted.
+    alone: bool,
     /// Every record reached, with the component it was reached in.
     member_of: BTreeMap<Node, usize>,
     /// For each component started, the one it was joined to, or itself.
@@ -74,12 +77,14 @@ pub struct Components<'a, S: EdgeSource + ?Sized> {
 
 impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
     /// An empty set of components over `relations`, holding at most
-    /// `max_nodes` records.
-    pub fn new(source: &'a S, relations: Vec<RelationName>, max_nodes: u32) -> Self {
+    /// `max_nodes` records; `alone` says whether a seed that reaches
+    /// nothing is a component of one.
+    pub fn new(source: &'a S, relations: Vec<RelationName>, max_nodes: u32, alone: bool) -> Self {
         Components {
             source,
             relations,
             max_nodes,
+            alone,
             member_of: BTreeMap::new(),
             joined: Vec::new(),
             hidden: BTreeSet::new(),
@@ -123,13 +128,16 @@ impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
     /// adds nothing. Refused `too_large` as soon as more than `max_nodes`
     /// records are reached.
     pub fn add(&mut self, seeds: &[Node]) -> Result<()> {
-        let fresh: BTreeSet<&Node> = seeds
+        let fresh: BTreeSet<Node> = seeds
             .iter()
             .filter(|s| !self.member_of.contains_key(*s))
+            .cloned()
             .collect();
-        let mut frontier: Vec<Node> = fresh.into_iter().cloned().collect();
-        for seed in &frontier {
-            self.start(seed.clone())?;
+        let mut frontier: Vec<Node> = fresh.iter().cloned().collect();
+        if self.alone {
+            for seed in &frontier {
+                self.start(seed.clone())?;
+            }
         }
         while !frontier.is_empty() {
             let nears = frontier.split_off(frontier.len().saturating_sub(PAGE));
@@ -146,8 +154,9 @@ impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
                     }
                 }
             }
+            // A seed is shown, and its links are read as a seed's.
             let asked: BTreeSet<&Node> = (pairs.iter().map(|(_, o)| o))
-                .filter(|o| !self.member_of.contains_key(*o))
+                .filter(|o| !self.member_of.contains_key(*o) && !fresh.contains(*o))
                 .collect();
             let asked: Vec<Node> = asked.into_iter().cloned().collect();
             for page in asked.chunks(PAGE) {
@@ -161,7 +170,12 @@ impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
                 if self.hidden.contains(&other) {
                     continue;
                 }
-                let here = self.member_of[near];
+                // A seed that reaches nothing it may see is started only
+                // here, where it may not stand alone.
+                let here = match self.member_of.get(near) {
+                    Some(&i) => i,
+                    None => self.start(near.clone())?,
+                };
                 match self.member_of.get(&other) {
                     Some(&there) => {
                         let (a, b) = (self.root(here), self.root(there));
@@ -169,7 +183,9 @@ impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
                     }
                     None => {
                         self.reach(other.clone(), here)?;
-                        frontier.push(other);
+                        if !fresh.contains(&other) {
+                            frontier.push(other);
+                        }
                     }
                 }
             }

@@ -891,7 +891,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         (
             "start",
             members(&Start {
-                ty: "invoice".into(),
+                ty: Some("invoice".into()),
                 key: Some("k".into()),
                 filter: Some(cond()),
                 search: Some(search_mode()),
@@ -915,7 +915,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             adjusted(
                 members(&Pattern {
                     start: Start {
-                        ty: "invoice".into(),
+                        ty: Some("invoice".into()),
                         key: None,
                         filter: None,
                         search: None,

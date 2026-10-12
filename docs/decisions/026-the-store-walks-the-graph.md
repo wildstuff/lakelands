@@ -38,9 +38,11 @@ best rows asked for, not the type. Components grow from a page of start
 records at a time, the links of a page of the records reached read
 together whichever start reached them, and two starts of a page that
 reach each other are one component; so the partition costs a question of
-the engine per page, relation and hop, not per start. Components hold every
-record they reach, up to the lake's `max_graph_nodes`, and are refused
-`too_large` past it, never cut.
+the engine per page, relation and hop, not per start. With no start type
+the starts are the records of every type shown that declares a step's
+relation, read a page at a time, and one with no link it may see is never
+counted (018). Components hold every record they reach, up to the lake's
+`max_graph_nodes`, and are refused `too_large` past it, never cut.
 
 **A measure's page.** A read keeps nothing between calls, and a page in
 the middle of a measure cannot be made from less than the measure: a
@@ -118,3 +120,5 @@ answers identical.
   hop, each in its own read; 48 000 questions, 45 s on PostgreSQL and
   3 s on SQLite for 4 000 records read in four pages, against 0.18 s on
   memory. The partition is the same.
+- With no start type, components grow from the records of every type
+  that declares a step's relation (lakelands#992).

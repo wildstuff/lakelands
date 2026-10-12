@@ -367,7 +367,9 @@ fn from(ty: &str, key: Option<&str>, filter: Option<&str>, steps: Vec<Step>) -> 
 async fn nodes(l: &Lake, p: Pattern, far: &str) -> Result<Vec<String>, Failure> {
     let what = format!(
         "a pattern started on `{}` (key {:?}, where {:?})",
-        p.start.ty, p.start.key, p.start.filter
+        p.start.ty.as_ref().map_or("", |t| t.as_str()),
+        p.start.key,
+        p.start.filter
     );
     let reply = l.cat.query(&l.own, p).await.must(&what)?;
     let mut got: Vec<String> = match reply.data {

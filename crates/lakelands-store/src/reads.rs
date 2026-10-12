@@ -281,7 +281,7 @@ fn encode(c: &CursorState) -> Cursor {
 /// it names one, and past as many rows as its offset says.
 fn offset(c: Option<&Cursor>, p: &Pattern, params: &Params) -> Result<(usize, Option<SortKey>)> {
     let Some(c) = c else { return Ok((0, None)) };
-    let state = resume(c, "query", Some(&p.start.ty), params)?;
+    let state = resume(c, "query", p.start.ty.as_ref(), params)?;
     same_read(&state, &pattern_read(p))?;
     Ok((state.offset as usize, state.after))
 }
@@ -329,6 +329,25 @@ fn same_read(state: &CursorState, of: &str) -> Result<()> {
         return Err(invalid(Case::CursorOtherRead { door }));
     }
     Ok(())
+}
+
+/// The start's type, which every read of a pattern but `components`
+/// needs (018).
+fn start_type(p: &Pattern) -> Result<&TypeName> {
+    let asks = || projection_name(&p.project);
+    (p.start.ty.as_ref()).ok_or_else(|| invalid(Case::StartNoType { asks: asks() }))
+}
+
+/// A projection by the name its pattern gives it.
+fn projection_name(p: &Projection) -> String {
+    match p {
+        Projection::Rows { .. } => "rows",
+        Projection::Graph => "graph",
+        Projection::Aggregate(_) => "aggregate",
+        Projection::Degree => "degree",
+        Projection::Components => "components",
+    }
+    .to_owned()
 }
 
 /// A cursor's state, when it was handed out for this door, this type and
@@ -2973,7 +2992,10 @@ impl<'a> Reader<'a> {
         // Its steps as declared: a step naming an inverse is rewritten below.
         let mut p = p.clone();
         let p = &mut p;
-        let start_decl = self.named_type(&p.start.ty)?.clone();
+        let Some(start_ty) = p.start.ty.clone() else {
+            return self.untyped(p);
+        };
+        let start_decl = self.named_type(&start_ty)?.clone();
         let params = self.bind_params(&start_decl, &p.start.params)?;
         let limit = self.limit(p.limit, measures::is_measure(&p.project))?;
         let max_depth = self.lake.limits.max_depth;
@@ -3166,7 +3188,7 @@ impl<'a> Reader<'a> {
         // rows read a page at a time.
         let few: Option<Vec<StoredRecord>> = if let Some(key) = &p.start.key {
             if self.start_found(p, key)? {
-                Some(self.get_one(&p.start.ty, key)?.into_iter().collect())
+                Some(self.get_one(&start_ty, key)?.into_iter().collect())
             } else {
                 Some(Vec::new())
             }
@@ -3177,8 +3199,8 @@ impl<'a> Reader<'a> {
             };
             let held = keys
                 .iter()
-                .filter_map(|k| self.view.get(&p.start.ty, k).ok().flatten());
-            Some(self.at_read(&p.start.ty, held.collect()))
+                .filter_map(|k| self.view.get(&start_ty, k).ok().flatten());
+            Some(self.at_read(&start_ty, held.collect()))
         } else {
             None
         };
@@ -3496,7 +3518,7 @@ impl<'a> Reader<'a> {
             at: ReadAt::default(),
             params: p.start.params.clone(),
         };
-        match self.get(&p.start.ty, &get) {
+        match self.get(start_type(p)?, &get) {
             Ok(_) => Ok(true),
             Err(Error::NotFound { .. }) => Ok(false),
             Err(e) => Err(e),
@@ -3511,7 +3533,7 @@ impl<'a> Reader<'a> {
         carried: Option<Pulled>,
     ) -> Result<Judged<Vec<RecordKey>>> {
         let s = Search {
-            ty: p.start.ty.clone(),
+            ty: start_type(p)?.clone(),
             mode: mode.clone(),
             k: self.lake.limits.max_limit,
             cursor: None,
@@ -3572,6 +3594,23 @@ impl<'a> Reader<'a> {
     /// name, so that a step over it from elsewhere walks nothing.
     fn out_any(&self, relation: &RelationName) -> bool {
         (self.shown_relations(None).iter()).any(|(_, r)| &r.name == relation)
+    }
+
+    /// [`Self::as_declared`] where the start names no type: a step names a
+    /// relation some type the principal is shown declares, or else the
+    /// `inverse` of each relation it is shown that bears it, answered with
+    /// its owner. None where a relation is declared under the name.
+    fn inverses_anywhere(&self, name: &RelationName) -> Vec<(RelationName, TypeName)> {
+        let shown = self.shown_relations(None);
+        if (shown.iter()).any(|(_, r)| r.name == *name) {
+            return Vec::new();
+        }
+        let inverse = shown
+            .into_iter()
+            .filter(|(_, r)| r.inverse.as_ref() == Some(name));
+        inverse
+            .map(|(t, r)| (r.name.clone(), t.name.clone()))
+            .collect()
     }
 
     /// Rewrite a step naming a relation's `inverse` to that relation,
