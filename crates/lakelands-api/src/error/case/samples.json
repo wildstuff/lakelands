@@ -708,6 +708,20 @@
    "pattern": "s"
   },
   {
+   "cardinality": "one_to_one",
+   "code": "relation_holds_many",
+   "relation": "r"
+  },
+  {
+   "code": "relation_is_derived",
+   "relation": "r"
+  },
+  {
+   "code": "relation_via_field",
+   "field": "f",
+   "relation": "r"
+  },
+  {
    "code": "retired_only_in_guard"
   },
   {

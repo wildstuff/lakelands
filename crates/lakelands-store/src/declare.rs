@@ -38,7 +38,7 @@ use lakelands_api::error::{Case, Names, Naming, Place, Said};
 use lakelands_api::expr::kind::{self, Kind};
 use lakelands_api::expr::{Condition, Expr, Func};
 use lakelands_api::ontology::{
-    Authority, Derived, FieldDecl, OnInputChange, RelationDecl, StorageKind, TypeDecl,
+    Authority, Cardinality, Derived, FieldDecl, OnInputChange, RelationDecl, StorageKind, TypeDecl,
     ValueTypeDecl, VerbEffect, VerbScope, ViewDecl, lands_in_the_fold,
 };
 use lakelands_api::tools::{NameProblem, name_problems};
@@ -946,9 +946,27 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
         Declaration::ObjectSet(s) => o.ty(&s.of).ok(),
         _ => None,
     };
+    // A verb's path may begin at a relation of its type and go on to the
+    // link's fields (055, extended); the relation is judged below. One
+    // carried by links begins a path only where `o` holds its link type's
+    // `from`: to an author who may not know of the link type, judged over
+    // the lake as it is shown, the path names a field the type lacks.
+    let link_known = |on: &TypeDecl, r: &RelationDecl| {
+        let lt = o.ty(&links::link_type_name(&on.name, &r.name));
+        !r.carried_by_links() || lt.is_ok_and(|lt| lt.fields.iter().any(|f| f.name == links::FROM))
+    };
+    let begins_at_relation = |n: &FieldName| match (d, on) {
+        (Declaration::Verb(v), Some(on)) => {
+            (v.record_paths().unwrap_or_default().iter()).any(|p| {
+                p.len() > 1 && &p[0] == n && related(on, n).is_some_and(|r| link_known(on, r))
+            })
+        }
+        _ => false,
+    };
     if let Some(on) = on
         && let reads = lakelands_core::describe::declaration_reads(d, &on.name, &|_| None)
-        && let Some(n) = (reads.iter()).find(|n| !on.fields.iter().any(|f| &f.name == *n))
+        && let Some(n) = (reads.iter())
+            .find(|n| !on.fields.iter().any(|f| &f.name == *n) && !begins_at_relation(n))
     {
         let (ty, field) = (on.name.clone(), n.clone());
         return Err(invalid(at(&[d.place()], Case::UnknownField { ty, field })));
@@ -968,9 +986,38 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
     if let (Some(on), Declaration::Verb(v)) = (on, d) {
         let wrong = |c| Err(invalid(at(&[d.place()], c)));
         for path in v.record_paths().unwrap_or_default() {
+            // A relation reads the one link a record holds under it, so one
+            // whose records each hold one link record at most.
+            if let (Some(r), true) = (related(on, &path[0]), path.len() > 1) {
+                let (relation, cardinality) = (r.name.clone(), r.cardinality);
+                let many = matches!(
+                    cardinality,
+                    Cardinality::OneToMany | Cardinality::ManyToMany
+                );
+                let case = match (&r.derived, &r.via) {
+                    (Some(_), _) => Some(Case::RelationIsDerived { relation }),
+                    (_, Some(field)) => Some(Case::RelationViaField {
+                        relation,
+                        field: field.clone(),
+                    }),
+                    _ => many.then_some(Case::RelationHoldsMany {
+                        relation,
+                        cardinality,
+                    }),
+                };
+                if let Some(case) = case {
+                    return wrong(case);
+                }
+            }
             let read = on.stepped(&path, &far);
+            // The next segment is the link's where the path began at a
+            // relation, else the far record's of the last reference read.
             let target = read.last().and_then(|l| l.1.ty.target.as_ref());
-            if let Some((t, field)) = target.and_then(far).zip(path.get(read.len())) {
+            let next = match read.as_slice() {
+                [(link, _)] if link.name != on.name => Some(*link),
+                _ => target.and_then(far),
+            };
+            if let Some((t, field)) = next.zip(path.get(read.len())) {
                 let (ty, field) = (t.name.clone(), field.clone());
                 return wrong(Case::UnknownField { ty, field });
             }
@@ -1002,6 +1049,13 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The relation of `on` a path's first segment `n` names, where `on` has
+/// no field of that name.
+fn related<'d>(on: &'d TypeDecl, n: &FieldName) -> Option<&'d RelationDecl> {
+    let field = on.fields.iter().any(|f| &f.name == n);
+    (on.relations.iter()).find(|r| !field && r.name.as_str() == n.as_str())
 }
 
 /// The fields of `ty` a declaration reads

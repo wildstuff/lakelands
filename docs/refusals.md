@@ -400,6 +400,9 @@ What a refusal is about.
 | `parse_unexpected` | `found` (char), `offset` (usize) | unexpected `{found}` (at character {offset}) | A character no token starts with. |
 | `path_empty` | — | a path names at least one field | A path with no field. |
 | `regex_unmatchable` | `pattern` (String), `limit` (usize, optional) | `{pattern}` cannot be matched[: its compiled form is over {limit} bytes] | A pattern the matcher refuses. |
+| `relation_holds_many` | `relation` (RelationName), `cardinality` (Cardinality) | `{relation}` may hold several links from a record ({cardinality}): a path reads a relation that holds at most one, `many_to_one` or `one_to_one`; walk it in a pattern | A path through a relation that may hold several links from a record. |
+| `relation_is_derived` | `relation` (RelationName) | `{relation}` is derived from matching values and holds no link record for a path to read | A path through a relation derived from matching values. |
+| `relation_via_field` | `relation` (RelationName), `field` (FieldName) | `{relation}` is carried by the field `{field}`: a path steps through `{field}` | A path through a relation carried by a reference field. |
 | `retired_only_in_guard` | — | retired() has meaning only in a trigger's guard | A `retired` outside a trigger's guard. |
 | `set_cycle` | `set` (String), `through` (Names) | in_set('{set}') names a set that names it in turn, through {through} | A set that names itself through others. |
 | `set_of_other_type` | `set` (String), `of` (TypeName), `type` (TypeName) | in_set('{set}') names a set of `{of}`, not of `{type}` | A set of another type named in a filter. |

@@ -26,15 +26,7 @@ use lakelands_api::principal::Renamed;
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::{StoredRecord, Value};
 
-/// The prefix of every link type's name.
-pub const PREFIX: &str = "sys.link.";
-
-pub use lakelands_api::key::{FROM, TO, link_key};
-
-/// The name of the link type of relation `r` on type `t`.
-pub fn link_type_name(t: &TypeName, r: &RelationName) -> TypeName {
-    TypeName::from(format!("{PREFIX}{t}.{r}"))
-}
+pub use lakelands_api::key::{FROM, LINK_PREFIX as PREFIX, TO, link_key, link_type_name};
 
 /// Whether a type is a link type.
 pub fn is_link_type(name: &TypeName) -> bool {

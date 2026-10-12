@@ -1032,6 +1032,12 @@ catalog! {
         PathEmpty => "a path names at least one field",
         /// A pattern the matcher refuses.
         RegexUnmatchable { pattern: String, limit: Option<usize> } => "`{pattern}` cannot be matched[: its compiled form is over {limit} bytes]",
+        /// A path through a relation that may hold several links from a record.
+        RelationHoldsMany { relation: RelationName, cardinality: Cardinality } => "`{relation}` may hold several links from a record ({cardinality}): a path reads a relation that holds at most one, `many_to_one` or `one_to_one`; walk it in a pattern",
+        /// A path through a relation derived from matching values.
+        RelationIsDerived { relation: RelationName } => "`{relation}` is derived from matching values and holds no link record for a path to read",
+        /// A path through a relation carried by a reference field.
+        RelationViaField { relation: RelationName, field: FieldName } => "`{relation}` is carried by the field `{field}`: a path steps through `{field}`",
         /// A `retired` outside a trigger's guard.
         RetiredOnlyInGuard => "retired() has meaning only in a trigger's guard",
         /// A set that names itself through others.

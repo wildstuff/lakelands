@@ -457,6 +457,10 @@ pub fn pinnable(who: &Principal, decl: &TypeDecl, verb: Option<&VerbDecl>) -> bo
 /// filter on it is: a verb that reads one would answer its value, by
 /// running or not, or copy it whole (024, extended). So is each field it
 /// reads of another record, across a reference, on the type `ty` answers.
+/// A path that steps through a relation's link is `who`'s only where
+/// nothing of the link type and its end types is held from it: it holds
+/// `restricted` and no `only` there, and is shown the relation (055,
+/// extended), so no link it reads can be one it is not answered.
 pub fn reads_what_verb_reads<'d>(
     who: &Principal,
     decl: &'d TypeDecl,
@@ -468,8 +472,22 @@ pub fn reads_what_verb_reads<'d>(
         field.is_none_or(|f| field_access(who, decl, f).reads())
     };
     let far = verb.reads_across(decl, ty);
+    let free = |p: &Vec<FieldName>| {
+        let field = decl.fields.iter().any(|f| f.name == p[0]);
+        let r = decl
+            .relations
+            .iter()
+            .find(|r| !field && r.name.as_str() == p[0].as_str());
+        let lt = r.and_then(|r| ty(&crate::links::link_type_name(&decl.name, &r.name)));
+        r.zip(lt).is_none_or(|(r, lt)| {
+            let held = !own_only(who, &lt.name).is_empty() || !held_ends(who, lt, ty).is_empty();
+            who.grants.restricted && !held && crate::describe::relation_shown(decl, r, ty, who)
+        })
+    };
+    let paths = verb.record_paths();
     verb.fields_read()
         .is_some_and(|read| read.iter().all(reads))
+        && paths.is_some_and(|p| p.iter().all(free))
         && far.is_some_and(|far| far.iter().all(|(t, f)| field_access(who, t, f).reads()))
 }
 

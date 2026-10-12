@@ -969,7 +969,10 @@ read across a reference counts with every reference on the way and the
 types they name: a verb whose path reads `customer.discount_days` is its
 caller's only where the caller may read `customer`, is shown the
 customer's type and may read `discount_days` there
-(`docs/decisions/055-a-path-steps-through-a-reference.md`).
+(`docs/decisions/055-a-path-steps-through-a-reference.md`). A path that
+steps through a relation's link asks more: the caller holds
+`restricted` and no `only` on the link type or its end types, so no link
+it reads is one it is not answered (055).
 `payload.<name>` reads the call's payload, which is the caller's own. To
 any other caller the verb answers `not_granted`, as one whose fields it
 may not write does, before the record is read, and `describe` names it
@@ -2587,3 +2590,6 @@ Of `only`:
   reviewer is not answered beside its own is not there to that
   reviewer, where it was listed and its accept refused as not granted
   (lakelands#567, lakelands#929).
+- A verb whose path steps through a relation's link is its caller's
+  only where the caller holds `restricted` and no `only` on the link
+  type or its end types (lakelands#567).

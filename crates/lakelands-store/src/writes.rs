@@ -1181,7 +1181,8 @@ fn call_reads(
     payload: &Patch,
 ) -> Result<(Patch, Vec<(TypeName, RecordKey)>)> {
     let far = |ty: &TypeName, k: &RecordKey| view.get(ty, k);
-    let across = Across::new(o, o.ty(&v.on)?, &far, u32::MAX);
+    let link = |r: &RelationName| key.map_or(Ok(None), |k| link_from(view, &v.on, r, k));
+    let across = Across::new(o, o.ty(&v.on)?, (&far, &link), u32::MAX);
     let mut set = None;
     if let Some(k) = key
         && let Some(r) = view.get(&v.on, k)?
@@ -1331,6 +1332,25 @@ fn assigned(
 /// The record a reference names, as one reader of it reaches it.
 type Far<'a> = &'a dyn Fn(&TypeName, &RecordKey) -> Result<Option<StoredRecord>>;
 
+/// The link the call's record holds under a relation ([`link_from`]).
+type Link<'a> = &'a dyn Fn(&RelationName) -> Result<Option<RecordKey>>;
+
+/// The key of the one live link `from` of `ty` holds over the relation
+/// `r` in `view`, whoever is answered it: a relation a path reads holds one
+/// at most from a record (055, extended). A verb is decided before what it
+/// sets off, so no draft of its decision is a link.
+fn link_from(
+    view: &dyn ProjectionView,
+    ty: &TypeName,
+    r: &RelationName,
+    from: &RecordKey,
+) -> Result<Option<RecordKey>> {
+    use lakelands_api::query::Walk;
+    let edges = view.edges(ty, std::slice::from_ref(from), Some(r), Walk::Out)?;
+    let mut keys = edges.into_iter().flatten();
+    Ok(keys.next().map(|e| links::link_key(from, &e.to.1)))
+}
+
 /// What a verb's `requires` and values read across a reference: a path
 /// steps through a reference field to the one record it names and reads a
 /// field there ([`TypeDecl::stepped`]), each record read once a call, as
@@ -1339,6 +1359,7 @@ struct Across<'a> {
     o: &'a Ontology,
     on: &'a TypeDecl,
     far: Far<'a>,
+    link: Link<'a>,
     /// The most steps a path may take: the lake's `max_depth` at a call.
     max: u32,
     /// The records read, none where the reference reached none.
@@ -1348,12 +1369,13 @@ struct Across<'a> {
 }
 
 impl<'a> Across<'a> {
-    fn new(o: &'a Ontology, on: &'a TypeDecl, far: Far<'a>, max: u32) -> Self {
+    fn new(o: &'a Ontology, on: &'a TypeDecl, (far, link): (Far<'a>, Link<'a>), max: u32) -> Self {
         let (read, refusal) = (RefCell::default(), RefCell::default());
         Across {
             o,
             on,
             far,
+            link,
             max,
             read,
             refusal,
@@ -1363,7 +1385,8 @@ impl<'a> Across<'a> {
     /// The value at `path` from a record of the verb's type holding
     /// `fields`. A reference that is null reaches nothing and the path is
     /// null; one that names a record not reached is noted
-    /// ([`Self::reached`]).
+    /// ([`Self::reached`]). A path that begins at a relation reads the one
+    /// link the record holds under it, none reading null.
     fn value(&self, fields: &BTreeMap<FieldName, Value>, path: &[FieldName]) -> Option<Value> {
         let steps = self.on.stepped(path, &|n| self.o.ty(n).ok());
         let (max, asked) = (self.max, steps.len().saturating_sub(1) as u32);
@@ -1374,14 +1397,31 @@ impl<'a> Across<'a> {
             refuse(invalid(Case::StepTooDeep { max, asked }));
             return None;
         }
+        let reach = |named: &(TypeName, RecordKey)| {
+            let known = self.read.borrow().get(named).cloned();
+            let far = || (self.far)(&named.0, &named.1).map_err(refuse).ok();
+            let found = known.unwrap_or_else(|| far().flatten());
+            self.read.borrow_mut().insert(named.clone(), found.clone());
+            found
+        };
         let mut at: Option<StoredRecord> = None;
-        for step in steps.windows(2) {
+        let by_link = steps.first().filter(|s| s.0.name != self.on.name);
+        if let Some((lt, _)) = by_link {
+            let relation = RelationName::from(path[0].as_str());
+            let link = (self.link)(&relation).map_err(refuse).ok()??;
+            // Its caller holds nothing of the link from it (055): one not
+            // reached anyway is refused as the verb not its, naming nothing.
+            let found = reach(&(lt.name.clone(), link));
+            if found.is_none() {
+                refuse(refused(Refusal::NotGranted));
+            }
+            at = Some(found?);
+        }
+        for step in steps[usize::from(by_link.is_some())..].windows(2) {
             let (via, to) = (&step[0].1.name, &step[1].0.name);
             let held = at.as_ref().map_or(fields, |r| &r.fields);
             let named = (to.clone(), RecordKey::from(held.get(via)?.as_str()?));
-            let known = self.read.borrow().get(&named).cloned();
-            let far = || (self.far)(to, &named.1).map_err(refuse).ok().flatten();
-            let found = known.unwrap_or_else(far);
+            let found = reach(&named);
             if found.is_none() {
                 let (field, ty, key) = (via.clone(), to.clone(), named.1.clone());
                 refuse(constraint(
@@ -1389,7 +1429,6 @@ impl<'a> Across<'a> {
                     Case::NotLive { field, ty, key },
                 ));
             }
-            self.read.borrow_mut().insert(named, found.clone());
             at = Some(found?);
         }
         let rest = &path[steps.len().saturating_sub(1)..];
@@ -1941,7 +1980,8 @@ impl Decide<'_> {
         // sends the reference would be accepted, and by nothing else.
         let (view, pending, who) = (self.view, &self.pending, self.who);
         let far = |ty: &TypeName, k: &RecordKey| live_for(view, pending, o, ty, k, who);
-        let across = Across::new(o, on, &far, self.call.lake.limits.max_depth);
+        let link = |r: &RelationName| link_from(view, &verb.on, r, key);
+        let across = Across::new(o, on, (&far, &link), self.call.lake.limits.max_depth);
         requires(&w.settings, verb, key, &record, now, &across)?;
         // A verb on a link finds both its ends live and answered, whatever
         // its effect (035): one that writes the link has them judged where
@@ -2709,7 +2749,7 @@ impl Call<'_> {
             return e;
         }
         let sight = Sight::held(self.who, o);
-        let read = |f: &FieldName| sight.reads(&ty, f);
+        let read = |f: &FieldName| sight.reads_from(&ty, f);
         let sees = |t: &TypeName| sight.ty(t).is_ok();
         let requires = |v: &VerbName| o.verb(v).ok().and_then(|v| v.requires.clone());
         let mut named = Named::default();
@@ -2875,6 +2915,7 @@ impl Call<'_> {
         self.redeclared(&w.ontology, std::slice::from_mut(&mut declaration))?;
         declare::check_declaration(&w.ontology, &declaration, false)?;
         self.check_bound(&declaration, Some(&w.ontology))?;
+        self.verbs_still_read(&w.ontology, std::slice::from_ref(&declaration))?;
         if w.ontology.in_force(&declaration) {
             return Ok(applied(head(&w), None));
         }
@@ -2882,6 +2923,31 @@ impl Call<'_> {
         let drafts = self.bundle_drafts(&w, vec![declaration], now, 0)?;
         let events = self.lake.append(&mut w, drafts)?;
         Ok(outcome_of(&events))
+    }
+
+    /// Refuse each type of `set` declared again with a change, as its
+    /// migration would be refused for a verb that reads into it
+    /// ([`verbs_judged_again`]): over `held`, the lake's own, with the set
+    /// in it as its author's view is completed.
+    fn verbs_still_read(&self, held: &Ontology, set: &[Declaration]) -> Result<()> {
+        let changed = set.iter().filter(|d| !held.in_force(d));
+        let changed: Vec<_> = (changed.filter_map(|d| match d {
+            Declaration::Type(t) => Some((&held.types.get(&t.name)?.decl, t, d.place())),
+            _ => None,
+        }))
+        .collect();
+        if changed.is_empty() {
+            return Ok(());
+        }
+        let mut after = held.clone();
+        set.iter()
+            .for_each(|d| put_as_appended(&mut after, d, Some));
+        let sees = Sight::held(self.who, held);
+        for (was, t, at) in changed {
+            let judged = verbs_judged_again((held, &after), was, t, &|d| sees.shows(d));
+            judged.map_err(|said| invalid(said).within(at))?;
+        }
+        Ok(())
     }
 
     /// `recompute`: the declaration in force appended again as it was
@@ -3156,7 +3222,8 @@ impl Call<'_> {
     /// every other declaration of the set already in it, every problem
     /// collected into one refusal.
     fn check_bundle(&self, ontology: &Ontology, declarations: &[Declaration]) -> Result<()> {
-        self.check_set((ontology, ontology), declarations)
+        self.check_set((ontology, ontology), declarations)?;
+        self.verbs_still_read(ontology, declarations)
     }
 
     /// [`Self::check_bundle`] against `ontology` as the set's author is
@@ -3616,36 +3683,10 @@ impl Call<'_> {
         // And the type it migrates to reads only fields it has: `declare`'s
         // check above ends at the reshaping, before it comes to the reads.
         declare::reads_its_type(&after, &Declaration::Type(m.to.clone()))?;
-        // So does every verb on it or on a link type its relations carry, or
-        // reading across into one of them: a path it reads across, a kind
-        // its condition computes with, are judged over the types it leaves
-        // (028, 055). A verb is named to an author `describe` shows it to;
-        // another is told one could not be declared.
-        let o = &w.ontology;
-        let mut moved = vec![m.to.name.clone()];
-        for t in [&before, &m.to] {
-            moved.extend(links::link_types_of(t).into_iter().map(|l| l.name));
-        }
-        let into = |v: &VerbDecl| {
-            let far = o.ty(&v.on).ok();
-            let far = far.and_then(|on| v.reads_across(on, &|n| o.ty(n).ok()));
-            far.is_some_and(|far| far.iter().any(|(t, _)| moved.contains(&t.name)))
-        };
-        // Over the lake as the migration leaves it, its link types with it.
-        let mut linked = after.clone();
-        put_as_appended(&mut linked, &Declaration::Type(m.to.clone()), Some);
-        let judged = (after.verbs.values()).filter(|e| moved.contains(&e.decl.on) || into(&e.decl));
-        for v in judged {
-            let verb = Declaration::Verb(v.decl.clone());
-            let Err(e) = declare::reads_its_type(&linked, &verb) else {
-                continue;
-            };
-            let said = e.case().filter(|_| sees.shows(&verb)).cloned();
-            let ty = m.to.name.clone();
-            return Err(after_it(
-                said.unwrap_or(Case::NoLongerDeclarable { ty }.into()),
-            ));
-        }
+        // So does every verb that reads into it (028, 055).
+        let sees = Sight::held(self.who, &w.ontology);
+        let shows = |d: &Declaration| sees.shows(d);
+        verbs_judged_again((&w.ontology, &after), &before, &m.to, &shows).map_err(after_it)?;
         // A record that does not convert is already not lossless; its
         // stored fields still tell whether it has a new key.
         let convert = |decl: &TypeDecl, m: &Migration, r: &StoredRecord| {
@@ -4598,6 +4639,46 @@ fn link_type_drafts(o: &Ontology, t: &TypeDecl, now: Timestamp) -> Result<Vec<Dr
         out.push(system_declared(o, Declaration::Type(lt), now)?);
     }
     Ok(out)
+}
+
+/// Refuse `to`, a type declared again or migrated from `was`, where a verb
+/// on it or on a link type its relations carry, before or after, or
+/// reading across into one of them, could not be declared over `after`
+/// as `to` leaves it, its link types with it: a path read across, a
+/// relation stepped through, a kind its condition computes with (028,
+/// 055). A verb `shows` names is named; another is told one could not be
+/// declared. `o` is the lake before, where the verbs read.
+fn verbs_judged_again(
+    (o, after): (&Ontology, &Ontology),
+    was: &TypeDecl,
+    to: &TypeDecl,
+    shows: &dyn Fn(&Declaration) -> bool,
+) -> std::result::Result<(), Said> {
+    let mut moved = vec![to.name.clone()];
+    for t in [was, to] {
+        moved.extend(links::link_types_of(t).into_iter().map(|l| l.name));
+    }
+    let into = |v: &VerbDecl| {
+        let far = o.ty(&v.on).ok();
+        let far = far.and_then(|on| v.reads_across(on, &|n| o.ty(n).ok()));
+        far.is_some_and(|far| far.iter().any(|(t, _)| moved.contains(&t.name)))
+    };
+    let judged = (after.verbs.values()).filter(|e| moved.contains(&e.decl.on) || into(&e.decl));
+    let judged: Vec<_> = judged.collect();
+    if judged.is_empty() {
+        return Ok(());
+    }
+    let mut linked = after.clone();
+    put_as_appended(&mut linked, &Declaration::Type(to.clone()), Some);
+    for v in judged {
+        let verb = Declaration::Verb(v.decl.clone());
+        if let Err(e) = declare::reads_its_type(&linked, &verb) {
+            let said = e.case().filter(|_| shows(&verb)).cloned();
+            let ty = to.name.clone();
+            return Err(said.unwrap_or(Case::NoLongerDeclarable { ty }.into()));
+        }
+    }
+    Ok(())
 }
 
 /// Puts `d` into `o` as an append leaves it: a type with the link types
