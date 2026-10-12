@@ -19,7 +19,8 @@ writer reaches held (a record written again after it was retired has
 none), and each that is computed from a field the write sends, whatever
 value it then holds, names a live record its writer is answered, as one
 the write sends does (a record held from the writer or outside its
-`only` is to it not there, 006 and 051). A field sent again is a key
+`only` is to it not there, 006 and 051, and so is every record of a
+type it is not shown). A field sent again is a key
 sent again, and that is judged though the record held it already; were
 it not, a writer who may not read the reference would learn it by
 guessing, a dead guess being applied exactly when it is the key held.
