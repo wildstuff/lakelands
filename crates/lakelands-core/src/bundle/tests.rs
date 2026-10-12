@@ -1034,6 +1034,10 @@ fn a_text_expression_that_does_not_parse_is_refused_wherever_it_is() {
             "types/x.yaml",
             "name: x\nview:\n  source: partner\n  measures:\n    n: \"nosuch(1)\"\n",
         ),
+        (
+            "types/x.yaml",
+            "name: x\nfields:\n  p: text\nrelations:\n  r:\n    target: partner\n    derived: { match: [{ from: p, to: id }], where: \"from.p =\" }\n",
+        ),
         ("functions/x.yaml", "name: x\nexpr: \"1 +\"\n"),
         (
             "verbs/x.yaml",

@@ -942,6 +942,45 @@ fn derived(o: &Ontology, t: &TypeDecl, r: &RelationDecl, d: &Derived, on: &[Plac
             return wrong(Case::PairAtRead { from, to, target });
         }
     }
+    // The condition reads a stored field of either record, one step each,
+    // and what a read's `where` may call of the record and the clock.
+    let Some(c) = &d.filter else { return Ok(()) };
+    let e = condition(c, Eval::Record, on)?;
+    let mut paths = Vec::new();
+    lakelands_api::expr::paths(&e, &mut paths);
+    for p in paths {
+        let side = match (p.first().map(FieldName::as_str), p.len()) {
+            (Some(links::FROM), 2) => Some(t),
+            (Some(links::TO), 2) => target,
+            _ => {
+                let path = p
+                    .iter()
+                    .map(FieldName::as_str)
+                    .collect::<Vec<_>>()
+                    .join(".");
+                return wrong(Case::DerivedWherePath { path });
+            }
+        };
+        let (Some(side), field) = (side, &p[1]) else {
+            continue;
+        };
+        let ty = side.name.clone();
+        match side.fields.iter().find(|f| &f.name == field) {
+            None => {
+                return wrong(Case::UnknownField {
+                    ty,
+                    field: field.clone(),
+                });
+            }
+            Some(f) if f.at_read() => {
+                return wrong(Case::ReadsAtRead {
+                    field: field.clone(),
+                    ty,
+                });
+            }
+            Some(_) => {}
+        }
+    }
     Ok(())
 }
 
@@ -1100,11 +1139,7 @@ fn read_as_stored(o: &Ontology, t: &TypeDecl) -> Result<()> {
     let matching = others
         .flat_map(|e| &e.decl.relations)
         .filter(|r| r.target == t.name);
-    read.extend(
-        matching
-            .flat_map(|r| r.derived.iter().flat_map(|d| &d.pairs))
-            .map(|p| p.to.clone()),
-    );
+    read.extend(matching.flat_map(|r| r.derived.iter().flat_map(|d| d.reads()[1].clone())));
     match t
         .fields
         .iter()

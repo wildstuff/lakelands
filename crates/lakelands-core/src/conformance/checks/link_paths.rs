@@ -67,7 +67,10 @@ fn deal(with: Cardinality, target: &str) -> TypeDecl {
             ..RelationDecl::to("by", "customer")
         },
         RelationDecl {
-            derived: Some(Derived { pairs }),
+            derived: Some(Derived {
+                pairs,
+                filter: None,
+            }),
             ..RelationDecl::to("alike", "customer")
         },
     ];

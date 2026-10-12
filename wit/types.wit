@@ -189,9 +189,11 @@ interface types {
     }
 
     /// What connects a derived relation's records: every pair holds the
-    /// same non-null value on both sides.
+    /// same non-null value on both sides, and `where`, if given, holds over
+    /// `from.<field>` (the owner's record) and `to.<field>` (the target's).
     record derived {
         %match: list<match-pair>,
+        where: option<condition>,
     }
 
     record relation-decl {

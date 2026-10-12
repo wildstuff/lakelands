@@ -30,8 +30,9 @@ of a field of the owning type and a field of the target type:
   a neighbourhood or a path, and in `degree` and `components`. The edges
   are the matches as the read's position holds the values. A write that
   changes a matched field moves the edge at that write's position, and
-  `as_of` answers the edges as they stood. It has no `link` or
-  `unlink` door and no link type.
+  `as_of` answers the edges as the values stood; a condition that reads
+  the clock reads the read's (below). It has no `link` or `unlink` door
+  and no link type.
 - **Found through the seam's scan.** A walk asks `scan` for the records
   of the other side that hold exactly the near record's values
   (`Scan.equal`); the seam gains no method. At the head, SQLite and
@@ -60,6 +61,54 @@ of a field of the owning type and a field of the target type:
 - **A step of the log format.** `derived` is a new member of a relation
   declaration, so it came with a step of the format
   (`docs/log-format.md` §6).
+
+### A derived relation may hold under a condition
+
+A derived relation may name a condition beside its match, `where`. Two
+records then connect where every pair holds the same non-null value and
+the condition holds over the two of them:
+
+```json
+{"name": "discountable", "target": "terms", "inverse": "discountable_of",
+ "derived": {"match": [{"from": "terms_no", "to": "no"}],
+             "where": "from.status = 'open' and now() <= from.invoiced_on + to.discount_days * 1d"}}
+```
+
+- **What it reads.** `from.<field>` is the owner's record and
+  `to.<field>` the target's, whichever way a walk goes: stored fields,
+  one step each. Beside them it reads what a read's `where` may read of
+  one record and the lake: `setting(…)`, `now()`, `today()` and the
+  closed functions (017). A path of another form is refused at the
+  declaration (`derived_where_path`), as are a field the record does not
+  have (`unknown_field`), one computed at the read (`at_read_match` on
+  the owner's side, `reads_at_read` on the target's),
+  `in_set`, `previous`, `changed`, `retired`, `param` and the
+  aggregates, each where a record's own condition refuses it.
+- **No edge where it does not hold.** A condition that answers false or
+  null, or cannot be evaluated over the pair, connects nothing, as a
+  read's `where` matches nothing there.
+- **The read's clock.** A walk evaluates the condition with the clock of
+  the read, also in a read as of a position: the values are those the
+  position holds, the clock is the one every other `now()` of that read
+  reads (052).
+- **Where a walk reads the edge.** In every walk above, and in `degree`
+  and `components`, the candidates are found by the match as before and
+  the condition is evaluated on each pair, both records already loaded.
+  Nothing of it is pushed into the scan.
+- **Rights.** A walk probes every field the condition reads, on both
+  sides, as it probes the matched fields: whether an edge appears answers
+  the condition. One the walker sees masked is refused `not_granted`
+  naming it; one it may not know of hides the relation.
+- **Not shape.** `where` is a member of `derived`, outside the schema
+  hash; changing it is a `declare`. A type declared again so that a field
+  a `where` in force reads is computed at the read is refused, as for a
+  matched field.
+- **Derived relations only.** A relation carried by a reference or by
+  link records takes no condition. Its edge is a fact a door wrote and
+  judges (032, a link's cardinality, `unlink`); an edge the read hid
+  while the store holds it would let a link door refuse a second link
+  no read shows. Over a carried edge a verb's condition is its
+  `requires` across the path (055), and a read's is the step's `where`.
 
 ### A step that names an inverse walks the relation the other way
 
@@ -157,8 +206,9 @@ the answer the same on every engine.
 
 ## What it is not
 
-- It is not a join language. A match is equality of named fields, and
-  a general expression is out of scope (017, 018).
+- It is not a join language. A match is equality of named fields; a
+  condition beside it reads the two records the match connects, one
+  field a step, and connects no record the match does not (017, 018).
 - It is not a reference. It does not require a live target (032); a
   value no record holds simply connects nothing.
 - It stores nothing. There is no edge to restrict, retire or purge; the
@@ -182,3 +232,7 @@ the answer the same on every engine.
 - Corrected at the rewrite (lakelands#817): the kinds a pair may be
   left out the date, which a key may be and `declare` admits since
   lakelands#702.
+- A derived relation may hold under a condition, `where`, over the
+  owner's record and the target's, read with the read's clock; `as_of`
+  answers the values as they stood and no longer the edges whole
+  (lakelands#960).

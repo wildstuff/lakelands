@@ -109,6 +109,7 @@ fn paid() -> TypeDecl {
                 from: "account".into(),
                 to: "account".into(),
             }],
+            filter: None,
         }),
         ..RelationDecl::to("window", "account_window")
     }];

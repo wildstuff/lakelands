@@ -871,7 +871,7 @@ with that declaration's members beside it. Every member not marked
 | `type` | `name` (required), `key` (`[]`), `fields` (`[]`), `relations` (`[]`), `view` (none), `valid_from`, `valid_to`, `language` (none), `field_meta` (`true`), `description`, `label` (none), `annotations` (`{}`) |
 | a field (in `fields`, a relation's `fields`, a verb's `payload`, a function's `inputs`) | `name` and `type` (required), `required` (`false`), `authority` (`authored`), `derived` (none), `computed_at` (none), `depends_on` (`[]`), `on_input_change` (`keep`), `initial` (none; on a type's own field alone), `sensitive` (`false`), `searchable` (`false`), `description`, `label` (none), `annotations` (`{}`) |
 | a field's `type` | `kind` (required), `value_type`, `target`, `dimensions` (none) |
-| a relation | `name` and `target` (required), `cardinality` (`many_to_one`), `authority` (`authored`; who writes its links, when link records carry it), `inverse`, `via` (none), `fields` (`[]`), `description` (none), `annotations` (`{}`), `derived` (none: `{ "match": [ { "from", "to" } ] }`, a field of the owner and one of the target per pair) |
+| a relation | `name` and `target` (required), `cardinality` (`many_to_one`), `authority` (`authored`; who writes its links, when link records carry it), `inverse`, `via` (none), `fields` (`[]`), `description` (none), `annotations` (`{}`), `derived` (none: `{ "match": [ { "from", "to" } ], "where" }`, a field of the owner and one of the target per pair, and `where` (none) a condition over `from.<field>` and `to.<field>`) |
 | a `view` | `source` and `measures` (required; each measure `{ "name", "expr" }`), `where` (none), `group_by` (`[]`), `params` (`[]`: each `{ "name", "kind" }`, a kind of `text`, `number`, `decimal`, `boolean`, `date_time` or `date`), `merge` (`[]`: each `{ "source", "where", "group_by", "measures" }`; `source` and `measures` required, `where` none, `group_by` `[]`) |
 | `value_type` | `name` and `kind` (required), `constraint` (none), `one_of` (`[]`), `format`, `scale`, `description` (none) |
 | `verb` | `name`, `on`, `risk` and `effect` (required), `payload` (`[]`), `requires` (none), `description` (none); `effect: write` carries `set`, a list of `{ "field", "value" }`; `effect: external` carries `executor` |
@@ -964,7 +964,9 @@ a duration unit and ends the token (`30d` is a duration, `30days` an
 error).
 
 A path's first identifier names a field of the record the expression is
-evaluated on, or `payload` in a verb's values. Each later one reads the
+evaluated on, or `payload` in a verb's values; in a derived relation's
+`where` it is `from` or `to`, the owner's record or the target's, and
+the second a field there. Each later one reads the
 member of that name of the value the path has come to; in a verb's
 `requires` and set values, where that value is a reference, it reads the
 field of that name on the record the reference names; and there a

@@ -787,6 +787,7 @@ async fn a_purge_names_the_records_outside_it_that_refer_into_it(store: Store) -
             from: "name".into(),
             to: "name".into(),
         }],
+        filter: None,
     };
     bill.relations = vec![
         RelationDecl {
@@ -1087,6 +1088,7 @@ async fn a_purge_from_a_type_names_the_link_types_its_relations_carry(store: Sto
             from: "name".into(),
             to: "name".into(),
         }],
+        filter: None,
     };
     let derived = RelationDecl {
         derived: Some(by_name),

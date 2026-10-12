@@ -22,7 +22,7 @@ use lakelands_api::describe::{
 use lakelands_api::engine::Declared;
 use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::{
-    Authority, RelationDecl, Risk, TypeDecl, VerbDecl, VerbEffect, ViewDecl,
+    Authority, Derived, RelationDecl, Risk, TypeDecl, VerbDecl, VerbEffect, ViewDecl,
 };
 use lakelands_api::write::{Declaration, FunctionDecl};
 use lakelands_api::{Access, FieldName, LakeId, Principal, TypeName};
@@ -372,17 +372,22 @@ pub fn declaration_probes(
     match d {
         Declaration::Type(t) => {
             let own = t.fields.iter().filter(|_| &t.name == ty);
-            let pairs = |r: &RelationDecl| r.derived.clone().map(|m| m.pairs).unwrap_or_default();
-            let matching = (t.relations.iter().filter(|_| &t.name == ty)).flat_map(pairs);
-            let matched = (t.relations.iter().filter(|r| &r.target == ty)).flat_map(pairs);
+            let side = |r: &RelationDecl, i: usize| {
+                r.derived
+                    .as_ref()
+                    .map(|d| d.reads()[i].clone())
+                    .unwrap_or_default()
+            };
+            let matching = (t.relations.iter().filter(|_| &t.name == ty)).flat_map(|r| side(r, 0));
+            let matched = (t.relations.iter().filter(|r| &r.target == ty)).flat_map(|r| side(r, 1));
             let view = t
                 .view
                 .iter()
                 .flat_map(|v| view_reads(v).unwrap_or_default());
             own.filter_map(|f| f.derived.as_ref())
                 .flat_map(of)
-                .chain(matching.map(|p| p.from))
-                .chain(matched.map(|p| p.to))
+                .chain(matching)
+                .chain(matched)
                 .chain(view.filter(|(source, _)| source == ty).flat_map(|v| v.1))
                 .collect()
         }
@@ -567,13 +572,12 @@ pub(crate) fn relation_shown<'a>(
         let f = t.fields.iter().find(|f| &f.name == n);
         f.is_some_and(|f| field_access(who, t, f) != Access::None)
     };
-    let pairs = r.derived.iter().flat_map(|d| &d.pairs);
+    let [from, to] = r.derived.as_ref().map(Derived::reads).unwrap_or_default();
     type_shown(owner, &|n| find(n), who)
         && type_shown(target, find, who)
         && r.via.iter().all(|v| known(owner, v))
-        && pairs
-            .into_iter()
-            .all(|p| known(owner, &p.from) && known(target, &p.to))
+        && from.iter().all(|n| known(owner, n))
+        && to.iter().all(|n| known(target, n))
 }
 
 impl Sight<'_> {

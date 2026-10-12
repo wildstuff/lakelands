@@ -441,6 +441,7 @@ async fn a_walk_over_a_derived_relation_reaches_a_views_records_both_ways(store:
                 from: "name".into(),
                 to: "partner".into(),
             }],
+            filter: None,
         }),
         ..RelationDecl::to("totals", "partner_totals")
     }];
@@ -600,6 +601,7 @@ async fn a_relation_on_a_view_is_derived_or_refused(store: Store) -> Held {
                 from: "partner".into(),
                 to: "partner".into(),
             }],
+            filter: None,
         }),
         ..RelationDecl::to("billed", "invoice")
     };

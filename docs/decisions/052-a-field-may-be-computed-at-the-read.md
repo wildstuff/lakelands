@@ -52,7 +52,7 @@ records as stored, and would read it as absent. So it has the authority
 backing is called at a write), it reads no `previous` or `changed`, and
 it is not `required`, `sensitive` by itself, cleared by
 `on_input_change` or searchable; it is no key, validity bound, `via` or
-derived relation's match on either side, no `reference` (nothing would
+derived relation's match or `where` on either side, no `reference` (nothing would
 judge the record it names for a writer, 032), no field of a view (a view
 is computed at the read already) or of a link; no field computed at the
 write reads it; a trigger, a verb and an object set that read it are

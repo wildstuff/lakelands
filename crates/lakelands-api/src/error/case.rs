@@ -731,8 +731,9 @@ catalog! {
         LinkFieldAtRead => "a link's field is computed at the write; a walk reads links as stored",
         /// A key field computed at the read.
         AtReadKey => "computed at the read, it is no key, which is read as stored",
-        /// A derived relation's match computed at the read.
-        AtReadMatch => "computed at the read, it is no derived relation's match, which is read as stored",
+        /// A field a derived relation's match or `where` reads, computed at
+        /// the read.
+        AtReadMatch => "computed at the read, it is read by no derived relation's match or `where`, which read records as stored",
         /// A field computed at the read that reads what only a write has.
         AtReadPrevious => "computed at the read, it reads no `previous` or `changed`, which a write has and a read has not",
         /// A required field computed at the read.
@@ -773,6 +774,9 @@ catalog! {
         DerivedNoPair => "a derived relation matches at least one pair of fields",
         /// A derived field that reads itself.
         DerivedReadsItself { field: FieldName } => "derived field `{field}` reads itself",
+        /// A derived relation's `where` reading a path that is no field of
+        /// one of its two records.
+        DerivedWherePath { path: String } => "`{path}`: a derived relation's `where` reads `from.<field>` and `to.<field>`, a field of the owner's record or of the target's, one step",
         /// A derived relation with a carrier of its own.
         DerivedStoresEdge => "a derived relation stores no edge, so it has no `via`, no fields and no link authority",
         /// Dimensions on what is no vector.

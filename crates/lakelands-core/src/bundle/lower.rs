@@ -396,9 +396,14 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
             let at = format!("relation `{name}`");
             let target = l.type_ref(&at, &r.target);
             let fields = l.fields(&format!("{at}, field"), r.fields);
+            let derived = r.derived.map(|mut d| {
+                let filter = d.filter.take().map(super::doc::Cond);
+                d.filter = l.opt_cond(&format!("{at}, where"), filter);
+                d
+            });
             RelationDecl {
                 annotations: r.annotations,
-                derived: r.derived,
+                derived,
                 name: RelationName::new(name),
                 target,
                 cardinality: r.cardinality,

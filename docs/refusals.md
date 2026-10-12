@@ -251,7 +251,7 @@ What a refusal is about.
 | `at_read_cleared` | — | computed at the read, no value of it is kept to clear | A field computed at the read that a change of its inputs clears. |
 | `link_field_at_read` | — | a link's field is computed at the write; a walk reads links as stored | A link's field computed at the read. |
 | `at_read_key` | — | computed at the read, it is no key, which is read as stored | A key field computed at the read. |
-| `at_read_match` | — | computed at the read, it is no derived relation's match, which is read as stored | A derived relation's match computed at the read. |
+| `at_read_match` | — | computed at the read, it is read by no derived relation's match or `where`, which read records as stored | A field a derived relation's match or `where` reads, computed at the read. |
 | `at_read_previous` | — | computed at the read, it reads no `previous` or `changed`, which a write has and a read has not | A field computed at the read that reads what only a write has. |
 | `at_read_required` | — | computed at the read, it is not `required`: no write gives it a value | A required field computed at the read. |
 | `at_read_searchable` | — | computed at the read, it is not searchable: an index holds stored values only | A searchable field computed at the read. |
@@ -272,6 +272,7 @@ What a refusal is about.
 | `derived_cycle` | `fields` (Names) | derived fields read each other in a cycle: {fields} | Derived fields that read each other. |
 | `derived_no_pair` | — | a derived relation matches at least one pair of fields | A derived relation with no pair. |
 | `derived_reads_itself` | `field` (FieldName) | derived field `{field}` reads itself | A derived field that reads itself. |
+| `derived_where_path` | `path` (String) | `{path}`: a derived relation's `where` reads `from.<field>` and `to.<field>`, a field of the owner's record or of the target's, one step | A derived relation's `where` reading a path that is no field of one of its two records. |
 | `derived_stores_edge` | — | a derived relation stores no edge, so it has no `via`, no fields and no link authority | A derived relation with a carrier of its own. |
 | `dimensions_not_vector` | — | only a vector names dimensions | Dimensions on what is no vector. |
 | `embed_also_computed` | — | a field is an embedding, derived from an expression or computed by a function, only one | An embedding that is also derived or computed. |
