@@ -288,15 +288,25 @@ pub(crate) fn only<'a>(
     ty: &TypeName,
     find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
 ) -> (Vec<(FieldName, Value)>, bool) {
-    only_seen(who, ty, find, &mut Vec::new())
+    only_seen(who, ty, find, &mut Vec::new(), &mut BTreeMap::new())
 }
 
+/// What [`only`] answers of a type: its pairs, and whether it is computed.
+type OnlyAnswer = (Vec<(FieldName, Value)>, bool);
+
+/// [`only`] of `ty`, `seen` the views on the walk's path and `known` what
+/// each view walked before answered, so that a view many views read is
+/// asked once a call (lakelands#942). An answer is the same from any path:
+/// a view on a cycle of views, which the read refuses, reads a view whose
+/// answer is computed, so it carries no pairs and answers its own pairs,
+/// computed, whichever way the walk came.
 fn only_seen<'a>(
     who: &Principal,
     ty: &TypeName,
     find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
     seen: &mut Vec<TypeName>,
-) -> (Vec<(FieldName, Value)>, bool) {
+    known: &mut BTreeMap<TypeName, OnlyAnswer>,
+) -> OnlyAnswer {
     let kept = ty.as_str().strip_prefix(lakelands_api::seam::KEPT_PREFIX);
     let ty = kept.map_or_else(|| ty.clone(), TypeName::from);
     let mut pairs = own_only(who, &ty);
@@ -306,24 +316,33 @@ fn only_seen<'a>(
     if seen.contains(&ty) {
         return (pairs, true);
     }
-    seen.push(ty);
+    if let Some(answer) = known.get(&ty) {
+        return answer.clone();
+    }
+    seen.push(ty.clone());
     let sources = std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source));
     let ends_held = |d: &TypeDecl| !held_ends(who, d, find).is_empty();
-    let held = |s: &TypeName, seen: &mut Vec<TypeName>| {
-        let (p, computed) = only_seen(who, s, find, seen);
+    let mut held = Vec::new();
+    for s in sources {
+        let (p, computed) = only_seen(who, s, find, seen, known);
         let whole = p.is_empty() && !computed;
-        (!whole || find(s).is_some_and(ends_held)).then_some((p, computed))
-    };
-    let held: Vec<_> = sources.filter_map(|s| Some((s, held(s, seen)?))).collect();
+        if !whole || find(s).is_some_and(ends_held) {
+            held.push((s, (p, computed)));
+        }
+    }
     seen.pop();
-    let Some((source, (p, computed))) = held.first() else {
-        return (pairs, false);
+    let answer = match held.first() {
+        None => (pairs, false),
+        Some((source, (p, computed))) => {
+            let stored = find(source).is_some_and(|d| d.view.is_none() && !ends_held(d));
+            let grouped = p.iter().all(|(f, _)| v.group_by.contains(f));
+            let carried = !computed && v.merge.is_empty() && stored && grouped;
+            pairs.extend(p.iter().filter(|_| carried).cloned());
+            (pairs, !carried)
+        }
     };
-    let stored = find(source).is_some_and(|d| d.view.is_none() && !ends_held(d));
-    let grouped = p.iter().all(|(f, _)| v.group_by.contains(f));
-    let carried = !computed && v.merge.is_empty() && stored && grouped;
-    pairs.extend(p.iter().filter(|_| carried).cloned());
-    (pairs, !carried)
+    known.insert(ty, answer.clone());
+    answer
 }
 
 /// What a grant admits of a type's records for one principal (051): the

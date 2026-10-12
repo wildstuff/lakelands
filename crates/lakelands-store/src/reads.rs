@@ -115,6 +115,15 @@ pub struct Reader<'a> {
     bound: RefCell<BTreeMap<TypeName, Bound>>,
     /// The views being computed, outermost first.
     computing: RefCell<Vec<TypeName>>,
+    /// What [`Self::kept_read`] answered for each view and face, so that a
+    /// view many views read is asked once a read (lakelands#942).
+    kept_reads: RefCell<BTreeMap<(TypeName, usize), Option<KeptRead>>>,
+    /// The views whose sources [`Self::probe_view`] found readable, so
+    /// that a view many views read is probed once a read (lakelands#942).
+    probed: RefCell<BTreeSet<TypeName>>,
+    /// What [`Self::computes`] answered for each type this read, so that a
+    /// view many views read is asked once (lakelands#942).
+    computes_known: RefCell<BTreeMap<TypeName, bool>>,
     /// For a search as of a position, the head, whose indexes its rankings
     /// read (025, 051).
     pub head: Option<Head<'a>>,
@@ -418,6 +427,10 @@ pub(crate) fn holds(
     expr::holds(e, &scope).unwrap_or(false)
 }
 
+/// What [`Reader::kept_read`] answers of a kept view: its state, and how
+/// many of its groups and its sources' are not exact.
+type KeptRead = (kept::State, u64);
+
 impl<'a> Reader<'a> {
     /// Open a read at `at`, of `view` and its `shape`.
     pub fn open(
@@ -441,6 +454,9 @@ impl<'a> Reader<'a> {
             computed: RefCell::default(),
             bound: RefCell::default(),
             computing: RefCell::default(),
+            kept_reads: RefCell::default(),
+            probed: RefCell::default(),
+            computes_known: RefCell::default(),
             head: None,
             held_now: false,
         })
@@ -740,6 +756,19 @@ impl<'a> Reader<'a> {
     /// computed so, whose links are judged by their ends, as no kept face
     /// can (006).
     fn computes(&self, ty: &TypeName) -> bool {
+        if let Some(known) = self.computes_known.borrow().get(ty) {
+            return *known;
+        }
+        let computes = self.computes_once(ty);
+        self.computes_known
+            .borrow_mut()
+            .insert(ty.clone(), computes);
+        computes
+    }
+
+    /// [`Self::computes`], asked: each source through [`Self::computes`]
+    /// again.
+    fn computes_once(&self, ty: &TypeName) -> bool {
         let find = |t: &TypeName| self.shape.ontology.ty(t).ok();
         let view = find(ty).and_then(|d| d.view.as_deref());
         let mut sources = view
@@ -978,8 +1007,15 @@ impl<'a> Reader<'a> {
         if let Some(kept) = self.kept(decl)? {
             return self.each_kept(&decl.name, kept, filter, page, each);
         }
-        if decl.view.is_some() {
-            return self.records(decl, filter)?.iter().try_for_each(each);
+        // A view is computed once a read, however many views read it, and
+        // a reader's `where` on it held after, as its computation holds it
+        // (lakelands#942).
+        if let Some(all) = self.computed(&decl.name)? {
+            let bounded = self.with_bound(decl, filter);
+            let held = |r: &&StoredRecord| {
+                (bounded.as_ref()).is_none_or(|e| self.holds(e, &r.fields, None))
+            };
+            return all.iter().filter(held).try_for_each(each);
         }
         self.each_stored(decl, filter, page, &mut each)
     }
@@ -1492,7 +1528,24 @@ impl<'a> Reader<'a> {
         ty: &TypeName,
         v: &lakelands_api::ontology::ViewDecl,
         face: usize,
-    ) -> Result<Option<(kept::State, u64)>> {
+    ) -> Result<Option<KeptRead>> {
+        let at = (ty.clone(), face);
+        if let Some(known) = self.kept_reads.borrow().get(&at) {
+            return Ok(known.clone());
+        }
+        let read = self.kept_read_once(ty, v, face)?;
+        self.kept_reads.borrow_mut().insert(at, read.clone());
+        Ok(read)
+    }
+
+    /// [`Self::kept_read`], asked: each source that is a view through
+    /// [`Self::kept_read`] again.
+    fn kept_read_once(
+        &self,
+        ty: &TypeName,
+        v: &lakelands_api::ontology::ViewDecl,
+        face: usize,
+    ) -> Result<Option<KeptRead>> {
         let asked = format!("{}{ty}", lakelands_api::seam::VIEW_KEPT_SETTING);
         if !lakelands_api::seam::view_kept(self.shape.settings.get(&asked)) {
             return Ok(None);
@@ -1523,8 +1576,11 @@ impl<'a> Reader<'a> {
         for (source, filter, group_by, measures) in std::iter::once(own).chain(merged) {
             let (source, ..) =
                 self.view_probe(source, filter, group_by, measures, &BTreeMap::new(), false)?;
-            if let Some(inner) = &source.view {
+            if let Some(inner) = &source.view
+                && !self.probed.borrow().contains(&source.name)
+            {
                 self.probe_view(inner)?;
+                self.probed.borrow_mut().insert(source.name.clone());
             }
         }
         Ok(())
