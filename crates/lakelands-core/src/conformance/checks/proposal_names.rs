@@ -24,7 +24,7 @@ check!(
 
 check!(
     LISTED_AS_SHOWN = a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_field,
-    "013 and 024, extended (lakelands#499): a proposal on a restricted record without the grant is listed without its write and says `more`, and one on a type its reader may not see is not listed (lakelands#762); `type` and `kind` are answered on the entry as shown, so a hidden type answers what an undeclared one answers and an entry without a write is of no kind, while the unfiltered listing and `state` hold it; an accepter who may not know of a field the migration takes away, which a declaration reads, is listed it in part and refused its accept as not granted, naming neither (lakelands#867)"
+    "013 and 024, extended (lakelands#499): a proposal on a restricted record is not listed to a reader without the grant (lakelands#1008), nor one on a type its reader may not see (lakelands#762); `type` and `kind` are answered on the entry as shown, so a hidden type answers what an undeclared one answers and an entry without a write is of no kind, while the unfiltered listing and `state` hold it; an accepter who may not know of a field the migration takes away, which a declaration reads, is listed it in part and refused its accept as not granted, naming neither (lakelands#867)"
 );
 
 /// The lake of the re-key checks with a type `doc`, and the proposals of
@@ -279,20 +279,23 @@ async fn a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_fi
 ) -> Held {
     let (s, l) = (store.as_ref(), proposed(store.as_ref()).await?);
     let [hid, plain, unseeing] = readers(s);
-    // A record its reader is not answered: restricted, without the grant.
-    for (who, why, shown) in [
-        (&plain, "upsert", true),
-        (&plain, "restricted", false),
-        (&plain, "retire restricted", false),
-        (&l.own, "restricted", true),
-    ] {
+    // A record its reader is not answered: restricted, without the grant,
+    // and a proposal to write it is not there (lakelands#1008).
+    for (who, why) in [(&plain, "upsert"), (&l.own, "restricted")] {
         let (write, more) = entry(&l, who, why).await?;
-        let (who, with) = (&who.id, if shown { "with" } else { "without" });
         ensure!(
-            write.is_some() == shown && more != shown,
-            "`{who}` must list `{why}` {with} its write; it reads {write:?}, `more` {more}"
+            write.is_some() && !more,
+            "`{}` must list `{why}` with its write; it reads {write:?}, `more` {more}",
+            who.id
         );
     }
+    let theirs = listed(&l, &plain, json!({})).await?;
+    let held = ["restricted", "retire restricted"];
+    ensure!(
+        !theirs.iter().any(|p| held.contains(&p.why.as_str())),
+        "`plain` must list no proposal on a restricted record; it lists {:?}",
+        theirs.iter().map(|p| &p.why).collect::<Vec<_>>()
+    );
     // A proposal on a type its reader may not see is not listed at all
     // (lakelands#762).
     let theirs = listed(&l, &unseeing, json!({})).await?;

@@ -2537,26 +2537,18 @@ impl Call<'_> {
 
     /// Refuse a reviewer holding `only` a proposal it is not listed whole:
     /// a change of shape, which it never makes, and a write to a type it
-    /// holds `only` on that its listing would trim or withhold (051); and
-    /// one without `restricted` a write that reaches a held record, which
-    /// it is not answered (006). It is judged before the reviewer is told
-    /// whether the proposal is decided.
+    /// holds `only` on that its listing would trim or withhold (051). A
+    /// write that reaches a held record is not listed to one without
+    /// `restricted`, so it is not found before this (006, lakelands#1008).
+    /// It is judged before the reviewer is told whether the proposal is
+    /// decided.
     fn decides(
         &self,
         w: &Writer,
         p: &lakelands_api::write::Proposal,
         listed: &(Option<ProposedWrite>, bool),
     ) -> Result<()> {
-        let (o, sees) = (&w.ontology, Sight::held(self.who, &w.ontology));
-        // The grant is asked first only to spare the walk.
-        if let Some(write) = p.write.as_ref().filter(|_| !self.who.grants.restricted) {
-            let view = self.lake.engine.view(None)?;
-            let now = crate::lake::wall_clock().max(w.last_known_at);
-            let at = (view.as_ref(), &w.settings, now);
-            for (ty, key) in reached(self.lake, o, at, write, true)? {
-                granted(!view.get(&ty, &key)?.is_some_and(|r| sees.withheld(&r)))?;
-            }
-        }
+        let o = &w.ontology;
         let Some(write) = p.write.as_ref().filter(|_| rights::holds_only(self.who)) else {
             return Ok(());
         };
