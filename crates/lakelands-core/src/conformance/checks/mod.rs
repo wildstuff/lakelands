@@ -6,6 +6,7 @@
 
 use super::Check;
 
+mod accepted_whole;
 mod after;
 mod aggregates;
 mod aging;
@@ -297,6 +298,7 @@ pub const ALL: &[Check] = &[
     proposals::NOT_SHOWN_NOT_DECIDED,
     proposals::TOLD_AS_LISTED,
     readers_view::VALUES_AS_THE_READERS_VIEW,
+    accepted_whole::ACCEPTED_WHOLE,
     verb_reads::VERB_READS_AS_A_FILTER,
     proposal_names::NAMES_AS_THE_READERS_VIEW,
     proposal_names::LISTED_AS_SHOWN,

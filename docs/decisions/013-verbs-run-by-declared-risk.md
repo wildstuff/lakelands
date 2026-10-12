@@ -41,8 +41,9 @@ conflict and a `requires` that does not hold is a precondition, and
 neither is recorded as a proposal (lakelands#338).
 
 Accepting a proposal applies its write as it was logged, whole, in the
-proposer's name and not under its grant
-(`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
+proposer's name and not under its grant, and so only a reviewer listed
+it whole accepts it; one listed it in part rejects it (lakelands#867,
+`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
 At acceptance the store checks the write again at the head, as the
 order of refusals lists it, and records the write with the proposer as
 its writer, caused by the acceptance. A call that reads across a

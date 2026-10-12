@@ -30,7 +30,7 @@ check!(
 
 check!(
     AS_ITS_READERS = what_a_migration_restates_is_shown_as_its_fields_are_and_holds_at_the_accept,
-    "027, 024 and 013, extended (lakelands#554): a `to` that leaves out `sensitive`, `searchable` and the labels is lossless and its report restates each; an entry is answered where its reader may know of the field, a renamed field's where it may know of the name it had, in a proposal's listing and in the refusal of an accept that is not lossless, with `more`, and an author kept from a field restates nothing of it; one who knows of a field or a link field and does not read it, in `to` or as the type stands, is answered its shape alone, `sensitive` and no label, description, annotation, `searchable`, initial value or expression, in its own preflight, in a listing and in a refusal, and in the `to` and the types a listing hands it; the `write_proposed` event carries the report whole in the feed and in an export, and without the member where nothing is restated; an accept is refused where the type gained a mark the proposal's report does not restate",
+    "027, 024 and 013, extended (lakelands#554): a `to` that leaves out `sensitive`, `searchable` and the labels is lossless and its report restates each; an entry is answered where its reader may know of the field, a renamed field's where it may know of the name it had, in a proposal's listing, with `more`, so that a reviewer listed it so is refused the accept as not granted (lakelands#867), and whole in the refusal of an accept that is not lossless to one listed it whole; an author kept from a field restates nothing of it; one who knows of a field or a link field and does not read it, in `to` or as the type stands, is answered its shape alone, `sensitive` and no label, description, annotation, `searchable`, initial value or expression, in its own preflight and in a listing, and in the `to` and the types a listing hands it; the `write_proposed` event carries the report whole in the feed and in an export, and without the member where nothing is restated; an accept is refused where the type gained a mark the proposal's report does not restate",
     scratch
 );
 
@@ -429,7 +429,17 @@ async fn what_a_migration_restates_is_shown_as_its_fields_are_and_holds_at_the_a
     l.upsert("person", "bob", bob).await?;
     let whole = json!(preview(&l, &l.own, bare.clone()).await?).to_string();
     let own = json!(preview(&l, &hid, unknowing).await?).to_string();
-    let accepted = refused(l.cat.accept(&hid, &ids[3]).await)?;
+    // Listed it in part, a reviewer is refused its accept (lakelands#867).
+    let not_granted = Err(lakelands_api::Error::Refused {
+        field: None,
+        reason: lakelands_api::Refusal::NotGranted,
+    });
+    let accepted = l.cat.accept(&hid, &ids[3]).await.map(|_| ());
+    ensure!(
+        accepted == not_granted,
+        "one kept from `secret`, listed the migration in part, must be refused its accept as \
+         not granted, naming nothing; it answered {accepted:?}"
+    );
     let for_hid = listed(&l, &hid, &ids[0]).await?;
     let for_old = listed(&l, &old, &ids[0]).await?;
     let for_own = listed(&l, &l.own, &ids[0]).await?;
@@ -459,8 +469,12 @@ async fn what_a_migration_restates_is_shown_as_its_fields_are_and_holds_at_the_a
         reports.push(("the preview of one who does not read `secret`", own));
         let listing = listed(&l, &who, &ids[0]).await?;
         reports.push(("the listing for one who does not read `secret`", listing));
-        let accepted = refused(l.cat.accept(&who, &ids[3]).await)?;
-        reports.push(("the refused accept of one who does not read it", accepted));
+        let accepted = l.cat.accept(&who, &ids[3]).await.map(|_| ());
+        ensure!(
+            accepted == not_granted,
+            "one who does not read `secret`, listed the migration in part, must be refused its \
+             accept as not granted, naming nothing; it answered {accepted:?}"
+        );
         for id in [&ids[1], &ids[4]] {
             let listing = listed(&l, &who, id).await?;
             shapes.push(("the shape listed for one who does not read it", listing));
@@ -498,10 +512,11 @@ async fn what_a_migration_restates_is_shown_as_its_fields_are_and_holds_at_the_a
         "the preview of one kept from `secret`, of its own `to`",
         own,
     );
+    let accepted = refused(l.cat.accept(&l.own, &ids[3]).await)?;
+    let accepted = ("the owner's refused accept, not lossless", accepted);
     let for_hid = ("the listing for one kept from `secret`", for_hid);
     let for_old = ("the listing for one kept from the name `nick`", for_old);
     let for_own = ("the owner's listing", for_own);
-    let accepted = ("the refusal of an accept that is not lossless", accepted);
     let (feed, export) = (("the feed", feed), ("an export", export));
     let rows: [Answered; 8] = [
         (&whole, &[mark, found, label, alias, lossless], &["more"]),
@@ -509,7 +524,7 @@ async fn what_a_migration_restates_is_shown_as_its_fields_are_and_holds_at_the_a
         (&for_hid, &[label, alias, more], &["secret"]),
         (&for_old, &[label, mark, more], &["alias", "nick"]),
         (&for_own, &[mark, label, alias], &[more]),
-        (&accepted, &[label, more, lost], &["secret"]),
+        (&accepted, &[label, lost], &[more]),
         (&feed, &[mark, label, alias], &[empty, more]),
         (&export, &[mark, label, alias], &[empty, more]),
     ];

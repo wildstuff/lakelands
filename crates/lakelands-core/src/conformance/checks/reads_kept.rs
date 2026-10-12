@@ -155,7 +155,7 @@ async fn a_migration_keeps_the_fields_a_declaration_reads(store: Store) -> Held 
 
 check!(
     RELATION_KEPT_FOR_A_VERB = a_relation_stays_while_a_verb_is_declared_on_its_link_type,
-    "027 and 035, extended: a migration that removes a relation carried by link records is refused as invalid while a verb in force is declared on the relation's link type, by the preflight, by the apply and by the accept of a removal proposed before the verb, with the head unmoved, while one that keeps the relation is applied, naming a verb to an author `describe` shows it to, one who may call it, whichever of several that is, and telling another only that a declaration is declared there, with no name and no verb's place: one who writes nothing at a proposal, and one kept from the link type at the preflight, the apply, a proposal and, as its reviewer, the accept; the verb's call is still answered; once every such verb is declared again on another type the removal is applied, a `link` sent again under its key finds no relation, and a verb declared on the link type it leaves is refused as on a type that is not declared"
+    "027 and 035, extended: a migration that removes a relation carried by link records is refused as invalid while a verb in force is declared on the relation's link type, by the preflight, by the apply and by the accept of a removal proposed before the verb, with the head unmoved, while one that keeps the relation is applied, naming a verb to an author `describe` shows it to, one who may call it, whichever of several that is, and telling another only that a declaration is declared there, with no name and no verb's place: one who writes nothing at a proposal, and one kept from the link type at the preflight, the apply and a proposal, while as a reviewer, listed the removal in part, it is refused the accept as not granted (lakelands#867); the verb's call is still answered; once every such verb is declared again on another type the removal is applied, a `link` sent again under its key finds no relation, and a verb declared on the link type it leaves is refused as on a type that is not declared"
 );
 
 async fn a_relation_stays_while_a_verb_is_declared_on_its_link_type(store: Store) -> Held {
@@ -231,8 +231,16 @@ async fn a_relation_stays_while_a_verb_is_declared_on_its_link_type(store: Store
     let before = store.head().await.must("reading the head")?;
     let accepted = cat.accept(own, &proposal).await;
     refused_like("the accept of the removal proposed early", accepted, &first)?;
-    let what = "the accept by a reviewer kept from the link type";
-    untold(what, cat.accept(&kept, &proposal).await)?;
+    let accepted = cat.accept(&kept, &proposal).await.map(|_| ());
+    let not_granted = Err(lakelands_api::Error::Refused {
+        field: None,
+        reason: lakelands_api::Refusal::NotGranted,
+    });
+    ensure!(
+        accepted == not_granted,
+        "the accept by a reviewer kept from the link type, listed the removal in part, must be \
+         refused as not granted, naming nothing; it answered {accepted:?}"
+    );
     head_unmoved(store.as_ref(), before, "a refused accept of the removal").await?;
     // A migration that keeps the relation is not the verb's to refuse.
     l.migrate(doc(&["n"], &["signed_by"])).await?;

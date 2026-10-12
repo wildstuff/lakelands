@@ -18,7 +18,7 @@ use crate::conformance::{Failure, Given, Held, ImportedLake, Store};
 
 check!(
     GRANT_FOLLOWS = a_grant_holds_a_field_under_every_name_it_has_borne,
-    "006 and 024, extended (lakelands#527): a field renamed by a migration is one field: its access is the lowest of what a principal's grants say under the name it bears at the position read and under every other name it has borne or will bear that they name, reading and writing judged apart; so a field held at none or masked stays so under its new name, through a chain of renames, and under its old name in a read as of before for a host that renamed its grant, at every door (`get`, a `where`, an `order_by`, an aggregate, a view's measure, a pattern, a search, `describe_type`, a write, a verb that sets it), but a search as of before finds it only where the head shows it too, since it ranks by the head's text; a permission stays with its name, and a host widens by naming the new name and dropping the old; two fields that have borne one name are restricted together by it; a proposed migration that renames is listed to a reader kept from the old name with neither the pair nor the new name, and its accept answers it no rename; a migration's answer names its renames; a grant held through a rename may hide what the grants as given do not (a key field held at `write_only` under its old name leaves its type not shown), and the write door hides a reference to that type as a read does (lakelands#798); the list is kept through a reopen, made again by a rebuild and an import, and is no event of the log",
+    "006 and 024, extended (lakelands#527): a field renamed by a migration is one field: its access is the lowest of what a principal's grants say under the name it bears at the position read and under every other name it has borne or will bear that they name, reading and writing judged apart; so a field held at none or masked stays so under its new name, through a chain of renames, and under its old name in a read as of before for a host that renamed its grant, at every door (`get`, a `where`, an `order_by`, an aggregate, a view's measure, a pattern, a search, `describe_type`, a write, a verb that sets it), but a search as of before finds it only where the head shows it too, since it ranks by the head's text; a permission stays with its name, and a host widens by naming the new name and dropping the old; two fields that have borne one name are restricted together by it; a proposed migration that renames is listed to a reader kept from the old name with neither the pair nor the new name, and `more`, so its accept is refused it as not granted (lakelands#867); a migration's answer names its renames; a grant held through a rename may hide what the grants as given do not (a key field held at `write_only` under its old name leaves its type not shown), and the write door hides a reference to that type as a read does (lakelands#798); the list is kept through a reopen, made again by a rebuild and an import, and is no event of the log",
     given
 );
 
@@ -368,8 +368,8 @@ async fn a_grant_holds_a_field_under_every_name_it_has_borne(store: Store, given
     );
 
     // A proposed migration that renames `c`, listed to a reviewer kept
-    // from it, shows neither the pair nor the new name; its accept answers
-    // that reviewer no rename.
+    // from it, shows neither the pair nor the new name and says `more`;
+    // its accept is not that reviewer's (lakelands#867).
     let mut kept_from = reviewer(s, true);
     kept_from.grants.types = held(s, read, &[("c", none)]).grants.types;
     let to = serde_json::from_value(account(&["a", "d", "owner", "holder"])).expect("a type");
@@ -396,15 +396,20 @@ async fn a_grant_holds_a_field_under_every_name_it_has_borne(store: Store, given
         let listed = listed.must("listing")?.data;
         entries.extend(listed.iter().map(|p| (json!(p.write).to_string(), p.more)));
     }
-    let accepted = l.cat.accept(&anew, &proposal).await;
+    let accepted = l.cat.accept(&anew, &proposal).await.map(|_| ());
     let pair = |w: &String| w.contains("\"c\"");
+    let refused = lakelands_api::Error::Refused {
+        field: None,
+        reason: lakelands_api::Refusal::NotGranted,
+    };
     ensure!(
         matches!(entries.as_slice(), [(w, true), (n, true)]
             if !w.contains("\"d\"") && !pair(w) && n.contains("\"d\"") && !pair(n))
-            && matches!(&accepted, Ok(Outcome::Applied { renamed, .. }) if renamed.is_empty()),
+            && accepted == Err(refused),
         "a proposed rename is listed without the pair to a reader who may not know of the \
          field under its old name, without the new name too where it is kept from the field, \
-         and its accept answers no rename; listed {entries:?}, accepted {accepted:?}"
+         each with `more`, and its accept is refused as not granted, naming nothing; listed \
+         {entries:?}, accepted {accepted:?}"
     );
 
     // Two chains of names that end in one name: a rename continues the one

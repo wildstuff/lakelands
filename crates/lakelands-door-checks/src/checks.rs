@@ -4768,9 +4768,10 @@ pub async fn only_a_reviewer_decides_proposals(store: Arc<dyn LakeStore>) {
 
 /// As the store (lakelands#780): a refusal of the proposer's write at its
 /// accept is whole to a reviewer shown all it names and to its proposer,
-/// and to one kept from a field or a type it names answers a write
-/// changed since it was proposed: an upsert's reference retired since and
-/// a value its field no longer takes, and a call's payload reference; a
+/// and one kept from a field or a type it names, listed the write in
+/// part, is not granted the accept (lakelands#867): an upsert's reference
+/// retired since and a value its field no longer takes, and a call's
+/// payload reference; a
 /// call whose `requires` reads a field the reviewer is kept from is not
 /// there to it (lakelands#779); a conflict and a retirement of a record
 /// retired since name only what is listed.
@@ -4861,13 +4862,10 @@ pub async fn an_accepts_refusal_names_only_what_its_reviewer_is_listed(store: Ar
     };
     let report = c.migrate(own, m.clone()).await.unwrap().data;
     c.migrate_apply(own, m, &report.report_id).await.unwrap();
-    let stale = |k: &str| {
-        let case = Case::WriteChangedSinceProposed {
-            ty: ty("inv"),
-            key: Some(key(k)),
-        };
-        Err(invalid(None, case))
-    };
+    let not_granted = Err(Error::Refused {
+        field: None,
+        reason: Refusal::NotGranted,
+    });
     let head = f.head().await;
     for (id, k, hidden, whole, said) in [
         (
@@ -4919,8 +4917,8 @@ pub async fn an_accepts_refusal_names_only_what_its_reviewer_is_listed(store: Ar
             wire.contains(&format!("\"{said}\"")),
             "`{k}` to `all`: {wire}"
         );
-        for (who, expected) in
-            (hidden.iter().map(|w| (w, stale(k)))).chain(whole.iter().map(|w| (w, to_all.clone())))
+        for (who, expected) in (hidden.iter().map(|w| (w, not_granted.clone())))
+            .chain(whole.iter().map(|w| (w, to_all.clone())))
         {
             let told = c.accept(who, id).await.map(drop);
             assert_eq!(told, expected, "the accept of `{k}` by `{}`", who.id);
@@ -8574,10 +8572,10 @@ pub async fn a_migration_restates_what_its_to_states_otherwise(store: Arc<dyn La
 
 /// One who knows of a field and does not read it is answered its shape
 /// alone of a migration and of a proposed declaration: `sensitive`, and
-/// no label, in its own preflight, in a refusal's report and in the `to`
-/// and the type a listing hands it
+/// no label, in its own preflight and in the `to` and the type a listing
+/// hands it, with `more`, so that its accept is not granted
 /// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
-/// extended).
+/// extended; lakelands#867).
 pub async fn a_migration_shows_a_field_by_its_shape_to_one_who_does_not_read_it(
     store: Arc<dyn LakeStore>,
 ) {
@@ -8657,10 +8655,15 @@ pub async fn a_migration_shows_a_field_by_its_shape_to_one_who_does_not_read_it(
         .unwrap();
     for who in readers {
         let refused = c.accept(&who, &ids[0]).await;
-        let Err(e) = &refused else {
-            panic!("a refusal is due: {refused:?}");
+        let not_granted = lakelands_api::Error::Refused {
+            field: None,
+            reason: lakelands_api::Refusal::NotGranted,
         };
-        answers.push(("the refusal", json!(refusal(e).1).to_string()));
+        assert_eq!(
+            refused.err(),
+            Some(not_granted),
+            "listed in part, not its to accept"
+        );
         answers.push(("the listing", listed(who).await));
     }
     let shape = |a: &str| a.contains(mark) && a.contains("\"more\":true");

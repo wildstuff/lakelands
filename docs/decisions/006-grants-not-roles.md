@@ -1638,8 +1638,10 @@ none. The accept and the reject ask the listing's answer (above) at the
 head as soon as the proposal is found: an entry that is not there is an id
 that does not exist, word for word, to both; one listed without its
 write for a record its reviewer is not answered, or to a holder of
-`only` not whole (below), is not granted to decide; and an accept's
-refusal is told by the same answer (below). A bundle that a reviewer
+`only` not whole (below), is not granted to decide; one listed with
+`more` to any other reviewer is not granted to accept, and is its to
+reject (lakelands#867); and an accept's refusal is told by the same
+answer (below). A bundle that a reviewer
 without `schema` who holds no `only` is listed without its write, none
 of its declarations shown, is that reviewer's to reject; its accept
 takes `schema`.
@@ -1647,15 +1649,34 @@ takes `schema`.
 Accepting a proposal applies it in the proposer's name and not under its
 grant, which is not in the log (below): the write was checked whole
 under the proposer's grants when it was proposed, and the accept plans
-it again as the proposer. A reviewer need not know all of what it
-accepts: the accept asks for `review`, and for `schema` where the
-ontology changes, and applies the write as it was logged and checked
-under the proposer's grants, the part its reviewer was not shown too.
-Trimming what is applied to what the reviewer read would make the
+it again as the proposer. It applies the write as it was logged, whole:
+trimming what is applied to what the reviewer read would make the
 reviewer's grants decide what the proposer wrote, and a write checked
-whole would be applied in part. A reviewer shown every type an entry
-names applies the write whole, the part its listing trims included,
-where the entry is its to decide (above).
+whole would be applied in part. So a reviewer accepts only what it is
+listed whole (lakelands#867): the accept asks for `review`, for
+`schema` where the ontology changes, and for an entry its listing shows
+without `more`. A reviewer listed an entry in part would apply in its
+name what it was not shown; it rejects it, since a reject applies
+nothing, and its accept is refused as not granted, naming nothing, as
+a reviewer's without the grant is. A holder of `only` neither accepts
+nor rejects an entry it is not listed whole: what is left out there is
+another's record, not a field (below). `more` is what the trim left
+out: a value type's report, whose id the listing makes again over what
+its reader is shown, is whole where nothing of it was left out.
+
+What it costs is said here. A reviewer kept from a field (at `none`)
+accepts no upsert whose patch holds it, no call of a verb that sets it,
+and no migration of its type, whose `to` it is listed without the
+field; masked on it, the upsert and the call. One kept from a type is
+listed nothing that names it, which is not there to it. A holder of
+`schema` is shown a proposed set's declarations as `describe` shows it
+each definition in force, so it accepts a set of a verb that sets a
+field it is kept from. And the direct door is wider than the accept: a
+holder of `schema` kept from a field declares and migrates the type
+itself, its view carried back
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`), and
+may not accept the same migration from another. What it authors it has
+seen; what another proposes may touch what it has not.
 
 Accepting a change of the ontology needs `schema` as well as `review`.
 For a record write, the proposer's own grants were the check when it was
@@ -1836,7 +1857,8 @@ record that does not exist.
   proposed. The accept writes in the proposer's name, not under its
   grant, and the pin compares records and types, not grants: a grant
   narrowed or revoked between the proposal and its accept does not stop
-  a pinned proposal. The reviewer decides it, on what the listing shows.
+  a pinned proposal. The reviewer decides it, on what the listing shows,
+  and accepts it only where that is the whole (lakelands#867).
 - **A reviewer holding `only` decides what it is shown whole.** It
   accepts or rejects a proposal on a type it holds `only` on only where
   the proposal listing shows it the proposal whole: the record at the
@@ -1846,7 +1868,10 @@ record that does not exist.
   proposal id, which is positional and so can be guessed, tells it
   nothing the listing does not. Its accept is judged by its own pairs
   too: a write that would leave the record outside them is refused as
-  not granted, as its own write would be.
+  not granted, as its own write would be. Every reviewer accepts only
+  what it is listed whole (above, lakelands#867); a holder of `only`
+  is refused the reject as well, since what its listing leaves out is
+  another's record.
 - **What is refused**, as not granted, naming no field: an aging rule on
   the type, which moves records at the host's run. A holder of `only` on
   any type changes no shape: every schema door and the proposal of a

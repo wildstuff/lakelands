@@ -12,7 +12,7 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     DECIDED_AS_LISTED = an_entry_is_decided_as_its_reviewer_is_listed_it,
-    "006 and 013, extended (lakelands#791): the listing, `accept` and `reject` ask one judgement of an entry, so over a grid of proposed writes (an upsert, a retirement, a call, a migration, a bundle, one decided, and an id that was never proposed) and reviewers (kept from a type, holding `only`, kept from a field, masked on one, shown three types, shown all) an entry that is not listed is to its accept and its reject an id that does not exist, word for word, appending nothing: a write to a type its reader is not shown, a call whose verb reads a field it may not read, as it is declared or as it was where the call was proposed, a migration to a holder of `only`, one that keys its type by a field its reader may not know of, one of a type declared again since that its reader was not shown where it was proposed, and a bundle that brings a type its reader would not be shown, which its proposer of that kind is not listed either; one listed without its write to a holder of `only`, and a declaration listed whole to it, is not granted to accept or to reject; a migration of a type a field of which was renamed since is judged, for a reader kept from that field, on the type as it was proposed against; a call's payload is listed only to one who reads each field its verb sets, as it is declared and as it was where the call was proposed; and, as it stands, a call whose verb would take the record out of its reviewer's `only` is listed whole to it, its accept not granted and its reject taken, the listing not judging the record as the call would leave it"
+    "006 and 013, extended (lakelands#791): the listing, `accept` and `reject` ask one judgement of an entry, so over a grid of proposed writes (an upsert, a retirement, a call, a migration, a bundle, one decided, and an id that was never proposed) and reviewers (kept from a type, holding `only`, kept from a field, masked on one, shown three types, shown all) an entry that is not listed is to its accept and its reject an id that does not exist, word for word, appending nothing: a write to a type its reader is not shown, a call whose verb reads a field it may not read, as it is declared or as it was where the call was proposed, a migration to a holder of `only`, one that keys its type by a field its reader may not know of, one of a type declared again since that its reader was not shown where it was proposed, and a bundle that brings a type its reader would not be shown, which its proposer of that kind is not listed either; one listed without its write to a holder of `only`, and a declaration listed whole to it, is not granted to accept or to reject; one listed with `more` to a reviewer kept from a field or masked on one is not granted to accept (lakelands#867); a migration of a type a field of which was renamed since is judged, for a reader kept from that field, on the type as it was proposed against; a call's payload is listed only to one who reads each field its verb sets, as it is declared and as it was where the call was proposed; and, as it stands, a call whose verb would take the record out of its reviewer's `only` is listed whole to it, its accept not granted and its reject taken, the listing not judging the record as the call would leave it"
 );
 
 /// The entries, in the grid's order.
@@ -39,7 +39,8 @@ const ENTRIES: [&str; 18] = [
 
 /// Each reviewer with what its grants add to `read`, `review` and
 /// `schema`, and, for each entry, how it is listed it (`H` not at all, `N`
-/// without its write, `T` with `more`, `W` whole) and what its accept
+/// without its write, `T` with `more`, so not its to accept, `W` whole)
+/// and what its accept
 /// answers, the reviewers asked in this order (`-` as an id that does not
 /// exist, `g` not granted, `r` not granted and its reject taken, `a`
 /// applied, `d` decided, `c` changed since it was proposed, `v` its verb
@@ -59,12 +60,12 @@ const GRID: [(&str, &str, &str); 6] = [
         "kept",
         r#"{"types": {"doc": {"fields": {"secret": "none"}}, "memo": {"fields": {"a": "none"}},
                       "note": {"fields": {"code": "none"}}, "slip": {"fields": {"code": "none"}}}}"#,
-        "Td Wa Wd Wd H- H- Ta Tc H- Wa Wa Wd H- Tv H- H- Tv Wd",
+        "Tg Wa Wd Wd H- H- Tg Tg H- Wa Wa Wd H- Tg H- H- Tg Wd",
     ),
     (
         "masked",
         r#"{"types": {"doc": {"fields": {"secret": "masked"}}}}"#,
-        "Td Wd Wd Wd H- H- Wd Wc Wc Wd Wd Wd H- Tv Wc H- Tv Wd",
+        "Tg Wd Wd Wd H- H- Wa Wc Wc Wd Wd Wd H- Tg Wc H- Tg Wd",
     ),
     (
         "typed",
@@ -247,8 +248,11 @@ async fn an_entry_is_decided_as_its_reviewer_is_listed_it(store: Store) -> Held 
             let mut accept = said(l.cat.accept(&who, id).await, id);
             // One not listed, or not its reviewer's to decide, is refused
             // its reject in the accept's words, and nothing is appended;
-            // a reject taken there is the grid's `r`.
-            if cell == 'H' || accept == "g" {
+            // a reject taken there is the grid's `r`. One listed with
+            // `more` is its reviewer's to reject, which is left to
+            // `a_reviewer_accepts_only_what_it_is_listed_whole`, so that
+            // the entry waits for the rows below.
+            if cell == 'H' || (accept == "g" && cell != 'T') {
                 let reject = l.cat.reject(&who, id, "no".into()).await;
                 if accept == "g" && reject.is_ok() {
                     accept = "r".to_owned();

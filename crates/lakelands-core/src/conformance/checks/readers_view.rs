@@ -7,7 +7,7 @@
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::write::{ProposalFilter, ProposedWrite};
 use lakelands_api::{
-    Access, Error, LakeStore, Missing, Outcome, Principal, ProposalId, TypeName, WriteOpts,
+    Access, Error, LakeStore, Missing, Outcome, Principal, ProposalId, Refusal, TypeName, WriteOpts,
 };
 use serde_json::{Value, json};
 
@@ -18,7 +18,7 @@ use crate::conformance::{Failure, Held, Store};
 check!(
     VALUES_AS_THE_READERS_VIEW =
         a_proposal_shows_its_reader_the_values_it_may_read_and_is_accepted_whole,
-    "013 and 024, extended (lakelands#499): `proposals` shows a proposed value where a read of the record would: a field its reader may not know of and a masked one are not in a proposed patch, a proposed call's payload is whole only to a reader who may read every field the verb sets, or see the type of a verb that reaches outside, and a write to a type the reader may not see is not listed (lakelands#762); every entry that holds more than its reader is shown says `more`, and no other does; the proposer reads its own proposal by the same rule; the accept applies the logged write whole, what its reviewer was not shown too, and one not shown the type is answered as for a proposal that does not exist (lakelands#762)"
+    "013 and 024, extended (lakelands#499): `proposals` shows a proposed value where a read of the record would: a field its reader may not know of and a masked one are not in a proposed patch, a proposed call's payload is whole only to a reader who may read every field the verb sets, or see the type of a verb that reaches outside, and a write to a type the reader may not see is not listed (lakelands#762); every entry that holds more than its reader is shown says `more`, and no other does; the proposer reads its own proposal by the same rule; the accept by a reviewer listed the entry whole applies the logged write, a reviewer listed it with `more` is refused it as not granted, naming nothing, and rejects it (lakelands#867), and one not shown the type is answered as for a proposal that does not exist (lakelands#762)"
 );
 
 /// The agent `id` holding `review`, reading `invoice` but for its `salary`,
@@ -148,9 +148,23 @@ async fn a_proposal_shows_its_reader_the_values_it_may_read_and_is_accepted_whol
         red.join("; ")
     );
 
-    // The accept applies what was logged, not what its reviewer was shown.
-    let by_blind = l.cat.accept(&blind, &raise).await;
-    by_blind.must("the reviewer who may not know of `salary` accepting the upsert")?;
+    // Only a reviewer listed the entry whole accepts it, and the accept
+    // applies what was logged; one listed it in part rejects it.
+    let refused = Error::Refused {
+        field: None,
+        reason: Refusal::NotGranted,
+    };
+    let by_blind = l.cat.accept(&blind, &raise).await.map(|_| ());
+    ensure!(
+        by_blind == Err(refused.clone()),
+        "the reviewer who may not know of `salary` accepting the upsert must be refused as not \
+         granted, naming nothing; it answered {by_blind:?}"
+    );
+    let by_reader = l
+        .cat
+        .accept(&reviewer(s, "reads", Access::Read), &raise)
+        .await;
+    by_reader.must("the reviewer who reads `salary` accepting the upsert")?;
     let raised = l.read("invoice", "i1").await?;
     // One not shown `invoice` is not shown the proposal (lakelands#762).
     let by_unseeing = l.cat.accept(&unseeing, &call).await.map(|_| ());
@@ -160,14 +174,18 @@ async fn a_proposal_shows_its_reader_the_values_it_may_read_and_is_accepted_whol
         "the reviewer who may not see `invoice` accepting the call must be answered as for a \
          proposal that does not exist; it answered {by_unseeing:?}"
     );
-    let by_blind = l.cat.accept(&blind, &call).await;
-    by_blind.must("the reviewer who may not know of `salary` accepting the call")?;
+    let by_blind = l.cat.accept(&blind, &call).await.map(|_| ());
+    let rejected = l.cat.reject(&blind, &call, "not now".into()).await;
+    rejected.must("the reviewer who may not know of `salary` rejecting the call")?;
     let called = l.read("invoice", "i1").await?;
     ensure!(
-        raised.fields == patch(json!({"no": "1", "note": "raise", "salary": "250"}))
-            && value(&called, "salary") == Some(&json!("300")),
-        "the accept applies the logged write whole: after the upsert `i1` must hold the note \
-         `raise` and the salary `250`, after the call the salary `300`; it held {:?}, then {:?}",
+        by_blind == Err(refused)
+            && raised.fields == patch(json!({"no": "1", "note": "raise", "salary": "250"}))
+            && value(&called, "salary") == Some(&json!("250")),
+        "the accept applies the logged write whole, and one listed in part is refused: after \
+         the upsert `i1` must hold the note `raise` and the salary `250`, the call refused to \
+         the reviewer who may not know of `salary` and rejected by it; it held {:?}, the accept \
+         answered {by_blind:?}, then it held {:?}",
         raised.fields,
         called.fields
     );

@@ -55,7 +55,7 @@ check!(
 
 check!(
     SET_NAMES_ITS_LINK_TYPE = a_set_declares_a_relation_and_what_stands_on_its_link_type,
-    "035 and 028, extended: one set that declares a type with a relation carried by link records and a verb, a trigger, an object set and a view on the relation's link type is applied to a lake that holds none of them, and the same set of another type is proposed, listed to its reviewer with every declaration and nothing more, is not listed to a reviewer kept from the link type its relation brings, whose accept and reject of it answer as an id that does not exist (013, extended), and is accepted, and the owner alone, with nothing on its link type, is listed to that reviewer with `more` and the relation without its link fields, and applied by its accept; on the applied one a link and the verb's call each fire the trigger; a set whose verb names the link type of a relation its type does not declare is refused as on a type that is not declared, at the verb, by `apply` and `propose` alike, and one whose type no longer declares the relation the lake holds is refused with that refusal among its problems; a set that adds a field to a link type the lake holds and reads it is applied; an author not shown a link type the lake holds is refused a trigger on it as on a type that is not declared, alone and word for word in a set that declares its owner, applied or proposed, and one kept from a field of it is refused an object set that reads the field as reading a field it does not know, at the set, alone and word for word with the owner beside it"
+    "035 and 028, extended: one set that declares a type with a relation carried by link records and a verb, a trigger, an object set and a view on the relation's link type is applied to a lake that holds none of them, and the same set of another type is proposed, listed to its reviewer with every declaration and nothing more, is not listed to a reviewer kept from the link type its relation brings, whose accept and reject of it answer as an id that does not exist (013, extended), and is accepted, and the owner alone, with nothing on its link type, is listed to that reviewer with `more` and the relation without its link fields, refused it at the accept as not granted, and applied by the accept of one listed it whole (lakelands#867); on the applied one a link and the verb's call each fire the trigger; a set whose verb names the link type of a relation its type does not declare is refused as on a type that is not declared, at the verb, by `apply` and `propose` alike, and one whose type no longer declares the relation the lake holds is refused with that refusal among its problems; a set that adds a field to a link type the lake holds and reads it is applied; an author not shown a link type the lake holds is refused a trigger on it as on a type that is not declared, alone and word for word in a set that declares its owner, applied or proposed, and one kept from a field of it is refused an object set that reads the field as reading a field it does not know, at the set, alone and word for word with the owner beside it"
 );
 
 check!(
@@ -1185,7 +1185,8 @@ async fn a_set_declares_a_relation_and_what_stands_on_its_link_type(store: Store
     );
     // The owner alone, nothing on its link type, is listed to `blind` as
     // `describe` would show it the owner once in force: with `more`, the
-    // relation without its link fields; and its accept applies it.
+    // relation without its link fields; so its accept is not `blind`'s,
+    // and the owner's applies it (lakelands#867).
     let declarations = set("bare").split_off(4);
     let write = ProposedWrite::Declare { declarations };
     let bare = cat.propose(own, write, "the owner alone".into()).await;
@@ -1202,12 +1203,20 @@ async fn a_set_declares_a_relation_and_what_stands_on_its_link_type(store: Store
         },
         _ => Vec::new(),
     };
-    let applied = cat.accept(&blind, &bare).await;
+    let refused = cat.accept(&blind, &bare).await.map(|_| ());
+    let not_granted = Err(Error::Refused {
+        field: None,
+        reason: Refusal::NotGranted,
+    });
+    let applied = cat.accept(own, &bare).await;
     ensure!(
-        link_fields == [0] && matches!(applied, Ok(Outcome::Applied { .. })),
+        link_fields == [0]
+            && refused == not_granted
+            && matches!(applied, Ok(Outcome::Applied { .. })),
         "the owner alone, proposed, is listed to one kept from its link type with `more` and \
-         the relation without its link fields, and its accept applies it; it was listed \
-         {entry:?} and its accept answered {applied:?}"
+         the relation without its link fields, its accept refused to it as not granted and \
+         applied by the owner's; it was listed {entry:?}, its accept answered {refused:?}, \
+         then {applied:?}"
     );
     // A set may also name a field it adds to a link type the lake holds.
     let mut noted = RelationDecl {
