@@ -321,3 +321,166 @@ async fn a_vocabulary_whose_tools_would_bear_anothers_names_refuses_the_writers_
     );
     Ok(())
 }
+
+check!(
+    HOST_EXTERNAL_VERB = a_host_external_verb_on_its_own_system_type_is_admitted,
+    "003 and seams, SystemVocabulary, extended (lakelands#966): on a type the host's vocabulary declares, a verb whose effect is `external` and which sets nothing is admitted alike by `declare`, `apply` and `propose`, of scope record and of scope type; at risk low its call is run by its executor and answers its output, at risk high it is proposed and its accept runs it; the same verb with `effect: write` is refused as reserved by the three doors, and so is an external verb on `sys.setting` and on `sys.aging_rule`; one named as a tool of its type is refused as `tool_names`; the head stays unmoved",
+    reopens
+);
+
+async fn a_host_external_verb_on_its_own_system_type_is_admitted(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    use lakelands_api::write::{Declaration, Outcome, ProposedWrite};
+    use lakelands_api::{Refusal, VerbName};
+    const ON: &str = "sys.host_job";
+    let job = || type_decl(ON, vec![field("text", StorageKind::Text)]);
+    let seams = Seams {
+        backings: backing::backings(),
+        executors: backing::executors(),
+        vocabulary: Some(backing::vocabulary(vec![job()], &[])),
+        ..Seams::default()
+    };
+    let store = reopen(store, seams)
+        .await
+        .map_err(|e| reopened("with `sys.host_job`", e))?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    let verb = |name: &str, on: &str, extra: serde_json::Value| {
+        let mut v = json!({"declare": "verb", "name": name, "on": on, "risk": "low",
+                           "effect": "external", "executor": backing::EXECUTOR});
+        for (k, x) in extra.as_object().into_iter().flatten() {
+            v[k] = x.clone();
+        }
+        if v["effect"] == "write" {
+            v.as_object_mut().map(|v| v.remove("executor"));
+        }
+        serde_json::from_value::<Declaration>(v).expect("a verb reads")
+    };
+    // Each door answers alike; `propose` answers a proposal where `declare`
+    // and `apply` apply.
+    let doors = |d: Declaration| {
+        let (cat, own) = (cat.clone(), own.clone());
+        async move {
+            let declarations = vec![d.clone()];
+            let proposed = cat.propose(&own, ProposedWrite::Declare { declarations }, "w".into());
+            let proposed = proposed
+                .await
+                .map(|o| matches!(o, Outcome::Proposed { .. }));
+            let applied = cat.apply(&own, vec![d.clone()]).await.map(drop);
+            let declared = cat.declare(&own, d).await.map(drop);
+            (declared, applied, proposed)
+        }
+    };
+    let mut red = Vec::new();
+    for d in [
+        verb("deploy", ON, json!({})),
+        verb("archive", ON, json!({"risk": "high"})),
+        verb("tally", ON, json!({"scope": "type"})),
+    ] {
+        let name = d.place();
+        match doors(d).await {
+            (Ok(()), Ok(()), Ok(true)) => {}
+            other => red.push(format!(
+                "{name:?} must be admitted by the three doors: {other:?}"
+            )),
+        }
+    }
+    let reserved = |a: &lakelands_api::Result<()>| {
+        matches!(
+            crate::conformance::fixture::reason(a),
+            Some(Refusal::Reserved)
+        )
+    };
+    let before = store.head().await.must("reading the head")?;
+    for d in [
+        verb(
+            "stamp",
+            ON,
+            json!({"effect": "write", "set": [{"field": "text", "value": "'x'"}]}),
+        ),
+        verb("tune", "sys.setting", json!({})),
+        verb("expire", "sys.aging_rule", json!({})),
+    ] {
+        let name = d.place();
+        let (declared, applied, proposed) = doors(d).await;
+        let proposed = proposed.map(drop);
+        if !(reserved(&declared) && reserved(&applied) && reserved(&proposed)) {
+            red.push(format!(
+                "{name:?} must be refused as reserved by the three doors: {declared:?}, \
+                 {applied:?}, {proposed:?}"
+            ));
+        }
+    }
+    // Its name is judged as any verb's: one named as a tool of its type is
+    // refused as `tool_names`.
+    let made = lakelands_api::tools::tools(&l.describe().await?).unwrap_or_default();
+    let base = lakelands_api::tools::tool_base(ON);
+    let taken = made
+        .iter()
+        .map(|t| t.name.as_str())
+        .find(|n| n.starts_with(&base));
+    let clash = cat
+        .declare(own, verb(taken.unwrap_or_default(), ON, json!({})))
+        .await;
+    if !invalid_like(&clash, &json!({"code": "tool_names"})) {
+        red.push(format!(
+            "a verb named as {taken:?}, a tool of `{ON}`: {clash:?}"
+        ));
+    }
+    crate::conformance::fixture::head_unmoved(store.as_ref(), before, "a reserved verb").await?;
+    ensure!(red.is_empty(), "{}", red.join("; "));
+    // Called: at risk low the executor runs and the output is answered; at
+    // risk high the call is proposed and its accept runs it.
+    l.upsert(ON, "job-966", json!({"text": "t"})).await?;
+    let key = lakelands_api::RecordKey::from("job-966");
+    let call = |verb: &'static str, key: Option<lakelands_api::RecordKey>| {
+        let (cat, own) = (cat.clone(), own.clone());
+        async move {
+            let (verb, opts) = (VerbName::from(verb), Default::default());
+            cat.call(&own, &verb, key.as_ref(), Default::default(), opts)
+                .await
+        }
+    };
+    let low = call("deploy", Some(key.clone()))
+        .await
+        .must("calling `deploy`")?;
+    let tally = call("tally", None)
+        .await
+        .must("calling `tally` on its type")?;
+    let high = call("archive", Some(key.clone()))
+        .await
+        .must("calling `archive`")?;
+    let Outcome::Proposed { proposal, .. } = &high else {
+        return Err(Failure::new(format!(
+            "`archive` is high: it is proposed; it answered {high:?}"
+        )));
+    };
+    let ran = backing::executed("job-966");
+    let accepted = cat
+        .accept(own, proposal)
+        .await
+        .must("accepting `archive`")?;
+    let output = |o: &Outcome| {
+        matches!(
+            o,
+            Outcome::Applied {
+                output: Some(_),
+                ..
+            }
+        )
+    };
+    ensure!(
+        output(&low)
+            && output(&tally)
+            && ran == 1
+            && backing::executed("job-966") == 2
+            && backing::executed("tally") == 1
+            && output(&accepted),
+        "an external verb on `{ON}` runs its executor and answers its output: `deploy` \
+         {low:?}, `tally` {tally:?}; `archive` ran {ran} time(s) before its accept and \
+         answered {accepted:?} after it"
+    );
+    Ok(())
+}

@@ -872,6 +872,15 @@ pub fn check_vocabulary_type(t: &TypeDecl) -> Result<()> {
     Err(invalid(Case::VocabularyReserved { ty, link }))
 }
 
+/// Whether `ty` is a type of a host's vocabulary: a system type that is
+/// neither a link type nor one of the store's own four. No caller declares
+/// a system type, and the writer's open refuses those from a vocabulary,
+/// so the declarations in force tell it, whoever opened the lake.
+fn vocabulary_type(ty: &TypeName) -> bool {
+    let own = lakelands_api::seam::RESERVED_SYSTEM_TYPES.contains(&ty.as_str());
+    is_system(ty) && !links::is_link_type(ty) && !own
+}
+
 /// What carries a relation's edges: a `via` field, link records, or
 /// nothing stored (derived, 044).
 fn carrier(r: &RelationDecl) -> Carrier {
@@ -1216,10 +1225,13 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             if links::is_link_type(&v.on) && links::relation_of(types, &v.on).is_none() {
                 return Err(invalid(at(&on, Case::Undeclared { ty })));
             }
-            // Of the system types, a verb names only a relation's link
-            // type: every other is reserved (003) and written through its
-            // own door.
-            if is_system(&v.on) && !links::is_link_type(&v.on) && !who_is_system {
+            // Of the system types, a verb names a relation's link type, and
+            // one whose effect is external a type of the host's vocabulary:
+            // it sets nothing and hands its effect to the host's executor.
+            // Every other is reserved (003) and written through its own door.
+            let external = matches!(v.effect, VerbEffect::External { .. });
+            let admitted = links::is_link_type(&v.on) || external && vocabulary_type(&v.on);
+            if is_system(&v.on) && !admitted && !who_is_system {
                 return Err(crate::writes::refused(Refusal::Reserved));
             }
             // A verb on a record of a view could never act: there is no
