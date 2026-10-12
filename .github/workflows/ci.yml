@@ -49,6 +49,13 @@ jobs:
   msrv:
     runs-on: ubuntu-latest
     steps:
+      # Builds every test of the workspace too, as nextest does.
+      - name: free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost "$AGENT_TOOLSDIRECTORY/CodeQL"
+          df -h /
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
