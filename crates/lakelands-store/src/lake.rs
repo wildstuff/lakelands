@@ -86,6 +86,11 @@ pub struct Writer {
     /// The plans the fold, a step's walk and the write path compute
     /// records by.
     pub plans: record::Plans,
+    /// The engine said this handle holds the lease no more: the session
+    /// it lived in closed under it (lakelands#979). The next write, rebuild
+    /// or compaction takes the lease again before it decides anything
+    /// ([`Lake::regain`]); until its `lease_taken` is appended this stays.
+    pub lost: bool,
 }
 
 /// What the lake declares at one position, as a read needs it and before
@@ -456,6 +461,7 @@ impl Lake {
                 failed: None,
                 answers: Vec::new(),
                 plans: record::Plans::default(),
+                lost: false,
             }),
             head: AtomicU64::new(0),
             holds_lease: AtomicBool::new(false),
@@ -468,7 +474,8 @@ impl Lake {
     fn publish(&self, w: &Writer) {
         self.head
             .store(w.tip.as_ref().map_or(0, |t| t.0.0), Ordering::Release);
-        self.holds_lease.store(w.lease.is_some(), Ordering::Release);
+        let holds = w.lease.is_some() && !w.lost;
+        self.holds_lease.store(holds, Ordering::Release);
     }
 
     /// A system principal of this lake, named `id`, with every grant: the
@@ -510,10 +517,56 @@ impl Lake {
     /// whose fold fails is caught up from as any other.
     pub fn for_write(&self) -> Result<MutexGuard<'_, Writer>> {
         let mut w = self.writer();
+        self.regain(&mut w)?;
         self.caught_up(&mut w)?;
         let _ = self.record_held(&mut w, None);
         self.caught_up(&mut w)?;
         Ok(w)
+    }
+
+    /// Marks the writer lost where the engine said its lease is not held
+    /// (lakelands#979): the lease goes, and the handle is no writer until
+    /// it takes one again.
+    fn lose(&self, w: &mut Writer, e: &Error) {
+        if matches!(e.situation(), Some(Situation::LeaseNotHeld { .. })) {
+            (w.lost, w.lease) = (true, None);
+            self.holds_lease.store(false, Ordering::Release);
+        }
+    }
+
+    /// A lost writer takes the lease again before its next write, as an
+    /// open does: a greater fence, what another writer appended meanwhile
+    /// folded from the projection's mark, and a `lease_taken` in the log,
+    /// the first event under the new fence (lakelands#979). It is no
+    /// longer lost only once that is appended: a regain that took the
+    /// lease and failed after it goes on with that lease. Where another
+    /// holds the lease it is refused with the lease's situation, appends
+    /// nothing, and stays lost.
+    fn regain(&self, w: &mut Writer) -> Result<()> {
+        if !w.lost {
+            return Ok(());
+        }
+        let lease = match w.lease.clone() {
+            Some(lease) => lease,
+            None => {
+                let holder = format!("lakelands process {}", std::process::id());
+                let lease = self.engine.take_lease(&holder)?;
+                w.lease = Some(lease.clone());
+                lease
+            }
+        };
+        // The fold from the mark catches up a writer that was behind too.
+        w.behind = false;
+        self.catch_up_in(w)?;
+        let now = self.clock(w);
+        let (fence, holder) = (lease.fence, lease.holder);
+        self.append(
+            w,
+            vec![Draft::system(now, EventBody::LeaseTaken { fence, holder })],
+        )?;
+        w.lost = false;
+        self.publish(w);
+        Ok(())
     }
 
     /// Fold a writer that is behind from the projection's mark, or refuse.
@@ -542,6 +595,9 @@ impl Lake {
             let held = stamped.and_then(|(lease, events, stored)| {
                 self.engine.append(&lease, &stored).map(|()| events)
             });
+            if let Err(e) = &held {
+                self.lose(w, e);
+            }
             answer = match held {
                 Ok(events) => self.landed(w, events, Reads::default()),
                 Err(e) => {
@@ -564,7 +620,11 @@ impl Lake {
     /// Fold the log's events the projection does not reflect yet, and load
     /// the head's ontology and settings.
     pub(crate) fn catch_up(&self) -> Result<()> {
-        let mut w = self.writer();
+        self.catch_up_in(&mut self.writer())
+    }
+
+    /// [`Self::catch_up`] on the writer held.
+    fn catch_up_in(&self, w: &mut Writer) -> Result<()> {
         let folded;
         (folded, w.tip) = ends(self.engine.as_ref())?;
         {
@@ -582,8 +642,8 @@ impl Lake {
         // writer folded, and writes nothing.
         if w.lease.is_some() {
             let from = folded.map_or(Position::GENESIS, Position::next);
-            self.fold_from(&mut w, from)?;
-            self.publish(&w);
+            self.fold_from(w, from)?;
+            self.publish(w);
         } else {
             // A read-only handle reads what the writer folded: its head is
             // the projection's position, which it can be read at.
@@ -755,7 +815,10 @@ impl Lake {
         reads: Reads,
     ) -> Result<Vec<Event>> {
         let (lease, events, stored) = self.stamp(w, drafts)?;
-        self.engine.append(&lease, &stored)?;
+        if let Err(e) = self.engine.append(&lease, &stored) {
+            self.lose(w, &e);
+            return Err(e);
+        }
         self.landed(w, events, reads)
     }
 
@@ -966,6 +1029,7 @@ impl Lake {
                 // the writer read from it while folding.
                 projection.rollback();
                 w.behind = true;
+                self.lose(w, &e);
                 match kept {
                     Some(kept) => w.owed = kept,
                     None => w.owed.truncate(due),
@@ -1743,9 +1807,11 @@ impl Lake {
     }
 
     /// Clear the projection and fold the whole log again. Only the lease's
-    /// holder does: a handle without it would clear under the holder's fold.
+    /// holder does: a handle without it would clear under the holder's fold,
+    /// and a lost one takes the lease again first, as a write does.
     pub fn rebuild(&self) -> Result<Position> {
         let mut w = self.writer();
+        self.regain(&mut w)?;
         if w.lease.is_none() {
             return Err(no_lease());
         }
@@ -1965,9 +2031,12 @@ impl Lake {
     /// Give back the storage the projection no longer uses. It runs under
     /// the writer's lock, so a write waits and lands before or after it;
     /// it appends nothing, and the head stays where it is
-    /// (`docs/decisions/040-maintenance-never-changes-an-answer.md`).
+    /// (`docs/decisions/040-maintenance-never-changes-an-answer.md`). A
+    /// lost writer takes the lease again before it, as a write does: its
+    /// `lease_taken` changes no answer.
     pub fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
-        let w = self.writer();
+        let mut w = self.writer();
+        self.regain(&mut w)?;
         if w.lease.is_none() {
             return Err(read_only());
         }
