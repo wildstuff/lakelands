@@ -575,7 +575,7 @@ check!(
 
 check!(
     EMBED_ORPHAN_SWEEP = an_abandoned_sweep_advances_one_batch_with_each_write_that_owes,
-    "022, extended: the embeddings a declaration whose caller went away left due wait for no one; a later write that owes a call answers after its own batch and one batch of them, and each such write advances them by a batch",
+    "022, extended: the embeddings a declaration whose caller went away left due wait for no one; a later write that owes a call answers after its own batch and one batch of them, with the head as it stood before that batch (lakelands#935), and each such write advances them by a batch",
     embedding
 );
 
@@ -729,12 +729,18 @@ async fn an_abandoned_sweep_advances_one_batch_with_each_write_that_owes(store: 
     .await;
     drop(declared);
     release(&texts[0]);
-    let mut covered = Vec::new();
+    let (mut covered, mut before) = (Vec::new(), Vec::new());
     for code in ["AT", "BE"] {
-        l.upsert("place", code, json!({"code": code})).await?;
+        let answered = l.upsert("place", code, json!({"code": code})).await?;
         let c = store.vector_coverage(&"doc".into()).await;
         covered.push(c.must("asking vector_coverage of `doc`")?[0].embedded);
+        before.push(answered.position() < store.head().await.must("reading the head")?);
     }
+    ensure!(
+        before == [true, true],
+        "each write answers the head before the batch of the declaration's records it makes \
+         after its own; it answered the head after it: {before:?}"
+    );
     ensure!(
         !done.load(Ordering::Acquire) && covered == [64, 128],
         "the declaration's caller went away; each later write that owes a call makes its own \

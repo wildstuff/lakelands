@@ -527,7 +527,7 @@ async fn a_backed_field_reading_another_waits_for_its_output(store: Store) -> He
 
 check!(
     FAILURE_RETRIED = a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds,
-    "022, extended: a settle forced by `recompute` calls again, once, for an input whose recorded output is a failure, for a function backing as for an embedding; the later output holds for every record with that input"
+    "022, extended: a settle forced by `recompute` calls again, once, for an input whose recorded output is a failure, for a function backing as for an embedding; the later output holds for every record with that input; and so does one forced by the function declared again with a change its call does not read (lakelands#935)"
 );
 
 async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
@@ -607,6 +607,26 @@ async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
         listed == Some(0),
         "the door appends `spot` as it was declared, its computed field listing no input; \
          the event's fields list {listed:?}"
+    );
+    // A declaration that changed what its call does not read forces a
+    // settle that calls again for a recorded failure, as `recompute` does.
+    unplug(token);
+    l.upsert("place", "p3", json!({"code": "BE"})).await?;
+    plug(token);
+    let failed = made(token);
+    l.declare_json(
+        json!({"declare": "function", "name": "lookup", "backing": KIND,
+        "inputs": [{"name": "code", "type": {"kind": "text"}}], "description": "a lookup",
+        "config": {"token": token, "echo": "code"}}),
+    )
+    .await?;
+    let p3 = l.read("place", "p3").await?;
+    ensure!(
+        made(token) - failed == 1 && value(&p3, "name") == Some(&json!("BE")),
+        "`lookup` declared again with a description retries the failed call for code BE once \
+         and fills `p3`; it called {} times and `p3` reads {:?}",
+        made(token) - failed,
+        value(&p3, "name")
     );
     Ok(())
 }
