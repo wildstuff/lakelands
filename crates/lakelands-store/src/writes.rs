@@ -1943,6 +1943,16 @@ impl Decide<'_> {
         let far = |ty: &TypeName, k: &RecordKey| live_for(view, pending, o, ty, k, who);
         let across = Across::new(o, on, &far, self.call.lake.limits.max_depth);
         requires(&w.settings, verb, key, &record, now, &across)?;
+        // A verb on a link finds both its ends live and answered, whatever
+        // its effect (035): one that writes the link has them judged where
+        // the record is written, any other here, as `link` judges them.
+        if links::is_link_type(&verb.on) && !matches!(verb.effect, VerbEffect::Write { .. }) {
+            let end = |f: &&FieldName| [links::FROM, links::TO].contains(&f.as_str());
+            let ends: Patch = (record.fields.iter().filter(|(f, _)| end(f)))
+                .map(|(f, v)| (f.clone(), v.clone()))
+                .collect();
+            check_references(view, pending, o, &verb.on, key, &ends, who)?;
+        }
         let patch = assigned(o, &w.settings, verb, &record, payload, (now, &across))?;
         let called_at = self.next;
         self.next = called_at.next();

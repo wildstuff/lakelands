@@ -64,16 +64,16 @@ accept, whatever the verb's effect: the link live and answered to the
 proposer, and the reviewer by the records the call reaches, the link
 and its two end records among them
 (`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
-A proposed call of a verb that sets fields of a link type sets a live
-link's own fields, and its accept judges both ends again too, live and
-answered to the proposer: an accept of such a call proposed before an
-end was retired is refused as `not_live` on that end
-(`a_verb_on_a_link_type_keeps_what_the_link_door_keeps`, lakelands#847).
-A proposed call on a link of a verb that reaches outside the lake
-writes no record: for the proposer its accept judges of the ends only
-that none is held from it, an end retired or not. Cardinality is judged
-only where a link is made, by `link` and by ingest, since no verb moves
-an end.
+A verb on a link, whatever its risk or effect, finds both ends live and
+answered to its caller, at the call and again at its accept, as `link`
+with a field does: a call, or the accept of one proposed before an end
+was retired, is refused as `not_live` on that end
+(`a_verb_on_a_link_type_keeps_what_the_link_door_keeps`, lakelands#847,
+lakelands#935). A verb that sets fields of a link type sets a live
+link's own fields; one that reaches outside the lake writes no record,
+and is held to the same ends: an executor is handed no link whose end
+is gone. Cardinality is judged only where a link is made, by `link` and
+by ingest, since no verb moves an end.
 
 ### An executor's failure is recorded as its output, and a call no executor was handed is answered so
 
@@ -528,10 +528,8 @@ listing and its accept need, moved to
   judged only where a link is written, and no proposal writes one". An
   accepted call of a verb that sets fields of a link type writes the
   link's own fields (lakelands#759), and its accept judges the link and
-  both ends again, the ends live where the verb writes the link and only
-  as not held from the proposer where it reaches outside the lake: the
-  ends are judged live in the record's write, which only a verb with a
-  write effect makes. Cardinality is judged where a link is made. The
+  both ends again (lakelands#935 made the ends live for every verb, see
+  below). Cardinality is judged where a link is made. The
   order's "a link type at an ordinary door" at `propose` is an upsert
   or a retirement of one.
 - Corrected at the rewrite (lakelands#817): "At any other risk the call
@@ -557,3 +555,9 @@ listing and its accept need, moved to
   only by one shown every field they write (lakelands#553).
 - An accept reads a record its call reads across a reference as it
   stands at the accept (lakelands#567).
+- A verb on a link finds both ends live whatever its effect
+  (lakelands#935): one that reaches outside the lake ran on a link whose
+  end was retired, at the call and at the accept of one proposed
+  before, its ends judged only as not held from its caller, since they
+  were judged live in the record's write, which such a verb does not
+  make.

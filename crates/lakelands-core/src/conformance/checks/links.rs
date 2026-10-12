@@ -50,7 +50,7 @@ check!(
 
 check!(
     VERB_KEEPS_ENDS = a_verb_on_a_link_type_keeps_what_the_link_door_keeps,
-    "035 and 003, extended (lakelands#759): a verb on a relation's link type writes a live link's own fields and never its ends: one whose `set` names `from` or `to` is refused as invalid where it is declared, by `declare`, `propose` and `apply` alike; its call on a link an end of which is retired is refused as `link` with a field is, word for word, on that end, and nothing is appended, and so is the accept of a call proposed while both ends were live (lakelands#847); a caller without `restricted` whose link has a held end, and a holder of `only` on an end's type not admitted to that end, are each answered as for a key no link has; and a verb on the link type a relation's rename left behind is refused as on a type that is not declared; each door keeps its family's order: with an end retired and a stale expected version, `link` is refused on the end as without the version, and the verb's call answers the conflict"
+    "035 and 003, extended (lakelands#759): a verb on a relation's link type writes a live link's own fields and never its ends: one whose `set` names `from` or `to` is refused as invalid where it is declared, by `declare`, `propose` and `apply` alike; its call on a link an end of which is retired is refused as `link` with a field is, word for word, on that end, and nothing is appended, and so is the accept of a call proposed while both ends were live (lakelands#847), and so are the call and the accept of a verb that reaches outside the lake, which runs on a link with both ends live (lakelands#935); a caller without `restricted` whose link has a held end, and a holder of `only` on an end's type not admitted to that end, are each answered as for a key no link has, by either verb; and a verb on the link type a relation's rename left behind is refused as on a type that is not declared; each door keeps its family's order: with an end retired and a stale expected version, `link` is refused on the end as without the version, and the verb's call answers the conflict"
 );
 
 check!(
@@ -409,6 +409,9 @@ async fn a_verb_on_a_link_type_keeps_what_the_link_door_keeps(store: Store) -> H
     }
     let date = cat.declare(own, verb("date", "since")).await;
     date.must("declaring `date` on the link type")?;
+    let ping = json!({"declare": "verb", "name": "ping", "on": LT, "risk": "low",
+        "effect": "external", "executor": crate::conformance::backing::EXECUTOR});
+    l.declare_json(ping).await?;
     for (p, i) in [("p3", "i3"), ("p4", "i4")] {
         l.upsert("partner", p, json!({"name": p})).await?;
         l.upsert("invoice", i, json!({"amount": "10"})).await?;
@@ -416,19 +419,26 @@ async fn a_verb_on_a_link_type_keeps_what_the_link_door_keeps(store: Store) -> H
     for n in ["1", "2", "3", "4"] {
         link_ok(&l, &format!("i{n}"), &format!("p{n}"), json!({})).await?;
     }
-    let call = |who: &Principal, from: &str, to: &str| {
+    let call_of = |verb: &str, who: &Principal, from: &str, to: &str| {
         let (who, key) = (who.clone(), link_key(&from.into(), &to.into()));
-        let (verb, opts) = ("date".into(), WriteOpts::default());
+        let (verb, opts) = (verb.into(), WriteOpts::default());
         async move {
             cat.call(&who, &verb, Some(&key), Default::default(), opts)
                 .await
         }
     };
-    // Proposed while both ends live, accepted below once one is retired.
+    let call = |who: &Principal, from: &str, to: &str| call_of("date", who, from, to);
+    // Proposed while both ends live, accepted below once one is retired:
+    // `date`'s calls, then `ping`'s, which reaches outside the lake.
     let mut held = Vec::new();
-    for (from, to) in [("i1", "p1"), ("i2", "p2")] {
+    for (verb, from, to) in [
+        ("date", "i1", "p1"),
+        ("date", "i2", "p2"),
+        ("ping", "i1", "p1"),
+        ("ping", "i2", "p2"),
+    ] {
         let key = Some(link_key(&from.into(), &to.into()));
-        let (verb, payload, opts) = ("date".into(), Default::default(), WriteOpts::default());
+        let (verb, payload, opts) = (verb.into(), Default::default(), WriteOpts::default());
         let write = ProposedWrite::Call {
             verb,
             key,
@@ -450,26 +460,33 @@ async fn a_verb_on_a_link_type_keeps_what_the_link_door_keeps(store: Store) -> H
         "`date` on a link with both ends live is applied and sets its `since`; it answered \
          {applied:?}, and the links read {links:?}"
     );
+    let pinged = call_of("ping", own, "i2", "p2").await;
+    ensure!(
+        matches!(pinged, Ok(Outcome::Applied { .. })),
+        "`ping` on a link with both ends live runs; it answered {pinged:?}"
+    );
     // An end retired: the verb is refused as `link` with a field is.
     l.retire("partner", "p1").await?;
     l.retire("invoice", "i2").await?;
     let before = store.head().await.must("reading the head")?;
-    for ((from, to, end), id) in [("i1", "p1", "to"), ("i2", "p2", "from")]
+    for (n, (from, to, end)) in [("i1", "p1", "to"), ("i2", "p2", "from")]
         .into_iter()
-        .zip(&held)
+        .enumerate()
     {
         let by_link = link(cat.as_ref(), own, from, to, json!({"since": SEPT})).await;
         let by_verb = call(own, from, to).await;
-        let accepted = cat.accept(own, id).await;
+        let accepted = cat.accept(own, &held[n]).await;
+        let by_ping = call_of("ping", own, from, to).await;
+        let ping_accepted = cat.accept(own, &held[n + 2]).await;
         let said = by_link.as_ref().err().and_then(Error::case);
         ensure!(
             matches!(refused_on(&by_link), Some((f, _)) if f == end)
                 && matches!(said.map(|s| &s.case), Some(Case::NotLive { .. }))
-                && by_verb == by_link
-                && accepted == by_link,
+                && [&by_verb, &accepted, &by_ping, &ping_accepted] == [&by_link; 4],
             "with its `{end}` retired, `link` with a field is refused as `not_live` on `{end}`, \
-             and a verb on the link, and the accept of its call proposed before, word for word \
-             as it; they answered {by_link:?}, {by_verb:?} and {accepted:?}"
+             and a verb on the link, whatever its effect, and the accept of its call proposed \
+             before, word for word as it; they answered {by_link:?}, `date` {by_verb:?} and \
+             {accepted:?}, `ping` {by_ping:?} and {ping_accepted:?}"
         );
     }
     // Each door keeps its family's order (035): beside a retired end, a
@@ -512,14 +529,17 @@ async fn a_verb_on_a_link_type_keeps_what_the_link_door_keeps(store: Store) -> H
         (&writer, "i3", "p3", "a held end"),
         (&holder, "i4", "p4", "an end its `only` does not admit"),
     ] {
-        let hidden = call(who, from, to).await.must_fail(what)?;
-        let absent = call(who, "i9", "p9").await.must_fail("a key no link has")?;
-        let keys = ("i9:p9", link_key(&from.into(), &to.into()));
-        alike_renamed(what, &hidden, &absent, (keys.0, keys.1.as_str()))?;
-        ensure!(
-            matches!(hidden, Error::NotFound { .. }),
-            "{what}: the link is not found; it answered {hidden:?}"
-        );
+        for verb in ["date", "ping"] {
+            let hidden = call_of(verb, who, from, to).await.must_fail(what)?;
+            let absent = call_of(verb, who, "i9", "p9").await;
+            let absent = absent.must_fail("a key no link has")?;
+            let keys = ("i9:p9", link_key(&from.into(), &to.into()));
+            alike_renamed(what, &hidden, &absent, (keys.0, keys.1.as_str()))?;
+            ensure!(
+                matches!(hidden, Error::NotFound { .. }),
+                "{what}: `{verb}` finds no link; it answered {hidden:?}"
+            );
+        }
     }
     // The writer may call the verb: on a link it is answered, it applies.
     let own_link = call(&writer, "i4", "p4").await;
