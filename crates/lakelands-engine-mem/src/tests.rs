@@ -155,7 +155,7 @@ fn a_read_only_handle_refuses_the_lease_append_and_seal() {
         Err(Error::Unavailable { .. })
     ));
     assert!(matches!(
-        reader.seal_segment(&lease),
+        reader.seal_segment(&lease, false, &mut |_| Ok(e.clone())),
         Err(Error::Unavailable { .. })
     ));
     assert!(reader.tip().unwrap().is_none());
@@ -297,15 +297,16 @@ fn declarations_memberships_proposals_outputs_and_applied_ids_keep_history() {
         position: Position(1),
         proposer: "human:a".into(),
         proposed_at: Timestamp(0),
-        write: ProposedWrite::Retire {
+        write: Some(ProposedWrite::Retire {
             ty: "t".into(),
             key: "a".into(),
             opts: Default::default(),
-        },
+        }),
         why: "review".into(),
         state,
         decided_by: None,
         reason: None,
+        more: false,
     };
     fold(e.as_ref(), 1, |p| {
         p.put_declaration(&ty, 1, Some("h1"), Position(0)).unwrap();
@@ -746,11 +747,12 @@ fn proposals_filter_by_state_and_type_newest_first() {
         position: Position(position),
         proposer: "human:a".into(),
         proposed_at: Timestamp(0),
-        write,
+        write: Some(write),
         why: "review".into(),
         state,
         decided_by: None,
         reason: None,
+        more: false,
     };
     let retire = |ty: &str| ProposedWrite::Retire {
         ty: ty.into(),

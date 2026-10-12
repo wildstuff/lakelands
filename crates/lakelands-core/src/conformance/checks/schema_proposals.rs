@@ -232,7 +232,7 @@ async fn a_migration_proposal_carries_its_report_and_is_preflighted_again_at_acc
     let report = listed
         .iter()
         .find(|p| p.id == id)
-        .and_then(|p| match &p.write {
+        .and_then(|p| match p.write.as_ref()? {
             ProposedWrite::Migrate { report, .. } => Some(report.clone()),
             _ => None,
         });
@@ -399,7 +399,7 @@ async fn report_of(
 ) -> Result<(Vec<String>, u64, bool), Failure> {
     let listed = l.cat.proposals(who, ProposalFilter::default()).await;
     let mine = listed.must("listing the proposals")?.data;
-    match mine.into_iter().find(|p| p.id == *id).map(|p| p.write) {
+    match mine.into_iter().find(|p| p.id == *id).and_then(|p| p.write) {
         Some(ProposedWrite::MigrateValueType { report, .. }) => {
             let uses = (report.fields.iter())
                 .map(|u| format!("{}.{}={}", u.ty, u.field, u.values_scanned));
@@ -438,12 +438,12 @@ async fn a_value_types_tightening_is_proposed_without_schema_and_applied_on_acce
     );
     let both = vec!["ticket.state=2".to_owned(), "ticket.inner=2".to_owned()];
     ensure!(
-        v == [10]
+        matches!(v[..], [f] if f >= 10)
             && whole == (both, 2, true)
             && shown == (vec!["ticket.state=2".to_owned()], 2, true),
-        "the proposal must be one event in format 10 whose report fits and names both uses to \
-         the owner, and to its proposer, who may not know of `inner`, only `state`, the \
-         totals whole; it was written as {v:?}, the owner reads {whole:?}, the clerk {shown:?}"
+        "the proposal must be one event in format 10 or newer whose report fits and names both \
+         uses to the owner, and to its proposer, who may not know of `inner`, only `state`, \
+         the totals whole; it was written as {v:?}, the owner reads {whole:?}, the clerk {shown:?}"
     );
     let refused = l.cat.accept(&reviewer(store.as_ref(), false), &id).await;
     ensure!(

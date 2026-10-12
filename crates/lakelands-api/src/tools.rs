@@ -117,6 +117,8 @@ pub enum Door {
     Apply,
     /// `add_field`.
     AddField,
+    /// `recompute`.
+    Recompute,
     /// `migrate`: the preflight, or with a `report_id` argument the
     /// `migrate_apply` door.
     Migrate,
@@ -149,6 +151,7 @@ const ACCEPT: &str = "accept";
 const REJECT: &str = "reject";
 const DECLARE_TYPE: &str = "declare_type";
 const ADD_FIELD: &str = "add_field";
+const RECOMPUTE: &str = "recompute";
 const MIGRATE: &str = "migrate";
 
 /// The kinds of change a session may subscribe to: the log's event kinds
@@ -164,7 +167,7 @@ pub const CHANGE_KINDS: [&str; 6] = [
 
 /// The names of the generic tools, which no type or verb may produce.
 /// The generator emits these constants and no other generic name.
-pub const GENERIC_TOOLS: [&str; 13] = [
+pub const GENERIC_TOOLS: [&str; 14] = [
     DESCRIBE,
     PIN,
     SUBSCRIBE,
@@ -177,6 +180,7 @@ pub const GENERIC_TOOLS: [&str; 13] = [
     REJECT,
     DECLARE_TYPE,
     ADD_FIELD,
+    RECOMPUTE,
     MIGRATE,
 ];
 
@@ -512,7 +516,7 @@ fn write_opts(p: &mut Map<String, Value>) {
     p.insert(
         "idempotency_key".into(),
         json!({"type": "string",
-               "description": "A retry with the same key is a no-op answering the first outcome."}),
+               "description": "A retry with the same key appends nothing and answers the first outcome; for a verb that reaches outside the lake, its executor's recorded answer, or the refusal `unanswered` while none is recorded."}),
     );
 }
 
@@ -1141,7 +1145,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
         time_axes(&mut p);
         out.push(ToolSpec {
             name: PROPOSALS.into(),
-            description: "List proposals waiting for review, or decided ones; newest first unless ordered otherwise.".into(),
+            description: "List proposals waiting for review, or decided ones; newest first unless ordered otherwise. Each shows its write as far as you may see it, and `more: true` where it holds more than you are shown.".into(),
             input_schema: obj(p, &[]),
             output_schema: reply_schema(json!({"type": "array"})),
             door: Door::Proposals,
@@ -1193,18 +1197,30 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             door: Door::AddField,
         });
         out.push(ToolSpec {
+            name: RECOMPUTE.into(),
+            description: "Compute again what a declaration in force computes: name a `function`, or a `type` with a field computed outside the lake. Retries a failed call and makes a field that waits.".into(),
+            input_schema: obj(
+                props([
+                    ("function", json!({"type": "string"})),
+                    ("type", names(|_| true)),
+                ]),
+                &[],
+            ),
+            output_schema: outcome_schema(),
+            door: Door::Recompute,
+        });
+        // Old name and new name, for a field or a relation.
+        let pairs = json!({"type": "array", "items": {
+            "type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2}});
+        out.push(ToolSpec {
             name: MIGRATE.into(),
-            description: "Change a type's shape (`to`) or tighten a value type (`value_type`), one of the two. Without `report_id` it only reports what would convert or no longer fit; with the id of that report it applies the migration.".into(),
+            description: "Change a type's shape (`to`) or tighten a value type (`value_type`), one of the two. Without `report_id` it only reports what would convert, what would no longer fit and what it drops (`dropped`, each with the records that hold a value); with the id of that report it applies the migration, which discards the values `dropped` counts. `lossless` speaks of what the migration keeps, not of what it drops: sum `dropped`'s counts to know what goes.".into(),
             input_schema: obj(
                 props([
                     ("to", json!({"type": "object"})),
                     ("value_type", json!({"type": "object"})),
-                    (
-                        "renames",
-                        json!({"type": "array", "items": {
-                        "type": "array", "items": {"type": "string"},
-                        "minItems": 2, "maxItems": 2}}),
-                    ),
+                    ("renames", pairs.clone()),
+                    ("relation_renames", pairs),
                     ("report_id", json!({"type": "string"})),
                 ]),
                 &[],

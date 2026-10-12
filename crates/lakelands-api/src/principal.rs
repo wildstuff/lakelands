@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::id::{FieldName, LakeId, TypeName};
+use crate::id::{FieldName, LakeId, Position, TypeName};
 
 /// What kind of party a principal is. It is recorded as the `writer` of
 /// every value the principal writes; it grants nothing by itself.
@@ -104,6 +104,20 @@ impl Access {
     pub fn appears(self) -> bool {
         self.reads() || self == Access::Masked
     }
+
+    /// The lowest of two accesses, reading and writing judged apart: it reads
+    /// the value only if both do, shows the field masked if both at least show
+    /// it, and writes only if both write.
+    pub fn lowest(self, b: Access) -> Access {
+        let (appears, writes) = (self.appears() && b.appears(), self.writes() && b.writes());
+        match (self.reads() && b.reads(), appears, writes) {
+            (true, _, true) => Access::Write,
+            (true, _, false) => Access::Read,
+            (false, true, _) => Access::Masked,
+            (false, false, true) => Access::WriteOnly,
+            (false, false, false) => Access::None,
+        }
+    }
 }
 
 /// The rights of one principal, per type and per field.
@@ -132,6 +146,51 @@ pub struct Grants {
     /// May the principal see records withheld from ordinary reads.
     #[serde(default)]
     pub restricted: bool,
+}
+
+/// An entry of the lake's list of renames, in the log's order, of one of
+/// two kinds: one migration's renames of a type's fields, or a type's own
+/// new name (a link type's, when its relation is renamed), with the
+/// position it took effect at.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Renamed {
+    /// The position of the `migrated` event.
+    pub at: Position,
+    /// The type migrated; for a type's new name, the name it had.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// Each field's old and new name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub renames: Vec<(FieldName, FieldName)>,
+    /// The type's new name, in an entry of the second kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<TypeName>,
+}
+
+impl Renamed {
+    /// The entries of a migration written before the lake's entries
+    /// `since`, each begun at the name its old one bears after them: a
+    /// link type's by the entries of the second kind, a field's by its
+    /// type's. A proposal that waited while its relation or its field was
+    /// renamed is so judged by the grants on the name in force
+    /// (lakelands#594).
+    pub fn at_head(since: &[Renamed], mut entries: Vec<Renamed>) -> Vec<Renamed> {
+        for e in &mut entries {
+            for r in since {
+                match &r.to {
+                    Some(now) if r.ty == e.ty && e.to.is_some() => e.ty = now.clone(),
+                    None if r.ty == e.ty && e.to.is_none() => {
+                        for (from, _) in &mut e.renames {
+                            let named = r.renames.iter().find(|(old, _)| old == from);
+                            *from = named.map_or(from.clone(), |(_, now)| now.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        entries
+    }
 }
 
 /// The grants of one principal on one type.
@@ -170,6 +229,127 @@ impl Grants {
             && self.types.values().all(|t| {
                 t.default.is_none_or(Access::reads) && t.fields.values().all(|a| a.reads())
             })
+    }
+
+    /// Holds a principal's grants to a field through its renames (006,
+    /// extended): a field's access at `at` (the head when `None`) is the
+    /// lowest of what the grants say under the name it bears there and under
+    /// every other name it has borne or will bear that they name. A grant
+    /// reaches further than its own name only to take away. The result is a
+    /// grant by name on the name borne at `at`. A field's names are replayed
+    /// from `list`, one migration's renames at once; a rename continues the
+    /// chain of names that ends in its old name, the newest where several
+    /// do, or starts one.
+    pub fn follow(&mut self, list: &[Renamed], at: Option<Position>) {
+        self.follow_names(list, at);
+        let lake = self.default;
+        for (ty, held) in self.types.iter_mut().filter(|t| !t.1.fields.is_empty()) {
+            let mut chains: Vec<Vec<(&FieldName, Position)>> = Vec::new();
+            for r in list.iter().filter(|r| &r.ty == ty) {
+                // Of the chains that end in the old name, the one whose last
+                // name was taken latest: a name is free when a rename takes
+                // it, so every earlier bearer of it is gone.
+                let ends = |old| {
+                    let named = chains
+                        .iter()
+                        .enumerate()
+                        .filter(|c| c.1.last().is_some_and(|l| l.0 == old));
+                    named.max_by_key(|c| c.1.last().map(|l| l.1)).map(|c| c.0)
+                };
+                let ends: Vec<Option<usize>> = r.renames.iter().map(|(old, _)| ends(old)).collect();
+                for ((old, new), end) in r.renames.iter().zip(ends) {
+                    match end {
+                        Some(i) => chains[i].push((new, r.at)),
+                        None => chains.push(vec![(old, Position::GENESIS), (new, r.at)]),
+                    }
+                }
+            }
+            let given = held.fields.clone();
+            for chain in &chains {
+                let borne = chain.iter().rfind(|c| at.is_none_or(|p| c.1 <= p));
+                let borne = borne.map_or(chain[0].0, |c| c.0);
+                let said = chain.iter().filter(|c| c.0 != borne);
+                let mut said = said.filter_map(|c| given.get(c.0)).peekable();
+                if said.peek().is_some() {
+                    let own = held.fields.get(borne).copied();
+                    let own = own.or(held.default).unwrap_or(lake);
+                    (held.fields).insert(borne.clone(), said.fold(own, |a, b| a.lowest(*b)));
+                }
+            }
+        }
+    }
+
+    /// The step over a type's names, before the one over its fields: the
+    /// grants on every name a type has borne or will bear become one entry
+    /// under the name it bears at `at`. A field's access there is the
+    /// lowest of what that name's entry says (the field's grant, else its
+    /// default, else the lake's) and of what each other name's entry says
+    /// for it (its grant, else its default; an entry with neither says
+    /// nothing). So a restriction follows the type in both directions of
+    /// time and a permission stays with its name. A name's chain continues
+    /// as a field's does: the newest of those that end in the old name.
+    /// A name two chains bear at `at` is written once, by the chain that
+    /// took it last; where both took it at one position, the lower of the
+    /// two. Each chain reads the grants as they were given.
+    fn follow_names(&mut self, list: &[Renamed], at: Option<Position>) {
+        let lake = self.default;
+        // The chains, and for each name the chain that took it last: a
+        // name is free when a rename takes it.
+        let mut chains: Vec<Vec<(&TypeName, Position)>> = Vec::new();
+        let mut ends: BTreeMap<&TypeName, usize> = BTreeMap::new();
+        for (r, to) in list.iter().filter_map(|r| Some((r, r.to.as_ref()?))) {
+            let i = ends.remove(&r.ty).unwrap_or_else(|| {
+                chains.push(vec![(&r.ty, Position::GENESIS)]);
+                chains.len() - 1
+            });
+            chains[i].push((to, r.at));
+            ends.insert(to, i);
+        }
+        let names = |c: &Vec<(&TypeName, Position)>| c.iter().any(|n| self.types.contains_key(n.0));
+        if !chains.iter().any(names) {
+            return;
+        }
+        let given = self.types.clone();
+        let said = |t: &TypeGrants, f: &FieldName| t.fields.get(f).copied().or(t.default);
+        // What `own` and `others` say together, the lower for each field.
+        let lowest = |mut own: TypeGrants, others: &[&TypeGrants]| {
+            let named = others.iter().copied().chain([&own]);
+            let named: std::collections::BTreeSet<FieldName> =
+                named.flat_map(|t| t.fields.keys()).cloned().collect();
+            let field = |f: FieldName| {
+                let mine = said(&own, &f).unwrap_or(lake);
+                let low = (others.iter().filter_map(|t| said(t, &f))).fold(mine, Access::lowest);
+                (f, low)
+            };
+            let fields = named.into_iter().map(field).collect();
+            let mut defaults = others.iter().filter_map(|t| t.default).peekable();
+            if defaults.peek().is_some() {
+                let mine = own.default.unwrap_or(lake);
+                own.default = Some(defaults.fold(mine, Access::lowest));
+            }
+            own.fields = fields;
+            own
+        };
+        // For each name borne at `at`: when it was taken, and the entry.
+        let mut borne: BTreeMap<&TypeName, (Position, TypeGrants)> = BTreeMap::new();
+        for chain in &chains {
+            let held = chain.iter().rfind(|c| at.is_none_or(|p| c.1 <= p));
+            let (name, since) = *held.unwrap_or(&chain[0]);
+            let others = chain.iter().filter(|c| c.0 != name);
+            let others: Vec<&TypeGrants> = others.filter_map(|c| given.get(c.0)).collect();
+            let entry = lowest(given.get(name).cloned().unwrap_or_default(), &others);
+            let entry = match borne.remove(name) {
+                Some((taken, by)) if taken > since => (taken, by),
+                Some((taken, by)) if taken == since => (since, lowest(entry, &[&by])),
+                _ => (since, entry),
+            };
+            borne.insert(name, entry);
+        }
+        for (name, (_, entry)) in borne {
+            if entry != TypeGrants::default() || given.contains_key(name) {
+                self.types.insert(name.clone(), entry);
+            }
+        }
     }
 
     /// The access this principal has to one field of one type.

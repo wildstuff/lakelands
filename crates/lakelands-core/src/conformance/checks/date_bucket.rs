@@ -41,6 +41,12 @@ check!(
     "017, extended, and log-format §6: a declaration may call date_bucket (a derived field, a view's where, an object set's filter); the event that first declares such a call is written in format version 3, as is every event after it, and a derived bucket answers finds by it"
 );
 
+check!(
+    /// Windows of a width, counted from an origin.
+    WINDOWS = find_groups_records_by_windows_of_a_width_from_an_origin,
+    "017, extended (lakelands#559), and log format §6: date_bucket(x, width, origin) answers the start of the window of that width holding x, the windows counted from the origin in both directions, the same on every engine; a width without its origin, a width that is not above zero, a quoted width and a calendar unit with an origin are refused as invalid, each naming what to write; a declaration that calls it by a width is written in format version 11, as is every event after it"
+);
+
 /// The days of the lake, as `YYYY-MM-DD`.
 fn days() -> Vec<String> {
     let mut out = Vec::new();
@@ -80,6 +86,11 @@ async fn lake(store: &dyn LakeStore) -> Result<Lake, Failure> {
 }
 
 fn by(unit: &str) -> Find {
+    keyed(&format!("date_bucket(on, '{unit}')"))
+}
+
+/// A find grouping by `bucket`, counting the entries and summing them.
+fn keyed(bucket: &str) -> Find {
     Find {
         aggregate: Some(Aggregate {
             measures: vec![
@@ -88,7 +99,7 @@ fn by(unit: &str) -> Find {
             ],
             group_by: vec![GroupKey::Named {
                 name: "bucket".into(),
-                expr: Condition::Text(format!("date_bucket(on, '{unit}')")),
+                expr: Condition::Text(bucket.to_owned()),
             }],
         }),
         ..Find::default()
@@ -277,14 +288,83 @@ async fn a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3
         .must("applying a view and an object set calling date_bucket")?;
     let events = log_events(store.as_ref()).await?;
     for e in &events {
-        let want_v3 = e.position >= declared_at;
+        let want = if e.position > declared_at { 11 } else { 3 };
         ensure!(
-            (e.v == 3) == want_v3 && (want_v3 || e.position <= before),
+            if e.position >= declared_at {
+                e.v == want
+            } else {
+                e.v < 3 && e.position <= before
+            },
             "the event at {} carries format {}; the declaration at {declared_at} first calls \
-             date_bucket, so it and every event after it carry 3, and none before it does",
+             date_bucket, so it carries 3 and none before it does, and the lake writes 11 from \
+             the first record made after it",
             e.position,
             e.v
         );
     }
+    Ok(())
+}
+
+async fn find_groups_records_by_windows_of_a_width_from_an_origin(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = lake(store.as_ref()).await?;
+    let Lake { cat, own } = &l;
+    // Thirty days from 2028-01-01: the seven days of December fall in the
+    // window that starts thirty days before the origin, 2027-12-02; then
+    // January 1 to 30, January 31 to the leap February's end, and March.
+    let thirty = keyed("date_bucket(on, 30d, '2028-01-01T00:00:00Z')");
+    let got = groups(store.as_ref(), thirty, "grouping by thirty days").await?;
+    let starts = [
+        ("2027-12-02", 7),
+        ("2028-01-01", 30),
+        ("2028-01-31", 30),
+        ("2028-03-01", 5),
+    ];
+    let want = expect(&starts);
+    ensure!(
+        got == want,
+        "grouped by windows of 30d from 2028-01-01, find answered\n  {got:?}\nand expected are\n  \
+         {want:?}"
+    );
+    for (bucket, names) in [
+        ("date_bucket(on, 30d)", "date_bucket(t, 30d, origin)"),
+        ("date_bucket(on, 0d, on)", "a width above zero"),
+        ("date_bucket(on, '30d', on)", "a width is written unquoted"),
+        ("date_bucket(on, 'month', on)", "and no origin"),
+    ] {
+        let refused = cat.find(own, &TypeName::from("entry"), keyed(bucket)).await;
+        ensure!(
+            matches!(reason(&refused), Some(Refusal::Invalid { message }) if message.contains(names)),
+            "`{bucket}` is refused as invalid, naming \"{names}\"; find answered {refused:?}"
+        );
+    }
+    // A declaration may call it, written in format 11 as the lake's
+    // records are; that it needs 11 is held by `versions`' rows.
+    let declared = l
+        .declare_json(json!({
+            "declare": "type", "name": "shift",
+            "fields": [
+                {"name": "on", "type": {"kind": "date_time"}},
+                {"name": "week", "type": {"kind": "date_time"}, "authority": "derived",
+                 "derived": "date_bucket(on, 7d, '2027-12-27T00:00:00Z')"}
+            ]
+        }))
+        .await?
+        .position();
+    l.upsert("shift", "s", json!({"on": "2028-01-05T10:00:00Z"}))
+        .await?;
+    let week = l.read("shift", "s").await?;
+    let events = log_events(store.as_ref()).await?;
+    ensure!(
+        crate::conformance::fixture::value(&week, "week")
+            == Some(&json!("2028-01-03T00:00:00.000000Z"))
+            && events.iter().all(|e| e.position < declared || e.v == 11),
+        "a derived window of seven days from Monday 2027-12-27 holds 2028-01-03 for 2028-01-05, \
+         and its declaration and every event after it are written in format 11; the record \
+         holds {:?}, the events carry {:?}",
+        week.fields,
+        events.iter().map(|e| (e.position, e.v)).collect::<Vec<_>>()
+    );
     Ok(())
 }

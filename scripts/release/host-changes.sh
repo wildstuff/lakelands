@@ -4,6 +4,9 @@
 # builds against. Under 0.x a release may break a host; it must say how.
 # Usage: scripts/release/host-changes.sh [<baseline-tag>]
 #   (default: the nearest `v*` tag that is not a pre-release)
+#        scripts/release/host-changes.sh --compare <was.rs> <now.rs>
+#   (the script's own three comparisons over two files and nothing else:
+#   no baseline and no tool; what `host-changes-test.sh` holds it by)
 #
 # The findings are cargo-semver-checks' (checked against the rules of a
 # minor release: under 0.x the tool reads 0.5 -> 0.6 as a major step and
@@ -22,21 +25,39 @@
 # An item a line already names is not reported twice. With nothing found
 # it says so. It exits 0 whatever it finds, and 2 when it cannot run.
 #
+# In all three of its own comparisons (a trait method's signature, a
+# function's or method's, a field's type) a type written by another path
+# is the same type: `lakelands_api::ontology::FieldDecl` and `FieldDecl`
+# agree, as two paths do whenever one is the other's ending at a `::`.
+# `a::Decl` and `b::Decl` do not, and are reported.
+#
 # Not compared, so a release reviewer reads them by hand: the items of a
 # public struct, enum, trait or impl block declared anywhere but at
 # column 0; a method whose impl block lies in a private module that does
-# not re-export its type; and `pub(crate)` items, which reach no host.
+# not re-export its type; `pub(crate)` items, which reach no host; and a
+# path written shorter whose shorter form an import now binds to another
+# type of that name (`std::result::Result<T>` and a crate's own
+# `Result<T>` read as one), since the imports are not resolved; by the
+# same rule `Self::Out` and a type named `Out` read as one.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 CRATES=(lakelands-api lakelands-client lakelands-core lakelands-store)
 
-baseline="${1:-$(git describe --tags --abbrev=0 --match 'v*' --exclude 'v*-*' HEAD 2>/dev/null || true)}"
-[ -n "$baseline" ] || { echo "host-changes: cannot run: no baseline tag" >&2; exit 2; }
-git rev-parse -q --verify "$baseline^{commit}" >/dev/null ||
-    { echo "host-changes: cannot run: $baseline is not a revision" >&2; exit 2; }
-command -v cargo-semver-checks >/dev/null ||
-    { echo "host-changes: cannot run: cargo-semver-checks is not installed" >&2; exit 2; }
+# `--compare` asks the tool nothing and reads no crate.
+compare=()
+if [ "${1:-}" = --compare ]; then
+    [ -f "${2:-}" ] && [ -f "${3:-}" ] ||
+        { echo "host-changes: cannot run: --compare takes two files" >&2; exit 2; }
+    compare=("$2" "$3") CRATES=()
+else
+    baseline="${1:-$(git describe --tags --abbrev=0 --match 'v*' --exclude 'v*-*' HEAD 2>/dev/null || true)}"
+    [ -n "$baseline" ] || { echo "host-changes: cannot run: no baseline tag" >&2; exit 2; }
+    git rev-parse -q --verify "$baseline^{commit}" >/dev/null ||
+        { echo "host-changes: cannot run: $baseline is not a revision" >&2; exit 2; }
+    command -v cargo-semver-checks >/dev/null ||
+        { echo "host-changes: cannot run: cargo-semver-checks is not installed" >&2; exit 2; }
+fi
 
 # One sentence per lint: what a host has to do. A lint not named here
 # keeps the tool's own summary, so nothing found is ever dropped.
@@ -126,7 +147,10 @@ done
 # leaves out the parameter names of a signature (a `name: ` or
 # `mut name: ` at the start of a parameter of the outer list), which is
 # what is compared: a renamed parameter asks nothing of a caller or an
-# implementation. `depth` counts the brackets a text leaves open.
+# implementation. `depth` counts the brackets a text leaves open. `same`
+# says whether two signatures or types agree once a path may be written
+# shorter: token by token, where a token is a path or one other character
+# and two paths agree when one is the other or its ending at a `::`.
 LIB='
 function norm(s) {
     gsub(/[ \t]+/, " ", s)
@@ -156,6 +180,25 @@ function unnamed(s,    out, n, i, c, d, a, start, rest) {
     }
     return out
 }
+function tokens(s, out,    n, m) {
+    n = 0
+    while (length(s) > 0) {
+        m = match(s, /^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*/) ? RLENGTH : 1
+        out[++n] = substr(s, 1, m); s = substr(s, m + 1)
+    }
+    return n
+}
+function ending(long, short) {
+    return long == short || (length(long) > length(short) + 2 &&
+        substr(long, length(long) - length(short) - 1) == "::" short)
+}
+function same(a, b,    x, y, n, i) {
+    if (a == b) return 1
+    n = tokens(a, x)
+    if (n != tokens(b, y)) return 0
+    for (i = 1; i <= n; i++) if (!ending(x[i], y[i]) && !ending(y[i], x[i])) return 0
+    return 1
+}
 function depth(s,    i, n, c, d) {
     d = 0; n = length(s)
     for (i = 1; i <= n; i++) {
@@ -167,6 +210,12 @@ function depth(s,    i, n, c, d) {
     return d
 }
 '
+
+# The lines whose tab-separated fields `$1` and `$2` (by number) do not
+# hold the same signature or type: what the three comparisons below keep.
+changed() {
+    awk -F '\t' -v a="$1" -v b="$2" "$LIB"'!same($a, $b)'
+}
 
 # Every public trait (`Trait`, `trait`) and every method of one, one line
 # each, fields apart by a tab: `Trait::method`, `required` or `provided`
@@ -388,6 +437,37 @@ named() {
         printf '%s\n' "${lines[@]}" | grep -Eq "$before${1//./\\.}([^A-Za-z0-9_]|$)"
 }
 
+# The three comparisons, each over what one file held and what it holds:
+# the items in both whose signature or type is not the same, one line
+# each, fields apart by a tab. `method_rows` takes the two outputs of
+# `methods`; the other two the baseline's text and the file.
+method_rows() {
+    LC_ALL=C join -t $'\t' -o 1.1,1.3,1.4,2.3,2.4 \
+        <(printf '%s\n' "$1" | sed '/^$/d' | LC_ALL=C sort -t $'\t' -k1,1) \
+        <(printf '%s\n' "$2" | sed '/^$/d' | LC_ALL=C sort -t $'\t' -k1,1) | changed 3 5
+}
+function_rows() {
+    LC_ALL=C join -t $'\t' -o 1.1,1.2,1.3,2.2,2.3 \
+        <(printf '%s\n' "$1" | functions | LC_ALL=C sort -t $'\t' -k1,1) \
+        <(functions < "$2" | LC_ALL=C sort -t $'\t' -k1,1) | changed 3 5
+}
+field_rows() {
+    LC_ALL=C join -t $'\t' -o 1.1,1.2,2.2 \
+        <(printf '%s\n' "$1" | fields | LC_ALL=C sort -t $'\t' -k1,1) \
+        <(fields < "$2" | LC_ALL=C sort -t $'\t' -k1,1) | changed 2 3
+}
+
+if [ "${#compare[@]}" -gt 0 ]; then
+    was_src="$(cat "${compare[0]}")"
+    method_rows "$(printf '%s\n' "$was_src" | methods)" "$(methods < "${compare[1]}")" |
+        awk -F '\t' '{ print "trait method " $1 ": was `" $2 "`, now `" $4 "`" }'
+    function_rows "$was_src" "${compare[1]}" |
+        awk -F '\t' '{ print "function or method " $1 ": was `" $2 "`, now `" $4 "`" }'
+    field_rows "$was_src" "${compare[1]}" |
+        awk -F '\t' '{ print "field " $1 ": was `" $2 "`, now `" $3 "`" }'
+    exit 0
+fi
+
 # The items in both trees, compared file by file. Test files hold no
 # public items.
 while read -r f; do
@@ -413,19 +493,15 @@ while read -r f; do
     # In both, with another signature once the parameter names are left
     # out. Under `async_trait` an `async` that comes or goes is a change.
     while IFS=$'\t' read -r m was was_unnamed now now_unnamed; do
-        [ "$was_unnamed" != "$now_unnamed" ] || continue
         reach "$f" "${m%%::*}" >/dev/null || continue
         named "$m" qualified && continue
         lines+=("\`$crate\`: trait method $m: an implementation of the trait must follow: was \`$was\`, now \`$now\` (trait_method_signature_changed)")
-    done < <(LC_ALL=C join -t $'\t' -o 1.1,1.3,1.4,2.3,2.4 \
-        <(printf '%s\n' "$base" | sed '/^$/d' | LC_ALL=C sort -t $'\t' -k1,1) \
-        <(printf '%s\n' "$head" | sed '/^$/d' | LC_ALL=C sort -t $'\t' -k1,1))
+    done < <(method_rows "$base" "$head")
 
     # A public function or inherent method in both, with another
     # signature once the parameter names are left out: a function is
     # named by its path, as the tool names it, a method by its type.
     while IFS=$'\t' read -r m was was_unnamed now now_unnamed; do
-        [ "$was_unnamed" != "$now_unnamed" ] || continue
         path="$(reach "$f" "${m%%::*}")" || continue
         case "$m" in
         *::*) k="$m" what=method lint=method_signature_changed ;;
@@ -433,14 +509,11 @@ while read -r f; do
         esac
         named "$k" qualified && continue
         lines+=("\`$crate\`: $what $k: every call must follow: was \`$was\`, now \`$now\` ($lint)")
-    done < <(LC_ALL=C join -t $'\t' -o 1.1,1.2,1.3,2.2,2.3 \
-        <(printf '%s\n' "$was_src" | functions | LC_ALL=C sort -t $'\t' -k1,1) \
-        <(functions < "$f" | LC_ALL=C sort -t $'\t' -k1,1))
+    done < <(function_rows "$was_src" "$f")
 
     # A field in both, with another type: a host that builds, matches or
     # reads it must follow.
     while IFS=$'\t' read -r k was now; do
-        [ "$was" != "$now" ] || continue
         t="${k%%.*}"
         reach "$f" "${t%%::*}" >/dev/null || continue
         named "$k" && continue
@@ -453,9 +526,7 @@ while read -r f; do
         *) lint=struct_field_type_changed ;;
         esac
         lines+=("\`$crate\`: field $k: a literal, a pattern or a read of the field must follow: was \`$was\`, now \`$now\` ($lint)")
-    done < <(LC_ALL=C join -t $'\t' -o 1.1,1.2,2.2 \
-        <(printf '%s\n' "$was_src" | fields | LC_ALL=C sort -t $'\t' -k1,1) \
-        <(fields < "$f" | LC_ALL=C sort -t $'\t' -k1,1))
+    done < <(field_rows "$was_src" "$f")
 done < <(git ls-tree -r --name-only "$baseline" -- "${CRATES[@]/#/crates/}" | grep '/src/.*\.rs$')
 
 echo "Changes a host must make, since $baseline:"

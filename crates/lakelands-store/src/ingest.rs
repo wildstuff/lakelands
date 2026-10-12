@@ -53,8 +53,16 @@ pub fn window(
     records: Vec<SourceRecord>,
 ) -> Result<Committed> {
     crate::writes::check_context(lake, &context)?;
-    let call = Call { lake, who, context };
-    let mut w = lake.writer();
+    let mut w = lake.for_write()?;
+    // Under the writer, so through every rename the lake has folded.
+    let (who, _) = lake.followed(who.clone(), None, None)?;
+    let (who, followed) = (&who, None);
+    let call = Call {
+        lake,
+        who,
+        context,
+        followed,
+    };
     let view = lake.engine.view(None)?;
     let now = lake.clock(&mut w);
     let mut pending = Pending::default();
@@ -64,7 +72,7 @@ pub fn window(
     let mut window_links = Vec::new();
     let mut duplicates = 0u32;
     for r in records {
-        let decl = w.ontology.ty(&r.ty)?;
+        let decl = crate::writes::shown_type(&w.ontology, &r.ty, who)?;
         // The key's form before the door, as `upsert` checks it.
         crate::writes::check_key(&r.key)?;
         // Then the door: a patch that carries a field the source is not
@@ -77,7 +85,15 @@ pub fn window(
         // earlier in this window.
         if links::is_link_type(&r.ty) {
             let types = w.ontology.types.values().map(|e| &e.decl);
-            if let Some((t, relation)) = links::relation_of(types, &r.ty) {
+            // A link type no relation carries, its relation renamed or
+            // removed, stays declared for its history and takes no link.
+            let Some((t, relation)) = links::relation_of(types, &r.ty) else {
+                return Err(lakelands_core::invalid(format!(
+                    "`{}` is the link type of no relation: its relation was renamed or removed",
+                    r.ty
+                )));
+            };
+            {
                 // The ends from the patch, or from the key's components
                 // when the patch leaves them out: the key rule fills them.
                 let parts = lakelands_core::log::key_components(&r.key);
@@ -133,19 +149,17 @@ pub fn window(
         committed += 1;
     }
     drop(view);
-    if drafts.is_empty() {
-        return Ok(Committed {
-            position: w
-                .tip
-                .as_ref()
-                .map_or(lakelands_api::Position::GENESIS, |t| t.0),
-            records: 0,
-            duplicates,
-        });
-    }
-    let events = lake.append_after(&mut w, drafts, pending.into_reads())?;
+    // A window that appends nothing committed no record, and answers the head.
+    let position = if drafts.is_empty() {
+        w.tip
+            .as_ref()
+            .map_or(lakelands_api::Position::GENESIS, |t| t.0)
+    } else {
+        let events = lake.append_after(&mut w, drafts, pending.into_reads())?;
+        events.last().expect("appended").position
+    };
     Ok(Committed {
-        position: events.last().expect("appended").position,
+        position,
         records: committed,
         duplicates,
     })
@@ -200,12 +214,10 @@ pub fn run(
             let mut answer = exec::run(move || window(&l, &w, context, &s, batch)).await;
             // The calls the window made due are made before it answers, so
             // its position is one the filled fields are visible from.
-            if let Ok(c) = &mut answer {
-                match crate::backed::settle(&lake, seen).await {
-                    Ok(Some(last)) => c.position = c.position.max(last),
-                    Ok(None) => {}
-                    Err(e) => answer = Err(e),
-                }
+            if let Ok(c) = &mut answer
+                && let Some(last) = crate::backed::settle_after(&lake, seen).await
+            {
+                c.position = c.position.max(last);
             }
             let failed = answer.is_err();
             if tx.send(answer).await.is_err() || failed {

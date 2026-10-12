@@ -11,7 +11,10 @@
 //!
 //! **Folding.** The fold is a pure function of the log: each event, in
 //! order, changes the projection exactly as [`Lake::fold`] says, and
-//! nothing else does. Opening a lake folds whatever the log holds beyond
+//! nothing else does. One kind of change comes later than its event: the
+//! records a `declared` computes again are put by [`Lake::flush`], before
+//! the next event that reads a record and before the commit, as of the
+//! `declared`'s position. Opening a lake folds whatever the log holds beyond
 //! the projection; `rebuild` clears the projection and folds everything
 //! again, reaching the same state (`docs/decisions/001-the-log-is-the-truth.md`).
 //!
@@ -20,24 +23,26 @@
 //! §1.3).
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use lakelands_api::engine::{CanonicalEvent, LakeEngine, Lease, OpenMode, ProjectionView};
 use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_BASE, SegmentDigest};
 use lakelands_api::location::{EngineConfig, Limits, Location};
-use lakelands_api::ontology::StorageKind;
+use lakelands_api::ontology::{StorageKind, TypeDecl};
+use lakelands_api::principal::Renamed;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::Seams;
-use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposalState};
+use lakelands_api::write::{Declaration, Migration, Proposal, ProposalFilter, ProposalState};
 use lakelands_api::{
-    Error, LakeId, Position, ProposalId, RecordKey, Refusal, Result, Timestamp, TypeName, Value,
-    WriteContext,
+    Error, FieldName, LakeId, Position, Principal, ProposalId, RecordKey, Refusal, Result,
+    Timestamp, TypeName, Value, WriteContext,
 };
 use lakelands_core::{shape, unavailable};
 
-use crate::backed::{Due, Outputs};
+use crate::backed::{Due, Outputs, Recorded};
+use crate::kept;
 use crate::log::{self, Draft};
 use crate::ontology::Ontology;
 use crate::record;
@@ -57,14 +62,38 @@ pub struct Writer {
     /// The settings at the head.
     pub settings: BTreeMap<String, Value>,
     /// The calls of backed functions the appends made due and
-    /// [`crate::backed::settle`] has not taken yet.
+    /// [`crate::backed::settle`] has not taken yet. A call is due to the
+    /// append that wrote its event, never to a fold of the log (022,
+    /// extended).
     pub due: Vec<Due>,
     /// A fold failed after its events were in the log: the projection is
     /// behind the log, and nothing is appended until it has caught up.
     pub behind: bool,
+    /// The first position of an append whose fold failed: the fold that
+    /// catches up hands out the calls of its events from there on, and
+    /// forgets it once it has folded them.
+    pub failed: Option<Position>,
     /// The log format version the lake writes: the version of its last
     /// event, raised by an append that needs a newer one, never lowered.
     pub format: u32,
+}
+
+/// The seam name the lake's renames are recorded under, as one output: the
+/// store's own, which no seam records under (`docs/seams.md`).
+pub(crate) const RENAMES: &str = "sys:renames";
+
+/// The prefix of every seam name of the store's own, [`RENAMES`] and the
+/// kept views' among them. A host's seams are named behind their kind's
+/// prefix (`function:`, `embed:`, `verb:`), so no door records under one.
+pub(crate) const OWN_SEAM: &str = "sys:";
+
+/// The lake's list of renames as its output holds it; empty where none is
+/// recorded.
+fn renames_in(recorded: Option<Value>) -> Result<Vec<Renamed>> {
+    let list = recorded.map(serde_json::from_value).transpose();
+    Ok(list
+        .map_err(|e| unavailable(e.to_string()))?
+        .unwrap_or_default())
 }
 
 /// One open lake.
@@ -87,6 +116,9 @@ pub struct Lake {
     /// change the writer made: read without the writer's lock, which an
     /// append holds across the engine's append and the whole fold.
     head: AtomicU64,
+    /// The renames an open found where no fold had recorded them, for a
+    /// handle that records nothing.
+    walked: OnceLock<Vec<Renamed>>,
     holds_lease: AtomicBool,
 }
 
@@ -95,7 +127,13 @@ pub(crate) fn opener(
     location: &Location,
     seams: &Seams,
 ) -> Result<Arc<dyn lakelands_api::engine::EngineOpener>> {
-    let name = engine_name(&location.engine);
+    let name: String = match &location.engine {
+        EngineConfig::Sqlite { .. } => "sqlite".into(),
+        EngineConfig::Memory => "memory".into(),
+        EngineConfig::Postgres { .. } => "pg".into(),
+        EngineConfig::Other { name, .. } => name.clone(),
+        _ => String::new(),
+    };
     seams
         .engines
         .iter()
@@ -104,16 +142,6 @@ pub(crate) fn opener(
         .ok_or_else(|| Error::Unbound {
             seam: format!("the engine `{name}` (no opener for it was passed in)"),
         })
-}
-
-fn engine_name(config: &EngineConfig) -> String {
-    match config {
-        EngineConfig::Sqlite { .. } => "sqlite".into(),
-        EngineConfig::Memory => "memory".into(),
-        EngineConfig::Postgres { .. } => "pg".into(),
-        EngineConfig::Other { name, .. } => name.clone(),
-        _ => String::new(),
-    }
 }
 
 pub(crate) fn wall_clock() -> Timestamp {
@@ -136,12 +164,10 @@ pub(crate) fn every(retired: bool) -> lakelands_api::engine::Scan {
 }
 
 /// The settings a view holds: the `value` of every live `sys.setting`
-/// record, by key.
+/// record, by key, a restricted one too. A restriction hides the record
+/// from a reader; the value stays what the lake computes with, as the
+/// fold keeps it, so a read, a writer opened again and a rebuild agree.
 pub fn settings_in(view: &dyn ProjectionView) -> Result<BTreeMap<String, Value>> {
-    let scan = lakelands_api::engine::Scan {
-        limit: u32::MAX,
-        ..Default::default()
-    };
     let ty = TypeName::from(SETTING_TYPE);
     if !view
         .declarations()?
@@ -151,10 +177,22 @@ pub fn settings_in(view: &dyn ProjectionView) -> Result<BTreeMap<String, Value>>
         return Ok(BTreeMap::new());
     }
     Ok(view
-        .scan(&ty, &scan)?
+        .scan(&ty, &every(false))?
         .into_iter()
         .filter_map(|r| Some((r.key.to_string(), r.fields.get("value")?.clone())))
         .collect())
+}
+
+/// What the kept views' hooks are handed in the fold of one event.
+macro_rules! kept_at {
+    ($w:expr, $view:expr, $projection:expr) => {
+        kept::At {
+            view: $view,
+            projection: $projection,
+            ontology: &$w.ontology,
+            settings: &$w.settings,
+        }
+    };
 }
 
 impl Lake {
@@ -263,9 +301,11 @@ impl Lake {
                 settings: BTreeMap::new(),
                 due: Vec::new(),
                 behind: false,
+                failed: None,
                 format: LOG_FORMAT_BASE,
             }),
             head: AtomicU64::new(0),
+            walked: OnceLock::new(),
             holds_lease: AtomicBool::new(false),
         }
     }
@@ -290,9 +330,32 @@ impl Lake {
 
     /// The writer state, locked.
     pub fn writer(&self) -> MutexGuard<'_, Writer> {
-        self.writer
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        lakelands_core::lock(&self.writer)
+    }
+
+    /// The writer for a write, locked and caught up. A writer whose fold
+    /// failed is behind its log: it folds from the projection's mark before
+    /// anything is decided over the projection, or the write is answered
+    /// `unavailable`, with that fold's words, and appends nothing.
+    /// Everything that decides a write takes the writer here;
+    /// [`Self::append_after`] refuses one that is behind. Only the lease's
+    /// holder folds: a handle that gave its lease up while it was behind
+    /// folds nothing and is refused here, as its append would be.
+    pub fn for_write(&self) -> Result<MutexGuard<'_, Writer>> {
+        let mut w = self.writer();
+        if w.behind {
+            if w.lease.is_none() {
+                return Err(unavailable(NO_LEASE));
+            }
+            self.refold(&mut w).map_err(|e| {
+                unavailable(format!(
+                    "the lake's projection is behind its log and could not catch up; nothing \
+                     was appended ({})",
+                    crate::backed::why(&e)
+                ))
+            })?;
+        }
+        Ok(w)
     }
 
     /// The next `known_at`: the wall clock, never before the last event's.
@@ -310,8 +373,22 @@ impl Lake {
         let folded = self.engine.projection().folded_through()?;
         {
             let view = self.engine.view(None)?;
-            w.ontology = Ontology::from_declared(&view.declarations()?);
+            w.ontology = Ontology::at(view.as_ref())?;
             w.settings = settings_in(view.as_ref())?;
+            // A lake made before the fold recorded renames: its list is
+            // found once, and recorded by the handle that writes.
+            let recorded = view.output(RENAMES, &Digest::zero())?.is_some();
+            if let (false, Some(list), Some(at)) = (recorded, self.walk(view.as_ref())?, folded) {
+                let p = self.engine.projection();
+                if w.lease.is_none() {
+                    let _ = self.walked.set(list);
+                } else {
+                    p.begin()?;
+                    let put = p.put_output(RENAMES, &Digest::zero(), &serde_json::json!(list), at);
+                    put.and_then(|()| p.commit(at))
+                        .inspect_err(|_| p.rollback())?;
+                }
+            }
         }
         // The last event's time and format: versions only go up, so the
         // tip's is the log's newest.
@@ -326,8 +403,6 @@ impl Lake {
         if w.lease.is_some() {
             let from = folded.map_or(Position::GENESIS, Position::next);
             self.fold_from(&mut w, from)?;
-            // Opening a lake never calls a backing.
-            w.due.clear();
             self.publish(&w);
         } else {
             // A read-only handle reads what the writer folded: its head is
@@ -337,6 +412,71 @@ impl Lake {
             self.holds_lease.store(false, Ordering::Release);
         }
         Ok(())
+    }
+
+    /// The renames of a lake whose fold recorded none, from what the
+    /// projection keeps (006, extended): a rename happens only in a
+    /// `migrated` event, and a type's declaration is in force since the
+    /// event that put it. So for each type past its first version the event
+    /// at its `since` is read, then the type as of the position before it,
+    /// down to its first version. `None` where no type is past its first.
+    fn walk(&self, head: &dyn ProjectionView) -> Result<Option<Vec<Renamed>>> {
+        let key = lakelands_core::engines::declaration_key;
+        let mut list = Vec::new();
+        let later = |d: &lakelands_api::engine::Declared| d.version > 1;
+        let types = head.declarations()?.into_iter().filter(later);
+        let types: Vec<_> = types
+            .filter(|d| matches!(d.declaration, Declaration::Type(_)))
+            .collect();
+        for mut d in types.clone() {
+            while d.version > 1 && d.since > Position::GENESIS {
+                let event = self.read_events(d.since, 1)?.pop();
+                if let Some(EventBody::Migrated { migration, .. }) = event.map(|e| e.body) {
+                    list.extend(lakelands_core::links::renamed(&migration, d.since));
+                }
+                let before = self.engine.view(Some(Position(d.since.0 - 1)))?;
+                let was = before
+                    .declarations()?
+                    .into_iter()
+                    .find(|b| key(&b.declaration) == key(&d.declaration));
+                let Some(was) = was else { break };
+                d = was;
+            }
+        }
+        list.sort_by_key(|r| r.at);
+        Ok((!types.is_empty()).then_some(list))
+    }
+
+    /// The lake's list of renames: what the fold recorded, read from
+    /// `head` or from a view of the head, or what this handle's open found.
+    pub(crate) fn renames(&self, head: Option<&dyn ProjectionView>) -> Result<Vec<Renamed>> {
+        let recorded = match head {
+            Some(view) => view.output(RENAMES, &Digest::zero())?,
+            None => self.engine.view(None)?.output(RENAMES, &Digest::zero())?,
+        };
+        match recorded {
+            None => Ok(self.walked.get().cloned().unwrap_or_default()),
+            recorded => renames_in(recorded),
+        }
+    }
+
+    /// A principal with its grants held through the lake's renames
+    /// (`Grants::follow`), for a read at `at` or a write at the head, and
+    /// how many entries of the list it was followed through. The list is
+    /// asked only for one whose grants name a type: a grant that is only
+    /// a default follows a link type's rename too.
+    pub(crate) fn followed(
+        &self,
+        mut who: Principal,
+        at: Option<Position>,
+        head: Option<&dyn ProjectionView>,
+    ) -> Result<(Principal, Option<usize>)> {
+        if who.grants.types.is_empty() {
+            return Ok((who, None));
+        }
+        let list = self.renames(head)?;
+        who.grants.follow(&list, at);
+        Ok((who, Some(list.len())))
     }
 
     /// The log from a position, a page at a time, opened and checked: a
@@ -388,16 +528,29 @@ impl Lake {
         drafts: Vec<Draft>,
         reads: Reads,
     ) -> Result<Vec<Event>> {
+        let (lease, v, events, stored) = self.stamp(w, drafts)?;
+        self.engine.append(&lease, &stored)?;
+        self.landed(w, v, events, reads)
+    }
+
+    /// The events `drafts` become after the tip, as the log's format `v`
+    /// writes them and as the engine stores them, under the writer's
+    /// lease: refused where an append of them would be. Nothing is changed.
+    fn stamp(
+        &self,
+        w: &Writer,
+        drafts: Vec<Draft>,
+    ) -> Result<(Lease, u32, Vec<Event>, Vec<CanonicalEvent>)> {
         let Some(lease) = w.lease.clone() else {
-            return Err(unavailable(
-                "this lake is open read-only here; another process holds its writer lease",
-            ));
+            return Err(unavailable(NO_LEASE));
         };
-        // Nothing is appended while the projection is behind the log: a
-        // fold that failed after its events were durable is done again
-        // first, or the append answers its error and appends nothing.
+        // Nothing is appended while the projection is behind the log, and
+        // nothing is folded this late: the drafts were decided already.
         if w.behind {
-            self.refold(w)?;
+            return Err(unavailable(
+                "this write was decided while the lake's projection was behind its log; \
+                 nothing was appended",
+            ));
         }
         // A host's cause names an event the log holds: at or below the
         // head (021). What it names is the host's business.
@@ -443,13 +596,34 @@ impl Lake {
             events.push(event);
             stored.push(canon);
         }
-        self.engine.append(&lease, &stored)?;
-        w.tip = prev_pos.map(|p| (p, prev_hash));
+        Ok((lease, v, events, stored))
+    }
+
+    /// What follows once the engine holds `events`, stamped in format `v`:
+    /// the writer stands on them, and they are folded and published.
+    fn landed(
+        &self,
+        w: &mut Writer,
+        v: u32,
+        events: Vec<Event>,
+        reads: Reads,
+    ) -> Result<Vec<Event>> {
         w.format = v;
         if let Some(last) = events.last() {
+            w.tip = Some((last.position, last.hash.clone()));
             w.last_known_at = w.last_known_at.max(last.known_at);
         }
-        self.fold_all(w, &events, reads)?;
+        // The events are durable whatever the fold answers: its failure is
+        // told as that, so that it is not read as a write that did not land.
+        self.fold_all(w, &events, reads, false).map_err(|e| {
+            let at = events.first().map_or(0, |e| e.position.0);
+            unavailable(format!(
+                "what was appended is in the log from position {at} and is not folded yet; the \
+                 next write folds it, and a write is sent again only under its idempotency key \
+                 ({})",
+                crate::backed::why(&e)
+            ))
+        })?;
         // Published only once the fold has committed: a position `head()`
         // answers is one a read can be answered at, on every engine.
         self.publish(w);
@@ -481,24 +655,57 @@ impl Lake {
         Ok(())
     }
 
-    /// Fold events into the projection, in one transaction.
-    fn fold_all(&self, w: &mut Writer, events: &[Event], reads: Reads) -> Result<()> {
+    /// Fold events into the projection: an append's in one transaction, a
+    /// page `of_log` in one unless a recomputation was kept as a step.
+    ///
+    /// The steps a `declared` left pending are flushed before the first
+    /// event that reads a record ([`reads_a_record`]) and before the commit.
+    /// A fold of the log then ends its transaction when the flush kept a
+    /// step: it commits through the last event folded and begins again, so
+    /// the next walk reads those records in its view and no step is stacked
+    /// on another. Each commit moves the engine's `folded_through`, and
+    /// what it commits is whole: every event through that position, their
+    /// recomputations put. An append is never split, and it stacks only if
+    /// it holds a second flush, events that read records between two runs
+    /// of declarations: that flush applies the first's kept steps to every
+    /// row again. No door drafts such an append.
+    ///
+    /// An append hands out the calls its events make due; a fold of the
+    /// log hands out only those of an append whose fold failed.
+    fn fold_all(&self, w: &mut Writer, events: &[Event], reads: Reads, of_log: bool) -> Result<()> {
         let Some(last) = events.last() else {
             return Ok(());
         };
+        let owed = (!of_log).then_some(Position::GENESIS).or(w.failed);
         let projection = self.engine.projection();
-        projection.begin()?;
-        let due = w.due.len();
+        let mut due = w.due.len();
         let mut staged = Staged {
             reads,
             ..Staged::default()
         };
         let result = (|| {
-            let view = self.engine.view(None)?;
-            for e in events {
-                self.fold(w, view.as_ref(), &mut staged, e)?;
+            // A `begin` that is refused leaves the writer behind like any
+            // other failure of the fold: the events are in the log.
+            projection.begin()?;
+            let mut view = self.engine.view(None)?;
+            for (i, e) in events.iter().enumerate() {
+                if reads_a_record(&e.body)
+                    && self.flush(w, view.as_ref(), &mut staged, &events[..i], owed)?
+                    && of_log
+                {
+                    drop(view);
+                    projection.commit(events[i - 1].position)?;
+                    // What is committed stays due, whatever fails next.
+                    due = w.due.len();
+                    projection.begin()?;
+                    staged = Staged::default();
+                    view = self.engine.view(None)?;
+                }
+                let owes = owed.is_some_and(|p| e.position >= p);
+                self.fold(w, view.as_ref(), &mut staged, e, owes)?;
             }
-            Ok(())
+            self.flush(w, view.as_ref(), &mut staged, events, owed)
+                .map(drop)
         })()
         .and_then(|()| projection.commit(last.position));
         match result {
@@ -507,14 +714,17 @@ impl Lake {
                 Ok(())
             }
             Err(e) => {
-                // The projection is as it was; so is what the writer read
-                // from it while folding.
+                // The projection is as its last commit left it; so is what
+                // the writer read from it while folding.
                 projection.rollback();
                 w.behind = true;
                 w.due.truncate(due);
+                if !of_log {
+                    w.failed = Some(events[0].position);
+                }
                 if let Ok(view) = self.engine.view(None) {
-                    if let Ok(d) = view.declarations() {
-                        w.ontology = Ontology::from_declared(&d);
+                    if let Ok(o) = Ontology::at(view.as_ref()) {
+                        w.ontology = o;
                     }
                     if let Ok(s) = settings_in(view.as_ref()) {
                         w.settings = s;
@@ -525,160 +735,261 @@ impl Lake {
         }
     }
 
-    /// Move the records a re-keying migration lists to their new keys,
-    /// keeping their fields, versions and per-field provenance; end each
-    /// old key that is no one's new key; and rewrite every reference to a
-    /// moved key (`crate::rekey`). An ended key reads as not found from
-    /// here on, and a later record at it starts at version 1.
-    fn rekey(
+    /// Fold one `migrated` event's step over every record it reaches: the
+    /// migrated type's, for a re-key those of every type with moves and of
+    /// every type that references one, and for a renamed relation carried
+    /// by link records those of its link type, which move to the link type
+    /// of its new name and leave their old keys ended. Each type is walked
+    /// once, under the name the view knows it by, a page
+    /// of the view at a time, and nothing of the walk is kept: a record
+    /// this transaction wrote is stepped where it is kept, and a later read
+    /// of any other goes through the step ([`Staged::record`]). An old key
+    /// that is no one's new key ends: it reads as not found from here on,
+    /// and a later record at it starts at version 1. Every listed move is
+    /// applied, or the fold fails.
+    fn step(
         &self,
         w: &Writer,
         view: &dyn ProjectionView,
         projection: &dyn lakelands_api::engine::ProjectionStore,
         staged: &mut Staged,
-        e: &Event,
-        rekeyed: &[lakelands_api::write::Rekey],
+        step: Migrated,
     ) -> Result<()> {
-        let mut moves: crate::rekey::Moves = BTreeMap::new();
-        for r in rekeyed {
-            moves
-                .entry(r.ty.clone())
-                .or_default()
-                .insert(r.from.clone(), r.to.clone());
+        let migrated = &step.migration.to.name;
+        let moved = step.decls.keys().chain(step.types.keys());
+        let reached: BTreeSet<&TypeName> = moved.chain([migrated]).collect();
+        // The old keys whose records moved.
+        let mut applied = BTreeSet::new();
+        let mut put = |pre: &StoredRecord, post: &StoredRecord| -> Result<()> {
+            if post.ty == *migrated || post != pre {
+                projection.put_record(post)?;
+            }
+            if post.ty != pre.ty {
+                // A link type's records moved to another: its keys end.
+                let ended = StoredRecord::ended(pre.ty.clone(), pre.key.clone(), step.at);
+                projection.put_record(&ended)?;
+                self.index_vectors(&w.ontology, &ended)?;
+                self.index_vectors_as(&w.ontology, &pre.ty, post)?;
+            }
+            if post.key != pre.key {
+                if !step.arrives(&pre.ty, &pre.key) {
+                    let ended = StoredRecord::ended(pre.ty.clone(), pre.key.clone(), step.at);
+                    projection.put_record(&ended)?;
+                }
+                applied.insert((pre.ty.clone(), pre.key.clone()));
+            }
+            Ok(())
+        };
+        for ty in &reached {
+            // The view holds a record under the type it had before the
+            // transaction: an earlier step of it may have moved the type.
+            let ty = staged.known(ty);
+            walk(view, ty, true, |row| {
+                // A record this transaction wrote is its own, under the
+                // key the earlier steps left it: tested before anything
+                // of the view's row is converted.
+                if staged.wrote(ty, &row.key) {
+                    return Ok(());
+                }
+                let pre = staged.stepped(view, row)?;
+                put(&pre, &step.apply(pre.clone())?)
+            })?;
         }
-        // Every moved record is read before any is written: a new key may
-        // be another record's old one.
-        let mut moved = Vec::new();
-        for (ty, m) in &moves {
-            let decl = w.ontology.ty(ty)?.clone();
-            for (from, to) in m {
-                let Some(r) = staged.record(view, ty, from)? else {
-                    return Err(unavailable(format!(
-                        "the migration at position {} moves `{ty}` `{from}`, which the lake does \
-                         not hold",
-                        e.position
-                    )));
-                };
-                let fields = crate::rekey::rewritten(&decl, &r.fields, &moves);
-                moved.push((
-                    from.clone(),
-                    StoredRecord {
-                        key: to.clone(),
-                        fields,
-                        position: e.position,
-                        ..r
-                    },
-                ));
+        // What the transaction wrote is stepped where it is kept: all are
+        // taken out before any is put back, a new key may be another's old.
+        let (stepped, kept) = std::mem::take(&mut staged.records)
+            .into_iter()
+            .partition::<Vec<_>, _>(|((ty, _), _)| reached.contains(ty));
+        staged.records = kept.into_iter().collect();
+        for (_, pre) in stepped {
+            let post = step.apply(pre.clone())?;
+            put(&pre, &post)?;
+            staged.put(post);
+        }
+        let listed = (step.moves.iter()).flat_map(|(ty, m)| m.keys().map(move |from| (ty, from)));
+        for (ty, from) in listed {
+            if !applied.contains(&(ty.clone(), from.clone())) {
+                return Err(unavailable(format!(
+                    "the migration at position {} moves `{ty}` `{from}`, which the lake does \
+                     not hold",
+                    step.at
+                )));
             }
         }
-        let arrivals: std::collections::BTreeSet<(TypeName, RecordKey)> = moved
-            .iter()
-            .map(|(_, r)| (r.ty.clone(), r.key.clone()))
-            .collect();
         // Object-set membership moves with the record: the new key is in
-        // every set the old key was in, and an ended key is in none.
+        // every set the old key was in, and an ended key is in none. Every
+        // membership is read before any is put.
         let mut members = Vec::new();
         for s in w.ontology.object_sets.values().map(|s| &s.decl) {
-            if !moves.contains_key(&s.of) {
+            let Some(moves) = step.moves.get(&s.of) else {
                 continue;
-            }
+            };
             // Read once for the set, not looked up for each moved record; a
             // membership this page put is not in the view yet.
             let held = view.members(&s.name, &s.of)?;
-            for (from, r) in moved.iter().filter(|(_, r)| r.ty == s.of) {
-                let (ty, to) = (r.ty.clone(), r.key.clone());
+            for (from, to) in moves {
                 let put = staged
                     .members
-                    .get(&(s.name.clone(), ty.clone(), from.clone()));
+                    .get(&(s.name.clone(), s.of.clone(), from.clone()));
                 let member = put.copied().unwrap_or_else(|| held.contains(from));
-                members.push((s.name.clone(), ty, from.clone(), to, member));
+                members.push((&s.name, &s.of, from, to, member));
             }
         }
         for (set, ty, from, to, member) in members {
-            staged.member(projection, &set, &ty, &to, member, e.position)?;
-            if member && !arrivals.contains(&(ty.clone(), from.clone())) {
-                staged.member(projection, &set, &ty, &from, false, e.position)?;
+            staged.member(projection, set, ty, to, member, step.at)?;
+            if member && !step.arrives(ty, from) {
+                staged.member(projection, set, ty, from, false, step.at)?;
             }
         }
-        for (from, r) in moved {
-            if !arrivals.contains(&(r.ty.clone(), from.clone())) {
-                let ended = StoredRecord::ended(r.ty.clone(), from, e.position);
-                projection.put_record(&ended)?;
-                staged.put(ended);
-            }
-            projection.put_record(&r)?;
-            staged.put(r);
-        }
-        // References to a moved key, in records that did not move.
-        for (name, entry) in &w.ontology.types {
-            let decl = &entry.decl;
-            if decl.view.is_some()
-                || !decl.fields.iter().any(|f| {
-                    f.ty.kind == StorageKind::Reference
-                        && f.ty.target.as_ref().is_some_and(|t| moves.contains_key(t))
-                })
-            {
+        // A set of a link type whose records moved holds them under the
+        // type they moved to: read under the type the view knows them by,
+        // with what the transaction put laid over.
+        for s in w.ontology.object_sets.values().map(|s| &s.decl) {
+            let Some(to) = step.types.get(&s.of) else {
                 continue;
-            }
-            for r in staged_scan(view, staged, name, true)?
-                .into_iter()
-                .filter(|r| !r.is_ended())
-            {
-                let touched = |k: &RecordKey| {
-                    arrivals.contains(&(name.clone(), k.clone()))
-                        || moves.get(name).is_some_and(|m| m.contains_key(k))
-                };
-                if touched(&r.key) {
-                    continue;
-                }
-                let fields = crate::rekey::rewritten(decl, &r.fields, &moves);
-                if fields != r.fields {
-                    let next = StoredRecord {
-                        fields,
-                        position: e.position,
-                        ..r
+            };
+            let known = staged.known(&s.of);
+            let mut keys = view.members(&s.name, known)?;
+            for ty in [known, &s.of] {
+                let put = staged.members.iter();
+                for ((_, _, key), member) in put.filter(|((n, t, _), _)| n == &s.name && t == ty) {
+                    match member {
+                        true => keys.insert(key.clone()),
+                        false => keys.remove(key),
                     };
-                    projection.put_record(&next)?;
-                    staged.put(next);
                 }
+            }
+            for key in keys {
+                staged.member(projection, &s.name, to, &key, true, step.at)?;
+                staged.member(projection, &s.name, &s.of, &key, false, step.at)?;
             }
         }
+        staged.steps.push(Step::Migrated(Box::new(step)));
         Ok(())
     }
 
+    /// Compute derived fields again for the `declared` events that are
+    /// pending, each type walked once however many of them recompute it:
+    /// every live record of the view the transaction did not write, as the
+    /// kept steps leave it, and every one it wrote, where it is kept, goes
+    /// through the pending steps in order. Each computes with its own
+    /// entries and settings and the outputs recorded before its own event,
+    /// and a record is put, and its vectors indexed, at each step that
+    /// changes it: one state a step, as if each had walked at its event.
+    /// Nothing of the view is kept, and what the transaction wrote stays
+    /// kept, changed or not. The calls made due by a step whose event is at
+    /// or past `owed` come by step, type and key, a record's fields in the
+    /// order they settle. A step that put nothing is dropped: a later read
+    /// through it would change nothing either. Answers whether a step is
+    /// kept.
+    fn flush(
+        &self,
+        w: &mut Writer,
+        view: &dyn ProjectionView,
+        staged: &mut Staged,
+        folded: &[Event],
+        owed: Option<Position>,
+    ) -> Result<bool> {
+        let (false, Some(last)) = (staged.pending.is_empty(), folded.last()) else {
+            return Ok(false);
+        };
+        let pending = std::mem::take(&mut staged.pending);
+        let projection = self.engine.projection();
+        let (from, mut put) = (w.due.len(), vec![false; pending.len()]);
+        let mut through = |r: &mut StoredRecord, recorded: &Recorded, due: &mut Vec<Due>| {
+            for (s, put) in pending.iter().zip(&mut put) {
+                let owes = owed.is_some_and(|p| s.event.position >= p);
+                if let Some(next) = s.apply(r, view, recorded, owes.then_some(&mut *due))? {
+                    projection.put_record(&next)?;
+                    self.index_vectors(&s.entries, &next)?;
+                    (*r, *put) = (next, true);
+                }
+            }
+            Ok(())
+        };
+        let types = pending.iter().flat_map(|s| s.entries.types.keys());
+        let types: BTreeSet<&TypeName> = types.collect();
+        // The view holds a record under the type it had before the
+        // transaction, and a kept step may have moved a type's records: so
+        // each of the view's types is walked once, and a step computes a
+        // row by the type it has now.
+        let known: BTreeSet<&TypeName> = types.iter().map(|ty| staged.known(ty)).collect();
+        for ty in known {
+            walk(view, ty, false, |row| {
+                // Tested before anything of the row is computed, by the
+                // type and key the kept steps give it.
+                if staged.wrote(ty, &row.key) {
+                    return Ok(());
+                }
+                let mut r = staged.stepped(view, row)?;
+                through(&mut r, &staged.outputs, &mut w.due)
+            })?;
+        }
+        for ty in types {
+            let written = (staged.records)
+                .range_mut((ty.clone(), RecordKey::from(""))..)
+                .take_while(|((t, _), _)| t == ty);
+            for (_, r) in written {
+                through(r, &staged.outputs, &mut w.due)?;
+            }
+        }
+        w.due[from..].sort_by(|a, b| (a.cause, &a.ty, &a.key).cmp(&(b.cause, &b.ty, &b.key)));
+        let kept = put.contains(&true);
+        let steps = pending.into_iter().zip(put);
+        staged
+            .steps
+            .extend(steps.filter_map(|(s, put)| put.then(|| Step::Recomputed(Box::new(s)))));
+        kept::made(&kept_at!(w, view, projection), staged, last.position)?;
+        Ok(kept)
+    }
+
     /// Fold the log from `from` on, a page at a time, each page in its own
-    /// transaction that commits `folded_through` at its last event. A fold
-    /// stops in one of two ways: reading a page of the log fails, or
-    /// folding it does, and that page rolls back. Either way the
-    /// projection is folded through the last page committed, the writer is
-    /// `behind`, and the head names that position; nothing is appended
-    /// until the next fold (an append's `refold`, a `rebuild`, or the next
-    /// open's catch-up) has continued from there. Every read is answered
-    /// at or before `folded_through`, so no read sees half a page.
+    /// transaction that commits `folded_through` at its last event, or in
+    /// several, each committing at the last event it folded
+    /// ([`Self::fold_all`]). A fold stops in one of two ways: reading a
+    /// page of the log fails, or folding it does, and the open transaction
+    /// rolls back. Either way the projection is folded through the last
+    /// commit, the writer is `behind`, and the head names that position;
+    /// nothing is appended until the next fold (the catch-up before a
+    /// write, a `rebuild`, or the next open's) has continued from there.
+    /// Every read is answered at or before `folded_through`, so no read
+    /// sees half a transaction. A fold that reaches the tip has handed out
+    /// the calls of an append whose fold had failed.
     fn fold_from(&self, w: &mut Writer, from: Position) -> Result<()> {
         let folded = (|| {
             for page in self.pages(from) {
-                self.fold_all(w, &page?, Reads::default())?;
+                self.fold_all(w, &page?, Reads::default(), true)?;
             }
             Ok(())
         })();
         if folded.is_err() {
             // Whatever stopped it, a read of the log or a page's fold, the
             // projection is behind the log: nothing is appended until a
-            // fold has caught up, and the head names the last page
-            // committed, as `head()` promises.
+            // fold has caught up, and the head names the last commit, as
+            // `head()` promises.
             w.behind = true;
             let through = self.engine.projection().folded_through().ok().flatten();
             self.head
                 .store(through.map_or(0, |p| p.0), Ordering::Release);
+        } else {
+            w.failed = None;
         }
         folded
     }
 
     /// Fold the events the log holds past the projection, a page at a
     /// time, and publish the head once they are folded.
+    ///
+    /// The writer's ontology and settings are read at the mark first: what
+    /// it holds may be what a failed fold left, and a fold compares a
+    /// declaration with the one the writer holds. A writer that cannot
+    /// read them stays behind.
     fn refold(&self, w: &mut Writer) -> Result<()> {
         let folded = self.engine.projection().folded_through()?;
+        {
+            let view = self.engine.view(None)?;
+            (w.ontology, w.settings) = (Ontology::at(view.as_ref())?, settings_in(view.as_ref())?);
+        }
         let from = folded.map_or(Position::GENESIS, Position::next);
         self.fold_from(w, from)?;
         w.behind = false;
@@ -686,15 +997,27 @@ impl Lake {
         Ok(())
     }
 
-    /// What one event does to the projection.
+    /// What one event does to the projection; the calls it makes due are
+    /// handed out when it `owes` them.
     fn fold(
         &self,
         w: &mut Writer,
         view: &dyn ProjectionView,
         staged: &mut Staged,
         e: &Event,
+        owes: bool,
     ) -> Result<()> {
         let projection = self.engine.projection();
+        // A name of the kept form, and a seam that begins `sys:`, are the
+        // store's own, and a view's records are computed: no door declares,
+        // writes or records under the one, nor writes the other, so only a
+        // log another build wrote names them, and such a log is not folded.
+        if let Some(why) = foreign(&w.ontology, &e.body) {
+            return Err(unavailable(format!(
+                "the event at position {} {why}, and the log is not folded past it",
+                e.position
+            )));
+        }
         projection.mark_applied(&e.id, e.position)?;
         match &e.body {
             EventBody::LakeCreated { .. }
@@ -713,6 +1036,9 @@ impl Lake {
                 let computes = |t: &lakelands_api::ontology::TypeDecl| -> Vec<_> {
                     t.fields
                         .iter()
+                        .filter(|f| {
+                            f.derived.is_some() || f.function.is_some() || f.embed.is_some()
+                        })
                         .map(|f| {
                             (
                                 f.name.clone(),
@@ -743,15 +1069,7 @@ impl Lake {
                     Declaration::Type(t) => match w.ontology.types.get(&t.name) {
                         Some(old)
                             if computes(&old.decl) != computes(t)
-                                || t.fields.iter().any(|f| {
-                                    f.embed.is_some()
-                                        || f.function
-                                            .as_deref()
-                                            .and_then(|n| w.ontology.functions.get(n))
-                                            .is_some_and(|func| {
-                                                crate::backed::is_backed(&func.decl)
-                                            })
-                                }) =>
+                                || crate::backed::computed_outside(&w.ontology, t) =>
                         {
                             vec![t.name.clone()]
                         }
@@ -768,22 +1086,21 @@ impl Lake {
                     e.position,
                 )?;
                 // A redeclared function, or revised derived expressions,
-                // compute every live record's derived fields again, in this
-                // event.
-                for ty in rederive {
-                    for r in staged_scan(view, staged, &ty, false)? {
-                        let mut outputs = Outputs {
-                            view,
-                            staged: Some(&staged.outputs),
-                            due: Some(&mut w.due),
-                        };
-                        let next = record::rederive(&w.ontology, &r, e, &w.settings, &mut outputs)?;
-                        if let Some(next) = next {
-                            projection.put_record(&next)?;
-                            self.index_vectors(&w.ontology, &next)?;
-                            staged.put(next);
-                        }
-                    }
+                // compute every live record's derived fields again, as of
+                // this event: what that reads is kept as it stands now, and
+                // the records are walked at the flush. No record and no
+                // setting changes before it, so the settings are one map
+                // for all that are pending.
+                if !rederive.is_empty() {
+                    let settings = match staged.pending.last() {
+                        Some(s) => s.settings.clone(),
+                        None => Arc::new(w.settings.clone()),
+                    };
+                    staged.pending.push(Recomputed {
+                        event: e.clone(),
+                        entries: w.ontology.computing(&rederive),
+                        settings,
+                    });
                 }
             }
             EventBody::Migrated {
@@ -794,43 +1111,28 @@ impl Lake {
                 ..
             } => {
                 let before = w.ontology.ty(&migration.to.name)?.clone();
-                let records = staged_scan(view, staged, &migration.to.name, true)?;
                 let decl = Declaration::Type(migration.to.clone());
                 w.ontology
                     .put(decl.clone(), *version, Some(schema_hash.clone()));
                 projection.put_declaration(&decl, *version, Some(schema_hash), e.position)?;
-                for r in records.into_iter().filter(|r| !r.is_ended()) {
-                    let converted = shape::migrate_record(&before, migration, &r.fields)
-                        .map_err(|err| unavailable(err.to_string()))?
-                        .ok_or_else(|| {
-                            unavailable(format!(
-                                "the migration at position {} cannot convert `{}` `{}`",
-                                e.position, r.ty, r.key
-                            ))
-                        })?;
-                    let mut meta = BTreeMap::new();
-                    for (old, meta_of) in &r.meta {
-                        let new = migration
-                            .renames
-                            .iter()
-                            .find(|(from, _)| from == old)
-                            .map_or(old, |(_, to)| to);
-                        if converted.contains_key(new) {
-                            meta.insert(new.clone(), meta_of.clone());
-                        }
-                    }
-                    let next = StoredRecord {
-                        fields: converted,
-                        meta,
-                        position: e.position,
-                        ..r
+                // The lake's list of renames takes the fields this migration
+                // renames, and each link type a renamed relation moves.
+                let renamed = lakelands_core::links::renamed(migration, e.position);
+                if !renamed.is_empty() {
+                    let key = (RENAMES.to_owned(), Digest::zero());
+                    let mut list = match staged.outputs.get(&key).and_then(|l| l.last()) {
+                        Some((_, list)) => renames_in(Some(list.clone()))?,
+                        None => renames_in(view.output(RENAMES, &key.1)?)?,
                     };
-                    projection.put_record(&next)?;
-                    staged.put(next);
+                    list.extend(renamed);
+                    let list = serde_json::json!(list);
+                    projection.put_output(RENAMES, &key.1, &list, e.position)?;
+                    // No step reads the renames: the last list is all that
+                    // is kept of them.
+                    staged.outputs.insert(key, vec![(e.position, list)]);
                 }
-                if !rekeyed.is_empty() {
-                    self.rekey(w, view, projection, staged, e, rekeyed)?;
-                }
+                let step = Migrated::new(&w.ontology, e.position, before, migration, rekeyed);
+                self.step(w, view, projection, staged, step)?;
             }
             EventBody::RecordUpserted { ty, key, .. }
             | EventBody::RecordIngested { ty, key, .. }
@@ -841,7 +1143,8 @@ impl Lake {
                 let mut outputs = Outputs {
                     view,
                     staged: Some(&staged.outputs),
-                    due: Some(&mut w.due),
+                    before: None,
+                    due: owes.then_some(&mut w.due),
                 };
                 let after =
                     record::apply(&w.ontology, before.as_ref(), e, &w.settings, &mut outputs)?;
@@ -854,6 +1157,8 @@ impl Lake {
                     }
                     projection.put_record(&after)?;
                     self.index_vectors(&w.ontology, &after)?;
+                    let before = before.as_ref();
+                    kept::note(&kept_at!(w, view, projection), staged, before, &after)?;
                     staged.put(after);
                 }
             }
@@ -867,11 +1172,12 @@ impl Lake {
                     position: e.position,
                     proposer: e.writer.clone(),
                     proposed_at: e.known_at,
-                    write: write.clone(),
+                    write: Some(write.clone()),
                     why: why.clone(),
                     state: ProposalState::Pending,
                     decided_by: None,
                     reason: None,
+                    more: false,
                 };
                 projection.put_proposal(&p, e.position)?;
                 staged.proposals.insert(proposal.clone(), p);
@@ -905,16 +1211,16 @@ impl Lake {
                 field,
             } => {
                 projection.put_output(seam, input, output, e.position)?;
-                staged
-                    .outputs
-                    .insert((seam.clone(), input.clone()), output.clone());
+                let recorded = staged.outputs.entry((seam.clone(), input.clone()));
+                recorded.or_default().push((e.position, output.clone()));
                 if let Some((ty, key, name)) = field
                     && let Some(r) = staged.record(view, ty, key)?
                 {
                     let mut outputs = Outputs {
                         view,
                         staged: Some(&staged.outputs),
-                        due: Some(&mut w.due),
+                        before: None,
+                        due: owes.then_some(&mut w.due),
                     };
                     let next = record::fill(
                         &w.ontology,
@@ -930,19 +1236,32 @@ impl Lake {
                     if let Some(next) = next {
                         projection.put_record(&next)?;
                         self.index_vectors(&w.ontology, &next)?;
+                        kept::note(&kept_at!(w, view, projection), staged, Some(&r), &next)?;
                         staged.put(next);
                     }
                 }
             }
         }
-        Ok(())
+        kept::settle(&kept_at!(w, view, projection), staged, e)
     }
 
     /// Keep the engine's vector index in step with a record's vector
     /// fields: a live record's vectors are indexed, a retired or cleared
     /// one's removed.
     fn index_vectors(&self, ontology: &Ontology, r: &StoredRecord) -> Result<()> {
-        let (Some(index), Ok(decl)) = (self.engine.vectors(), ontology.ty(&r.ty)) else {
+        self.index_vectors_as(ontology, &r.ty, r)
+    }
+
+    /// [`Self::index_vectors`] for a record whose vector fields are those
+    /// `declared` declares: a link moved to a link type that is declared
+    /// only by the next event has the fields of the one it came from.
+    fn index_vectors_as(
+        &self,
+        ontology: &Ontology,
+        declared: &TypeName,
+        r: &StoredRecord,
+    ) -> Result<()> {
+        let (Some(index), Ok(decl)) = (self.engine.vectors(), ontology.ty(declared)) else {
             return Ok(());
         };
         for f in decl
@@ -969,26 +1288,29 @@ impl Lake {
         Ok(())
     }
 
-    /// Clear the projection and fold the whole log again.
+    /// Clear the projection and fold the whole log again. Only the lease's
+    /// holder does: a handle without it would clear under the holder's fold.
     pub fn rebuild(&self) -> Result<Position> {
         let mut w = self.writer();
+        if w.lease.is_none() {
+            return Err(unavailable(NO_LEASE));
+        }
         self.engine.projection().clear()?;
         w.ontology = Ontology::default();
         w.settings = BTreeMap::new();
         // A page at a time: a rebuild that stops is continued by the next
         // fold from where it committed, as a failed fold is.
-        let folded = self.fold_from(&mut w, Position::GENESIS);
-        // A rebuild reads the recorded outputs; it never calls a backing,
-        // whether it finished or stopped.
-        w.due.clear();
-        folded?;
+        // It reads the recorded outputs and makes no call due but a failed
+        // append's; the calls a write before it made due stay that write's.
+        self.fold_from(&mut w, Position::GENESIS)?;
         // Everything the log holds is folded again: the head is its tip.
         self.publish(&w);
         Ok(w.tip.as_ref().map_or(Position::GENESIS, |t| t.0))
     }
 
-    /// Check the hash chain between two positions, and every checkpoint in
-    /// that range against the segments the engine keeps.
+    /// Check the hash chain between two positions, every checkpoint in
+    /// that range against the segments the engine keeps, and that each
+    /// segment after the first begins with one.
     pub fn verify(
         &self,
         from: Option<Position>,
@@ -1003,6 +1325,8 @@ impl Lake {
         let mut before = prev.as_ref().map(|e| (e.position, e.hash.clone()));
         let mut known = prev.map(|e| e.known_at);
         let segments = self.engine.segments()?;
+        // Where a segment after the first begins: behind each sealed one.
+        let begins: BTreeSet<Position> = segments.iter().map(|s| s.last.next()).collect();
         let mut last = None;
         let mut last_v = 0;
         'pages: for page in self.pages(from) {
@@ -1039,15 +1363,19 @@ impl Lake {
                 {
                     check_checkpoint(&e, *through, hash, listed)?;
                     check_segments(listed, &segments, e.position)?;
+                } else if begins.contains(&e.position) {
+                    return Err(unavailable(format!(
+                        "the log is damaged at position {}: a segment begins there, and its \
+                         first event is no checkpoint (`docs/log-format.md` §4.2)",
+                        e.position
+                    )));
                 }
                 before = Some((e.position, e.hash.clone()));
                 last = Some(e);
             }
         }
-        let last = last.ok_or_else(|| Error::Refused {
-            field: None,
-            reason: lakelands_api::Refusal::OutOfRange { head: self.head() },
-        })?;
+        let last =
+            last.ok_or_else(|| crate::writes::refused(Refusal::OutOfRange { head: self.head() }))?;
         Ok(lakelands_api::Verification {
             from,
             through: last.position,
@@ -1095,16 +1423,7 @@ impl Lake {
         ty: &TypeName,
     ) -> Result<Vec<lakelands_api::read::VectorCoverage>> {
         let view = self.engine.view(None)?;
-        let decl = view
-            .declarations()?
-            .into_iter()
-            .find_map(|d| match d.declaration {
-                Declaration::Type(t) if &t.name == ty => Some(t),
-                _ => None,
-            })
-            .ok_or_else(|| Error::NotFound {
-                missing: lakelands_api::Missing::Type { name: ty.clone() },
-            })?;
+        let decl = Ontology::at(view.as_ref())?.ty(ty)?.clone();
         let mut out = Vec::new();
         for f in &decl.fields {
             let Some(embed) = &f.embed else {
@@ -1150,36 +1469,39 @@ impl Lake {
         Ok(out)
     }
 
-    /// Seal the active segment and write the checkpoint that opens the next.
+    /// Seal the active segment and write the checkpoint that opens the
+    /// next, as one step.
     pub fn checkpoint(&self) -> Result<Position> {
-        let mut w = self.writer();
+        // A segment is sealed only over events the projection has folded.
+        let mut w = self.for_write()?;
         let lease = w
             .lease
             .clone()
             .ok_or_else(|| unavailable("this lake is open read-only here"))?;
-        // A segment is sealed only over events the projection has folded.
-        if w.behind {
-            self.refold(&mut w)?;
-        }
         let Some((through, hash)) = w.tip.clone() else {
             return Ok(Position::GENESIS);
         };
-        if self.engine.seal_segment(&lease)?.is_none() {
-            return Ok(through);
-        }
-        let segments = self.engine.segments()?;
+        let before = self.engine.segments()?;
         let now = self.clock(&mut w);
-        let events = self.append(
-            &mut w,
-            vec![Draft::system(
-                now,
-                EventBody::Checkpoint {
-                    through,
-                    hash,
-                    segments,
-                },
-            )],
-        )?;
+        // The engine closes the segment and begins the next with the
+        // checkpoint in one step: one refused before it has sealed
+        // nothing, and is sent again.
+        let mut stamped = None;
+        self.engine.seal_segment(&lease, false, &mut |sealed| {
+            let segments = before.iter().chain([sealed]).cloned().collect();
+            let body = EventBody::Checkpoint {
+                through,
+                hash: hash.clone(),
+                segments,
+            };
+            let (_, v, events, stored) = self.stamp(&w, vec![Draft::system(now, body)])?;
+            stamped = Some((v, events));
+            Ok(stored)
+        })?;
+        let Some((v, events)) = stamped else {
+            return Ok(through);
+        };
+        let events = self.landed(&mut w, v, events, Reads::default())?;
         Ok(events.last().map_or(through, |e| e.position))
     }
 
@@ -1238,10 +1560,6 @@ impl Drop for Lake {
     }
 }
 
-fn broken(at: Position, what: String) -> Error {
-    unavailable(format!("the checkpoint at position {at} is broken: {what}"))
-}
-
 /// A checkpoint's own claims (`docs/log-format.md` §2.6, §4.3): it follows
 /// the segment it seals, repeats its last hash, and lists sealed ranges
 /// that start at 0, follow each other with no gap or overlap, and end
@@ -1252,36 +1570,29 @@ fn check_checkpoint(
     hash: &Digest,
     listed: &[SegmentDigest],
 ) -> Result<()> {
+    let at = e.position;
+    let broken =
+        |what: &str| unavailable(format!("the checkpoint at position {at} is broken: {what}"));
     if e.position.0 != through.0 + 1 {
-        return Err(broken(
-            e.position,
-            format!("it says it follows position {through}"),
-        ));
+        return Err(broken(&format!("it says it follows position {through}")));
     }
     if *hash != e.prev {
-        return Err(broken(
-            e.position,
-            "its hash is not the hash of the event before it".into(),
-        ));
+        return Err(broken("its hash is not the hash of the event before it"));
     }
     let mut next = 0u64;
     for s in listed {
         if s.first.0 != next || s.last < s.first {
-            return Err(broken(
-                e.position,
-                format!(
-                    "its segment list has the range {}..={} where one starting at {next} belongs",
-                    s.first, s.last
-                ),
-            ));
+            return Err(broken(&format!(
+                "its segment list has the range {}..={} where one starting at {next} belongs",
+                s.first, s.last
+            )));
         }
         next = s.last.0 + 1;
     }
     if next != through.0 + 1 {
-        return Err(broken(
-            e.position,
-            format!("its segment list does not end at position {through}"),
-        ));
+        return Err(broken(&format!(
+            "its segment list does not end at position {through}"
+        )));
     }
     Ok(())
 }
@@ -1316,6 +1627,9 @@ pub fn find_proposal(view: &dyn ProjectionView, id: &ProposalId) -> Result<Propo
 
 /// How many events a page of the log holds at most.
 const PAGE: u32 = 1024;
+
+/// What a write is answered on a handle that does not hold the lease.
+const NO_LEASE: &str = "this lake is open read-only here; another process holds its writer lease";
 
 /// The log read a page at a time (`Lake::pages`): each item is up to
 /// `PAGE` events, opened and checked; the iteration ends after the tip, or
@@ -1370,51 +1684,523 @@ impl Reads {
     }
 }
 
-/// Every record of `ty` as the fold leaves it so far, restricted ones
-/// included and retired ones when `retired`: the view's, with what this
-/// append wrote earlier over it. A fold of many events in one page (a
-/// rebuild, an import) writes records the view it opened does not show yet.
-fn staged_scan(
+/// The records of `ty` a view holds, a page at a time by key, restricted
+/// ones included and retired ones when `retired`; an ended key is passed
+/// over. Whether a page is the last, and where the next continues, are
+/// decided on the rows as the view returned them. A page that cannot be
+/// read ends the walk: it yields nothing more, and whoever drove it asks
+/// [`Walk::failed`] before it uses anything the walk produced.
+pub(crate) struct Walk<'v> {
+    view: &'v dyn ProjectionView,
+    ty: &'v TypeName,
+    scan: lakelands_api::engine::Scan,
+    page: std::vec::IntoIter<StoredRecord>,
+    more: bool,
+    failed: Option<Error>,
+}
+
+impl<'v> Walk<'v> {
+    pub(crate) fn new(view: &'v dyn ProjectionView, ty: &'v TypeName, retired: bool) -> Self {
+        let scan = lakelands_api::engine::Scan {
+            limit: PAGE,
+            ..every(retired)
+        };
+        Walk {
+            view,
+            ty,
+            scan,
+            page: Vec::new().into_iter(),
+            more: true,
+            failed: None,
+        }
+    }
+
+    /// The error of the page read that ended the walk, if one did.
+    pub(crate) fn failed(&mut self) -> Result<()> {
+        self.failed.take().map_or(Ok(()), Err)
+    }
+}
+
+impl Iterator for Walk<'_> {
+    type Item = StoredRecord;
+
+    fn next(&mut self) -> Option<StoredRecord> {
+        loop {
+            match self.page.next() {
+                Some(r) if r.is_ended() => continue,
+                Some(r) => return Some(r),
+                None if !self.more => return None,
+                None => {}
+            }
+            let rows = match self.view.scan(self.ty, &self.scan) {
+                Ok(rows) => rows,
+                Err(e) => {
+                    (self.more, self.failed) = (false, Some(e));
+                    return None;
+                }
+            };
+            self.more = rows.len() == PAGE as usize;
+            self.scan.after = rows.last().map(|r| lakelands_api::engine::After {
+                values: Vec::new(),
+                key: r.key.clone(),
+            });
+            self.page = rows.into_iter();
+        }
+    }
+}
+
+/// [`Walk`], each record handed to `each`: the first error, of a page read
+/// or of `each`, ends it.
+pub(crate) fn walk(
     view: &dyn ProjectionView,
-    staged: &Staged,
     ty: &TypeName,
     retired: bool,
-) -> Result<Vec<StoredRecord>> {
-    let records = view.scan(ty, &every(retired))?;
-    let mut all: BTreeMap<RecordKey, StoredRecord> =
-        records.into_iter().map(|r| (r.key.clone(), r)).collect();
-    all.extend(staged.of_type(ty).map(|r| (r.key.clone(), r.clone())));
-    Ok(all.into_values().collect())
+    mut each: impl FnMut(StoredRecord) -> Result<()>,
+) -> Result<()> {
+    let mut walk = Walk::new(view, ty, retired);
+    walk.by_ref().try_for_each(&mut each)?;
+    walk.failed()
+}
+
+/// What an event names that only the store's fold makes, said as the
+/// refusal says it: a type of the kept form, an output under a seam of
+/// the store's own, or a record of a view. `None` for every event a door
+/// appends.
+fn foreign(o: &Ontology, body: &EventBody) -> Option<String> {
+    let (ty, declares) = match body {
+        EventBody::OutputRecorded { seam, .. } => {
+            let own = format!("a seam that begins `{OWN_SEAM}` is the store's own");
+            return (seam.starts_with(OWN_SEAM)).then(|| format!("records under `{seam}`: {own}"));
+        }
+        EventBody::Declared {
+            declaration: Declaration::Type(TypeDecl { name, .. }),
+            ..
+        } => (name, true),
+        EventBody::RecordUpserted { ty, .. }
+        | EventBody::RecordIngested { ty, .. }
+        | EventBody::RecordRetired { ty, .. }
+        | EventBody::RecordRestricted { ty, .. }
+        | EventBody::RecordUnrestricted { ty, .. }
+        | EventBody::ObjectSetChanged { ty, .. } => (ty, false),
+        _ => return None,
+    };
+    if lakelands_api::seam::is_kept_name(ty) {
+        return Some(format!(
+            "declares or writes the type `{ty}`: a name that begins `{}` is the store's own, for \
+             the records of a view it keeps",
+            lakelands_api::seam::KEPT_PREFIX
+        ));
+    }
+    let view = !declares && o.ty(ty).is_ok_and(|t| t.view.is_some());
+    view.then(|| format!("writes a record of `{ty}`, a view, whose records are computed"))
+}
+
+/// Whether the fold of an event reads a record: such an event is folded
+/// only after the recomputations pending before it are flushed
+/// ([`Lake::fold_all`]), so it reads what they left. Every kind is named: a
+/// new one does not compile until it is said here whether it reads one.
+fn reads_a_record(body: &EventBody) -> bool {
+    match body {
+        // The record's state before, which the event changes.
+        EventBody::RecordUpserted { .. }
+        | EventBody::RecordIngested { .. }
+        | EventBody::RecordRetired { .. }
+        | EventBody::RecordRestricted { .. }
+        | EventBody::RecordUnrestricted { .. }
+        // Every record of the migrated type, and those a re-key reaches.
+        | EventBody::Migrated { .. } => true,
+        // The record whose field it fills; one that names no field is put
+        // and fills nothing.
+        EventBody::OutputRecorded { field, .. } => field.is_some(),
+        // Nothing of the projection is changed for these but their mark.
+        EventBody::LakeCreated { .. }
+        | EventBody::LeaseTaken { .. }
+        | EventBody::Checkpoint { .. }
+        | EventBody::VerbCalled { .. }
+        | EventBody::TriggerFired { .. }
+        // The writer's ontology, and the declaration put; a recomputation
+        // is left pending, and reads its records at the flush.
+        | EventBody::Declared { .. }
+        // A proposal is put, or read and put: a row of its own, no record.
+        | EventBody::WriteProposed { .. }
+        | EventBody::WriteAccepted { .. }
+        | EventBody::WriteRejected { .. }
+        // A membership is put by the key the event names; the record at
+        // that key is not read.
+        | EventBody::ObjectSetChanged { .. } => false,
+    }
+}
+
+/// One event a transaction folded, kept in place of the records it
+/// changed: what it does to a record. A later read of a record the
+/// transaction did not write takes the view's row through every step, in
+/// the order of their events ([`Staged::record`]).
+pub(crate) enum Step {
+    /// A `migrated` event.
+    Migrated(Box<Migrated>),
+    /// A `declared` event that computed derived fields again and changed a
+    /// record.
+    Recomputed(Box<Recomputed>),
+}
+
+impl Step {
+    /// A record, not an ended key, after the step. A recomputation reads
+    /// the outputs in `recorded` that stand before its own event, makes no
+    /// call due and indexes nothing: the event that reads writes the
+    /// record, and indexes what it writes.
+    fn apply(
+        &self,
+        r: StoredRecord,
+        view: &dyn ProjectionView,
+        recorded: &Recorded,
+    ) -> Result<StoredRecord> {
+        match self {
+            Step::Migrated(s) => s.apply(r),
+            Step::Recomputed(s) => Ok(s.apply(&r, view, recorded, None)?.unwrap_or(r)),
+        }
+    }
+
+    /// The migration, of a step that may move a key; a recomputation moves
+    /// none.
+    fn migrated(&self) -> Option<&Migrated> {
+        match self {
+            Step::Migrated(s) => Some(s),
+            Step::Recomputed(_) => None,
+        }
+    }
+}
+
+/// One `declared` event that computes derived fields again: all that the
+/// computation reads, as it stood at the event, so that the flush's walk
+/// and a later read through the step compute the same, whatever the writer
+/// holds by then.
+pub(crate) struct Recomputed {
+    /// The event, whole: its position, and the provenance it gives every
+    /// field it changes.
+    event: Event,
+    /// The types whose records it computes again, and what computing them
+    /// reads of the ontology after the event ([`Ontology::computing`]):
+    /// each entry shared with the writer's ontology and with the other
+    /// steps that read it.
+    entries: Ontology,
+    /// The settings at the event.
+    settings: Arc<BTreeMap<String, Value>>,
+}
+
+impl Recomputed {
+    /// A record after the step when the step changes it: a live record of
+    /// one of its types whose derived fields come out other than they are.
+    /// A record of another type is as it was. The calls it makes due go to
+    /// `due`.
+    fn apply(
+        &self,
+        r: &StoredRecord,
+        view: &dyn ProjectionView,
+        recorded: &Recorded,
+        due: Option<&mut Vec<Due>>,
+    ) -> Result<Option<StoredRecord>> {
+        if !self.entries.types.contains_key(&r.ty) {
+            return Ok(None);
+        }
+        let mut outputs = Outputs {
+            view,
+            staged: Some(recorded),
+            before: Some(self.event.position),
+            due,
+        };
+        record::rederive(&self.entries, r, &self.event, &self.settings, &mut outputs)
+    }
+}
+
+/// One `migrated` event a transaction folded: what it does to a record,
+/// kept in place of the records it changed. The fold's walk, the records
+/// the transaction wrote and a later read all take a record through
+/// [`Migrated::apply`], so the three cannot disagree.
+pub(crate) struct Migrated {
+    /// The event's position.
+    at: Position,
+    /// The migrated type's declaration before.
+    before: TypeDecl,
+    migration: Migration,
+    /// The moves the event lists, per type: old key to new key.
+    moves: crate::rekey::Moves,
+    /// The same, new key to old.
+    back: crate::rekey::Moves,
+    /// The link types a renamed relation's records move between, old name
+    /// to new: the type's whole, every key as it is (035, extended).
+    types: BTreeMap<TypeName, TypeName>,
+    /// For a step with moves, as declared once the migration is in force:
+    /// every type with moves, and every type, not a view, that has a
+    /// reference field to one.
+    decls: BTreeMap<TypeName, TypeDecl>,
+}
+
+impl Migrated {
+    fn new(
+        ontology: &Ontology,
+        at: Position,
+        before: TypeDecl,
+        migration: &Migration,
+        rekeyed: &[lakelands_api::write::Rekey],
+    ) -> Migrated {
+        let (mut moves, mut back) = (crate::rekey::Moves::new(), crate::rekey::Moves::new());
+        for r in rekeyed {
+            let ty = || r.ty.clone();
+            moves
+                .entry(ty())
+                .or_default()
+                .insert(r.from.clone(), r.to.clone());
+            back.entry(ty())
+                .or_default()
+                .insert(r.to.clone(), r.from.clone());
+        }
+        let reaches = |d: &&TypeDecl| {
+            moves.contains_key(&d.name)
+                || d.view.is_none() && !crate::rekey::moved_references(d, &moves).is_empty()
+        };
+        let decls = (ontology.types.values().map(|t| &t.decl).filter(reaches))
+            .map(|d| (d.name.clone(), d.clone()))
+            .collect();
+        let types = lakelands_core::links::moved(migration);
+        Migrated {
+            at,
+            before,
+            migration: migration.clone(),
+            moves,
+            back,
+            types,
+            decls,
+        }
+    }
+
+    /// A record, not an ended key, after the step. Of the migrated type:
+    /// its fields converted, its per-field provenance carried over the
+    /// renames for the fields it still has, at the step's position. Under
+    /// a re-key: its references to moved keys rewritten and, when its own
+    /// key moved, its new key; at the step's position when either changed
+    /// it. Its version and its flags are never touched.
+    fn apply(&self, mut r: StoredRecord) -> Result<StoredRecord> {
+        if r.ty == self.migration.to.name {
+            let converted = shape::migrate_record(&self.before, &self.migration, &r.fields)
+                .map_err(|err| unavailable(err.to_string()))?
+                .ok_or_else(|| {
+                    unavailable(format!(
+                        "the migration at position {} cannot convert `{}` `{}`",
+                        self.at, r.ty, r.key
+                    ))
+                })?;
+            let renames = &self.migration.renames;
+            let renamed = |old: FieldName| match renames.iter().find(|(from, _)| *from == old) {
+                Some((_, to)) => to.clone(),
+                None => old,
+            };
+            r.meta = (std::mem::take(&mut r.meta).into_iter())
+                .map(|(old, meta)| (renamed(old), meta))
+                .filter(|(new, _)| converted.contains_key(new))
+                .collect();
+            r.fields = converted;
+            r.position = self.at;
+        }
+        if let Some(decl) = self.decls.get(&r.ty) {
+            let fields = crate::rekey::rewritten(decl, &r.fields, &self.moves);
+            let to = self.moves.get(&r.ty).and_then(|m| m.get(&r.key));
+            if to.is_some() || fields != r.fields {
+                r.position = self.at;
+            }
+            r.key = to.cloned().unwrap_or(r.key);
+            r.fields = fields;
+        }
+        if let Some(to) = self.types.get(&r.ty) {
+            (r.ty, r.position) = (to.clone(), self.at);
+        }
+        Ok(r)
+    }
+
+    /// Whether `key` is the new key of a move: a record arrives at it.
+    fn arrives(&self, ty: &TypeName, key: &RecordKey) -> bool {
+        self.back.get(ty).is_some_and(|m| m.contains_key(key))
+    }
+
+    /// Where the record of `ty` at `key` after the step was before it: the
+    /// old key of the move that arrives there, else the key itself, under
+    /// the type its records moved from, if they did; `None` for a key that
+    /// ended at the step, which a record moved away from and none arrived
+    /// at, as every key of a type whose records moved to another.
+    fn source<'a>(
+        &'a self,
+        ty: &'a TypeName,
+        key: &'a RecordKey,
+    ) -> Option<(&'a TypeName, &'a RecordKey)> {
+        if self.types.contains_key(ty) {
+            return None;
+        }
+        match self.back.get(ty).and_then(|m| m.get(key)) {
+            Some(old) => Some((ty, old)),
+            None => (self.moved(ty, key) == key).then_some((self.origin(ty), key)),
+        }
+    }
+
+    /// The type whose records the step moved to `ty`, else `ty` itself.
+    fn origin<'a>(&'a self, ty: &'a TypeName) -> &'a TypeName {
+        let from = self.types.iter().find(|(_, to)| *to == ty);
+        from.map_or(ty, |(from, _)| from)
+    }
+
+    /// The key a record at `key` before the step has after it.
+    fn moved<'a>(&'a self, ty: &TypeName, key: &'a RecordKey) -> &'a RecordKey {
+        let to = self.moves.get(ty).and_then(|m| m.get(key));
+        to.unwrap_or(key)
+    }
 }
 
 /// What one append has written so far, read before the projection.
 #[derive(Default)]
 pub struct Staged {
+    /// The records this transaction wrote, each under the key and in the
+    /// state it has now: ended only where the fold ended a kept view's
+    /// record, which `each` and `matching` leave out.
     records: BTreeMap<(TypeName, RecordKey), StoredRecord>,
+    /// The steps this transaction folded and kept, in the order of their
+    /// events.
+    pub(crate) steps: Vec<Step>,
+    /// The recomputations whose records are not walked yet: every
+    /// `declared` that recomputes since the last event that read a record.
+    pending: Vec<Recomputed>,
     /// What the fold and the decision before it read from the projection.
     reads: Reads,
     /// Proposals changed in this append.
     pub proposals: BTreeMap<ProposalId, Proposal>,
-    /// Outputs recorded in this append, by seam and input.
-    pub outputs: BTreeMap<(String, Digest), Value>,
+    /// Outputs recorded in this append: every recording, since a step
+    /// reads the last one before its own event.
+    pub outputs: Recorded,
     /// Set memberships put in this append, by set, type and key.
     members: BTreeMap<(String, TypeName, RecordKey), bool>,
+    /// The views the lake keeps, as this append works on them.
+    pub(crate) kept: crate::kept::Views,
 }
 
 impl Staged {
     /// A record as this append leaves it so far: written earlier in it,
-    /// or else as the projection holds it. What the append wrote always
-    /// comes first; a read kept from before it never answers over it.
+    /// or else as the projection holds it, taken through the steps the
+    /// append folded: read at the key it had before them, or ended at the
+    /// step it moved away at. What the append wrote always comes first; a
+    /// read kept from before it never answers over it.
     pub fn record(
         &self,
         view: &dyn ProjectionView,
         ty: &TypeName,
         key: &RecordKey,
     ) -> Result<Option<StoredRecord>> {
-        match self.records.get(&(ty.clone(), key.clone())) {
-            Some(r) => Ok(Some(r.clone())),
-            None => self.reads.get(view, ty, key),
+        if let Some(r) = self.records.get(&(ty.clone(), key.clone())) {
+            return Ok(Some(r.clone()));
         }
+        let (mut from, mut before) = (ty, key);
+        for s in self.steps.iter().rev().filter_map(Step::migrated) {
+            match s.source(from, before) {
+                Some(old) => (from, before) = old,
+                None => return Ok(Some(StoredRecord::ended(ty.clone(), key.clone(), s.at))),
+            }
+        }
+        match self.reads.get(view, from, before)? {
+            Some(r) if !r.is_ended() => self.stepped(view, r).map(Some),
+            held => Ok(held),
+        }
+    }
+
+    /// The type the view holds the records of `ty` under: the one they
+    /// had before the transaction, which a step of it may have moved them
+    /// from.
+    fn known<'a>(&'a self, ty: &'a TypeName) -> &'a TypeName {
+        let moves = self.steps.iter().rev().filter_map(Step::migrated);
+        moves.fold(ty, |t, s| s.origin(t))
+    }
+
+    /// A record of the view after every step the append kept.
+    fn stepped(&self, view: &dyn ProjectionView, r: StoredRecord) -> Result<StoredRecord> {
+        let mut steps = self.steps.iter();
+        steps.try_fold(r, |r, s| s.apply(r, view, &self.outputs))
+    }
+
+    /// Whether the append wrote the record the view holds at `key`: it is
+    /// kept under the key the steps moved it to.
+    fn wrote(&self, ty: &TypeName, key: &RecordKey) -> bool {
+        let (mut ty, mut key) = (ty, key);
+        for s in self.steps.iter().filter_map(Step::migrated) {
+            (ty, key) = (s.types.get(ty).unwrap_or(ty), s.moved(ty, key));
+        }
+        self.records.contains_key(&(ty.clone(), key.clone()))
+    }
+
+    /// Every record of `ty` as the append leaves it so far, ended ones
+    /// left out, handed to `each` one at a time: the view's, a page at a
+    /// time, each taken through the append's steps, then what the append
+    /// wrote. Nothing of the walk is held.
+    pub(crate) fn each(
+        &self,
+        view: &dyn ProjectionView,
+        ty: &TypeName,
+        mut each: impl FnMut(StoredRecord) -> Result<()>,
+    ) -> Result<()> {
+        let known = self.known(ty);
+        walk(view, known, true, |row| {
+            let stepped = match self.wrote(known, &row.key) {
+                true => None,
+                false => Some(self.stepped(view, row)?).filter(|r| &r.ty == ty),
+            };
+            stepped.map_or(Ok(()), &mut each)
+        })?;
+        (self.of_type(ty).filter(|r| !r.is_ended()).cloned()).try_for_each(each)
+    }
+
+    /// The live records of `ty` whose fields hold every value of `equal`,
+    /// as the append leaves them so far, handed to `each` until it answers
+    /// false: the view's by the engine's lookup, a page at a time, then
+    /// what the append wrote; after a kept step, by a walk of the type,
+    /// which goes on to its end once `each` has answered false.
+    pub(crate) fn matching(
+        &self,
+        view: &dyn ProjectionView,
+        ty: &TypeName,
+        equal: &[(FieldName, Value)],
+        mut each: impl FnMut(&StoredRecord) -> bool,
+    ) -> Result<bool> {
+        let holds = |r: &StoredRecord| {
+            !r.retired && !r.is_ended() && equal.iter().all(|(f, v)| r.fields.get(f) == Some(v))
+        };
+        // A kept step moved what the view holds: every record of the type
+        // as the steps leave it, the lookup's own answer among them.
+        if !self.steps.is_empty() {
+            let mut all = true;
+            self.each(view, ty, |r| {
+                all = all && (!holds(&r) || each(&r));
+                Ok(())
+            })?;
+            return Ok(all);
+        }
+        let mut walk = Walk::new(view, ty, false);
+        walk.scan.equal = equal.to_vec();
+        let mut unwritten = walk.by_ref().filter(|r| !self.wrote(ty, &r.key));
+        let all = unwritten.all(|r| each(&r));
+        walk.failed()?;
+        Ok(all && self.of_type(ty).filter(|r| holds(r)).all(each))
+    }
+
+    /// Whether a recomputation of the records of `ty` is pending: their
+    /// derived fields are not what the declarations in force compute.
+    pub(crate) fn recomputes(&self, ty: &TypeName) -> bool {
+        let pending = |s: &Recomputed| s.entries.types.contains_key(ty);
+        self.pending.iter().any(pending)
+    }
+
+    /// The types whose records the append's last step reached: the
+    /// migrated one, those with moved keys or references to them, and the
+    /// link types records moved between.
+    pub(crate) fn stepped_types(&self) -> BTreeSet<TypeName> {
+        let Some(s) = self.steps.last().and_then(Step::migrated) else {
+            return BTreeSet::new();
+        };
+        let reached = s.decls.keys().chain(s.types.keys()).chain(s.types.values());
+        reached.chain([&s.migration.to.name]).cloned().collect()
     }
 
     /// The records of one type written in this append.
@@ -1447,3 +2233,6 @@ impl Staged {
         self.records.insert((r.ty.clone(), r.key.clone()), r);
     }
 }
+
+#[cfg(test)]
+mod tests;

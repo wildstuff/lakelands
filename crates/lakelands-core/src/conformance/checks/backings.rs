@@ -15,15 +15,17 @@ use std::sync::Arc;
 
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind;
-use lakelands_api::write::Declaration;
-use lakelands_api::{Error, LakeStore, Origin, Refusal, Version};
+use lakelands_api::write::{Declaration, Recompute};
+use lakelands_api::{
+    Access, Error, Grants, LakeStore, Origin, Position, Principal, Refusal, Version,
+};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::backing::{KIND, made, plug, unplug};
 use crate::conformance::fixture::{
-    Lake, Must, computed_by, derived, events_from, field, head_unmoved, reason, recorded_outputs,
-    trigger_on, type_decl, value,
+    Lake, Must, computed_by, derived, events_from, field, field_access, head_unmoved, reason,
+    recorded_outputs, trigger_on, type_decl, value,
 };
 
 check!(
@@ -523,7 +525,7 @@ async fn a_backed_field_reading_another_waits_for_its_output(
 check!(
     /// A redeclaration calls again for an input whose output was a failure.
     FAILURE_RETRIED = a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds,
-    "022, extended: a settle forced by a declaration calls again, once, for an input whose recorded output is a failure, for a function backing as for an embedding; the later output holds for every record with that input"
+    "022, extended: a settle forced by `recompute` calls again, once, for an input whose recorded output is a failure, for a function backing as for an embedding; the later output holds for every record with that input"
 );
 
 async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
@@ -543,22 +545,68 @@ async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
     );
 
     plug(token);
-    let name = computed_by("name", StorageKind::Text, "lookup", &["code"]);
-    l.declare(type_decl(
-        "place",
-        vec![field("code", StorageKind::Text), name],
-    ))
-    .await?;
+    // The door's caller is shown the type and not `name`: it is answered
+    // of the type what it was answered before (lakelands#576's rule).
+    let shown = field_access(store.as_ref(), "author", "place", &[("name", Access::None)]);
+    let author = Principal {
+        grants: Grants {
+            schema: true,
+            ..shown.grants.clone()
+        },
+        ..shown
+    };
+    let place = lakelands_api::TypeName::from("place");
+    let described = || async {
+        let seen = l.cat.describe_type(&author, &place, Default::default());
+        let fields = seen.await.must("describing `place`")?.data.fields;
+        Ok::<_, Failure>(format!("{fields:?}"))
+    };
+    let before = described().await?;
+    let what = Recompute::Function("lookup".into());
+    let done = l.cat.recompute(&author, what).await.must("the door")?;
+    let after = described().await?;
+    ensure!(
+        after == before && !after.contains("\"name\"") && done.position() > Position::GENESIS,
+        "the door's caller, shown `place` without `name`, is described the type as before \
+         the call; it was described {before} and then {after}"
+    );
     let calls = made(token) - failed;
     let (p1, p2) = (l.read("place", "p1").await?, l.read("place", "p2").await?);
     ensure!(
         calls == 1
             && value(&p1, "name") == Some(&json!("AT"))
             && value(&p2, "name") == Some(&json!("AT")),
-        "declaring `place` again retries the failed call for code AT: one more call, not \
+        "`recompute` of `lookup` retries the failed call for code AT: one more call, not \
          {calls}, and its output fills `name` on both records; they read {:?} and {:?}",
         value(&p1, "name"),
         value(&p2, "name")
+    );
+    // By a type, the door appends the type as it was declared: a computed
+    // field that listed no input lists none, where the lake completes it.
+    let bare = computed_by("name", StorageKind::Text, "lookup", &[]);
+    l.declare(type_decl(
+        "spot",
+        vec![field("code", StorageKind::Text), bare],
+    ))
+    .await?;
+    let before = store.head().await.must("reading the head")?;
+    let spot = Recompute::Type("spot".into());
+    l.cat
+        .recompute(&l.own, spot)
+        .await
+        .must("the door, by a type")?;
+    let appended = events_from(store.as_ref(), before.next()).await?;
+    let listed = appended.iter().find_map(|e| match &e.body {
+        EventBody::Declared {
+            declaration: Declaration::Type(t),
+            ..
+        } => Some(t.fields.iter().map(|f| f.depends_on.len()).sum::<usize>()),
+        _ => None,
+    });
+    ensure!(
+        listed == Some(0),
+        "the door appends `spot` as it was declared, its computed field listing no input; \
+         the event's fields list {listed:?}"
     );
     Ok(())
 }

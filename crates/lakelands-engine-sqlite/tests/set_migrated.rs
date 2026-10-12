@@ -25,22 +25,48 @@ use serde_json::json;
 #[global_allocator]
 static HEAP: PeakAlloc = PeakAlloc;
 
-const RECORDS: u64 = 100_000;
+/// How many records a cell loads: 100 000, or `LAKELANDS_TEST_RECORDS`.
+fn size() -> u64 {
+    let asked = std::env::var("LAKELANDS_TEST_RECORDS").ok();
+    asked.and_then(|n| n.parse().ok()).unwrap_or(100_000)
+}
+
 /// The records `flag` holds for: the lake's default ceiling of membership
 /// changes.
 const MOVED: u64 = 20_000;
-/// The cells: how many sets the type has, and whether the migration
-/// converts the field one of them reads (`flag`) or one none reads (`f0`).
-const CELLS: [(usize, bool); 5] = [(0, false), (1, false), (1, true), (3, false), (3, true)];
+/// The cells: how many sets the type has, whether the migration converts
+/// the field one of them reads (`flag`) or one none reads (`f0`), and
+/// whether it re-keys the type by `n` instead, which moves every record.
+const CELLS: [(usize, bool, bool); 6] = [
+    (0, false, false),
+    (1, false, false),
+    (1, true, false),
+    (3, false, false),
+    (3, true, false),
+    (0, false, true),
+];
 
-/// `invoice`, with `boolean` converted from text.
-fn invoice(boolean: Option<&str>) -> TypeDecl {
+/// The cells to run: all, or those `LAKELANDS_TEST_CELLS` numbers from 0
+/// (`0,2,5`).
+fn cells() -> Vec<(usize, bool, bool)> {
+    let Ok(asked) = std::env::var("LAKELANDS_TEST_CELLS") else {
+        return CELLS.to_vec();
+    };
+    let numbered = asked
+        .split(',')
+        .filter_map(|i| i.trim().parse::<usize>().ok());
+    numbered.filter_map(|i| CELLS.get(i).copied()).collect()
+}
+
+/// `invoice`, with `boolean` converted from text, keyed by `n` when `rekeyed`.
+fn invoice(boolean: Option<&str>, rekeyed: bool) -> TypeDecl {
     let kind = |f: &str| if boolean == Some(f) { Boolean } else { Text };
     let flags = ["f0", "flag", "flagb"].map(|f| sourced(f, kind(f)));
-    type_decl(
-        "invoice",
-        [vec![sourced("n", Number)], flags.to_vec()].concat(),
-    )
+    let mut n = sourced("n", Number);
+    n.required = true;
+    let mut ty = type_decl("invoice", [vec![n], flags.to_vec()].concat());
+    ty.key.extend(rekeyed.then(|| "n".into()));
+    ty
 }
 
 /// The `object_set_changed` events from `from` on.
@@ -61,12 +87,13 @@ async fn changes(store: &dyn LakeStore, from: Position) -> usize {
 }
 
 /// One cell, on a fresh lake: loads the records, declares `sets` sets and
-/// applies one migration, which changes `MOVED` memberships when `moves`.
+/// applies one migration, which changes `MOVED` memberships when `moves`
+/// and moves every record to the key `n` makes when `rekeyed`.
 /// Prints how long `migrate_apply` held the writer and its peak memory.
-async fn cell(engine: &str, store: &dyn LakeStore, sets: usize, moves: bool) {
+async fn cell(engine: &str, store: &dyn LakeStore, (sets, moves, rekeyed): (usize, bool, bool)) {
     let l = Lake::of(store);
-    l.declare(invoice(None)).await.unwrap();
-    let records = (0..RECORDS).map(|i| {
+    l.declare(invoice(None, false)).await.unwrap();
+    let records = (0..size()).map(|i| {
         let held = if i < MOVED { "true" } else { "false" };
         let fields = json!({"n": i, "f0": "true", "flag": held, "flagb": held});
         source_record("invoice", &format!("i{i:06}"), fields)
@@ -83,7 +110,7 @@ async fn cell(engine: &str, store: &dyn LakeStore, sets: usize, moves: bool) {
             .unwrap();
     }
     let convert = if moves { "flag" } else { "f0" };
-    let m = migration(invoice(Some(convert)));
+    let m = migration(invoice((!rekeyed).then_some(convert), rekeyed));
     let report = l.cat.migrate(&l.own, m.clone()).await.unwrap().data;
     let from = store.head().await.unwrap().next();
     let live = HEAP.current_usage();
@@ -97,17 +124,23 @@ async fn cell(engine: &str, store: &dyn LakeStore, sets: usize, moves: bool) {
     let peak = HEAP.peak_usage().saturating_sub(live);
     let changed = changes(store, from).await;
     println!(
-        "{engine}: {RECORDS} records, {sets} set(s), converting `{convert}`, {changed} \
-         memberships changed: writer held {held:?}, peak memory {} MB",
+        "{engine}: {} records, {sets} set(s), {}, {changed} memberships changed: writer held \
+         {held:?}, peak memory {} MB",
+        size(),
+        if rekeyed {
+            "re-keying by `n`".into()
+        } else {
+            format!("converting `{convert}`")
+        },
         peak / 1_000_000
     );
-    assert_eq!(changed as u64, if moves { MOVED } else { 0 });
+    assert_eq!(changed as u64, if moves { MOVED.min(size()) } else { 0 });
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "measures migrations over 100 000 records; run by hand with --release"]
 async fn migrating_a_hundred_thousand_records_under_sets() {
-    for (sets, moves) in CELLS {
+    for c in cells() {
         let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
             .join(format!("set-migrated-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -119,7 +152,7 @@ async fn migrating_a_hundred_thousand_records_under_sets() {
         let store: Arc<dyn LakeStore> = lakelands_store::open(location, seams, OpenMode::Create)
             .await
             .unwrap();
-        cell("sqlite", store.as_ref(), sets, moves).await;
+        cell("sqlite", store.as_ref(), c).await;
         store.close().await.unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }

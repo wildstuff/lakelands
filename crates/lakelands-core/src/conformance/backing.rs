@@ -255,11 +255,23 @@ fn executions() -> &'static Mutex<BTreeMap<String, usize>> {
 }
 
 /// The scripted executor: it answers `{"done": <verb>, "record": <key>}`,
-/// the key null for a verb called on its type, or fails when the
-/// payload's `fail` is `true`. It counts its runs per record key, and per
-/// verb for a verb called on its type, so a check uses keys and such verbs
-/// of its own.
+/// the key null for a verb called on its type, `null` when the payload's
+/// `null` is `true`, or fails when its `fail` is `true`. It counts its
+/// runs per record key, and per verb for a verb called on its type, so a
+/// check uses keys and such verbs of its own. A call on a record whose key
+/// begins with `held-` is counted and held until [`release`] of that key,
+/// five seconds at most.
 struct Executor;
+
+fn released() -> &'static Mutex<BTreeSet<String>> {
+    static RELEASED: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+    RELEASED.get_or_init(Mutex::default)
+}
+
+/// Let the executor answer the call it holds on the record `key`.
+pub fn release(key: &str) {
+    lock(released()).insert(key.to_owned());
+}
 
 #[async_trait]
 impl lakelands_api::seam::VerbExecutor for Executor {
@@ -278,6 +290,17 @@ impl lakelands_api::seam::VerbExecutor for Executor {
                     .unwrap_or_else(|| invocation.verb.as_str().to_owned()),
             )
             .or_default() += 1;
+        if let Some(held) = key.as_deref().filter(|k| k.starts_with("held-")) {
+            for _ in 0..1_000 {
+                if lock(released()).contains(held) {
+                    break;
+                }
+                crate::conformance::fixture::pause(std::time::Duration::from_millis(5)).await;
+            }
+        }
+        if invocation.payload.get("null") == Some(&Value::Bool(true)) {
+            return Ok(Value::Null);
+        }
         if invocation.payload.get("fail") == Some(&Value::Bool(true)) {
             return Err(fail(format!("`{}` was asked to fail", invocation.verb)));
         }

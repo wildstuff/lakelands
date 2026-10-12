@@ -104,6 +104,24 @@ not checked.
    that names a firing is `too_deep` when the depth is above that
    trigger's ceiling (021, extended).
 
+**A door decides over everything the log holds.** An append is durable
+before it is folded, and a fold can fail: the events are in the log and
+the projection, which every check above reads, does not hold them. A
+write decided there would answer a retry as a new write and give a
+record a version it already has. So the writer is taken for a write in
+one place, and a writer whose fold failed folds from the projection's
+position there, before the door's own checks; where that fold fails the
+write is `unavailable`, whatever kind the fold answered, and appends
+nothing. The store's own writes take the writer there too: the drain of
+due calls reads what it decides on behind the catch-up. An append
+decided under a writer that is behind was decided some other way: it is
+refused before it reaches the log, and appends nothing. The write whose fold failed is answered `unavailable` with its
+position in the log: sent again under its idempotency key it is the
+retry, answered the first write's outcome; without a key it is a second
+write. No kind of its own tells it from a write that never landed: a
+caller without a key cannot know that of any `unavailable` write, so
+the kind would promise what a door cannot keep.
+
 **The record checks** decide every record a write makes, by `upsert`, a
 verb's effect, a proposal and its acceptance, and `ingest`:
 
@@ -152,3 +170,14 @@ record and checks nothing further; then the record checks from the
 empty patch on, the expected version excepted. The two cardinality
 steps answer alike, and are stated, not checked.
 
+## Extended: the one value the fold writes that no door admitted
+
+The authority line holds for what an event carries. One value crosses
+it where the fold applies a write, not in the event: a field that
+declares `initial` is filled when its record is made, also by an ingest
+that may not carry the field
+(`docs/decisions/050-a-field-declares-its-initial-value.md`). The event
+stays as the door wrote it, so the content id and the duplicate test
+read the same patch as before, and a delivery of the same content is
+still a duplicate. A door judges `required` over the record as the fold
+will leave it, filled values included.

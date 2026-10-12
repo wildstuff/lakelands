@@ -10,7 +10,7 @@ use crate::id::{
 };
 use crate::ontology::{
     ANNOTATION_KEY_MAX_BYTES, ANNOTATIONS_MAX_BYTES, Annotations, FieldDecl, FieldType,
-    RESERVED_ANNOTATION_NAMESPACES, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl,
+    RESERVED_ANNOTATION_NAMESPACES, RelationDecl, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl,
 };
 
 use crate::record::Patch;
@@ -26,7 +26,10 @@ pub struct WriteOpts {
     pub expected_version: Option<Version>,
     /// Make a retry of this write a no-op: a second write with the same
     /// key from the same principal answers the first write's outcome and
-    /// appends nothing. The key is recorded in the log.
+    /// appends nothing. For a call of a verb that reaches outside the
+    /// lake, that outcome carries its executor's recorded answer; while
+    /// none is recorded the retry is refused as `unanswered`. The key is
+    /// recorded in the log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<IdempotencyKey>,
 }
@@ -46,12 +49,23 @@ pub enum Outcome {
         /// For a verb whose effect reaches outside the lake: its executor's
         /// recorded output, `{"error": "<text>"}` when the executor failed.
         /// The position is real either way; the verb is not run again for
-        /// it. `None` for every other write.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// it. `None` for every other write; an answer of `null` is
+        /// `Some(Null)`, and read back so.
+        #[serde(
+            default,
+            deserialize_with = "present",
+            skip_serializing_if = "Option::is_none"
+        )]
         output: Option<serde_json::Value>,
         /// What the write set off beyond the event it is visible from.
         #[serde(flatten)]
         set_off: SetOff,
+        /// For a migration: each field it renamed, old name and new, as the
+        /// one answered may know of them. A grant by name restricts a field
+        /// under every name it has borne; a host that grants a renamed
+        /// field more names the new one (`docs/hosting.md`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        renamed: Vec<(FieldName, FieldName)>,
     },
     /// The write was recorded as a proposal and waits for review.
     Proposed {
@@ -63,6 +77,12 @@ pub enum Outcome {
         /// policy of the lake).
         why: String,
     },
+}
+
+/// A member that is there, `null` included: an executor's answer of `null`
+/// is an answer, and only an absent `output` is none.
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<serde_json::Value>, D::Error> {
+    serde::Deserialize::deserialize(d).map(Some)
 }
 
 /// What a write set off: the reactions in its own append, and an external
@@ -246,8 +266,11 @@ pub struct Proposal {
     pub proposer: String,
     /// When.
     pub proposed_at: Timestamp,
-    /// What it would write.
-    pub write: ProposedWrite,
+    /// What it would write, as far as its reader may see it: absent in a
+    /// listing for a reader who may see nothing of the write. A stored
+    /// proposal always holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write: Option<ProposedWrite>,
     /// Why it waits.
     pub why: String,
     /// Where it stands.
@@ -258,6 +281,10 @@ pub struct Proposal {
     /// The reason given on rejection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Whether the proposal holds more than this reader is shown: a
+    /// listing says so, without a name. A stored proposal holds `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub more: bool,
 }
 
 /// Which proposals to list.
@@ -568,6 +595,17 @@ fn refusal(
     }
 }
 
+/// What `recompute` names: the declaration in force whose fields the lake
+/// computes again (`docs/decisions/022-functions-are-declarations.md`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Recompute {
+    /// A function, whatever its backing: every type that names it.
+    Function(String),
+    /// A type with a field computed outside the lake.
+    Type(TypeName),
+}
+
 /// A function: a named computation a [`FunctionBacking`](crate::seam::FunctionBacking)
 /// performs. The backing kind is an open token; `expr` is evaluated in the
 /// store from `expr`, any other kind is called through its seam and its
@@ -603,16 +641,209 @@ pub struct Migration {
     /// Fields renamed: old name to new name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub renames: Vec<(FieldName, FieldName)>,
+    /// Relations renamed: old name to new name. A renamed relation keeps
+    /// its edges, however it is carried (log format version 11).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relation_renames: Vec<(RelationName, RelationName)>,
 }
 
-/// The preflight of a migration: what it would do to the stored records,
-/// computed before anything changes. A migration is applied only when its
+impl Migration {
+    /// The relations the migration renames, each as it stood on `before`
+    /// and as it stands. A pair names a relation of the type before and
+    /// one of `to`, each once, and frees the old name. A rename moves edges
+    /// and changes none: the carrier, the target, the cardinality and, for
+    /// a relation carried by link records, its fields and who writes them
+    /// stay. Otherwise the sentence that says why, naming the relation. It
+    /// lives in the contract so that the mock refuses the same.
+    pub fn renamed_relations<'a>(
+        &'a self,
+        before: &'a TypeDecl,
+    ) -> std::result::Result<Vec<(&'a RelationDecl, &'a RelationDecl)>, String> {
+        let mut out = Vec::new();
+        for (i, (old, new)) in self.relation_renames.iter().enumerate() {
+            let wrong = |why: &str| format!("renaming relation `{old}` to `{new}`: {why}");
+            let of = |t: &'a TypeDecl, n| t.relations.iter().find(|r| &r.name == n);
+            let (Some(was), Some(is)) = (of(before, old), of(&self.to, new)) else {
+                return Err(wrong(
+                    "the first names a relation the type has, the second one the new shape has",
+                ));
+            };
+            let again = |(o, n): &(RelationName, RelationName)| o == old || n == new;
+            if self.relation_renames[..i].iter().any(again)
+                || of(before, new).is_some()
+                || of(&self.to, old).is_some()
+            {
+                return Err(wrong(
+                    "a relation is renamed once, to a name no relation of the type bears, and \
+                     leaves its old name free",
+                ));
+            }
+            let kept = |r: &'a RelationDecl| {
+                let carried = (&r.via, &r.derived, &r.target, r.cardinality);
+                (carried, &r.fields, r.authority)
+            };
+            if kept(was) != kept(is) {
+                return Err(wrong(
+                    "a rename keeps the relation's carrier, target, cardinality, link fields \
+                     and authority; change them in a migration of their own",
+                ));
+            }
+            out.push((was, is));
+        }
+        Ok(out)
+    }
+}
+
+impl Migration {
+    /// What `to` states otherwise than `before`, the declaration in force,
+    /// for [`MigrationReport::restated`]: the two compared member by member
+    /// as they serialise, a field with the one it takes its values from, a
+    /// relation with the one it is renamed from, a link field as
+    /// `relation.field`. It lives in the contract so that the mock reports
+    /// the same.
+    pub fn restated(&self, before: &TypeDecl) -> Vec<Restated> {
+        let mut out = Vec::new();
+        let own = ["name", "fields", "relations"];
+        differing(None, Some(before), &self.to, &own, &mut out);
+        differing_fields("", &before.fields, &self.to.fields, &self.renames, &mut out);
+        for r in &self.to.relations {
+            let renamed = self.relation_renames.iter().find(|(_, new)| new == &r.name);
+            let name = renamed.map_or(&r.name, |(old, _)| old);
+            let was = before.relations.iter().find(|w| &w.name == name);
+            // A rename is said by the report's `relations`, a link field below.
+            let (of, said) = (format!("{}.", r.name), ["name", "fields"]);
+            differing(Some(r.name.to_string()), was, r, &said, &mut out);
+            let held = was.map_or(&[][..], |w| &w.fields);
+            differing_fields(&of, held, &r.fields, &[], &mut out);
+        }
+        out
+    }
+}
+
+/// Each field of `to` against the one of `was` it takes its values from,
+/// by `renames` or by its name, named after `of`. A type that changes and
+/// a `required` that tightens are a conversion, said by a report's `fields`.
+fn differing_fields(
+    of: &str,
+    was: &[FieldDecl],
+    to: &[FieldDecl],
+    renames: &[(FieldName, FieldName)],
+    out: &mut Vec<Restated>,
+) {
+    for f in to {
+        let from = match renames.iter().find(|(_, new)| new == &f.name) {
+            Some((old, _)) => Some(old),
+            None => Some(&f.name).filter(|n| !renames.iter().any(|(old, _)| &old == n)),
+        };
+        let from = from.and_then(|n| was.iter().find(|w| &w.name == n));
+        let retyped = from.is_some_and(|w| w.ty != f.ty).then_some("type");
+        let tightened = (f.required && !from.is_some_and(|w| w.required)).then_some("required");
+        let said: Vec<&str> = retyped.into_iter().chain(tightened).collect();
+        differing(Some(format!("{of}{}", f.name)), from, f, &said, out);
+    }
+}
+
+/// The members of `to` that differ from those of `was`, as the two
+/// serialise, but those `said` elsewhere; of a declaration with no `was`,
+/// each member it states otherwise than a bare one, from null.
+fn differing<T: Serialize + Default>(
+    field: Option<String>,
+    was: Option<&T>,
+    to: &T,
+    said: &[&str],
+    out: &mut Vec<Restated>,
+) {
+    let members = |d: &T| serde_json::to_value(d).unwrap_or_default();
+    let (before, to) = (members(was.unwrap_or(&T::default())), members(to));
+    let both = [&before, &to].into_iter().filter_map(|d| d.as_object());
+    let names: std::collections::BTreeSet<&String> = both.flat_map(|d| d.keys()).collect();
+    for member in names.into_iter().filter(|n| !said.contains(&n.as_str())) {
+        if before[member] != to[member] {
+            out.push(Restated {
+                field: field.as_deref().map(FieldName::from),
+                member: member.clone(),
+                was: was.map_or(serde_json::Value::Null, |_| before[member].clone()),
+                to: to[member].clone(),
+            });
+        }
+    }
+}
+
+/// How a relation's edges are carried.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Carrier {
+    /// By a reference field of the record, the relation's `via`.
+    Via,
+    /// By link records, of the relation's link type.
+    Links,
+    /// By matching values: a derived relation.
+    Derived,
+}
+
+impl Carrier {
+    /// How `r`'s edges are carried.
+    pub fn of(r: &RelationDecl) -> Carrier {
+        match (&r.via, &r.derived) {
+            (Some(_), _) => Carrier::Via,
+            (None, Some(_)) => Carrier::Derived,
+            (None, None) => Carrier::Links,
+        }
+    }
+}
+
+/// A declaration a migration carries along: one that names a link type
+/// whose records move, which the lake declares again under the new name.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Carried {
+    /// What is declared: `trigger`, `object_set`, `verb` or `type`.
+    pub kind: String,
+    /// Its name.
+    pub name: String,
+}
+
+/// One relation a migration renames, in its preflight's report.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationRename {
+    /// The relation's name before.
+    pub from: RelationName,
+    /// Its name after.
+    pub to: RelationName,
+    /// How its edges are carried.
+    pub carrier: Carrier,
+    /// The link records that move to the new name's link type: none
+    /// unless the relation is carried by links.
+    pub links: u64,
+}
+
+/// One member of a declaration that a migration's `to` states otherwise
+/// than the declaration in force, where the report's other lists do not
+/// say it: a mark, a label, an expression, a relation's target.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Restated {
+    /// What the member is of: a field, a relation by its name, a link
+    /// field as `relation.field`. Left out for the type itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<FieldName>,
+    /// The member, as a declaration serialises it.
+    pub member: String,
+    /// What the declaration in force states, null where it leaves the
+    /// member out or declares no such field or relation.
+    pub was: serde_json::Value,
+    /// What `to` states, null where it leaves the member out.
+    pub to: serde_json::Value,
+}
+
+/// The preflight of a migration: what it would do to the stored records
+/// and to the declaration, computed before anything changes. Every
+/// difference between the declaration in force and `to` is in it. A migration is applied only when its
 /// report is lossless, and only by a call that names the report it was
 /// shown. The empty report (`Default`) is what a proposer sends with a
 /// proposed migration, which the store replaces with the preflight's.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MigrationReport {
-    /// The type migrated.
+    /// The type migrated. Empty, which no type's name is, in an answer to
+    /// a reader who may not see the type.
     #[serde(rename = "type")]
     pub ty: TypeName,
     /// The schema hash before.
@@ -624,12 +855,23 @@ pub struct MigrationReport {
     /// Per field whose type changes: how many values convert.
     pub fields: Vec<FieldConversion>,
     /// Fields the migration removes, and how many records hold a value
-    /// that removing them discards; and each relation carried by link
-    /// records it removes, by the relation's name, with the number of its
-    /// live links. Removal is the migration's intent, named here before
-    /// anything is applied; it does not make the report lossy.
+    /// that removing them discards; and each relation it removes, by the
+    /// relation's name, with the number of its live links, none for one
+    /// not carried by link records. Removal is the migration's intent,
+    /// named here before anything is applied; it does not make the report
+    /// lossy. The apply discards what the counts count: a host that tests
+    /// for that reads them, or their sum, [`MigrationReport::discards`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dropped: Vec<(FieldName, u64)>,
+    /// The relations the migration renames, each with how its edges are
+    /// carried and the link records that move with it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relations: Vec<RelationRename>,
+    /// The declarations that name a link type a renamed relation's
+    /// records move from: the lake declares each again under the new name,
+    /// in the same append.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub carried: Vec<Carried>,
     /// Per type a re-key moves: its records, and the new keys that
     /// collide or cannot be made.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -640,11 +882,33 @@ pub struct MigrationReport {
     /// The first new keys more than one record would take, at most ten.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sample_collisions: Vec<RecordRef>,
+    /// What `to` states otherwise than the declaration in force, beside
+    /// the lists above: each member as the two declarations serialise it,
+    /// but a field's type that changes and a `required` that tightens,
+    /// which `fields` says. A field or a relation `to` adds is restated
+    /// member by member, from null.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub restated: Vec<Restated>,
     /// True when every stored value converts without loss, and every
-    /// record a re-key moves takes a new key of its own.
+    /// record a re-key moves takes a new key of its own. It speaks of
+    /// stored values: a migration that only restates is lossless. It says
+    /// nothing of what the migration removes, which is `dropped`.
     pub lossless: bool,
-    /// Names this report; `migrate_apply` must repeat it.
+    /// Names this report; `migrate_apply` must repeat it. It is the id of
+    /// the whole report, whatever its reader is shown of it.
     pub report_id: String,
+    /// Whether the report holds more than this reader is shown: an answer
+    /// says so, without a name. A logged and a stored report hold `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub more: bool,
+}
+
+impl MigrationReport {
+    /// The stored values and live links the apply discards: the sum of
+    /// `dropped`'s counts. Derived, so nothing on the wire carries it.
+    pub fn discards(&self) -> u64 {
+        self.dropped.iter().map(|(_, n)| n).sum()
+    }
 }
 
 /// How the values of one field convert to its new type.
@@ -721,13 +985,18 @@ pub struct RuleRun {
 pub struct PurgeReport {
     /// The source purged.
     pub source: SourceId,
+    /// The one type the purge was of; absent for a purge of the source
+    /// whole.
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub ty: Option<TypeName>,
     /// The records retired, over every type.
     pub retired: u32,
     /// Per type, in name order, the records retired in it; types with
     /// none are left out.
     pub types: Vec<TypeRetired>,
     /// The types that keep no per-field provenance, which a purge cannot
-    /// read and does not search, in name order.
+    /// read and does not search, in name order; empty for a purge of one
+    /// type, which is refused instead.
     pub unsearched: Vec<TypeName>,
     /// The head after the append, or the head as it stood when nothing
     /// was appended.
@@ -737,6 +1006,12 @@ pub struct PurgeReport {
     /// are left out.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<PurgeReference>,
+    /// Per type and field, in that order, the records retired whose field
+    /// with a declared `initial` value an author had written: the purge
+    /// takes them with what was written there. Fields with none are left
+    /// out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub moved: Vec<PurgeMoved>,
     /// Names a preflight's report; `purge_source` may repeat it. Empty on
     /// a purge's own report.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -756,6 +1031,21 @@ pub struct PurgeReference {
     /// The first of them in key order, at most ten: the referring records
     /// of a `via` relation, the link records of one carried by links.
     pub first: Vec<RecordRef>,
+}
+
+/// The records a purge takes whose one field with a declared `initial`
+/// value an author had written.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurgeMoved {
+    /// The type.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// The field.
+    pub field: FieldName,
+    /// How many of the purge's records an author wrote it on.
+    pub records: u64,
+    /// The first of them in key order, at most ten.
+    pub first: Vec<RecordKey>,
 }
 
 /// The records a purge retired in one type.
@@ -805,7 +1095,8 @@ pub struct ValueTypeUse {
     pub field: FieldName,
     /// Values stored in it.
     pub values_scanned: u64,
-    /// Values the new declaration would refuse.
+    /// Values the new declaration would refuse: stored ones, and the
+    /// field's declared `initial`.
     pub misfits: u64,
 }
 

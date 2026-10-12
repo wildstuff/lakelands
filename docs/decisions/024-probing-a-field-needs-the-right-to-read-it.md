@@ -94,6 +94,74 @@ field. So the line this record draws for reads holds for writes:
 
 What a write checks is unchanged; only which refusal comes first.
 
+**A setting the store reads is judged the same way (lakelands#601).**
+`sort_index.<type>`, `vector_index.<type>` and `view_kept.<type>` name
+a type, its fields and, for a view, what its measures read, and the
+judge's sentences say whether each is declared, of which kind, and why
+a view cannot be kept. An applied write tells as much as a sentence
+does, and it acts: an index is built, a view is kept. So the judge
+comes after the writer's grant on `sys.setting`, and it is handed the
+type as `describe_type` answers it to the writer, the one function
+that already decides what a principal is shown:
+
+- A type that is not shown is a name that is not declared, under every
+  value: `null` and `false` change nothing, and would otherwise tell a
+  declared type from none.
+- A field the description does not name is one the type does not
+  declare. A field it names masked or write-only is judged by its kind:
+  the description says the kind already, and an index changes no answer.
+- A view shown without its definition cannot be kept, and the refusal
+  says no more: the reason names a measure, a call and a field of the
+  source, and is said to one shown the view as declared, as `kept` says
+  it.
+- The judge reads the value the write leaves, with no exception for a
+  name that stood before. A principal extends or patches a setting only
+  while it is shown everything the setting names; otherwise the setting
+  is left to one who sees more. Retiring a setting is not judged.
+
+The rule was weighed against letting a standing name pass unjudged: that
+keeps one write, and costs a second path through the judge and an answer
+that depends on who wrote the setting first.
+
+**A write asks first whether its writer is shown the type
+(lakelands#607).** A principal shown nothing of a type was told by its
+writes what `describe` kept from it: an `upsert` was refused field by
+field (`` `vault` has no field `code` ``), a `retire` and a verb's call
+were refused as not granted, a write to a view was told it is a view,
+and each of these is another answer than the one a name that is not
+declared gets. So every door that writes a record asks the question the
+link doors ask (`docs/decisions/006-grants-not-roles.md`, extended)
+before anything else is judged:
+
+- **`upsert`, `retire`, `propose` of either and `ingest`** answer one
+  not shown the type as for a type that is not declared, before the
+  patch, the key's form, the view's refusal, the grants and the version
+  are looked at. `ingest` asks its own grant first, as before: one
+  without it is refused whatever it names.
+- **A verb on a type its caller is not shown is a verb that is not
+  declared**, for `call` and for `propose`, before its scope is judged
+  in a sentence that names the type. A caller that is shown the type is
+  told what it may not do there: a verb it may not call stays refused
+  as not granted.
+- **A retry is answered first**, as at the link doors: a write made
+  under an idempotency key is answered that write to the principal that
+  made it, whatever it is shown since.
+- **It is asked of the type the caller names.** `link` and `unlink`
+  name the owner and are asked of it; the link record they write is then
+  judged by its grants, so a caller shown the owner and kept from the
+  link type by its own grant is refused by that grant, as before. A verb
+  is asked of its type once, at the call; the record it writes is not
+  asked again.
+- **A proposal was asked when it was made**: accepting it applies what
+  was checked then, and aging writes as the store.
+
+The question is the two tests that decide whether a type is described,
+some access to the type or to one of its fields and the same of every
+type it is made of, as one function that the description calls first.
+Asking the description itself was measured and refused: it copies the
+lake's declarations, 209 µs a write in a lake of two hundred types
+against a write of 75 µs, where the two tests take nanoseconds.
+
 ## Extended: a field built from another is read as that field (lakelands#387)
 
 A derived field hands out what it is computed from: `g = salary * 2`
@@ -136,3 +204,239 @@ steps onto it answer alike.
 A principal with the `schema` grant is shown every definition, so the
 field's name tells it nothing new, and it is the one who can act on it:
 it keeps the answer that names the field.
+
+## Extended: a proposed value is shown where the record's is (lakelands#499)
+
+A proposal holds values before they are stored: an upsert's patch, and a
+call's payload, which is what the verb's fields become. `proposals` used
+to show both whole to every reviewer and to the proposer, so a principal
+that holds `review` read the proposed value of a field every other door
+hides from it. The listing now shows them as a read of the record would:
+
+- **A patch** keeps the fields its reader may read. A field the reader
+  may not know of leaves it, and so does a masked one: a patch holds
+  values and has no place for a name without one.
+- **A payload** is shown whole to a reader who may read every field the
+  verb sets, and empty to any other. Showing it member by member would
+  need the payload paths each assignment's value reads, which the
+  declaring rule does not hand out (lakelands#470). For a verb that
+  reaches outside the lake, the payload goes to the executor and is
+  shown to a reader who may see the verb's type.
+- **A write to a type the reader may not see** is listed without its
+  write: the type's name and the key are names. The entry stays in the
+  listing, so that a principal holding `review` and no read grant still
+  finds what it is asked to decide.
+
+The proposer reads its own proposal by the same rule, whole for as long
+as it may read what it wrote.
+
+The names follow the same reader. A proposal on a record it is not
+answered (one restricted, without the grant) is listed without its
+write too. A migration's report, a rename and a proposed declaration
+are shown by what the reader may know of, and an entry that holds more
+than its reader is shown says `more`
+(`docs/decisions/013-verbs-run-by-declared-risk.md` and
+`docs/decisions/027-shape-changes-are-declared-or-migrated.md`, each
+extended).
+
+## Extended: a report's sample keys are of records its reader is answered (lakelands#531)
+
+A migration's report names records by their keys: the first that do not
+convert, the first new keys that collide. A key is a name of a record,
+and a reader without the `restricted` grant is answered a restricted
+record by no read. So a sample key of such a record is not answered to
+it either, in a preview and in a refusal alike; the count beside it
+stays whole, and the report says `more`
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+extended).
+
+## Extended: a computed field is read as what it is computed from, listed or not (lakelands#540)
+
+A field built from another is read no further than what it is built
+from. The rule followed `depends_on` and `embed.from`, the lists a
+declaration gives, and a declaration need not give the first: a derived
+field whose `depends_on` did not name what its expression reads, and a
+field computed by a function whose inputs it did not list, were read
+whole by a principal the host had kept from the input. Every read door
+answered them: `get`, a `where`, an `order_by`, an aggregate, a view's
+measure, a pattern's projection and a search.
+
+What a computed field is computed from is not the declaration's to
+leave out. So wherever a declaration comes into force in memory, each
+computed field's `depends_on` is completed with every field its
+expression reads, or with the inputs of the function that computes it.
+The rule above then holds as it stands, in every door at once:
+
+- **Nothing logged changes.** The log holds a declaration as it was
+  sent; the completion is made when it is read into memory, at the
+  declaration and at every open. A lake that holds such a field is
+  closed when it is opened by a store that completes; the schema hash
+  does not cover `depends_on`, so no hash moves.
+- **The completion is made from what was declared, each time.** A
+  function declared again with fewer inputs leaves no field held by an
+  input it lost.
+- **A shape that is not in force is completed before it is judged:** a
+  proposed migration's shape and a proposed type, in the listing and in
+  a report.
+- **`describe` shows the completed list.** It is what the field is read
+  by, and a host that reads it sees what its declaration left out.
+- **One list.** A field that declared `on_input_change: clear` is
+  cleared with every field it is computed from, listed or not. For a
+  field computed by a backed function that is a value due again where a
+  stale one was kept: a host may see more calls of its backing for such
+  a field.
+- **An expression is read as it is checked** (lakelands#652). A derived
+  expression is checked as part of a write, where `previous` and
+  `changed` have meaning, and what it reads is told the same way: a
+  field built with `previous(b)` or `changed(b)` is built from `b`. Told
+  as a read outside a write, such an expression had no reads, and the
+  field was read whole by a principal kept from `b`. An expression whose
+  reads cannot be told is completed with every other field beside it, of
+  its type or of its relation: a field whose reads are unknown is
+  closed, never open, so no function that one parse accepts and another
+  refuses can open a field again.
+
+An embedding names what it is made from in `embed.from`, which has no
+unlisted form; it is untouched.
+
+Why not follow the expression where rights are asked: a field's access
+is asked for every field of every record a read answers, a function's
+inputs are on another declaration, and the list `declare` checks and
+`describe` shows would then say less than the rule that reads it.
+
+## Extended: a declaration reads only what its author may read, and a reaction is named to one who reads its condition (lakelands#538)
+
+A principal with the `schema` grant that was kept from a field could
+still read it, record by record. It declared an object set or a trigger
+whose condition named the field, and the answer of a write named the
+set a record joined and the trigger that fired. It needed no declaration
+of its own where another's condition read the field: `describe` shows
+one who holds `schema` every definition, and a write's answer named
+every reaction `describe` lists to its caller. The same declaration also
+told whether a name was a field's: one over a field the type has was
+taken, one over a name it has not was refused.
+
+Two rules close it.
+
+**A declaration reads only what its author may read.** Where a
+declaration is its author's, at `declare`, `apply`, `add_field`, a
+migration and a proposal of either:
+
+- **A field its author may not know of answers as one the type does not
+  have.** The set is checked, as sent, against the ontology as its
+  author is shown it, by the checks every declaration passes. So the
+  answer is the one a name the type never had gets, word for word, and
+  it holds for whatever reads a field: a set's `where`, a trigger's
+  `when`, a verb's `requires`, what a verb sets a field from and the
+  field it sets, a derived field, a field computed by a function, what
+  an embedding is made from, a view's `where`, grouping and measures,
+  and the pairs a derived relation matches. A reader added later is held
+  with them, since it is the existing check that refuses.
+- **A field its author knows of and may not read is refused as not
+  granted on it**, wherever the declaration reads its value. A verb may
+  still set such a field: a call is held to its caller's right to write
+  each field the verb sets, so the declaration grants nothing.
+- **What a type's shape names stands as declared.** A key field, a
+  valid time and a relation's `via` are named by the shape, not read by
+  it. An author who may not know of such a field still names it, or
+  sends the relation `describe` shows it, and declares its type again or
+  migrates it as before: the reads are held to its view, the shape is
+  not.
+- **Only what its author adds or changes is its author's.** A type that
+  holds another's derived field over a field its author sees masked is
+  declared again as it stands; a field of the author's own over the same
+  field is refused.
+- **`add_field` adds to its author's view of the type.** It built the
+  new shape from the whole type before, so a field derived from a hidden
+  one went in through it, and an author kept from any field could add
+  none.
+
+**Not at the accept.** An accepter did not write the declaration, and a
+refusal there would name a field to one who may not know of it. The
+author is held at the proposal; a proposal made before a lake ran this
+is accepted as it was proposed.
+
+**A write's answer names a reaction to one who reads what its condition
+reads.** `fired`, `joined` and `left` name a trigger or an object set
+only where the one answered is listed it by `describe` and reads every
+field its condition names. Being shown a definition is not reading what
+it reads. So a condition another principal declared, or one in force
+from before, tells its reader nothing by name.
+
+**What stays.** A principal with `schema` is shown every definition, and
+a write answers `through`, the position its consequences reach. One who
+is shown a condition and sees that a write reached further than itself
+can infer that the condition held, where nothing else explains it. The
+lake no longer answers a name or a value; it cannot hide that something
+reacted from one who must read its own write's consequences. So `schema`
+is not handed to a principal that is kept from a field or a type
+(`docs/hosting.md`).
+
+A declaration in force that reads a field its declarer may not read
+stays in force. It is held when it is declared again, and until then the
+second rule covers what it tells.
+
+## Extended: a field is the same field under another name (lakelands#527)
+
+The right to read a field is asked by the field's name, and a migration
+can change the name. The rule above holds through it: a field a
+principal may not read is not read under the name a rename gives it, nor
+under the name it had in a read as of before. How a grant holds a field
+through its renames is in `docs/decisions/006-grants-not-roles.md`,
+extended.
+
+## Extended: a value type's report is shown as its listing is (lakelands#538)
+
+The preview of a tightened value type listed every type and field that
+uses it, with its counts, and the refused apply named the first values
+that would not fit, to a caller that was shown neither the type nor the
+field. A proposal's listing was held already: a use says something of a
+field's values. Now the preview and the refused apply are held the same
+way. A use and a misfit are shown where their caller is shown the type
+and reads the field; the totals and the report's id, which names the
+whole report, stay.
+
+## Extended: a named set is read by its filter's right (lakelands#552)
+
+`in_set('open')` reads what `open`'s filter reads, and what the sets
+that filter names read. So every rule that asks what a condition reads
+asks it of the filters in the names' place: a read probes those fields;
+`describe` lists a set or a trigger to one who reads them all; a write's
+answer names a set joined or left, and a trigger fired, to one who reads
+them all; an author declares a condition naming a set only where it may
+read them.
+
+To a reader kept from a field, a set whose filter reads it is a set that
+is not declared, by its name as in `describe`: the refusal is the one a
+name no set has gets, and names nothing of the field.
+
+## Extended: a field's declaration is shown by one list, wherever it is answered (lakelands#554)
+
+`describe` showed a field its reader may know of and not read by its
+shape alone, and a migration's report, a proposed migration's `to` and a
+proposed declaration's types did not: a reader with a field masked was
+handed its label, its description, its annotations, whether it is
+searchable and the expression it is computed by, in the listing of a
+proposal and in a report's `restated`. The `to` of a listing stood so
+before `restated` existed.
+
+**One list, in the contract.** The members a field shows only to one
+who reads it (`derived`, `function`, `depends_on`, `searchable`,
+`description`, `label`, `embed`, `annotations`) are named once beside
+the field's declaration, with the step that clears them. `describe`, a
+relation's link fields, a report's `restated` and both listings go by
+it, so a member added to the list is hidden everywhere at once.
+
+**In both shapes.** A field's access is built from what it is computed
+from, and a migration may change that with no rename: a derived field
+read from `secret` and in `to` from `name`. So an entry of a member on
+the list is shown only where its reader reads the field in `to` and in
+the type as it stands, under the name it had; its shape (`sensitive`
+among it) is shown where the reader may know of the field.
+
+**An author's view is not a listing.** The view an author declares or
+migrates from holds every field it may know of as declared, so that a
+field it does not read stays as it is; the list clears a declaration
+only where one is handed out. An author with a field masked is
+therefore answered of its own migration the shape and `more`, not the
+members it never saw.

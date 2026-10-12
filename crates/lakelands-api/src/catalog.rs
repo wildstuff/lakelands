@@ -25,7 +25,7 @@ use crate::record::{Patch, Record, SourceRecord};
 use crate::seam::ChangeFeed;
 use crate::write::{
     Committed, Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter,
-    ProposedWrite, ValueTypeReport, WriteOpts,
+    ProposedWrite, Recompute, ValueTypeReport, WriteOpts,
 };
 
 /// A stream of records from one source, as `ingest` takes it.
@@ -128,8 +128,9 @@ pub trait Catalog: Send + Sync {
     /// or is proposed by its declared risk. A verb whose effect reaches outside the lake answers,
     /// when it runs, `Applied` with its executor's recorded `output` —
     /// `{"error": "<text>"}` when the executor failed, since the verb's
-    /// position is real either way. A retry answered from its idempotency
-    /// key carries no `output`; the recorded one is in the log.
+    /// position is real either way. A retry under its idempotency key runs
+    /// nothing: it answers that recorded `output`, or, where none is
+    /// recorded, is refused as `unanswered`.
     async fn call(
         &self,
         who: &Principal,
@@ -154,7 +155,9 @@ pub trait Catalog: Send + Sync {
     /// whole then, and a reviewer applies exactly what was checked. At
     /// acceptance the store checks again only what can have moved since —
     /// the type's shape and the record's version. An accepted external
-    /// verb answers its executor's recorded `output`, as `call` does.
+    /// verb answers its executor's recorded `output`, as `call` does, and
+    /// so does the accept sent again; any other accept sent again is
+    /// `decided`.
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome>;
 
     /// Reject a proposal. Nothing is written but the rejection, and the
@@ -176,7 +179,9 @@ pub trait Catalog: Send + Sync {
         filter: ProposalFilter,
     ) -> Result<Reply<Vec<Proposal>>>;
 
-    /// Add or revise a declaration that does not reshape stored records.
+    /// Add or revise a declaration that does not reshape stored records. One
+    /// that is the declaration in force is answered at the head and appends
+    /// nothing (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome>;
 
     /// Declare a set of declarations together, as a bundle is: validated as
@@ -184,8 +189,18 @@ pub trait Catalog: Send + Sync {
     /// are checked over the whole set, and one refusal names every problem —
     /// and appended in one append, or refused whole with nothing appended.
     /// The outcome names the position of the set's last declaration, from
-    /// which all of it is in force.
+    /// which all of it is in force. What is in force before the set is not
+    /// appended again; a set wholly in force is answered at the head.
     async fn apply(&self, who: &Principal, declarations: Vec<Declaration>) -> Result<Outcome>;
+
+    /// Compute again what a declaration in force computes: it is appended
+    /// again as it stands, at its next version, and the fold does what it
+    /// does at any `declared`: a function's fields are computed with the
+    /// settings and the time of that event, a call whose recorded output is
+    /// a failure is made again, a field that waits for its backend is made.
+    /// A deliberate act the log shows; an identical `declare` does none of
+    /// it (`docs/decisions/022-functions-are-declarations.md`).
+    async fn recompute(&self, who: &Principal, what: Recompute) -> Result<Outcome>;
 
     /// Add one field to a type.
     async fn add_field(&self, who: &Principal, ty: &TypeName, field: FieldDecl) -> Result<Outcome>;
@@ -203,7 +218,8 @@ pub trait Catalog: Send + Sync {
 
     /// Apply a migration whose preflight the caller was shown. Refused if
     /// the lake moved since (the report differs) or if it is not
-    /// lossless.
+    /// lossless. One to the type in force that renames nothing is then
+    /// answered at the head and appends nothing.
     async fn migrate_apply(
         &self,
         who: &Principal,
@@ -323,7 +339,9 @@ pub trait LakeStore: Send + Sync {
     fn feed(&self) -> Arc<dyn ChangeFeed>;
 
     /// Check the hash chain between two positions (all of it when both
-    /// are absent), against the lake's checkpoints.
+    /// are absent), against the lake's checkpoints. It reads the log, so
+    /// it finds what an open does not look for: a damaged line of an
+    /// engine's index of the log.
     async fn verify(
         &self,
         from: Option<Position>,
@@ -371,19 +389,27 @@ pub trait LakeStore: Send + Sync {
     /// another hand also wrote refuses the whole purge as invalid, naming
     /// it, and nothing is appended; a type that keeps no per-field
     /// provenance is not searched and is named in the report
-    /// (`docs/decisions/039-a-source-is-retracted-as-one.md`). With the
-    /// `report_id` of a preflight, it is refused as invalid if the lake
-    /// moved since.
+    /// (`docs/decisions/039-a-source-is-retracted-as-one.md`). With `ty`,
+    /// the purge is of what the source brought into that type and the
+    /// link types of its relations, and all of this is said of that
+    /// selection alone; a type that cannot be purged from is refused.
+    /// With the `report_id` of a preflight, it is refused as invalid
+    /// unless that report is of this purge at this head.
     async fn purge_source(
         &self,
         source: &SourceId,
+        ty: Option<&TypeName>,
         report_id: Option<&str>,
     ) -> Result<crate::write::PurgeReport>;
 
     /// What [`Self::purge_source`] would do, appending nothing: the same
     /// report, refused as the purge would be, under an id the purge may
     /// repeat.
-    async fn purge_preflight(&self, source: &SourceId) -> Result<crate::write::PurgeReport>;
+    async fn purge_preflight(
+        &self,
+        source: &SourceId,
+        ty: Option<&TypeName>,
+    ) -> Result<crate::write::PurgeReport>;
 
     /// Give back the storage the projection no longer uses. It appends
     /// nothing and changes no answer, no event and no byte of an export;

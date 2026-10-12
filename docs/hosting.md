@@ -152,6 +152,9 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   Lakelands reserves only the types its own fold reads; today those are
   `sys.setting` and `sys.aging_rule`, and the other two are reserved
   ahead of their readers. See `docs/decisions/003-reservation-by-namespace.md`.
+  A value that must be kept from a reader is not put into a setting:
+  any reader's expression reads `setting('<key>')`, whatever its grant
+  on `sys.setting` and whether or not the setting is restricted.
   The aging rules run when the host calls `LakeStore::age(today)`, once
   a day, with the date (`docs/decisions/036-aging-runs-by-date-once.md`);
   `lakelands age --today <YYYY-MM-DD>` is the same call from the CLI, and
@@ -159,23 +162,56 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `aging` section: the date at its `utc_offset`, once at start and at each
   rollover (`docs/seams.md` §aging).
   A source that should be taken back is purged with
-  `LakeStore::purge_source(source)` (`lakelands purge --source <id>`):
+  `LakeStore::purge_source(source, None, None)`
+  (`lakelands purge --source <id>`):
   every record it brought in is retired in one append, and a record
   another hand also wrote refuses the purge
   (`docs/decisions/039-a-source-is-retracted-as-one.md`). The report
   names, per relation, the live records outside the purge that still
   refer to a record it took. A host that must know that before it acts
-  asks first: `LakeStore::purge_preflight(source)`
+  asks first: `LakeStore::purge_preflight(source, None)`
   (`lakelands purge --source <id> --preflight`) appends nothing and
-  answers the same report under an id, and `purge_source(source,
+  answers the same report under an id, and `purge_source(source, None,
   Some(id))` (`--report <id>`) purges only if the lake has not moved
-  since.
+  since. Both take one type in place of `None` (`--type <type>`): the
+  purge is then of what the source brought into that type and the links
+  of its relations, a co-owned record elsewhere does not hold it, the
+  report names the source's records in other types that still refer
+  into what went, and the id is of that purge alone. A view, and a type
+  that keeps no per-field provenance, are refused there.
   A lake's log is exported with `lakelands_store::export::write(store,
   dir)` (`lakelands export --to <dir>`) as files that verify without
   Lakelands (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`);
   an export is the whole log, unmasked, so it is handed over as the
   lake itself would be. An export only reads: it needs no writer, appends
   nothing, and runs beside a `lakelands serve` that holds the lake.
+  Opening a lake on SQLite reads the end of each log segment's index,
+  not the index: what an open costs follows the number of segments, one
+  more for each `checkpoint` that sealed one, not the events the lake
+  holds, so a host may open every lake at its start. A damaged index line
+  is therefore not found at the open; `verify`, which reads the log,
+  finds it, as does the read that meets it. A writer's `close` truncates
+  the projection's journal (`projection.db-wal`); a writer that ends
+  without it leaves the journal as large as it grew, for the next
+  `close` or `compact` (lakelands#564). A write the disk refuses, as when
+  it is full, is answered `unavailable` and leaves the log's files as
+  they were before it: the host makes room and the lake's next write goes
+  on, on the same handle. One such answer says that its outcome is not
+  known: the disk took the write and did not confirm it, and its events
+  are in the log (lakelands#618). The handle's log then holds them and
+  the store's writer does not, so the next write on that handle is
+  refused as not continuing the log, and each one after it: the host
+  opens the lake again, and the handle opened then reads them and writes
+  on. A `checkpoint` closes the segment and begins the next one with its
+  checkpoint in one step, on every engine: one refused before that step
+  has sealed nothing, the lake directory verifies meanwhile as before it,
+  and the host sends it again when the cause is gone. An error can also
+  come behind the step, with the seal standing: the SQLite engine's says
+  so (the new segment's name could not be synced and the outcome is not
+  known, or the handle could not read on), and a fold that fails behind
+  the seal answers its own. Then the host opens the lake again and sends
+  nothing again: the handle opened then reads the checkpoint where it is
+  in the log (lakelands#623).
   In a quiet hour the host can call `LakeStore::compact()` (`lakelands
   compact`) to give back the storage the projection no longer uses; it
   changes no answer and appends nothing, and writes wait while it runs
@@ -293,6 +329,98 @@ A host that already has a store of its own moves in four steps.
   host-side check is never a substitute and never needed. See
   `docs/decisions/010-provenance-per-field.md` and
   `docs/decisions/012-writes-touch-only-their-fields.md`.
+- **`schema` is for a principal that reads everything it may declare
+  over.** A principal with `schema` is shown every definition, and a
+  write answers `through`, the position its consequences reach. The lake
+  refuses a declaration that reads a field its author may not read, and
+  names a trigger or an object set in a write's answer only to one who
+  reads what its condition reads; it cannot hide from such a principal
+  that something reacted to its own write. So a host does not hand
+  `schema` to a principal it keeps from a field or a type. See
+  `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+  extended.
+- **A grant by name holds a field through its renames.** A field's
+  access is the lowest of what a principal's grants say under every name
+  the field has borne. A restriction follows the field, at the head and
+  in a read as of before the rename; a permission stays with its name.
+  So a host that does nothing stays closed, and a host that wants a
+  renamed field read or written by a principal names the new name and
+  drops the restriction on the old. A migration's answer names what it
+  renamed (`renamed`), and the feed's `migrated` event carries it. Two
+  fields that have borne one name (after a swap, or when a name is taken
+  again) are restricted together by it; grant by a name only one of them
+  has borne. A lake made before this finds its renames at its next open
+  from the declarations it keeps, not from its log; until a writer has
+  opened it once, each read-only open finds them again. See
+  `docs/decisions/006-grants-not-roles.md`, extended.
+- **What a host reads before it applies a migration.** The preflight's
+  report says, each in one member: whether the apply is admitted
+  (`lossless`: every value the migration keeps converts, and every
+  record a re-key moves takes a key of its own; it says nothing of what
+  the migration removes); what goes (`dropped`: each removed field with
+  the records that hold a value, each removed relation with its live
+  links; the apply discards them, so a host that asks "is anything
+  lost?" sums the counts, `MigrationReport::discards()` in Rust); what
+  moves (`rekeyed`, `references`, `sample_collisions`); a relation's
+  rename (`relations`, `carried`, the entry below); and every other
+  member `to` states otherwise (`restated`, the entry after it). A
+  removal is the migration's intent and is consented to by repeating the
+  report's id, so `lossless: true` with a count above zero in `dropped`
+  is an apply that is admitted and discards values. See
+  `docs/decisions/027-shape-changes-are-declared-or-migrated.md`.
+- **A migration may rename a relation, and the relation keeps its
+  edges.** `relation_renames` pairs an old name with a new one. A
+  relation carried by a `via` field or derived from matching values is
+  only named anew. One carried by link records moves them: its links
+  become records of `sys.link.<type>.<new>`, with their versions, fields
+  and provenance, and a read as of before answers them under the old
+  name. The preflight's report lists each renamed relation with the
+  links that move (`relations`), and what the lake declares again
+  because it names the old link type (`carried`): a trigger or a verb on
+  it, an object set of it, a view that reads it. A rename changes no
+  link field and re-keys nothing; those are migrations of their own, and
+  a rename is refused while a reference field or a relation of another
+  type names the link type, or while a set, a trigger or a verb reads a
+  field of the new name's standing link type that the relation lacks. A
+  consumer of the feed that follows the old or the new link
+  type is handed the `migrated` event. The old link type stays declared,
+  for the reads as of before: it holds no record and takes none, so a
+  source that still sends links under the old name is refused, naming it.
+- **A migration's `to` is the type's whole declaration; read `restated`
+  before you apply.** A `to` built from a reduced view (a field's name
+  and type, nothing else) takes away every mark it does not restate:
+  `sensitive`, `searchable`, a label, annotations, an expression. The
+  migration is lossless, since no stored value changes, and its
+  preflight lists each such member in `restated` with what was declared
+  and what `to` states; `dropped` names every removed relation, with 0
+  where it holds no live link. Build `to` from `describe`'s answer for
+  the type and change what you mean to change; a report whose `restated`
+  is not what you meant is the signal. A field you may not read is
+  described and reported by its shape alone: your preview says `more`
+  where it leaves a member out, and a reviewer who reads the field sees
+  the rest. A proposed migration is refused
+  at its accept ("propose it again") where the type gained or lost a
+  member since that the proposal's report does not restate
+  (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+  extended).
+- **A grant on a link type follows the relation's rename, as a grant on
+  a field follows the field's.** A field of the link type is as closed
+  as the lowest of what a principal's grants say under every name the
+  link type has borne: its grant, else its default. So
+  `sys.link.invoice.signed_by: {default: none}` holds for
+  `sys.link.invoice.approved_by` after the rename, and a grant on the new
+  name holds for the old one in a read as of before. A permission stays
+  with its name: a host that wants the links read under the new name
+  names the new link type. A mirror's mapping that names the old link
+  type stops applying at the rename and is stated again.
+- **A key is shown to whoever is shown the record.** A principal that
+  is shown a type finds and gets its records, also where it reads no
+  field of them: each with its key, its version and the names of the
+  fields it sees masked. A key made of fields holds their values,
+  whatever is granted on those fields, so a host does not key a type by
+  a field it hides; and a principal that is not to list a type's records
+  is granted nothing of the type. See
+  `docs/decisions/006-grants-not-roles.md`, extended.
 - **One writer per lake.** A lake has one writing process at a time,
   held by a lease; one process may write many lakes. See
   `docs/decisions/008-one-writer-per-lake.md`.
@@ -315,17 +443,254 @@ A host that already has a store of its own moves in four steps.
   `max_limit`. See `docs/decisions/026-the-store-walks-the-graph.md`.
 - **A migration of a large type is a step for a quiet moment.** Applying
   one reads, converts and writes again every record of the type under
-  the writer, and holds them in memory meanwhile; other writes wait. At
-  100 000 records of four small fields, measured under some load from
-  other processes (`tests/set_migrated.rs` in the SQLite and PostgreSQL
-  engines, by hand), the writer is held 7 to 9 s on SQLite and 20 to 26 s
-  on PostgreSQL, with a peak of about 600 MB and 1.1 GB. Both grow with
-  the type's records. An object set of the type adds little: its members
+  the writer; other writes wait. The check before the append and the fold
+  read the type a page of 1 024 records at a time. What the store still
+  holds for the whole type is keys, not records: for a type with key
+  fields the old and the new key of every record; for a re-key its moves,
+  in the report's id, the event and the fold, and one membership for each
+  moved record and set; the ends of the live links of a relation it
+  narrows; a set's members and its changes up to `max_set_changes`.
+  PostgreSQL writes a transaction's puts a page of 1 024 at a time inside
+  its transaction, so its engine holds a page of them too. At 100 000 records of four small fields, measured under some
+  load from other processes (`tests/set_migrated.rs` in the SQLite and
+  PostgreSQL engines, by hand), the writer is held 4 to 5.5 s on SQLite
+  and 10.5 to 14 s on PostgreSQL. On SQLite the peak is a few megabytes
+  whatever the type's size, 57 MB with a set that changes 20 000
+  memberships, and for a re-key of every record about 160 MB, which grows
+  with the records moved (630 MB at 400 000). On PostgreSQL it is the
+  same, with 8 MB where SQLite holds a few. On PostgreSQL the statements that write a migration
+  sort and hash a row for every record; at the server's default `work_mem`
+  of 4 MB they do it on disk, so a host that migrates large types gives
+  the lake's connections more. An object set of the type adds little: its members
   are read once, and 20 000 memberships changed cost one to three seconds
-  and 35 MB. Before that single read (lakelands#477) each set added a lookup
+  and 40 to 55 MB. Before that single read (lakelands#477) each set added a lookup
   for each record: 41 s with one set and 74 to 79 s with three on
   PostgreSQL, 9 to 15 s on SQLite. Bringing the migration's own cost
-  down is lakelands#480.
+  down further is lakelands#480.
+- **A host may state its declarations at every start.** A declaration
+  that is the one in force is answered `applied` at the head and appends
+  nothing, by `declare` and by `apply`: a type, a value type, a function,
+  a verb, a trigger, an object set. A computed field may be stated with
+  the inputs `describe` shows or without them. A declaration's version
+  counts its changes. See
+  `docs/decisions/027-shape-changes-are-declared-or-migrated.md`.
+- **`recompute` is how a host computes again.** It names a function, or
+  a type with an embedding or a field of a function with a backing, and
+  does three things a declaration in force no longer does: it calls
+  again for a recorded failure, makes a field that waited for its
+  backend, and computes a function's fields with the settings and the
+  time of the call. It appends one `declared` and holds the writer for a
+  walk of the type, as a recomputation does (below). A derived expression
+  of a type that reads a setting or the clock is not its business: such
+  a field is as of its record's last write, and a write of the record
+  brings it up to date; the type declared again with a field more that
+  is not computed does not, since it computes nothing. From a shell: `lakelands recompute --function
+  <name>` or `--type <name>`. See
+  `docs/decisions/022-functions-are-declarations.md`.
+- **One text the embedding backend refuses fails its whole batch
+  (lakelands#658).** The store sends the texts due for one model in
+  batches of up to 64, and when a request fails it records the failure
+  for every text the request carried. So a backend that refuses a whole
+  request for one input (an HTTP 400 for one text over its length
+  limit, say) fails the good texts sent beside it. The failure is
+  recorded for each of those texts, and an output is read back for its
+  text lake-wide: a later record that writes one of them is answered
+  the failure without a call. `get` shows the backend's message in the
+  field's `error`, and `vector_coverage` counts each such record as
+  due. `recompute`, and a declaration that walks the type, batch the
+  refused text with the others again and fail them again. A host
+  recovers by changing the refused text in its record, then calling
+  `recompute` of the type; a record whose own text changes is embedded
+  on that write.
+- **A write that changes nothing is still a write.** An upsert of the
+  values a record already holds appends an event and raises the version:
+  it says who vouches for the values and when, a trigger reacts to it,
+  and a caller that writes with `expected_version` counts on it. A host
+  that states data again and wants no growth has three ways: an
+  idempotency key, under which the same call appends once; `ingest`,
+  which appends nothing for a record delivered twice; or a read first.
+  Opening a lake for writing appends one `lease_taken`, which carries
+  the token every later event of that writer bears; a reader appends
+  none.
+- **A required field a source does not write takes `initial`.** A type
+  a source feeds may hold a field the source knows nothing of, such as a
+  state the lake's own users move. Declared `required` alone, no door
+  can make its record: the ingest may not carry the field, and an
+  author's write comes after the record exists. Declare it with
+  `initial`, a literal: the write that makes the record fills it at
+  version 1, with `origin: initial`, and the host needs no second
+  append. The filled value makes no owner: a purge of the source takes
+  the record with the state an author moved, and names it in `moved`. A
+  record retired and made again starts again from the initial value, and
+  a trigger sees a create. Changing `initial` later changes no stored
+  record. See `docs/decisions/050-a-field-declares-its-initial-value.md`.
+- **A write answered `unavailable` may be in the log.** The store
+  appends a write durably, then folds it. When the fold fails (the
+  projection's transaction cannot begin or commit: a busy SQLite file, a
+  lost connection, a full disk), the write is answered `unavailable` and
+  its sentence says so: what was appended is in the log from the
+  position named, it is not folded yet, the next write folds it, and a
+  write is sent again only under its idempotency key. Reads answer at
+  the last folded position meanwhile. The next write through any door
+  folds what was left before it is decided, or is answered `unavailable`
+  (the projection could not catch up) and appends nothing. A caller that
+  sends the write again under its key is answered the first write's
+  outcome; one without a key writes a second time. For a verb that
+  reaches outside the lake the answer says one thing more: its executor
+  was not handed the call, and sending it again under its key will not
+  run it (the retry is refused as `unanswered`: a retry is answered
+  `applied` only with an answer of the executor that is recorded). The
+  host calls the verb again under another key or with none; a proposal
+  accepted so is spent, and the call is proposed again. The kind is the same as for a write that never
+  reached the log, and a caller cannot tell the two apart by it, over a
+  network door least of all: a host that must not write twice gives its
+  writes a key. When the calls a write made due cannot be recorded, an
+  upsert, a feed's window, an aging run and a purge whose own fold
+  succeeded are each answered their own outcome and the computed fields
+  wait. The next write records what was left, from the answers the calls
+  were already given, or is answered `unavailable` if the lake cannot
+  catch up; `vector_coverage` counts the embeddings that still wait. Two
+  writes are answered an error although their own fold succeeded. A call
+  of a verb that reaches outside the lake, and its acceptance: where the
+  calls due before the hand-out could not be recorded, the executor is
+  handed nothing and the answer is `unavailable` with the sentence about
+  the executor (an acceptance's says that the proposal is decided, that
+  accepting it again will not run the verb, and to propose the call
+  again). And a write that set
+  something off (a trigger fired, a set joined or left), which reads
+  the lake's description to name it to its writer: where that read
+  fails, the write is answered the read's error. Each is in the log and
+  folded, and a write sent again under its key is answered its position.
+- **A declaration that recomputes a type is a step for a quiet moment.**
+  A function declared again with a change, or a type declared again with
+  another derived expression, computes the derived fields of every live record
+  of the type again in that one append, under the writer; other writes
+  wait. The store reads the type a page of records at a time, puts each
+  record it changes and keeps none: it holds the declaration, not the
+  records, so what it holds does not grow with the type
+  (`docs/decisions/048-the-fold-keeps-the-event-not-the-records-it-changed.md`).
+  A bundle that declares several functions of one type again reads the
+  type once and computes each record once for each of them. At 100 000
+  records of four small fields, one of them derived
+  (`tests/recomputed.rs` in the SQLite and PostgreSQL engines, by
+  hand), the writer is held 4.1 to 4.5 s on SQLite and 13.3 to 14 s on
+  PostgreSQL, whichever of the two is declared again, and about 20 s
+  and 51 to 56 s at 400 000; the peak of the append is 3 MB on SQLite
+  and 9 MB on PostgreSQL at both sizes. A bundle of two changed
+  functions holds the writer 12 s on SQLite and 21 s on PostgreSQL at
+  100 000 records (50 s and 99 s at 400 000), at 4 MB and 11 MB. The
+  time grows with the type's records; the peak does not. Two things
+  still grow with them: the calls an embedding or a function computed outside the lake
+  makes due on that append, one for every record whose output is not
+  recorded, held until they are made; and what the engine holds of an open transaction, which on the
+  memory engine is every put. A rebuild, or an open that catches up,
+  commits inside a page of the log after such a declaration, so there
+  too each record is computed once for each declaration. Such a fold of
+  the log makes no call due and holds none: a rebuild of 100 000
+  embedded writes of a 1 000-byte text peaks at 4 MB on SQLite, where it
+  held every write's call and peaked at 163 MB before
+  (`tests/recomputed.rs` in the SQLite engine, by hand;
+  `docs/decisions/022-functions-are-declarations.md`, extended). A type
+  declared again that computes nothing (its description changed, say,
+  or a field that is not computed was added) costs one pass of the
+  engine over its records at the commit, a page at a time: 1.3 to 2.1 s
+  at 100 000 records and 3 MB whatever the type holds. A type with an
+  embedding or a field of a function computed outside the lake is never
+  such a type: the store walks its records at every declaration of it,
+  whatever changed.
+- **A view that is read often may be kept.** A view's read walks its
+  source: seconds at a hundred thousand records. The setting
+  `view_kept.<type>` asks the fold to keep the view's records in the
+  projection, and a read of the view then reads those, at the head and
+  at every position from the setting on
+  (`docs/decisions/049-a-view-the-fold-keeps.md`). What it costs and
+  where it does not hold:
+  - **Turning it on is a step for a quiet moment:** the fold of the
+    setting's write walks the view's sources once under the writer and
+    holds the folds of every group until that append ends, so a view
+    grouped by a nearly unique field holds about as many as its source
+    has records.
+  - **Every write to a source puts one state more** for each group it
+    touches in each kept view, for good. An append reads the state of
+    the kept views that read a type it wrote, one read each, and of no
+    other; a lake with no `view_kept.` setting reads none.
+  - **The view is made again,** by the same walk, by a declaration of
+    the view or of a source, by a declaration that computes a source's
+    records again (a function they call, declared again with a change),
+    by a migration that reaches a source's records, and by a write of a
+    setting its expressions name. Declare and migrate as for any large
+    type: in a quiet moment. After a declaration that computes records
+    again the view is made once those records are put: a read as of a
+    position in between computes.
+  - **A read computes, as before,** when it names a valid time, when it
+    is as of a position before the view was made, and while a group of
+    the view is not exact for its reader: a measure that fails over it,
+    or an extreme that was given up (below). `describe_type` then says
+    `not_whole` with the number of such groups, to a principal the
+    view's read would answer.
+  - **A write that takes an extreme's holder away reads its group
+    again,** in its own append and under the writer: the live records
+    that hold the group's values, 8 192 at most. The bound is one for
+    the group over all the view's sources, and a record the view's
+    `where` leaves out counts in it. An append whose n events each take
+    a holder away reads up to n times that: an aging run that moves the
+    oldest record of 1 000 groups of 5 000 under `min(date)` reads 5
+    million records in its append. Such a step is one for a quiet
+    moment, as a migration is. Three reads cost more than the bound
+    lets one expect:
+    - **A view over a kept view** reads, beside the inner records of
+      the group's values, every inner record whose whole face reads
+      otherwise than its own (a restricted member of its group makes it
+      so), whatever its group, and each counts in the bound: an outer
+      group of three members is given up once the inner view has about
+      8 190 such records, and until then every such reread reads them
+      all.
+    - **A view grouped by more than one field** is looked up by its
+      first text field alone: a view grouped by `country, city` reads
+      every record of the country for a reread of one city, on the
+      memory engine every record of the source. Those are read and not
+      handed to the fold, and the bound does not count them.
+    - **After a migration's step in the same append** every lookup
+      walks the source whole.
+  - **A group past that bound is given up:** its extreme is kept no
+    more, the view computes for the readers it concerns, and
+    `describe_type` says `not_whole` with the group counted. Nothing
+    mends it by itself, and the fold goes on keeping the view's other
+    records meanwhile, at a state for each write: a reader whose face
+    of the group is exact, one without the `restricted` grant where the
+    group was given up on the whole face alone, is answered from them.
+    What mends it is what makes the view again
+    (above), or writing its setting `false` and then `true`; or the
+    group's own end. A view with a `min` or `max` over groups larger
+    than the bound, or whose holders leave in bulk, is not worth
+    keeping today (lakelands#629).
+  - **A reader with the `restricted` grant** is answered from every
+    kept record of a view at each call, read once and once more for a
+    total, as soon as one group of it reads otherwise for that reader
+    (a restricted record is a member of it). For every other reader,
+    and for that one while no group differs, the page and the count are
+    the engine's.
+  - **Not every view can be kept:** only counts, sums and averages of
+    what is certainly a number, and a `min` or `max` of a number or an
+    instant under text or reference group fields. The setting's write is
+    refused otherwise and says which measure. `describe_type` says for a
+    view whether it is kept, and why not.
+- **A kept view is made to be read at the head.** The records of a
+  view kept as its sources are written (the setting `view_kept.<view>`)
+  are put again at every write to their group, and SQLite and
+  PostgreSQL read them by statements of their own. At the head a page
+  or a count reads the states in force and none before them, however
+  often a group was written: with 10 000 writes to each of 20 groups, a
+  page in 0.05 ms on SQLite and about 1 ms on PostgreSQL, where a stored
+  type's statements take 120 ms and 45 to 60 ms. As of an earlier
+  position such a read steps from group to group and seeks each one's
+  state there. That pays where groups are written often (the same view
+  in 0.1 ms and 1 to 2 ms, against 80 ms and 33 to 39 ms) and costs on
+  PostgreSQL where they are written seldom: at about 20 writes a group a
+  page of 1 000 takes 14 to 15 ms where a stored type's statement takes
+  8, and a count 67 to 78 ms against 39 to 43; SQLite is faster at both
+  positions. A read `as_of` an earlier position is the rare one of a
+  kept view.
 - **Every answer carries its position.** A host that records what an
   agent saw records the position, and reads `as_of` it later. See
   `docs/decisions/009-every-response-carries-its-position.md`.

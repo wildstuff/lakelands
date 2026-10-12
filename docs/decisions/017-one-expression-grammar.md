@@ -54,3 +54,53 @@ call is written in version 3, and so is every event after it
 any other field.
 A new function is still a contract change. Where it may stand is part of
 that contract, and a function that only reads moves no log format.
+
+## Extended: arithmetic on durations (lakelands#549)
+
+The difference of two instants was a duration, and nothing could be done
+with one but add it to an instant. A host that asked for the days between
+two instants found no spelling that answered: `(today() - due_on) / 1d`
+failed for every record, which a read showed as no match and a null key,
+and a derived field as a field never filled.
+
+The grammar stays as it is, and three operations get a meaning:
+
+| operation | answer |
+|---|---|
+| a duration `/` a duration | a number, exact: how many of the one the other holds |
+| a duration `/` a number, a duration `*` a number, a number `*` a duration | a duration, to the microsecond |
+
+So the days between two instants are `(paid_on - due_on) / 1d`, the
+hours `/ 1h`, the weeks `/ 7d`: one spelling for every unit, and no
+function a unit. One function is added, `floor(n)`, the greatest whole
+number not above `n`: the whole days that have passed are
+`floor((now() - due_on) / 1d)`, where `round` would count a day from its
+noon on.
+
+`now()` and `today()` are the fold's clock in a derived field, the
+`known_at` of the event folded: a derived "days overdue" is as of the
+record's last write. A read that computes it asks as of the read.
+
+## Extended: a bucket of any width (lakelands#559)
+
+`date_bucket` knew the calendar's five units. A host that groups
+invoices into windows of thirty days from a date it names had the
+formula, once durations divide, and nothing shorter.
+
+`date_bucket(x, width, origin)` answers the start of the window of that
+width holding `x`: `origin + floor((x - origin) / width) * width`. The
+windows are counted from the origin in both directions, so an instant
+before it falls in the window that starts before it, and none is lost.
+
+- **The width is a duration, as the grammar writes one** (`30d`, `12h`),
+  above zero. A quoted `'30d'` is refused, and its refusal names the
+  unquoted form: a quoted second argument is a calendar unit.
+- **A width takes its origin.** No default is chosen for it: counted
+  from 1970, a week would begin on a Thursday and thirty days on a date
+  nobody picked. `date_bucket(x, 30d)` is refused, naming the form with
+  three arguments.
+- **A calendar unit takes none.** A month has no width to count from an
+  origin; `date_bucket(x, 'month', origin)` is refused.
+
+It is the one function with two arguments more, and no new unit. A read
+may call it in any log format version; a declaration from version 11 on.

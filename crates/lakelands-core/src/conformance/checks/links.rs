@@ -22,9 +22,8 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all, doors, field, field_writer, head_unmoved, migration, no_such_field, nobody,
-    patch, pattern, reads_all, reason, reference, refused_on, restrict, source_record, step,
-    type_decl,
+    Lake, Must, all, doors, field, field_writer, head_unmoved, migration, no_such_field, patch,
+    pattern, reads_all, reason, reference, refused_on, restrict, source_record, step, type_decl,
 };
 use crate::links::{link_key, link_type_name};
 
@@ -109,7 +108,7 @@ check!(
 check!(
     /// A re-declared relation that reshapes its links is a migration.
     REDECLARED_TARGET = a_relation_declared_again_with_another_target_is_a_migration,
-    "027 and 035, extended: a relation removed by migrate keeps its links, and the preflight lists it under `dropped` with the number of its live links, or not at all when none is live; declaring it again with another target would reshape them, and is refused, naming the link type"
+    "027 and 035, extended: a relation removed by migrate keeps its links, and the preflight lists it under `dropped` with the number of its live links, none when none is live (lakelands#554); declaring it again with another target would reshape them, and is refused, naming the link type"
 );
 
 check!(
@@ -125,7 +124,7 @@ check!(
 );
 
 const LT: &str = "sys.link.invoice.approved_by";
-const SEPT: &str = "2026-09-01T00:00:00.000000Z";
+pub(super) const SEPT: &str = "2026-09-01T00:00:00.000000Z";
 const OCT: &str = "2026-10-01T00:00:00.000000Z";
 
 fn approved_by(fields: Vec<FieldDecl>, authority: Authority) -> RelationDecl {
@@ -141,14 +140,14 @@ fn approved_by(fields: Vec<FieldDecl>, authority: Authority) -> RelationDecl {
 }
 
 /// `approved_by` as the lake declares it: authored, with a `since`.
-fn dated() -> RelationDecl {
+pub(super) fn dated() -> RelationDecl {
     approved_by(
         vec![field("since", StorageKind::DateTime)],
         Authority::Authored,
     )
 }
 
-fn invoice(relations: Vec<RelationDecl>) -> TypeDecl {
+pub(super) fn invoice(relations: Vec<RelationDecl>) -> TypeDecl {
     let mut t = type_decl("invoice", vec![field("amount", StorageKind::Decimal)]);
     t.relations = relations;
     t
@@ -156,7 +155,7 @@ fn invoice(relations: Vec<RelationDecl>) -> TypeDecl {
 
 /// Partners p1 and p2, invoices i1 and i2, and `approved_by` from an
 /// invoice to a partner, carried by link records with a `since`.
-async fn lake(store: &dyn LakeStore) -> Result<Lake, Failure> {
+pub(super) async fn lake(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
         .await?;
@@ -190,7 +189,12 @@ async fn link(
 }
 
 /// Links `from` to `to` over `approved_by` as the owner.
-async fn link_ok(l: &Lake, from: &str, to: &str, fields: Value) -> Result<Outcome, Failure> {
+pub(super) async fn link_ok(
+    l: &Lake,
+    from: &str,
+    to: &str,
+    fields: Value,
+) -> Result<Outcome, Failure> {
     let linked = link(l.cat.as_ref(), &l.own, from, to, fields).await;
     linked.must(&format!("linking {from} to {to}"))
 }
@@ -230,7 +234,7 @@ async fn walked(
     }
 }
 
-fn pairs(edges: &[Edge]) -> Vec<String> {
+pub(super) fn pairs(edges: &[Edge]) -> Vec<String> {
     edges
         .iter()
         .map(|e| format!("{}>{}", e.from.1, e.to.1))
@@ -335,12 +339,12 @@ async fn a_link_that_would_break_the_relations_cardinality_is_refused(
         "`approved_by` is many_to_one: i1 already links to p1, so linking it to p2 is \
          refused as a constraint on `to`; it answered {second:?}"
     );
-    let nobody = nobody(store.as_ref());
-    let ungranted = link(cat.as_ref(), &nobody, "i1", "p2", json!({})).await;
+    let reader = reads_all(store.as_ref(), "reader");
+    let ungranted = link(cat.as_ref(), &reader, "i1", "p2", json!({})).await;
     ensure!(
         matches!(reason(&ungranted), Some(Refusal::NotGranted))
             || no_such_field(&ungranted, "from"),
-        "a principal with no grant links i1 to p2: it is refused before the cardinality reads \
+        "a principal that writes nothing links i1 to p2: it is refused before the cardinality reads \
          i1's link to p1, which it must not learn of, as not granted or as for a field it may \
          not know of; it answered {ungranted:?}"
     );
@@ -766,9 +770,9 @@ async fn a_relation_declared_again_with_another_target_is_a_migration(
     link_ok(&l, "i2", "p2", json!({})).await?;
     let linked = dropped().await?;
     ensure!(
-        unlinked.is_empty() && linked == [("approved_by".into(), 2)],
+        unlinked == [("approved_by".into(), 0)] && linked == [("approved_by".into(), 2)],
         "removing `approved_by` takes its live links from the head: the preflight must list it \
-         under `dropped` with its 2 live links, and not at all while its only link is unlinked; \
+         under `dropped` with its 2 live links, and with none while its only link is unlinked; \
          it listed {linked:?} and {unlinked:?}"
     );
     // The relation removed: a migration, which keeps its links.

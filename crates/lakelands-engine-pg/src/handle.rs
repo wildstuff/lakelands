@@ -26,6 +26,7 @@
 //! changes no answer, only a plan; a failed one leaves the commit as it
 //! is.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
@@ -49,12 +50,22 @@ use crate::{NAME, invalid, lease, lock, log, unavailable};
 
 /// The open transaction of the fold: the latest position a put in it
 /// names, which the commit must reach, the head declarations it read, and
-/// the puts it holds until the commit writes them.
+/// the puts it holds until a full page of them, or the commit, is written.
 #[derive(Default)]
 struct Transaction {
     latest: Option<Position>,
     types: HeadTypes,
     buffer: Buffer,
+    /// The types declared in it, each with the position of its latest
+    /// declaration: the commit indexes their older records under it.
+    redeclared: BTreeMap<TypeName, Position>,
+    /// The types whose `vector_index.<type>` setting a page wrote, each with
+    /// the setting's position: the commit builds their indexes, once.
+    asked: BTreeMap<TypeName, Position>,
+    /// The record states staged in it, for the count that tells the
+    /// planner: counted as they are staged, since the buffer is written and
+    /// emptied a page at a time.
+    put: u64,
 }
 
 /// The records a writer puts between two analyses of its tables.
@@ -72,8 +83,8 @@ struct Writing {
 pub struct PgLake {
     lake: LakeId,
     target: Target,
-    names: Names,
-    reader: Mutex<Db>,
+    pub(crate) names: Names,
+    pub(crate) reader: Mutex<Db>,
     writing: Option<Writing>,
     held: Mutex<Option<Lease>>,
     transaction: Mutex<Option<Transaction>>,
@@ -131,16 +142,6 @@ impl PgLake {
         })
     }
 
-    /// The reader connection.
-    pub(crate) fn reader(&self) -> MutexGuard<'_, Db> {
-        lock(&self.reader)
-    }
-
-    /// The lake's tables.
-    pub(crate) fn names(&self) -> &Names {
-        &self.names
-    }
-
     fn writing(&self) -> Result<&Writing> {
         self.writing.as_ref().ok_or_else(|| {
             unavailable(format!(
@@ -165,18 +166,21 @@ impl PgLake {
     }
 
     /// Take a put into the open transaction: `f` holds it in the buffer,
-    /// which the commit writes.
+    /// which is written inside the transaction once it holds a page of
+    /// puts, and at the commit. So the engine holds a page of a
+    /// transaction's puts, not all of them; no view sees a written page
+    /// before the commit.
     fn stage(&self, position: Position, f: impl FnOnce(&mut Buffer)) -> Result<()> {
-        self.writing()?;
+        let writing = self.writing()?;
         let mut transaction = lock(&self.transaction);
-        let Some(t) = transaction.as_mut() else {
-            return Err(invalid(
-                "the projection is written inside a transaction: call `begin` first",
-            ));
-        };
+        let t = transaction.as_mut().ok_or_else(engines::unstaged)?;
         t.latest = t.latest.max(Some(position));
         f(&mut t.buffer);
-        Ok(())
+        if t.buffer.len() < projection::PAGE {
+            return Ok(());
+        }
+        let (page, mut db) = (std::mem::take(&mut t.buffer), lock(&writing.projection));
+        page.write(&mut db, &self.names, &mut t.types, &mut t.asked)
     }
 }
 
@@ -327,7 +331,7 @@ impl LakeEngine for PgLake {
     }
 
     fn tip(&self) -> Result<Option<(Position, Digest)>> {
-        log::tip(&mut self.reader(), &self.names)
+        log::tip(&mut lock(&self.reader), &self.names)
     }
 
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
@@ -341,16 +345,21 @@ impl LakeEngine for PgLake {
     }
 
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
-        log::read(&mut self.reader(), &self.names, from, limit)
+        log::read(&mut lock(&self.reader), &self.names, from, limit)
     }
 
-    fn seal_segment(&self, lease: &Lease) -> Result<Option<SegmentDigest>> {
+    fn seal_segment(
+        &self,
+        lease: &Lease,
+        imported: bool,
+        first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
+    ) -> Result<Option<SegmentDigest>> {
         let mut db = self.holding(lease, "sealed")?;
-        log::seal(&mut db, &self.names, lease)
+        log::seal(&mut db, &self.names, lease, imported, first)
     }
 
     fn segments(&self) -> Result<Vec<SegmentDigest>> {
-        log::segments(&mut self.reader(), &self.names)
+        log::segments(&mut lock(&self.reader), &self.names)
     }
 
     fn projection(&self) -> &dyn ProjectionStore {
@@ -358,7 +367,7 @@ impl LakeEngine for PgLake {
     }
 
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
-        let folded = projection::folded(&mut self.reader(), &self.names)?;
+        let folded = projection::folded(&mut lock(&self.reader), &self.names)?;
         let at = engines::view_at(as_of, folded)?;
         Ok(Box::new(PgView { lake: self, at }))
     }
@@ -390,16 +399,34 @@ impl ProjectionStore for PgLake {
             .take()
             .ok_or_else(|| invalid("there is no transaction to commit: call `begin` first"))?;
         let mut db = lock(&writing.projection);
-        let folded = projection::folded(&mut db, &self.names)?;
+        // After a page the server refused, this read fails too: the
+        // transaction is taken by now, so its session is rolled back here.
+        let folded = projection::folded(&mut db, &self.names).or_else(|e| db.end(Err(e)))?;
         if let Some(refused) = engines::commit_refusal(folded, t.latest, through) {
             return db.end(Err(refused));
         }
         let Transaction {
-            mut types, buffer, ..
+            mut types,
+            buffer,
+            redeclared,
+            mut asked,
+            put,
+            ..
         } = t;
-        let put = buffer.records_put() as u64;
+        // The last page, then the records a declaration left to index and
+        // the vector indexes a setting asked for.
         let written = buffer
-            .write(&mut db, &self.names, &mut types, self.pgvector.as_ref())
+            .write(&mut db, &self.names, &mut types, &mut asked)
+            .and_then(|()| {
+                let older = |(ty, at): (&TypeName, &Position)| {
+                    projection::index_older(&mut db, &self.names, &mut types, ty, *at)
+                };
+                redeclared.iter().try_for_each(older)?;
+                let v = self.pgvector.as_ref();
+                asked.iter().try_for_each(|(ty, at)| {
+                    vector_index::rebuild(&mut db, &self.names, v, ty, *at)
+                })
+            })
             .and_then(|()| projection::set_folded(&mut db, &self.names, through));
         db.end(written)?;
         // Once enough records went in since the last analysis, the planner
@@ -419,7 +446,7 @@ impl ProjectionStore for PgLake {
     }
 
     fn folded_through(&self) -> Result<Option<Position>> {
-        projection::folded(&mut self.reader(), &self.names)
+        projection::folded(&mut lock(&self.reader), &self.names)
     }
 
     fn put_declaration(
@@ -437,14 +464,12 @@ impl ProjectionStore for PgLake {
         };
         let writing = self.writing()?;
         let mut transaction = lock(&self.transaction);
-        let Some(t) = transaction.as_mut() else {
-            return Err(invalid(
-                "the projection is written inside a transaction: call `begin` first",
-            ));
-        };
+        let t = transaction.as_mut().ok_or_else(engines::unstaged)?;
         t.latest = t.latest.max(Some(at));
         let mut db = lock(&writing.projection);
-        projection::put_declaration(&mut db, &self.names, &mut t.types, &d)?;
+        if let Some(ty) = projection::put_declaration(&mut db, &self.names, &mut t.types, &d)? {
+            t.redeclared.insert(ty, at);
+        }
         // A redeclaration may change a field's dimensions or drop it: the
         // type's vector indexes are built again under it.
         if let Declaration::Type(ty) = declaration {
@@ -454,7 +479,11 @@ impl ProjectionStore for PgLake {
     }
 
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
-        self.stage(record.position, |b| b.record(record))
+        self.stage(record.position, |b| b.record(record))?;
+        if let Some(t) = lock(&self.transaction).as_mut() {
+            t.put += 1;
+        }
+        Ok(())
     }
 
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
@@ -608,17 +637,12 @@ impl VectorIndex for PgLake {
             let key: String = row.get(0);
             let v = vector_of(&row.get::<_, Vec<u8>>(1));
             if exact && v.len() != query.len() {
-                return Err(invalid(format!(
-                    "the query vector has {} dimensions, but `{ty}.{field}` holds vectors \
-                     of {} (record `{key}`)",
-                    query.len(),
-                    v.len()
-                )));
+                return Err(engines::dimensions(query.len(), v.len(), ty, field, &key));
             }
             top.push(&RecordKey::from(key), cosine(query, &v));
             Ok(())
         };
-        let mut db = self.reader();
+        let mut db = lock(&self.reader);
         // A field the lake asks an index for, whose index describes the
         // head, answers the index's `k` candidates, ranked by the one
         // cosine (`crate::vector_index`); every other search scans.
@@ -645,8 +669,7 @@ impl VectorIndex for PgLake {
     }
 
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64> {
-        let n: i64 = self
-            .reader()
+        let n: i64 = lock(&self.reader)
             .query_one(
                 &format!(
                     "SELECT count(*) FROM {} WHERE ty = $1 AND field = $2",
@@ -667,5 +690,5 @@ pub fn export(location: &lakelands_api::Location, dir: &std::path::Path) -> Resu
         crate::target(location)?,
         OpenMode::Read,
     )?;
-    log::export(&mut lake.reader(), &lake.names, dir)
+    log::export(&mut lock(&lake.reader), &lake.names, dir)
 }

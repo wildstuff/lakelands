@@ -92,3 +92,64 @@ to a type the purge takes from, and the link type of a relation one of
 whose ends it takes from. What it holds is the purged keys, a page and
 ten references per relation. The selection itself still reads each
 provenance type whole, as above.
+
+## Extended: a purge may name one type
+
+A host that wanted one type of a source back had no way to say so. The
+purge read a source and a type written together as a source nobody fed,
+and answered that nothing was there; and one co-owned record in any
+type of the source held back the records of every other
+(lakelands#562).
+
+- **The purge and its preflight take one optional type.** Without it
+  the purge is the one above, to the letter. With it, the purge is of
+  what the source brought into that type. One type, not a list: two
+  types are two purges, each one append with its own report.
+- **The named type's own links go with it.** The selection reads the
+  named type and the link types of the relations that type declares: a
+  record's own links are nothing without the record, and a host does
+  not spell the store's name for a link type. A link of another type's
+  relation that ends at a record the purge took stays, and the report
+  names it.
+- **Co-ownership is judged in the selection alone.** A co-owned record
+  in the named type refuses the purge whole; one in another type of the
+  source does not hold it. What is never split is the record, and no
+  record is.
+- **A type that cannot be purged from is refused.** A name that is no
+  declared type is not found. A view, and a type declared without
+  per-field provenance, are refused as invalid, saying why. The purge
+  of a source whole passes over such a type and names it; a host that
+  asked for exactly that type would read "nothing retired" as "nothing
+  there". A typed report names no type as not searched.
+- **The report names its type, and what it left behind.** The
+  references now include the source's own records in its other types
+  that still refer into what went.
+- **The id is of the source, the type and the head.** An id of the
+  source and the head alone would let the report of the source whole
+  authorise a purge from one type at the same head, and the reverse. An
+  id that does not fit is refused as invalid in one sentence for both
+  causes: the store cannot tell a moved lake from another purge's id.
+- **No event of its own.** A typed purge appends fewer of the same
+  `record_retired`; nothing is replayed differently.
+
+"Why" above says the unit is the source, not the type, because a purge
+by type would leave the source's records in other types behind, still
+referring to what went. That holds for the purge without a type, which
+stays the way to take a source back. What changed is that the report
+now says what a purge strands, so a host that takes one type back is
+told which of the source's other records still point there, and
+decides. A purge is still not a door.
+
+## Extended: a field that declares an initial value makes no owner
+
+A field that declares `initial` co-owns nothing, whoever wrote it last
+(`docs/decisions/050-a-field-declares-its-initial-value.md`). It is
+there because its record is, and the record is there because the source
+brought it: an author who moved the state did not bring the record, and
+when the source is taken back the state goes with it. A whole purge and
+a typed one ask the same rule. The report says what went: `moved`
+holds, per type and field, how many records the purge takes whose such
+field an author had written, and the first ten by key; it is left out
+when empty, and the preflight says the same. Every other authored field
+co-owns as before, so a record where a person wrote anything else still
+refuses the purge whole.

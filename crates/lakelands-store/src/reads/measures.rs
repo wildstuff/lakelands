@@ -13,7 +13,8 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 
 use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Walk};
-use lakelands_api::{RecordKey, RelationName, Result, Value};
+use lakelands_api::record::StoredRecord;
+use lakelands_api::{Params, RecordKey, RelationName, Result, Value};
 use lakelands_core::graph::{self, Components, Node};
 
 use super::{CursorState, Reader, Visible, encode, invalid};
@@ -73,7 +74,7 @@ impl Reader<'_> {
         let params = self.bound_params(&p.start.ty);
         let offset = super::offset(p.cursor.as_ref(), p, &params)?;
         let hidden = Visible { reader: self };
-        let (rows, more) = match p.project {
+        let all = match p.project {
             Projection::Degree => {
                 let steps: Vec<(RelationName, Walk)> = p
                     .steps
@@ -106,8 +107,7 @@ impl Reader<'_> {
                 })?;
                 rank(&mut seeds)?;
                 let ty = &p.start.ty;
-                let all: Vec<BTreeMap<String, Value>> = best
-                    .into_sorted_vec()
+                best.into_sorted_vec()
                     .into_iter()
                     .map(|(Reverse(d), key)| {
                         BTreeMap::from([
@@ -116,8 +116,7 @@ impl Reader<'_> {
                             ("degree".to_owned(), Value::from(d)),
                         ])
                     })
-                    .collect();
-                page(all, offset, limit)
+                    .collect()
             }
             _ => {
                 let relations: Vec<RelationName> =
@@ -137,10 +136,23 @@ impl Reader<'_> {
                         ]));
                     }
                 }
-                page(all, offset, limit)
+                all
             }
         };
-        let next_cursor = more.then(|| {
+        Ok(self.rows_page(p, all, offset, limit, params))
+    }
+
+    /// One page of a pattern's rows already in their order, and the cursor
+    /// that continues it when more follow.
+    pub(super) fn rows_page(
+        &self,
+        p: &Pattern,
+        all: Vec<BTreeMap<String, Value>>,
+        offset: usize,
+        limit: usize,
+        params: Params,
+    ) -> QueryResult {
+        let next_cursor = (all.len() > offset + limit).then(|| {
             encode(&CursorState {
                 at: self.position,
                 after: None,
@@ -151,7 +163,8 @@ impl Reader<'_> {
                 of: super::pattern_read(p),
             })
         });
-        Ok(QueryResult::Rows { rows, next_cursor })
+        let rows = all.into_iter().skip(offset).take(limit).collect();
+        QueryResult::Rows { rows, next_cursor }
     }
 
     /// Hands every seed of the pattern's start to `each`, in key order: the
@@ -176,35 +189,7 @@ impl Reader<'_> {
             return Ok(());
         }
         let filter = self.record_filter(&decl, p.start.filter.as_ref(), "start where")?;
-        if decl.view.is_some() {
-            for r in self.records(&decl, filter.as_ref())? {
-                each((r.ty, r.key))?;
-            }
-            return Ok(());
-        }
-        let mut after = None;
-        loop {
-            let rows = self.page(&decl, filter.as_ref(), &[], after.take(), PAGE)?;
-            let last_page = rows.len() < PAGE;
-            if let Some(last) = rows.last() {
-                after = Some((Vec::new(), last.key.clone()));
-            }
-            for r in rows {
-                each((r.ty, r.key))?;
-            }
-            if last_page {
-                return Ok(());
-            }
-        }
+        let seed = |r: &StoredRecord| each((r.ty.clone(), r.key.clone()));
+        self.each_member(&decl, filter.as_ref(), PAGE, seed)
     }
-}
-
-/// One page of rows already in their order, and whether more follow.
-pub(super) fn page(
-    all: Vec<BTreeMap<String, Value>>,
-    offset: usize,
-    limit: usize,
-) -> (Vec<BTreeMap<String, Value>>, bool) {
-    let more = all.len() > offset + limit;
-    (all.into_iter().skip(offset).take(limit).collect(), more)
 }

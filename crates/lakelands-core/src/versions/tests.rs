@@ -97,6 +97,7 @@ fn annotations_anywhere_in_a_declaration_need_format_5() {
     let migration = lakelands_api::write::Migration {
         to: to.clone(),
         renames: vec![],
+        relation_renames: Vec::new(),
     };
     let migrated = EventBody::Migrated {
         migration: migration.clone(),
@@ -299,4 +300,162 @@ fn a_proposed_tightening_of_a_value_type_needs_format_10_and_says_so_below_it() 
         below(&event_json(9, narrower)).as_deref(),
         Some("a format 9 event proposes a value type's tightening, which format 10 added")
     );
+}
+
+#[test]
+fn a_declared_call_of_floor_needs_format_11_and_says_so_below_it() {
+    let days = |expr: &str| {
+        json!({"declare": "type", "name": "t", "fields": [
+            {"name": "a", "type": {"kind": "date_time"}},
+            {"name": "days", "type": {"kind": "number"}, "authority": "derived", "derived": expr}]})
+    };
+    let (whole, exact) = (days("floor((now() - a) / 1d)"), days("(now() - a) / 1d"));
+    let need = |d: &serde_json::Value| needed(&declared_event(11, d).body, false);
+    assert_eq!((need(&whole), need(&exact)), (11, 1));
+    assert_eq!(
+        below(&declared_event(10, &whole)).as_deref(),
+        Some("a format 10 event declares a call of `floor`, which format 11 added")
+    );
+    // A bucket by a width is format 11's; by a calendar unit it stays 3's.
+    let (window, month) = (
+        days("date_bucket(a, 7d, a)"),
+        days("date_bucket(a, 'month')"),
+    );
+    assert_eq!((need(&window), need(&month)), (11, 3));
+    assert_eq!(
+        below(&declared_event(10, &window)).as_deref(),
+        Some(
+            "a format 10 event declares a call of `date_bucket` by a width, which format 11 added"
+        )
+    );
+    // A set that names a set is format 11's too.
+    let urgent = json!({"declare": "object_set", "name": "urgent", "of": "t",
+                        "where": "in_set('open')"});
+    assert_eq!(need(&urgent), 11);
+    assert_eq!(
+        below(&declared_event(10, &urgent)).as_deref(),
+        Some("a format 10 event declares a call of `in_set`, which format 11 added")
+    );
+}
+
+#[test]
+fn a_record_event_that_carries_made_needs_format_11_and_says_so_below_it() {
+    let record = |kind: &str, made: bool| {
+        let mut body = json!({"kind": kind, "type": "note", "key": "k", "version": 4});
+        body["patch"] = json!({"f": 1});
+        if made {
+            body["made"] = json!(true);
+        }
+        body
+    };
+    for kind in ["record_upserted", "record_ingested"] {
+        assert_eq!(needed(&event_json(11, record(kind, true)).body, false), 11);
+        assert_eq!(
+            below(&event_json(10, record(kind, true))).as_deref(),
+            Some("a format 10 event carries `made`, which format 11 added")
+        );
+        // A change says nothing, needs nothing, and is written without it.
+        let changed = event_json(1, record(kind, false));
+        let written = serde_json::to_string(&changed).unwrap();
+        assert!(needed(&changed.body, false) == 1 && !written.contains("made"));
+    }
+}
+
+#[test]
+fn a_declared_initial_value_needs_format_11_and_says_so_below_it() {
+    let f = |initial: bool| {
+        let mut f = json!({"name": "f", "type": {"kind": "text"}});
+        if initial {
+            f["initial"] = json!("new");
+        }
+        f
+    };
+    // Wherever a field is declared, though only a type's own may hold it.
+    let places = |i: bool| {
+        [
+            json!({"declare": "type", "name": "t", "fields": [f(i)]}),
+            json!({"declare": "type", "name": "t", "fields": [],
+                   "relations": [{"name": "r", "target": "t", "fields": [f(i)]}]}),
+            json!({"declare": "verb", "name": "v", "on": "t", "risk": "low", "payload": [f(i)],
+                   "effect": "write", "set": [{"field": "f", "value": "'x'"}]}),
+            json!({"declare": "function", "name": "g", "backing": "expr", "expr": "f",
+                   "inputs": [f(i)]}),
+        ]
+    };
+    for (with, without) in places(true).iter().zip(&places(false)) {
+        assert_eq!(needed(&declared_event(11, with).body, false), 11, "{with}");
+        assert_eq!(
+            needed(&declared_event(1, without).body, false),
+            1,
+            "{without}"
+        );
+        assert_eq!(
+            below(&declared_event(10, with)).as_deref(),
+            Some("a format 10 event declares an `initial` value, which format 11 added")
+        );
+    }
+    let to = json!({"name": "t", "fields": [f(true)]});
+    let migrated = json!({"kind": "migrated", "migration": {"to": to}, "version": 2,
+                          "schema_hash": "0", "report_id": "r"});
+    assert_eq!(needed(&event_json(11, migrated).body, false), 11);
+    let declare = json!({"write": "declare", "declarations": [places(true)[0]]});
+    let proposed = json!({"kind": "write_proposed", "proposal": "p", "write": declare, "why": "w"});
+    assert_eq!(needed(&event_json(11, proposed).body, false), 11);
+}
+
+#[test]
+fn a_write_of_a_view_kept_setting_needs_format_11_and_says_so_below_it() {
+    let record = |kind: &str, key: &str| {
+        let patch = json!({"key": key, "value": true});
+        json!({"kind": kind, "type": "sys.setting", "key": key, "version": 1, "patch": patch})
+    };
+    let proposed = |ty: &str, key: &str| {
+        let write = json!({"write": "upsert", "type": ty, "key": key, "patch": {"value": true}});
+        json!({"kind": "write_proposed", "proposal": "p", "write": write, "why": "w"})
+    };
+    let need = |body: serde_json::Value| needed(&event_json(11, body).body, false);
+    let kept = "view_kept.totals";
+    for body in [
+        record("record_upserted", kept),
+        record("record_ingested", kept),
+        proposed("sys.setting", kept),
+    ] {
+        assert_eq!(need(body.clone()), 11, "{body}");
+        assert_eq!(
+            below(&event_json(10, body)).as_deref(),
+            Some("a format 10 event writes a `view_kept.` setting, which format 11 added")
+        );
+    }
+    // Any other setting, and a record of another type under that key.
+    assert_eq!(need(record("record_upserted", "sort_index.totals")), 1);
+    assert_eq!(need(proposed("note", kept)), 1);
+    let mut other = record("record_upserted", kept);
+    other["type"] = json!("note");
+    assert_eq!(need(other), 1);
+}
+
+#[test]
+fn a_proposed_migration_whose_report_restates_needs_format_11_and_says_so_below_it() {
+    let proposed = |restated: Option<serde_json::Value>| {
+        let mut report = json!({"type": "t", "from_schema_hash": "a", "to_schema_hash": "a",
+            "records_scanned": 0, "fields": [], "lossless": true, "report_id": "r"});
+        report["restated"] = restated.unwrap_or(json!([]));
+        let migration = json!({"to": {"name": "t", "fields": []}});
+        let write = json!({"write": "migrate", "migration": migration, "report": report});
+        json!({"kind": "write_proposed", "proposal": "p", "why": "w", "write": write})
+    };
+    let mark = json!([{"field": "f", "member": "sensitive", "was": true, "to": false}]);
+    let restates = event_json(11, proposed(Some(mark.clone())));
+    assert_eq!(needed(&restates.body, false), 11);
+    assert_eq!(
+        below(&event_json(10, proposed(Some(mark)))).as_deref(),
+        Some(
+            "a format 10 event proposes a migration whose report holds `restated`, which format \
+             11 added"
+        )
+    );
+    // One that restates nothing needs what it did, and is written without it.
+    let plain = event_json(4, proposed(None));
+    let written = serde_json::to_string(&plain).unwrap();
+    assert!(needed(&plain.body, false) == 4 && !written.contains("restated"));
 }

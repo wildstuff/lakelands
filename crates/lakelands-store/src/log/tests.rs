@@ -101,6 +101,7 @@ fn a_version_2_event_that_carries_upstream_or_declares_date_bucket_is_refused() 
         key: "k".into(),
         version: lakelands_api::Version(1),
         patch: [("f".into(), json!(1))].into(),
+        made: false,
     });
     ingested.upstream = Some(lakelands_api::Upstream {
         lake: "other".into(),
@@ -137,6 +138,7 @@ fn a_version_1_event_that_carries_rekeyed_is_refused() {
         migration: lakelands_api::write::Migration {
             to: serde_json::from_value(json!({"name": "t"})).unwrap(),
             renames: vec![],
+            relation_renames: Vec::new(),
         },
         schema_hash: "h".into(),
         version: 2,

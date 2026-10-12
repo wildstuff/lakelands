@@ -55,6 +55,12 @@
 //! binds to the view parameter of that name; only a view's `where` and
 //! `measures` may call it, since only a view declares parameters.
 //!
+//! **Durations.** The difference of two instants is a duration. A
+//! duration divided by a duration is a number, so the days between two
+//! instants are `(paid_on - due_on) / 1d`, and the whole days
+//! `floor(...)` of it; a duration times or divided by a number is a
+//! duration. What an expression certainly computes is [`kind::of`].
+//!
 //! **Comparisons across kinds.** A comparison between values of kinds
 //! that do not compare — a number against text that is not a number, a
 //! boolean against anything but a boolean, a JSON value against anything
@@ -87,7 +93,12 @@ use crate::id::FieldName;
 
 mod parse;
 
+mod kept;
+pub mod kind;
+mod rewrite;
+pub use kept::keepable;
 pub use parse::{ParseError, arity, func_name, parse, print};
+pub use rewrite::{expand, rewrite};
 
 /// An expression in the one grammar, typed. A member this form does not
 /// know is refused, never ignored.
@@ -239,6 +250,12 @@ pub enum Func {
     /// that name. Only a view's `where` and `measures` may call it. Format 8
     /// (`docs/log-format.md` §6).
     Param,
+    /// `in_set('name')`: whether the named object set's filter holds for
+    /// the record: the filter in the call's place, bound when the
+    /// condition is read, never stored membership. In an object set's
+    /// `where`, a trigger's `when` and a read's `where`. Format 11
+    /// (`docs/log-format.md` §6).
+    InSet,
     /// `changed(field)`: in a guard, whether the write changes the field.
     Changed,
     /// `retired()`: in a trigger's guard, whether the write retires the
@@ -274,12 +291,17 @@ pub enum Func {
     Abs,
     /// `round(n, digits)`.
     Round,
+    /// `floor(n)`: the greatest whole number not above `n`, as in the
+    /// whole days of `floor((now() - due_on) / 1d)`.
+    Floor,
     /// `date_bucket(x, 'unit')`: the instant, in UTC, at which the bucket
     /// holding `x` starts; `unit` is `'day'`, `'week'` (ISO, from Monday),
-    /// `'month'`, `'quarter'` or `'year'`. Null when `x` is not an
-    /// instant. A read's function only: it is refused in a declaration,
-    /// whose expressions the log keeps, until a format version admits it
-    /// (`docs/log-format.md` §6, Appendix B).
+    /// `'month'`, `'quarter'` or `'year'`. `date_bucket(x, 30d, origin)`:
+    /// the start of the window of that width holding `x`, the windows
+    /// counted from `origin` in both directions. Null when `x` or the
+    /// origin is not an instant. What a declaration, whose expressions
+    /// the log keeps, may call is the format's (`docs/log-format.md` §6,
+    /// Appendix B).
     DateBucket,
     /// `count(…)`: aggregate; see the module documentation.
     Count,
@@ -291,6 +313,18 @@ pub enum Func {
     Max,
     /// `avg(field)`: aggregate.
     Avg,
+}
+
+/// The expressions directly inside `e`, left to right.
+pub fn children(e: &Expr) -> impl Iterator<Item = &Expr> {
+    let (pair, list): ([Option<&Expr>; 2], &[Expr]) = match e {
+        Expr::Lit { .. } | Expr::Path { .. } => ([None, None], &[]),
+        Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => ([Some(lhs), Some(rhs)], &[]),
+        Expr::Neg { arg } | Expr::Not { arg } | Expr::IsNull { arg } => ([Some(arg), None], &[]),
+        Expr::And { args } | Expr::Or { args } | Expr::Call { args, .. } => ([None, None], args),
+        Expr::In { arg, list } => ([Some(arg), None], list),
+    };
+    pair.into_iter().flatten().chain(list)
 }
 
 impl Func {

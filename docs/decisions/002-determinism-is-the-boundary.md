@@ -59,7 +59,8 @@ fold reads the log and the outputs recorded in it, and nothing else
 
 "The store never calls the seam again for the same input" holds for a
 replay and for every later event that touches the record. It has one
-deliberate exception: declaring the function or the type again retries
-a recorded failure once, and the later output holds
-(`docs/decisions/022-functions-are-declarations.md`, "Extended: a
-redeclaration retries a recorded failure").
+deliberate exception: a `declared` event of the function or the type
+retries a recorded failure once, and the later output holds. Since
+lakelands#565 the door `recompute` appends that event; a declaration in
+force appends none (`docs/decisions/022-functions-are-declarations.md`,
+"Extended: `recompute` computes again, and retries a recorded failure").

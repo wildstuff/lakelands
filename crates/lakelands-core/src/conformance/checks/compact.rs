@@ -196,11 +196,12 @@ async fn churned(store: &dyn LakeStore, embedded: bool, token: &str) -> Result<L
         .must("tightening `account_kind`")?;
     rekey::apply(store).await?;
     store.rebuild().await.must("rebuilding the projection")?;
+    crate::conformance::fixture::two_makes(&l).await?;
     Ok(l)
 }
 
-const TYPES: [&str; 8] = [
-    "person", "account", "payment", "entry", "invoice", "totals", "place", "note",
+const TYPES: [&str; 9] = [
+    "person", "account", "payment", "entry", "invoice", "totals", "place", "note", "mark",
 ];
 
 /// One answer as it serialises, or the refusal it was.

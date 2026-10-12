@@ -25,6 +25,15 @@ pub(crate) struct DeclaredType {
     pub decl: TypeDecl,
     pub version: u32,
     pub schema_hash: String,
+    /// Each field's `depends_on` as declared: the completed lists are made
+    /// again from them.
+    pub listed: Vec<Vec<FieldName>>,
+}
+
+/// A type's fields and its relations' link fields: all that may be computed.
+fn computed(t: &mut TypeDecl) -> impl Iterator<Item = &mut FieldDecl> {
+    let links = t.relations.iter_mut().flat_map(|r| r.fields.iter_mut());
+    t.fields.iter_mut().chain(links)
 }
 
 /// The lake as it stood at one position.
@@ -63,6 +72,7 @@ impl State {
             version,
             output: None,
             set_off: Default::default(),
+            renamed: Vec::new(),
         };
         match &e.body {
             EventBody::Declared {
@@ -102,26 +112,36 @@ impl State {
                         }
                     }
                 }
-                self.types.insert(
-                    ty.clone(),
-                    DeclaredType {
-                        decl: migration.to.clone(),
-                        version: *version,
-                        schema_hash: schema_hash.clone(),
-                    },
-                );
+                // As the store: a renamed relation's link records move to
+                // the link type of its new name, as they are.
+                for (old, new) in &migration.relation_renames {
+                    let (from, to) = (crate::links::name(ty, old), crate::links::name(ty, new));
+                    let moved: Vec<_> = (self.records.keys().filter(|k| k.0 == from))
+                        .cloned()
+                        .collect();
+                    for at in moved {
+                        if let Some(mut r) = self.records.remove(&at) {
+                            (r.ty, r.position) = (to.clone(), e.position);
+                            self.records.insert((to.clone(), at.1), r);
+                        }
+                    }
+                }
+                let to = Declaration::Type(migration.to.clone());
+                self.declare(&to, Some(schema_hash.clone()), *version);
             }
             EventBody::RecordUpserted {
                 ty,
                 key,
                 version,
                 patch,
+                made,
             }
             | EventBody::RecordIngested {
                 ty,
                 key,
                 version,
                 patch,
+                made,
             } => {
                 if matches!(e.body, EventBody::RecordIngested { .. }) {
                     self.ingested.insert(e.id.clone());
@@ -141,6 +161,11 @@ impl State {
                         restricted: false,
                     });
                 let field_meta = decl.as_ref().is_none_or(|d| d.field_meta);
+                // As the store: a record made again starts from no fields.
+                if *made {
+                    rec.fields.clear();
+                    rec.meta.clear();
+                }
                 let mut changed = Vec::new();
                 for (f, v) in patch {
                     if rec.fields.get(f) != Some(v) && !(v.is_null() && !rec.fields.contains_key(f))
@@ -155,6 +180,31 @@ impl State {
                         if field_meta {
                             rec.meta.insert(f.clone(), meta_of(e));
                         }
+                    }
+                }
+                // As the store (050): the event that makes a record fills
+                // each declared `initial` value its patch left out, with
+                // the origin `initial` and nothing of a source.
+                for f in decl.iter().flat_map(|d| &d.fields).filter(|_| *made) {
+                    let Some(v) = f
+                        .initial
+                        .as_ref()
+                        .filter(|_| !rec.fields.contains_key(&f.name))
+                    else {
+                        continue;
+                    };
+                    rec.fields
+                        .insert(f.name.clone(), crate::value::canonical(&f.ty, v));
+                    if field_meta {
+                        let filled = FieldMeta {
+                            origin: Origin::Initial,
+                            upstream: None,
+                            seen_at: None,
+                            source: None,
+                            procedure_version: None,
+                            ..meta_of(e)
+                        };
+                        rec.meta.insert(f.name.clone(), filled);
                     }
                 }
                 // A dependent field declared `clear` is cleared in the
@@ -195,11 +245,12 @@ impl State {
                         position: e.position,
                         proposer: e.writer.clone(),
                         proposed_at: e.known_at,
-                        write: write.clone(),
+                        write: Some(write.clone()),
                         why: why.clone(),
                         state: ProposalState::Pending,
                         decided_by: None,
                         reason: None,
+                        more: false,
                     },
                 );
                 self.remember(
@@ -232,14 +283,15 @@ impl State {
     pub(crate) fn declare(&mut self, d: &Declaration, schema_hash: Option<String>, version: u32) {
         match d {
             Declaration::Type(t) => {
-                self.types.insert(
-                    t.name.clone(),
-                    DeclaredType {
-                        decl: t.clone(),
-                        version,
-                        schema_hash: schema_hash.unwrap_or_default(),
-                    },
-                );
+                let mut decl = t.clone();
+                let mut held = DeclaredType {
+                    listed: computed(&mut decl).map(|f| f.depends_on.clone()).collect(),
+                    decl,
+                    version,
+                    schema_hash: schema_hash.unwrap_or_default(),
+                };
+                self.complete(&mut held.decl);
+                self.types.insert(t.name.clone(), held);
             }
             Declaration::Verb(v) => {
                 self.verbs.insert(v.name.clone(), v.clone());
@@ -256,10 +308,66 @@ impl State {
                 self.object_sets.retain(|x| x.name != s.name);
                 self.object_sets.push(s.clone());
             }
+            // As the store: a function's inputs are what its fields are
+            // computed from, so the types in force are completed again,
+            // from their lists as declared.
             Declaration::Function(f) => {
                 self.functions.retain(|x| x.name != f.name);
                 self.functions.push(f.clone());
+                for name in self.types.keys().cloned().collect::<Vec<_>>() {
+                    let mut held = self.types.remove(&name).expect("a type in force");
+                    for (f, declared) in computed(&mut held.decl).zip(&held.listed) {
+                        f.depends_on.clone_from(declared);
+                    }
+                    self.complete(&mut held.decl);
+                    self.types.insert(name, held);
+                }
             }
+        }
+    }
+
+    /// As the store: whether `d` is the declaration in force, a type in its
+    /// completed form. Such a declaration appends nothing.
+    pub(crate) fn in_force(&self, d: &Declaration) -> bool {
+        match d {
+            Declaration::Type(t) => {
+                let mut t = t.clone();
+                self.complete(&mut t);
+                self.types.get(&t.name).is_some_and(|held| held.decl == t)
+            }
+            Declaration::Verb(v) => self.verbs.get(&v.name) == Some(v),
+            Declaration::ValueType(v) => self.value_types.contains(v),
+            Declaration::Trigger(t) => self.triggers.contains(t),
+            Declaration::ObjectSet(s) => self.object_sets.contains(s),
+            Declaration::Function(f) => self.functions.contains(f),
+        }
+    }
+
+    /// As the store: a shape with every computed field's `depends_on`
+    /// holding each field it is computed from, what its expression reads or
+    /// its function's inputs; a field is read no further than those.
+    pub(crate) fn complete(&self, t: &mut TypeDecl) {
+        for f in computed(t).filter(|f| f.embed.is_none()) {
+            let function = f.function.as_deref();
+            let inputs = function.and_then(|n| self.functions.iter().find(|x| x.name == n));
+            let mut reads: Vec<FieldName> = match (inputs, &f.derived) {
+                (Some(func), _) => func.inputs.iter().map(|i| i.name.clone()).collect(),
+                (None, Some(e)) => {
+                    let mut paths = Vec::new();
+                    if let Ok(e) = crate::expr::typed(e) {
+                        crate::expr::paths(&e, &mut paths);
+                    }
+                    paths
+                        .into_iter()
+                        .filter_map(|p| p.first().cloned())
+                        .collect()
+                }
+                (None, None) => Vec::new(),
+            };
+            reads.retain(|r| !f.depends_on.contains(r));
+            reads.sort();
+            reads.dedup();
+            f.depends_on.extend(reads);
         }
     }
 
@@ -286,16 +394,35 @@ impl State {
             .map_or(Version(0), |r| r.version)
     }
 
-    /// A type the principal may see: declared, and holding at least one
-    /// grant for it. Anything else is absent, not forbidden.
+    /// A type the principal may see: declared, and its grants giving it
+    /// some access to the type or to one of its fields, a `sensitive`
+    /// field's raise not among them. Anything else is absent, not
+    /// forbidden. As the store (006, extended), a type made of another is
+    /// shown only with it: a link type with the type that declares its
+    /// relation and a view with each of its sources, whatever a grant on
+    /// its own name says.
     pub fn visible(&self, who: &Principal, ty: &TypeName) -> Option<&DeclaredType> {
-        self.types.get(ty).filter(|t| {
-            type_default(who, ty) != Access::None
-                || t.decl
-                    .fields
-                    .iter()
-                    .any(|f| who.grants.access(ty, &f.name) != Access::None)
-        })
+        let own = |t: &&DeclaredType| {
+            let d = &t.decl;
+            let given = |f| built_from(who, d, f, &mut Vec::new()).0 != Access::None;
+            type_default(who, &d.name) != Access::None || d.fields.iter().any(given)
+        };
+        let shown = self.types.get(ty).filter(own)?;
+        let (mut asked, mut next) = (vec![ty.clone()], vec![shown]);
+        while let Some(t) = next.pop() {
+            let owner = crate::links::parts(&t.decl.name).map(|p| p.0);
+            let sources = (t.decl.view.iter())
+                .flat_map(|v| std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source)));
+            for n in owner.iter().chain(sources) {
+                let Some(o) = self.types.get(n).filter(|_| !asked.contains(n)) else {
+                    continue;
+                };
+                own(&o).then_some(())?;
+                asked.push(n.clone());
+                next.push(o);
+            }
+        }
+        Some(shown)
     }
 
     /// A record as one principal may read it.
@@ -331,6 +458,9 @@ impl State {
             out.fields.retain(|f, _| declared(f));
             out.meta.retain(|f, _| declared(f));
             out.masked.retain(|f| declared(f));
+            // In the declaration's order, as the store lists them.
+            out.masked
+                .sort_by_key(|f| decl.fields.iter().position(|d| &d.name == f));
         }
         out
     }
@@ -364,6 +494,25 @@ fn access_seen<'d>(
     f: &'d FieldDecl,
     seen: &mut Vec<&'d FieldName>,
 ) -> Access {
+    let (a, from_source) = built_from(who, decl, f, seen);
+    // `sensitive` shows a field nobody granted or denied by name as masked;
+    // a `none` given by name, or handed down by a source, hides it.
+    let named = (who.grants.types.get(&decl.name)).is_some_and(|t| t.fields.contains_key(&f.name));
+    match a {
+        Access::None if f.sensitive && !named && !from_source => Access::Masked,
+        a => a,
+    }
+}
+
+/// A field's grant, lowered by each field it is built from that the
+/// principal may not read, and whether a source hid it: what a type is
+/// shown by, before `sensitive` raises anything.
+fn built_from<'d>(
+    who: &Principal,
+    decl: &'d TypeDecl,
+    f: &'d FieldDecl,
+    seen: &mut Vec<&'d FieldName>,
+) -> (Access, bool) {
     let mut a = who.grants.access(&decl.name, &f.name);
     let mut from_source = false;
     seen.push(&f.name);
@@ -378,6 +527,8 @@ fn access_seen<'d>(
         if let Some(source) = decl.fields.iter().find(|s| &s.name == name) {
             a = match access_seen(who, decl, source, seen) {
                 s if s.reads() => a,
+                // Its value stays hidden; its write stays the principal's.
+                _ if a.writes() => Access::WriteOnly,
                 Access::Masked if a.reads() => Access::Masked,
                 Access::Masked => a,
                 _ => {
@@ -388,13 +539,7 @@ fn access_seen<'d>(
         }
     }
     seen.pop();
-    // `sensitive` shows a field nobody granted or denied by name as masked;
-    // a `none` given by name, or handed down by a source, hides it.
-    let named = (who.grants.types.get(&decl.name)).is_some_and(|t| t.fields.contains_key(&f.name));
-    match a {
-        Access::None if f.sensitive && !named && !from_source => Access::Masked,
-        a => a,
-    }
+    (a, from_source)
 }
 
 /// The access a principal has to a type as a whole.

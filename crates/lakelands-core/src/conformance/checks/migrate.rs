@@ -179,6 +179,7 @@ async fn migrated_values_follow_the_conversion_table_and_renames_keep_them(
     let m = Migration {
         to,
         renames: vec![("title".into(), "heading".into())],
+        relation_renames: Vec::new(),
     };
     let report = preflight(store.as_ref(), &m).await?;
     cat.migrate_apply(own, m, &report.report_id)
@@ -208,7 +209,7 @@ check!(
 check!(
     /// The preflight names every field a migration drops.
     DROPPED_REPORTED = the_preflight_names_every_dropped_field_and_an_empty_type_migrates_cleanly,
-    "027 and MigrationReport.dropped: the preflight names every removed field with how many values it discards, and a type with no records reports nothing to lose"
+    "027 and MigrationReport.dropped: the preflight names every removed field with how many values it discards, and a type with no records reports nothing to lose; the report is lossless and the apply discards them"
 );
 
 check!(
@@ -356,6 +357,7 @@ async fn a_migration_taking_a_field_a_view_reads_is_refused(
         Migration {
             to: t,
             renames: vec![(from.into(), to.into())],
+            relation_renames: Vec::new(),
         }
     };
     let dropped = |t: &TypeDecl, name: &str| {
@@ -455,9 +457,9 @@ async fn the_preflight_names_every_dropped_field_and_an_empty_type_migrates_clea
     let m = migration(narrow.clone());
     let empty = preflight(store.as_ref(), &m).await?;
     ensure!(
-        empty.records_scanned == 0 && empty.fields.is_empty() && empty.lossless,
-        "the preflight over a type with no records must scan none, convert nothing \
-         and be lossless; it answered {empty:?}"
+        empty.records_scanned + empty.discards() == 0 && empty.fields.is_empty() && empty.lossless,
+        "the preflight over a type with no records must scan none, convert nothing, \
+         be lossless and discard nothing; it answered {empty:?}"
     );
 
     l.upsert("memo", "a", json!({"title": "A", "pages": 3, "ref": "x"}))
@@ -473,11 +475,18 @@ async fn the_preflight_names_every_dropped_field_and_an_empty_type_migrates_clea
         .collect();
     dropped.sort();
     ensure!(
-        dropped == [("pages".to_owned(), 2), ("ref".to_owned(), 1)] && report.records_scanned == 3,
-        "dropping `pages` (held by two records) and `ref` (held by one) must be \
-         reported as pages 2, ref 1 over three records; it reported {:?} over {}",
-        report.dropped,
-        report.records_scanned
+        dropped == [("pages".to_owned(), 2), ("ref".to_owned(), 1)]
+            && report.records_scanned == 3
+            && report.lossless
+            && report.discards() == 3,
+        "dropping `pages` (held by two records) and `ref` (held by one) must be reported as \
+         pages 2, ref 1 over three records, lossless, discarding 3; it reported {report:?}"
+    );
+    migrated(&l, m).await.must("the apply")?;
+    let a = l.read("memo", "a").await?.fields;
+    ensure!(
+        a.len() == 1 && a.get("title") == Some(&json!("A")),
+        "the apply discards what `dropped` counts: `a` must hold its title alone; it holds {a:?}"
     );
     Ok(())
 }

@@ -7,8 +7,10 @@
 //! lease it took, which it gives up when it is dropped. A handle opened
 //! read-only refuses the lease, every append and every seal.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
 
 use lakelands_api::engine::{
     CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
@@ -27,13 +29,20 @@ use crate::lease::{Held, LeaseFile};
 use crate::log::Log;
 use crate::projection::{self, MEMBERS, OUTPUTS, PROPOSALS};
 use crate::view::SqliteView;
-use crate::{NAME, invalid, lock, sql, unavailable};
+use crate::{NAME, invalid, io_error, lock, sql, unavailable};
 
 /// The open transaction of the fold: the latest position a put in it
 /// names, which the commit must reach.
 #[derive(Default)]
 struct Transaction {
     latest: Option<Position>,
+    /// The types declared in it, each with the position of its latest
+    /// declaration: the commit indexes their older records under it.
+    redeclared: BTreeMap<TypeName, Position>,
+    /// The types `put_record` indexed a record under: each read once in
+    /// the transaction, and all forgotten when a declaration or a
+    /// `sort_index.<type>` setting is put, which may change one.
+    kept: projection::Kept,
 }
 
 /// One handle onto a lake kept by the SQLite engine.
@@ -45,9 +54,12 @@ pub struct SqliteLake {
     lease_file: LeaseFile,
     held: Mutex<Option<Held>>,
     writer: Mutex<Option<Connection>>,
-    reader: Mutex<Connection>,
+    pub(crate) reader: Mutex<Connection>,
     transaction: Mutex<Option<Transaction>>,
 }
+
+/// How long a statement waits for another connection's lock.
+const BUSY: Duration = Duration::from_secs(10);
 
 /// Open a connection to the projection with the tuning for its role. A
 /// reader's connection is read-only: it never creates the file, never
@@ -65,9 +77,9 @@ fn connect(path: &std::path::Path, tuning: &SqliteTuning, writer: bool) -> Resul
     } else {
         tuning.reader_cache_kb
     };
+    conn.busy_timeout(BUSY).map_err(sql)?;
     conn.execute_batch(&format!(
-        "PRAGMA busy_timeout = 10000;
-         PRAGMA cache_size = -{cache};
+        "PRAGMA cache_size = -{cache};
          PRAGMA mmap_size = {};",
         u64::from(tuning.mmap_mb) * 1024 * 1024,
     ))
@@ -102,7 +114,7 @@ impl SqliteLake {
                     dir.display()
                 )));
             }
-            std::fs::create_dir_all(&dir).map_err(|e| crate::io_error("creating", &dir, e))?;
+            std::fs::create_dir_all(&dir).map_err(|e| io_error("creating", &dir, e))?;
         }
         check_name(&dir, &lake, create)?;
         let log = Log::open(&dir, create)?;
@@ -143,11 +155,6 @@ impl SqliteLake {
         })
     }
 
-    /// The reader connection.
-    pub(crate) fn reader(&self) -> Result<MutexGuard<'_, Connection>> {
-        Ok(lock(&self.reader))
-    }
-
     /// Run `f` on the writer connection; a handle opened read-only has
     /// none, and writes nothing.
     fn write<R>(&self, f: impl FnOnce(&Connection) -> Result<R>) -> Result<R> {
@@ -178,11 +185,18 @@ impl SqliteLake {
     /// this handle holds, or whose fencing token the lease file no longer
     /// records: the lock can be lost without the process knowing, and the
     /// token is what says so.
-    fn check_lease(&self, lease: &Lease) -> Result<()> {
+    ///
+    /// The answer is the lease this handle holds, locked: while the caller
+    /// keeps it, this handle cannot give the lease up, so the check and
+    /// what the caller then cuts and writes are one step. The lease
+    /// file's lock, which the lease held keeps from `take_lease` to its
+    /// release, lets no other handle take the lease meanwhile.
+    fn check_lease(&self, lease: &Lease) -> Result<MutexGuard<'_, Option<Held>>> {
         self.writable()?;
+        let held = lock(&self.held);
         let (fence, holder) = self.lease_file.current()?;
-        if lock(&self.held).as_ref().is_some_and(|h| h.lease == *lease) && fence == lease.fence {
-            return Ok(());
+        if held.as_ref().is_some_and(|h| h.lease == *lease) && fence == lease.fence {
+            return Ok(held);
         }
         Err(unavailable(if holder.is_empty() {
             format!(
@@ -198,6 +212,37 @@ impl SqliteLake {
         }))
     }
 
+    /// Run `write`, which adds imported events to the log and answers the
+    /// last one's position and fence: refused unless the log holds nothing
+    /// but imported events, and what it added is recorded in the lease
+    /// file.
+    fn importing<R>(
+        &self,
+        lease: &Lease,
+        write: impl FnOnce(&mut Log) -> Result<(R, Option<(u64, u64)>)>,
+    ) -> Result<R> {
+        let mut held = self.check_lease(lease)?;
+        let held = held
+            .as_mut()
+            .ok_or_else(|| unavailable("the lease is not held by this handle"))?;
+        let mut log = lock(&self.log);
+        log.refresh()?;
+        if let Some((tip, _)) = log.tip()
+            && self.lease_file.imported(held)? != Some(tip.0)
+        {
+            return Err(invalid(format!(
+                "the lake's log holds events up to position {tip} that were not imported; an \
+                 import goes only into a lake that holds nothing else, and nothing was \
+                 appended"
+            )));
+        }
+        let (answer, last) = write(&mut log)?;
+        if let Some((position, fence)) = last {
+            self.lease_file.record_import(held, position, fence)?;
+        }
+        Ok(answer)
+    }
+
     /// The projection's storage in bytes: `projection.db` and its
     /// write-ahead journal.
     fn size(&self) -> Result<u64> {
@@ -207,20 +252,20 @@ impl SqliteLake {
             .try_fold(0, |sum, p| match std::fs::metadata(p) {
                 Ok(m) => Ok(sum + m.len()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(sum),
-                Err(e) => Err(crate::io_error("measuring", p, e)),
+                Err(e) => Err(io_error("measuring", p, e)),
             })
     }
 
     /// Hold a put for the open transaction.
-    fn stage(&self, position: Position, f: impl FnOnce(&Connection) -> Result<()>) -> Result<()> {
+    fn stage(
+        &self,
+        position: Position,
+        f: impl FnOnce(&Connection, &mut Transaction) -> Result<()>,
+    ) -> Result<()> {
         let mut transaction = lock(&self.transaction);
-        let Some(t) = transaction.as_mut() else {
-            return Err(invalid(
-                "the projection is written inside a transaction: call `begin` first",
-            ));
-        };
+        let t = transaction.as_mut().ok_or_else(engines::unstaged)?;
         t.latest = t.latest.max(Some(position));
-        self.write(f)
+        self.write(|conn| f(conn, t))
     }
 }
 
@@ -236,10 +281,9 @@ fn check_name(dir: &std::path::Path, lake: &LakeId, create: bool) -> Result<()> 
             name.trim_end()
         ))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && create => {
-            std::fs::write(&path, format!("{lake}\n"))
-                .map_err(|e| crate::io_error("writing", &path, e))
+            std::fs::write(&path, format!("{lake}\n")).map_err(|e| io_error("writing", &path, e))
         }
-        Err(e) => Err(crate::io_error("reading", &path, e)),
+        Err(e) => Err(io_error("reading", &path, e)),
     }
 }
 
@@ -271,7 +315,9 @@ impl LakeEngine for SqliteLake {
         let taken = self.lease_file.take(holder)?;
         // What a writer that ended mid-append left uncommitted is cut off
         // before this one appends.
-        lock(&self.log).recover()?;
+        let mut log = lock(&self.log);
+        log.recover()?;
+        log.sweep()?;
         let lease = taken.lease.clone();
         *held = Some(taken);
         Ok(lease)
@@ -280,6 +326,16 @@ impl LakeEngine for SqliteLake {
     fn release_lease(&self, lease: &Lease) -> Result<()> {
         let mut held = lock(&self.held);
         if held.as_ref().is_some_and(|h| h.lease == *lease) {
+            // The writer leaves an empty journal behind. It does not wait
+            // for a reader that holds a snapshot of it, and a journal it
+            // could not truncate is no failure of the release: the next
+            // release, or `compact`, truncates it.
+            let _ = self.write(|conn| {
+                conn.busy_timeout(Duration::ZERO).map_err(sql)?;
+                let truncated = truncate_journal(conn);
+                conn.busy_timeout(BUSY).map_err(sql)?;
+                truncated
+            });
             self.lease_file
                 .release(held.take().expect("checked above"))?;
         }
@@ -293,43 +349,40 @@ impl LakeEngine for SqliteLake {
     }
 
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        self.check_lease(lease)?;
+        let _held = self.check_lease(lease)?;
         lock(&self.log).append(Some(lease.fence), events)
     }
 
     fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        self.check_lease(lease)?;
-        let mut held = lock(&self.held);
-        let held = held
-            .as_mut()
-            .ok_or_else(|| unavailable("the lease is not held by this handle"))?;
-        let mut log = lock(&self.log);
-        log.refresh()?;
-        if let Some((tip, _)) = log.tip()
-            && self.lease_file.imported(held)? != Some(tip.0)
-        {
-            return Err(invalid(format!(
-                "the lake's log holds events up to position {tip} that were not imported; an \
-                 import goes only into a lake that holds nothing else, and nothing was \
-                 appended"
-            )));
-        }
-        log.append(None, events)?;
-        match events.last() {
-            Some(last) => self
-                .lease_file
-                .record_import(held, last.position.0, last.fence),
-            None => Ok(()),
-        }
+        self.importing(lease, |log| {
+            log.append(None, events)?;
+            Ok(((), events.last().map(|e| (e.position.0, e.fence))))
+        })
     }
 
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
         lock(&self.log).read(from, limit)
     }
 
-    fn seal_segment(&self, lease: &Lease) -> Result<Option<SegmentDigest>> {
-        self.check_lease(lease)?;
-        lock(&self.log).seal()
+    fn seal_segment(
+        &self,
+        lease: &Lease,
+        imported: bool,
+        first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
+    ) -> Result<Option<SegmentDigest>> {
+        if !imported {
+            let _held = self.check_lease(lease)?;
+            return lock(&self.log).seal(Some(lease.fence), first);
+        }
+        self.importing(lease, |log| {
+            let mut last = None;
+            let sealed = log.seal(None, &mut |sealed| {
+                let events = first(sealed)?;
+                last = events.last().map(|e| (e.position.0, e.fence));
+                Ok(events)
+            })?;
+            Ok((sealed, last))
+        })
     }
 
     fn segments(&self) -> Result<Vec<SegmentDigest>> {
@@ -341,7 +394,7 @@ impl LakeEngine for SqliteLake {
     }
 
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
-        let folded = projection::folded(&*self.reader()?)?;
+        let folded = projection::folded(&lock(&self.reader))?;
         let at = engines::view_at(as_of, folded)?;
         Ok(Box::new(SqliteView { lake: self, at }))
     }
@@ -375,6 +428,9 @@ impl ProjectionStore for SqliteLake {
                 let _ = conn.execute_batch("ROLLBACK");
                 return Err(refused);
             }
+            for (ty, at) in &t.redeclared {
+                projection::index_older(conn, ty, *at)?;
+            }
             projection::set_folded(conn, through)?;
             projection::mark_sorted(conn, through)?;
             conn.execute_batch("COMMIT").map_err(sql)
@@ -387,7 +443,7 @@ impl ProjectionStore for SqliteLake {
     }
 
     fn folded_through(&self) -> Result<Option<Position>> {
-        projection::folded(&*self.reader()?)
+        projection::folded(&lock(&self.reader))
     }
 
     fn put_declaration(
@@ -403,16 +459,23 @@ impl ProjectionStore for SqliteLake {
             schema_hash: schema_hash.map(str::to_owned),
             since: at,
         };
-        self.stage(at, |conn| projection::put_declaration(conn, &d))
+        self.stage(at, |conn, t| {
+            t.kept.clear();
+            let redeclared = projection::put_declaration(conn, &d)?;
+            t.redeclared.extend(redeclared.map(|ty| (ty, at)));
+            Ok(())
+        })
     }
 
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
-        self.stage(record.position, |conn| projection::put_record(conn, record))
+        self.stage(record.position, |conn, t| {
+            projection::put_record(conn, &mut t.kept, record)
+        })
     }
 
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         let state = serde_json::to_string(proposal).expect("a proposal serialises");
-        self.stage(at, |conn| {
+        self.stage(at, |conn, _| {
             PROPOSALS.put(conn, &[&proposal.id.as_str()], at, &state)
         })
     }
@@ -425,20 +488,20 @@ impl ProjectionStore for SqliteLake {
         member: bool,
         at: Position,
     ) -> Result<()> {
-        self.stage(at, |conn| {
+        self.stage(at, |conn, _| {
             MEMBERS.put(conn, &[&set, &ty.as_str(), &key.as_str()], at, &member)
         })
     }
 
     fn put_output(&self, seam: &str, input: &Digest, output: &Value, at: Position) -> Result<()> {
         let state = serde_json::to_string(output).expect("a value serialises");
-        self.stage(at, |conn| {
+        self.stage(at, |conn, _| {
             OUTPUTS.put(conn, &[&seam, &input.0.as_str()], at, &state)
         })
     }
 
     fn mark_applied(&self, id: &EventId, at: Position) -> Result<()> {
-        self.stage(at, |conn| {
+        self.stage(at, |conn, _| {
             conn.prepare_cached("INSERT OR IGNORE INTO applied (id, at) VALUES (?1, ?2)")
                 .and_then(|mut s| s.execute(params![id.0, at.0 as i64]))
                 .map(|_| ())
@@ -558,7 +621,7 @@ impl VectorIndex for SqliteLake {
         query: &[f32],
         k: u32,
     ) -> Result<Vec<(RecordKey, f64)>> {
-        let conn = self.reader()?;
+        let conn = lock(&self.reader);
         let mut stmt = conn
             .prepare_cached(
                 "SELECT key, data FROM vectors WHERE ty = ?1 AND field = ?2 ORDER BY key",
@@ -574,12 +637,7 @@ impl VectorIndex for SqliteLake {
             let (key, data) = row.map_err(sql)?;
             let v = vector_of(&data);
             if v.len() != query.len() {
-                return Err(invalid(format!(
-                    "the query vector has {} dimensions, but `{ty}.{field}` holds vectors of {} \
-                     (record `{key}`)",
-                    query.len(),
-                    v.len()
-                )));
+                return Err(engines::dimensions(query.len(), v.len(), ty, field, &key));
             }
             top.push(
                 &RecordKey::from(key),
@@ -590,7 +648,7 @@ impl VectorIndex for SqliteLake {
     }
 
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64> {
-        self.reader()?
+        lock(&self.reader)
             .prepare_cached("SELECT count(*) FROM vectors WHERE ty = ?1 AND field = ?2")
             .and_then(|mut s| s.query_row(params![ty.as_str(), field], |r| r.get::<_, i64>(0)))
             .map(|n| n as u64)

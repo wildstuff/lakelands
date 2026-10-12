@@ -172,9 +172,10 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
             origin: WriteOrigin::Scheduled,
             depth: 0,
         },
+        followed: None,
     };
     let all = every(false);
-    let mut w = lake.writer();
+    let mut w = lake.for_write()?;
     let mut rules = lake
         .engine
         .view(None)?

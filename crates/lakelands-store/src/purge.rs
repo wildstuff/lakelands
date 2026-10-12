@@ -6,23 +6,31 @@
 //! of them came from the source. It is co-owned when a field that holds a value came from
 //! another hand, a principal's authored write or another source; a
 //! derived or system value (a computed field, a backed output, an aging
-//! move) is the lake's own and makes no owner. One co-owned record
+//! move) is the lake's own and makes no owner, and neither does a field
+//! that declares an `initial` value: the report's `moved` counts the
+//! records taken with an author's write in one. One co-owned record
 //! refuses the whole purge, and nothing is appended. A type that keeps no
 //! per-field provenance cannot be read this way; it is not searched, and
 //! the report names it.
+//!
+//! A purge may name one type. It then reads that type and the link types
+//! of the relations it declares, and judges co-ownership there alone: the
+//! unit that is never split is the record, not the source. A type it
+//! cannot purge from is refused, where the purge of a source whole passes
+//! over it.
 //!
 //! [`run`] holds the writer's lock for the whole purge and appends one
 //! `record_retired` per record, each reacting as a `retire` does, in one
 //! append: the act is one. That append is held in memory before it lands.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::engine::{After, ProjectionView, Scan};
-use lakelands_api::event::EventBody;
+use lakelands_api::engine::ProjectionView;
+use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::{Origin, StoredRecord, Value};
-use lakelands_api::write::{PurgeReference, PurgeReport, RecordRef, TypeRetired};
+use lakelands_api::write::{PurgeMoved, PurgeReference, PurgeReport, RecordRef, TypeRetired};
 use lakelands_api::{
-    FieldName, Position, RecordKey, RelationName, Result, SourceId, TypeName, Version, WriteContext,
+    FieldName, Position, RecordKey, RelationName, Result, SourceId, TypeName, WriteContext,
 };
 
 use lakelands_core::{invalid, links};
@@ -35,9 +43,6 @@ use crate::writes::{self, Call, Pending};
 /// How many co-owned records a refusal names, and how many referring
 /// records a report names per relation.
 const NAMED: usize = 10;
-
-/// The records of a type that can refer into a purge, read at a time.
-const PAGE: u32 = 1024;
 
 /// The fields of a type that name a record, each with the type named.
 type Names<'a> = Vec<(&'a FieldName, &'a TypeName)>;
@@ -55,9 +60,16 @@ fn brought_by(r: &StoredRecord, source: &SourceId) -> bool {
 
 /// Whether a field of `r` that holds a value came from another hand than
 /// `source`: a principal's write, or another source. A field cleared since
-/// holds no value and co-owns nothing.
-fn co_owned(r: &StoredRecord, source: &SourceId) -> bool {
-    r.fields.keys().any(|f| {
+/// holds no value and co-owns nothing, and neither does one that declares
+/// an `initial` value, whoever wrote it last: it is there because the
+/// record is (`docs/decisions/050-a-field-declares-its-initial-value.md`).
+fn co_owned(decl: &TypeDecl, r: &StoredRecord, source: &SourceId) -> bool {
+    let starts = |f: &FieldName| {
+        decl.fields
+            .iter()
+            .any(|d| &d.name == f && d.initial.is_some())
+    };
+    r.fields.keys().filter(|f| !starts(f)).any(|f| {
         r.meta.get(f).is_some_and(|m| match m.origin {
             Origin::Authored => true,
             Origin::Source => m.source.as_ref() != Some(source),
@@ -66,18 +78,41 @@ fn co_owned(r: &StoredRecord, source: &SourceId) -> bool {
     })
 }
 
-/// What a purge of `source` takes at `view`: its records, in type then
-/// key order, and the types it could not search. One co-owned record
-/// refuses it whole. The purge and its preflight both select here.
+/// The types a purge from `ty` reads: `ty` and the link types of the
+/// relations it declares, whose records are nothing without its own. A
+/// type that holds no records, or cannot say who brought them in, is
+/// refused.
+fn named(ontology: &Ontology, ty: &TypeName) -> Result<BTreeSet<TypeName>> {
+    let decl = ontology.ty(ty)?;
+    if decl.view.is_some() {
+        return Err(invalid(format!(
+            "`{ty}` is a view; it holds no records a purge could take"
+        )));
+    }
+    if !decl.field_meta {
+        return Err(invalid(format!(
+            "`{ty}` keeps no per-field provenance; a purge cannot read who brought its records in"
+        )));
+    }
+    let links = (decl.relations.iter()).map(|r| links::link_type_name(ty, &r.name));
+    Ok(links.chain([ty.clone()]).collect())
+}
+
+/// What a purge of `source` takes at `view`, from `ty` alone where one is
+/// named: its records, in type then key order, and the types it could
+/// not search. One co-owned record refuses it whole. The purge and its
+/// preflight both select here.
 fn selection(
     view: &dyn ProjectionView,
     ontology: &Ontology,
     source: &SourceId,
+    ty: Option<&TypeName>,
 ) -> Result<(Vec<StoredRecord>, Vec<TypeName>)> {
+    let only = ty.map(|t| named(ontology, t)).transpose()?;
     let (mut purged, mut unsearched, mut shared) = (Vec::new(), Vec::new(), Vec::new());
     for (name, entry) in &ontology.types {
         let decl = &entry.decl;
-        if decl.view.is_some() {
+        if decl.view.is_some() || only.as_ref().is_some_and(|o| !o.contains(name)) {
             continue;
         }
         if !decl.field_meta {
@@ -88,7 +123,7 @@ fn selection(
             if !brought_by(&r, source) {
                 continue;
             }
-            if co_owned(&r, source) {
+            if co_owned(decl, &r, source) {
                 shared.push(format!("`{}` `{}`", r.ty, r.key));
             } else {
                 purged.push(r);
@@ -98,8 +133,9 @@ fn selection(
     if !shared.is_empty() {
         let n = shared.len();
         shared.truncate(NAMED);
+        let from = ty.map(|t| format!(" from `{t}`")).unwrap_or_default();
         return Err(invalid(format!(
-            "the purge of `{source}` is refused whole: {n} record(s) it brought in were also \
+            "the purge of `{source}`{from} is refused whole: {n} record(s) it brought in were also \
              written by another hand (a principal, or another source), and a purge never \
              half-removes a record; retire them or clear those fields, then purge again. \
              First: {}",
@@ -116,7 +152,7 @@ fn selection(
 fn report<'a>(
     view: &dyn ProjectionView,
     ontology: &'a Ontology,
-    source: &SourceId,
+    (source, ty): (&SourceId, Option<&TypeName>),
     purged: &[StoredRecord],
     unsearched: Vec<TypeName>,
 ) -> Result<PurgeReport> {
@@ -129,6 +165,25 @@ fn report<'a>(
                 ty: r.ty.clone(),
                 retired: 1,
             }),
+        }
+    }
+    // What an author wrote in a record the purge takes is a field with an
+    // `initial` value: any other would have refused the purge.
+    let mut moved: BTreeMap<(&TypeName, &FieldName), PurgeMoved> = BTreeMap::new();
+    for r in purged {
+        let authored =
+            |f: &&FieldName| r.meta.get(*f).is_some_and(|m| m.origin == Origin::Authored);
+        for f in r.fields.keys().filter(authored) {
+            let m = moved.entry((&r.ty, f)).or_insert_with(|| PurgeMoved {
+                ty: r.ty.clone(),
+                field: f.clone(),
+                records: 0,
+                first: Vec::new(),
+            });
+            m.records += 1;
+            if m.first.len() < NAMED {
+                m.first.push(r.key.clone());
+            }
         }
     }
     let inside = |target: &TypeName, v: Option<&Value>| {
@@ -145,12 +200,11 @@ fn report<'a>(
         let mut found: Vec<(PurgeReference, Names<'a>)> = Vec::new();
         let mut names = |ty: TypeName, relation: RelationName, fields: Names<'a>| {
             if fields.iter().any(|(_, target)| reached(target)) {
-                let (records, first) = (0, Vec::new());
                 let at = PurgeReference {
                     ty,
                     relation,
-                    records,
-                    first,
+                    records: 0,
+                    first: Vec::new(),
                 };
                 found.push((at, fields));
             }
@@ -169,101 +223,96 @@ fn report<'a>(
         if found.is_empty() {
             continue;
         }
-        let mut scan = Scan {
-            limit: PAGE,
-            ..every(false)
-        };
-        loop {
-            let rows = view.scan(name, &scan)?;
-            for r in &rows {
-                if taken.contains(&(name, &r.key)) {
-                    continue;
-                }
-                for (at, fields) in &mut found {
-                    if fields.iter().any(|(f, t)| inside(t, r.fields.get(*f))) {
-                        at.records += 1;
-                        if at.first.len() < NAMED {
-                            at.first.push(RecordRef {
-                                ty: r.ty.clone(),
-                                key: r.key.clone(),
-                            });
-                        }
+        writes::live(view, name, |r| {
+            if taken.contains(&(name, &r.key)) {
+                return Ok(());
+            }
+            for (at, fields) in &mut found {
+                if fields.iter().any(|(f, t)| inside(t, r.fields.get(*f))) {
+                    at.records += 1;
+                    if at.first.len() < NAMED {
+                        at.first.push(RecordRef {
+                            ty: r.ty.clone(),
+                            key: r.key.clone(),
+                        });
                     }
                 }
             }
-            match rows.last() {
-                Some(last) if rows.len() == PAGE as usize => {
-                    scan.after = Some(After {
-                        values: Vec::new(),
-                        key: last.key.clone(),
-                    })
-                }
-                _ => break,
-            }
-        }
+            Ok(())
+        })?;
         references.extend(found.into_iter().map(|f| f.0).filter(|f| f.records > 0));
     }
     references.sort_by(|a, b| (&a.ty, &a.relation).cmp(&(&b.ty, &b.relation)));
     Ok(PurgeReport {
         source: source.clone(),
+        ty: ty.cloned(),
         retired: purged.len() as u32,
         types,
         unsearched,
         position: view.position().unwrap_or(Position::GENESIS),
         references,
+        moved: moved.into_values().collect(),
         report_id: String::new(),
     })
 }
 
-/// The id of the preflight of a purge of `source` read at `head`: the
-/// report is a function of the two, so a purge that repeats it at
-/// another head is stale.
-fn id(source: &SourceId, head: Option<Position>) -> String {
-    let head = head.map_or(0, |p| p.0);
-    lakelands_core::canonical::sha256_hex(&serde_json::json!({"purge": source, "head": head}))
+/// The id of the preflight of a purge of `source`, from `ty` where one is
+/// named, read at `head`: the report is a function of the three, so a
+/// purge that repeats it at another head, or is another purge, does not
+/// fit it.
+fn id(source: &SourceId, ty: Option<&TypeName>, head: Option<Position>) -> String {
+    let of = serde_json::json!({"purge": source, "type": ty, "head": head.map_or(0, |p| p.0)});
+    lakelands_core::canonical::sha256_hex(&of)
 }
 
 /// What [`run`] would do, appending nothing, under the id a purge may
 /// repeat.
-pub fn preflight(lake: &Lake, source: &SourceId) -> Result<PurgeReport> {
+pub fn preflight(lake: &Lake, source: &SourceId, ty: Option<&TypeName>) -> Result<PurgeReport> {
     let view = lake.engine.view(None)?;
-    let ontology = Ontology::from_declared(&view.declarations()?);
-    let (purged, unsearched) = selection(view.as_ref(), &ontology, source)?;
-    let mut report = report(view.as_ref(), &ontology, source, &purged, unsearched)?;
-    report.report_id = id(source, view.position());
+    let ontology = Ontology::at(view.as_ref())?;
+    let (purged, unsearched) = selection(view.as_ref(), &ontology, source, ty)?;
+    let mut report = report(view.as_ref(), &ontology, (source, ty), &purged, unsearched)?;
+    report.report_id = id(source, ty, view.position());
     Ok(report)
 }
 
-/// Retire every live record `source` brought in, in one append; with a
-/// preflight's `report_id`, only if the lake has not moved since.
-pub fn run(lake: &Lake, source: &SourceId, report_id: Option<&str>) -> Result<PurgeReport> {
+/// Retire every live record `source` brought in, into `ty` alone where
+/// one is named, in one append; with a preflight's `report_id`, only if
+/// that report is of this purge and the lake has not moved since.
+pub fn run(
+    lake: &Lake,
+    source: &SourceId,
+    ty: Option<&TypeName>,
+    report_id: Option<&str>,
+) -> Result<PurgeReport> {
     let system = lake.system("lakelands");
     let call = Call {
         lake,
         who: &system,
         context: WriteContext::default(),
+        followed: None,
     };
-    let mut w = lake.writer();
+    let mut w = lake.for_write()?;
     let view = lake.engine.view(None)?;
-    if report_id.is_some_and(|given| given != id(source, view.position())) {
+    if report_id.is_some_and(|given| given != id(source, ty, view.position())) {
         return Err(invalid(
-            "the lake moved since that preflight report; run the preflight again",
+            "that report is not of this purge at this head; run the preflight again",
         ));
     }
-    let (purged, unsearched) = selection(view.as_ref(), &w.ontology, source)?;
-    let mut report = report(view.as_ref(), &w.ontology, source, &purged, unsearched)?;
+    let (purged, unsearched) = selection(view.as_ref(), &w.ontology, source, ty)?;
+    let mut report = report(
+        view.as_ref(),
+        &w.ontology,
+        (source, ty),
+        &purged,
+        unsearched,
+    )?;
     let now = lake.clock(&mut w);
     let mut pending = Pending::default();
     let mut drafts = Vec::new();
     for before in purged {
-        let d = Draft::system(
-            now,
-            EventBody::RecordRetired {
-                ty: before.ty.clone(),
-                key: before.key.clone(),
-                version: Version(before.version.0 + 1),
-            },
-        );
+        let body = writes::retirement(&before.ty, &before.key, before.version);
+        let d = Draft::system(now, body);
         let at = writes::position_after(&w, drafts.len());
         drafts.extend(call.retiring(&w, view.as_ref(), &mut pending, &before, d, at, now)?);
     }

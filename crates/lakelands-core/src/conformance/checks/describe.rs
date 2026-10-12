@@ -19,16 +19,20 @@ use lakelands_api::ontology::{
 use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl};
 use std::sync::Arc;
 
-use lakelands_api::{Access, Catalog, LakeStore, Principal, ReadAt};
+use lakelands_api::{Access, Catalog, Grants, LakeStore, Principal, PrincipalKind, ReadAt};
+use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::backing::EMBED_MODEL;
-use crate::conformance::fixture::{Must, doors, field, field_access, owner, type_decl, view_of};
+use crate::conformance::fixture::{
+    Must, all, describe_type, doors, field, field_access, owner, principal, type_decl, upsert,
+    view_of,
+};
 
 check!(
     /// `describe` answers the declaration whole.
     DESCRIBE_IS_THE_DECLARATION = describe_answers_the_declaration_whole,
-    "014 and 024: for the owner, a described type projects back onto its declaration byte for byte — every field's function, embedding, searchable, sensitive, label and description, and the type's label, language and view; a masked field shows its shape only; functions, triggers, object sets and views are answered as declared, to a principal who reads every field they name or holds the schema grant, as in force at the read position",
+    "014 and 024: for the owner, a described type projects back onto its declaration byte for byte — every field's function, embedding, initial value, searchable, sensitive, label and description, and the type's label, language and view; a masked field shows its shape only, without its initial value (050); functions, triggers, object sets and views are answered as declared, to a principal who reads every field they name or holds the schema grant, as in force at the read position; a type that is shown is one its principal may find and get, also where every field is masked",
     embedding
 );
 
@@ -47,13 +51,16 @@ fn ledger() -> TypeDecl {
     title.required = true;
     let mut body = described("body", "Body", StorageKind::Text);
     body.searchable = true;
+    body.initial = Some(serde_json::json!("none"));
     let net = described("net", "Net", StorageKind::Number);
     let mut gross = described("gross", "Gross", StorageKind::Number);
     gross.authority = Authority::Derived;
     gross.function = Some("scaled".into());
+    gross.depends_on = vec![net.name.clone()];
     let mut doubled = described("doubled", "Doubled", StorageKind::Number);
     doubled.authority = Authority::Derived;
     doubled.derived = Some(Condition::from("net + net"));
+    doubled.depends_on = vec![net.name.clone()];
     let mut vec = described("vec", "Vector", StorageKind::Vector);
     vec.ty = FieldType {
         dimensions: Some(2),
@@ -66,9 +73,11 @@ fn ledger() -> TypeDecl {
     });
     let mut salary = described("salary", "Salary", StorageKind::Number);
     salary.sensitive = true;
+    salary.initial = Some(serde_json::json!(0));
     let mut bonus = described("bonus", "Bonus", StorageKind::Number);
     bonus.authority = Authority::Derived;
     bonus.function = Some("tenth".into());
+    bonus.depends_on = vec![salary.name.clone()];
     TypeDecl {
         language: Some("en".into()),
         label: Some("Ledger".into()),
@@ -151,6 +160,7 @@ fn field_projected(f: &FieldDescription) -> FieldDecl {
         function: f.function.clone(),
         depends_on: f.depends_on.clone(),
         on_input_change: f.on_input_change,
+        initial: f.initial.clone(),
         sensitive: f.sensitive,
         searchable: f.searchable,
         description: f.description.clone(),
@@ -283,7 +293,8 @@ async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) -> Re
         &vec![first.clone(), tenth.clone()],
     )?;
 
-    // The clerk: the salary masked to its shape, and nothing that names it.
+    // The clerk: the salary masked to its shape, with the bonus computed
+    // from it, and nothing that names it.
     let who = clerk(store);
     let c = describe_at(cat, &who, ReadAt::default(), "describing as the clerk").await?;
     let t = one_type(&c, "ledger")?;
@@ -293,7 +304,7 @@ async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) -> Re
             .iter()
             .find(|d| d.name == f.name)
             .ok_or_else(|| Failure::new(format!("describe invents field `{}`", f.name)))?;
-        if f.name.as_str() == "salary" {
+        if ["salary", "bonus"].contains(&f.name.as_str()) {
             let shape = FieldDescription {
                 name: decl.name.clone(),
                 ty: decl.ty.clone(),
@@ -301,10 +312,10 @@ async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) -> Re
                 authority: decl.authority,
                 access: Access::Masked,
                 on_input_change: decl.on_input_change,
-                sensitive: true,
+                sensitive: decl.sensitive,
                 ..Default::default()
             };
-            same("the clerk's masked `salary`", f, &shape)?;
+            same(&format!("the clerk's masked `{}`", f.name), f, &shape)?;
         } else {
             same(
                 &format!("the clerk's `{}`", f.name),
@@ -344,5 +355,23 @@ async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) -> Re
         &one_type(&c, "pay_by_title")?.view,
         &None,
     )?;
+
+    // One shown the ledger who reads no field of it may find and get it:
+    // a record is its key, its version and what is withheld.
+    upsert(cat, &own, "ledger", "a", json!({"title": "rent", "net": 1})).await?;
+    let masked = Grants {
+        default: Access::Masked,
+        ..Grants::default()
+    };
+    let who = principal(store, PrincipalKind::Agent, "auditor", masked);
+    let may = describe_type(cat, &who, "ledger").await?.may;
+    let found = all(cat, &who, "ledger").await?;
+    let withheld = matches!(&found[..], [r] if r.fields.is_empty() && !r.masked.is_empty());
+    ensure!(
+        may.find && may.get && withheld,
+        "one shown the ledger with every field masked is answered its record with the \
+         masked list, so describe says it may find and get it; it says {may:?} and find \
+         answers {found:?}"
+    );
     Ok(())
 }

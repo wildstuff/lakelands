@@ -68,8 +68,9 @@ everything that names the records it moves:
   new key, or a record without a value for a new key field, make the
   migration not lossless;
 - every type whose key fields reference a re-keyed type, re-keyed with it
-  (link records, keyed by their two ends, are the common case); the
-  closure is computed with a visited set;
+  (link records, keyed by their two ends, are the common case), each
+  after the types its own key references (see "a key is made after the
+  keys it reads" below);
 - every reference value, in any type, that names a moved key.
 
 The moves are listed in the `migrated` event (`rekeyed`, log format
@@ -234,8 +235,10 @@ declared relations, and the link doors refuse a relation that is gone.
 That is what a removed field does to its values, so the preflight says
 it the same way: the relation is one entry in the report's `dropped`,
 named by the relation, with the number of its live links. A relation
-whose links are all unlinked removes nothing from the head and is not
-listed. The entry does not make the report lossy, as a removed field
+whose links are all unlinked removes nothing from the head; it is listed
+with none, as a field no record holds is, and so is a relation that is
+not carried by link records (lakelands#554, below: it used to be left
+out). The entry does not make the report lossy, as a removed field
 does not: removal is the migration's intent, named before it is applied.
 
 A relation removed and another added is that and nothing more: the old
@@ -269,6 +272,77 @@ field a hidden one is built from is refused on the field it removes,
 saying only that another field reads it. A masked or a write-only field
 is shown to the principal, and stays its to remove.
 
+## Extended: a proposed migration is listed as its reader may know it (lakelands#499)
+
+A proposed migration holds the type's whole shape and the preflight's
+report. `proposals` already showed `to` without the fields its reader
+may not know of. The rest named them still: a rename's old name, a
+dropped field or link field in the report, a re-keyed type the reader
+may not see, a reference field of such a type. Each is now shown where
+its reader may see the type and may know of the field:
+
+- **`renames`**: a pair whose old name the reader may know of in the
+  type as it stands, and whose new name is in `to` as shown.
+- **`dropped` and `fields`**: an entry for a field, or a link field
+  named `relation.field`, the reader may know of in the type as it
+  stands.
+- **`rekeyed`**: the types the reader may see.
+- **`references`**: the fields the reader may know of, of types it may
+  see.
+
+The totals, `lossless`, the two schema hashes and the report's id stay
+whole, and the entry says `more` when anything was left out
+(`docs/decisions/013-verbs-run-by-declared-risk.md`, extended). A
+logged report is lossless, so it names no record that would not convert
+or would collide. A migration of a type its reader may not see is
+listed without its write.
+
+## Extended: a report is answered as its reader may know it (lakelands#531)
+
+The listing was one of five places that answer a migration's report. The
+preview answers one, and a migration that is not lossless is refused
+with one, to whoever proposes, applies or accepts it. Those four gave
+the report whole: a field hidden from an accepter with its kinds, its
+counts and its sample keys; the key of a restricted record to a reader
+without the grant; a type the reader may not see among the re-keyed
+types, the rewritten references and the colliding keys.
+
+One function trims a report now, and all five places call it. The rule
+is the listing's, with two members that only a report that is not
+lossless holds, and such a report is never logged:
+
+- **`sample_keys`**: the keys of records the reader is answered. A
+  restricted record's key leaves them for a reader without the grant;
+  the counts stay whole.
+- **`sample_collisions`**: the keys of types the reader may see. A key
+  is shown to whoever may see its type.
+
+**`more`.** A report says `more` when it holds more than its reader is
+shown, and nothing else of it. A reader told that a migration is not
+lossless, and shown no misfit, reads `more`: the reason lies where it
+may not look, and one who may see it reads why. The refusal keeps its
+kind. A logged and a stored report never say it, so a `write_proposed`
+event and a projection row stay what they are.
+
+**The id names the whole report.** A preview read trimmed is applied by
+the id it carried, and the apply is refused or applied as for the whole
+report: the trim changes what is read, not what is decided.
+
+**An author is a reader like any other.** Its migration is completed
+with the fields hidden from it, and the report is made over the whole;
+what it may not see, it is not answered, in its own preview too.
+
+**One who may not see the migrated type is answered no name.** A
+reviewer may accept a migration of a type it may not see, by its id. If
+that accept is refused as not lossless, the report's `type` is the empty
+name, which no type's is, every list is empty and `more` is true; the
+totals, the hashes and the id stay; and the refusal says that the
+migration would lose information, without the type's name. A refusal
+that named the type would say what the listing withholds.
+
+A relation the migration removes is listed under `dropped` by its own
+name, to one who sees the type.
+
 ## Extended: the order of refusals (lakelands#338)
 
 The migration doors refuse in this order, in the frame every write
@@ -299,3 +373,214 @@ no new one), and are stated, not checked; so are the report id against
 the fit of a value type, both `invalid` naming nothing a caller can
 tell apart.
 
+## Extended: a key is made after the keys it reads (lakelands#524)
+
+A type keyed by references to two types a re-key moves takes its new keys
+from both. Its keys were made when the first of the two had moved, in the
+order of the types' names, so a type whose name sorts before the second
+kept that one's old keys in its own: a link type, named `sys.link.…`,
+before any closure type whose name sorts after it. The fold rewrote the
+reference, the key stayed, and a link whose key is not what its ends make
+is found from neither end. The preflight had called it lossless.
+
+So the order is the one the keys need, not the one the names have:
+
+- **A type's keys are made after those of every type its key references.**
+  The types a re-key can reach are read from the declarations. Each waits
+  until every other type its key references has its moves, and is then
+  read once, and only if one of them moved anything. The report lists the
+  types in that order.
+- **Keys made of each other are refused.** A type keyed by a reference to
+  itself, or types keyed by each other, have no such order: a key would
+  have to be made from a key that is still to move. A re-key that would
+  move them is refused as invalid, naming them, and appends nothing. A
+  lake holds no record in a ring of two or more types, since the first
+  record of each would need a live record of the other; a type keyed by
+  itself holds records only when it was re-keyed into that shape, and that
+  is what is refused.
+- **A renamed reference field is counted.** The report's `references`
+  count the values a re-key rewrites. For the migrated type they are read
+  under the name its records still hold, so a field the same migration
+  renames is listed, under its new name. The entry is answered to a
+  reader who may know of the field in the shape the migration leaves, as
+  a conversion is.
+
+Where the names' order was already the keys' order, the report keeps its
+rows and its id. Where it was not, the rows come in the new order, and a
+report made before is refused as stale at the apply.
+
+This repairs no lake. A `migrated` event lists its moves, and the fold
+applies exactly those: a lake re-keyed before this keeps what that re-key
+left, and a link record whose key is not what its `from` and `to` make
+is how such a lake is found.
+
+## Extended: a type its author is not shown is a type that is not declared (lakelands#538)
+
+A principal with the `schema` grant that is not shown a type could
+still learn of it, and change it. `add_field` told which of its names
+were fields. A migration of it with no field was applied. A trigger, a
+verb and an object set on it were declared, where the same on a name no
+type has were refused. Seven of these doors wrote an event.
+
+To its author such a type is one that is not declared:
+
+- **`add_field`, a migration, its preview, its apply and its proposal**
+  answer that there is no such type, as they do for a name no type has.
+- **A trigger, a verb and an object set on it,** declared, applied in a
+  set or proposed in a bundle, are refused as on a type that is not
+  declared, in the same words. The set is checked against the ontology
+  as its author is shown it, which no longer holds the type
+  (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+  extended).
+- **To declare the type itself is not granted,** and so is to propose
+  it. This is the one door that cannot hide that the name is taken: for
+  a free name it creates the type. The refusal names no field and tells
+  nothing else, and nothing is written.
+
+The test comes before the author's view is completed and before
+anything is appended. An accepter stays as it was: it may accept by its
+id a proposal on a type it is not shown, and the accept's answer names
+it nothing it may not know of.
+
+## Extended: a declaration in force appends nothing (lakelands#565)
+
+A host states its declarations again at every start. Each statement
+appended a `declared` with the next version, so the log grew with every
+start, and a declaration's version counted the starts instead of its
+changes: one function body declared six times stood at version 6 while
+the records it had computed named version 1.
+
+So a declaration that is the one in force is answered `applied` at the
+lake's head and appends nothing. Its version stays: a version counts a
+declaration's changes, and the times `recompute` appended it again (022).
+
+- **In force is judged in the form the lake keeps.** A type is compared
+  after the store has put back what its author may not see (024) and has
+  completed each computed field's `depends_on`; the type in force is held
+  the same way. So a computed field stated with no input and one stated
+  with the inputs `describe` shows are the same declaration. The lists
+  the type was declared with stay as they were.
+- **Every refusal comes first:** the context, the `schema` grant, the
+  author's view, the declaration's own checks, the binding of a model or
+  an executor. Only a declaration that would have been applied is
+  compared, so the rule never answers where a refusal was.
+- **A set is compared one declaration at a time, against the ontology in
+  force before it.** Its refusals are judged over the whole set, as
+  before. What differs is appended in the set's order, and what that
+  sets off happens: a recomputation, a set's memberships. A set wholly
+  in force is answered at the head.
+- **A proposal is recorded as before,** in force or not. When it is
+  accepted, the proposal is decided and what is in force at that moment
+  is not appended again, so an acceptance may append `write_accepted`
+  alone.
+- **Every kind:** a value type, a type, a function, a verb, a trigger,
+  an object set. A function with a backing and a type with a field
+  computed outside the lake are no exception (022).
+
+- **A migration to the type in force** (lakelands#577) is the same case:
+  its `to` is the type in force, judged the same way, and it renames
+  nothing. `migrate_apply` answers it `applied` at the head and appends
+  nothing, after every refusal, a stale report among them: the preflight
+  is made and its id compared as before, and answers as before. An
+  accepted proposal of one appends its acceptance alone. It used to
+  append a `migrated`, raise the version and read every record of the
+  type under the writer to change none. A value type's migration to
+  itself needs no rule: its preflight refuses it, there being nothing to
+  migrate.
+
+**What a declaration in force did besides its event, and no longer
+does.** None of it was a promise of this record:
+- An engine wrote the head index rows of the type's records again, and
+  PostgreSQL built the type's vector indexes again. They came out as they
+  were.
+- A function computed every live record of every type that names it
+  again. One that reads only its inputs changed nothing. One that reads
+  a setting or the clock took their values at the declaration, and one
+  with a backing called again for an input whose recorded output was a
+  failure.
+- A type with a field computed outside the lake was settled again: a
+  recorded failure was called again, and a field waiting for its backend
+  was made.
+
+Each of these now follows a declaration that differs from the one in
+force, or `recompute` (022), as the fold decides it from the `declared`
+event. The log format
+does not change, and a log that holds identical declarations folds as
+it did.
+
+## Extended: the report says every difference between the declaration in force and `to` (lakelands#554)
+
+A host built a migration's `to` from a reduced view of its type: the
+field named, its type, nothing else. The migration was applied and its
+report read `lossless: true` with nothing listed, and afterwards the
+field was no longer `sensitive`, no longer searchable, and had lost its
+label and annotations, as had the type its own. No value was handed out
+by it: a reader without the grant is not told a field exists once the
+mark is gone, where it was told of a masked one before. What went was
+the mask's notice, the search and the meaning, and no answer said so.
+The walk that followed found the same silence for most of a declaration:
+a field's authority, expression, function, `depends_on` and embedding,
+the type's key where no record moves, its valid-time fields, every
+member of a relation, an optional field or a relation added, and a
+relation removed that held no live link.
+
+**`to` stays whole.** A migration's `to` is a declaration, and a
+declaration is what it says (028). A `to` that kept what it leaves out
+would be partial, and could then take no mark away, since a mark left
+out and a mark set false are one form. So the remedy is the signal:
+**every difference between the declaration in force and `to` is in the
+report.**
+
+- **`fields`** says a field's type that changes and a `required` that
+  tightens, as before; **`dropped`** a removed field, and every removed
+  relation, with the number of its live links; **`relations`** a
+  renamed relation.
+- **`restated`** says every other member, one entry each:
+  `{field, member, was, to}`. It is the comparison of the two
+  declarations as they serialise, so the store keeps no list of
+  members, and one added to a declaration later is reported without a
+  line of code. `field` is left out for the type's own members, is a
+  field's name, a relation's name, or `relation.field` for a link
+  field; a field is compared with the one it takes its values from, so
+  a renamed field reads `name` from its old name to its new one. A
+  member left out reads null.
+- **A field or a relation `to` adds** is restated from null, in each
+  member it states otherwise than a bare declaration does, its name
+  first: a reviewer reads `sensitive`, or its absence, at the proposal.
+- **Both shapes are completed first** as one in force is (024,
+  extended): a `depends_on` the author leaves to the store restates
+  nothing.
+- **`lossless` keeps its meaning.** It speaks of stored values, and a
+  migration that only restates is lossless. Taking `sensitive` away is
+  a legitimate change and is not refused; the report is where it is said.
+
+**Rights.** An entry is answered as a conversion is: the type's own to
+one who may see the type, a field's to one who may know of the field
+and, where it was renamed, of the name it had. A member is shown as
+`describe` shows the field: one beyond its shape only to one who reads
+the field in `to` and as the type stands (024, lakelands#554 there). An
+author kept from a field restates nothing of it, since the
+field is put back as declared (lakelands#475, above). The preview, the
+refusal of a migration that is not lossless and a proposal's listing
+pass the one function that trims a report (lakelands#531, above); the
+feed and an export are the log as the host reads it, and carry the
+report whole.
+
+**The log.** A proposed migration is logged with its report, so with
+`restated`, which is left out when it is empty: a line of format
+version 11 (`docs/log-format.md` §6), whose reader below would take the
+proposal for one that restates nothing.
+
+**An accept restates what the proposal's report said, no more.** An
+accept already refused a migration proposed on another shape, by the
+schema hash, which covers a field's name, type and `required` alone. A
+mark set while the proposal waited, `sensitive` on a field the
+migration names without it, was taken away by the accept and shown to
+no one. The accept now compares what the migration would restate on the
+type as it stands with what its logged report restates, and refuses a
+difference as it refuses another shape: "changed since this migration
+was proposed; propose it again".
+
+A report's id names the whole report, so it differs from the id the
+same migration had before this: a preview is taken again, as after any
+change of the lake.

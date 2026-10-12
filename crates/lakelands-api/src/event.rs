@@ -27,8 +27,9 @@ use crate::write::{Declaration, Migration, ProposedWrite};
 /// version 6 a derived relation; version 7 a call of `retired` in a
 /// declaration; version 8 a view's `params` and a call of `param`, and a
 /// verb on its type; version 9 a view's `merge`; version 10 a proposed
-/// tightening of a value type (`docs/log-format.md` §6).
-pub const LOG_FORMAT_VERSION: u32 = 10;
+/// tightening of a value type; version 11 a call of `floor` in a
+/// declaration (`docs/log-format.md` §6).
+pub const LOG_FORMAT_VERSION: u32 = 11;
 
 /// The version a lake is created with and writes until it needs a newer
 /// one: a lake that never re-keys a type stays at version 1, byte for
@@ -171,6 +172,10 @@ pub enum EventBody {
         version: Version,
         /// The sparse patch.
         patch: Patch,
+        /// Whether the write found no live record under the key (format
+        /// version 11): with `version` 1 the first, above it made again.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        made: bool,
     },
     /// A write from a source, through `ingest`.
     RecordIngested {
@@ -183,6 +188,10 @@ pub enum EventBody {
         version: Version,
         /// The sparse patch.
         patch: Patch,
+        /// Whether the write found no live record under the key (format
+        /// version 11): with `version` 1 the first, above it made again.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        made: bool,
     },
     /// A record was retired.
     RecordRetired {

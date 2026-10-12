@@ -46,6 +46,8 @@ use lakelands_api::error::{Error, Result};
 use lakelands_api::location::{EngineConfig, Location};
 
 pub use handle::SqliteLake;
+#[doc(hidden)]
+pub use view::{first_page_statements, read_statements, seek_statements};
 
 /// The name the engine answers to, in [`EngineConfig::Sqlite`] and in
 /// [`LakeEngine::name`].

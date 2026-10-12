@@ -10,7 +10,7 @@
 //! head and keeps what the view's position could see. The vector index is
 //! exact: the true top `k` by cosine, ties by key.
 
-use lakelands_api::engine::{After, LakeEngine, Scan};
+use lakelands_api::engine::{After, LakeEngine, ProjectionStore, ProjectionView, Scan};
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{Position, RecordKey, TypeName};
 use lakelands_api::read::{Direction, Order, OrderBy};
@@ -30,6 +30,12 @@ engine_check!(
 );
 
 engine_check!(
+    /// A kept name answers as a stored type holding the same states.
+    KEPT_NAME = a_kept_name_answers_as_a_stored_type_holding_the_same_states,
+    "seams §ProjectionStore and lakelands#575: the same states put under a view's kept name, `sys:kept.<view>`, and under an ordinary one answer alike through `get`, `get_many`, a walk by key from `after` across batches, a page under a filter, in a field's order and under `equal`, and a count under each flag and under a filter, at the head and at an earlier position, over a key put thousands of times, keys first put after that position between older ones, and an ended, a retired and a restricted key; an output recorded as often is read at both"
+);
+
+engine_check!(
     /// Mixed kinds sort the same on every engine.
     MIXED_KINDS = mixed_kinds_sort_the_same_on_every_engine,
     "029: a scan orders numbers, then instants, then text, then booleans, then JSON, a missing value last in either direction, ties by key, so every engine puts the same records in the same places"
@@ -45,6 +51,13 @@ engine_check!(
     /// A key-ordered scan answers across its batches as one scan.
     KEY_BATCHES = a_key_ordered_scan_answers_across_its_batches_as_one_scan,
     "seams §scan and lakelands#134: a scan ordered by the key alone, read in batches from `after`, answers what one scan over every state answers, whatever its limit, its `after`, its flags and its filter, at the head and at an earlier position, however many rows each batch passes over"
+);
+
+engine_check!(
+    /// A page by key under an exact text reads from `after`, not every
+    /// match.
+    TEXT_PAGE = a_page_by_key_under_an_exact_text_reads_from_after_not_every_match,
+    "seams §scan and lakelands#574: a scan ordered by the key alone that must hold a text exactly, by a term of its filter or by `equal`, walked page by page from `after` and read whole, answers what one scan over every state answers, past records that hold the text and do not qualify (another term, retired, restricted) and a key that ended on both sides of a batch's end, over keys a database's collation orders otherwise than their bytes; a walk is handed at most twice the type's rows and a batch, not every record holding the text for each page, and a count no more rows than hold the text and a batch"
 );
 
 engine_check!(
@@ -147,7 +160,7 @@ engine_check!(
 engine_check!(
     /// A later output replaces an earlier one.
     LATER_OUTPUT_HOLDS = a_later_output_for_the_same_call_replaces_the_earlier_from_its_position,
-    "022, extended, and seams §ProjectionView: the log may hold two outputs for one seam and input (a failure, then the answer a redeclaration asked for); the later one holds from its position, the earlier one before it"
+    "022, extended, and seams §ProjectionView: the log may hold two outputs for one seam and input (a failure, then the answer a redeclaration asked for); the later one holds from its position, the earlier one before it; an output under the store's own seam name, `sys:renames`, is kept and answered as of a position like any other (lakelands#527)"
 );
 
 engine_check!(
@@ -390,6 +403,106 @@ fn a_key_ordered_scan_answers_across_its_batches_as_one_scan(
             }
         }
     }
+    Ok(())
+}
+
+fn a_page_by_key_under_an_exact_text_reads_from_after_not_every_match(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    const N: u64 = 4100;
+    const BATCH: u64 = 1024;
+    // Keys in three runs, which the bytes order `B`, `_`, `a` and a
+    // database's collation otherwise. All but two hold `v = 'a'`. On each
+    // side of the first batch's end, be it a batch of the type (after
+    // 1 023) or of the records holding the text (after 1 024): one that
+    // fails the filter's other term, a retired one, a restricted one, and
+    // a key that ended after it held the text.
+    let first: Vec<(StoredRecord, bool)> = (0..N)
+        .map(|i| {
+            let odd = (1020..=1028).contains(&i).then(|| (i - 1020) % 5);
+            let key = format!("{}{i:04}", ["B", "_", "a"][(i / 1367) as usize]);
+            let v = if i % 1500 == 1499 { "b" } else { "a" };
+            let n = if odd == Some(0) { -1 } else { 1 };
+            let mut r = record("t", &key, json!({"v": v, "n": n}), 1);
+            (r.retired, r.restricted) = (odd == Some(1), odd == Some(2));
+            (r, odd == Some(3))
+        })
+        .collect();
+    fold(engine, 1, |p| {
+        first.iter().try_for_each(|(r, _)| p.put_record(r))
+    })?;
+    let ended = |r: StoredRecord| StoredRecord::ended(r.ty, r.key, Position(2));
+    let states: Vec<StoredRecord> = (first.into_iter())
+        .map(|(r, ends)| if ends { ended(r) } else { r })
+        .collect();
+    fold(engine, 2, |p| {
+        (states.iter().filter(|r| r.is_ended())).try_for_each(|r| p.put_record(r))
+    })?;
+    let (ty, head) = (TypeName::from("t"), view(engine, None)?);
+    // The pages of a scan, each after the last key of the one before, and
+    // the rows the engine handed the rulebook for them all.
+    let walk = |mut scan: Scan, what: &str| -> Result<(), Failure> {
+        let mut read = 0;
+        loop {
+            let before = crate::engines::rows_read();
+            let page = head.scan(&ty, &scan).must(what)?;
+            read += crate::engines::rows_read() - before;
+            let whole = crate::engines::scan(None, &states, &scan);
+            ensure!(
+                keys(&page) == keys(&whole),
+                "{what}, after {:?}, answered {} rows, first {:?}, last {:?}; one scan over \
+                 every state answers {}, first {:?}, last {:?}",
+                scan.after.as_ref().map(|a| a.key.as_str()),
+                page.len(),
+                page.first().map(|r| r.key.as_str()),
+                page.last().map(|r| r.key.as_str()),
+                whole.len(),
+                whole.first().map(|r| r.key.as_str()),
+                whole.last().map(|r| r.key.as_str())
+            );
+            let Some(last) = page.last().filter(|_| page.len() as u64 == BATCH) else {
+                break;
+            };
+            scan.after = Some(After {
+                values: vec![],
+                key: last.key.clone(),
+            });
+        }
+        ensure!(
+            read <= 2 * N + BATCH,
+            "{what}, walked to its end, was handed {read} rows of a type of {N}; a page reads \
+             from `after` what fills it, at most a batch over, not every record holding the \
+             text for each page"
+        );
+        Ok(())
+    };
+    let filter = crate::expr::parse("v = 'a' and n >= 0").expect("the check's filter parses");
+    let equal = vec![("v".into(), json!("a"))];
+    let scan = scan_with(|s| s.filter = Some(filter));
+    let paged = |scan: Scan| Scan {
+        limit: BATCH as u32,
+        ..scan
+    };
+    walk(
+        paged(scan.clone()),
+        "pages by key under `v = 'a' and n >= 0`",
+    )?;
+    let by_equal = scan_with(|s| s.equal = equal);
+    walk(paged(by_equal.clone()), "pages by key with `equal`")?;
+    walk(by_equal, "a scan with `equal` and no limit")?;
+    let holding = (states.iter())
+        .filter(|r| r.fields.get("v") == Some(&json!("a")))
+        .count() as u64;
+    let selected = crate::engines::scan(None, &states, &scan).len() as u64;
+    let before = crate::engines::rows_read();
+    let counted = head.count(&ty, &scan).must("counting under the filter")?;
+    let read = crate::engines::rows_read() - before;
+    ensure!(
+        counted == selected && read <= holding + BATCH,
+        "a count under `v = 'a' and n >= 0` answered {counted} from {read} rows handed to the \
+         rulebook; its scan selects {selected}, and {holding} records hold the text: a count \
+         reads them once, at most a batch over"
+    );
     Ok(())
 }
 
@@ -845,6 +958,316 @@ fn a_record_put_after_a_redeclaration_in_the_same_transaction_is_indexed_under_i
     Ok(())
 }
 
+engine_check!(
+    /// A changed record is found by what it holds now, and by nothing else.
+    CHANGED_ROWS = a_changed_record_is_found_by_what_it_holds_now_and_read_no_more,
+    "seams §ProjectionStore, 025 and 041: after a record changes, the head indexes hold the rows of its latest state and no others: an exact text lookup, a search and a page in an indexed field's order answer by what it holds now, a field it cleared included, and an exact lookup hands the rulebook no record that matched only before, unless the engine keeps no index of exact text and reads the type for every lookup"
+);
+
+fn a_changed_record_is_found_by_what_it_holds_now_and_read_no_more(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    let t = declare(json!({
+        "declare": "type", "name": "t", "language": "en",
+        "fields": [
+            {"name": "a", "type": {"kind": "text"}},
+            {"name": "b", "type": {"kind": "text"}},
+            {"name": "same", "type": {"kind": "text"}},
+            {"name": "body", "type": {"kind": "text"}, "searchable": true}
+        ]
+    }));
+    let k1 = json!({"a": "x", "b": "y", "same": "s", "body": "river bank"});
+    fold(engine, 1, |p| {
+        p.put_declaration(&t, 1, None, Position(0))?;
+        p.put_record(&sort_setting(json!(["a"]), 1))?;
+        p.put_record(&record("t", "k1", k1, 1))?;
+        p.put_record(&record(
+            "t",
+            "k2",
+            json!({"a": "m", "b": "y", "body": "hill"}),
+            1,
+        ))
+    })?;
+    // `k1` changes `a` and a word of `body`, clears `b` and keeps `same`.
+    let k1 = json!({"a": "c", "same": "s", "body": "meadow bank"});
+    fold_one(engine, 2, record("t", "k1", k1, 2))?;
+    let (ty, head) = (TypeName::from("t"), view(engine, None)?);
+    // What an exact lookup answers, with the rows it handed the rulebook. A
+    // search may hand in any superset of its hits, so its rows are not
+    // counted.
+    let lookup = |filter: &str| -> Result<(Vec<String>, u64), Failure> {
+        let filter = crate::expr::parse(filter).expect("the check's filter parses");
+        let before = crate::engines::rows_read();
+        let scan = scan_with(|s| s.filter = Some(filter));
+        let rows = head.scan(&ty, &scan).must("an exact lookup")?;
+        Ok((keys(&rows), crate::engines::rows_read() - before))
+    };
+    let search = |text: &str| -> Result<(Vec<String>, u64), Failure> {
+        let hits = head.lexical(&ty, text, None, 10).must("searching")?;
+        Ok((hit_keys(&hits), 0))
+    };
+    let answers = [
+        ("a = 'x'", lookup("a = 'x'")?, vec![]),
+        ("a = 'c'", lookup("a = 'c'")?, vec!["k1"]),
+        ("b = 'y'", lookup("b = 'y'")?, vec!["k2"]),
+        ("river", search("river")?, vec![]),
+        ("meadow", search("meadow")?, vec!["k1"]),
+        ("bank", search("bank")?, vec!["k1"]),
+    ];
+    // An engine that keeps no index of exact text reads the type, both
+    // records, for every lookup.
+    let whole = answers[..3].iter().all(|(_, (_, rows), _)| *rows == 2);
+    for (asked, (keys, rows), must) in &answers {
+        ensure!(
+            keys == must && (whole || *rows <= must.len() as u64),
+            "`k1` changed `a` from `x` to `c` and `river bank` to `meadow bank`, cleared its \
+             `b`, which `k2` still holds as `y`, and kept `same`; `{asked}` answered {keys:?} \
+             from {rows} row(s) handed to the rulebook; it must answer {must:?} from no more \
+             rows than that, unless every lookup reads the type"
+        );
+    }
+    let by_a = scan_with(|s| s.order_by = vec![order("a", OrderBy::Value, Direction::Asc)]);
+    let page = keys(&head.scan(&ty, &by_a).must("a page ordered by `a`")?);
+    ensure!(
+        page == ["k1", "k2"],
+        "`k1` changed its `a` from `x` to `c`, before `k2`'s `m`; the page ordered by `a` \
+         answered {page:?}; it must be `k1` then `k2`"
+    );
+    Ok(())
+}
+
+engine_check!(
+    /// A transaction of many puts leaves what putting them one by one leaves.
+    MANY_PUTS = a_transaction_of_many_puts_leaves_what_putting_them_one_by_one_leaves,
+    "seams §ProjectionStore: an engine may write a transaction's puts before its commit, so a type's declaration is put before any record of the type at or after its position; a transaction of more than a page of puts (records below a declaration's position, the declaration, records after it, a record put again, a state put again at its position, a membership put twice, a `sort_index.<type>` setting after its records, a `vector_index.<type>` setting in its first page and one in its last, each with vectors put before and after the page between), over keys a database's collation orders otherwise than their bytes, leaves the head indexes, the earlier states, the memberships and the nearest vectors that putting them one by one leaves; a view opened in it after more than a page of its puts answers what was committed before it; one refused at its commit leaves nothing; and a type that holds an ended key is indexed whole when it is declared again; and the states of two records put record by record, below a declaration's position and at it, after the declaration, leave what position order leaves"
+);
+
+fn a_transaction_of_many_puts_leaves_what_putting_them_one_by_one_leaves(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    const N: u64 = 2_100;
+    let t = |searchable: bool| {
+        let under = json!([{"name": "under", "target": "t", "via": "up"}]);
+        declare(json!({
+            "declare": "type", "name": "t", "language": "en",
+            "fields": [{"name": "body", "type": {"kind": "text"}, "searchable": searchable},
+                       {"name": "v", "type": {"kind": "text"}},
+                       {"name": "up", "type": {"kind": "reference", "target": "t"}}],
+            "relations": if searchable { under } else { json!([]) }
+        }))
+    };
+    // Keys in three runs, which the bytes order `B`, `_`, `a` and a
+    // database's collation otherwise; the first and the last two are each
+    // more than a page, so a pass over the type by pages ends a page inside
+    // a run in either order.
+    let run = |i: u64| ["B", "_", "a"][usize::from(i >= 1_040) + usize::from(i >= 1_070)];
+    let (ty, key) = (TypeName::from("t"), |i: u64| format!("{}{i:04}", run(i)));
+    let state = |i: u64, at: u64| {
+        let fields = json!({"body": "river", "v": format!("{i:04}"), "up": key(0)});
+        record("t", &key(i), fields, at)
+    };
+    let member = |p: &dyn ProjectionStore, is: bool, at: u64| {
+        p.put_membership("s", &ty, &RecordKey::from(key(2)), is, Position(at))
+    };
+    // Two types with a vector field: `d`'s `vector_index` setting goes into
+    // the transaction's first page and `e`'s into its last, each with
+    // vectors put before and after the page between them.
+    let index = vectors(engine)?;
+    let vector = |p: &dyn ProjectionStore, ty: &str, key: &str, v: [f32; 2], at: u64| {
+        p.put_record(&record(ty, key, json!({"emb": v}), at))?;
+        index.put(&ty.into(), &key.into(), "emb", &v)
+    };
+    let asks = |ty: &str, at: u64| {
+        let key = format!("vector_index.{ty}");
+        let fields = json!({"key": key, "value": ["emb"]});
+        record(lakelands_api::seam::SETTING_TYPE, &key, fields, at)
+    };
+    // Folded through 1 with nothing put, so a view opened inside the next
+    // transaction has a position and reads; what it reads is asked there.
+    fold(engine, 1, |_| Ok(()))?;
+    let mut open = None;
+    fold(engine, 3, |p| {
+        for ty in ["d", "e"] {
+            let emb = json!([{"name": "emb", "type": {"kind": "vector", "dimensions": 2}}]);
+            let decl = declare(json!({"declare": "type", "name": ty, "fields": emb}));
+            p.put_declaration(&decl, 1, None, Position(1))?;
+            vector(p, ty, "east", [1.0, 0.0], 1)?;
+            vector(p, ty, "north", [0.0, 1.0], 1)?;
+        }
+        p.put_record(&asks("d", 1))?;
+        p.put_declaration(&t(false), 1, None, Position(1))?;
+        member(p, true, 1)?;
+        (0..N).try_for_each(|i| p.put_record(&state(i, 1)))?;
+        let (during, third) = (engine.view(None)?, RecordKey::from(key(3)));
+        let holds = crate::expr::parse("v = '0003'").expect("the check's filter parses");
+        open = Some((
+            during.get(&ty, &third)?.map(|r| r.key),
+            keys(&during.scan(&ty, &scan_with(|s| s.filter = Some(holds)))?),
+            during.members("s", &ty)?,
+        ));
+        drop(during);
+        // A state put again at its position, a page later, replaces the first.
+        p.put_record(&record("t", &key(1), json!({"body": "again"}), 1))?;
+        p.put_declaration(&t(true), 2, None, Position(2))?;
+        p.put_record(&record(
+            "t",
+            &key(0),
+            json!({"body": "hill", "v": "zzzz"}),
+            3,
+        ))?;
+        (N..N + 10).try_for_each(|i| p.put_record(&state(i, 3)))?;
+        member(p, false, 3)?;
+        vector(p, "d", "north-east", [1.0, 1.0], 3)?;
+        vector(p, "e", "north-east", [1.0, 1.0], 3)?;
+        p.put_record(&asks("e", 3))?;
+        p.put_record(&sort_setting(json!(["v"]), 3))
+    })?;
+    ensure!(
+        open == Some((None, vec![], Default::default())),
+        "a view opened in a transaction after more than a page of its puts read {open:?}: \
+         `{}`, the records holding `v = '0003'` and the members of `s`; nothing of them is \
+         committed, so it must answer none, none and none",
+        key(3)
+    );
+    // What the head answers: the search, a relation's edges, an exact
+    // lookup, a page in the indexed order.
+    let answers = |when: &str, rivers: u64| -> Result<(), Failure> {
+        let head = view(engine, None)?;
+        let found = |text: &str| head.lexical(&ty, text, None, 5_000).map(|h| hit_keys(&h));
+        let (river, hill) = (
+            found("river").must("searching")?,
+            found("hill").must("searching")?,
+        );
+        let from = [RecordKey::from(key(5))];
+        let out = lakelands_api::query::Walk::Out;
+        let edges = head.edges(&ty, &from, None, out).must("reading edges")?;
+        let exact = crate::expr::parse("v = '1099'").expect("the check's filter parses");
+        let exact = head.scan(&ty, &scan_with(|s| s.filter = Some(exact)));
+        let largest = [key(0), key(N + 9), key(N + 8)];
+        let by_v = scan_with(|s| {
+            s.order_by = vec![order("v", OrderBy::Value, Direction::Desc)];
+            s.limit = 3;
+        });
+        let page = keys(&head.scan(&ty, &by_v).must("a page ordered by `v`")?);
+        ensure!(
+            river.len() as u64 == rivers
+                && hill == [key(0)]
+                && edges.first().is_some_and(|e| e.len() == 1)
+                && keys(&exact.must("an exact lookup")?) == [key(1099)]
+                && page == largest,
+            "{when}: `river` is found in {} records ({rivers} hold it), `hill` in {hill:?} \
+             (`{}`); `{}` has {:?} edge(s) (one, to `{}`); the three largest `v` are {page:?} \
+             ({largest:?})",
+            river.len(),
+            key(0),
+            key(5),
+            edges.first().map(Vec::len),
+            key(0)
+        );
+        for vectors in ["d", "e"] {
+            let near = index.nearest(&vectors.into(), "emb", &[2.0, 0.0], 3);
+            let near = hit_keys(&near.must("searching the vectors")?);
+            ensure!(
+                near == ["east", "north-east", "north"],
+                "{when}: the nearest three of `{vectors}` to (2, 0) are {near:?} (`east`, \
+                 `north-east`, `north`)"
+            );
+        }
+        Ok(())
+    };
+    answers("after one transaction of more than a page of puts", N + 8)?;
+    let (at_one, head) = (view(engine, Some(Position(1)))?, view(engine, None)?);
+    let body = |v: &dyn ProjectionView, k: u64| -> Result<Option<Value>, Failure> {
+        let r = v
+            .get(&ty, &RecordKey::from(key(k)))
+            .must("reading a record")?;
+        Ok(r.and_then(|r| r.fields.get("body").cloned()))
+    };
+    let members = |v: &dyn ProjectionView| v.members("s", &ty).map(|m| m.len());
+    ensure!(
+        body(at_one.as_ref(), 0)? == Some(json!("river"))
+            && body(at_one.as_ref(), 1)? == Some(json!("again"))
+            && body(head.as_ref(), 0)? == Some(json!("hill"))
+            && members(at_one.as_ref()).must("reading the members")? == 1
+            && members(head.as_ref()).must("reading the members")? == 0,
+        "as of 1 `{0}` holds `river` and `{1}` the state put again there; at the head `{0}` \
+         holds `hill`; `{2}` is a member as of 1 and none at the head",
+        key(0),
+        key(1),
+        key(2)
+    );
+    drop((at_one, head));
+    // An ended key, then the type declared again: every record is indexed
+    // again, the ended key passed over.
+    fold_one(
+        engine,
+        4,
+        StoredRecord::ended(ty.clone(), key(7).as_str().into(), Position(4)),
+    )?;
+    fold(engine, 5, |p| {
+        p.put_declaration(&t(true), 3, None, Position(5))
+    })?;
+    answers("after an ended key and a redeclaration", N + 7)?;
+    // A transaction refused at its commit leaves nothing of its pages, seen
+    // once the projection is folded past the position they were put at.
+    let p = engine.projection();
+    p.begin().must("beginning a transaction")?;
+    (0..N)
+        .try_for_each(|i| p.put_record(&record("t", &format!("r{i:04}"), json!({}), 9)))
+        .must("putting more than a page of records")?;
+    let late = p.commit(Position(6));
+    fold(engine, 9, |_| Ok(()))?;
+    let left = view(engine, None)?.get(&ty, &RecordKey::from("r0000"));
+    ensure!(
+        crate::conformance::fixture::is_invalid(&late) && left.must("reading")?.is_none(),
+        "a commit through 6 of states valid from 9 answered {late:?}; it must be refused, \
+         and none of its {N} records stay"
+    );
+    // A declaration given first, then the states of two records, record by
+    // record, below its position and at it: what position order leaves.
+    let o = |searchable: bool| {
+        let body = json!({"name": "body", "type": {"kind": "text"}, "searchable": searchable});
+        declare(json!({"declare": "type", "name": "o", "language": "en", "fields": [body]}))
+    };
+    let state = |key: &str, body: &str, at: u64| record("o", key, json!({"body": body}), at);
+    fold(engine, 10, |p| {
+        p.put_declaration(&o(false), 1, None, Position(10))?;
+        p.put_record(&state("a", "river", 10))?;
+        p.put_record(&state("b", "river", 10))
+    })?;
+    fold(engine, 12, |p| {
+        p.put_declaration(&o(true), 2, None, Position(12))?;
+        p.put_record(&state("a", "hill", 11))?;
+        p.put_record(&state("a", "meadow", 12))?;
+        p.put_record(&state("b", "hill", 11))
+    })?;
+    let (head, o) = (view(engine, None)?, TypeName::from("o"));
+    let found = |text: &str| head.lexical(&o, text, None, 10).map(|h| hit_keys(&h));
+    let (meadow, hill, river) = (
+        found("meadow").must("searching")?,
+        found("hill").must("searching")?,
+        found("river").must("searching")?,
+    );
+    let then = |at: u64, key: &str| -> Result<Option<Value>, Failure> {
+        let v = view(engine, Some(Position(at)))?;
+        let r = v.get(&o, &RecordKey::from(key)).must("reading a record")?;
+        Ok(r.and_then(|r| r.fields.get("body").cloned()))
+    };
+    ensure!(
+        meadow == ["a"]
+            && hill == ["b"]
+            && river.is_empty()
+            && then(10, "a")? == Some(json!("river"))
+            && then(11, "a")? == Some(json!("hill"))
+            && then(12, "b")? == Some(json!("hill")),
+        "`o` was declared searchable at 12 before `a` was put at 11 and 12 and `b` at 11, in \
+         that order; `meadow` is found in {meadow:?} (`a`), `hill` in {hill:?} (`b`, whose \
+         head state lies below the declaration), `river` in {river:?} (none); as of 10, 11 \
+         and 12 a record holds the state put there"
+    );
+    Ok(())
+}
+
 fn vectors(engine: &dyn LakeEngine) -> Result<&dyn lakelands_api::engine::VectorIndex, Failure> {
     engine
         .vectors()
@@ -1070,11 +1493,12 @@ fn proposal(id: &str, position: u64, write: ProposedWrite, state: ProposalState)
         position: Position(position),
         proposer: "human:a".into(),
         proposed_at: Timestamp(0),
-        write,
+        write: Some(write),
         why: "review".into(),
         state,
         decided_by: None,
         reason: None,
+        more: false,
     }
 }
 
@@ -1208,25 +1632,29 @@ fn lexical_finds_every_token_the_pipeline_makes_beyond_ascii(
 fn a_later_output_for_the_same_call_replaces_the_earlier_from_its_position(
     engine: &dyn LakeEngine,
 ) -> Result<(), Failure> {
-    let failed = json!({"error": "timed out"});
-    fold(engine, 2, |p| {
-        p.put_output("embed:m", &Digest::zero(), &failed, Position(2))
-    })?;
-    fold(engine, 4, |p| {
-        p.put_output("embed:m", &Digest::zero(), &json!([1.0, 0.0]), Position(4))
-    })?;
-    let at = |position: Option<Position>| -> Result<Option<serde_json::Value>, Failure> {
-        view(engine, position)?
-            .output("embed:m", &Digest::zero())
-            .must("reading an output")
-    };
-    let (before, between, after) = (at(Some(Position(1)))?, at(Some(Position(3)))?, at(None)?);
-    ensure!(
-        before.is_none() && between == Some(failed.clone()) && after == Some(json!([1.0, 0.0])),
-        "a failure recorded at 2 and an answer for the same call at 4: at 1 the view must \
-         answer nothing ({before:?}), at 3 the failure ({between:?}), at the head the answer \
-         ({after:?})"
-    );
+    // A seam's name and the store's own, under which the fold keeps the
+    // lake's renames: an engine keeps both alike.
+    let (failed, answer) = (json!({"error": "timed out"}), json!([1.0, 0.0]));
+    for (through, output) in [(2, &failed), (4, &answer)] {
+        fold(engine, through, |p| {
+            p.put_output("embed:m", &Digest::zero(), output, Position(through))?;
+            p.put_output("sys:renames", &Digest::zero(), output, Position(through))
+        })?;
+    }
+    for seam in ["embed:m", "sys:renames"] {
+        let at = |position: Option<Position>| -> Result<Option<serde_json::Value>, Failure> {
+            view(engine, position)?
+                .output(seam, &Digest::zero())
+                .must("reading an output")
+        };
+        let (before, between, after) = (at(Some(Position(1)))?, at(Some(Position(3)))?, at(None)?);
+        ensure!(
+            before.is_none() && between == Some(failed.clone()) && after == Some(answer.clone()),
+            "under `{seam}`, a failure recorded at 2 and an answer for the same call at 4: at 1 \
+             the view must answer nothing ({before:?}), at 3 the failure ({between:?}), at the \
+             head the answer ({after:?})"
+        );
+    }
     Ok(())
 }
 
@@ -1391,18 +1819,23 @@ fn a_field_ordered_scan_walks_page_by_page_as_one_scan(
         (0..N).try_for_each(|i| p.put_record(&state(i, 1)))
     })?;
     // Every fourth moves, and every tenth loses or gains `v`, some twice
-    // in the transaction; then the setting.
+    // in the transaction; the setting comes between them, so the records
+    // put after it in the same transaction are indexed under it.
     fold(engine, 2, |p| {
         (0..N)
             .filter(|i| i.is_multiple_of(4) || i.is_multiple_of(10))
             .try_for_each(|i| {
+                if i == N / 2 {
+                    p.put_record(&sort_setting(json!(["v", "w", "x"]), 2))?;
+                }
                 let mut again = state(i, 1);
                 again.position = Position(2);
                 p.put_record(&again)?;
                 p.put_record(&state(i, 2))
-            })?;
-        p.put_record(&sort_setting(json!(["v", "w", "x"]), 2))
+            })
     })?;
+    let after_the_setting = "at the head, before the type is declared again";
+    walk_field_orders(engine, None, &two, 2, N, &state, after_the_setting)?;
     fold(engine, 3, |p| {
         p.put_declaration(&three, 2, None, Position(3))
     })?;
@@ -1428,6 +1861,42 @@ fn a_field_ordered_scan_walks_page_by_page_as_one_scan(
         &state,
         "at the head, the setting without `v`",
     )
+}
+
+engine_check!(
+    /// A setting that orders the settings type is read by the next setting.
+    SETTINGS_ORDERED = a_sort_setting_for_the_settings_type_orders_the_settings_put_after_it,
+    "041 and seams §ProjectionStore: a `sort_index.<type>` setting takes effect for the records put after it in the same transaction, the settings type's own included: a setting put before it and one put after it are both in the order index"
+);
+
+fn a_sort_setting_for_the_settings_type_orders_the_settings_put_after_it(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    use lakelands_api::seam::SETTING_TYPE;
+    let settings = declare(json!({
+        "declare": "type", "name": SETTING_TYPE,
+        "fields": [{"name": "key", "type": {"kind": "text"}},
+                   {"name": "value", "type": {"kind": "json"}}]
+    }));
+    let setting =
+        |key: &str, value: Value| record(SETTING_TYPE, key, json!({"key": key, "value": value}), 1);
+    fold(engine, 1, |p| {
+        p.put_declaration(&settings, 1, None, Position(0))?;
+        p.put_record(&setting("a.one", json!(1)))?;
+        p.put_record(&setting("sort_index.sys.setting", json!(["key"])))?;
+        p.put_record(&setting("a.two", json!(2)))
+    })?;
+    let by_key = scan_with(|s| s.order_by = vec![order("key", OrderBy::Value, Direction::Desc)]);
+    let page = view(engine, None)?
+        .scan(&TypeName::from(SETTING_TYPE), &by_key)
+        .must("a page of the settings ordered by `key`")?;
+    ensure!(
+        keys(&page) == ["sort_index.sys.setting", "a.two", "a.one"],
+        "one transaction put the setting `a.one`, then `sort_index.sys.setting` asking for \
+         `key`, then `a.two`; the settings by `key`, descending, came as {:?}",
+        keys(&page)
+    );
+    Ok(())
 }
 
 /// Walk every field order of the check's type `t` page by page at `at`,
@@ -1835,6 +2304,116 @@ fn a_scan_with_equal_answers_exactly_the_identical_values(
                  {expected:?}"
             );
         }
+    }
+    Ok(())
+}
+
+fn a_kept_name_answers_as_a_stored_type_holding_the_same_states(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    // Under each name `a` is put at every position, the even keys of
+    // 2 600 at position 1 and the odd ones, which lie between them, after
+    // `then`; one key ends before `then` and one after it; some keys are
+    // retired and some restricted. The output is recorded at every
+    // position.
+    const STATES: u64 = 3_000;
+    const KEYS: u64 = 2_600;
+    let (then, seam, input) = (STATES / 2, "sys:kept", Digest::zero());
+    let names = [
+        lakelands_api::seam::kept_name(&TypeName::from("v")),
+        TypeName::from("t"),
+    ];
+    let key = |i: u64| format!("k{i:04}");
+    let puts = |ty: &TypeName, at: u64| {
+        let mut all = vec![record(ty.as_str(), "a", json!({"n": at, "g": "x"}), at)];
+        let born = |i: &u64| at == if i.is_multiple_of(2) { 1 } else { then + 1 };
+        all.extend((0..KEYS).filter(born).map(|i| {
+            let g = if i.is_multiple_of(3) { "x" } else { "y" };
+            let mut r = record(ty.as_str(), &key(i), json!({"n": i, "g": g}), at);
+            (r.retired, r.restricted) = (i % 11 == 5, i % 13 == 6);
+            r
+        }));
+        let ended = |i| StoredRecord::ended(ty.clone(), RecordKey::from(key(i)), Position(at));
+        all.extend((at == 2).then(|| ended(200)));
+        all.extend((at == then + 2).then(|| ended(100)));
+        all
+    };
+    for first in (1..=STATES).step_by(200) {
+        fold(engine, first + 199, |p| {
+            for at in first..first + 200 {
+                for r in names.iter().flat_map(|ty| puts(ty, at)) {
+                    p.put_record(&r)?;
+                }
+                p.put_output(seam, &input, &json!(at), Position(at))?;
+            }
+            Ok(())
+        })?;
+    }
+    let some: Vec<RecordKey> = ["a", "k0000", "k0001", "k0100", "k0200", "none"]
+        .map(RecordKey::from)
+        .to_vec();
+    let filter = crate::expr::parse("n >= 1000").expect("the check's filter parses");
+    for (as_of, at, held) in [(None, STATES, KEYS + 1), (Some(then), then, KEYS / 2 + 1)] {
+        let v = view(engine, as_of.map(Position))?;
+        let recorded = v.output(seam, &input).must("reading the output")?;
+        ensure!(
+            recorded == Some(json!(at)),
+            "an output recorded at every position through {STATES} read {recorded:?} as of \
+             {as_of:?}"
+        );
+        // Every answer under a name, each record as the other name's.
+        let read = |ty: &TypeName| -> Result<(Vec<Vec<StoredRecord>>, Vec<u64>), Failure> {
+            let mut one = Vec::new();
+            for key in &some {
+                one.extend(v.get(ty, key).must("reading one record")?);
+            }
+            let mut pages = vec![one, v.get_many(ty, &some).must("reading by keys")?];
+            // The walk ends at a page that is not full, and after ten whatever
+            // an engine answers.
+            let mut walk = scan_with(|s| (s.limit, s.retired, s.restricted) = (1024, true, true));
+            for _ in 0..10 {
+                let page = v.scan(ty, &walk).must("walking by key")?;
+                let last = page.last().filter(|_| page.len() == 1024);
+                walk.after = last.map(|r| After {
+                    values: vec![],
+                    key: r.key.clone(),
+                });
+                pages.push(page);
+                if walk.after.is_none() {
+                    break;
+                }
+            }
+            let mut counts = vec![pages[2..].iter().map(Vec::len).sum::<usize>() as u64];
+            for scan in [
+                scan_all(),
+                scan_with(|s| s.retired = true),
+                scan_with(|s| s.restricted = true),
+                scan_with(|s| s.filter = Some(filter.clone())),
+                scan_with(|s| s.equal = vec![("g".into(), json!("x"))]),
+                scan_with(|s| (s.order_by, s.limit) = (vec![by("n", Direction::Desc)], 50)),
+            ] {
+                counts.push(v.count(ty, &scan).must("counting")?);
+                pages.push(v.scan(ty, &scan).must("scanning")?);
+            }
+            for r in pages.iter_mut().flatten() {
+                r.ty = names[1].clone();
+            }
+            Ok((pages, counts))
+        };
+        let (kept, stored) = (read(&names[0])?, read(&names[1])?);
+        let sizes = |(pages, counts): &(Vec<Vec<StoredRecord>>, Vec<u64>)| {
+            let rows: Vec<usize> = pages.iter().map(Vec::len).collect();
+            format!("{rows:?} records and the counts {counts:?}")
+        };
+        ensure!(
+            kept == stored && kept.1[0] == held,
+            "as of {as_of:?}, a `get` of six keys, a `get_many` of them, a walk by key of \
+             every state, {held} of them, 1 024 a page, and a scan under no flag, each flag, \
+             a filter, an exact text and a field's order answered, under the kept name, \
+             {}, the walk's states first; under an ordinary name, {}",
+            sizes(&kept),
+            sizes(&stored)
+        );
     }
     Ok(())
 }

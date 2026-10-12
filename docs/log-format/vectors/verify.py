@@ -12,10 +12,10 @@ export or a SQLite lake directory holds it instead, reading only
 `<dir>/log/` (log-format §4.2): canonical lines each ending in a line
 feed, positions consecutive from 0 and naming their files in 20 digits,
 the hash chain from 64 zeros, every checkpoint against the position,
-the hash and the files before it, format versions from 1 to 10 that
+the hash and the files before it, format versions from 1 to 11 that
 never go down, a verb on its type (declared with `scope: type`, called or
 proposed with no `key`) only from version 8 on, a derived relation only from version 6 on, a declaration's `annotations` only from version 5 on, a proposed declaration or migration only from version 4 on, `upstream` only from version 3 on and only on a
-`record_ingested` event, and every `known_at` in its one form and never before
+`record_ingested` event, `made` only from version 11 on, and every `known_at` in its one form and never before
 the `known_at` before it (log-format §1.3). It prints one line
 per file and the last position and hash, or the position where the
 files stop being the log, and exits non-zero there.
@@ -126,7 +126,7 @@ def check(ok, what):
         sys.exit(1)
 
 
-FIRST_FORMAT, NEWEST_FORMAT = 1, 10
+FIRST_FORMAT, NEWEST_FORMAT = 1, 11
 ONE_FORM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
 
 
@@ -227,6 +227,7 @@ def verify_dir(root):
             need(v >= version, f"format {v} is not below the {version} before it")
             version = v
             need("upstream" not in event or v >= 3, f"a format {v} event carries `upstream`, which format 3 added")
+            need("made" not in event["body"] or v >= 11, f"a format {v} event carries `made`, which format 11 added")
             proposed = event["body"].get("write", {}).get("write") if event["body"].get("kind") == "write_proposed" else None
             need(proposed not in ("declare", "migrate") or v >= 4,
                  f"a format {v} event proposes a declaration or a migration, which format 4 added")
@@ -466,6 +467,33 @@ def main():
     check(sha(canonical(body)) == negative10["hash"], "v10.json: the negative line's hash is its own")
     check(negative10["v"] == 9 and narrows(negative10),
           "v10.json: the negative line proposes a tightening in format 9, which a reader refuses")
+    # Format 11 is one release's step: each thing it added is a test here.
+    v11 = json.loads((HERE / "v11.json").read_text("utf-8"))
+    derived = lambda e: [f.get("derived", "") for f in e["body"].get("declaration", {}).get("fields", [])]
+    by_a_width = re.compile(r"date_bucket\([^,]+, [0-9.]+[dhms],")
+    eleventh = [lambda e: any("floor(" in d for d in derived(e)),
+                lambda e: any(by_a_width.search(d) for d in derived(e)),
+                lambda e: "in_set(" in e["body"].get("declaration", {}).get("where", ""),
+                lambda e: bool(e["body"].get("migration", {}).get("relation_renames")),
+                lambda e: e["body"].get("type") == "sys.setting" and e["body"].get("key", "").startswith("view_kept."),
+                lambda e: e["body"].get("kind") in ("record_upserted", "record_ingested") and e["body"].get("made") is True,
+                lambda e: bool(e["body"].get("write", {}).get("report", {}).get("restated")),
+                lambda e: any("initial" in f for f in e["body"].get("declaration", {}).get("fields", []))]
+    for line, want in zip(v11["lines"], v11["hashes"]):
+        event = json.loads(line)
+        check(canonical(event) == line.encode("utf-8"), f"v11.json: position {event['position']} is canonical")
+        check(event["v"] == 11 and any(added(event) for added in eleventh),
+              f"v11.json: position {event['position']} is format 11 and carries what it added")
+        body = {k: v for k, v in event.items() if k != "hash"}
+        check(sha(canonical(body)) == event["hash"] == want, f"v11.json: hash {want[:12]}…")
+        check(event["prev"] == prev, f"v11.json: position {event['position']} follows the one before it")
+        prev = event["hash"]
+    for line in v11["negatives"]:
+        negative = json.loads(line)
+        body = {k: v for k, v in negative.items() if k != "hash"}
+        check(sha(canonical(body)) == negative["hash"], "v11.json: a negative line's hash is its own")
+        check(negative["v"] == 10 and any(added(negative) for added in eleventh),
+              "v11.json: a negative line carries in format 10 what format 11 added, which a reader refuses")
     for name in ("negative_verb", "negative_call"):
         negative = json.loads(v8[name])
         body = {k: v for k, v in negative.items() if k != "hash"}

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use lakelands_api::engine::{EngineOpener, OpenMode};
-use lakelands_api::event::EventBody;
+use lakelands_api::event::{Digest, EventBody, SegmentDigest};
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
     Assignment, Authority, FieldDecl, FieldType, RelationDecl, Risk, StorageKind, TypeDecl,
@@ -69,6 +69,7 @@ fn field(name: &str, kind: StorageKind) -> FieldDecl {
         function: None,
         depends_on: vec![],
         on_input_change: Default::default(),
+        initial: None,
         sensitive: false,
         searchable: false,
         description: None,
@@ -376,6 +377,7 @@ async fn a_low_verb_runs_a_high_one_waits_for_acceptance_and_an_unbound_one_is_r
             version: Some(r.data.version),
             output: None,
             set_off: Default::default(),
+            renamed: Vec::new(),
         },
         "accepting a verb answers the write it made, not the verb's call"
     );
@@ -639,6 +641,7 @@ async fn a_migration_covers_retired_records_and_keeps_the_key() {
     let retyped = Migration {
         to,
         renames: vec![],
+        relation_renames: Vec::new(),
     };
     let report = cat.migrate(&o, retyped.clone()).await.unwrap().data;
     assert!(
@@ -668,6 +671,7 @@ async fn a_migration_covers_retired_records_and_keeps_the_key() {
             Migration {
                 to: rekeyed,
                 renames: vec![],
+                relation_renames: Vec::new(),
             },
         )
         .await;
@@ -683,8 +687,12 @@ async fn a_migration_covers_retired_records_and_keeps_the_key() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_tampered_checkpoint_is_reported_by_verify() {
+/// `verify` over a lake whose first segment a writer that is not the
+/// store sealed, beginning the next with the event `first` makes of the
+/// tip's position and hash and of every segment sealed, that one included.
+async fn verified_after_a_seal_by_another_writer(
+    first: impl Fn(Position, Digest, Vec<SegmentDigest>) -> EventBody,
+) -> lakelands_api::Result<lakelands_api::Verification> {
     let lake = name();
     let store = open(&lake, OpenMode::Create).await.unwrap();
     let cat = store.catalog(WriteContext::default());
@@ -698,37 +706,67 @@ async fn a_tampered_checkpoint_is_reported_by_verify() {
     store.close().await.unwrap();
     drop((cat, store));
 
-    // A writer that is not the store appends a checkpoint that does not
-    // follow the segment it seals.
     let engine = opener()
         .open(&Location::memory(lake.as_str()), OpenMode::Write)
         .unwrap();
-    let lease = engine.take_lease("tamperer").unwrap();
+    let lease = engine.take_lease("another writer").unwrap();
     let (tip, hash) = engine.tip().unwrap().unwrap();
-    engine.seal_segment(&lease).unwrap().unwrap();
-    let draft = lakelands_store::log::Draft::system(
-        lakelands_api::Timestamp(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_micros() as i64,
-        ),
-        EventBody::Checkpoint {
-            through: Position(tip.0 - 1),
-            hash: hash.clone(),
-            segments: engine.segments().unwrap(),
-        },
-    );
-    let (_, canon) =
-        lakelands_store::log::seal(&lake.as_str().into(), tip.next(), &hash, lease.fence, draft);
-    engine.append(&lease, &[canon]).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    let sealed = engine.seal_segment(&lease, false, &mut |sealed| {
+        let draft = lakelands_store::log::Draft::system(
+            lakelands_api::Timestamp(now.as_micros() as i64),
+            first(tip, hash.clone(), vec![sealed.clone()]),
+        );
+        let (lake, at) = (lake.as_str().into(), tip.next());
+        let (_, canon) = lakelands_store::log::seal(&lake, at, &hash, lease.fence, draft);
+        Ok(vec![canon])
+    });
+    sealed.unwrap().unwrap();
     engine.release_lease(&lease).unwrap();
     drop(engine);
-
     let reader = open(&lake, OpenMode::Read).await.unwrap();
-    let r = reader.verify(None, None).await;
+    reader.verify(None, None).await
+}
+
+/// A checkpoint that does not follow the segment it seals is reported.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tampered_checkpoint_is_reported_by_verify() {
+    let r = verified_after_a_seal_by_another_writer(|tip, hash, segments| EventBody::Checkpoint {
+        through: Position(tip.0 - 1),
+        hash,
+        segments,
+    })
+    .await;
     assert!(
         matches!(&r, Err(Error::Unavailable { message }) if message.contains("checkpoint")),
+        "{r:?}"
+    );
+}
+
+/// A segment after the first begins with a `checkpoint`
+/// (`docs/log-format.md` §4.2): `verify` refuses a log whose second
+/// segment begins with any other event, naming the position, and takes
+/// one that begins with its checkpoint (lakelands#623).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_segment_that_begins_with_no_checkpoint_is_reported_by_verify() {
+    let whole =
+        verified_after_a_seal_by_another_writer(|through, hash, segments| EventBody::Checkpoint {
+            through,
+            hash,
+            segments,
+        })
+        .await;
+    assert!(whole.is_ok(), "{whole:?}");
+    let r = verified_after_a_seal_by_another_writer(|_, _, _| EventBody::LeaseTaken {
+        fence: 2,
+        holder: "another writer".into(),
+    })
+    .await;
+    assert!(
+        matches!(&r, Err(Error::Unavailable { message })
+            if message.contains("a segment begins there") && message.contains("no checkpoint")),
         "{r:?}"
     );
 }
@@ -857,7 +895,7 @@ async fn a_proposal_holds_the_write_as_checked() {
         .await
         .unwrap()
         .data;
-    let ProposedWrite::Upsert { patch, .. } = &p[0].write else {
+    let Some(ProposedWrite::Upsert { patch, .. }) = &p[0].write else {
         panic!("{:?}", p[0].write);
     };
     assert_eq!(patch["at"], stored, "the proposal holds the checked value");
@@ -2358,21 +2396,19 @@ impl lakelands_api::seam::VerbExecutor for Gate {
     }
 }
 
-/// A retry looks for the call's output among the 4,096 events after the
-/// call; an output recorded further on is answered as none, the position
-/// stands, and nothing runs again (`docs/seams.md`, `VerbExecutor`). The
-/// reach is the store's constant (`RETRY_REACH` in `writes.rs`), the same
-/// on every engine, which is why this is a store test on the memory
-/// engine. A store that blocks fails the test at the time limit instead of
+/// A retry while the executor runs is refused as `unanswered` and hands
+/// nothing; once the answer is recorded, a retry answers it however far
+/// the log has grown since the call: the old reach of 4,096 events is
+/// passed. A store that blocks fails the test at the time limit instead of
 /// hanging it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_retry_past_the_reach_answers_the_position_without_the_output() {
-    tokio::time::timeout(std::time::Duration::from_secs(120), retry_past_the_reach())
+async fn a_retry_answers_the_recorded_output_however_far_behind() {
+    tokio::time::timeout(std::time::Duration::from_secs(120), retry_far_behind())
         .await
-        .expect("the retry past the reach finishes within two minutes");
+        .expect("the retry far behind finishes within two minutes");
 }
 
-async fn retry_past_the_reach() {
+async fn retry_far_behind() {
     let lake = name();
     let gate = Arc::new(Gate {
         entered: tokio::sync::Notify::new(),
@@ -2418,7 +2454,22 @@ async fn retry_past_the_reach() {
         })
     };
     gate.entered.notified().await;
-    // The lake takes more than the reach of other events while the
+    let running = cat
+        .call(
+            &o,
+            &"pay".into(),
+            Some(&"i1".into()),
+            patch(json!({})),
+            key.clone(),
+        )
+        .await;
+    assert!(
+        matches!(&running, Err(lakelands_api::Error::Refused {
+            reason: lakelands_api::Refusal::Unanswered { message }, ..
+        }) if message.contains("is still running")),
+        "a retry while the executor runs is `unanswered`: {running:?}"
+    );
+    // The lake takes more than the old reach of other events while the
     // executor runs, so its output lands past it.
     for n in 0..4_100 {
         cat.upsert(
@@ -2448,10 +2499,9 @@ async fn retry_past_the_reach() {
         .call(&o, &"pay".into(), Some(&"i1".into()), patch(json!({})), key)
         .await
         .unwrap();
-    assert!(
-        matches!(&again, Outcome::Applied { position: p, output: None, .. } if p == position),
-        "past the reach, a retry answers the call's position {position} with no output: \
-         {again:?}"
+    assert_eq!(
+        again, first,
+        "a retry answers the call's position {position} and its output"
     );
     assert_eq!(
         gate.calls.load(std::sync::atomic::Ordering::SeqCst),

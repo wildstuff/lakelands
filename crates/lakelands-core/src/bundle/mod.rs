@@ -71,8 +71,8 @@
 //!
 //! The full form of a field carries `type` and, all optional, `required`,
 //! `authority` (`authored`, `source`, `shared`, `derived`), `derived`,
-//! `depends_on`, `on_input_change` (`keep`, `clear`), `sensitive`,
-//! `searchable`, `description` and `label`.
+//! `depends_on`, `on_input_change` (`keep`, `clear`), `initial`,
+//! `sensitive`, `searchable`, `description` and `label`.
 //!
 //! # The lanes
 //!

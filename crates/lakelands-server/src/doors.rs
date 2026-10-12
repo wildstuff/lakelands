@@ -7,7 +7,7 @@
 //! argument differently, and a door's answer is the same JSON on both.
 
 use lakelands_api::error::{Error, Refusal};
-use lakelands_api::id::{FieldName, ProposalId, RecordKey, TypeName};
+use lakelands_api::id::{FieldName, ProposalId, RecordKey, RelationName, TypeName};
 use lakelands_api::ontology::{FieldDecl, TypeDecl, ValueTypeDecl};
 use lakelands_api::query::{Pattern, Search};
 use lakelands_api::read::{Find, Get, ReadAt};
@@ -262,6 +262,10 @@ pub(crate) async fn run(
             let d: D = declaring(label, &a)?;
             to_json(&c.apply(who, d.declarations).await?)
         }
+        Door::Recompute => {
+            let what: lakelands_api::write::Recompute = declaring(label, &a)?;
+            to_json(&c.recompute(who, what).await?)
+        }
         Door::AddField => {
             #[derive(Deserialize)]
             struct D {
@@ -282,6 +286,8 @@ pub(crate) async fn run(
                 #[serde(default)]
                 renames: Vec<(FieldName, FieldName)>,
                 #[serde(default)]
+                relation_renames: Vec<(RelationName, RelationName)>,
+                #[serde(default)]
                 report_id: Option<String>,
             }
             let m: M = declaring(label, &a)?;
@@ -298,6 +304,7 @@ pub(crate) async fn run(
                     let migration = Migration {
                         to,
                         renames: m.renames,
+                        relation_renames: m.relation_renames,
                     };
                     match m.report_id {
                         Some(r) => to_json(&c.migrate_apply(who, migration, &r).await?),

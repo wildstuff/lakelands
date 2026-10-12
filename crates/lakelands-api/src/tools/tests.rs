@@ -134,6 +134,7 @@ fn a_type_gives_four_doors_and_the_generic_tools_follow_rights() {
             "proposals",
             "propose",
             "query",
+            "recompute",
             "reject",
             "search",
             "subscribe",

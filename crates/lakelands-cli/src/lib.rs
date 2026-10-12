@@ -189,6 +189,12 @@ fn command() -> Command {
                 .arg(Arg::new("bundle").value_name("DIR").required(true).help("The bundle's directory")),
         )
         .subcommand(
+            Command::new("recompute")
+                .about("Compute again what a function or a type in force computes: retry a failed call, make a field that waits")
+                .arg(Arg::new("function").long("function").value_name("NAME").conflicts_with("type").help("A function: every type that names it"))
+                .arg(Arg::new("type").long("type").value_name("NAME").help("A type with a field computed outside the lake")),
+        )
+        .subcommand(
             Command::new("ingest")
                 .about("Feed the lake records from a source")
                 .arg(Arg::new("file").value_name("FILE").required(true).help("One JSON record per line, or CSV with --map"))
@@ -236,8 +242,9 @@ fn command() -> Command {
                         .value_parser(clap::builder::NonEmptyStringValueParser::new())
                         .help("The source whose records are retired"),
                 )
+                .arg(Arg::new("type").long("type").value_name("TYPE").value_parser(clap::builder::NonEmptyStringValueParser::new()).help("Retire only what the source brought into this type and its relations' links"))
                 .arg(Arg::new("preflight").long("preflight").action(ArgAction::SetTrue).conflicts_with("report").help("Say what the purge would retire and strand, appending nothing"))
-                .arg(Arg::new("report").long("report").value_name("ID").help("Purge only if the lake has not moved since the preflight with this id")),
+                .arg(Arg::new("report").long("report").value_name("ID").help("Purge only if the preflight with this id is of this purge and the lake has not moved since")),
         )
         .subcommand(Command::new("rebuild").about("Delete the lake's projection and rebuild it from the log"))
         .subcommand(Command::new("compact").about("Give back the storage the lake's projection no longer uses"))
@@ -400,6 +407,10 @@ async fn dispatch(
             )
             .await
         }
+        "recompute" => {
+            let (function, ty) = (text(sub, "function"), text(sub, "type"));
+            commands::recompute(out, catalog.as_ref(), &who, function, ty).await
+        }
         "ingest" => {
             let map = text(sub, "map").map(PathBuf::from);
             commands::ingest(
@@ -424,7 +435,8 @@ async fn dispatch(
         "purge" => {
             let (source, report) = (text(sub, "source").unwrap_or_default(), text(sub, "report"));
             let report = (!sub.get_flag("preflight")).then_some(report.as_deref());
-            commands::purge(out, &store, &source, report).await
+            let of = (source.as_str(), text(sub, "type"));
+            commands::purge(out, &store, (of.0, of.1.as_deref()), report).await
         }
         "rebuild" => commands::rebuild(out, &store).await,
         "compact" => commands::compact(out, &store).await,

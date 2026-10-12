@@ -46,18 +46,40 @@ impl std::error::Error for DeriveError {}
 /// The fields an expression reads: the first segment of every path, and
 /// the field named by `known_at`, `seen_at`, `previous` and `changed`.
 pub fn reads(e: &Expr) -> BTreeSet<FieldName> {
-    let mut out = BTreeSet::new();
-    collect(e, &mut out);
-    out
+    let mut out = Vec::new();
+    paths(e, &mut out);
+    out.into_iter().filter_map(|p| p.first().cloned()).collect()
 }
 
-fn collect(e: &Expr, out: &mut BTreeSet<FieldName>) {
-    if let Expr::Path { path } = e
-        && let Some(first) = path.first()
-    {
-        out.insert(first.clone());
+fn paths<'e>(e: &'e Expr, out: &mut Vec<&'e [FieldName]>) {
+    if let Expr::Path { path } = e {
+        out.push(path);
     }
-    crate::expr::children(e).for_each(|c| collect(c, out));
+    crate::expr::children(e).for_each(|c| paths(c, out));
+}
+
+/// The member of the call's payload a path in a verb's value reads:
+/// `payload.<name>`, and no other path. A bare `payload` and a longer path
+/// are the record's field of that name (028, extended).
+pub fn payload_member(path: &[FieldName]) -> Option<&FieldName> {
+    match path {
+        [payload, name] if payload.as_str() == "payload" => Some(name),
+        _ => None,
+    }
+}
+
+/// What a verb's value reads: the record's fields, as [`reads`] counts
+/// them, and the members of the call's payload.
+pub fn verb_reads(e: &Expr) -> (BTreeSet<FieldName>, BTreeSet<FieldName>) {
+    let mut all = Vec::new();
+    paths(e, &mut all);
+    let record = all.iter().filter(|p| payload_member(p).is_none());
+    (
+        record.filter_map(|p| p.first().cloned()).collect(),
+        all.iter()
+            .filter_map(|p| payload_member(p).cloned())
+            .collect(),
+    )
 }
 
 fn typed(field: &FieldDecl) -> Result<Option<Expr>, DeriveError> {

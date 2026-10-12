@@ -10,10 +10,12 @@ mod after;
 mod aggregates;
 mod aging;
 mod annotations;
+mod authored_reads;
 mod authors_view;
 mod backings;
 mod bundles;
 mod compact;
+mod computed_inputs;
 mod concurrency;
 mod cursors;
 mod date_bucket;
@@ -21,6 +23,7 @@ mod decimals;
 mod derived_fields;
 mod derived_relations;
 mod describe;
+mod durations;
 mod embeddings;
 mod export;
 mod feed;
@@ -30,23 +33,31 @@ mod fusion;
 mod graph_measures;
 mod host_cause;
 mod ingest;
+mod initial;
 mod keys;
 mod latest;
 mod link_triggers;
 mod links;
+mod made_of;
 mod masking;
 mod migrate;
 mod paging;
 mod positions;
+mod proposal_names;
 mod proposals;
 mod provenance;
 mod purge;
 mod reactions;
 mod reactive_depth;
+mod readers_view;
 mod reads_kept;
 mod rebuild;
 mod references;
 mod rekey;
+mod relation_renamed;
+mod renamed_grants;
+mod report_names;
+mod restated;
 mod restriction;
 mod retire;
 mod schema;
@@ -55,6 +66,7 @@ mod search;
 mod search_fields;
 mod set_declared;
 mod set_migrated;
+mod set_names;
 mod set_rewritten;
 mod settings;
 mod streaming;
@@ -64,6 +76,7 @@ mod values;
 mod vector_index;
 mod verbs_on_type;
 mod versions;
+mod view_kept;
 mod view_merge;
 mod view_params;
 mod view_rights;
@@ -97,6 +110,7 @@ pub const ALL: &[Check] = &[
     decimals::AS_WRITTEN,
     decimals::EXACT_SUM,
     decimals::SCALE_KEPT,
+    decimals::SUM_SCALE,
     derived_fields::COMPUTED_BY_THE_FOLD,
     derived_fields::NO_DOOR_WRITES_IT,
     derived_fields::ADDED_LATER,
@@ -146,6 +160,8 @@ pub const ALL: &[Check] = &[
     ingest::UPSERT_REFUSES_SOURCE_FIELD,
     rebuild::REBUILD_ANSWERS_AS_BEFORE,
     rebuild::REBUILD_REPRODUCES_THE_CHAIN,
+    rebuild::REBUILD_FOLDS_OVER_RECORDS,
+    rebuild::REBUILD_RECOMPUTES_IN_A_PAGE,
     filters::ABSENT_NEVER_MATCHES,
     filters::NUMBERS_COMPARE_AS_NUMBERS,
     filters::KINDS_THAT_DO_NOT_COMPARE,
@@ -155,6 +171,10 @@ pub const ALL: &[Check] = &[
     provenance::FIELD_PROVENANCE,
     masking::MASKED_AND_ABSENT,
     masking::BUILT_FROM_HIDDEN,
+    computed_inputs::COMPUTED_AS_ITS_INPUTS,
+    authored_reads::AUTHOR_READS,
+    renamed_grants::GRANT_FOLLOWS,
+    authored_reads::HIDDEN_TYPE,
     masking::NONE_HIDES,
     masking::VALID_AT_PROBES,
     masking::WRITE_ONLY,
@@ -174,6 +194,11 @@ pub const ALL: &[Check] = &[
     migrate::APPLY_NEEDS_ITS_REPORT,
     migrate::LOSSY_REFUSED,
     migrate::CONVERSIONS_AND_RENAMES,
+    made_of::SHOWN_WITH_WHAT_IT_IS_MADE_OF,
+    made_of::KEPT_AT_EVERY_DOOR,
+    made_of::NAMES_NO_TYPE_NOT_SHOWN,
+    initial::FILLED_AT_CREATION,
+    initial::DECLARED,
     links::WRITTEN_AND_WALKED,
     links::ONE_PER_PAIR,
     links::UNLINK_KEEPS_HISTORY,
@@ -211,6 +236,12 @@ pub const ALL: &[Check] = &[
     proposals::ACCEPT_APPLIES,
     proposals::REJECT_AND_DECIDED,
     proposals::WHO_DECIDES,
+    readers_view::VALUES_AS_THE_READERS_VIEW,
+    proposal_names::NAMES_AS_THE_READERS_VIEW,
+    proposal_names::LISTED_AS_SHOWN,
+    report_names::REPORT_AS_ITS_READERS_VIEW,
+    restated::EVERY_MEMBER,
+    restated::AS_ITS_READERS,
     schema_proposals::DECLARED_ON_ACCEPT,
     schema_proposals::SCHEMA_TO_ACCEPT,
     schema_proposals::MIGRATION_PREFLIGHTED_AGAIN,
@@ -238,12 +269,19 @@ pub const ALL: &[Check] = &[
     ingest::REVERT_IS_A_CHANGE,
     views::VIEW_KEY_IS_ITS_GROUP,
     view_rights::VIEW_OVER_A_HIDDEN_FIELD,
+    view_kept::KEPT_SHAPES,
+    view_kept::KEPT_VALUES,
+    view_kept::KEPT_POSITIONS,
+    view_kept::KEPT_RUNS,
     keys::KEY_AND_KEY_FIELDS_AGREE,
     keys::KEY_FIELDS_FROM_THE_KEY,
     restriction::HOLD_WITHHOLDS_AND_KEEPS,
     reactions::VERB_WRITE_REACTS,
     reactions::SET_READ_BY_ITS_FILTER,
     set_declared::SET_DECLARED_OVER_RECORDS,
+    set_names::COMPOSED,
+    set_names::REFUSED,
+    set_names::RIGHTS,
     set_migrated::SET_MIGRATED,
     set_rewritten::SET_REKEYED_REFERENCES,
     set_rewritten::SET_OVER_LINKS,
@@ -267,11 +305,30 @@ pub const ALL: &[Check] = &[
     reads_kept::DECLARATION_READS_ITS_TYPE,
     migrate::VIEW_SOURCE_KEPT,
     schema::REORDERED_FIELDS,
+    schema::IN_FORCE_APPENDS_NOTHING,
+    schema::MIGRATION_IN_FORCE,
+    schema::RECOMPUTED,
+    relation_renamed::RENAMED_KEEPS_EDGES,
+    relation_renamed::RENAMED_GRANT_FOLLOWS,
+    relation_renamed::RENAME_REFUSED,
+    relation_renamed::RENAME_CARRIES,
+    relation_renamed::RENAMED_EVERY_CARRIER,
+    relation_renamed::RENAMED_NEWEST_CHAIN,
+    relation_renamed::RENAME_PROPOSED,
+    relation_renamed::RENAMED_NAME_BORNE_TWICE,
+    relation_renamed::RENAME_ONTO_A_STANDING_TYPE,
+    relation_renamed::RENAMED_VECTORS_FOLLOW,
+    relation_renamed::RENAMED_LINKS_RECOMPUTED,
+    relation_renamed::RENAMED_OLD_TYPE_CLOSED,
     aggregates::EMPTY_AGGREGATE,
     aggregates::COUNT_IS_THE_WALK,
     date_bucket::GROUPS,
     date_bucket::WHERE,
     date_bucket::DECLARED,
+    date_bucket::WINDOWS,
+    durations::DAYS,
+    durations::LANDS,
+    durations::NEVER,
     filters::CLEARED_FIELD,
     walks::CYCLE_TERMINATES,
     derived_relations::BOTH_WAYS,
@@ -342,6 +399,7 @@ pub const ALL: &[Check] = &[
     rekey::MOVES,
     rekey::REFERENCES,
     rekey::LINKS,
+    rekey::LINK_RESHAPED,
     rekey::CLOSURE,
     rekey::OLD_KEY_ENDED,
     rekey::FORMAT_TWO,
@@ -350,6 +408,9 @@ pub const ALL: &[Check] = &[
     rekey::STALE,
     rekey::SETS,
     rekey::AGAIN,
+    rekey::KEY_ORDER,
+    rekey::KEY_RING,
+    rekey::RENAMED_REFERENCE,
     export::ONE_FILE_PER_SEGMENT,
     export::VERIFIES,
     export::MIXED_VERSIONS,
@@ -366,7 +427,10 @@ pub const ALL: &[Check] = &[
     compact::AGAIN_AND_ON,
     compact::WRITES_DURING,
     settings::SETTING_AS_OF,
+    settings::SETTING_RESTRICTED,
+    settings::SETTING_AS_OF_THE_WRITE,
     feed::LIMIT_ZERO_IS_ONE,
+    feed::MADE,
     feed::BY_KEY,
     feed::BY_OLD_KEY,
     retire::SOURCE_ONLY_HAS_NO_UPSERT,
@@ -387,6 +451,8 @@ pub const ALL: &[Check] = &[
     proposals::RETRY_EXTERNAL_PAST_HOST,
     proposals::RETRY_WRITE_PAST_HOST,
     proposals::RETRY_PROPOSED_PAST_ACCEPT,
+    proposals::ACCEPT_AGAIN,
+    proposals::UNANSWERED,
     verbs_on_type::ON_TYPE_RUNS,
     verbs_on_type::ON_TYPE_PROPOSED,
     verbs_on_type::VERB_EVENTS_UNTYPED,
@@ -405,8 +471,15 @@ pub const ALL: &[Check] = &[
     concurrency::AGE_UNDER_WRITES,
     purge::CO_OWNED_COUNTED,
     purge::BACKED_NO_OWNER,
+    purge::INITIAL_NO_OWNER,
     purge::PREFLIGHT,
     purge::REFERENCES_NAMED,
+    purge::ONE_TYPE,
+    purge::CO_OWNED_IN_TYPE,
+    purge::OWN_REFERENCES,
+    purge::TYPED_LINKS,
+    purge::TYPED_ID,
+    purge::TYPE_REFUSED,
     value_types::CONSTRAINT_AND_FORMAT,
     value_types::CONDITION_NEVER_HOLDS,
     streaming::STREAMS,

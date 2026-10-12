@@ -391,3 +391,110 @@ fn retiring_the_setting_drops_the_index_and_its_mark() {
     drop(engine);
     common::drop_schema(&url, &schema);
 }
+
+/// How many locks any session holds on `vectors` that keep another
+/// session's read or write out: an index built or dropped inside an open
+/// transaction holds one until its commit.
+fn held(url: &str, schema: &str) -> i64 {
+    let row = exec(
+        url,
+        format!(
+            "SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = '{schema}' AND c.relname = 'vectors' \
+             AND l.mode NOT IN ('AccessShareLock', 'RowShareLock', 'RowExclusiveLock')"
+        ),
+    );
+    row[0].get(0)
+}
+
+/// A transaction's puts are written a page at a time, so a setting may be
+/// written long before its commit. Its page builds nothing: the commit
+/// builds the index, once, after the last page. Until then no build's or
+/// drop's lock is held on `vectors`, and a search from the reader goes on
+/// reading the index the last commit left; after it every vector, put
+/// before the setting or after, holds its unit vector.
+#[test]
+fn a_setting_written_a_page_before_its_commit_builds_the_index_at_the_commit() {
+    let Some(url) = common::url_or_skip("the pg vector-index test") else {
+        return;
+    };
+    if !pgvector(&url) {
+        return;
+    }
+    let schema = common::fresh_schema();
+    let engine = PgOpener
+        .open(&common::location(&url, "vindex", &schema), OpenMode::Create)
+        .unwrap();
+    let (p, index) = (engine.projection(), engine.vectors().unwrap());
+    let put = |i: u64| {
+        let r = record(i);
+        p.put_record(&r).unwrap();
+        index.put(&r.ty, &r.key, "e", &vector(i)).unwrap();
+    };
+    // More than a page of other puts: a setting put before them is written
+    // with its page here.
+    let others = |at: u64| {
+        for i in 0..1_100 {
+            let other = StoredRecord {
+                ty: TypeName::from("u"),
+                position: Position(at),
+                ..record(i)
+            };
+            p.put_record(&other).unwrap();
+        }
+    };
+    p.begin().unwrap();
+    p.put_declaration(&declaration(), 1, None, Position(0))
+        .unwrap();
+    (0..RECORDS / 2).for_each(put);
+    p.put_record(&setting(json!(["e"]), 1)).unwrap();
+    others(1);
+    (RECORDS / 2..RECORDS).for_each(put);
+    assert_eq!(
+        held(&url, &schema),
+        0,
+        "the setting's page is written and the transaction open: no index is built yet, so \
+         nothing holds `vectors` against another session"
+    );
+    p.commit(Position(1)).unwrap();
+    let unfilled = exec(
+        &url,
+        format!("SELECT count(*) FROM \"{schema}\".vectors WHERE field = 'e' AND unit IS NULL"),
+    );
+    assert_eq!(
+        (marks(&url, &schema), unfilled[0].get::<_, i64>(0)),
+        ((Some(1), 1), 0),
+        "the commit builds and marks `e`'s index, and every vector, put before the setting \
+         or after, holds its unit vector"
+    );
+    let (query, t) = (vector(7), TypeName::from("t"));
+    decoy(&url, &schema, &query);
+    assert!(
+        through_index(&index.nearest(&t, "e", &query, 10).unwrap()),
+        "a search of `e` reads the index the commit built"
+    );
+    // The setting written again, over an index that is there: its page drops
+    // nothing, and a search goes on reading the index until the commit.
+    p.begin().unwrap();
+    p.put_record(&setting(json!(["e", "f"]), 2)).unwrap();
+    others(2);
+    assert_eq!(
+        (held(&url, &schema), marks(&url, &schema)),
+        (0, (Some(1), 1)),
+        "the setting's page is written and the transaction open: `e`'s index is not dropped \
+         and `f`'s not built before the commit"
+    );
+    assert!(
+        through_index(&index.nearest(&t, "e", &query, 10).unwrap()),
+        "while the transaction is open a search of `e` reads the index the last commit left"
+    );
+    p.commit(Position(2)).unwrap();
+    assert_eq!(
+        marks(&url, &schema),
+        (Some(2), 2),
+        "the commit builds the indexes the setting asks for, `e`'s again and `f`'s"
+    );
+    drop(engine);
+    common::drop_schema(&url, &schema);
+}

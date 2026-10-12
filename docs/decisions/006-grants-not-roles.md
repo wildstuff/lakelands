@@ -90,3 +90,243 @@ other field is writable too.
   values; it asks whether a grant reads, writes, or appears in a read
   answer. A host that matches on the access enum gains one arm.
 
+## Extended: a grant holds a field through its renames (lakelands#527)
+
+A grant names a field, and a migration can rename one. The grant stayed
+on the old name and the field fell to the type's default: a principal
+held at `none` or `masked` on `holder` read it whole as `keeper`, with
+nothing but the rename having happened. A host that renamed its grant
+with the field was answered the old name's value in every read as of a
+position before the rename.
+
+> A field's access is the lowest of what its grants say under every name
+> the field bears, has borne, or, for a read as of an earlier position,
+> will bear. A grant reaches further than its own name only to take away.
+
+- **What a name says.** The name the field bears at the position read
+  says what it always said: its grant by name, else the type's default,
+  else the lake's. Any other name of the field says something only where
+  the grants name it. A name they do not name says nothing, or a default
+  would undo a grant on the present name.
+- **The lowest of two accesses** judges reading and writing apart: it
+  reads the value only if both do, shows the field masked if both at
+  least show it, and writes only if both write. So `write` with
+  `write_only` is `write_only`, and `read` or `masked` with `write_only`
+  is `none`.
+- **A restriction follows the field, in both directions of time.**
+  `holder: none` holds for `keeper`, for `owner` after a second rename,
+  and `keeper: none` holds for `holder` in a read as of before.
+- **A permission stays with its name.** A principal granted `holder:
+  write` on a type it may otherwise not see loses the field at the
+  rename; its host names the new name to give it back. A host that
+  widens a renamed field names the new name and drops the restriction on
+  the old.
+- **The result is a grant by name** on the name the field bears at the
+  position read, put where the principal enters, before any door asks.
+  So every place a field's name meets a grant holds it, and a
+  restriction that followed counts as one given by name: a `sensitive`
+  field held at `none` under a former name is hidden, not masked.
+- **A migration that is not in force** is judged with its own renames as
+  the last of the list: a proposed rename is listed to a reader kept
+  from the old name with neither the pair nor the new name, and a
+  migration's answer names in `renamed` each rename the one answered may
+  know of. A proposal that waited while the lake renamed the same field,
+  or the same relation, otherwise is judged from the names its old ones
+  bear now: each of its renames begins at the name in force, so a reader
+  kept from the field or from the relation's link type under that name
+  is listed neither the pair nor the proposed name (lakelands#594).
+
+**Two costs, taken with the rule.**
+
+- **Two fields that have borne one name cannot be told apart by that
+  name.** After a swap of `a` and `b` each of the two names restricts
+  both fields; after `holder` became `keeper` and a new field took
+  `holder`, a grant on `holder` restricts both. A host tells them apart
+  by a name only one of them has borne: it renames one once more.
+- **The list holds renames, not removals.** A field that is removed, and
+  whose last name a new field takes and is later renamed from, has its
+  chain of names continued by the new field, which is then restricted by
+  the removed field's former names too. It errs to the closed side.
+  Where several chains end in the name a rename takes, the rename
+  continues the one whose last name was taken latest: a name is free
+  when a rename takes it, so every earlier bearer of it is gone, and a
+  field renamed onto a name another field bore is held by its own names.
+
+**Where the rule is applied, and when.** To the principal, where it
+enters: a read takes the list from the view it reads at the head, so a
+rename is in its shape and in its grants or in neither; a read as of a
+position takes the head's list, where a later rename can only take away.
+A write is followed before it waits for the writer, and a migration can
+rename a field while it waits. Where the list has grown when the write
+takes the writer, it is refused to be sent again; an ingest is followed
+under the writer itself.
+
+**Where the renames are kept.** A rename happens only in a `migrated`
+event. The fold keeps the lake's list of them, each with its position
+and type, as one recorded output under a seam name of the store's own,
+`sys:renames` (`docs/seams.md`); it is no event, and no door answers it.
+A rebuild and an import fold the log and make the list again. A lake
+made before this holds no list: its first open finds one from what the
+projection keeps, without reading the log. A type's declaration is in
+force since the event that put it, so for each type past its first
+version the one event at that position is read, then the type as of the
+position before it, down to its first version. The handle that writes
+records the list; one opened read-only before any writer has opened
+keeps it in memory.
+
+**A type's name follows the same rule (lakelands#429).** A renamed
+relation carried by link records moves them to the link type of its new
+name, and a grant can name a link type. The list holds an entry of a
+second kind for it: the position, the link type's old name and its new
+one. The step over a type's names comes before the step over fields:
+the grants on every name the type has borne or will bear become one
+entry under the name it bears at the position read, a field's access
+there the lowest of what that name's entry says (its grant, else its
+default, else the lake's) and of what each other name's entry says for
+it (its grant, else its default). A grant that is only a `default` is
+followed too, so a principal is followed whenever its grants name a
+type. Each chain of names reads the grants as they were given, and of
+the chains that end in a name the one that took it last continues.
+
+## Extended: a type made of another is shown with it (lakelands#595)
+
+Two kinds of type have no records of their own making. A link type is
+the edges of one relation: its name spells the type that declares the
+relation and the relation, and its records are that relation's links
+(`docs/decisions/035-a-link-is-a-record.md`). A view is its sources'
+records, computed (`docs/decisions/018-one-pattern-query.md`). Each was
+judged by the grants on its own name alone, and those the grant on the
+other type does not touch: a principal kept from `invoice` by
+`{default: none}` was told that `invoice` does not exist, and was
+described `sys.link.invoice.approved_by`, read its records, wrote and
+retired its links, and read through a view how many invoices there are.
+
+**A type made of another is shown to a principal only where that other
+type is**: a link type where the type that declares its relation is, a
+view where its source and every merged source is. One who is told a type
+does not exist is told the same of what is made of it.
+
+- **One function decides it**, the one that decides whether a type is
+  described at all. So `describe` and the tools built from it,
+  `describe_type`, `find`, `get`, `search`, a pattern's start and each of
+  its steps, a set or a trigger on the type, a proposal's listing and
+  every refusal that names a type only to one `describe` shows it to
+  follow it without a rule of their own. The answer is the one for a
+  type that is not declared, never a refusal: a refusal would tell that
+  something is there.
+- **A grant on its own name does not give it back.** The grants on a
+  link type's name and on a view's name stay, follow a rename as before,
+  and can take more away; they cannot show what the other type's grant
+  withholds.
+- **Shown means what it means for any type**: the principal has some
+  access to the type or to one of its fields. A principal who reads one
+  field of `invoice` is shown its link types and the views over it,
+  each under its own grants, and a view still refuses the reader who
+  does not read a field its definition probes
+  (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+  extended).
+- **It runs down a chain**: a view over a view over a link type is shown
+  where the type that declares the relation is.
+- **`link` and `unlink` ask it before they name a relation.** They reach
+  a link type by its owner's name, so they ask whether the caller is
+  shown the owner, and answer one who is not as for a type that is not
+  there, whether the type has the relation or not. Its retry of a write
+  it made is answered that write first, as every retry is before the
+  grants are asked: it tells the caller its own write.
+- **Every door that writes a record asks it first (lakelands#607)**:
+  `upsert`, `retire`, `propose` of either, `ingest`, and a verb's call
+  for the type the verb is on
+  (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+  extended).
+- **A relation is named from its target's end only to one shown its
+  owner.** A relation and its inverse are declared on the owner, so a
+  step from the target by the inverse, or by the relation's own name
+  walked in, is answered one who is not shown the owner as a relation
+  the target does not have, for a relation carried by links and by a
+  reference field alike. A step forward from a type the principal is
+  shown to a target it is not is as before: the relation is declared
+  where the principal reads it, and the target is not found.
+- **A pattern's probes ask it too (lakelands#653, lakelands#654).** An
+  order, a measure or a grouping over a path `type.field` on a type the
+  principal is not shown reads nothing and is left alone, as a path on
+  a type that is not declared is. A step over a derived relation probes
+  the matched fields of the relations it walks and of no other: its
+  own out of the type it leaves, and one into that type whose owner
+  the principal is shown. A relation a hidden type derives under the
+  same name reaches no record the principal is shown and is not probed,
+  so no refusal names it.
+- **The other end is not asked.** A link's `to` is a key of the target
+  type, read by a principal kept from the target as it reads a reference
+  field's value in any record.
+
+For a host: a principal that reads or writes a type's links is granted
+something of the type, and a principal that reads a view is granted
+something of each of its sources.
+
+## Extended: `sensitive` shows a field, never a type (lakelands#608)
+
+`sensitive` raises a field nobody named from an inherited `none` to
+`masked` (lakelands#394). That sentence was written for a field in a
+record its reader holds, and the function that decides whether a type
+is shown counted the raised field as access to the type. So a principal
+its host gave nothing of `invoice`, by `{default: none}` or by a lake
+default of `none`, was described `invoice` with `note` masked, read
+every invoice's key and version, was answered its writes field by field
+instead of as on a type that is not declared, and through a grant on a
+link type or a view read every link and every count. Marking a field
+`sensitive` made its type more visible than leaving it unmarked, and a
+host could hide the type only by naming every sensitive field `none`
+for every principal.
+
+**A type is shown to a principal by what its grants give it: some
+access to the type, or to one of its fields. `sensitive` raises a field
+to `masked` only for one who is shown the type; it never shows a
+type.**
+
+- **The one function asks the access before the raise.** Everything
+  that asks whether a type is shown asks it, so the description, the
+  reads, the doors that write a record, the link doors, the settings'
+  judge and what is made of the type follow without a rule of their own.
+- **What stays.** Inside a type its principal is shown, a sensitive
+  field nobody named is listed as masked, and a filter on it is refused
+  as not granted.
+- **A field is counted as it is read.** A field built from another is
+  read as that field (024), so a grant to read a field, or to see it
+  masked, whose source is `none` gives nothing and shows no type. A
+  grant to write it leaves it write-only (lakelands#393), and that
+  shows the type.
+
+For a host: a principal that is to see that a field is withheld is
+granted something of the type, or the field as `masked` by name.
+
+## Extended: a type that is shown is one its principal may find and get (lakelands#620)
+
+`describe` said `may.find` and `may.get` only of a type its principal
+reads a field of. The read doors never asked that: a principal shown
+`invoice` with every field masked, with one field masked by name, or
+with a field it may only write, was answered every invoice by `get` and
+`find`, counted them and walked from them, while the description said
+it may not, and the tools built from the description offered it neither
+read nor named the type in the pattern, search and subscribe tools.
+
+**A principal that is shown a type may find and get its records, and
+`may.find` and `may.get` say so of every type `describe` answers.**
+
+- **A record is its key, its version and what the grants show of each
+  field**: the value of one that is read, the name of one that is masked,
+  in the declaration's order, and nothing of one that is hidden or only
+  written. One who reads no field is still answered the record; that is
+  how it sees what is withheld, and what a writer writes against.
+- **The probe is refused as before.** A filter, an order, an aggregate
+  or a search over a field the principal does not read is not granted
+  (024), so `may.find` promises the door, not every question.
+- **A key is shown to whoever is shown the record.** A key made of
+  fields holds their values, whatever is granted on those fields. A host
+  does not key a type by a field it hides.
+- **A step walks a relation by its owner.** A relation is declared on
+  the type the principal is shown, so a step over it is answered the
+  other end's key also where the principal's grants keep it from the
+  relation's link type; it is then shown no link field.
+
+For a host: a principal that is not to list a type's records is granted
+nothing of the type.

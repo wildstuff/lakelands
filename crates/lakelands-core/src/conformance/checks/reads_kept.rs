@@ -22,7 +22,7 @@ use crate::conformance::fixture::{
 check!(
     /// A migration keeps the fields a declaration reads.
     MIGRATION_KEEPS_READ_FIELDS = a_migration_keeps_the_fields_a_declaration_reads,
-    "027, extended: a migration that drops a field read by a derived field of its type, by another type's derived relation to it, or by an object set, a trigger or a verb on it (its `requires`, a field it sets, the value it sets one from) is refused as invalid by its preflight, naming the reader and the field, and one that renames such a field names the new name too; so is one that drops a relation's field a trigger on the relation's link type reads, naming the link type; a migration that drops a field no declaration reads goes through; an author who is not shown the reader, as `describe` shows it, is told that a declaration reads the field and not its name, nor a field hidden from it, which its migration does not take away"
+    "027, extended: a migration that drops a field read by a derived field of its type, by another type's derived relation to it, or by an object set, a trigger or a verb on it (its `requires`, a field it sets, the value it sets one from, a field named `payload` read bare too) is refused as invalid by its preflight, naming the reader and the field, and one that renames such a field names the new name too; so is one that drops a relation's field a trigger on the relation's link type reads, naming the link type; a migration that drops a field no declaration reads goes through; an author who is not shown the reader, as `describe` shows it, is told that a declaration reads the field and not its name, nor a field hidden from it, which its migration does not take away"
 );
 
 /// `item` with the text fields `names` and `loud`, derived from `a`.
@@ -36,13 +36,15 @@ async fn a_migration_keeps_the_fields_a_declaration_reads(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let all = ["a", "b", "c", "d", "e", "f", "g", "free"];
+    let all = ["a", "b", "c", "d", "e", "f", "g", "payload", "free"];
     l.declare(item(&all)).await?;
     for d in [
         json!({"declare": "object_set", "name": "s", "of": "item", "where": "b = 'x'"}),
         json!({"declare": "trigger", "name": "t", "on": "item", "when": "changed(c)"}),
         json!({"declare": "verb", "name": "v", "on": "item", "risk": "low", "requires": "f = 'x'",
                "effect": "write", "set": [{"field": "d", "value": "e"}]}),
+        json!({"declare": "verb", "name": "w", "on": "item", "risk": "low",
+               "effect": "write", "set": [{"field": "d", "value": "payload"}]}),
         json!({"declare": "type", "name": "other", "fields": [{"name": "k", "type": {"kind": "text"}}],
                "relations": [{"name": "its", "target": "item",
                               "derived": {"match": [{"from": "k", "to": "g"}]}}]}),
@@ -57,6 +59,7 @@ async fn a_migration_keeps_the_fields_a_declaration_reads(
         ("e", "verb declaration `v`"),
         ("f", "verb declaration `v`"),
         ("g", "type declaration `other`"),
+        ("payload", "verb declaration `w`"),
     ];
     for (gone, reader) in readers {
         let kept: Vec<&str> = all.iter().copied().filter(|n| *n != gone).collect();
@@ -65,8 +68,9 @@ async fn a_migration_keeps_the_fields_a_declaration_reads(
         invalid_naming(&what, preflight, &[reader, &format!("reads `{gone}`")])?;
     }
     let renamed = Migration {
-        to: item(&["a", "b2", "c", "d", "e", "f", "g", "free"]),
+        to: item(&["a", "b2", "c", "d", "e", "f", "g", "payload", "free"]),
         renames: vec![("b".into(), "b2".into())],
+        relation_renames: Vec::new(),
     };
     invalid_naming(
         "a migration renaming `b`",
@@ -95,7 +99,7 @@ async fn a_migration_keeps_the_fields_a_declaration_reads(
             "reads `ok` of `sys.link.doc.signed_by`",
         ],
     )?;
-    l.migrate(item(&all[..7])).await?;
+    l.migrate(item(&all[..8])).await?;
     // A reader its author is not shown is not named to it: `audit` reads
     // `bonus`, which `partial` may not know of, so `describe` leaves it out;
     // and `bonus` was not `partial`'s to leave out, so it stays (027).
@@ -217,7 +221,7 @@ async fn a_migration_names_a_view_only_to_an_author_who_is_shown_it(
 check!(
     /// A declaration reads only fields its type has.
     DECLARATION_READS_ITS_TYPE = a_declaration_reads_only_fields_its_type_has,
-    "028, extended: `declare` and `apply` refuse as invalid, naming the declaration and the field and appending nothing, a derived field, an object set's `where`, a trigger's `when` (`changed` and `previous` included) and a verb's `requires` or the value it sets a field from that read a field the type does not have, and so does a migration's preflight for the type it migrates to; `payload.<name>` in a verb's value, `setting`, `now`, `today` and a guard's `retired` read no field and are accepted"
+    "028, extended: `declare` and `apply` refuse as invalid, naming the declaration and the field and appending nothing, a derived field, an object set's `where`, a trigger's `when` (`changed` and `previous` included) and a verb's `requires` or the value it sets a field from that read a field the type does not have, and so does a migration's preflight for the type it migrates to; in a verb's value only `payload.<name>` is the call's and reads no field, so a bare `payload`, a longer path and one inside a function read the record's field of that name and are refused on a type without it and taken on one that has it, and a member the verb's payload does not have is refused, naming it (lakelands#470); `setting`, `now`, `today` and a guard's `retired` read no field and are accepted"
 );
 
 async fn a_declaration_reads_only_fields_its_type_has(
@@ -259,6 +263,20 @@ async fn a_declaration_reads_only_fields_its_type_has(
         invalid_naming(&what, l.cat.declare(&l.own, d.clone()).await, &names)?;
         invalid_naming(&what, l.cat.apply(&l.own, vec![d]).await, &names)?;
     }
+    // In a verb's value only `payload.<name>` is the call's.
+    let reads = ["verb declaration `p`", "reads `payload`"];
+    for (value, names) in [
+        ("payload", reads),
+        ("payload.note.deep", reads),
+        ("concat(payload, '!')", reads),
+        ("payload.ghost", ["verb `p`", "`payload.ghost`"]),
+    ] {
+        let d = verb("p", "status = 'x'", value);
+        let d: Declaration = serde_json::from_value(d).expect("a verb");
+        let what = format!("declaring a verb whose value is `{value}`");
+        invalid_naming(&what, l.cat.declare(&l.own, d.clone()).await, &names)?;
+        invalid_naming(&what, l.cat.apply(&l.own, vec![d]).await, &names)?;
+    }
     head_unmoved(
         store.as_ref(),
         before,
@@ -272,8 +290,12 @@ async fn a_declaration_reads_only_fields_its_type_has(
         l.cat.migrate(&l.own, migration(loud)).await,
         &["type declaration `invoice`", "reads `ghost`"],
     )?;
+    // On a type that has a field `payload`, the bare name reads it.
+    let fields = ["status", "old", "payload"].map(|n| field(n, Text));
+    l.declare(type_decl("invoice", fields.into())).await?;
     for d in [
         verb("note", "status = setting('mode')", "payload.note"),
+        verb("own", "status = 'x'", "concat(payload, payload.note)"),
         trigger("retired() or changed(status) and previous(status) = 'x'"),
         set("status = 'x' and now() > today()"),
     ] {

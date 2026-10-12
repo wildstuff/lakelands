@@ -30,7 +30,7 @@ use lakelands_api::read::{Find, Found, Get, ReadAt, Reply};
 use lakelands_api::record::{Patch, Record};
 use lakelands_api::write::{
     Committed, Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter,
-    ProposedWrite, ValueTypeReport, WriteOpts,
+    ProposedWrite, Recompute, ValueTypeReport, WriteOpts,
 };
 use serde_json::{Value, json};
 
@@ -289,6 +289,11 @@ impl Catalog for RemoteCatalog {
         self.go(who, call).await
     }
 
+    async fn recompute(&self, who: &Principal, what: Recompute) -> Result<Outcome> {
+        let call = Call::new(Method::POST, "schema/recompute".into()).json(&json!(what));
+        self.go(who, call).await
+    }
+
     async fn add_field(&self, who: &Principal, ty: &TypeName, field: FieldDecl) -> Result<Outcome> {
         let call = Call::new(Method::POST, "schema/add_field".into())
             .json(&json!({ "type": ty, "field": field }));
@@ -300,8 +305,7 @@ impl Catalog for RemoteCatalog {
         who: &Principal,
         migration: Migration,
     ) -> Result<Reply<MigrationReport>> {
-        let call = Call::new(Method::POST, "schema/migrate".into())
-            .json(&json!({ "to": migration.to, "renames": migration.renames }));
+        let call = Call::new(Method::POST, "schema/migrate".into()).json(&json!(migration));
         self.go(who, call).await
     }
 
@@ -311,11 +315,9 @@ impl Catalog for RemoteCatalog {
         migration: Migration,
         report_id: &str,
     ) -> Result<Outcome> {
-        let call = Call::new(Method::POST, "schema/migrate/apply".into()).json(&json!({
-            "to": migration.to,
-            "renames": migration.renames,
-            "report_id": report_id,
-        }));
+        let mut body = json!(migration);
+        body["report_id"] = json!(report_id);
+        let call = Call::new(Method::POST, "schema/migrate/apply".into()).json(&body);
         self.go(who, call).await
     }
 

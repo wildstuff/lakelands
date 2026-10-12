@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.9.1"
+version = "0.10.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -32,6 +32,9 @@ regex = "1"
 # A counting global allocator for the conformance tests' heap meter; the
 # workspace forbids unsafe code, which an allocator needs.
 peak_alloc = "0.3"
+# Sets a file size limit for the SQLite engine's tests of a write the kernel
+# cuts short; the workspace forbids unsafe code, which the call needs.
+rustix = { version = "1.1", features = ["process"] }
 lakelands-core = { path = "crates/lakelands-core" }
 lakelands-store = { path = "crates/lakelands-store" }
 lakelands-engine-mem = { path = "crates/lakelands-engine-mem" }

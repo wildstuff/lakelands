@@ -85,7 +85,7 @@ check!(
 check!(
     /// A failure clears, and a redeclaration retries it.
     EMBED_FAILURE_RETRIED = a_failed_embedding_clears_the_field_and_a_redeclaration_retries_it,
-    "022, extended: a failure is recorded, clears the field and puts its reason in the metadata; a redeclaration calls again for that text once, the later output holds and the vector fills every record holding it",
+    "022, extended: a failure is recorded, clears the field and puts its reason in the metadata; `recompute` calls again for that text once, the later output holds and the vector fills every record holding it",
     embedding
 );
 
@@ -109,6 +109,13 @@ fn notes_with(vec: FieldDecl, extra: Vec<FieldDecl>) -> lakelands_api::ontology:
 /// `note` whose `vec` of `dimensions` embeds `from` with `model`.
 fn notes_by(from: &[&str], model: &str, dimensions: u32) -> lakelands_api::ontology::TypeDecl {
     notes_with(embedding("vec", dimensions, from, model), vec![])
+}
+
+/// `note` computed again by the door: declared again it would settle nothing.
+async fn recomputed(l: &Lake) -> Result<(), Failure> {
+    let what = lakelands_api::write::Recompute::Type("note".into());
+    let done = l.cat.recompute(&l.own, what).await;
+    done.must("computing `note` again").map(drop)
 }
 
 /// Declare `note`, whose `vec` embeds `title` and `body`.
@@ -366,15 +373,14 @@ async fn a_failed_embedding_clears_the_field_and_a_redeclaration_retries_it(
     l.upsert("note", "n1", json!({"body": ""})).await?;
     let before = embedded(text);
     plug_text(text);
-    l.declare(notes_by(&["title", "body"], EMBED_MODEL, 2))
-        .await?;
+    recomputed(&l).await?;
     let (n1, n2) = (
         vec_of(store.as_ref(), "n1").await?,
         vec_of(store.as_ref(), "n2").await?,
     );
     ensure!(
         before == 1 && embedded(text) == 2 && is_east(&n1) && is_east(&n2),
-        "declaring `note` again retries the recorded failure: {text:?} must be sent once \
+        "`recompute` of `note` retries the recorded failure: {text:?} must be sent once \
          more for both records that hold it (twice in all, not {}), and the later output \
          holds, so `vec` reads (1, 0) on both; they read {n1:?} and {n2:?}",
         embedded(text)
@@ -481,7 +487,7 @@ async fn a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_un
 check!(
     /// A due embedding waits while no backend makes it.
     EMBED_WAITS = a_due_embedding_waits_while_no_backend_makes_it,
-    "seams, EmbedBackend: a due embedding whose backend is gone or makes another model or other dimensions is not made; the field waits, with neither a value nor metadata, until its record is written again or its type is declared again with the backend bound",
+    "seams, EmbedBackend: a due embedding whose backend is gone or makes another model or other dimensions is not made; the field waits, with neither a value nor metadata, until its record is written again or `recompute` names its type, with the backend bound",
     reopens
 );
 
@@ -525,7 +531,7 @@ async fn a_due_embedding_waits_while_no_backend_makes_it(
     }
     // The backend is back. Opening the lake calls nothing, and neither
     // does a write to another record: a waiting field is made when its
-    // record is written again or its type is declared again.
+    // record is written again or the door names its type.
     store = reopen(store, with_embedder(Some(backing::embedder())))
         .await
         .map_err(|e| reopen_failed("with the suite's embedding backend again", e))?;
@@ -545,14 +551,14 @@ async fn a_due_embedding_waits_while_no_backend_makes_it(
         "`gone` was written again with its backend bound, so its waiting `vec` is made; \
          it reads {touched:?}"
     );
-    notes(store.as_ref()).await?;
+    recomputed(&l).await?;
     let (other, wider) = (
         vec_of(store.as_ref(), "other").await?,
         vec_of(store.as_ref(), "wider").await?,
     );
     ensure!(
         is_east(&other) && is_east(&wider),
-        "declaring `note` again with its backend bound makes every waiting `vec`; `other` \
+        "`recompute` of `note`, its backend bound, makes every waiting `vec`; `other` \
          and `wider` read {other:?} and {wider:?}"
     );
     Ok(())
@@ -769,12 +775,11 @@ async fn vector_coverage_counts_embedded_and_due_records_at_the_head(
     for title in failing {
         plug_text(title);
     }
-    l.declare(notes_by(&["title", "body"], EMBED_MODEL, 2))
-        .await?;
+    recomputed(&l).await?;
     let got = coverage(store.as_ref(), "after the redeclaration's retry").await?;
     ensure!(
         got == (5, 0),
-        "declaring `note` again retries the two failures: (5, 0) is expected, and \
+        "`recompute` of `note` retries the two failures: (5, 0) is expected, and \
          vector_coverage answered {got:?}"
     );
 

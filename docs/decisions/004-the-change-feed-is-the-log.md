@@ -234,3 +234,33 @@ a re-key of `X` the filter holds for no record, and the members leave,
 which the events say. A host that means "under this person" declares the
 set again with the new key; that declaration decides the records
 (lakelands#453).
+
+## Extended: a set names a set (lakelands#552)
+
+A set built from two others repeated their filters, and drifted when one
+of them was declared again: nothing tied the copy to what it copied.
+
+`in_set('name')` names a set in a condition. It holds for a record where
+the named set's filter holds for it: the filter stands in the name's
+place when the condition is read. It is not a lookup of stored
+membership, so a set stays its filter, and union, intersection and
+difference are `or`, `and` and `and not`. A set's `where`, a trigger's
+`when` and a read's `where` may name a set; anywhere else the call is
+refused.
+
+- **A change reaches the sets built on it.** A set declared again decides
+  the sets that name it, and those that name them, in the same append,
+  each change caused by that `declared`. The lake's `max_set_changes`
+  counts over all of them; past it the declaration is refused
+  `too_large`, naming the set whose change passed it, and nothing is
+  appended.
+- **Refused at the declaration:** a set that is not declared, a set of
+  another type than the record's, and a set that names itself through
+  others, naming them.
+- **A set is of one type.** Declared again for another type it is
+  refused: it would let go of every member without a word, and a set of
+  another type is another set.
+- **A read at an earlier position** takes each named set's filter as it
+  was in force there.
+
+A declaration that names a set is written in log format 11.

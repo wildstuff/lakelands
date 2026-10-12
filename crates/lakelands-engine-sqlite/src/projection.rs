@@ -23,7 +23,7 @@
 //! position folded through in the same transaction. A crash or a rollback
 //! leaves the projection at a whole append.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::Declared;
 use lakelands_api::error::Result;
@@ -32,7 +32,7 @@ use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING};
 use lakelands_api::write::Declaration;
-use lakelands_core::engines;
+use lakelands_core::engines::{self, sorted_mark};
 use rusqlite::types::FromSql;
 use rusqlite::{Connection, OptionalExtension, Params, ToSql, params};
 
@@ -151,6 +151,21 @@ impl History {
             .join(" AND ")
     }
 
+    /// The statement that ends the state in force before a put: only the
+    /// latest earlier state can be the one, so it is sought and the
+    /// thing's other states are not read (lakelands#596). Its parameters
+    /// are the thing's columns and then the put's position.
+    pub(crate) fn ends_latest(&self) -> String {
+        format!(
+            "UPDATE {t} SET until = ?{n1} WHERE {w} AND since = \
+             (SELECT max(since) FROM {t} WHERE {w} AND since < ?{n1}) \
+             AND (until IS NULL OR until > ?{n1})",
+            t = self.table,
+            w = self.ident_where(1),
+            n1 = self.ident.len() + 1
+        )
+    }
+
     /// Put a state of one thing valid from `since`, keeping every other
     /// state: the one it supersedes ends at `since`, and it ends where the
     /// next one, if any, begins.
@@ -191,15 +206,9 @@ impl History {
             ))
             .and_then(|mut s| s.query_row(args.as_slice(), |r| r.get(0)))
             .map_err(sql)?;
-        conn.prepare_cached(&format!(
-            "UPDATE {} SET until = ?{n1} WHERE {} AND since < ?{n1} \
-             AND (until IS NULL OR until > ?{n1})",
-            self.table,
-            self.ident_where(1),
-            n1 = n + 1
-        ))
-        .and_then(|mut s| s.execute(args.as_slice()))
-        .map_err(sql)?;
+        conn.prepare_cached(&self.ends_latest())
+            .and_then(|mut s| s.execute(args.as_slice()))
+            .map_err(sql)?;
         let columns = self.ident.join(", ");
         let marks: Vec<String> = (1..=n + 3).map(|i| format!("?{i}")).collect();
         conn.prepare_cached(&format!(
@@ -261,12 +270,6 @@ pub(crate) fn folded(conn: &Connection) -> Result<Option<Position>> {
         .map(|v: Option<i64>| v.map(|v| Position(v as u64)))
 }
 
-/// The meta row marking the position `ty`'s order index was last kept
-/// through.
-fn sorted_mark(ty: &TypeName) -> String {
-    format!("sorted.{ty}")
-}
-
 /// The position `ty`'s order index was last kept through, if the lake
 /// keeps one. It describes the head only when it is the position folded
 /// through: a writer that does not keep the index leaves it behind.
@@ -307,8 +310,7 @@ pub(crate) fn rebuild_sorted(conn: &Connection, ty: &TypeName, through: Position
     let decl = type_at(conn, ty, None)?;
     let fields = sorted_fields(conn, ty, decl.as_ref())?;
     if fields.is_empty() {
-        run(conn, "DELETE FROM meta WHERE k = ?1", [sorted_mark(ty)])?;
-        return Ok(());
+        return set_sorted(conn, ty, None);
     }
     // A page of the type at a time, so the pass holds a page, not the type.
     let mut after = String::new();
@@ -335,10 +337,19 @@ pub(crate) fn rebuild_sorted(conn: &Connection, ty: &TypeName, through: Position
             break;
         }
     }
+    set_sorted(conn, ty, Some(through))
+}
+
+/// Mark `ty`'s order index kept through `through`; with none, drop its
+/// mark: the index keeps no field.
+fn set_sorted(conn: &Connection, ty: &TypeName, through: Option<Position>) -> Result<()> {
+    let Some(at) = through else {
+        return run(conn, "DELETE FROM meta WHERE k = ?1", [sorted_mark(ty)]);
+    };
     run(
         conn,
         "INSERT INTO meta (k, v) VALUES (?1, ?2) ON CONFLICT (k) DO UPDATE SET v = ?2",
-        params![sorted_mark(ty), through.0 as i64],
+        params![sorted_mark(ty), at.0 as i64],
     )
 }
 
@@ -439,16 +450,6 @@ pub(crate) fn type_at(
     ))
 }
 
-/// The latest states of one type's records.
-pub(crate) fn head_records(conn: &Connection, ty: &TypeName) -> Result<Vec<StoredRecord>> {
-    column(
-        conn,
-        "SELECT state FROM records WHERE ty = ?1 AND until IS NULL ORDER BY key",
-        params![ty.as_str()],
-        |s: String| decode_record(&s),
-    )
-}
-
 /// The latest state of one record.
 pub(crate) fn head_record(
     conn: &Connection,
@@ -464,9 +465,7 @@ pub(crate) fn head_record(
 }
 
 pub(crate) fn decode_record(state: &str) -> Result<StoredRecord> {
-    serde_json::from_str(state).map_err(|e| {
-        crate::unavailable(format!("the projection holds a record it cannot read: {e}"))
-    })
+    engines::decode(state, "a record")
 }
 
 /// Whether a record's state put at `position` is its latest.
@@ -573,42 +572,91 @@ pub(crate) fn fts_term(token: &str) -> String {
     lakelands_core::canonical::hex(token.as_bytes())
 }
 
-/// Put a record's state and, when it is the latest, its head indexes.
-pub(crate) fn put_record(conn: &Connection, r: &StoredRecord) -> Result<()> {
+/// The types a transaction's records are indexed under, each as its
+/// records are: its declaration at the head and the fields its order
+/// index keeps.
+pub(crate) type Kept = BTreeMap<TypeName, (Option<TypeDecl>, Vec<FieldName>)>;
+
+/// Put a record's state and, when it is the latest, its head indexes. Its
+/// type is read into `kept` and not again for another record of that type
+/// in the transaction, whatever is put between them: a source's record
+/// and a view's kept record follow each other at every event
+/// (lakelands#575). A `sort_index.<type>` setting forgets them all, since
+/// the type it names may be the settings' own; the caller forgets them at
+/// a declaration.
+pub(crate) fn put_record(conn: &Connection, kept: &mut Kept, r: &StoredRecord) -> Result<()> {
     let state = serde_json::to_string(r).expect("a record serialises");
     RECORDS.put(conn, &[&r.ty.as_str(), &r.key.as_str()], r.position, &state)?;
     if is_head(conn, &r.ty, &r.key, r.position)? {
-        let decl = type_at(conn, &r.ty, None)?;
-        let sorted = sorted_fields(conn, &r.ty, decl.as_ref())?;
-        index_record(conn, decl.as_ref(), &sorted, r)?;
+        if !kept.contains_key(&r.ty) {
+            let decl = type_at(conn, &r.ty, None)?;
+            let sorted = sorted_fields(conn, &r.ty, decl.as_ref())?;
+            kept.insert(r.ty.clone(), (decl, sorted));
+        }
+        let (decl, sorted) = &kept[&r.ty];
+        index_record(conn, decl.as_ref(), sorted, r)?;
         // The setting's write rebuilds the index it asks for, so the index
         // describes the head from the next read on.
         if let Some(ty) = engines::sort_index_type(r) {
             rebuild_sorted(conn, &ty, r.position)?;
+            kept.clear();
         }
     }
     Ok(())
 }
 
-/// Put a declaration and, for a type now in force at the head, rewrite
-/// the head indexes of its records under it.
-pub(crate) fn put_declaration(conn: &Connection, d: &Declared) -> Result<()> {
+/// Put a declaration. For a type now in force at the head its records'
+/// head indexes are to be rewritten under it, and it answers the type:
+/// the commit does that with [`index_older`], for the records the
+/// transaction has not put again by then.
+pub(crate) fn put_declaration(conn: &Connection, d: &Declared) -> Result<Option<TypeName>> {
     let ident = engines::declaration_key(&d.declaration);
     let state = serde_json::to_string(d).expect("a declaration serialises");
     DECLARATIONS.put(conn, &[&ident], d.since, &state)?;
-    if let Declaration::Type(t) = &d.declaration {
-        let head = type_at(conn, &t.name, None)?;
-        if head.as_ref() == Some(t) {
-            // The rows go whole: the declaration may have dropped a field
-            // the index kept.
-            conn.prepare_cached("DELETE FROM sort_index WHERE ty = ?1")
-                .and_then(|mut s| s.execute([t.name.as_str()]))
-                .map_err(sql)?;
-            let sorted = sorted_fields(conn, &t.name, head.as_ref())?;
-            for r in head_records(conn, &t.name)? {
-                index_record(conn, head.as_ref(), &sorted, &r)?;
-            }
+    let Declaration::Type(t) = &d.declaration else {
+        return Ok(None);
+    };
+    if type_at(conn, &t.name, None)?.as_ref() != Some(t) {
+        return Ok(None);
+    }
+    // The rows go whole: the declaration may have dropped a field the index
+    // kept. The mark follows the fields it leaves the index, which the
+    // records put after it and the commit fill: a setting put before the
+    // declaration that first declares its fields found none to mark.
+    conn.prepare_cached("DELETE FROM sort_index WHERE ty = ?1")
+        .and_then(|mut s| s.execute([t.name.as_str()]))
+        .map_err(sql)?;
+    let kept = !sorted_fields(conn, &t.name, Some(t))?.is_empty();
+    set_sorted(conn, &t.name, kept.then_some(d.since))?;
+    Ok(Some(t.name.clone()))
+}
+
+/// Rewrite the head indexes of the records of `ty` whose latest state is
+/// older than `at`, under the type's declaration at the head. A record put
+/// at `at` or after was indexed under that declaration when it was put: a
+/// migration puts every record again, and nothing is left to do here.
+pub(crate) fn index_older(conn: &Connection, ty: &TypeName, at: Position) -> Result<()> {
+    let head = type_at(conn, ty, None)?;
+    let sorted = sorted_fields(conn, ty, head.as_ref())?;
+    // A page of the type at a time; an ended key has no index rows.
+    let mut after = String::new();
+    loop {
+        let older: Vec<StoredRecord> = column(
+            conn,
+            "SELECT state FROM records WHERE ty = ?1 AND until IS NULL AND since < ?2 \
+             AND key > ?3 ORDER BY key LIMIT 1024",
+            params![ty.as_str(), at.0 as i64, after],
+            |s: String| decode_record(&s),
+        )?;
+        for r in older.iter().filter(|r| !r.is_ended()) {
+            index_record(conn, head.as_ref(), &sorted, r)?;
+        }
+        match older.last() {
+            Some(last) if older.len() == 1024 => after = last.key.to_string(),
+            _ => return Ok(()),
         }
     }
-    Ok(())
 }
+
+#[cfg(test)]
+mod tests;

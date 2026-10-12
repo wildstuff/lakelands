@@ -1,4 +1,4 @@
-package lakelands:data@0.9.1;
+package lakelands:data@0.10.0;
 
 /// The lake's map: describing it and changing it. A bundle is declared
 /// whole with `apply`; a shape change goes through `migrate` and its
@@ -7,7 +7,7 @@ interface schema {
     use types.{
         principal, read-at, type-name, lake-description-reply, type-description-reply,
         declaration, field-decl, migration, migration-report-reply, outcome, error,
-        value-type-decl, value-type-report-reply,
+        value-type-decl, value-type-report-reply, recomputed,
     };
     use store.{catalog};
 
@@ -16,8 +16,10 @@ interface schema {
     declare: func(catalog: borrow<catalog>, who: principal, declaration: declaration) -> result<outcome, error>;
     apply: func(catalog: borrow<catalog>, who: principal, declarations: list<declaration>) -> result<outcome, error>;
     add-field: func(catalog: borrow<catalog>, who: principal, %type: type-name, field: field-decl) -> result<outcome, error>;
-    /// The fail-closed preflight: what the migration would convert, and
-    /// whether it is lossless. Nothing is written.
+    /// Compute again what a declaration in force computes.
+    recompute: func(catalog: borrow<catalog>, who: principal, what: recomputed) -> result<outcome, error>;
+    /// The fail-closed preflight: what the migration would convert, what
+    /// it drops, and whether it is lossless. Nothing is written.
     migrate: func(catalog: borrow<catalog>, who: principal, migration: migration) -> result<migration-report-reply, error>;
     /// Apply a migration against the report `migrate` answered.
     migrate-apply: func(catalog: borrow<catalog>, who: principal, migration: migration, report-id: string) -> result<outcome, error>;

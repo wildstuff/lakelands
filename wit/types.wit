@@ -1,4 +1,4 @@
-package lakelands:data@0.9.1;
+package lakelands:data@0.10.0;
 
 /// The types every interface of the package shares: the contract of
 /// `lakelands-api`, type for type.
@@ -149,6 +149,10 @@ interface types {
         function: option<string>,
         depends-on: list<field-name>,
         on-input-change: on-input-change,
+        /// The value the field takes when its record comes to exist and
+        /// the creating write gives it none; on an authored field of a
+        /// type's own alone.
+        initial: option<json>,
         sensitive: bool,
         searchable: bool,
         description: option<string>,
@@ -319,9 +323,47 @@ interface types {
         function(function-decl),
     }
 
+    /// What `recompute` names.
+    variant recomputed {
+        function(string),
+        %type(type-name),
+    }
+
     record migration {
         to: type-decl,
         renames: list<tuple<field-name, field-name>>,
+        /// Relations renamed, old name to new name: each keeps its edges.
+        relation-renames: list<tuple<relation-name, relation-name>>,
+    }
+
+    /// How a relation's edges are carried.
+    enum carrier {
+        via,
+        links,
+        derived,
+    }
+
+    /// A declaration a migration declares again under a link type's new name.
+    record carried {
+        kind: string,
+        name: string,
+    }
+
+    /// One member a migration's `to` states otherwise than the declaration
+    /// in force: of the type, a field, a relation or a link field.
+    record restated {
+        field: option<field-name>,
+        member: string,
+        was: json,
+        to: json,
+    }
+
+    /// One relation a migration renames, in its preflight's report.
+    record relation-rename {
+        %from: relation-name,
+        to: relation-name,
+        carrier: carrier,
+        links: u64,
     }
 
     record field-conversion {
@@ -334,17 +376,27 @@ interface types {
     }
 
     record migration-report {
+        /// Empty in an answer to a reader who may not see the type.
         %type: type-name,
         from-schema-hash: string,
         to-schema-hash: string,
         records-scanned: u64,
         fields: list<field-conversion>,
+        /// Each removed field or relation, with the records or links
+        /// whose values the apply discards.
         dropped: list<tuple<field-name, u64>>,
+        relations: list<relation-rename>,
+        carried: list<carried>,
         rekeyed: list<rekeyed>,
         references: list<reference-rewrite>,
         sample-collisions: list<record-ref>,
+        restated: list<restated>,
+        /// Every kept value converts and every moved record gets a key;
+        /// it says nothing of what `dropped` removes.
         lossless: bool,
         report-id: string,
+        /// The report holds more than its reader is shown.
+        more: bool,
     }
 
     /// What a re-key does to one type's records.
@@ -366,7 +418,9 @@ interface types {
     // Records
     // ------------------------------------------------------------------
 
-    enum origin { source, authored, derived, system }
+    /// `initial`: the field's declared initial value, filled when the
+    /// record came to exist.
+    enum origin { source, authored, derived, system, initial }
 
     /// Where values read from another lake's log came from: that lake and
     /// the position of the event there whose state they are (log format
@@ -545,6 +599,9 @@ interface types {
         fired: list<trigger-name>,
         joined: list<string>,
         left: list<string>,
+        /// For a migration: each field it renamed, old name and new, as
+        /// the one answered may know of them.
+        renamed: list<tuple<field-name, field-name>>,
     }
 
     record proposed {
@@ -615,11 +672,14 @@ interface types {
         position: position,
         proposer: string,
         proposed-at: timestamp,
-        write: proposed-write,
+        /// As far as its reader may see it; absent when it may see nothing.
+        write: option<proposed-write>,
         why: string,
         state: proposal-state,
         decided-by: option<string>,
         reason: option<string>,
+        /// The proposal holds more than its reader is shown.
+        more: bool,
     }
 
     record proposal-filter {
@@ -810,6 +870,28 @@ interface types {
         /// `vector_index.<type>` setting): a search over one of them
         /// answers the index's set and says `ranked_by: index`.
         indexed: list<field-name>,
+        /// For a view: whether its records are kept (its
+        /// `view_kept.<type>` setting) or computed at each read, and why.
+        kept: option<kept>,
+    }
+
+    /// Whether a view's records are kept as its sources are written, or
+    /// computed at each read.
+    variant kept {
+        kept,
+        computed(not-kept),
+    }
+
+    /// Why a view is computed at each read: no setting asks for it; it
+    /// cannot be kept (the reason, to a principal shown the view as
+    /// declared); its records are not whole (the groups that are not
+    /// exact for this reader); or its records are not kept at this
+    /// position, or by this lake.
+    variant not-kept {
+        not-asked,
+        cannot-be-kept(option<string>),
+        not-whole(u64),
+        not-kept-here,
     }
 
     record field-description {
@@ -823,6 +905,8 @@ interface types {
         function: option<string>,
         depends-on: list<field-name>,
         on-input-change: on-input-change,
+        /// The value it takes when its record comes to exist without one.
+        initial: option<json>,
         filterable: bool,
         searchable: bool,
         sensitive: bool,
@@ -941,6 +1025,7 @@ interface types {
         %type(type-name),
         %record(record-ref),
         verb(verb-name),
+        function(string),
         proposal(proposal-id),
     }
 
@@ -955,6 +1040,7 @@ interface types {
         too-large(u32),
         migration(migration-report),
         decided,
+        unanswered(string),
         out-of-range(position),
     }
 
@@ -1006,17 +1092,30 @@ interface types {
         skipped: option<string>,
     }
 
-    /// What one purge retired, or its preflight says it would: per type,
-    /// the types it could not search, the position, what outside it refers
-    /// into it, and a preflight's id.
+    /// What one purge retired, or its preflight says it would: the one
+    /// type it was of where it named one, per type, the types it could
+    /// not search, the position, what outside it refers into it, and a
+    /// preflight's id.
     record purge-report {
         source: source-id,
+        %type: option<type-name>,
         retired: u32,
         types: list<type-retired>,
         unsearched: list<type-name>,
         position: position,
         references: list<purge-reference>,
+        moved: list<purge-moved>,
         report-id: string,
+    }
+
+    /// The records a purge takes whose one field with a declared
+    /// `initial` value an author had written: how many, and the first ten
+    /// keys.
+    record purge-moved {
+        %type: type-name,
+        field: field-name,
+        records: u64,
+        first: list<record-key>,
     }
 
     /// The live records outside a purge that refer into it over one

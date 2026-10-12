@@ -35,8 +35,9 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
-use lakelands_api::engine::{After, Scan};
+use lakelands_api::engine::{After, CanonicalEvent, Scan};
 use lakelands_api::error::{Error, Refusal, Result};
+use lakelands_api::event::SegmentDigest;
 use lakelands_api::expr::Expr;
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
 use lakelands_api::ontology::TypeDecl;
@@ -238,7 +239,10 @@ pub fn key_batch(scan: &Scan) -> u32 {
 /// read in batches (`key_batch`), each continuing after the last key read,
 /// until the page is full or the type is out. `read(after, n)` answers at
 /// most `n` states after the key `after` (from the first when `None`), in
-/// key order. It answers what [`scan`] answers over every state.
+/// key order. It may leave out states the scan cannot select (an engine's
+/// index names the candidates, [`text_lookup`]), but a batch shorter than
+/// `n` ends the walk: it answers `n` whenever `n` remain. It answers what
+/// [`scan`] answers over every state.
 pub fn scan_in_key_order<E>(
     decl: Option<&TypeDecl>,
     scan: &Scan,
@@ -253,6 +257,7 @@ pub fn scan_in_key_order<E>(
     let mut after: Option<String> = scan.after.as_ref().map(|a| a.key.to_string());
     loop {
         let rows = read(after.as_deref(), batch)?;
+        count_read(rows.len());
         let read_all = rows.len() < batch as usize;
         for r in rows {
             after = Some(r.key.to_string());
@@ -407,6 +412,12 @@ pub fn sort_index_key(ty: &TypeName) -> String {
     format!("{}{ty}", lakelands_api::seam::SORT_INDEX_SETTING)
 }
 
+/// The meta row by which an engine that keeps `ty`'s order index in
+/// tables marks the position it was last kept through.
+pub fn sorted_mark(ty: &TypeName) -> String {
+    format!("sorted.{ty}")
+}
+
 /// The key of the setting that asks for `ty`'s vector index.
 pub fn vector_index_key(ty: &TypeName) -> String {
     format!("{}{ty}", lakelands_api::seam::VECTOR_INDEX_SETTING)
@@ -453,12 +464,13 @@ thread_local! {
     static LINKS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// The rows the scans on this thread were handed to order: the whole
-/// type in the fallback, [`scan`], the index rows and missing records
-/// in [`scan_in_field_order`], and those and the changed states in
-/// [`scan_in_field_order_at`]. It exists for the engine checks, which
-/// count by it that a page ordered by an indexed field reads its page,
-/// not the type; it costs one add per call or batch.
+/// The rows the scans and counts on this thread were handed: the whole
+/// type in the fallback, [`scan`], every batch of a key-ordered page
+/// ([`scan_in_key_order`]) and of a count ([`count_in_key_order`]), the
+/// index rows and missing records in [`scan_in_field_order`], and those
+/// and the changed states in [`scan_in_field_order_at`]. It exists for
+/// the engine checks, which count by it that a page reads its page, not
+/// the type or every match; it costs one add per call or batch.
 pub fn rows_read() -> u64 {
     ROWS_READ.with(|n| n.get())
 }
@@ -969,17 +981,16 @@ fn field_tokens(
 /// records of one type as they stand at the head, `decl` the type's
 /// declaration there, are hits when their searchable text holds a query
 /// token — the text of the searchable fields `fields` names, when it
-/// names any; `visible` keeps those live at the view's own
-/// position. A hit scores the distinct query tokens its head text holds;
-/// best first, ties by key, at most `k`.
+/// names any; each comes with whether it is live at the view's own
+/// position, and only those are kept. A hit scores the distinct query
+/// tokens its head text holds; best first, ties by key, at most `k`.
 ///
 /// An engine may hand in any superset of the hits as `head`: a record
 /// whose named fields hold no query token scores nothing and is dropped
 /// here, before the ranking is cut at `k`.
 pub fn lexical<'a>(
     decl: &TypeDecl,
-    head: impl IntoIterator<Item = &'a StoredRecord>,
-    visible: impl Fn(&RecordKey) -> bool,
+    head: impl IntoIterator<Item = (&'a StoredRecord, bool)>,
     text: &str,
     fields: Option<&[FieldName]>,
     k: u32,
@@ -987,9 +998,9 @@ pub fn lexical<'a>(
     let query = tokens(text, decl.language.as_deref().unwrap_or(""));
     let mut hits: Vec<(RecordKey, f64)> = head
         .into_iter()
-        .filter_map(|r| {
+        .filter_map(|(r, live)| {
             let score = query.intersection(&field_tokens(decl, r, fields)).count();
-            (score > 0 && visible(&r.key)).then(|| (r.key.clone(), score as f64))
+            (score > 0 && live).then(|| (r.key.clone(), score as f64))
         })
         .collect();
     rank(&mut hits, k);
@@ -1081,12 +1092,39 @@ pub fn append_fault(
     Ok(())
 }
 
+/// The events that begin the next segment as a seal's `first` answered
+/// them for `sealed`: at least one, or the seal is refused and nothing is
+/// sealed.
+pub fn first_of_next(
+    first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
+    sealed: &SegmentDigest,
+) -> Result<Vec<CanonicalEvent>> {
+    let events = first(sealed)?;
+    if events.is_empty() {
+        return Err(invalid(format!(
+            "a seal begins the next segment with its first event, and none was handed for the \
+             one after position {}; nothing was sealed",
+            sealed.last
+        )));
+    }
+    Ok(events)
+}
+
 /// The refusal of the writer lease to a taker while `holder` holds it
 /// under `fence`.
 pub fn lease_held(holder: &str, fence: u64) -> Error {
     crate::unavailable(format!(
         "the lake's writer lease is held by `{holder}` (fence {fence}); it must be released \
          before another writer can take it"
+    ))
+}
+
+/// The refusal of a query vector of `query` dimensions where the vector
+/// `ty.field` holds for the record `key` has `held`.
+pub fn dimensions(query: usize, held: usize, ty: &TypeName, field: &str, key: &str) -> Error {
+    invalid(format!(
+        "the query vector has {query} dimensions, but `{ty}.{field}` holds vectors of {held} \
+         (record `{key}`)"
     ))
 }
 
@@ -1200,6 +1238,21 @@ fn touched(
     }
 }
 
+/// Whether a proposal is of `filter`'s kind and touches its type, by the
+/// write it holds: one that holds none is of no kind and touches no type.
+pub fn matches(
+    p: &Proposal,
+    filter: &ProposalFilter,
+    verb_on: impl Fn(&VerbName) -> Option<TypeName>,
+) -> bool {
+    let write = p.write.as_ref();
+    filter
+        .kind
+        .is_none_or(|k| write.is_some_and(|w| w.kind() == k))
+        && (filter.ty.as_ref())
+            .is_none_or(|ty| write.is_some_and(|w| touched(w, &verb_on).contains(ty)))
+}
+
 /// Proposals as a view answers them: those in `filter`'s state, of its
 /// kind and touching its type (`verb_on` says which type a verb acts on,
 /// as declared at the view's position), newest first, ties by id, at most
@@ -1212,13 +1265,7 @@ pub fn proposals<'a>(
     let mut found: Vec<&Proposal> = all
         .into_iter()
         .filter(|p| filter.state.is_none_or(|s| p.state == s))
-        .filter(|p| filter.kind.is_none_or(|k| p.write.kind() == k))
-        .filter(|p| {
-            filter
-                .ty
-                .as_ref()
-                .is_none_or(|ty| touched(&p.write, &verb_on).contains(ty))
-        })
+        .filter(|p| matches(p, filter, &verb_on))
         .collect();
     found.sort_by(|a, b| b.position.cmp(&a.position).then_with(|| a.id.cmp(&b.id)));
     found
@@ -1226,6 +1273,13 @@ pub fn proposals<'a>(
         .take(filter.limit.map_or(usize::MAX, |l| l as usize))
         .cloned()
         .collect()
+}
+
+/// A state an engine's projection stored as JSON, read back; `what`
+/// names it (`a record`) in the fault of one that cannot be read.
+pub fn decode<T: serde::de::DeserializeOwned>(state: &str, what: &str) -> Result<T> {
+    serde_json::from_str(state)
+        .map_err(|e| crate::unavailable(format!("the projection holds {what} it cannot read: {e}")))
 }
 
 /// A vector as an index stores it: its components as little-endian
@@ -1279,6 +1333,11 @@ pub fn commit_refusal(
         "a state valid from position {late} cannot be committed through the earlier \
          position {through}"
     )))
+}
+
+/// The refusal of a put made outside a transaction of the fold.
+pub fn unstaged() -> Error {
+    invalid("the projection is written inside a transaction: call `begin` first")
 }
 
 #[cfg(test)]

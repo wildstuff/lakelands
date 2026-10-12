@@ -21,14 +21,16 @@
 //! lease taken; a log that holds anything refuses the import, naming its
 //! head: an import is a lake's birth, not a merge.
 //!
-//! **Then the files, as they are.** Each file's events go to
-//! `LakeEngine::import` [`BATCH`] at a time; before each file after the
-//! first, which starts with its `checkpoint`, the engine seals the segment
-//! before it, and the digest it answers must be the file's. The
-//! projection is folded under the import's lease as a rebuild folds it,
-//! and nothing is appended: the head is the export's. The lease is given
-//! up, and the host opens the lake as always; that open takes a lease
-//! greater than every fence in the log and continues it.
+//! **Then the files, as they are.** The first file's events go to
+//! `LakeEngine::import` [`BATCH`] at a time. Each later file starts with
+//! its `checkpoint`: its first batch is handed to
+//! `LakeEngine::seal_segment`, which closes the segment before it and
+//! begins the next with that batch in one step, once the digest the engine
+//! takes of that segment is the file's; the rest follows through `import`.
+//! The projection is folded under the import's lease as a rebuild folds
+//! it, and nothing is appended: the head is the export's. The lease is
+//! given up, and the host opens the lake as always; that open takes a
+//! lease greater than every fence in the log and continues it.
 //!
 //! **A failure is loud.** Once the first event is written, what can still
 //! fail is the target's storage. The error names the position the import
@@ -210,8 +212,9 @@ pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported>
     })
 }
 
-/// Hand every file's events to the engine a batch at a time, sealing
-/// before each file after the first.
+/// Hand every file's events to the engine a batch at a time; the first
+/// batch of each file after the first enters with the seal of the file
+/// before it.
 fn carry(
     engine: &dyn lakelands_api::engine::LakeEngine,
     lease: &Lease,
@@ -230,39 +233,40 @@ fn carry(
         ))
     };
     for (i, path) in files.iter().enumerate() {
-        if i > 0 {
-            let sealed = engine
-                .seal_segment(lease)
-                .map_err(|e| stopped(path, reached, e))?;
-            let before = &digests[i - 1];
-            if sealed.as_ref().map(|s| &s.digest) != Some(before) {
-                return Err(stopped(
-                    path,
-                    reached,
-                    unavailable(format!(
-                        "the engine sealed the segment before it with the digest {:?}, and \
-                             the file's is `{}`",
-                        sealed.map(|s| s.digest.0),
-                        before.0
-                    )),
-                ));
+        // A file after the first begins a segment: its first events enter
+        // with the seal of the one before, whose digest is checked against
+        // that file's before anything is sealed.
+        let mut seals = i > 0;
+        let mut hand = |batch: &[CanonicalEvent]| -> Result<()> {
+            if !std::mem::take(&mut seals) {
+                return engine.import(lease, batch);
             }
-        }
+            let before = &digests[i - 1];
+            let sealed = engine.seal_segment(lease, true, &mut |sealed| {
+                if &sealed.digest == before {
+                    return Ok(batch.to_vec());
+                }
+                Err(unavailable(format!(
+                    "the engine digests the segment before it as `{}`, and the file's is `{}`; \
+                     nothing of this file was imported",
+                    sealed.digest.0, before.0
+                )))
+            })?;
+            sealed.map(drop).ok_or_else(|| {
+                unavailable("the engine holds no event of the segment before it to seal")
+            })
+        };
         let mut batch = Vec::with_capacity(BATCH);
         for event in events(path)? {
             batch.push(event?.0);
             if batch.len() == BATCH {
-                engine
-                    .import(lease, &batch)
-                    .map_err(|e| stopped(path, reached, e))?;
+                hand(&batch).map_err(|e| stopped(path, reached, e))?;
                 reached = batch.last().expect("a full window").position.next();
                 batch.clear();
             }
         }
         if !batch.is_empty() {
-            engine
-                .import(lease, &batch)
-                .map_err(|e| stopped(path, reached, e))?;
+            hand(&batch).map_err(|e| stopped(path, reached, e))?;
             reached = batch.last().expect("not empty").position.next();
         }
     }

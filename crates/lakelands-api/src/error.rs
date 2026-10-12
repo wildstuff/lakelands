@@ -53,6 +53,13 @@ pub enum Error {
     },
 }
 
+/// Words in the message of an `unavailable` answer to a call of a verb
+/// that reaches outside the lake, when it failed around the hand-out to
+/// the verb's executor: the message says whether the executor was handed
+/// the call and what to do, and a door's advice sends nothing again but
+/// as it says.
+pub const THE_EXECUTOR: &str = "the verb's executor";
+
 /// Why a call was refused.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "refusal", rename_all = "snake_case")]
@@ -104,6 +111,14 @@ pub enum Refusal {
     },
     /// The proposal is already decided.
     Decided,
+    /// A retry of a call of a verb that reaches outside the lake, or of
+    /// its acceptance, found no answer of its executor recorded: the call
+    /// is in the log, and a retry runs nothing. The message names its
+    /// position and what to do.
+    Unanswered {
+        /// What is in the log, and what to do, for a person.
+        message: String,
+    },
     /// The position asked for is not in the lake's log.
     OutOfRange {
         /// The head of the log.
@@ -133,6 +148,11 @@ pub enum Missing {
         /// Its name.
         name: VerbName,
     },
+    /// A function.
+    Function {
+        /// Its name.
+        name: String,
+    },
     /// A proposal.
     Proposal {
         /// Its identifier.
@@ -154,7 +174,8 @@ impl fmt::Display for Error {
                     Refusal::Reserved => write!(f, ": the name is in a reserved namespace"),
                     Refusal::Invalid { message }
                     | Refusal::Constraint { message }
-                    | Refusal::Precondition { message } => write!(f, ": {message}"),
+                    | Refusal::Precondition { message }
+                    | Refusal::Unanswered { message } => write!(f, ": {message}"),
                     Refusal::TooDeep { max } => {
                         write!(f, ": reactions may go {max} levels deep, no deeper")
                     }
@@ -166,6 +187,10 @@ impl fmt::Display for Error {
                     }
                     Refusal::TooLarge { max } => {
                         write!(f, ": a graph measure may reach {max} records, no more")
+                    }
+                    // The type is not named to one who may not see it.
+                    Refusal::Migration { report } if report.ty.as_str().is_empty() => {
+                        write!(f, ": the migration would lose information")
                     }
                     Refusal::Migration { report } => write!(
                         f,
@@ -182,6 +207,7 @@ impl fmt::Display for Error {
                 Missing::Type { name } => write!(f, "there is no type `{name}`"),
                 Missing::Record { ty, key } => write!(f, "there is no `{ty}` with key `{key}`"),
                 Missing::Verb { name } => write!(f, "there is no verb `{name}`"),
+                Missing::Function { name } => write!(f, "there is no function `{name}`"),
                 Missing::Proposal { id } => write!(f, "there is no proposal `{id}`"),
             },
             Error::Conflict { expected, actual } => write!(

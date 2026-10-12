@@ -14,7 +14,11 @@
 //! what refuses a stale writer. Every append and every seal is checked
 //! against the lease this handle holds, and a writer that released or lost
 //! its lease holds none, so its token is refused whatever the file says
-//! now (`docs/decisions/008-one-writer-per-lake.md`).
+//! now (`docs/decisions/008-one-writer-per-lake.md`). The check and the
+//! append or seal it stands before are one step: the handle keeps the
+//! lease it holds locked from the check to the end of the write, so it
+//! cannot give the lease up between them, and the file's lock, held from
+//! the take to the release, keeps every other handle from taking it.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};

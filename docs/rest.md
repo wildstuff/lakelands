@@ -49,7 +49,7 @@ this page says only how a request reaches it.
   |---|---|
   | `refused`: `not_granted`, `wrong_door`, `reserved` | 403 (401 for a missing or unknown key) |
   | `refused`: `invalid`, `constraint`, `precondition`, `too_deep`, `too_large`, `migration`, `out_of_range` | 422 (400 for a request the server cannot read, 404 for no route, 405 for a method the route does not take, 413 for a body over 4 MiB, 415 for a body of another media type) |
-  | `refused`: `decided` | 409 |
+  | `refused`: `decided`, `unanswered` | 409 |
   | `not_found` | 404 |
   | `conflict` | 412 — the version expected came in `If-Match` |
   | `unbound` | 501 |
@@ -87,8 +87,9 @@ key may hold any character.
 | `POST …/schema/declare` | declare anything that does not reshape stored records | body: `declaration` |
 | `POST …/schema/apply` | declare a set together | body: `declarations` |
 | `POST …/schema/add_field` | add a field | body: `type`, `field` |
-| `POST …/schema/migrate` | a migration's preflight | body: `to` and `renames`, or `value_type` |
-| `POST …/schema/migrate/apply` | apply a migration | body: `to` and `renames`, or `value_type`; and `report_id` |
+| `POST …/schema/recompute` | compute again what a declaration in force computes | body: `function` or `type` |
+| `POST …/schema/migrate` | a migration's preflight | body: `to`, `renames` and `relation_renames`, or `value_type` |
+| `POST …/schema/migrate/apply` | apply a migration | body: `to`, `renames` and `relation_renames`, or `value_type`; and `report_id` |
 | `POST …/ingest/<source>` | ingest | body: NDJSON, one record per line |
 | `GET …/feed` | the change feed | query: `from`, `kinds`, `types`, `key` (repeated); `Last-Event-ID` |
 
@@ -186,6 +187,10 @@ or without its quotes) makes a write a compare-and-set; a weak validator
 that the record not exist yet; it is `PUT`'s alone, and `DELETE` or a
 verb that sends it is refused. `Idempotency-Key`
 makes a retry of the same write a no-op that answers the first outcome.
+A retry of a call of a verb that reaches outside the lake answers its
+executor's recorded answer (`"output": null` when it answered `null`);
+while none is recorded it is `409` `unanswered`, and runs nothing
+(`docs/seams.md` §`VerbExecutor`).
 
 A write answers its outcome: `200` with `{"outcome":"applied",…}`, or
 `202` with `{"outcome":"proposed","proposal":…,"why":…}` when it waits

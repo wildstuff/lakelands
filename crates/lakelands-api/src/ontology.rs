@@ -209,6 +209,11 @@ pub struct FieldDecl {
     /// What happens to this field when one of `depends_on` changes.
     #[serde(default)]
     pub on_input_change: OnInputChange,
+    /// The value the field takes when its record comes to exist and the
+    /// creating write gives it none. On an authored field of a type's own
+    /// alone (`docs/decisions/050-a-field-declares-its-initial-value.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial: Option<serde_json::Value>,
     /// Whether values are masked for principals without read access
     /// rather than dropped.
     #[serde(default)]
@@ -245,6 +250,29 @@ impl FieldDecl {
         }
     }
 }
+
+/// The members of a field's declaration that say what it is computed
+/// from, what it starts as, what it means or how the host marked it,
+/// listed once: one who may know of a field and not read it is shown none
+/// of them, wherever a declaration is answered
+/// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
+macro_rules! unread {
+    ($($member:ident),*) => {
+        impl FieldDecl {
+            /// The members shown only to one who may read the field, as
+            /// they serialise.
+            pub const UNREAD: &[&str] = &[$(stringify!($member)),*];
+
+            /// Leaves the declaration its shape alone: its name, type,
+            /// authority, whether it is required and sensitive and what
+            /// an input change does to it.
+            pub fn shape_alone(&mut self) {
+                $(self.$member = Default::default();)*
+            }
+        }
+    };
+}
+unread! { derived, function, depends_on, initial, searchable, description, label, embed, annotations }
 
 /// What a vector field is the embedding of
 /// (`docs/decisions/022-functions-are-declarations.md`, extended).

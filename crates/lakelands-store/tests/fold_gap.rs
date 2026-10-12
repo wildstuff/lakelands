@@ -79,9 +79,14 @@ impl LakeEngine for Failing {
         }
         self.inner.read(from, limit)
     }
-    fn seal_segment(&self, lease: &Lease) -> Result<Option<SegmentDigest>> {
+    fn seal_segment(
+        &self,
+        lease: &Lease,
+        imported: bool,
+        first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
+    ) -> Result<Option<SegmentDigest>> {
         self.sealed.fetch_add(1, Ordering::SeqCst);
-        self.inner.seal_segment(lease)
+        self.inner.seal_segment(lease, imported, first)
     }
     fn segments(&self) -> Result<Vec<SegmentDigest>> {
         self.inner.segments()
@@ -270,6 +275,7 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
         function: None,
         depends_on: vec![],
         on_input_change: Default::default(),
+        initial: None,
         sensitive: false,
         searchable: false,
         description: None,

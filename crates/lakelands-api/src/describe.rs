@@ -123,6 +123,9 @@ pub struct FieldDescription {
     pub depends_on: Vec<FieldName>,
     /// What happens to it when an input changes.
     pub on_input_change: OnInputChange,
+    /// The value it takes when its record comes to exist without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial: Option<serde_json::Value>,
     /// Whether `where` and `order_by` may use it.
     pub filterable: bool,
     /// Whether full-text search covers it.
@@ -148,35 +151,33 @@ impl FieldDescription {
     /// The description of a declared field for a principal with `access`.
     /// A masked field answers its shape only — name, type, whether it is
     /// required and sensitive, its authority and what an input change does
-    /// to it — never what it is computed from, what it means or how the
-    /// host marked it
+    /// to it — never what it is computed from, what it starts as, what it
+    /// means or how the host marked it
     /// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
     pub fn of(decl: &FieldDecl, access: Access) -> FieldDescription {
         use crate::ontology::StorageKind::{Bytes, Json, Vector};
-        let hidden = FieldDescription {
-            name: decl.name.clone(),
-            ty: decl.ty.clone(),
+        let mut decl = decl.clone();
+        if !access.reads() {
+            decl.shape_alone();
+        }
+        FieldDescription {
+            filterable: access.reads() && !matches!(decl.ty.kind, Bytes | Json | Vector),
+            name: decl.name,
+            ty: decl.ty,
             required: decl.required,
             authority: decl.authority,
             access,
+            derived: decl.derived,
+            function: decl.function,
+            depends_on: decl.depends_on,
             on_input_change: decl.on_input_change,
-            sensitive: decl.sensitive,
-            ..FieldDescription::default()
-        };
-        if !access.reads() {
-            return hidden;
-        }
-        FieldDescription {
-            derived: decl.derived.clone(),
-            function: decl.function.clone(),
-            depends_on: decl.depends_on.clone(),
-            filterable: !matches!(decl.ty.kind, Bytes | Json | Vector),
+            initial: decl.initial,
             searchable: decl.searchable,
-            description: decl.description.clone(),
-            label: decl.label.clone(),
-            embed: decl.embed.clone(),
-            annotations: decl.annotations.clone(),
-            ..hidden
+            sensitive: decl.sensitive,
+            description: decl.description,
+            label: decl.label,
+            embed: decl.embed,
+            annotations: decl.annotations,
         }
     }
 
@@ -208,9 +209,9 @@ pub struct TypeAccess {
 /// The doors one principal may use on one type.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeRights {
-    /// `find` and `search`.
+    /// `find` and `search`: true of every type described.
     pub find: bool,
-    /// `get`.
+    /// `get`: as `find`.
     pub get: bool,
     /// `upsert`: at least one authored field is writable.
     pub upsert: bool,
@@ -253,6 +254,74 @@ pub struct TypeLifecycle {
     /// no such index that set is the exact ranking.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub indexed: Vec<FieldName>,
+    /// For a view: whether its records are kept, by its `view_kept.<type>`
+    /// setting, or computed at each read, and why. Like `sorted` and
+    /// `indexed` it describes the projection, not the log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<Kept>,
+}
+
+/// Whether a view's records are kept as its sources are written, or
+/// computed at each read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Kept {
+    /// The view's records are kept and answer its reads.
+    Kept,
+    /// The view is computed at each read.
+    Computed {
+        /// Why it is not kept.
+        why: NotKept,
+    },
+}
+
+/// Why a view is computed at each read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "because", rename_all = "snake_case")]
+pub enum NotKept {
+    /// No `view_kept.<type>` setting holds.
+    NotAsked,
+    /// The view cannot be kept.
+    CannotBeKept {
+        /// Which measure, which call and why: the sentence the setting's
+        /// refusal says. It names what the view reads, so it is given to
+        /// a principal who is shown the view as declared, and to no other.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// Its records are not whole.
+    NotWhole {
+        /// The groups whose kept record is not exact, for this reader: a
+        /// measure fails over the group, which mends when its cause
+        /// leaves, or an extreme was given up, which only what makes the
+        /// view again mends.
+        not_exact: u64,
+    },
+    /// Its records are not kept at this position, or by this lake.
+    NotKeptHere,
+}
+
+impl Kept {
+    /// What a view's lifecycle says by its declaration and its
+    /// `view_kept.<type>` setting alone, where nothing keeps it: not asked
+    /// for, unable to be kept and why, or not kept here. `shown` is
+    /// whether the principal is shown the view as declared; `declared`
+    /// answers a type's declaration.
+    pub fn by_declaration<'a>(
+        view: &ViewDecl,
+        setting: Option<&serde_json::Value>,
+        shown: bool,
+        declared: impl Fn(&TypeName) -> Option<&'a crate::ontology::TypeDecl>,
+    ) -> Kept {
+        let why = match crate::expr::keepable(view, declared) {
+            _ if !crate::seam::view_kept(setting) => NotKept::NotAsked,
+            Err(reason) => NotKept::CannotBeKept {
+                reason: shown.then_some(reason),
+            },
+            Ok(()) => NotKept::NotKeptHere,
+        };
+        Kept::Computed { why }
+    }
 }
 
 /// One verb, as a caller sees it.

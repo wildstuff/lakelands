@@ -55,17 +55,10 @@ fn fold(engine: &dyn LakeEngine, from: u64, n: u64, at: u64) {
     p.commit(Position(at)).unwrap();
 }
 
-#[test]
-fn the_writer_analyses_its_tables_once_enough_records_went_in_and_not_before() {
-    let Some(url) = common::url_or_skip("the pg analysis test") else {
-        return;
-    };
-    let schema = common::fresh_schema();
+/// A fresh lake in `schema` with the type `t` declared at position 1.
+fn lake(url: &str, schema: &str) -> Box<dyn LakeEngine> {
     let engine = PgOpener
-        .open(
-            &common::location(&url, "analysed", &schema),
-            OpenMode::Create,
-        )
+        .open(&common::location(url, "analysed", schema), OpenMode::Create)
         .unwrap();
     let decl: Declaration = serde_json::from_value(json!({
         "declare": "type", "name": "t",
@@ -76,6 +69,16 @@ fn the_writer_analyses_its_tables_once_enough_records_went_in_and_not_before() {
     p.begin().unwrap();
     p.put_declaration(&decl, 1, None, Position(1)).unwrap();
     p.commit(Position(1)).unwrap();
+    engine
+}
+
+#[test]
+fn the_writer_analyses_its_tables_once_enough_records_went_in_and_not_before() {
+    let Some(url) = common::url_or_skip("the pg analysis test") else {
+        return;
+    };
+    let schema = common::fresh_schema();
+    let engine = lake(&url, &schema);
     // One record short of the threshold, in windows as a load commits them.
     let below = ANALYZE_AFTER - 1;
     let mut put = 0;
@@ -105,4 +108,39 @@ fn the_writer_analyses_its_tables_once_enough_records_went_in_and_not_before() {
     }
     drop(engine);
     common::drop_schema(&url, &schema);
+}
+
+/// The count is of the records a transaction staged, not of those its
+/// buffer holds at the commit: the buffer is written a page at a time, so
+/// at the commit of one transaction of `ANALYZE_AFTER` records it holds
+/// the last page only.
+#[test]
+fn a_transaction_written_by_pages_is_counted_whole() {
+    let Some(url) = common::url_or_skip("the pg analysis test") else {
+        return;
+    };
+    let (short, whole) = (common::fresh_schema(), common::fresh_schema());
+    let below = lake(&url, &short);
+    fold(below.as_ref(), 0, ANALYZE_AFTER - 1, 2);
+    let committed = Instant::now();
+    let at = lake(&url, &whole);
+    fold(at.as_ref(), 0, ANALYZE_AFTER, 2);
+    let asked = Instant::now();
+    while !analysed(&url, &whole) {
+        assert!(
+            asked.elapsed() < Duration::from_secs(30),
+            "one transaction put {ANALYZE_AFTER} records and the tables were not analysed"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    // The server records an analysis at most about ten seconds after its
+    // backend went idle.
+    std::thread::sleep(Duration::from_secs(12).saturating_sub(committed.elapsed()));
+    assert!(
+        !analysed(&url, &short),
+        "one transaction put one record fewer than {ANALYZE_AFTER} and the tables were analysed"
+    );
+    drop((below, at));
+    common::drop_schema(&url, &short);
+    common::drop_schema(&url, &whole);
 }

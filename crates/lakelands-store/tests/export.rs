@@ -87,6 +87,7 @@ async fn verify_py_verifies_an_export_with_a_checkpoint_and_a_rekey() {
     let to = Migration {
         to: serde_json::from_value(account("iban")).unwrap(),
         renames: vec![],
+        relation_renames: Vec::new(),
     };
     let report = cat.migrate(&who, to.clone()).await.unwrap().data;
     assert!(report.lossless, "{report:?}");
@@ -101,7 +102,7 @@ async fn verify_py_verifies_an_export_with_a_checkpoint_and_a_rekey() {
         .await
         .unwrap();
     assert_eq!(manifest.segments.len(), 2, "{manifest:?}");
-    assert_eq!(manifest.versions, [1, 2], "{manifest:?}");
+    assert_eq!(manifest.versions, [1, 11], "{manifest:?}");
 
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/verify.py");
@@ -265,11 +266,20 @@ impl LakeStore for BreaksMidway {
     async fn age(&self, today: Timestamp) -> Result<AgeReport> {
         self.0.inner.age(today).await
     }
-    async fn purge_source(&self, source: &SourceId, id: Option<&str>) -> Result<PurgeReport> {
-        self.0.inner.purge_source(source, id).await
+    async fn purge_source(
+        &self,
+        source: &SourceId,
+        ty: Option<&lakelands_api::TypeName>,
+        id: Option<&str>,
+    ) -> Result<PurgeReport> {
+        self.0.inner.purge_source(source, ty, id).await
     }
-    async fn purge_preflight(&self, source: &SourceId) -> Result<PurgeReport> {
-        self.0.inner.purge_preflight(source).await
+    async fn purge_preflight(
+        &self,
+        source: &SourceId,
+        ty: Option<&lakelands_api::TypeName>,
+    ) -> Result<PurgeReport> {
+        self.0.inner.purge_preflight(source, ty).await
     }
     async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
         self.0.inner.compact().await

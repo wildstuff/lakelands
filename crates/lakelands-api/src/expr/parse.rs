@@ -62,6 +62,7 @@ pub fn func_name(f: Func) -> &'static str {
         Func::Previous => "previous",
         Func::Setting => "setting",
         Func::Param => "param",
+        Func::InSet => "in_set",
         Func::Changed => "changed",
         Func::Retired => "retired",
         Func::Coalesce => "coalesce",
@@ -78,6 +79,7 @@ pub fn func_name(f: Func) -> &'static str {
         Func::Matches => "matches",
         Func::Abs => "abs",
         Func::Round => "round",
+        Func::Floor => "floor",
         Func::DateBucket => "date_bucket",
         Func::Count => "count",
         Func::Sum => "sum",
@@ -103,19 +105,22 @@ pub fn arity(f: Func) -> (usize, Option<usize>) {
         | Func::Previous
         | Func::Setting
         | Func::Param
+        | Func::InSet
         | Func::Changed
         | Func::Lower
         | Func::Upper
         | Func::Trim
         | Func::Len
         | Func::Abs
+        | Func::Floor
         | Func::Sum
         | Func::Min
         | Func::Max
         | Func::Avg => (1, Some(1)),
         Func::Count => (0, Some(1)),
         Func::Round => (1, Some(2)),
-        Func::Contains | Func::StartsWith | Func::Matches | Func::DateBucket => (2, Some(2)),
+        Func::Contains | Func::StartsWith | Func::Matches => (2, Some(2)),
+        Func::DateBucket => (2, Some(3)),
         Func::Substr => (2, Some(3)),
         Func::If | Func::Replace => (3, Some(3)),
         Func::Coalesce | Func::Concat => (1, None),

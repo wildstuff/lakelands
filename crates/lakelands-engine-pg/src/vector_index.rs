@@ -16,8 +16,8 @@
 //! at `folded`. A `put` fills `unit` for a marked field in the same
 //! statement, so the index follows every write. A search uses the index
 //! only while the mark equals `folded`; otherwise it scans, with the exact
-//! answer. The setting's write rebuilds its type's indexes in the fold's
-//! transaction; a writer's open rebuilds those whose mark is behind.
+//! answer. The commit of the setting's write rebuilds its type's indexes, in
+//! the fold's transaction; a writer's open rebuilds those whose mark is behind.
 //!
 //! **Without pgvector.** The extension is the host's (`docs/hosting.md`).
 //! A writer's open creates it if it can; when it cannot, or finds a
@@ -187,8 +187,8 @@ fn marked(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Vec<(String, i64)
 /// head, and mark each kept through `through`: drop every index the type
 /// had, then fill the unit vectors of each field asked for and build its
 /// index. Without pgvector, only the marks go. The fold does this when it
-/// writes the setting's or the type's head state, and a writer's open when
-/// a mark is behind.
+/// puts the type's head declaration and when it commits the setting's head
+/// state, and a writer's open when a mark is behind.
 pub(crate) fn rebuild(
     db: &mut Db,
     names: &Names,

@@ -24,6 +24,16 @@
 //!   (a `call` without `key`).
 //! - **9**: an event whose declaration is a view that `merge`s sources, in
 //!   the places 5 names.
+//! - **10**: a `write_proposed` event whose write tightens a value type.
+//! - **11**: what [`ELEVENTH`] lists: a declaration that calls `floor`,
+//!   `date_bucket` by a width or `in_set` in any expression it keeps, in
+//!   the places 5 names; a migration that renames a relation
+//!   (`relation_renames`), in a `migrated` event or a proposed `migrate`;
+//!   a write of a `view_kept.<type>` setting, made or proposed; a
+//!   `record_upserted` or `record_ingested` event that carries `made`;
+//!   a proposed `migrate` whose report holds `restated`; and a
+//!   declaration with a field that declares `initial`, in the places 5
+//!   names.
 //!
 //! The store writes every event of one append at the greatest of the
 //! lake's version and what [`needed`] answers for each event of the
@@ -32,12 +42,15 @@
 
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::expr::{Condition, Expr, Func};
-use lakelands_api::ontology::{VerbEffect, VerbScope};
+use lakelands_api::ontology::{FieldDecl, VerbEffect, VerbScope};
 use lakelands_api::write::{Declaration, ProposedWrite};
 
 /// The lowest format version that can carry `body`, with `upstream` or
 /// without it.
 pub fn needed(body: &EventBody, upstream: bool) -> u32 {
+    if eleventh(body).is_some() {
+        return 11;
+    }
     if let EventBody::WriteProposed { write, .. } = body
         && matches!(write, ProposedWrite::MigrateValueType { .. })
     {
@@ -71,6 +84,118 @@ pub fn needed(body: &EventBody, upstream: bool) -> u32 {
         EventBody::Migrated { rekeyed, .. } if !rekeyed.is_empty() => 2,
         _ => lakelands_api::event::LOG_FORMAT_BASE,
     }
+}
+
+/// Whether an event carries one thing a format version added, and the
+/// words an event below that version which carries it is refused in.
+pub type Added = (fn(&EventBody) -> bool, &'static str);
+
+/// What format version 11 added to what an event carries, each with the
+/// words an event below 11 that carries it is refused in. One release
+/// makes one step of the format: what it adds besides is a line here.
+pub const ELEVENTH: &[Added] = &[
+    (
+        |body| any_declaration(body, |d| declares_call(d, Func::Floor)),
+        "declares a call of `floor`",
+    ),
+    (
+        |body| any_declaration(body, |d| declares(d, &by_a_width)),
+        "declares a call of `date_bucket` by a width",
+    ),
+    (
+        |body| any_declaration(body, |d| declares_call(d, Func::InSet)),
+        "declares a call of `in_set`",
+    ),
+    (renames_a_relation, "renames a relation"),
+    (writes_a_kept_setting, "writes a `view_kept.` setting"),
+    (says_it_made, "carries `made`"),
+    (
+        reports_restated,
+        "proposes a migration whose report holds `restated`",
+    ),
+    (
+        |body| any_declaration(body, declares_initial),
+        "declares an `initial` value",
+    ),
+];
+
+/// Whether the event proposes a migration whose report says what its `to`
+/// states otherwise: below 11 no report does, and a reader there would
+/// take the proposal for one that restates nothing.
+fn reports_restated(body: &EventBody) -> bool {
+    use ProposedWrite::Migrate;
+    let EventBody::WriteProposed { write, .. } = body else {
+        return false;
+    };
+    matches!(write, Migrate { report, .. } if !report.restated.is_empty())
+}
+
+/// Whether a declaration holds a field that declares `initial`, wherever
+/// a field is declared: a type's, a relation's, a verb's payload's, a
+/// function's input.
+fn declares_initial(d: &Declaration) -> bool {
+    let any = |fs: &[FieldDecl]| fs.iter().any(|f| f.initial.is_some());
+    match d {
+        Declaration::Type(t) => any(&t.fields) || t.relations.iter().any(|r| any(&r.fields)),
+        Declaration::Verb(v) => any(&v.payload),
+        Declaration::Function(f) => any(&f.inputs),
+        _ => false,
+    }
+}
+
+/// Whether a record event says its write found no live record under the
+/// key. Below 11 no event says so, and absence tells nothing there.
+fn says_it_made(body: &EventBody) -> bool {
+    use EventBody::{RecordIngested, RecordUpserted};
+    matches!(
+        body,
+        RecordUpserted { made: true, .. } | RecordIngested { made: true, .. }
+    )
+}
+
+/// Whether the event writes a `view_kept.<type>` setting: an upsert or an
+/// ingest of that `sys.setting`, or a proposed upsert of it. A store that
+/// keeps no view would append beside records it never moves, so it must
+/// refuse the log and not read past the setting.
+fn writes_a_kept_setting(body: &EventBody) -> bool {
+    use lakelands_api::seam::{SETTING_TYPE, VIEW_KEPT_SETTING};
+    let (ty, key) = match body {
+        EventBody::RecordUpserted { ty, key, .. } | EventBody::RecordIngested { ty, key, .. } => {
+            (ty, key)
+        }
+        EventBody::WriteProposed {
+            write: ProposedWrite::Upsert { ty, key, .. },
+            ..
+        } => (ty, key),
+        _ => return false,
+    };
+    ty.as_str() == SETTING_TYPE && key.as_str().starts_with(VIEW_KEPT_SETTING)
+}
+
+/// Whether a migration the event carries, applied or proposed, renames a
+/// relation.
+fn renames_a_relation(body: &EventBody) -> bool {
+    let migration = match body {
+        EventBody::Migrated { migration, .. } => migration,
+        EventBody::WriteProposed {
+            write: ProposedWrite::Migrate { migration, .. },
+            ..
+        } => &**migration,
+        _ => return false,
+    };
+    !migration.relation_renames.is_empty()
+}
+
+/// Whether a node is `date_bucket` with its third argument, the origin a
+/// width is counted from.
+fn by_a_width(e: &Expr) -> bool {
+    matches!(e, Expr::Call { func: Func::DateBucket, args } if args.len() == 3)
+}
+
+/// What `body` carries that format version 11 added, if anything.
+pub fn eleventh(body: &EventBody) -> Option<&'static str> {
+    let added = ELEVENTH.iter().find(|(carries, _)| carries(body));
+    added.map(|(_, what)| *what)
 }
 
 /// Whether any declaration the event carries holds for `test`: a
@@ -168,7 +293,9 @@ pub fn below(event: &Event) -> Option<String> {
     if event.v >= need {
         return None;
     }
-    let what = if need == 10 {
+    let what = if let Some(what) = eleventh(&event.body) {
+        what.to_owned()
+    } else if need == 10 {
         "proposes a value type's tightening".to_owned()
     } else if need == 9 {
         "declares a view that merges sources".to_owned()
@@ -205,12 +332,17 @@ pub fn below(event: &Event) -> Option<String> {
 /// `cause` inside `context`, since a host's cause is the envelope's
 /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`); and
 /// `upstream` on any kind but `record_ingested`, since only a source's
-/// record is read from another lake (`docs/log-format.md` §1.1). No door
-/// puts either there; a reader holds the rule for a log written by
-/// something else.
+/// record is read from another lake (`docs/log-format.md` §1.1); and the
+/// origin `initial`, a field's provenance alone, never an event's
+/// (`docs/decisions/050-a-field-declares-its-initial-value.md`). No door
+/// puts any there; a reader holds the rule for a log written by something
+/// else.
 pub fn misplaced(event: &Event) -> Option<String> {
     if event.context.cause.is_some() {
         return Some("`context` carries `cause`, which the envelope carries".to_owned());
+    }
+    if event.origin == lakelands_api::record::Origin::Initial {
+        return Some("the envelope carries the origin `initial`, a field's alone".to_owned());
     }
     let kind = event_kind(&event.body);
     (event.upstream.is_some() && !matches!(event.body, EventBody::RecordIngested { .. })).then(
@@ -242,6 +374,15 @@ pub fn calls_date_bucket(declaration: &Declaration) -> bool {
 /// object set's filter, and an expression function's body. A condition in
 /// text form that does not parse calls nothing.
 pub fn declares_call(declaration: &Declaration, f: Func) -> bool {
+    declares(
+        declaration,
+        &|e| matches!(e, Expr::Call { func, .. } if *func == f),
+    )
+}
+
+/// Whether an expression the log keeps of a declaration holds, anywhere,
+/// a node `test` accepts.
+pub fn declares(declaration: &Declaration, test: &dyn Fn(&Expr) -> bool) -> bool {
     let mut conditions: Vec<&Condition> = Vec::new();
     match declaration {
         Declaration::Type(t) => {
@@ -262,14 +403,16 @@ pub fn declares_call(declaration: &Declaration, f: Func) -> bool {
         Declaration::ObjectSet(s) => conditions.push(&s.filter),
         Declaration::Function(f) => conditions.extend(f.expr.as_ref()),
     }
-    (conditions.into_iter())
-        .any(|c| crate::describe::parsed(c).is_some_and(|e| calls(&e, &|g| g == f)))
+    (conditions.into_iter()).any(|c| crate::describe::parsed(c).is_some_and(|e| holds(&e, test)))
 }
 
 /// Whether an expression calls, anywhere, a function `f` accepts.
 pub fn calls(e: &Expr, f: &dyn Fn(Func) -> bool) -> bool {
-    matches!(e, Expr::Call { func, .. } if f(*func))
-        || crate::expr::children(e).any(|c| calls(c, f))
+    holds(e, &|e| matches!(e, Expr::Call { func, .. } if f(*func)))
+}
+
+fn holds(e: &Expr, test: &dyn Fn(&Expr) -> bool) -> bool {
+    test(e) || crate::expr::children(e).any(|c| holds(c, test))
 }
 
 #[cfg(test)]

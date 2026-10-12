@@ -41,8 +41,8 @@ check!(
 
 check!(
     /// Both format versions, as they were written.
-    MIXED_VERSIONS = a_rekeyed_lake_exports_both_format_versions_as_written,
-    "030 and log-format §6: a lake that re-keyed exports its version-1 events and its version-2 events as they were written, and the export verifies",
+    MIXED_VERSIONS = a_lake_exports_both_format_versions_as_written,
+    "030 and log-format §6: a lake exports its version-1 events, written before its first record was made, and its version-11 events as they were written, a re-key among them, and the export verifies",
     scratch
 );
 
@@ -96,9 +96,10 @@ check!(
 );
 
 check!(
-    /// A line whose `context` carries `cause` is refused.
+    /// A line whose `context` carries `cause`, or whose envelope the
+    /// origin `initial`, is refused.
     IMPORT_CONTEXT_CAUSE = an_import_refuses_a_context_carrying_cause_naming_it,
-    "021, extended, and log-format §1.1: a host's cause is the envelope's and never written inside `context`; an export whose line carries `cause` in its `context`, its hash made right, is refused on import naming the member, and a write through the doors carries no cause",
+    "021, extended, and log-format §1.1: a host's cause is the envelope's and never written inside `context`; an export whose line carries `cause` in its `context`, its hash made right, is refused on import naming the member, and a write through the doors carries no cause; so is one whose envelope carries the origin `initial`, a field's provenance alone (050, lakelands#551)",
     given
 );
 
@@ -285,7 +286,7 @@ async fn an_export_verifies_to_the_through_and_hash_the_lake_answers(
     Ok(())
 }
 
-async fn a_rekeyed_lake_exports_both_format_versions_as_written(
+async fn a_lake_exports_both_format_versions_as_written(
     store: Arc<dyn LakeStore>,
     scratch: PathBuf,
 ) -> Result<(), Failure> {
@@ -305,12 +306,12 @@ async fn a_rekeyed_lake_exports_both_format_versions_as_written(
     }
     ensure!(
         lines == want,
-        "the export holds every event's line as the lake holds it, version 1 before the re-key at \
-         {at} and version 2 from it, and it does not"
+        "the export holds every event's line as the lake holds it, version 1 before its first \
+         record made and version 11 from it, the re-key at {at} among them, and it does not"
     );
     ensure!(
-        manifest.versions == [1, 2],
-        "the manifest of a lake that re-keyed names versions [1, 2], and it names {:?}",
+        manifest.versions == [1, 11],
+        "the manifest of a lake that made a record names versions [1, 11], and it names {:?}",
         manifest.versions
     );
     export::verify(&dir).must("verifying an export of both format versions")?;
@@ -594,6 +595,7 @@ fn import_seams() -> lakelands_api::seam::Seams {
 /// guard calls `retired` (version 7), a view with a parameter and a verb
 /// called on its type (version 8), a view that merges a second source
 /// (version 9), a proposed tightening of a value type (version 10), a
+/// derived field calling `floor` (version 11), a
 /// record ingested with an upstream,
 /// a second checkpoint and more invoices.
 /// Answers the
@@ -621,13 +623,15 @@ async fn exported_lake(
     // Format version 3: a derived field calling date_bucket, and a record
     // ingested with the lake and position it was read from. Format version
     // 5: the type, a field and a relation carry annotations. Format version
-    // 6: a relation derived from matching values.
+    // 6: a relation derived from matching values. Format version 11: a
+    // field that declares `initial`, filled when `s1` comes to exist.
     l.declare_json(json!({
         "declare": "type", "name": "stamp",
         "annotations": {"acme.icon": "clock", "acme.package": {"name": "audit", "weight": 1.5}},
         "fields": [
             {"name": "at", "type": {"kind": "date_time"}, "authority": "source",
              "annotations": {"acme.format": "iso"}},
+            {"name": "seen", "type": {"kind": "boolean"}, "initial": false},
             {"name": "month", "type": {"kind": "date_time"}, "authority": "derived",
              "derived": "date_bucket(at, 'month')", "depends_on": ["at"]}
         ],
@@ -681,6 +685,12 @@ async fn exported_lake(
     };
     let proposed = cat.propose(own, narrower, "one state".into()).await;
     proposed.must("proposing a narrower `stamp_state`")?;
+    // Format version 11: a derived field calling `floor`.
+    let days = json!({"name": "days", "type": {"kind": "number"}, "authority": "derived",
+                      "derived": "floor((now() - at) / 1d)"});
+    let days = serde_json::from_value(days).expect("a field");
+    let added = cat.add_field(own, &"stamp".into(), days).await;
+    added.must("adding `days` to `stamp`")?;
     // Format version 8 too: a verb on its type, called with no key.
     l.declare_json(json!({
         "declare": "verb", "name": "print_stamp", "on": "stamp", "scope": "type",
@@ -708,6 +718,7 @@ async fn exported_lake(
     crate::conformance::fixture::ingest(cat.as_ref(), own, "mirror", vec![read_from])
         .await
         .must("ingesting `s1` with an upstream")?;
+    crate::conformance::fixture::two_makes(&l).await?;
     let earlier = store.head().await.must("reading the head")?;
     store.checkpoint().await.must("checkpointing")?;
     invoices(store, 3, 2).await?;
@@ -979,22 +990,28 @@ async fn an_import_refuses_a_context_carrying_cause_naming_it(
         upserted.position,
         upserted.cause
     );
-    let from = scratch.dir("from");
-    write(store.as_ref(), &from).await?;
-    let file = files(&from)?.remove(0);
-    let mut lines = lines_of(&from, &file)?;
-    let at = upserted.position.0 as usize;
-    lines[at] = rehashed(&lines[at], |e| {
-        e["context"]["cause"] = json!(0);
-    })?;
-    rewrite(&from, &file, &lines)?;
-    let imported = (given.import)(from, store.lake().clone(), None, import_seams()).await;
-    let why = refused(imported, "an export whose `context` carries `cause`")?.to_string();
-    ensure!(
-        why.contains("`context` carries `cause`"),
-        "an export whose `context` carries `cause` must be refused naming it; it was refused \
-         with: {why}"
-    );
+    let cases = [
+        "`context` carries `cause`",
+        "the envelope carries the origin `initial`",
+    ];
+    for (n, said) in cases.into_iter().enumerate() {
+        let from = scratch.dir(&format!("from{n}"));
+        write(store.as_ref(), &from).await?;
+        let file = files(&from)?.remove(0);
+        let mut lines = lines_of(&from, &file)?;
+        let at = upserted.position.0 as usize;
+        lines[at] = rehashed(&lines[at], |e| match n {
+            0 => e["context"]["cause"] = json!(0),
+            _ => e["origin"] = json!("initial"),
+        })?;
+        rewrite(&from, &file, &lines)?;
+        let imported = (given.import)(from, store.lake().clone(), None, import_seams()).await;
+        let why = refused(imported, &format!("an export whose line {said}"))?.to_string();
+        ensure!(
+            why.contains(said),
+            "an export whose line {said} must be refused naming it; it was refused with: {why}"
+        );
+    }
     Ok(())
 }
 

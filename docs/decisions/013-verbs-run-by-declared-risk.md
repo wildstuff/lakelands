@@ -90,12 +90,119 @@ call as its cause, as a host's write of the effect's result does
 (`docs/decisions/021-the-write-context-belongs-to-the-host.md`,
 lakelands#305).
 
+A call whose own fold failed is in the log, and no executor was handed
+it. The store does not answer that call as if it were: its sentence
+says that the verb's executor was not handed the call, that sending it
+again under its key will not run it, and to call the verb again under
+another key or with none. An acceptance is answered so in its own words
+(the proposal is decided, accepting it again will not run it, and the
+call is proposed again). The same holds where the call's own fold
+succeeded and the drain of due calls before the hand-out failed: an
+executor is handed a call only when its answer can be recorded, and
+after such a drain the writer may be behind.
+
+## Extended: a retry never hands a position out again (lakelands#616)
+
+A position reaches its executor at most once, and a retry runs nothing:
+a call sent again under its key, or an acceptance sent again, answers
+by what is recorded for its position. Where an answer of the executor
+is recorded, the retry is `applied` with it, `null` included. Where none
+is, the retry is refused as `unanswered`, never `applied`: one sentence,
+true whichever way the position got there, says that the call is in the
+log at that position, that no answer is recorded and that the retry
+runs nothing; that a call still running will have its answer recorded
+and a retry then answers it; and that a call whose first answer said its
+executor was not handed it is called again under another key or with
+none, or proposed again. A retry may not tell the two apart, and the
+caller may: it was given the first answer.
+
+The answer is found by a seek, not by a read of the log after the call.
+It is recorded under an id derived from the lake and the position that
+made the verb due, and an acceptance under one derived from the lake
+and its proposal (`docs/log-format.md` §3), so what a retry reads under
+the writer's lock does not grow with the log. Before this, a retry read
+up to 4,096 events after the call: 74 to 90 ms on a lake of 5,000 events
+against 0.1 to 1 ms for the seek, on the three engines.
+
+An accept sent again answers by the verb as it stood at the acceptance,
+told by what the acceptance appended (a write verb's write follows its
+call, caused by it), whatever was declared since: an external call is
+answered as a retry of a call is, and any other acceptance is
+`decided`.
+
+Handing a position out again where no answer is recorded was weighed
+and not built. It would change what an executor is promised, once per
+position, to once per position unless the store asks again; and under
+which declaration, by whose grant, on which handle and while which other
+hand-out still runs it would happen are each a rule a host would have to
+read. A host that needs it carries its effect under a key of its own and
+calls the verb again.
+
 ## Extended: who sees which proposals
 
 A principal with the review grant lists every proposal and may accept
 or reject it. Any other principal lists only the proposals it made
 itself, so a proposer can follow what became of its write, and decides
 none.
+
+## Extended: a proposal is read as its reader's view (lakelands#499)
+
+`proposals` shows a proposed write to its reader as that reader may read
+the record the write is for
+(`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+extended). A reviewer need not know all of what it accepts: the accept
+asks for `review`, and for `schema` where the ontology changes, and
+applies the write as it was logged and checked under the proposer's
+grants, the part its reviewer was not shown too. Trimming what is
+applied to what the reviewer read would make the reviewer's grants
+decide what the proposer wrote, and a write checked whole would be
+applied in part.
+
+**Told that there is more.** A listed proposal says `more` when it holds
+more than its reader is shown, and says nothing else of it: no name and
+no count, since a count would say how many names are hidden. Where the
+reader may see nothing of the write, the entry has no write at all: a
+write to a type it may not see, to a record it is not answered (one
+restricted, without the grant), a call of a verb on such a type, a
+bundle none of whose declarations it would be shown. The entry keeps its
+id, its proposer, its times, its state and the proposer's `why`, so a
+reviewer without a read grant still finds what it is asked to decide,
+and accepts it by its id.
+
+The absent write is a form of the answer and of nothing else. A stored
+proposal and a logged `write_proposed` hold the write whole, and
+`propose` takes a write, never a proposal; so `Proposal.write` is
+optional and `ProposedWrite` gained no variant that could be proposed or
+logged.
+
+**The filters follow the entry.** `type` and `kind` are answered on the
+entry as its reader is shown it. A type the reader may not see answers
+what a type that is not declared answers, an empty listing; an entry
+without a write is of no kind. The unfiltered listing and `state` hold
+every entry. Ordering and paging were already over the entry as shown.
+
+**A proposed bundle** shows each declaration `describe` would show its
+reader once the bundle is in force: a type it could see, with the fields
+it may know of; a view with its definition or not at all; a trigger and
+an object set whose condition it may read; a function by `describe`'s
+rule; a value type always. A verb is judged by the fields it names, the
+ones it sets known and the ones it reads readable, not by who may call
+it: a reviewer need not be one who may. One who holds `schema`, as an
+accepter of a bundle must, is shown every definition, so for it `more`
+can only mean a field or a type hidden from it.
+
+**The refusal at the accept** follows the same rule. An accept refused
+because a declaration made since reads a field the migration takes away
+names the declaration and the field to an accepter who may know of the
+field, and to another says only that a declaration reads a field the
+migration takes away: the proposer took the field away knowingly, the
+accepter may not know that it exists.
+
+An accept refused because the migration is no longer lossless carries
+the fresh report as the accepter may know it, by the rule of the
+listing, and says `more` where that is less than the whole
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+extended, lakelands#531).
 
 ## Extended: a value type's tightening is proposed like a migration (lakelands#476)
 

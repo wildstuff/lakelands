@@ -129,8 +129,13 @@ impl LakeEngine for Counting {
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
         self.inner.read(from, limit)
     }
-    fn seal_segment(&self, lease: &Lease) -> Result<Option<SegmentDigest>> {
-        self.inner.seal_segment(lease)
+    fn seal_segment(
+        &self,
+        lease: &Lease,
+        imported: bool,
+        first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
+    ) -> Result<Option<SegmentDigest>> {
+        self.inner.seal_segment(lease, imported, first)
     }
     fn segments(&self) -> Result<Vec<SegmentDigest>> {
         self.inner.segments()

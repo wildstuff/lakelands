@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 
 use lakelands_api::Refusal;
 use lakelands_api::engine::{LakeEngine, ProjectionStore, ProjectionView};
+use lakelands_api::event::Digest;
 use lakelands_api::id::{Position, RecordKey, RelationName, TypeName, Version};
 use lakelands_api::query::Walk;
 use lakelands_api::record::StoredRecord;
@@ -105,6 +106,12 @@ engine_check!(
     /// Several puts in one transaction leave what they leave one by one.
     PUTS_IN_ONE_TRANSACTION = several_puts_of_one_thing_in_one_transaction_leave_what_they_leave_one_by_one,
     "seams §ProjectionStore: puts of the same things in one transaction, at later positions, at the same one or before a later one, leave the history and the head's indexes a commit after each put would leave"
+);
+
+engine_check!(
+    /// A key written often is put and read as a key written twice.
+    MUCH_WRITTEN_KEY = a_much_written_key_is_put_and_read_as_one_written_twice,
+    "seams §Engine (lakelands#596): a key put forty thousand times answers at the head, at an earlier position, in a page and in a count as a key put twice; what its puts and reads cost is counted in each disk engine's own tests"
 );
 
 engine_check!(
@@ -438,13 +445,88 @@ fn a_commit_backwards_or_with_a_put_past_through_is_invalid(
 }
 
 fn a_view_does_not_see_an_open_transaction(engine: &dyn LakeEngine) -> Result<(), Failure> {
-    fold_one(engine, 1, record("t", "a", json!({"n": 1}), 1))?;
+    let t = TypeName::from("t");
+    let declared = |fields: Value| {
+        serde_json::from_value::<Declaration>(
+            json!({"declare": "type", "name": "t", "fields": fields}),
+        )
+        .map_err(|e| Failure::new(format!("the check's declaration does not read: {e}")))
+    };
+    let (one, two) = (
+        declared(json!([]))?,
+        declared(json!([{"name": "n", "type": {"kind": "number"}}]))?,
+    );
+    let (held, new) = (Digest("1".repeat(64)), Digest("2".repeat(64)));
+    fold(engine, 1, |p| {
+        p.put_declaration(&one, 1, None, Position(1))?;
+        p.put_record(&record("t", "a", json!({"n": 1}), 1))?;
+        p.put_record(&record("t", "c", json!({"n": 1}), 1))?;
+        p.put_output("seam", &held, &json!("one"), Position(1))?;
+        p.put_membership("s", &t, &RecordKey::from("a"), true, Position(1))
+    })?;
     let p = engine.projection();
     p.begin().must("beginning a transaction")?;
+    // The view a fold reads through: opened before the transaction's puts
+    // and read between them, a page at a time.
+    let before = view(engine, None)?;
+    let page = |after: Option<&str>| -> Result<Vec<(String, Value)>, Failure> {
+        let scan = lakelands_api::engine::Scan {
+            limit: 1,
+            after: after.map(|k| lakelands_api::engine::After {
+                values: Vec::new(),
+                key: RecordKey::from(k),
+            }),
+            ..Default::default()
+        };
+        let rows = before.scan(&t, &scan).must("scanning between the puts")?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.key.to_string(), json!(r.fields)))
+            .collect())
+    };
+    p.put_declaration(&two, 2, None, Position(2))
+        .must("putting a declaration")?;
     p.put_record(&record("t", "a", json!({"n": 2}), 2))
         .must("putting a record")?;
+    let first = page(None)?;
+    // A fold reads the outputs recorded before its transaction through its
+    // view, and what the transaction recorded from what it staged.
+    for (input, output) in [(&held, "two"), (&new, "new")] {
+        p.put_output("seam", input, &json!(output), Position(2))
+            .must("putting an output")?;
+    }
+    let outputs = (
+        before.output("seam", &held).must("reading an output")?,
+        before.output("seam", &new).must("reading an output")?,
+    );
     p.put_record(&record("t", "b", json!({}), 2))
         .must("putting a record")?;
+    for (key, member) in [("b", true), ("a", false)] {
+        p.put_membership("s", &t, &RecordKey::from(key), member, Position(2))
+            .must("putting a membership")?;
+    }
+    let next = page(Some("a"))?;
+    let members = before.members("s", &t).must("reading the members")?;
+    let versions: Vec<u32> = (before
+        .declarations()
+        .must("reading the declarations")?
+        .iter())
+    .filter(|d| matches!(&d.declaration, Declaration::Type(ty) if ty.name == t))
+    .map(|d| d.version)
+    .collect();
+    drop(before);
+    ensure!(
+        first == [("a".to_owned(), json!({"n": 1}))]
+            && next == [("c".to_owned(), json!({"n": 1}))]
+            && members.iter().map(RecordKey::as_str).eq(["a"])
+            && versions == [1]
+            && outputs == (Some(json!("one")), None),
+        "a view opened before a transaction's puts and read between them answered the page \
+         {first:?}, after `a` the page {next:?}, the members {members:?}, `t` at versions \
+         {versions:?} and the outputs {outputs:?}; it must answer what was committed: `a` \
+         with n = 1, then `c`, the member `a`, version 1, and the output recorded before \
+         the transaction, none for the input it recorded first"
+    );
     let during = view(engine, None)?;
     let (a, b, at) = (
         during
@@ -468,9 +550,11 @@ fn a_view_does_not_see_an_open_transaction(engine: &dyn LakeEngine) -> Result<()
         .get(&TypeName::from("t"), &RecordKey::from("a"))
         .must("reading after the commit")?
         .and_then(|r| r.fields.get("n").cloned());
+    let output = after.output("seam", &held).must("reading an output")?;
     ensure!(
-        n == Some(json!(2)),
-        "after the commit `a` reads n = {n:?}; it must be 2"
+        n == Some(json!(2)) && output == Some(json!("two")),
+        "after the commit `a` reads n = {n:?} and the output {output:?}; they must be 2 and \
+         the output the transaction recorded"
     );
     Ok(())
 }
@@ -832,5 +916,44 @@ fn get_many_answers_what_get_answers_key_by_key(engine: &dyn LakeEngine) -> Resu
              once, get answers {want:?}"
         );
     }
+    Ok(())
+}
+
+fn a_much_written_key_is_put_and_read_as_one_written_twice(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    // `b` is put twice and `a` forty thousand times.
+    const STATES: u64 = 40_000;
+    let put = |key: &str, at: u64| record("t", key, json!({"n": at}), at);
+    fold_one(engine, 1, put("b", 1))?;
+    fold_one(engine, 2, put("b", 2))?;
+    for first in (3..3 + STATES).step_by(200) {
+        fold(engine, first + 199, |p| {
+            (first..first + 200).try_for_each(|at| p.put_record(&put("a", at)))
+        })?;
+    }
+    let (ty, head, then) = (TypeName::from("t"), 2 + STATES, 1_000);
+    let n = |r: Option<StoredRecord>| r.and_then(|r| r.fields.get("n").cloned());
+    let mut answers = Vec::new();
+    for as_of in [None, Some(then)] {
+        let v = view(engine, as_of.map(Position))?;
+        for key in ["a", "b"] {
+            let read = v.get(&ty, &RecordKey::from(key));
+            answers.push(n(read.must("reading one record")?));
+        }
+        let scan = lakelands_api::engine::Scan {
+            limit: 10,
+            ..Default::default()
+        };
+        let page = v.scan(&ty, &scan).must("reading a page")?;
+        let page: Vec<Value> = page.into_iter().filter_map(|r| n(Some(r))).collect();
+        answers.push(Some(json!([page, v.count(&ty, &scan).must("counting")?])));
+    }
+    let want = |a: u64| [Some(json!(a)), Some(json!(2)), Some(json!([[a, 2], 2]))];
+    ensure!(
+        answers == [want(head), want(then)].concat(),
+        "`a` was put at every position from 3 to {head} and `b` at 1 and 2; a `get` of each, a \
+         page and a count answered {answers:?} at the head and as of {then}"
+    );
     Ok(())
 }

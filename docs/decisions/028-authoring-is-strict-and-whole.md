@@ -97,6 +97,54 @@ named. A
 declaration already in force is not checked again until it is declared
 again.
 
+## Extended: the fields a declaration reads are those its author is shown (lakelands#538)
+
+"A field its type has" is said for the one who declares. A declaration
+is checked as sent against the ontology as its author is shown it,
+before it is checked against the lake's own, so a field its author may
+not know of is refused as a field the type does not have, by the same
+check and in the same words. What a declaration reads is gathered as
+before, with two additions: what a view reads of a source, and the own
+side of a derived relation's pairs. The fields a verb sets are kept
+apart from what it reads: its author must know of them, not read them.
+The rule and its reasons are in
+`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+extended.
+
+## Extended: in a verb's value only `payload.<name>` is the call's (lakelands#470)
+
+The rule above left the name `payload` out of what a verb's value
+reads, wherever it stood. But the call's payload is reached by exactly
+one form, `payload.<name>`: a bare `payload`, a longer path such as
+`payload.note.deep`, and either of them inside a function are the
+record's field of that name. On a type without such a field they were
+accepted and read null at every call, so the verb cleared the field it
+sets; and a migration could take a field named `payload` away while a
+verb read it bare, with the same end.
+
+One function now says which path is the call's, and the verb's scope
+that evaluates a value and the rule that gathers what a declaration
+reads both ask it:
+
+- **`payload.<name>`** is the call's payload and reads no field.
+- **Every other path** is the record's and reads its first segment,
+  `payload` included. `declare`, `apply` and an accepted proposal refuse
+  it on a type that has no such field, as for any other missing field,
+  and the migration preflight keeps the field while a verb reads it.
+- **A member the verb's payload does not declare** is refused too,
+  naming the verb, the field it sets and the member. A call's payload is
+  checked against the verb's list, so such a member is never given and
+  the value would read null at every call.
+
+A type may have a field named `payload`, and a verb on it is not
+refused: the two readings sit one segment apart, and the rule is total.
+What follows is that a verb's value cannot read a member of a json field
+named `payload`, since `payload.<name>` is always the call's. A lake
+that needs it names the field otherwise, or reads it whole.
+
+A verb already in force with a bare `payload` opens and runs as before;
+it is held to the rule when it is declared again.
+
 ## Extended: the order of refusals (lakelands#338)
 
 The schema doors refuse in this order, in the frame every write door
@@ -121,3 +169,56 @@ A trigger, a function and a type each need one thing bound, so the
 bound checks never meet in one declaration, and an undeclared type has
 no field: those pairs are stated, not checked.
 
+## Extended: what can never be evaluated is refused (lakelands#549)
+
+An expression that fails is, to the fold and to a read, a record that
+does not match, a null key or a derived field that is cleared. That is
+right where the failure is one record's: a division by a field that is
+zero in one record must not fail a read of the others. It was wrong
+where the failure is the expression's own. A derived `number` field that
+is `today() - due_on` was declared and never filled, and a `where`
+multiplying a boolean answered no record, each with nothing said.
+
+What an expression computes is now read off it where that is certain: a
+literal's kind, a function's result, arithmetic over certain kinds, a
+field by its declared kind (`lakelands_api::expr::kind`). Where it
+depends on the record (a `json` field, `if` or `coalesce` over two
+kinds, a setting, a parameter) nothing is said, and a text is never
+certain to fail, since one that reads as a number or an instant is one.
+Two rules hold by it:
+
+- **A derived field its expression can never fill is refused,** as
+  `invalid` on the field, by `declare`, `apply`, `add_field`, a migration
+  and a proposal. The fold lands a value by the field's kind, and what it
+  never lands is: a duration, a boolean or an instant in a `number` or
+  `decimal` field; anything but a boolean in a `boolean` field; a
+  duration, a boolean or a number in a `date_time` field. A duration says
+  how it becomes a number: divided by a unit.
+- **An operation that has no meaning is refused,** as `invalid`, naming
+  it: an instant plus an instant, a boolean in arithmetic, a duration
+  plus a number, a function of a number given an instant. In a derived
+  field, a trigger's `when`, an object set's `where` and a verb's
+  `requires` and values at the declaration; in a read's `where` and
+  group keys at the door, once the reader is known to read the fields
+  named, so the refusal tells nothing of a field it is kept from.
+
+A failure that depends on a record's value stays that record's. A
+declaration in force is not checked again until it is declared again.
+
+## Extended: a path steps only into a value that has members (lakelands#552)
+
+A path's first name was checked against the type, and the rest was not:
+`partner.name = 'x'` on a reference read null for every record, so a set
+declared with it had no member, a trigger never fired and a read
+answered nothing, each with nothing said.
+
+A path of more than one name is a walk into a `json` or `geo` value's
+members. Into a field of any other kind it is refused as `invalid`,
+where lakelands#549's rule refuses what can never be evaluated: at the
+declaration of a set, a trigger, a verb and a derived field, and at a
+read, once the reader is known to read the field. The refusal of a step
+through a reference says what to write: a condition reads the record's
+own fields; compare the reference's key, or walk to the record it names
+in a pattern. Reading through a reference in a condition is not built
+(lakelands#567). A declaration in force that holds such a path stays in
+force until it is declared again.

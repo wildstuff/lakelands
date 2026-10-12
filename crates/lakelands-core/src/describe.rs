@@ -25,7 +25,7 @@ use lakelands_api::ontology::{Authority, RelationDecl, TypeDecl, VerbDecl, VerbE
 use lakelands_api::write::{Declaration, FunctionDecl};
 use lakelands_api::{Access, FieldName, LakeId, Principal, TypeName};
 
-use crate::rights::{field_access, type_access};
+use crate::rights::{field_access, granted_access, type_access};
 
 /// The lake as `who` may see it.
 pub fn lake(lake: &LakeId, declared: &[Declared], who: &Principal) -> LakeDescription {
@@ -104,9 +104,62 @@ fn reads_all<'a>(
     })
 }
 
-/// The fields a condition names; `None` when it does not parse.
-fn named(c: &Condition) -> Option<std::collections::BTreeSet<FieldName>> {
-    parsed(c).map(|e| crate::derive::reads(&e))
+/// An object set's filter by the set's name, as a caller holds the sets.
+pub type Sets<'a> = &'a dyn Fn(&str) -> Option<Condition>;
+
+/// The sets among `declared`.
+fn sets_of(declared: &[Declared]) -> impl Fn(&str) -> Option<Condition> + '_ {
+    move |name| {
+        declared.iter().find_map(|d| match &d.declaration {
+            Declaration::ObjectSet(s) if s.name == name => Some(s.filter.clone()),
+            _ => None,
+        })
+    }
+}
+
+/// The fields a condition names, and those the sets it names read, through
+/// the sets those name: a set is its filter, so who reads a condition
+/// reads what its sets read. `None` when it does not parse, or names a set
+/// `sets` does not answer.
+fn named(c: &Condition, sets: Sets<'_>) -> Option<std::collections::BTreeSet<FieldName>> {
+    fn gather(
+        c: &Condition,
+        sets: Sets<'_>,
+        seen: &mut Vec<String>,
+        out: &mut std::collections::BTreeSet<FieldName>,
+    ) -> Option<()> {
+        let e = parsed(c)?;
+        out.extend(crate::derive::reads(&e));
+        let mut names = Vec::new();
+        in_sets(&e, &mut names);
+        for n in names
+            .into_iter()
+            .filter(|n| !seen.contains(n))
+            .collect::<Vec<_>>()
+        {
+            seen.push(n.clone());
+            gather(&sets(&n)?, sets, seen, out)?;
+        }
+        Some(())
+    }
+    let mut out = Default::default();
+    gather(c, sets, &mut Vec::new(), &mut out).map(|()| out)
+}
+
+/// The sets an expression names with `in_set`.
+fn in_sets(e: &Expr, out: &mut Vec<String>) {
+    use lakelands_api::expr::{Func, Literal};
+    if let Expr::Call {
+        func: Func::InSet,
+        args,
+    } = e
+        && let Some(Expr::Lit {
+            value: Literal::Text(name),
+        }) = args.first()
+    {
+        out.push(name.clone());
+    }
+    crate::expr::children(e).for_each(|c| in_sets(c, out));
 }
 
 /// Whether `who` is shown the declaration `d`: whether [`lake`] describes
@@ -128,6 +181,45 @@ pub fn shown(d: &Declaration, declared: &[Declared], who: &Principal) -> bool {
     }
 }
 
+/// Whether a proposed declaration is listed to `who`, over `declared` as
+/// the proposal would leave it (013, extended): as [`lake`] would describe
+/// it once in force, but a verb by the fields it names and not by who may
+/// call it, since a reviewer need not be one who may.
+pub fn listed(d: &Declaration, declared: &[Declared], who: &Principal) -> bool {
+    let described = |ty: &TypeName| one_type(ty, declared, who).is_some();
+    let holds = |c: Option<&Condition>, ty| condition_visible(c, ty, declared, who);
+    match d {
+        // A view without its definition would read as a stored type.
+        Declaration::Type(t) => {
+            described(&t.name) && (t.view.as_deref()).is_none_or(|v| view_visible(v, declared, who))
+        }
+        Declaration::Trigger(t) => described(&t.on) && holds(t.when.as_ref(), &t.on),
+        Declaration::ObjectSet(s) => described(&s.of) && holds(Some(&s.filter), &s.of),
+        // It names the fields it sets and says something of those it reads.
+        Declaration::Verb(v) => {
+            let VerbEffect::Write { set } = &v.effect else {
+                return described(&v.on) && holds(v.requires.as_ref(), &v.on);
+            };
+            let known = |n: &FieldName| {
+                let t = find_type(declared, &v.on);
+                let f = t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == n)?)));
+                f.is_some_and(|(t, f)| field_access(who, t, f) != Access::None)
+            };
+            // In a value `payload.<name>` is the call's and no field.
+            let value = |c: &Condition| {
+                let fields = parsed(c).map(|e| crate::derive::verb_reads(&e).0);
+                reads_all(&fields.unwrap_or_default(), &v.on, declared, who)
+            };
+            let all = |a: &lakelands_api::ontology::Assignment| known(&a.field) && value(&a.value);
+            described(&v.on)
+                && holds(v.requires.as_ref(), &v.on)
+                && (who.grants.schema || set.iter().all(all))
+        }
+        Declaration::Function(f) => function_visible(f, declared, who),
+        Declaration::ValueType(_) => true,
+    }
+}
+
 /// Whether a condition over type `ty` may be shown to `who`.
 fn condition_visible(
     c: Option<&Condition>,
@@ -136,7 +228,9 @@ fn condition_visible(
     who: &Principal,
 ) -> bool {
     who.grants.schema
-        || c.is_none_or(|c| named(c).is_some_and(|n| reads_all(&n, ty, declared, who)))
+        || c.is_none_or(|c| {
+            named(c, &sets_of(declared)).is_some_and(|n| reads_all(&n, ty, declared, who))
+        })
 }
 
 /// Whether a view may be shown whole to `who`: every source field it names
@@ -165,7 +259,7 @@ pub fn view_reads(v: &ViewDecl) -> Option<Vec<(TypeName, std::collections::BTree
             let mut names: std::collections::BTreeSet<FieldName> =
                 group_by.iter().cloned().collect();
             if let Some(f) = filter {
-                names.extend(named(f)?);
+                names.extend(named(f, &|_| None)?);
             }
             for m in measures {
                 aggregated(&parsed(&m.expr)?, false, &mut names);
@@ -175,25 +269,54 @@ pub fn view_reads(v: &ViewDecl) -> Option<Vec<(TypeName, std::collections::BTree
         .collect()
 }
 
-/// The fields of `ty` a declaration other than a view reads: a derived
-/// field's expression on `ty` itself, the fields of `ty` a derived
-/// relation matches as its target, a set's `where`, a trigger's `when`,
-/// and a verb's `requires`, the fields it sets and what it sets them from
-/// (where `payload` is the call's). A condition that does not parse reads
-/// nothing here.
-pub fn declaration_reads(d: &Declaration, ty: &TypeName) -> std::collections::BTreeSet<FieldName> {
-    let of = |c: &Condition| named(c).unwrap_or_default();
+/// The fields of `ty` a declaration reads: what it probes
+/// ([`declaration_probes`]) and the fields a verb sets.
+pub fn declaration_reads(
+    d: &Declaration,
+    ty: &TypeName,
+    sets: Sets<'_>,
+) -> std::collections::BTreeSet<FieldName> {
+    let mut names = declaration_probes(d, ty, sets);
+    if let Declaration::Verb(v) = d
+        && let VerbEffect::Write { set } = &v.effect
+        && &v.on == ty
+    {
+        names.extend(set.iter().map(|a| a.field.clone()));
+    }
+    names
+}
+
+/// The fields of `ty` whose values a declaration reads: a derived field's
+/// expression on `ty` itself, the fields a derived relation matches, its
+/// own and those of `ty` as its target, what a view reads of `ty` as a
+/// source ([`view_reads`]), a set's `where`, a trigger's `when`, and a
+/// verb's `requires` and what it sets its fields from (where
+/// `payload.<name>` is the call's and reads no field), each with what the
+/// sets it names read, as `sets` answers them. A condition that does not
+/// parse reads nothing here.
+pub fn declaration_probes(
+    d: &Declaration,
+    ty: &TypeName,
+    sets: Sets<'_>,
+) -> std::collections::BTreeSet<FieldName> {
+    // A set `sets` does not answer takes none of the condition's own reads.
+    let own = |c: &Condition| parsed(c).map(|e| crate::derive::reads(&e));
+    let of = |c: &Condition| named(c, sets).or_else(|| own(c)).unwrap_or_default();
     match d {
         Declaration::Type(t) => {
             let own = t.fields.iter().filter(|_| &t.name == ty);
-            let matched = t.relations.iter().filter(|r| &r.target == ty);
+            let pairs = |r: &RelationDecl| r.derived.clone().map(|m| m.pairs).unwrap_or_default();
+            let matching = (t.relations.iter().filter(|_| &t.name == ty)).flat_map(pairs);
+            let matched = (t.relations.iter().filter(|r| &r.target == ty)).flat_map(pairs);
+            let view = t
+                .view
+                .iter()
+                .flat_map(|v| view_reads(v).unwrap_or_default());
             own.filter_map(|f| f.derived.as_ref())
                 .flat_map(of)
-                .chain(
-                    matched
-                        .filter_map(|r| r.derived.as_ref())
-                        .flat_map(|m| m.pairs.iter().map(|p| p.to.clone())),
-                )
+                .chain(matching.map(|p| p.from))
+                .chain(matched.map(|p| p.to))
+                .chain(view.filter(|(source, _)| source == ty).flat_map(|v| v.1))
                 .collect()
         }
         Declaration::ObjectSet(s) if &s.of == ty => of(&s.filter),
@@ -202,14 +325,44 @@ pub fn declaration_reads(d: &Declaration, ty: &TypeName) -> std::collections::BT
             let mut names = v.requires.as_ref().map(of).unwrap_or_default();
             if let VerbEffect::Write { set } = &v.effect {
                 for a in set {
-                    names.extend(of(&a.value).into_iter().filter(|n| n.as_str() != "payload"));
-                    names.insert(a.field.clone());
+                    let value = parsed(&a.value).map(|e| crate::derive::verb_reads(&e).0);
+                    names.extend(value.unwrap_or_default());
                 }
             }
             names
         }
         _ => Default::default(),
     }
+}
+
+/// Leaves a write's answer the reactions it names to the reader `lake` is
+/// described to (024): the triggers and object sets `describe` lists to
+/// it, and of those only where it reads every field the condition names.
+/// Being shown a definition is not reading what it reads, and naming a
+/// reaction says that its condition held.
+pub fn named_reactions(lake: &LakeDescription, set_off: &mut lakelands_api::write::SetOff) {
+    let reads = |ty: &TypeName, c: Option<&Condition>| {
+        let fields = lake.types.iter().find(|t| &t.name == ty).map(|t| &t.fields);
+        let read = |n: &FieldName| {
+            fields.is_some_and(|f| f.iter().any(|f| &f.name == n && f.access.reads()))
+        };
+        let sets = |n: &str| {
+            let named = lake.object_sets.iter().find(|d| d.name == n);
+            named.map(|d| d.filter.clone())
+        };
+        c.is_none_or(|c| named(c, &sets).is_some_and(|names| names.iter().all(read)))
+    };
+    let fired = |t: &lakelands_api::TriggerName| {
+        let mut named = lake.triggers.iter().filter(|d| &d.name == t);
+        named.any(|d| reads(&d.on, d.when.as_ref()))
+    };
+    set_off.fired.retain(fired);
+    let listed = |s: &String| {
+        let mut named = lake.object_sets.iter().filter(|d| &d.name == s);
+        named.any(|d| reads(&d.of, Some(&d.filter)))
+    };
+    set_off.joined.retain(listed);
+    set_off.left.retain(listed);
 }
 
 /// The fields a measure reads from its source's records: the paths inside
@@ -277,12 +430,55 @@ fn find_type<'a>(declared: &'a [Declared], ty: &TypeName) -> Option<&'a TypeDecl
     })
 }
 
+/// Whether `who` is shown `t`: its grants give it some access to the type
+/// or to one of its fields, a `sensitive` field's raise not among them,
+/// and it is shown every type that `t` is made of
+/// (`docs/decisions/006-grants-not-roles.md`, extended): a link type is
+/// its owner's edges and a view is its sources' records computed, so one
+/// who is told the other does not exist is told the same of what is made
+/// of it, whatever a grant on its own name says. Each type is asked once,
+/// so views an imported log holds in a cycle are judged by their grants
+/// and the read that refuses the cycle is reached. `find` answers a type
+/// by its name; the description and every door that asks before it names
+/// a type ask this one function.
+pub fn type_shown<'a>(
+    t: &'a TypeDecl,
+    find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
+    who: &Principal,
+) -> bool {
+    let own = |t: &TypeDecl| {
+        let fields = &mut t.fields.iter();
+        type_access(who, &t.name) != Access::None
+            || fields.any(|f| granted_access(who, t, f) != Access::None)
+    };
+    let (mut asked, mut next) = (vec![&t.name], vec![t]);
+    while let Some(t) = next.pop() {
+        let owner = crate::links::link_type_parts(&t.name).map(|p| p.0);
+        let sources = (t.view.iter())
+            .flat_map(|v| std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source)));
+        for o in owner.iter().chain(sources).filter_map(find) {
+            if asked.contains(&&o.name) {
+                continue;
+            }
+            if !own(o) {
+                return false;
+            }
+            asked.push(&o.name);
+            next.push(o);
+        }
+    }
+    own(t)
+}
+
 fn type_description(
     t: &TypeDecl,
     d: &Declared,
     declared: &[Declared],
     who: &Principal,
 ) -> Option<TypeDescription> {
+    if !type_shown(t, &|n| find_type(declared, n), who) {
+        return None;
+    }
     let fields: Vec<FieldDescription> = t
         .fields
         .iter()
@@ -290,18 +486,13 @@ fn type_description(
         .filter(|(_, a)| *a != Access::None)
         .map(|(f, a)| FieldDescription::of(f, a))
         .collect();
-    let whole = type_access(who, &t.name);
-    if fields.is_empty() && whole == Access::None {
-        return None;
-    }
-    let reads = fields.iter().any(|f| f.access.reads()) || whole.reads();
     let is_view = t.view.is_some();
     // A link type's records are written through its relation's link
     // doors, never through `upsert` or `retire`.
     let is_link = crate::links::is_link_type(&t.name);
     let may = TypeRights {
-        find: reads,
-        get: reads,
+        find: true,
+        get: true,
         upsert: !is_view && !is_link && fields.iter().any(FieldDescription::authored_writable),
         retire: !is_link && crate::rights::may_retire(who, t),
         link: t
@@ -366,6 +557,7 @@ fn type_description(
             schema_hash: d.schema_hash.clone().unwrap_or_default(),
             sorted: vec![],
             indexed: vec![],
+            kept: None,
         },
         fields,
     })
@@ -383,14 +575,7 @@ fn relation_description(t: &TypeName, r: &RelationDecl, who: &Principal) -> Rela
         .retain(|f| field_access(who, &link, f) != Access::None);
     for f in &mut r.fields {
         if !field_access(who, &link, f).reads() {
-            f.derived = None;
-            f.function = None;
-            f.depends_on.clear();
-            f.searchable = false;
-            f.description = None;
-            f.label = None;
-            f.embed = None;
-            f.annotations.clear();
+            f.shape_alone();
         }
     }
     r

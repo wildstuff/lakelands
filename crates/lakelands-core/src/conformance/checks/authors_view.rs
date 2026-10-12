@@ -68,7 +68,11 @@ async fn shown(
 ) -> Result<(Vec<FieldName>, Vec<(FieldName, u64)>), Failure> {
     let listed = cat.proposals(who, ProposalFilter::default()).await;
     let listed = listed.must("listing the proposals")?.data;
-    match listed.into_iter().find(|p| &p.id == id).map(|p| p.write) {
+    match listed
+        .into_iter()
+        .find(|p| &p.id == id)
+        .and_then(|p| p.write)
+    {
         Some(ProposedWrite::Migrate { migration, report }) => {
             let fields = migration.to.fields.into_iter().map(|f| f.name).collect();
             Ok((fields, report.dropped))
@@ -177,6 +181,7 @@ async fn a_change_of_shape_never_names_a_field_its_author_may_not_know_of(
     let shape = |to: TypeDecl, renames: &[(&str, &str)]| Migration {
         to,
         renames: (renames.iter().map(|(a, b)| ((*a).into(), (*b).into()))).collect(),
+        relation_renames: Vec::new(),
     };
     for (what, m, field, says) in [
         (

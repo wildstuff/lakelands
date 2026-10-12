@@ -13,6 +13,7 @@
 #![allow(dead_code)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use lakelands_api::location::{EngineConfig, Location, PgTls, PgTlsMode, PgTuning};
 
@@ -92,4 +93,39 @@ pub fn drop_schema(url: &str, schema: &str) {
         }
     })
     .join();
+}
+
+/// A count the server keeps of the lake in `schema`, which `query`
+/// selects with the schema as `$1`, once it stands still: a backend that
+/// ended reports what it read at its end.
+pub fn settled(url: &str, schema: &str, query: &str) -> i64 {
+    let (url, schema, query) = (url.to_owned(), schema.to_owned(), query.to_owned());
+    let read = move || {
+        let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        let row = client.query_opt(&query, &[&schema]).unwrap();
+        row.map_or(0, |row| row.get::<_, i64>(0))
+    };
+    std::thread::spawn(move || {
+        let (asked, mut last) = (Instant::now(), -1);
+        loop {
+            std::thread::sleep(Duration::from_millis(700));
+            let now = read();
+            if now == last || asked.elapsed() > Duration::from_secs(20) {
+                return now;
+            }
+            last = now;
+        }
+    })
+    .join()
+    .unwrap()
+}
+
+/// The tuples of one of the lake's tables the server has fetched, by an
+/// index or in sequence, once the count stands still.
+pub fn fetched(url: &str, schema: &str, table: &str) -> i64 {
+    let tuples = format!(
+        "SELECT COALESCE(idx_tup_fetch, 0) + seq_tup_read FROM pg_stat_user_tables \
+         WHERE schemaname = $1 AND relname = '{table}'"
+    );
+    settled(url, schema, &tuples)
 }

@@ -89,7 +89,7 @@ fn status_of(e: &Error) -> StatusCode {
     match e {
         Error::Refused { reason, .. } => match reason {
             Refusal::NotGranted | Refusal::WrongDoor | Refusal::Reserved => StatusCode::FORBIDDEN,
-            Refusal::Decided => StatusCode::CONFLICT,
+            Refusal::Decided | Refusal::Unanswered { .. } => StatusCode::CONFLICT,
             Refusal::Invalid { .. }
             | Refusal::Constraint { .. }
             | Refusal::Precondition { .. }
@@ -624,6 +624,14 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
         (["schema", "add_field"], Method::POST) => r(
             Door::AddField,
             "POST …/schema/add_field",
+            none,
+            &[],
+            BodyAs::Args,
+            Writes::No,
+        ),
+        (["schema", "recompute"], Method::POST) => r(
+            Door::Recompute,
+            "POST …/schema/recompute",
             none,
             &[],
             BodyAs::Args,

@@ -31,7 +31,7 @@ use std::fmt;
 use std::panic::AssertUnwindSafe;
 
 use lakelands_api::engine::{CanonicalEvent, LakeEngine, Lease, OpenMode};
-use lakelands_api::event::{Digest, EventId};
+use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::LakeId;
 use lakelands_api::id::Position;
 use serde_json::{Value, json};
@@ -115,6 +115,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     log::IMPORT_KEEPS_FENCES,
     log::IMPORT_ONLY_INTO_IMPORTED,
     log::SEALS,
+    log::SEAL_OR_NOTHING,
     log::OPENING,
     log::READ_ONLY_OPEN,
     log::DROPPED_WRITER,
@@ -125,6 +126,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     projection::EDGES_IN_OUT_BOTH,
     projection::EDGES_OF_MANY_KEYS,
     projection::GET_MANY,
+    projection::MUCH_WRITTEN_KEY,
     projection::EDGES_TO_RETIRED,
     projection::EDGES_FOLLOW_THE_LATEST_STATE,
     projection::COMMIT_INVALID,
@@ -137,7 +139,10 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::MIXED_KINDS,
     reads::AFTER_AND_LIMIT,
     reads::KEY_BATCHES,
+    reads::KEPT_NAME,
+    reads::TEXT_PAGE,
     reads::FIELD_ORDER_WALK,
+    reads::SETTINGS_ORDERED,
     reads::SORTED_PAGE,
     reads::SORTED_PAGE_PINNED,
     reads::FILTER_AS_EVALUATOR,
@@ -148,6 +153,8 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::LEXICAL_BEYOND_ASCII,
     reads::LEXICAL_EARLIER,
     reads::LEXICAL_NAMED_FIELDS,
+    reads::CHANGED_ROWS,
+    reads::MANY_PUTS,
     reads::LEXICAL_REDECLARED_MID_FOLD,
     reads::NEAREST_BY_COSINE,
     reads::ZERO_AND_WRONG_LENGTH,
@@ -238,6 +245,16 @@ pub fn chain(start: u64, n: u64, prev: &Digest, lease: &Lease) -> Vec<CanonicalE
             e
         })
         .collect()
+}
+
+/// Seal the active segment under `lease` and begin the next with `first`,
+/// entering as an append's events do.
+pub fn seal(
+    engine: &dyn LakeEngine,
+    lease: &Lease,
+    first: &[CanonicalEvent],
+) -> lakelands_api::Result<Option<SegmentDigest>> {
+    engine.seal_segment(lease, false, &mut |_| Ok(first.to_vec()))
 }
 
 #[cfg(test)]

@@ -19,7 +19,7 @@ use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
 use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter, Seams, VerbInvocation};
 use lakelands_api::write::{
     AgeReport, CompactReport, Declaration, Migration, MigrationReport, Outcome, Proposal,
-    ProposalFilter, ProposedWrite, PurgeReport, ValueTypeReport, WriteOpts,
+    ProposalFilter, ProposedWrite, PurgeReport, Recompute, ValueTypeReport, WriteOpts,
 };
 use lakelands_api::{
     Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
@@ -33,7 +33,7 @@ use crate::exec;
 use crate::ingest;
 use crate::lake::Lake;
 use crate::reads::Reader;
-use crate::writes::{self, Call, External};
+use crate::writes::{self, Call, External, MadeDue};
 
 /// Open a lake at a location. The host passes the engines it compiled in
 /// (and any seams it binds) in `seams`; the store depends on no engine.
@@ -62,10 +62,11 @@ fn same_lake(lake: &Lake, who: &Principal) -> Result<()> {
 
 /// The store facade of one lake.
 pub struct Store {
-    lake: Arc<Lake>,
+    pub(crate) lake: Arc<Lake>,
 }
 
 /// The doors of one lake, bound to a host's write context.
+#[derive(Clone)]
 pub struct Doors {
     lake: Arc<Lake>,
     context: WriteContext,
@@ -80,7 +81,12 @@ impl Doors {
         same_lake(&self.lake, who)?;
         let (lake, who) = (self.lake.clone(), who.clone());
         exec::run(move || {
-            let r = Reader::open(&lake, &who, at)?;
+            // The list comes from the view the read reads, so that a rename
+            // is in its shape and in its grants, or in neither.
+            let view = lake.engine.view(at.as_of)?;
+            let head = at.as_of.is_none().then_some(view.as_ref());
+            let (who, _) = lake.followed(who, at.as_of, head)?;
+            let r = Reader::open(&lake, &who, at, view)?;
             let data = f(&r)?;
             Ok(Reply {
                 position: r.position,
@@ -98,10 +104,12 @@ impl Doors {
         same_lake(&self.lake, who)?;
         let (lake, who, context) = (self.lake.clone(), who.clone(), self.context);
         exec::run(move || {
+            let (who, followed) = lake.followed(who, None, None)?;
             f(&Call {
                 lake: &lake,
                 who: &who,
                 context,
+                followed,
             })
         })
         .await
@@ -115,18 +123,27 @@ impl Doors {
     /// Make the calls of backed functions the write made due, and answer
     /// its outcome at the position of the last output recorded, from which
     /// the filled fields are visible. Of what the write set off, it names
-    /// only the triggers and object sets `describe` lists to `who`: naming
-    /// one whose condition reads a field `who` may not read would tell it
-    /// that the condition held (024). `through` still covers them all.
-    async fn settled(&self, who: &Principal, mut outcome: Outcome, seen: u64) -> Result<Outcome> {
-        let last = crate::backed::settle(&self.lake, seen).await?;
+    /// only what [`lakelands_core::describe::named_reactions`] leaves `who` (024);
+    /// `through` still covers it all. A drain that fails is not the
+    /// write's failure, but an external verb is handed to its executor
+    /// only after a drain that did not fail: after one that did, the
+    /// writer may be behind and the executor's answer could not be
+    /// recorded, so nothing is handed and [`writes::not_handed`] answers.
+    async fn handed(
+        &self,
+        who: &Principal,
+        (mut outcome, external): (Outcome, Option<External>),
+        seen: u64,
+        by: MadeDue,
+    ) -> Result<Outcome> {
+        let last = crate::backed::settle(&self.lake, seen).await;
+        let last = match &external {
+            Some(_) => last.map_err(|e| writes::not_handed(e, true, by))?,
+            None => last.unwrap_or(None),
+        };
         let named = matches!(&outcome, Outcome::Applied { set_off, .. } if set_off.names_any());
         let lake = if named {
-            Some(
-                self.read(who, ReadAt::default(), |r| Ok(r.describe()))
-                    .await?
-                    .data,
-            )
+            Some(self.describe(who, ReadAt::default()).await?.data)
         } else {
             None
         };
@@ -137,31 +154,52 @@ impl Doors {
             *position = (*position).max(last.unwrap_or(*position));
             set_off.through = set_off.through.filter(|t| t > position);
             if let Some(lake) = lake {
-                set_off
-                    .fired
-                    .retain(|t| lake.triggers.iter().any(|d| &d.name == t));
-                let listed = |s: &String| lake.object_sets.iter().any(|d| &d.name == s);
-                set_off.joined.retain(listed);
-                set_off.left.retain(listed);
+                lakelands_core::describe::named_reactions(&lake, set_off);
             }
         }
-        Ok(outcome)
+        match external {
+            Some(ext) => Ok(writes::with_output(outcome, self.execute(ext, by).await?)),
+            None => Ok(outcome),
+        }
     }
 
-    /// A write whose outcome is [`Doors::settled`].
+    /// A write that can make an external verb due, with its drain, its
+    /// hand-out and the recording of the answer, run in a task of its own
+    /// that the caller awaits: a caller who goes away, as a request whose
+    /// client closed its connection does, does not stop it between the
+    /// call's append and its answer's recording.
+    async fn detached<F>(&self, who: &Principal, by: MadeDue, f: F) -> Result<Outcome>
+    where
+        F: FnOnce(&Call<'_>) -> Result<(Outcome, Option<External>)> + Send + 'static,
+    {
+        let (doors, who) = (self.clone(), who.clone());
+        let task = tokio::spawn(async move {
+            let seen = doors.seen();
+            let made = doors.write(&who, f).await?;
+            doors.handed(&who, made, seen, by).await
+        });
+        let stopped = |e| unavailable(format!("the store's work on this call stopped: {e}"));
+        task.await.unwrap_or_else(|e| Err(stopped(e)))
+    }
+
+    /// A write whose outcome is [`Doors::handed`]'s.
     async fn write_settled<F>(&self, who: &Principal, f: F) -> Result<Outcome>
     where
         F: FnOnce(&Call<'_>) -> Result<Outcome> + Send + 'static,
     {
         let seen = self.seen();
         let outcome = self.write(who, f).await?;
-        self.settled(who, outcome, seen).await
+        let by = MadeDue::Call { keyed: false };
+        self.handed(who, (outcome, None), seen, by).await
     }
 
     /// Hand an external verb to its executor and record the answer; the
     /// recorded output is returned, `{"error": …}` when the executor failed.
-    async fn execute(&self, ext: External) -> Result<(Position, serde_json::Value)> {
-        let executor = writes::bound_executor(&self.lake, &ext.executor)?.clone();
+    /// A failure before the hand-out is [`writes::not_handed`]'s.
+    async fn execute(&self, ext: External, by: MadeDue) -> Result<(Position, serde_json::Value)> {
+        let not_handed = |e| writes::not_handed(e, true, by);
+        let executor = writes::bound_executor(&self.lake, &ext.executor).map_err(not_handed)?;
+        let executor = executor.clone();
         // The executor is the host's own code: it receives the record whole,
         // unmasked by the grants of whoever made the verb due. The caller
         // sees only the outcome and the recorded output. A verb on its type
@@ -175,10 +213,10 @@ impl Doors {
                     params: Default::default(),
                 };
                 let host = self.lake.system("host");
-                let ty = ext.ty.clone();
                 Some(
-                    self.read(&host, ReadAt::default(), move |r| r.get(&ty, &get))
-                        .await?
+                    self.get(&host, &ext.ty, get)
+                        .await
+                        .map_err(not_handed)?
                         .data,
                 )
             }
@@ -201,22 +239,19 @@ impl Doors {
         };
         let lake = self.lake.clone();
         let recorded = output.clone();
-        let at = exec::run(move || writes::record_output(&lake, &ext, &input, output)).await?;
+        let at = exec::run(move || writes::record_output(&lake, &ext, &input, output)).await;
+        // The executor ran: where its answer reached the log, a retry
+        // answers it; where it did not, it is lost but for this sentence.
+        let at = at.map_err(|e| match e {
+            Error::Unavailable { message } => unavailable(format!(
+                "{} answered this call with {recorded}, and recording its answer failed: \
+                 {message}",
+                lakelands_api::error::THE_EXECUTOR
+            )),
+            e => e,
+        })?;
         Ok((at, recorded))
     }
-}
-
-/// An outcome with an external verb's recorded output in it, and the
-/// position it was recorded at as the last of what the call set off.
-fn with_output(mut outcome: Outcome, (at, recorded): (Position, serde_json::Value)) -> Outcome {
-    if let Outcome::Applied {
-        output, set_off, ..
-    } = &mut outcome
-    {
-        *output = Some(recorded);
-        set_off.through = Some(at);
-    }
-    outcome
 }
 
 #[async_trait]
@@ -315,15 +350,11 @@ impl Catalog for Doors {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         let (verb, key) = (verb.clone(), key.cloned());
-        let seen = self.seen();
-        let (outcome, external) = self
-            .write(who, move |c| c.call(&verb, key.as_ref(), payload, opts))
-            .await?;
-        let outcome = self.settled(who, outcome, seen).await?;
-        match external {
-            Some(ext) => Ok(with_output(outcome, self.execute(ext).await?)),
-            None => Ok(outcome),
-        }
+        let by = MadeDue::Call {
+            keyed: opts.idempotency_key.is_some(),
+        };
+        let call = move |c: &Call<'_>| c.call(&verb, key.as_ref(), payload, opts);
+        self.detached(who, by, call).await
     }
 
     async fn query(&self, who: &Principal, pattern: Pattern) -> Result<Reply<QueryResult>> {
@@ -400,13 +431,8 @@ impl Catalog for Doors {
 
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome> {
         let p = proposal.clone();
-        let seen = self.seen();
-        let (outcome, external) = self.write(who, move |c| c.accept(&p)).await?;
-        let outcome = self.settled(who, outcome, seen).await?;
-        match external {
-            Some(ext) => Ok(with_output(outcome, self.execute(ext).await?)),
-            None => Ok(outcome),
-        }
+        let accept = move |c: &Call<'_>| c.accept(&p);
+        self.detached(who, MadeDue::Accepted, accept).await
     }
 
     async fn reject(
@@ -438,6 +464,10 @@ impl Catalog for Doors {
             .await
     }
 
+    async fn recompute(&self, who: &Principal, what: Recompute) -> Result<Outcome> {
+        self.write_settled(who, move |c| c.recompute(&what)).await
+    }
+
     async fn add_field(&self, who: &Principal, ty: &TypeName, field: FieldDecl) -> Result<Outcome> {
         let ty = ty.clone();
         self.write_settled(who, move |c| c.add_field(&ty, field))
@@ -450,7 +480,7 @@ impl Catalog for Doors {
         migration: Migration,
     ) -> Result<Reply<MigrationReport>> {
         self.write(who, move |c| {
-            let w = c.lake.writer();
+            let w = c.writer()?;
             let view = c.lake.engine.view(None)?;
             Ok(Reply {
                 position: view.position().unwrap_or(Position::GENESIS),
@@ -478,11 +508,12 @@ impl Catalog for Doors {
     ) -> Result<Reply<ValueTypeReport>> {
         self.write(who, move |c| {
             crate::writes::granted(c.who.grants.schema)?;
-            let w = c.lake.writer();
+            let w = c.writer()?;
             let view = c.lake.engine.view(None)?;
             Ok(Reply {
                 position: view.position().unwrap_or(Position::GENESIS),
-                data: c.preflight_value_type(&w, view.as_ref(), &to)?,
+                data: c
+                    .shown_value_type(&w.ontology, c.preflight_value_type(&w, view.as_ref(), &to)?),
             })
         })
         .await
@@ -605,24 +636,36 @@ impl LakeStore for Store {
         let mut report = exec::run(move || crate::aging::run(&lake, today)).await?;
         // The moves' backed fields settle like any write's; the report
         // names the position from which what they filled is visible.
-        if let Some(last) = crate::backed::settle(&self.lake, seen).await? {
+        if let Some(last) = crate::backed::settle_after(&self.lake, seen).await {
             report.position = report.position.max(last);
         }
         Ok(report)
     }
 
-    async fn purge_preflight(&self, source: &SourceId) -> Result<PurgeReport> {
-        let (lake, source) = (self.lake.clone(), source.clone());
-        exec::run(move || crate::purge::preflight(&lake, &source)).await
+    async fn purge_preflight(
+        &self,
+        source: &SourceId,
+        ty: Option<&TypeName>,
+    ) -> Result<PurgeReport> {
+        let (lake, source, ty) = (self.lake.clone(), source.clone(), ty.cloned());
+        exec::run(move || crate::purge::preflight(&lake, &source, ty.as_ref())).await
     }
 
-    async fn purge_source(&self, source: &SourceId, id: Option<&str>) -> Result<PurgeReport> {
+    async fn purge_source(
+        &self,
+        source: &SourceId,
+        ty: Option<&TypeName>,
+        id: Option<&str>,
+    ) -> Result<PurgeReport> {
         let (lake, source, id) = (self.lake.clone(), source.clone(), id.map(str::to_owned));
-        let seen = lake.drains.load(std::sync::atomic::Ordering::Acquire);
-        let mut report =
-            exec::run(move || crate::purge::run(&lake, &source, id.as_deref())).await?;
+        let (ty, seen) = (
+            ty.cloned(),
+            lake.drains.load(std::sync::atomic::Ordering::Acquire),
+        );
+        let purge = move || crate::purge::run(&lake, &source, ty.as_ref(), id.as_deref());
+        let mut report = exec::run(purge).await?;
         // The retirements' backed fields settle like any write's.
-        if let Some(last) = crate::backed::settle(&self.lake, seen).await? {
+        if let Some(last) = crate::backed::settle_after(&self.lake, seen).await {
             report.position = report.position.max(last);
         }
         Ok(report)
@@ -663,38 +706,37 @@ pub struct Feed {
     lake: Arc<Lake>,
 }
 
-fn type_of(body: &EventBody) -> Option<&TypeName> {
+/// The type an event is about, and the record, by its key: both for the
+/// `record_*` events, `trigger_fired` and `object_set_changed`; the type
+/// for a type's `declared` and `migrated`; the record for `verb_called`.
+fn about(body: &EventBody) -> (Option<&TypeName>, Option<&RecordKey>) {
     match body {
-        EventBody::RecordUpserted { ty, .. }
-        | EventBody::RecordIngested { ty, .. }
-        | EventBody::RecordRetired { ty, .. }
-        | EventBody::RecordRestricted { ty, .. }
-        | EventBody::RecordUnrestricted { ty, .. }
-        | EventBody::TriggerFired { ty, .. }
-        | EventBody::ObjectSetChanged { ty, .. } => Some(ty),
+        EventBody::RecordUpserted { ty, key, .. }
+        | EventBody::RecordIngested { ty, key, .. }
+        | EventBody::RecordRetired { ty, key, .. }
+        | EventBody::RecordRestricted { ty, key, .. }
+        | EventBody::RecordUnrestricted { ty, key, .. }
+        | EventBody::TriggerFired { ty, key, .. }
+        | EventBody::ObjectSetChanged { ty, key, .. } => (Some(ty), Some(key)),
         EventBody::Declared {
             declaration: Declaration::Type(t),
             ..
-        } => Some(&t.name),
-        EventBody::Migrated { migration, .. } => Some(&migration.to.name),
-        _ => None,
+        } => (Some(&t.name), None),
+        EventBody::Migrated { migration, .. } => (Some(&migration.to.name), None),
+        EventBody::VerbCalled { key, .. } => (None, key.as_ref()),
+        _ => (None, None),
     }
 }
 
-/// The record an event is about, by its key: the `record_*` events,
-/// `trigger_fired`, `object_set_changed` and `verb_called`.
-fn key_of(body: &EventBody) -> Option<&RecordKey> {
-    match body {
-        EventBody::RecordUpserted { key, .. }
-        | EventBody::RecordIngested { key, .. }
-        | EventBody::RecordRetired { key, .. }
-        | EventBody::RecordRestricted { key, .. }
-        | EventBody::RecordUnrestricted { key, .. }
-        | EventBody::TriggerFired { key, .. }
-        | EventBody::ObjectSetChanged { key, .. }
-        | EventBody::VerbCalled { key: Some(key), .. } => Some(key),
-        _ => None,
-    }
+/// Whether a `migrated` event is also about one of `types`: the link
+/// types its renamed relations move records between, old and new, so a
+/// consumer that follows either hears of the move (035, extended).
+fn moves(body: &EventBody, types: &[TypeName]) -> bool {
+    let EventBody::Migrated { migration, .. } = body else {
+        return false;
+    };
+    let moved = lakelands_core::links::moved(migration);
+    (moved.iter()).any(|(old, new)| types.contains(old) || types.contains(new))
 }
 
 #[async_trait]
@@ -720,10 +762,12 @@ impl ChangeFeed for Feed {
                     next = e.position.next();
                     let kind_ok =
                         filter.kinds.is_empty() || filter.kinds.iter().any(|k| k == e.body.kind());
+                    let (ty, key) = about(&e.body);
                     let type_ok = filter.types.is_empty()
-                        || type_of(&e.body).is_some_and(|t| filter.types.contains(t));
-                    let key_ok = filter.keys.is_empty()
-                        || key_of(&e.body).is_some_and(|k| filter.keys.contains(k));
+                        || ty.is_some_and(|t| filter.types.contains(t))
+                        || moves(&e.body, &filter.types);
+                    let key_ok =
+                        filter.keys.is_empty() || key.is_some_and(|k| filter.keys.contains(k));
                     if kind_ok && type_ok && key_ok {
                         events.push(e);
                         if events.len() >= want {
@@ -743,3 +787,6 @@ impl ChangeFeed for Feed {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

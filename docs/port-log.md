@@ -223,6 +223,63 @@ which is already a row. Every root holds the files it held at
 `d628b79a19`. No row is added. **The list is closed for `0.9.0` as of
 `3918187ec1`**, the commit the tag's message names.
 
+**Checked on 2026-10-03, before the `0.9.1` tag**, against the source's
+mainline at `f1747cedea`: the 22 commits after `3918187ec1` (1138 after
+the freeze in all), checked the same way.
+- **One commit touches a root, and it is the last row.** `e766e2b5ca`
+  reached the mainline through `478943fa9c`. It adds one variant to the
+  error type among the moved `{types}` files in their new crate, six
+  lines, so that the source's adapter gives a store limit its own kind
+  of refusal. It changes no storage behaviour.
+- **None of the 11 merges** among them adds anything of its own under
+  the roots: what each shows against one parent is what the other
+  parent brought since their merge base, and by patch id that is this
+  commit's change or `3aa65077c6`'s, which is already a row.
+
+Every root holds the files it held at `3918187ec1`. **The list is
+closed for `0.9.1` as of `f1747cedea`**, the commit the tag's message
+names.
+
+**Checked on 2026-10-03, after the `0.9.1` tag**, against the source's
+mainline at `c492aa07a6`: the 5 commits after `f1747cedea` (1143 after
+the freeze in all), checked the same way. None of them touches a root,
+neither of the two merges among them shows a change under one against
+either parent, and every root holds the files it held at `f1747cedea`.
+No row is added. The next check starts after `c492aa07a6`.
+
+**Checked on 2026-10-06, before the `0.10.0` tag**, against the
+source's mainline at `8e069a5fac`. The mainline is the source's
+`develop`, the branch every check above followed; its `main` is an older
+branch and was not checked. The bare repository was fetched to that
+commit for the check. That covers the 556 commits after `c492aa07a6`, 188
+of them on the first-parent line, 1699 since the freeze in all.
+- **Each root still holds the files it held at `c492aa07a6`.** The moved
+  `{types}` files in their new crate are included. Five files are added,
+  none is removed or moved: a seed list and a type of the source's own,
+  two engine tests, and the source store's read judge.
+- **26 commits touch a root, and they are the last 26 rows.** The files
+  they change are exactly the 122 files that change under the roots
+  across the range.
+- **None of the 223 merges** adds a change of its own under the roots
+  (a combined diff against both parents is empty).
+- **One applies and is not held: lakelands#652.** The source closes a
+  computed field whose reads cannot be told. In Lakelands, a derived
+  expression that uses `changed()` or `previous()` is completed with no
+  `depends_on`, so it is read at its own grant and not at its inputs'.
+  The other 25 are held, test-only, or not applicable, each with its
+  reason in its row.
+- **Two holes of Lakelands' own were found beside them**, while the
+  source's read judge was being judged. Neither is a port of a source
+  commit. In a pattern read, a refusal names a type to a reader it is
+  not shown: by an order or a measure over a path on that type
+  (lakelands#653), and by a step over a relation that the type derives
+  under a name the reader is shown (lakelands#654). Both are probed on
+  develop, and their probes are in the issues.
+
+**The list is closed for `0.10.0` as of `8e069a5fac`**, once
+lakelands#652 is settled. If the mainline moves before the tag, only the
+commits after it are checked.
+
 | Source commit | Behaviour, in one line | Ported in, or not applicable and why |
 |---|---|---|
 | `5914084de9` | One German user-interface sentence in the capabilities module changes its form of address from formal to informal. | Not applicable: the capabilities module was not carried (cut in O2: there is no capability negotiation; see `docs/import-ledger.md`), and no storage behaviour changes: no event, no fold rule, no signature, no stored byte. |
@@ -241,3 +298,30 @@ which is already a row. Every root holds the files it held at
 | `d741fe684e` | The flow lint gains a check that warns, before a flow's first run, when a step files a record under a key an agent step produced with no confirm step between, since a retry could produce another key and file the record twice. | Not applicable: the flow lint (`{store}/src/flow_lint.rs`) was never imported, being a product feature (`docs/import-ledger.md`), and Lakelands has no flows. An idempotency key is the caller's own, and the same key answers the same outcome (`docs/decisions/016-two-write-doors-by-origin.md`). |
 | `580a645406` | The delete guard's rule for which relations hold a record alive moves into a public function, beside a public refusal helper, so that an engine counting its own referrers asks the same question and refuses in the same words. Two ownership functions become public. The field-grant set gains an accessor, and the error type gains a refusal for an operation the source's lake adapter does not carry. | Not applicable: the source exposes its own guard and helpers to its adapter. No event, fold rule, signature of ours or stored byte changes, and the guard's rule and wording stay as they were. |
 | `3aa65077c6` | The function of `{store}` that describes a type as its declaration states it becomes public, and `{engine}` re-exports it, so that the source's adapter onto a lake can answer a description. Two `use` lines change; the function itself does not. | Not applicable: only a visibility changes, for the source's own adapter. No event, fold rule, signature or stored byte changes. Lakelands answers a type's description through `describe_type`, which is a door of its contract already. |
+| `e766e2b5ca` | The error type among the moved `{types}` files gains one variant, for a limit of the store that was reached: a graph measure past the lake's node limit, or a chain of reactive writes past its depth. The source's adapter onto a lake maps those two refusals to it. Six added lines; nothing else under a root changes. | Not applicable: the variant is the source's own name for two refusals at its adapter. No event, fold rule, signature or stored byte changes. Lakelands answers both in its contract already, each with its own kind: `too_large` for a measure past the node limit and `too_deep` for a reactive chain past its depth. |
+| `1f7b2d0571` | The source's adapter onto a lake serves a whole source's retraction through the lake's purge preflight. It refuses the purge itself where records outside it still refer in, or where its caller sees only part of what the source brought, and reads the preflight again when the lake moved. It also hands a search over several fields to the lake's fusion, and reads a graph measure in one page of the node limit. | Already held. A preflight's id is stale once the lake moved (`a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_once_the_lake_moved`). The records that refer in are named, never a refusal (`a_purge_names_the_records_outside_it_that_refer_into_it`, record 039); the stricter refusal is the host's, which is what the source now does. A purge is the host's act on its store, not a principal's (`a_restricted_record_is_purged_too`). A measure is read whole in one page (`a_measure_is_read_whole_in_one_page_up_to_max_graph_nodes`), and a search fuses its rankings (`a_search_fuses_its_rankings_each_by_its_weight`). The source's owner gate and inbound guard were never imported. |
+| `a1c544e6ab` | A row of the source's inbox names whose it is, and the model's door refuses every row addressed to the operator; under a root only a test fixture's constructor is renamed. | Not applicable: Lakelands has no inbox, and the tool layer's channel reads were never imported (only the ten `{tools}` files were). |
+| `3dd1d81134` | The source's expression parser takes Lakelands' spelling: `=`, `!=`, `and`, `or`, `not` binding between `and` and the comparisons, single-quoted text with `''`, and a keyword refused as a value. `==`, `&&`, `\|\|`, `!x` and double-quoted text are each refused, naming the spelling to write. | Already held: the grammar is Lakelands' own (`lakelands-api/src/expr/parse.rs`: the precedence, `''` and keywords). Each old spelling is refused there and none is read as something else, though the refusal does not name the spelling to write. |
+| `bde4de53aa` | A computed field is closed to every caller kept from a field its expression reads, down the chain. Where the reads cannot be told (an expression that does not parse, a function no one resolved, a name that is no field), the field counts as reading every field of its type; a setting, the read's date and a literal count for nothing. | The rule is held (`rights::built_from`; `Ontology::complete` fills `depends_on`; `a_computed_field_is_read_no_further_than_what_it_is_computed_from`, `a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field`), and the declaration refuses an expression that does not parse, an undeclared function and a name that is no field. **One case is not held: lakelands#652.** A derived expression that uses `changed()` or `previous()` is completed with no `depends_on`, so it is read at its own grant; its probe is in the issue. |
+| `a5261b8fbf` | The source's adapter tells the lake each computed field's reads as `depends_on`, holds a computed field sensitive with its inputs, which keeps it out of the text index, and shows the inherited marks in its type read. | Already held: the store fills `depends_on` itself (`Ontology::complete`), a search never searches a field its reader may not (`rights::searched_fields`), a masked input is probed and refused (`rights::check_probe`), and `describe` shows the completed list (`a_computed_field_is_read_no_further_than_what_it_is_computed_from`). The adapter is the source's own. |
+| `b3e8186ee6` | Tests only: the computed-field rule is pinned by unit tests: the chain followed to its end, a cycle ending it, the field closed where its reads are unknown, a setting, the date and a literal adding nothing, a type pinned again read as it now stands. | Held, except where the reads are unknown (lakelands#652): a cycle is refused at declare (`computed_fields_that_read_each_other_in_a_cycle_are_refused`), a setting adds nothing (`a_restricted_setting_stays_what_the_lake_computes_with`), and a function declared again restricts by its inputs as they now stand. |
+| `39f8de2135` | `sensitive` and the source's `internal` mark are always inherited from what a field reads; its model-scope mark is inherited unless the computed field declares its own, which then stands for the field and what is computed from it. | Not applicable: Lakelands has no model scope and no `internal` mark (`docs/import-ledger.md`: the platform's vocabulary), and no override: a grant that names a derived field is still lowered by its inputs. |
+| `aa2feb8e32` | A stored key the type does not name (an old name in a read as of before a rename, or a dropped field's leftover value) is withheld from every caller the source restricts; an old name is judged as the field it became, and the mask strips by the record's keys. | Already held: an answer is built from declared fields only (`rights::visible`), a probe of an undeclared name is refused (`rights::check_probe`), an as-of read uses the type as it stood then, with grants followed through renames (`a_grant_holds_a_field_under_every_name_it_has_borne`), and a migration drops a removed field's values (`the_preflight_names_every_dropped_field_and_an_empty_type_migrates_cleanly`). |
+| `4464ad2d64` | Tests only: the rule of the row before is pinned with the source's rights switch off, and its mask hands back the stored bytes untouched where it strips nothing. | The first is held: Lakelands has no switch, so the probe rule always holds. The second is not applicable: Lakelands has no byte-level mask; an answer is built as a record. |
+| `1afe0a7ed3` | A refined type's key and projected columns, named in its `normalize` declaration, count as named and stay open, after the row before closed them. | Not applicable: refined types and `normalize` were never imported. |
+| `0adfde0316` | Tests only (written red first): a read as of a position, through every door, is judged by marks set after it: a field marked sensitive, a type made owner-scoped and the reverse, the root level, and the refusal's kind. | Held where it maps: grants are the host's as they are now at every door, followed through the renames (`a_grant_holds_a_field_under_every_name_it_has_borne`). `sensitive` read as of then only turns an inherited `none` into `masked`, never shows a value. Owner scope and the root level do not exist. A retention hold is judged as it stood then, by decision (`a_restricted_record_is_withheld_but_kept`). |
+| `88256e9366` | Every read door of the source's store asks one judge, which reads the marks (a sensitive field, an owner-scoped type) as they stand today, not as of the read's position; before, aggregates, searches, views and graph doors judged by the marks of then. | Already held: every read door opens one reader with one principal, its grants followed through the head's renames, and asks `lakelands_core::rights` (`a_grant_holds_a_field_under_every_name_it_has_borne`). Owner scope was cut. A retention hold as of before is decided (`a_restricted_record_is_withheld_but_kept`). |
+| `da527aeffd` | Tests only: a scan fails where any read door of the source's store calls a guard outside its judge. | Not applicable: it pins the source's own split between guards and a judge. The guards were read and cut; `rights` is Lakelands' one place for the rule. |
+| `a4f6c0a7d9` | A lint allowance goes: the judge's neighbour check takes seven arguments. | Not applicable: no behaviour changes. |
+| `8ce537ab9a` | A filter or an aggregate over neighbours is refused where the relation reaches a type the caller may not read; the adapter's subgraph gives no fields of such a type, and a field match skips it. | Already held: a pattern step that reaches a type its caller is not shown is refused before a record is read, a step's `where` and row paths are probed on the reached type, and a subgraph's nodes go out through `rights::visible` (`a_type_made_of_another_is_shown_only_with_it`). The adapter and the field match were never imported. Beside it, an order or a measure over a path on a type the caller is not shown names that type (lakelands#653). |
+| `f2a18c24b2` | Tests only: the folding doors of the source's root level refuse a closed neighbour type too. | Held for the behaviour: a step over a relation whose owner its caller is not shown is "no relation" (`a_type_made_of_another_is_shown_only_with_it`). The root level does not exist. Beside it, a step over a relation that a hidden type derives under a shown name names that type (lakelands#654). |
+| `4e7f2385fb` | A walk (neighbours, transitive walks, a subgraph, a path, a degree, components) never enters a type closed to its caller: no edge leads into it, so an open node reached only through it is not reached either. | Already held: a walk asks whether every far endpoint is visible before it follows a link, and a node of a type not shown is never visible; unit rows in `lakelands-core/src/graph/` (`a_hidden_record_and_its_links_are_left_out` and the path and measure rows). The source's push-down was read and cut. |
+| `723a498781` | The walk's edge source of the row before needs no visibility of its own, since no edge leads into a closed type. | Not applicable: a refactor of the source's own; no behaviour changes. |
+| `8574017244` | Tests only: a conformance check of the source declares its type before the instant it asks about, where both fell in one millisecond. | Not applicable: Lakelands reads as of a position, and its check of `position_at` takes instants from the log at least two milliseconds apart. |
+| `1bd4c2e878` | German operator text changes the source's tenant noun in labels, notices and fault rows. | Not applicable: wording of modules that were cut or never imported; Lakelands is English. |
+| `559b3a42e7` | The source's German system card titles itself like the section under it. | Not applicable: the card was never imported. |
+| `4960d0fa03` | The source keeps one seed of its learning and capability types and builds every one of its tenants from it; its shared mirror writes a row alone. | Not applicable: the source's own seeds and mirror. A seed declared again unchanged appends nothing in Lakelands anyway (`a_declaration_that_is_the_one_in_force_appends_nothing`). |
+| `3ad1139415` | Tests only: the SQLite engine's test of an outside writer stops on writes that waited, not on refusals alone. | Not applicable as code (never imported). The behaviour it pins is held: every SQLite connection waits out a busy timeout and every projection write begins `IMMEDIATE` (`lakelands-engine-sqlite/tests/busy_fold.rs`). |
+| `0516dad4da` | A door of the source that cannot express a mark (a component's re-pin, a schema delta, the operator's create-type tool) lays its words over the stored type and no longer strips the owner field, `sensitive` or `internal`. | Not applicable: every declaring door of Lakelands takes the declaration whole and strict (record 028), and WIT and bundles carry `sensitive`. Those narrow doors were never imported. |
+| `0e08100bc1` | Tests only: frozen test files of the tool layer are held at their size by a test-local helper. | Not applicable: those files are not among the ten `{tools}` files; no behaviour is pinned. |
+| `8d76bd000f` | The source's verb door refuses a call that names an input the verb does not take, naming it and what the verb takes, where it ran the call and dropped the value; a comparison over a value that is no number says so. | Already held: a payload field the verb does not declare is refused as invalid, naming it (`a_low_verb_runs_and_a_higher_one_is_proposed`), and a payload's values are typed, so a value that is no number is refused before anything is judged. |

@@ -4,9 +4,24 @@
 //! `log/<first position in 20 digits>.jsonl`, each event's canonical bytes
 //! followed by one line feed, nothing else. The last file is the active
 //! segment and takes appends; every other file is sealed and never
-//! changes. Sealing starts the next file, empty, named by the position
-//! its first event will take. A lake directory can therefore be verified
-//! by anyone holding the format, with nothing of this engine.
+//! changes. A lake directory can therefore be verified by anyone holding
+//! the format, with nothing of this engine.
+//!
+//! **A segment after the first comes to exist with its first events in
+//! it.** A seal writes the next segment's index whole, its event lines
+//! and their commit line, and syncs it and its name; then the segment's
+//! lines, under a name no handle and no verifier lists
+//! (`<first>.jsonl.partial`), synced; and the rename to the segment's
+//! name is the step. Whoever lists `log/` before it reads the log as it
+//! was; whoever lists it after finds the segment with its events
+//! committed, so no later segment is ever empty. A seal that fails before
+//! the rename takes its two files away and answers its error. A crash
+//! there leaves them, read by nobody: a seal at that position writes over
+//! both, and the next writer removes them as it takes the lease. After
+//! the rename the seal stands, and an error says so: where the sync of
+//! the segment's name fails the outcome is not known, as below for an
+//! append; where the process ends before that sync nothing syncs the name
+//! again, and a crash of the machine may still take the segment with it.
 //!
 //! **The index.** An append also hands the engine each event's position,
 //! id, `prev`, `hash` and fence beside its bytes, and a read must give
@@ -22,28 +37,56 @@
 //! an append is durable and whole when it returns, and after a crash it
 //! is either all there or not at all.
 //!
+//! **Nothing is written behind bytes that are no event.** A write can
+//! fail after it wrote, as on a full disk, and the handle goes on under
+//! its lease. So an append that fails reads what is committed and cuts
+//! both files back to it before it answers its error, and every append
+//! and every seal begins the same way, whoever left bytes there: an
+//! offset the index names is the byte its event begins at, and a sealed
+//! file holds its events' lines and nothing else. The cut takes the
+//! index first, so the index never commits bytes the segment has lost,
+//! and a file that ends before what is committed in it is damage: it is
+//! refused, and nothing is written behind it.
+//!
+//! **A commit line that is whole is never cut.** Another handle may have
+//! read its group. One append's outcome is therefore not known: when the
+//! sync after the commit line fails, the group is in the files for every
+//! handle, this one too, and may not outlast a crash; its append answers
+//! the error and says so.
+//!
 //! Every handle reads the files, so a reader opened beside the writer
 //! sees each append once it is committed.
 //!
 //! **What a handle holds.** Not the index: per segment, its first position
 //! and how many events it has committed (positions within a segment follow
 //! each other), where its committed bytes end, how far its index is read,
-//! its last event's hash, and every `MARK_EVERY`th event's place in the
-//! index file. A read seeks to the mark at or before the position it wants,
-//! reads index lines forward, checks that each event line is the position
-//! it expects, and reads the bytes the line names. Before the first event
-//! it answers it passes fewer than `MARK_EVERY` event lines, and the
-//! commit lines between them; then it reads one event line per event it
-//! answers, and the commit lines between. A page of the store's
-//! sequential reads therefore costs what it did when the index was held,
-//! plus one seek and that skip. So a handle's memory does
-//! not grow with the lake beyond a mark per `MARK_EVERY` events, and a
-//! handle opened read-only in another process refreshes and holds the
-//! same. An index line that is short, unreadable or not the position
-//! expected is a damaged index, never another event.
+//! its last event's hash, and where its last read ended. The end of an
+//! index file says the first four: the event line before the last commit
+//! line names the last committed position, where its bytes lie and its
+//! hash. So an open reads the last `BLOCK` bytes of each segment's index,
+//! and a block further back only while it has met no commit line, which a
+//! group a crash left uncommitted alone makes it do: what a lake holds
+//! does not lengthen its open, and a handle's memory does not grow with
+//! the lake. Afterwards a handle reads on from where its index is read,
+//! in the last segment alone: one it has read to its end while a later
+//! one existed is sealed, and its index is not opened again to look for
+//! new lines.
+//!
+//! **A read** finds the line of the position it starts at by halving the
+//! committed index by byte: every event line names its position, so the
+//! first one after the middle says which half holds the line wanted. Within
+//! `NEAR` bytes of it the read goes forward a line at a time, checks that
+//! each event line is the position that follows, and reads the bytes the
+//! line names. A read that starts where the segment's last one ended
+//! begins at that line with no search, so a page of the store's sequential
+//! reads costs one event line per event it answers and the commit lines
+//! between. An index line that is short, unreadable or not the position
+//! expected is a damaged index, never another event. It is found by the
+//! read that meets it, and so by a read of the whole log; an open, which
+//! reads the index's end alone, does not find it.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use lakelands_api::engine::CanonicalEvent;
@@ -54,8 +97,21 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{invalid, io_error, unavailable};
 
-/// Every how many events a segment keeps its place in the index file.
-const MARK_EVERY: u64 = 256;
+/// How much of an index file's end is read at once.
+const BLOCK: u64 = 64 * 1024;
+
+/// How much is read at once to find where one line begins.
+const LINE: u64 = 512;
+
+/// How near the line a read starts at the halving of the index ends.
+const NEAR: u64 = 8 * 1024;
+
+/// A commit line, from the line feed of the event line it follows.
+const COMMITTED: &[u8] = b"\n[\"c\"]\n";
+
+/// What a segment's file is named instead of `jsonl` until its seal's
+/// rename.
+const PARTIAL: &str = "jsonl.partial";
 
 /// One event's index line, as read from the file.
 #[derive(Clone, Debug)]
@@ -80,11 +136,11 @@ struct Segment {
     end: u64,
     /// The last committed event's hash.
     last_hash: Option<String>,
-    /// Where in the index file the line of every `MARK_EVERY`th committed
-    /// event begins: `marks[k]` is that of position `first + k * MARK_EVERY`.
-    marks: Vec<u64>,
     /// Bytes of the index file read through its last commit line.
     index_read: u64,
+    /// Where the last read ended: the position that follows, and a byte of
+    /// the index file at or before the one its line begins at.
+    resume: (u64, u64),
     /// The digest, once the segment is sealed and it was computed.
     digest: Option<Digest>,
 }
@@ -143,12 +199,17 @@ fn digest_of(dir: &Path, segment: &Segment) -> Result<Digest> {
     let read = std::io::copy(&mut file.take(segment.end), &mut hash)
         .map_err(|e| io_error("reading", &path, e))?;
     if read != segment.end {
-        return Err(unavailable(format!(
-            "{} ends before its committed events do; the log is damaged",
-            path.display()
-        )));
+        return Err(short(&path));
     }
     Ok(Digest(lakelands_core::canonical::hex(&hash.finalize())))
+}
+
+/// A file of the log that ends before what is committed in it.
+fn short(path: &Path) -> lakelands_api::Error {
+    unavailable(format!(
+        "{} ends before its committed events do; the log is damaged",
+        path.display()
+    ))
 }
 
 /// One index line, an event line checked to name `expected`.
@@ -165,11 +226,103 @@ fn parse_at(path: &Path, line: &[u8], expected: u64) -> Result<Option<Entry>> {
     }
 }
 
+/// Where `wanted` last begins in the first `end` bytes of `file`, read
+/// `step` bytes at a time from the end and never whole: after a crash the
+/// lines without a commit line can be most of the active segment's index.
+/// What lies across two steps is passed by.
+fn last_of(mut file: &File, mut end: u64, wanted: &[u8], step: u64) -> io::Result<Option<u64>> {
+    loop {
+        let at = end.saturating_sub(step);
+        let mut block = Vec::new();
+        file.seek(SeekFrom::Start(at))?;
+        file.take(end - at).read_to_end(&mut block)?;
+        if let Some(i) = block.windows(wanted.len()).rposition(|w| w == wanted) {
+            return Ok(Some(at + i as u64));
+        }
+        if at == 0 {
+            return Ok(None);
+        }
+        end = at;
+    }
+}
+
+/// What the end of its index says of a segment this handle has not read:
+/// the event line before a commit line names the last position committed
+/// through it, where its bytes end and its hash. The commit line is the
+/// last, or one before it when the last lies across two blocks: the lines
+/// after it are read as a later append's are. An index that holds no
+/// commit line says nothing.
+fn read_end(path: &Path, mut file: &File, segment: &mut Segment) -> Result<()> {
+    let reading = |e| io_error("reading", path, e);
+    let len = file.metadata().map_err(reading)?.len();
+    let Some(feed) = last_of(file, len, COMMITTED, BLOCK).map_err(reading)? else {
+        return Ok(());
+    };
+    let begins = last_of(file, feed, b"\n", LINE).map_err(reading)?;
+    let begins = begins.map_or(0, |at| at + 1);
+    let mut line = vec![0; (feed + 1 - begins) as usize];
+    file.seek(SeekFrom::Start(begins))
+        .and_then(|_| file.read_exact(&mut line))
+        .map_err(reading)?;
+    let last = parse_line(path, &line)?
+        .filter(|e| e.position >= segment.first)
+        .ok_or_else(|| damaged(path, "its last commit line follows no event of its segment"))?;
+    segment.count = last.position - segment.first + 1;
+    segment.end = last.offset + last.len + 1;
+    segment.last_hash = Some(last.hash);
+    segment.index_read = feed + COMMITTED.len() as u64;
+    Ok(())
+}
+
+/// An event line before that of position `start` in a segment's committed
+/// index, or the segment's first, as the position it names and the byte
+/// it begins at, the line before the one wanted no more than `NEAR` bytes
+/// after it. A line that names `start` itself is not taken: the line a
+/// read starts at is reached from one before it and checked to follow it.
+fn line_near(path: &Path, mut file: &File, segment: &Segment, start: u64) -> Result<(u64, u64)> {
+    // The line before the one wanted begins at `found.1` or after it, and
+    // at `end` or before it.
+    let (mut found, mut end) = ((segment.first, 0), segment.index_read - 1);
+    while end - found.1 > NEAR {
+        let middle = found.1 + (end - found.1) / 2;
+        file.seek(SeekFrom::Start(middle))
+            .map_err(|e| io_error("reading", path, e))?;
+        let mut lines = std::io::BufReader::new(file);
+        let (mut at, mut line) = (middle, Vec::new());
+        let landed = loop {
+            let begins = at;
+            line.clear();
+            at += lines
+                .read_until(b'\n', &mut line)
+                .map_err(|e| io_error("reading", path, e))? as u64;
+            if at == begins || begins > end {
+                break None;
+            }
+            // The first line read is the rest of the one `middle` lies
+            // in; a commit line names no position.
+            if begins > middle
+                && let Some(e) = parse_line(path, &line)?
+            {
+                break Some((e.position, begins));
+            }
+        };
+        match landed {
+            Some(line) if line.0 < start => found = line,
+            _ => end = middle,
+        }
+    }
+    Ok(found)
+}
+
 /// One lake's log, as this handle has read it.
 #[derive(Debug)]
 pub(crate) struct Log {
     dir: PathBuf,
     segments: Vec<Segment>,
+    /// How many segments a refresh that did not fail has read to their end
+    /// while a later one was listed: they are sealed, their indexes do not
+    /// change, and they are not opened again to look for new lines.
+    sealed: usize,
 }
 
 fn segment_path(dir: &Path, first: u64) -> PathBuf {
@@ -180,15 +333,48 @@ fn index_path(dir: &Path, first: u64) -> PathBuf {
     dir.join("index").join(format!("{first:020}.idx"))
 }
 
+/// The names in `dir`. An entry that cannot be read fails the listing: a
+/// segment passed over would be read as absent, and its index removed.
+fn names(dir: &Path) -> Result<Vec<String>> {
+    let read = fs::read_dir(dir).and_then(Iterator::collect::<io::Result<Vec<_>>>);
+    let entries = read.map_err(|e| io_error("reading", dir, e))?;
+    let names = entries.iter().map(|e| e.file_name().into_string().ok());
+    Ok(names.flatten().collect())
+}
+
 /// Sync a directory, so a file created in it survives a crash.
-fn sync_dir(dir: &Path) -> Result<()> {
+fn sync_dir(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
-    File::open(dir)
-        .and_then(|d| d.sync_all())
-        .map_err(|e| io_error("syncing", dir, e))?;
+    File::open(dir)?.sync_all()?;
     #[cfg(not(unix))]
     let _ = dir;
     Ok(())
+}
+
+/// The lines `events` add to a segment file from byte `offset` on, and
+/// their index lines, closed by one commit line.
+fn lines_of(events: &[CanonicalEvent], mut offset: u64) -> (Vec<u8>, Vec<u8>) {
+    let (mut lines, mut index) = (Vec::new(), Vec::new());
+    for event in events {
+        lines.extend_from_slice(&event.bytes);
+        lines.push(b'\n');
+        let len = event.bytes.len() as u64;
+        let line = serde_json::json!([
+            "e",
+            event.position.0,
+            event.fence,
+            offset,
+            len,
+            event.id.0,
+            event.prev.0,
+            event.hash.0
+        ]);
+        index.extend_from_slice(line.to_string().as_bytes());
+        index.push(b'\n');
+        offset += len + 1;
+    }
+    index.extend_from_slice(&COMMITTED[1..]);
+    (lines, index)
 }
 
 impl Log {
@@ -197,6 +383,7 @@ impl Log {
         let mut log = Log {
             dir: dir.to_owned(),
             segments: Vec::new(),
+            sealed: 0,
         };
         if create {
             for sub in ["log", "index"] {
@@ -211,7 +398,7 @@ impl Log {
         Ok(log)
     }
 
-    /// Create the files of a new, empty segment.
+    /// Create the files of a new lake's first segment, empty.
     fn start_segment(&self, first: u64) -> Result<()> {
         for path in [segment_path(&self.dir, first), index_path(&self.dir, first)] {
             OpenOptions::new()
@@ -221,17 +408,17 @@ impl Log {
                 .and_then(|f| f.sync_all())
                 .map_err(|e| io_error("creating", &path, e))?;
         }
-        sync_dir(&self.dir.join("log"))?;
-        sync_dir(&self.dir.join("index"))
+        ["log", "index"].iter().try_for_each(|sub| {
+            let dir = self.dir.join(sub);
+            sync_dir(&dir).map_err(|e| io_error("syncing", &dir, e))
+        })
     }
 
     /// The first positions of the segment files, in order.
     fn files(&self) -> Result<Vec<u64>> {
-        let dir = self.dir.join("log");
-        let mut firsts: Vec<u64> = fs::read_dir(&dir)
-            .map_err(|e| io_error("reading", &dir, e))?
-            .filter_map(|entry| {
-                let name = entry.ok()?.file_name().into_string().ok()?;
+        let mut firsts: Vec<u64> = names(&self.dir.join("log"))?
+            .iter()
+            .filter_map(|name| {
                 let stem = name.strip_suffix(".jsonl")?;
                 (stem.len() == 20).then(|| stem.parse().ok())?
             })
@@ -246,28 +433,31 @@ impl Log {
             if !self.segments.iter().any(|s| s.first == first) {
                 self.segments.push(Segment {
                     first,
+                    resume: (first, 0),
                     ..Segment::default()
                 });
             }
         }
-        for segment in &mut self.segments {
+        for segment in &mut self.segments[self.sealed..] {
             let path = index_path(&self.dir, segment.first);
             let mut file = match File::open(&path) {
                 Ok(f) => f,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(io_error("reading", &path, e)),
             };
+            if segment.index_read == 0 {
+                read_end(&path, &file, segment)?;
+            }
             file.seek(SeekFrom::Start(segment.index_read))
                 .map_err(|e| io_error("reading", &path, e))?;
-            // The tail not indexed yet is read a line at a time, never
-            // whole: after a crash it can be most of the active segment.
+            // What follows is read a line at a time, never whole: after a
+            // crash it can be most of the active segment.
             let mut tail = std::io::BufReader::new(file);
             let mut line = Vec::new();
             // What the lines since the last commit line add, kept until
             // their commit line is read: a group never committed is no
             // event.
             let mut pending = 0u64;
-            let mut marks = Vec::new();
             let mut last: Option<Entry> = None;
             let mut read = 0u64;
             loop {
@@ -278,13 +468,11 @@ impl Log {
                 if n == 0 || line.last() != Some(&b'\n') {
                     break;
                 }
-                let at = segment.index_read + read;
                 read += line.len() as u64;
                 let expected = segment.first + segment.count + pending;
                 match parse_at(&path, &line, expected)? {
                     None => {
                         segment.count += pending;
-                        segment.marks.append(&mut marks);
                         if let Some(e) = last.take() {
                             segment.end = e.offset + e.len + 1;
                             segment.last_hash = Some(e.hash);
@@ -294,28 +482,34 @@ impl Log {
                         read = 0;
                     }
                     Some(e) => {
-                        if (expected - segment.first).is_multiple_of(MARK_EVERY) {
-                            marks.push(at);
-                        }
                         pending += 1;
                         last = Some(e);
                     }
                 }
             }
         }
+        self.sealed = self.segments.len().saturating_sub(1);
         Ok(())
     }
 
-    /// Cut off what the last append left uncommitted in the active
-    /// segment. Only the writer does this, holding the lease.
+    /// Read what is committed, then cut off what lies past it in the
+    /// active segment. Only the writer does this, holding the lease.
     pub(crate) fn recover(&mut self) -> Result<()> {
         self.refresh()?;
+        self.cut()
+    }
+
+    /// Cut the active segment's two files back to their committed lengths,
+    /// as this handle has read them: the index first, which commits
+    /// nothing the segment then loses. A file shorter than that is
+    /// refused as damaged.
+    fn cut(&self) -> Result<()> {
         let Some(active) = self.segments.last() else {
             return Ok(());
         };
         for (path, len) in [
-            (segment_path(&self.dir, active.first), active.end),
             (index_path(&self.dir, active.first), active.index_read),
+            (segment_path(&self.dir, active.first), active.end),
         ] {
             // A crash between creating a segment and its index leaves no
             // index; the writer creates it empty.
@@ -329,6 +523,9 @@ impl Log {
                 .metadata()
                 .map_err(|e| io_error("reading", &path, e))?
                 .len();
+            if now < len {
+                return Err(short(&path));
+            }
             if now > len {
                 file.set_len(len)
                     .and_then(|()| file.sync_all())
@@ -350,18 +547,12 @@ impl Log {
     /// `fence`, the lease's, or, with none, as an import does, each keeping
     /// its own fence, never below the one before it.
     pub(crate) fn append(&mut self, fence: Option<u64>, events: &[CanonicalEvent]) -> Result<()> {
-        self.refresh()?;
-        let first = self.tip().map_or(0, |(p, _)| p.0 + 1);
-        let prev = self.tip().map_or_else(Digest::zero, |(_, h)| h);
-        let floor = match (fence, first) {
-            (None, 1..) => self.fence_at(first - 1)?,
-            _ => 0,
-        };
-        lakelands_core::engines::append_fault(events, first, prev, fence, floor)?;
+        self.recover()?;
+        self.continues(fence, events)?;
         if events.is_empty() {
             return Ok(());
         }
-        let active = self.segments.last_mut().ok_or_else(|| {
+        let active = self.segments.last().ok_or_else(|| {
             unavailable("the lake's log has no segment; it was not created by this engine")
         })?;
         let (segment_path, index_path) = (
@@ -377,50 +568,64 @@ impl Log {
                 active.first, events[0].position
             )));
         }
-        let mut offset = active.end;
-        let mut lines = Vec::new();
-        let mut index = Vec::new();
-        let mut marks = Vec::new();
-        for event in events {
-            lines.extend_from_slice(&event.bytes);
-            lines.push(b'\n');
-            let len = event.bytes.len() as u64;
-            if (event.position.0 - active.first).is_multiple_of(MARK_EVERY) {
-                marks.push(active.index_read + index.len() as u64);
-            }
-            let line = serde_json::json!([
-                "e",
-                event.position.0,
-                event.fence,
-                offset,
-                len,
-                event.id.0,
-                event.prev.0,
-                event.hash.0
-            ]);
-            index.extend_from_slice(line.to_string().as_bytes());
-            index.push(b'\n');
-            offset += len + 1;
+        let (lines, index) = lines_of(events, active.end);
+        let written = [(&segment_path, &lines), (&index_path, &index)]
+            .into_iter()
+            .try_for_each(|(path, bytes)| {
+                OpenOptions::new()
+                    .append(true)
+                    .open(path)
+                    .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_data()))
+                    .map_err(|e| (path, e))
+            });
+        if let Err((path, e)) = written {
+            return Err(self.failed(events, path, &e));
         }
-        index.extend_from_slice(b"[\"c\"]\n");
-        for (path, bytes) in [(&segment_path, &lines), (&index_path, &index)] {
-            let mut file = OpenOptions::new()
-                .append(true)
-                .open(path)
-                .map_err(|e| io_error("opening", path, e))?;
-            file.write_all(bytes)
-                .and_then(|()| file.sync_data())
-                .map_err(|e| io_error("appending to", path, e))?;
-        }
+        let active = self.segments.last_mut().expect("checked above");
         active.index_read += index.len() as u64;
         active.count += events.len() as u64;
-        active.end = offset;
-        active.marks.extend(marks);
+        active.end += lines.len() as u64;
         active.last_hash = events.last().map(|e| e.hash.0.clone());
         Ok(())
     }
 
-    /// At most `limit` events from `from` on, as appended.
+    /// Refuse `events` unless they continue the log as this handle has
+    /// read it, under `fence` as [`Self::append`] takes it.
+    fn continues(&mut self, fence: Option<u64>, events: &[CanonicalEvent]) -> Result<()> {
+        let first = self.tip().map_or(0, |(p, _)| p.0 + 1);
+        let prev = self.tip().map_or_else(Digest::zero, |(_, h)| h);
+        let floor = match (fence, first) {
+            (None, 1..) => self.fence_at(first - 1)?,
+            _ => 0,
+        };
+        lakelands_core::engines::append_fault(events, first, prev, fence, floor)
+    }
+
+    /// The error of an append of `events` whose write to `path` failed
+    /// with `e`. What it left is read, then cut, before the error is
+    /// answered: a group whose commit line is whole stays, and its outcome
+    /// is not known. Where the cut fails, the next append or seal cuts
+    /// before it writes, or is refused.
+    fn failed(
+        &mut self,
+        events: &[CanonicalEvent],
+        path: &Path,
+        e: &io::Error,
+    ) -> lakelands_api::Error {
+        let last = events.last().map(|e| (e.position, e.hash.clone()));
+        let more = match self.recover() {
+            Ok(()) if self.tip() == last => "; its events are in the log's files and their \
+                 sync failed: every handle reads them, and the outcome is not known"
+                .to_owned(),
+            Ok(()) => String::new(),
+            Err(cut) => format!(
+                "; what it wrote may still lie past the committed end, and the next append or \
+                 seal cuts it before it writes, or is refused ({cut})"
+            ),
+        };
+        unavailable(format!("appending to {} failed: {e}{more}", path.display()))
+    }
+
     /// The fence of the event at `position`.
     fn fence_at(&mut self, position: u64) -> Result<u64> {
         self.read(Position(position), 1)?
@@ -429,10 +634,11 @@ impl Log {
             .ok_or_else(|| unavailable(format!("the log holds no event at position {position}")))
     }
 
+    /// At most `limit` events from `from` on, as appended.
     pub(crate) fn read(&mut self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
         self.refresh()?;
         let mut out = Vec::new();
-        for segment in &self.segments {
+        for segment in &mut self.segments {
             let Some(last) = segment.last() else {
                 continue;
             };
@@ -440,7 +646,8 @@ impl Log {
             if start > last || out.len() >= limit as usize {
                 continue;
             }
-            let wanted = self.entries_of(segment, start, limit as u64 - out.len() as u64)?;
+            let wanted =
+                Self::entries_of(&self.dir, segment, start, limit as u64 - out.len() as u64)?;
             let path = segment_path(&self.dir, segment.first);
             let mut file = File::open(&path).map_err(|e| io_error("reading", &path, e))?;
             for e in wanted {
@@ -473,17 +680,17 @@ impl Log {
     }
 
     /// At most `n` of a segment's committed index lines from position
-    /// `start` on: from the mark at or before it, each line checked to be
-    /// the position that follows the one before.
-    fn entries_of(&self, segment: &Segment, start: u64, n: u64) -> Result<Vec<Entry>> {
-        let path = index_path(&self.dir, segment.first);
+    /// `start` on: from where the segment's last read ended, when that is
+    /// `start`, and else from a line near it, each line checked to be the
+    /// position that follows the one before.
+    fn entries_of(dir: &Path, segment: &mut Segment, start: u64, n: u64) -> Result<Vec<Entry>> {
+        let path = index_path(dir, segment.first);
         let last = segment.last().unwrap_or(segment.first);
-        let k = (start - segment.first) / MARK_EVERY;
-        let (mut expected, at) = match segment.marks.get(k as usize) {
-            Some(at) => (segment.first + k * MARK_EVERY, *at),
-            None => return Err(damaged(&path, format!("no mark for position {start}"))),
-        };
         let mut file = File::open(&path).map_err(|e| io_error("reading", &path, e))?;
+        let (mut expected, mut at) = match segment.resume {
+            resume if resume.0 == start => resume,
+            _ => line_near(&path, &file, segment, start)?,
+        };
         file.seek(SeekFrom::Start(at))
             .map_err(|e| io_error("reading", &path, e))?;
         let mut lines = std::io::BufReader::new(file);
@@ -500,6 +707,7 @@ impl Log {
                     format!("it ends before the committed position {expected}"),
                 ));
             }
+            at += read as u64;
             let Some(e) = parse_at(&path, &line, expected)? else {
                 continue;
             };
@@ -508,12 +716,21 @@ impl Log {
                 out.push(e);
             }
         }
+        segment.resume = (expected, at);
         Ok(out)
     }
 
-    /// Close the active segment, if it holds any event, and start the next.
-    pub(crate) fn seal(&mut self) -> Result<Option<SegmentDigest>> {
-        self.refresh()?;
+    /// Close the active segment, if it holds any event, and begin the next
+    /// with the events `first` answers for it, under `fence` as
+    /// [`Self::append`] takes it, in one step: the rename that gives the
+    /// next segment its name (module doc). An error before it leaves the
+    /// log as it was; an error after it says that the seal stands.
+    pub(crate) fn seal(
+        &mut self,
+        fence: Option<u64>,
+        first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
+    ) -> Result<Option<SegmentDigest>> {
+        self.recover()?;
         let Some(active) = self.segments.last() else {
             return Ok(None);
         };
@@ -526,11 +743,68 @@ impl Log {
             last: Position(last),
             digest: digest.clone(),
         };
-        let next = last + 1;
-        self.start_segment(next)?;
+        let events = lakelands_core::engines::first_of_next(first, &sealed)?;
+        self.continues(fence, &events)?;
+        let (lines, index) = lines_of(&events, 0);
+        let (segment, index_path) = (
+            segment_path(&self.dir, last + 1),
+            index_path(&self.dir, last + 1),
+        );
+        let partial = segment.with_extension(PARTIAL);
+        let write = |path: &Path, bytes: &[u8]| {
+            File::create(path)
+                .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
+                .map_err(|e| io_error("writing", path, e))
+        };
+        let (log, beside) = (self.dir.join("log"), self.dir.join("index"));
+        // The index and its name are durable before the segment's name
+        // exists: a segment that is listed has its events committed.
+        let written = write(&index_path, &index)
+            .and_then(|()| sync_dir(&beside).map_err(|e| io_error("syncing", &beside, e)))
+            .and_then(|()| write(&partial, &lines))
+            .and_then(|()| {
+                fs::rename(&partial, &segment).map_err(|e| io_error("renaming", &partial, e))
+            });
+        if let Err(e) = written {
+            let _ = fs::remove_file(&partial);
+            let _ = fs::remove_file(&index_path);
+            return Err(e);
+        }
         self.segments.last_mut().expect("checked above").digest = Some(digest);
-        self.refresh()?;
+        // The rename was the step: an error from here on says so.
+        sync_dir(&log).map_err(|e| {
+            unavailable(format!(
+                "syncing {} failed: {e}; the next segment is in the log's files and its name's \
+                 sync failed: every handle reads it, and the outcome is not known",
+                log.display()
+            ))
+        })?;
+        self.refresh().map_err(|e| {
+            unavailable(format!(
+                "the segment through position {last} is sealed and the next one is in the \
+                 log's files, synced; this handle then failed to read on: {e}"
+            ))
+        })?;
         Ok(Some(sealed))
+    }
+
+    /// Take away what a seal that never reached its rename left behind a
+    /// crash: a segment's lines under their other name, and an index whose
+    /// segment does not exist. No handle reads either, so one that cannot
+    /// be removed is passed over and refuses no lease. Only the writer
+    /// does this, as it takes the lease.
+    pub(crate) fn sweep(&self) -> Result<()> {
+        let firsts = self.files()?;
+        for sub in ["log", "index"] {
+            let dir = self.dir.join(sub);
+            for name in names(&dir)? {
+                let of_no_segment = |first: &str| first.parse().is_ok_and(|f| !firsts.contains(&f));
+                if name.ends_with(PARTIAL) || name.strip_suffix(".idx").is_some_and(of_no_segment) {
+                    let _ = fs::remove_file(dir.join(&name));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Every sealed segment, oldest first.
@@ -556,3 +830,6 @@ impl Log {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+mod tests;

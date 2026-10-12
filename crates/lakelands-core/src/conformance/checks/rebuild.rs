@@ -17,19 +17,25 @@ use serde_json::json;
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, all_found, derived, doors, field, find_at, find_where, get_at, owner, pattern,
-    reference, step, type_decl, type_of, vector, view_of,
+    reference, source_record, sourced, step, type_decl, type_of, vector, view_of,
 };
 
 check!(
     /// A rebuilt projection answers every read as before.
     REBUILD_ANSWERS_AS_BEFORE = a_rebuilt_projection_answers_every_read_as_the_live_one_did,
-    "001, 040 and the engine seam: a projection rebuilt from the log is the one it replaces, byte for byte, at the head and as of every earlier position, a type migration that converts records and a re-key that rewrites references to moved keys included"
+    "001, 040 and the engine seam: a projection rebuilt from the log is the one it replaces, byte for byte, at the head and as of every earlier position, the `initial` values the fold filled (050), a type migration that converts records and a re-key that rewrites references to moved keys included"
 );
 
 check!(
     /// A rebuild leaves the chain as it was.
     REBUILD_REPRODUCES_THE_CHAIN = a_rebuild_reproduces_the_chain,
     "001 and 020: the log is the truth and a rebuild only re-derives the projection, so verifying the chain answers the same range and hash before and after"
+);
+
+check!(
+    /// A rebuild folds a later page over the records the pages before wrote.
+    REBUILD_FOLDS_OVER_RECORDS = a_rebuild_folds_a_page_over_the_records_the_pages_before_wrote,
+    "001, 027 and the engine seam: a rebuild folds the log in pages of 1 024 events, each over the projection the pages before left; a page that holds a write, a re-keying migration, a write at a new key and one at an old, and a second migration, over records an earlier page wrote, leaves what the live lake's appends left, at the head and as of each of them"
 );
 
 /// Everything the check reads: every record of every type with
@@ -67,12 +73,16 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
     let Lake { own, .. } = &l;
 
     let gross = derived("gross", StorageKind::Decimal, "amount * 1.19", &["amount"]);
+    // A field the fold fills when a record comes to exist (050).
+    let mut state = field("state", StorageKind::Text);
+    state.initial = Some(json!("open"));
     let invoice = type_decl(
         "invoice",
         vec![
             field("partner", StorageKind::Text),
             field("amount", StorageKind::Decimal),
             gross,
+            state,
         ],
     );
     l.declare(invoice).await?;
@@ -155,6 +165,7 @@ async fn migrations(store: &dyn LakeStore) -> Result<Vec<Position>, Failure> {
     let m = Migration {
         to,
         renames: Vec::new(),
+        relation_renames: Vec::new(),
     };
     let report = cat
         .migrate(own, m.clone())
@@ -199,6 +210,138 @@ async fn migrated_snapshot(
     Ok(out)
 }
 
+async fn a_rebuild_folds_a_page_over_the_records_the_pages_before_wrote(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    // The re-key's fixture, then enough events to end a rebuild's first
+    // page: what follows is folded over a projection that holds the fixture.
+    let l = super::rekey::lake(store.as_ref(), super::rekey::IBANS).await?;
+    l.declare(type_decl("filler", vec![sourced("n", StorageKind::Number)]))
+        .await?;
+    let filler = (0..1_100).map(|i| source_record("filler", &format!("f{i:04}"), json!({"n": i})));
+    l.ingest("load", filler.collect())
+        .await
+        .must("loading the filler")?;
+    let payment = |amount: &str| -> lakelands_api::ontology::TypeDecl {
+        let fields = json!([{"name": "account", "type": {"kind": "reference", "target": "account"}},
+                            {"name": "amount", "type": {"kind": amount}}]);
+        let relations = json!([{"name": "pays", "target": "account", "via": "account"}]);
+        serde_json::from_value(json!({"name": "payment", "fields": fields, "relations": relations}))
+            .expect("a type")
+    };
+    let moved = json!({"holder": "moved"});
+    let fresh = json!({"number": "9", "iban": "1", "kind": "giro", "meta": {}});
+    let at = [
+        l.upsert("payment", "p1", json!({"amount": 6}))
+            .await?
+            .position(),
+        super::rekey::apply(store.as_ref()).await?,
+        l.upsert("account", "DE1", moved).await?.position(),
+        l.upsert("account", "1", fresh).await?.position(),
+        l.migrate(payment("text")).await?.position(),
+    ];
+    ensure!(
+        at[0].0 >= 1_024 && at[4].0 < 2_048,
+        "the check's five appends stand in the second page of 1 024 events: {at:?}"
+    );
+    let read = || async {
+        let mut out = Vec::new();
+        for ty in ["account", "payment", "entry", "sys.link.account.owner"] {
+            for at in at.iter().map(|p| Some(*p)).chain([None]) {
+                out.push((
+                    format!("{ty} as of {at:?}"),
+                    l.all_found(ty, find_at(at)).await?,
+                ));
+            }
+        }
+        Ok::<_, Failure>(out)
+    };
+    let live = read().await?;
+    store.rebuild().await.must("rebuilding the projection")?;
+    for ((label, before), (_, after)) in live.iter().zip(&read().await?) {
+        ensure!(
+            before == after,
+            "after the rebuild, `{label}` reads differently.\n  before: {before:?}\n  \
+             after:  {after:?}\nA page folded over records an earlier page wrote must \
+             leave what the live lake's appends left"
+        );
+    }
+    Ok(())
+}
+
+check!(
+    /// A rebuild computes again, in one page, what the live lake's appends did.
+    REBUILD_RECOMPUTES_IN_A_PAGE = a_rebuild_folds_a_page_that_computes_fields_again,
+    "001, 022 and the engine seam (lakelands#523): a rebuild folds a page of 1 024 events that holds a function declared again with a change, the outputs recorded for it, a write, and a `recompute`, over records an earlier page wrote; it leaves what the live lake's appends left, at the head and as of every event of the page, and calls no backing"
+);
+
+async fn a_rebuild_folds_a_page_that_computes_fields_again(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use crate::conformance::backing::{made, plug, unplug};
+    let token = "rebuild_recomputes_in_a_page";
+    let config = |round: u32| json!({"token": token, "echo": "code", "round": round});
+    let l = super::backings::places(store.as_ref(), config(1)).await?;
+    for (key, code) in [("p1", "AT"), ("p2", "DE")] {
+        l.upsert("place", key, json!({ "code": code })).await?;
+    }
+    // Enough events to end a rebuild's first page: what follows is folded
+    // over a projection that holds the two places, each with its name.
+    l.declare(type_decl("filler", vec![sourced("n", StorageKind::Number)]))
+        .await?;
+    let filler = (0..1_100).map(|i| source_record("filler", &format!("f{i:04}"), json!({"n": i})));
+    l.ingest("load", filler.collect())
+        .await
+        .must("loading the filler")?;
+    // The function changes the call it makes while its backing refuses:
+    // every name is cleared and a failure recorded for each call. A write
+    // reads the failure back. Then `recompute` calls again, and the outputs
+    // fill all three.
+    let from = store.head().await.must("reading the head")?.next();
+    unplug(token);
+    let lookup = json!({"declare": "function", "name": "lookup", "backing": crate::conformance::backing::KIND,
+        "inputs": [{"name": "code", "type": {"kind": "text"}}], "config": config(2)});
+    l.declare_json(lookup).await?;
+    l.upsert("place", "p3", json!({"code": "AT"})).await?;
+    plug(token);
+    let again = lakelands_api::write::Recompute::Function("lookup".into());
+    let recomputed = l.cat.recompute(&l.own, again).await;
+    let head = recomputed.must("the `recompute` door")?.position();
+    let p1 = l.read("place", "p1").await?;
+    ensure!(
+        from.0 >= 1_024
+            && head.0 < 2_048
+            && crate::conformance::fixture::value(&p1, "name") == Some(&json!("AT")),
+        "the check's appends stand in the second page of 1 024 events, from {from} to {head}, \
+         and leave `p1` its name again: {p1:?}"
+    );
+    let read = || async {
+        let mut out = Vec::new();
+        for at in (from.0..=head.0).map(Position) {
+            let places = l.all_found("place", find_at(Some(at))).await?;
+            out.push((format!("place as of {at}"), places));
+        }
+        Ok::<_, Failure>(out)
+    };
+    let (live, calls) = (read().await?, made(token));
+    unplug(token);
+    store.rebuild().await.must("rebuilding the projection")?;
+    for ((label, before), (_, after)) in live.iter().zip(&read().await?) {
+        ensure!(
+            before == after,
+            "after the rebuild, `{label}` reads differently.\n  before: {before:?}\n  \
+             after:  {after:?}\nA page that computes fields again must leave what the live \
+             lake's appends left"
+        );
+    }
+    ensure!(
+        made(token) == calls,
+        "the rebuild reads the recorded outputs back: {calls} calls before it, {} after",
+        made(token)
+    );
+    Ok(())
+}
+
 async fn a_rebuild_reproduces_the_chain(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
     l.declare(type_decl("memo", vec![field("text", StorageKind::Text)]))
@@ -223,7 +366,7 @@ async fn a_rebuild_reproduces_the_chain(store: Arc<dyn LakeStore>) -> Result<(),
 check!(
     /// Every index answers as before after a rebuild.
     INDEXES_AFTER_REBUILD = after_a_rebuild_every_index_answers_as_before,
-    "001 and the engine seam: the projection and its indexes are derived from the log, so after a rebuild a find by a field, a lexical and a vector search and a walk over a relation answer as they did"
+    "001 and the engine seam: the projection and its indexes are derived from the log, so a find by a field, a lexical and a vector search and a walk over a relation answer by the type's declaration in force, for records written before it was declared again and for records a migration writes again, and after a rebuild they answer as they did"
 );
 
 async fn after_a_rebuild_every_index_answers_as_before(
@@ -232,31 +375,39 @@ async fn after_a_rebuild_every_index_answers_as_before(
     use lakelands_api::ontology::RelationDecl;
     use lakelands_api::query::{Projection, Search, SearchMode, Walk};
     let l = Lake::of(store.as_ref());
-    let mut text = field("text", StorageKind::Text);
-    text.searchable = true;
-    let embedding = vector("embedding", 2);
-    let parent = reference("parent", "note");
-    let mut ty = type_decl("note", vec![text, embedding, parent]);
-    ty.language = Some("en".into());
-    ty.relations = vec![RelationDecl {
-        name: "under".into(),
-        target: "note".into(),
-        via: Some("parent".into()),
-        ..Default::default()
-    }];
-    l.declare(ty).await?;
+    // Declared first with nothing to search and no relation, and with a
+    // `tag` a migration takes away later.
+    let note = |indexed: bool, tag: bool| {
+        let mut text = field("text", StorageKind::Text);
+        text.searchable = indexed;
+        let mut fields = vec![text, vector("embedding", 2), reference("parent", "note")];
+        fields.extend(tag.then(|| field("tag", StorageKind::Text)));
+        let mut ty = type_decl("note", fields);
+        ty.language = Some("en".into());
+        ty.relations.extend(indexed.then(|| RelationDecl {
+            name: "under".into(),
+            target: "note".into(),
+            via: Some("parent".into()),
+            ..Default::default()
+        }));
+        ty
+    };
+    l.declare(note(false, true)).await?;
     l.upsert(
         "note",
         "root",
-        json!({"text": "harbour plans", "embedding": [1.0, 0.0]}),
+        json!({"text": "harbour plans", "embedding": [1.0, 0.0], "tag": "a"}),
     )
     .await?;
     l.upsert(
         "note",
         "leaf",
-        json!({"text": "crane rental", "embedding": [0.0, 1.0], "parent": "root"}),
+        json!({"text": "crane rental", "embedding": [0.0, 1.0], "parent": "root", "tag": "b"}),
     )
     .await?;
+    // Declared again, the type's text is searched and its relation walked:
+    // the records written before are indexed under it, none written again.
+    l.declare(note(true, true)).await?;
 
     let answers = |store: Arc<dyn LakeStore>| async move {
         let cat = doors(store.as_ref());
@@ -324,14 +475,23 @@ async fn after_a_rebuild_every_index_answers_as_before(
             "edges": edges,
         }))
     };
+    let declared = answers(store.clone()).await?;
+    ensure!(
+        declared["found"] == json!(["leaf"])
+            && declared["lexical"][0]["key"] == json!("root")
+            && declared["vector"][0]["key"] == json!("leaf")
+            && declared["edges"].as_array().is_some_and(|e| e.len() == 1),
+        "once the type is declared again the indexes must answer: find `leaf`, \"harbour\" → \
+         root, near (0, 1) → leaf, one edge leaf → root; they answered {declared}"
+    );
+    // A migration writes every record again; what it indexes is what the
+    // declaration left, and what a rebuild leaves.
+    l.migrate(note(true, false)).await?;
     let before = answers(store.clone()).await?;
     ensure!(
-        before["found"] == json!(["leaf"])
-            && before["lexical"][0]["key"] == json!("root")
-            && before["vector"][0]["key"] == json!("leaf")
-            && before["edges"].as_array().is_some_and(|e| e.len() == 1),
-        "before the rebuild the indexes must answer: find `leaf`, \"harbour\" → root, \
-         near (0, 1) → leaf, one edge leaf → root; they answered {before}"
+        before == declared,
+        "a migration that takes `tag` away leaves the indexes answering as they did: \
+         {declared} became {before}"
     );
     store.rebuild().await.must("rebuilding the projection")?;
     let after = answers(store.clone()).await?;
