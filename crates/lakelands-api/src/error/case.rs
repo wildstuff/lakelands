@@ -1220,6 +1220,8 @@ catalog! {
         ChangedSinceProposed { #[serde(rename = "type")] ty: TypeName } => "`{ty}` changed since this migration was proposed; propose it again",
         /// A field added that the type has.
         FieldExists { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`{ty}` already has a field `{field}`",
+        /// A new field whose name begins with `_`, which the lake keeps for its own columns.
+        FieldNameKept { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "a new field of `{ty}` may not begin with `_`: the lake keeps such names for its own columns of a pattern's rows (`<name>._depth`); name it `{field}` without the `_`",
         /// A field taken away that another part of the type reads.
         FieldReadElsewhere { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "`{field}` is read by another part of `{ty}` and cannot be removed",
         /// A view at a door that writes or holds a record.

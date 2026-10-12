@@ -368,6 +368,10 @@ fn decode(c: &Cursor) -> Result<CursorState> {
 /// The records a count that needs the store reads at a time.
 const COUNT_PAGE: usize = 1024;
 
+/// A row's column under each bound name for the hops its step took to
+/// reach the record (018, extended).
+const DEPTH: &str = "_depth";
+
 /// The most records a hop over a derived relation holds at once: a page of
 /// starts asks its matches a page of this many at a time (`derived_edges`).
 const MATCHED: u32 = 65_536;
@@ -3220,8 +3224,15 @@ impl<'a> Reader<'a> {
                 [] => (Vec::new(), Vec::new()),
                 [one] => {
                     let to = (to_ty.clone(), to_key.clone());
-                    graph::shortest_path(&hidden, one, &to, &p.steps, max_depth, keep)?
-                        .map_or_else(Default::default, |path| (path.nodes, path.edges))
+                    graph::shortest_path(&hidden, one, &to, &p.steps, max_depth, keep)?.map_or_else(
+                        Default::default,
+                        |path| {
+                            // Along a path a record's depth is its hop.
+                            let hops = (0..).zip(path.nodes);
+                            let nodes = hops.map(|(depth, node)| graph::Reached { node, depth });
+                            (nodes.collect(), path.edges)
+                        },
+                    )
                 }
                 more => {
                     let count = more.len();
@@ -3243,8 +3254,7 @@ impl<'a> Reader<'a> {
             let next = g
                 .truncated
                 .then(|| self.page_cursor(p, (offset + limit, None), params));
-            let nodes = g.nodes.into_iter().map(|r| r.node).collect();
-            return self.graph_result(nodes, g.edges, next).map(Ok);
+            return self.graph_result(g.nodes, g.edges, next).map(Ok);
         }
         // Rows are ordered, projected and measured by their paths,
         // `name.field`, each read as the rows hold it, and a name they do
@@ -3275,7 +3285,7 @@ impl<'a> Reader<'a> {
         if let Projection::Rows { fields } = &p.project {
             for (t, f) in fields.iter().map(|f| path(f)).collect::<Result<Vec<_>>>()? {
                 let decl = self.shape.ontology.ty(&t)?;
-                if !self.keyed(decl, &f) {
+                if !self.lakes(decl, &f) {
                     rights::check_known(self.who, decl, [&f])?;
                 }
             }
@@ -3304,16 +3314,16 @@ impl<'a> Reader<'a> {
                     .fields
                     .iter()
                     .any(|x| x.name == field && !x.at_read());
-                let own = n == names[0] && stored && !self.keyed(&start_decl, &field);
+                let own = n == names[0] && stored && !self.lakes(&start_decl, &field);
                 own.then(|| Order { field, ..o.clone() })
             };
             p.order_by.iter().map(own).collect::<Option<Vec<Order>>>()
         });
         let row = |start: &graph::Node, binding: &[graph::Reached]| -> Result<_> {
             let mut row = BTreeMap::new();
-            self.bind(&mut row, &names[0], start, hidden.record(start)?)?;
+            self.bind(&mut row, &names[0], (start, 0), hidden.record(start)?)?;
             for (r, name) in binding.iter().zip(&names[1..]) {
-                self.bind(&mut row, name, &r.node, hidden.record(&r.node)?)?;
+                self.bind(&mut row, name, (&r.node, r.depth), hidden.record(&r.node)?)?;
             }
             if let Projection::Rows { fields } = &p.project
                 && !fields.is_empty()
@@ -3545,14 +3555,14 @@ impl<'a> Reader<'a> {
     /// Refuse an order or a measure over a path of a pattern's rows, the
     /// type of a bound name and one of its fields, whose field the principal
     /// may not read, or that the type does not declare, as `find` refuses
-    /// one (024, 006). A row's `<name>.key` is the record's key and probes
-    /// nothing.
+    /// one (024, 006). A row's `<name>.key` and `<name>._depth` are the
+    /// lake's columns and probe nothing.
     /// The first `ordered` paths are orders, and an order by a field
     /// computed at the read is refused once the field is probed.
     fn probe_rows(&self, paths: &[(TypeName, FieldName)], ordered: usize) -> Result<()> {
         for (i, (ty, field)) in paths.iter().enumerate() {
             let decl = self.shape.ontology.ty(ty)?;
-            if self.keyed(decl, field) {
+            if self.lakes(decl, field) {
                 continue;
             }
             rights::check_probe(self.who, decl, [field])?;
@@ -3561,6 +3571,13 @@ impl<'a> Reader<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Whether a row's `<name>.<field>` is one of the lake's own columns,
+    /// not a field of the record: `_depth` always (018, extended), and its
+    /// key where [`Self::keyed`]. It is never probed.
+    fn lakes(&self, decl: &TypeDecl, field: &FieldName) -> bool {
+        field.as_str() == DEPTH || self.keyed(decl, field)
     }
 
     /// Whether a row's `<name>.<field>` is its record's key: the field is
@@ -3806,7 +3823,8 @@ impl<'a> Reader<'a> {
     /// A pattern's row as one type: for each name bound to a type in
     /// `types`, each field of the type its reader may know of under its
     /// path, `<name>.<field>`, and `<name>.key`, the record's key where no
-    /// such field is named `key`.
+    /// such field is named `key`. A field named `_depth` is left out: under
+    /// a bound name that path is the lake's column.
     fn row_shape(&self, names: &[String], types: &[TypeName]) -> TypeDecl {
         let mut row = TypeDecl::default();
         for (name, ty) in names.iter().zip(types) {
@@ -3814,7 +3832,8 @@ impl<'a> Reader<'a> {
                 continue;
             };
             let at = |f: &str| FieldName::from(format!("{name}.{f}"));
-            let known = t.fields.iter().filter(|f| self.knows(t, &f.name));
+            let known =
+                (t.fields.iter()).filter(|f| self.knows(t, &f.name) && f.name.as_str() != DEPTH);
             let fields: Vec<_> = known
                 .map(|f| lakelands_api::ontology::FieldDecl {
                     name: at(f.name.as_str()),
@@ -3835,12 +3854,14 @@ impl<'a> Reader<'a> {
     /// A record's values into a pattern's row under their paths,
     /// `<name>.<field>`. A row's `<name>.key` is the record's key, unless
     /// its type declares a field `key` its reader may know of: then that
-    /// field's value, null where the record holds none.
+    /// field's value, null where the record holds none. `<name>._depth`
+    /// is the hops its step took to reach it, 0 for the start, whatever
+    /// field of that name a lake written before the rule holds.
     fn bind(
         &self,
         row: &mut BTreeMap<String, Value>,
         name: &str,
-        node: &graph::Node,
+        (node, depth): (&graph::Node, u32),
         rec: Option<StoredRecord>,
     ) -> Result<()> {
         let decl = self.shape.ontology.ty(&node.0)?;
@@ -3854,22 +3875,29 @@ impl<'a> Reader<'a> {
             for (f, v) in rec.fields {
                 row.insert(format!("{name}.{f}"), v);
             }
+            row.insert(format!("{name}.{DEPTH}"), Value::from(depth));
         }
         Ok(())
     }
 
+    /// The records a graph reached as the principal may see them, each with
+    /// its depth.
     fn graph_result(
         &self,
-        nodes: Vec<lakelands_core::graph::Node>,
+        nodes: Vec<graph::Reached>,
         edges: Vec<Edge>,
         next_cursor: Option<Cursor>,
     ) -> Result<QueryResult> {
-        let mut records = Vec::new();
-        for node in &nodes {
-            records.extend(self.shown(node)?);
+        let (mut records, mut depths) = (Vec::new(), Vec::new());
+        for r in &nodes {
+            if let Some(record) = self.shown(&r.node)? {
+                records.push(record);
+                depths.push(r.depth);
+            }
         }
         Ok(QueryResult::Graph {
             nodes: records,
+            depths,
             edges,
             truncated: next_cursor.is_some(),
             next_cursor,

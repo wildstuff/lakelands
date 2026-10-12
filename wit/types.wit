@@ -820,6 +820,9 @@ interface types {
 
     record graph {
         nodes: list<%record>,
+        /// Each node's depth, in the order of `nodes`: the fewest hops that
+        /// reach it from a start, 0 for a start; along a path, its hop.
+        depths: list<u32>,
         edges: list<edge>,
         truncated: bool,
         next-cursor: option<cursor>,

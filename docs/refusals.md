@@ -485,6 +485,7 @@ What a refusal is about.
 | `cause_past_head` | `cause` (Position), `head` (Position, optional) | the cause {cause} is past the lake's head [{head}\|(none)] | A host's cause past the head. |
 | `changed_since_proposed` | `type` (TypeName) | `{type}` changed since this migration was proposed; propose it again | A type declared again since its migration was proposed. |
 | `field_exists` | `type` (TypeName), `field` (FieldName) | `{type}` already has a field `{field}` | A field added that the type has. |
+| `field_name_kept` | `type` (TypeName), `field` (FieldName) | a new field of `{type}` may not begin with `_`: the lake keeps such names for its own columns of a pattern's rows (`<name>._depth`); name it `{field}` without the `_` | A new field whose name begins with `_`, which the lake keeps for its own columns. |
 | `field_read_elsewhere` | `field` (FieldName), `type` (TypeName) | `{field}` is read by another part of `{type}` and cannot be removed | A field taken away that another part of the type reads. |
 | `is_a_view` | `type` (TypeName) | `{type}` is a view; it is computed, never written | A view at a door that writes or holds a record. |
 | `key_component_kind` | `part` (String), `kind` (StorageKind), `field` (FieldName) | the key component `{part}` is not a {kind} for `{field}` | A key component of a kind its field cannot read it as. |

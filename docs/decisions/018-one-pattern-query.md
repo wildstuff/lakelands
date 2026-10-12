@@ -75,7 +75,11 @@ names `0..` on each step.
 ### A graph cut by `limit` pages as rows do
 
 A graph cut by `limit` says `truncated` and carries a `next_cursor`,
-exactly as a page of rows does. The next page is the next `limit`
+exactly as a page of rows does. Each node comes with its depth, in the
+order of the nodes (`depths`): the fewest hops that reach it from a
+start, 0 for a start, which keeps 0 however a cycle comes back to it (a
+graph holds each record once; the edge back says the hop the cycle
+closes at). Along a path a node's depth is its hop. The next page is the next `limit`
 records of the one order (depth, type, key), with every link between a
 record of that page and one of this or an earlier page, so the pages
 together are the graph, each record and link once. Each page walks
@@ -125,10 +129,24 @@ the first record would not be possible.
 
 Each record a pattern binds has a name. The start and each step may
 give one with `as`. A record without one is bound under its type's name.
-A row holds `<name>.<field>` and `<name>.key`, and every path a pattern
-names reads those names. A field is still judged on its record's type: a
+A row holds `<name>.<field>`, `<name>.key` and `<name>._depth`, and every
+path a pattern names reads those names. `<name>._depth` is the hops the
+record's step took to reach it, 0 for the start: the depth the walk
+already orders by, which a caller could otherwise learn only by asking
+each depth on its own. A field is still judged on its record's type: a
 field its reader may not know of answers under any name as it does on
 the type, and a refusal names the type, not the name.
+
+A name that begins with `_` under a bound name is the lake's own column,
+never a field: a declaration, a set and a migration refuse a new field
+whose name begins with `_` (`field_name_kept`). A field the type already
+holds keeps its name, as a lake written before the rule holds it, and
+`get` and `find` answer it under that name; under a bound name its path
+reads the lake's column, so such a field is not reachable from a
+pattern's rows. Were the lake's columns bare words, a type's field
+`depth` would hide the record's depth wherever it is declared, and a name
+over several types would read the field for one type and the column for
+another.
 
 A pattern that would bind two records under one name is refused before
 any record is read. A name is never numbered for the caller: an order or
@@ -218,8 +236,8 @@ row's shape: one field for each path, of its declared kind.
 An order and a projected field read their path by the aggregate's rule,
 named whole: the longest name the pattern binds, then one of its fields
 or `key`. Any other name is refused as the aggregate refuses it.
-`<name>.key` is the record's key, as in the aggregate, and is never
-probed. An order probes its field before a row is read (024). A
+`<name>.key` is the record's key, as in the aggregate, and
+`<name>._depth` its depth; neither is ever probed. An order probes its field before a row is read (024). A
 projected field is named, not computed over, so it is not probed. A
 field its reader may not know of is refused as one the type does not
 have. A masked one is left out of the row, as an absent value is: a row
@@ -535,3 +553,8 @@ used.
   without a field `order_names_no_field` where both answered
   `pattern_no_path`, and `latest` with a field `latest_takes_no_field`
   where it answered `latest_no_change` (lakelands#901).
+- A row says the hops each step took, `<name>._depth`, and a graph each
+  node's depth (lakelands#989): the walk computed the depth and ordered
+  by it, and the answer dropped it, so a caller asked one query a depth
+  to learn it. A new field may not begin with `_`, the lake's names
+  under a bound name, and a field a type already holds keeps its name.

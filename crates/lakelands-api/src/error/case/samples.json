@@ -1096,6 +1096,11 @@
    "type": "t"
   },
   {
+   "code": "field_name_kept",
+   "field": "f",
+   "type": "t"
+  },
+  {
    "code": "field_read_elsewhere",
    "field": "f",
    "type": "t"

@@ -21,7 +21,8 @@ draws from, whatever the `min` of its steps. A rows projection holds a
 start only where its steps reach a match from it: every row binds its
 start beside the records its steps reach, and a start no match begins
 at is in no row. Either way the answer keeps the one order: depth, then
-type, then key.
+type, then key, and says each record's depth: a row's `<name>._depth`,
+a graph's `depths` (018).
 
 ### The whole-graph measures are walks
 
@@ -108,6 +109,7 @@ answers identical.
   row that holds its start only where a step arrives at that record.
   Every row binds its start, whatever the `min` of its steps; a start
   is left out only where no match begins at it.
+- An answer says the depth it is ordered by (lakelands#989).
 - A page of rows walks a page of starts and stops (lakelands#940): every
   page walked every start, bound every row and sorted them before it
   was cut, about four questions of the engine a start, 19 s for a first
