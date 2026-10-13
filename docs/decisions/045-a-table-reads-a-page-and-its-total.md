@@ -67,7 +67,9 @@ while a refresh, which reads the head, shows the head's.
 - **Not a field.** A retired record is counted, never read: no filter
   names retirement, and `retired()` keeps its meaning in a trigger's
   guard alone. The count of the retired costs what the total costs, a
-  pass over the type's records with the retired ones (lakelands#1024).
+  pass over the type's records with the retired ones, beside the live
+  count, which a `find` that asks the total too has taken already
+  (lakelands#1024).
 - **Rejected: no offset.** A host could reach page k by walking k
   cursors, or by keeping every cursor it has handed out. That pushes the
   cost of a jump onto every host and leaves it unbounded. A bounded

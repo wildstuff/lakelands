@@ -52,6 +52,16 @@
 < lakelands-position: 8
 < {"id":3,"jsonrpc":"2.0","result":{"content":[{"text":"position 8\n{\n  \"data\": {\n    \"fields\": {\n      \"status\": \"open\"\n    },\n    \"key\": \"INV-1\",\n    \"meta\": {\n      \"status\": {\n        \"known_at\": \"{known_at}\",\n        \"origin\": \"authored\",\n        \"position\": 8,\n        \"writer\": \"human:owner\"\n      }\n    },\n    \"type\": \"invoice\",\n    \"version\": 1\n  },\n  \"position\": 8\n}","type":"text"}],"isError":false,"structuredContent":{"data":{"fields":{"status":"open"},"key":"INV-1","meta":{"status":{"known_at":"{known_at}","origin":"authored","position":8,"writer":"human:owner"}},"type":"invoice","version":1},"position":8}}}
 
+# find answers its total and its count of the retired beside it.
+> POST /lakes/finance/mcp
+> authorization: Bearer k-clerk
+> mcp-session-id: {session}
+> {"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"invoice_find","arguments":{"total":true,"retired":true,"limit":1}}}
+< 200
+< content-type: application/json
+< lakelands-position: 8
+< {"id":40,"jsonrpc":"2.0","result":{"content":[{"text":"position 8\n{\n  \"data\": {\n    \"retired\": 0,\n    \"rows\": [\n      {\n        \"fields\": {\n          \"status\": \"open\"\n        },\n        \"key\": \"INV-1\",\n        \"type\": \"invoice\",\n        \"version\": 1\n      }\n    ],\n    \"shape\": \"records\",\n    \"total\": 1\n  },\n  \"position\": 8\n}","type":"text"}],"isError":false,"structuredContent":{"data":{"retired":0,"rows":[{"fields":{"status":"open"},"key":"INV-1","type":"invoice","version":1}],"shape":"records","total":1},"position":8}}}
+
 # A write: the clerk may write the status; the new position is also a
 # header.
 > POST /lakes/finance/mcp
