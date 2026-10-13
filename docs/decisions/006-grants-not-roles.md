@@ -1437,11 +1437,12 @@ proposed declaration are shown by what the reader may know of (above).
 more than its reader is shown, and says nothing else of it: no name and
 no count, since a count would say how many names are hidden. Where the
 reader may see nothing of the write, the entry has no write at all: a
-write to a record it is not answered (one restricted, without the
-grant), a call of a verb on such a record, a bundle none of whose
-declarations it would be shown. The entry keeps its id, its proposer,
-its times, its state and the proposer's `why`. A proposal that names a
-type its reader is not shown is not listed at all (below).
+bundle none of whose declarations it would be shown, and, to a holder
+of `only`, a write that would leave a record outside its pairs (below).
+The entry keeps its id, its proposer, its times, its state and the
+proposer's `why`. A proposal that names a type its reader is not shown
+is not listed at all, nor is one on a record its reader is not
+answered, held from it or, to a holder of `only`, another's (below).
 
 The absent write is a form of the answer and of nothing else. A stored
 proposal and a logged `write_proposed` hold the write whole, and
@@ -1537,9 +1538,10 @@ its report is trimmed, as above, by the reader's grants there, against
 the type as it stood. An accept or a reject judges this as soon as the
 proposal is found, before anything else of it is told: whether it is
 decided, whether a pinned record moved since it was proposed, whether
-its write or its bundle would apply. Nothing is appended. A proposal
-hidden only by a record, one restricted or outside a holder's `only`, is
-listed without its write (above). A reviewer shown every type it names
+its write or its bundle would apply. Nothing is appended. A proposal on
+a record its reviewer is not answered, held or outside a holder's
+`only`, is not there to it, its accept and reject answered as an id
+never made (below). A reviewer shown every type it names
 decides it, what its grants hide of a field included, where the entry is
 its to decide (below).
 
@@ -1636,9 +1638,9 @@ A principal with the review grant may accept or reject a proposal that
 is there to it, as the rules here say; any other principal decides
 none. The accept and the reject ask the listing's answer (above) at the
 head as soon as the proposal is found: an entry that is not there is an id
-that does not exist, word for word, to both; one listed without its
-write for a record its reviewer is not answered, or to a holder of
-`only` not whole (below), is not granted to decide; one listed with
+that does not exist, word for word, to both; one listed to a holder of
+`only` in part, its write withheld or trimmed (below), is not granted
+to decide; one listed with
 `more` to any other reviewer is not granted to accept, and is its to
 reject (lakelands#867); and an accept's refusal is told by the same
 answer (below). A bundle that a reviewer
@@ -1659,8 +1661,9 @@ without `more`. A reviewer listed an entry in part would apply in its
 name what it was not shown; it rejects it, since a reject applies
 nothing, and its accept is refused as not granted, naming nothing, as
 a reviewer's without the grant is. A holder of `only` neither accepts
-nor rejects an entry it is not listed whole: what is left out there is
-another's record, not a field (below). `more` is what the trim left
+nor rejects an entry it is listed in part: what is left out there may
+be a record the write would make another's, not a field alone (below).
+`more` is what the trim left
 out: a value type's report, whose id the listing makes again over what
 its reader is shown, is whole where nothing of it was left out.
 
@@ -1792,10 +1795,11 @@ record that does not exist.
   holder's records alone. A search ranks the type and keeps the admitted
   candidates, pulling deeper until its page is full; the fused search's
   path that reads no record is not taken. A walk reaches only admitted
-  records. A proposal on a record the holder is not admitted, before the
-  write or after it as proposed, is listed without its write (above); it
-  still shows why, the proposer and a type-level verb's payload, as one
-  on a restricted record does. A read as of a position judges the
+  records. A proposal on a record the holder is not admitted is not
+  there to it (below). One that would leave a record outside the
+  holder's pairs is listed without its write (above); it still shows
+  why, the proposer and a type-level verb's payload. A read as of a
+  position judges the
   records as they stood then, under the grant followed to that position.
 - **A search as of a position** keeps a candidate only where it is
   admitted then and at the head too, under the grant followed to the
@@ -1859,19 +1863,28 @@ record that does not exist.
   narrowed or revoked between the proposal and its accept does not stop
   a pinned proposal. The reviewer decides it, on what the listing shows,
   and accepts it only where that is the whole (lakelands#867).
-- **A reviewer holding `only` decides what it is shown whole.** It
-  accepts or rejects a proposal on a type it holds `only` on only where
-  the proposal listing shows it the proposal whole: the record at the
-  key, before the write and after it as proposed, admitted, and every
-  value the write carries one it may read. Otherwise it is refused as
-  not granted before it is told whether the proposal is decided, so a
-  proposal id, which is positional and so can be guessed, tells it
-  nothing the listing does not. Its accept is judged by its own pairs
-  too: a write that would leave the record outside them is refused as
-  not granted, as its own write would be. Every reviewer accepts only
-  what it is listed whole (above, lakelands#867); a holder of `only`
-  is refused the reject as well, since what its listing leaves out is
-  another's record.
+- **A reviewer holding `only` decides what it is shown whole.** A
+  proposal whose record at the key its `only` does not admit before the
+  write, another's, is not there to it, as one on a held record is not
+  (lakelands#1016): not listed, and its accept and reject answered as
+  an id never made, decided or not, to the byte, so a proposal id,
+  which is positional and so can be guessed, tells it nothing. A key
+  whose record another retired, and which is not held, is to it a free
+  key, as to its own writes. Of the rest it accepts or rejects only
+  what the listing shows it whole: the record after the write as
+  proposed admitted, and every value the write carries one it may
+  read. One it is listed in part, its own record handed to another, a
+  free key made another's or a value it may not read, is refused as not
+  granted, its accept and its reject alike, before it is told whether
+  the proposal is decided: what its listing leaves out is a record that
+  would be another's, which its reject would decide as surely as its
+  accept. Its accept is judged by its own pairs too: a write that would
+  leave the record outside them, its derived values computed, is
+  refused as not granted, as its own write would be. Every reviewer
+  accepts only what it is listed whole (above, lakelands#867). So the
+  listing tells a free key, where a write is listed in part, from
+  another's record, where the same write is not listed: as a write
+  tells it on purpose (what a holder's write tells, below).
 - **What is refused**, as not granted, naming no field: an aging rule on
   the type, which moves records at the host's run. A holder of `only` on
   any type changes no shape: every schema door and the proposal of a
@@ -1960,13 +1973,11 @@ these.
 
 Three doors judge a link as a read of it does. A reference to a link
 whose end the writer's `only` does not admit is refused as one to a link
-no record holds is. A proposed call on such a link is listed without its
-write to a reviewer who is not answered the link, and is no more that
-reviewer's to decide than any proposal it is not listed whole; its
-accept is refused for a verb that writes the link and for one that
-reaches outside the lake. A hold goes further: a proposed call on a link
-with a held end is not there to a reviewer without `restricted`
-(lakelands#1008). A migration's report names, among its sample keys, neither
+no record holds is. A proposed call on such a link is not there to a
+reviewer who is not answered the link, as one on a link with a held end
+is not there to a reviewer without `restricted`: not listed, its accept
+and reject answered as an id never made (lakelands#1008,
+lakelands#1016). A migration's report names, among its sample keys, neither
 a link with an end held from its reader nor the links of a link type its
 reader is not shown, and its counts stay whole (above).
 
@@ -2115,15 +2126,18 @@ record computes (032), and a call's as its assignments compute them for
 the record at the accept, whatever form they take, with the records its
 `requires` and set values read across a reference (055), as when it was
 proposed and as at the accept; and the two end records of each link
-among them. A proposal whose own record or ends are held from a
-reviewer without `restricted` is not there to it, and nor is one that
+among them. A proposal whose own record or ends its reviewer is not
+answered, held from one without `restricted` or another's to a holder
+of `only`, is not there to it, and nor is one that
 names a record its reviewer is not answered beside its own (a reference
 its upsert sends or computes, a record its call reads across, and their
 ends where one is a link), held when it was proposed or since: not
 listed, its accept and reject answered as an id no proposal holds, to
 the byte, as one whose verb reads a field its reviewer may not read is
-(lakelands#1008). This is asked of a reviewer without `restricted` and
-of one holding `only`, by the one function that computes the reach. The
+(lakelands#1008, lakelands#1016). A retired record that is not held is
+a free key here, as to a write. This is asked of a reviewer without
+`restricted` and of one holding `only`, by the one function that
+computes the reach. The
 accept judges a proposer as a holder where its write reached one when
 proposed, computed wholly as it stood then (the declarations, its
 record, the settings in force and the proposal's time): a record held, a
@@ -2634,3 +2648,7 @@ Of `only`:
   without `restricted` is not there to it, where it was listed without
   its write and its accept and reject refused as not granted
   (lakelands#1008).
+- A proposal on a record a holder's `only` does not admit is not there
+  to that holder, where it was listed without its write and its accept
+  and reject refused as not granted (lakelands#1016); a retired record
+  of another's that is not held is a free key to it, as to its writes.

@@ -12793,10 +12793,11 @@ pub async fn a_view_is_keyed_by_its_groups_where_their_values_come_from(store: A
 /// A grant's `only` admits its holder the records whose fields hold its
 /// values alone (051): another's record is not found, `find`, its total,
 /// a walk and a degree over the links answer its own, a proposal on
-/// another's record is listed without its write, its own records it
-/// writes while another's is to its write a key that is free, it
-/// proposes writes to its own records, pinned to them, and decides none
-/// of another's, and `describe_type` tells it the pairs and its writes.
+/// another's record is not there to it, its accept and reject those of an
+/// id never made (lakelands#1016), its own records it writes while
+/// another's is to its write a key that is free, it proposes writes to
+/// its own records, pinned to them, and `describe_type` tells it the
+/// pairs and its writes.
 pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
     store: Arc<dyn LakeStore>,
 ) {
@@ -12831,8 +12832,8 @@ pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
             .await
             .expect("the owner links a claim to `t1`");
     }
-    // Bob proposes to retire his `c2`: alice, a reviewer, is listed it
-    // without its write.
+    // Bob proposes to retire his `c2`: to alice, a reviewer, it is not
+    // there (lakelands#1016).
     let bob = serde_json::from_value(json!({"default": "write"})).expect("grants read");
     let bob = &principal(store.lake(), PrincipalKind::Agent, "bob", bob);
     let retire = json!({"write": "retire", "type": "claim", "key": "c2"});
@@ -13001,10 +13002,8 @@ pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
     }
     let listed = c.proposals(alice, Default::default()).await;
     let listed = listed.expect("alice's listing").data;
-    if !listed.iter().all(|p| p.write.is_none() && p.more) || listed.is_empty() {
-        wrong.push(format!(
-            "bob's proposal is listed to alice with its write: {listed:?}"
-        ));
+    if listed.iter().any(|p| p.id == his) {
+        wrong.push(format!("bob's proposal is listed to alice: {listed:?}"));
     }
     // Her own records she proposes to write, pinned to them: a proposal
     // applies while its record stands as proposed, and is refused once
@@ -13053,6 +13052,22 @@ pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
         panic!("bob's call of `give` must be proposed");
     };
     let head = store.head().await.expect("the head");
+    // Her accept and reject of bob's answer as of an id never made.
+    for (what, answer) in [
+        (
+            "an accept of bob's",
+            c.accept(alice, &his).await.map(|_| ()),
+        ),
+        (
+            "a reject of bob's",
+            c.reject(alice, &his, "no".into()).await.map(|_| ()),
+        ),
+    ] {
+        if !matches!(&answer, Err(Error::NotFound { missing: Missing::Proposal { id } }) if id == &his)
+        {
+            wrong.push(format!("{what}: {answer:?}"));
+        }
+    }
     for (what, answer) in [
         (
             "an accept of a call that hands her `c3` to bob",
@@ -13069,14 +13084,6 @@ pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
             c.propose(alice, amount("c2", 2), "mine".into())
                 .await
                 .map(|_| ()),
-        ),
-        (
-            "an accept of bob's",
-            c.accept(alice, &his).await.map(|_| ()),
-        ),
-        (
-            "a reject of bob's",
-            c.reject(alice, &his, "no".into()).await.map(|_| ()),
         ),
     ] {
         if !matches!(
@@ -13111,8 +13118,8 @@ pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
 }
 
 /// A grant whose `only` cannot be applied admits no record, whatever a
-/// stored value holds (051, lakelands#771): a reviewer is listed every
-/// proposal on the type without its write, a reference into the type is
+/// stored value holds (051, lakelands#771): a reviewer is listed no
+/// proposal on the type (lakelands#1016), a reference into the type is
 /// refused whole as one to an absent key, and a write on the record whose
 /// value equals the pair answers as on another's.
 pub async fn a_grant_that_cannot_be_applied_admits_no_record(store: Arc<dyn LakeStore>) {
@@ -13166,14 +13173,6 @@ pub async fn a_grant_that_cannot_be_applied_admits_no_record(store: Arc<dyn Lake
             .await
             .expect("the owner proposes");
     }
-    let mut all = c
-        .proposals(own, Default::default())
-        .await
-        .expect("a listing")
-        .data;
-    for p in &mut all {
-        (p.write, p.more) = (None, true);
-    }
     let mut wrong = Vec::new();
     for grant in [
         json!({"only": {"amount": 10}}),
@@ -13185,7 +13184,7 @@ pub async fn a_grant_that_cannot_be_applied_admits_no_record(store: Arc<dyn Lake
         let grants = serde_json::from_value(grants).expect("grants read");
         let eve = &principal(store.lake(), PrincipalKind::Agent, "eve", grants);
         let listed = c.proposals(eve, Default::default()).await.map(|r| r.data);
-        if listed.as_ref().ok() != Some(&all) {
+        if !listed.as_ref().is_ok_and(|l| l.is_empty()) {
             wrong.push(format!("{grant}: the listing {listed:?}"));
         }
         let refused = |to: &'static str| {

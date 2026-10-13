@@ -60,14 +60,7 @@ check!(
 /// Cells red for an open issue of 0.14.0, by the start of their name, and
 /// the issue. A cell listed must be red; one that holds is removed by its
 /// fix.
-const KNOWN: &[(&str, u32)] = &[
-    ("Plain/only_on_type/Proposals", 1016),
-    ("Plain/only_on_type/Accept", 1016),
-    ("Plain/only_on_type/Reject", 1016),
-    ("Plain/only_end_type/Proposals", 1016),
-    ("Plain/only_end_type/Accept", 1016),
-    ("Plain/only_end_type/Reject", 1016),
-];
+const KNOWN: &[(&str, u32)] = &[];
 
 /// The cells whose owner's answers differ between the twins.
 const CONTROLS: usize = 461;
