@@ -26,7 +26,7 @@
 //! ```
 //!
 //! Every statement names its tables with the schema; no connection's
-//! `search_path` is set. [`PgLake::export`] writes the log's segments as
+//! `search_path` is set. `PgLake::export` writes the log's segments as
 //! the files `docs/log-format.md` §4.2 describes.
 //!
 //! # Connections
@@ -52,13 +52,15 @@ use lakelands_api::error::{Case, Detail, Doing, Error, Part, Result, Situation};
 use lakelands_api::location::{EngineConfig, Location};
 
 pub use connect::MIN_SERVER_VERSION;
-pub use handle::{ANALYZE_AFTER, PgLake, export};
+use handle::PgLake;
+#[doc(hidden)]
+pub use handle::{ANALYZE_AFTER, export};
 #[doc(hidden)]
 pub use view::{few_holders_statements, holding_statements, read_statements};
 
 /// The name the engine answers to, in [`LakeEngine::name`] and for
 /// `EngineConfig::Postgres`.
-pub const NAME: &str = "pg";
+pub(crate) const NAME: &str = "pg";
 
 pub(crate) use lakelands_core::{invalid, lock};
 

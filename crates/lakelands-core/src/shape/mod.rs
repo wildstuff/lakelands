@@ -13,7 +13,7 @@
 //!   stored is reshaped) or needs a **migration**, and why. The store
 //!   refuses `declare` for anything that needs a migration, so a stored
 //!   record never silently stops matching its type.
-//! - [`convert`], [`preflight`] and [`migrate_record`] are the migration
+//! - [`convert()`], [`preflight`] and [`migrate_record`] are the migration
 //!   itself: the closed table of lossless conversions between storage
 //!   kinds, the report a migration must pass before it is applied, and
 //!   the per-record conversion the fold applies once it is.

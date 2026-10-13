@@ -6,27 +6,46 @@
 //! reproduce byte-identically from the log; whatever needs the outside
 //! world lives behind a seam declared in `lakelands-api`
 //! (`docs/decisions/002-determinism-is-the-boundary.md`).
+//!
+//! A host builds on `value::check`, `derive::reads`, `expr::{check, parse,
+//! Place}`, `log::record_key` and `names::is_identifier`, and on nothing
+//! else here. Every other public item is `#[doc(hidden)]`: the workspace's
+//! other crates and the conformance suite share it, and a release changes
+//! it without notice.
 
 #![forbid(unsafe_code)]
 
+#[doc(hidden)]
 pub use lakelands_api::canonical;
 
+#[doc(hidden)]
 pub mod bundle;
+#[doc(hidden)]
 pub mod conformance;
 pub mod derive;
+#[doc(hidden)]
 pub mod describe;
+#[doc(hidden)]
 pub mod engines;
+#[doc(hidden)]
 pub mod export;
 pub mod expr;
+#[doc(hidden)]
 pub mod feed;
+#[doc(hidden)]
 pub mod graph;
+#[doc(hidden)]
 pub mod links;
 pub mod log;
 pub mod names;
+#[doc(hidden)]
 pub mod rights;
+#[doc(hidden)]
 pub mod shape;
+#[doc(hidden)]
 pub mod sight;
-pub mod stem;
+mod stem;
+#[doc(hidden)]
 pub mod valid_time;
 pub mod value;
 
@@ -35,12 +54,14 @@ use lakelands_api::{Error, Position};
 
 /// A refusal of what the caller asked for as not well-formed, naming no
 /// field.
+#[doc(hidden)]
 pub fn invalid(said: impl Into<Said>) -> Error {
     Error::invalid(said)
 }
 
 /// Stored or exported events, or the files that hold them, are damaged:
 /// `part`, at `position` if one, by `flaw`.
+#[doc(hidden)]
 pub fn damaged(part: Part, position: Option<Position>, flaw: Flaw) -> Error {
     Error::unavailable(Situation::Damaged {
         part,
@@ -50,6 +71,7 @@ pub fn damaged(part: Part, position: Option<Position>, flaw: Flaw) -> Error {
 }
 
 /// The storage failed `doing` to `part`, in the operating system's words.
+#[doc(hidden)]
 pub fn io_failed(doing: Doing, part: Part, e: &std::io::Error) -> Error {
     let detail = Detail::io(e);
     Error::unavailable(Situation::Storage {
@@ -61,6 +83,7 @@ pub fn io_failed(doing: Doing, part: Part, e: &std::io::Error) -> Error {
 
 /// Locks a mutex, carrying on past a panic in another holder: a caller
 /// locks only state every holder changes whole or not at all.
+#[doc(hidden)]
 pub fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }

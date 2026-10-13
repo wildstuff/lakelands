@@ -10,7 +10,7 @@
 //!
 //! **Consequences in the same append.** The record a write will produce is
 //! computed first, with the fold's own function
-//! ([`crate::record::apply`]); from it the store decides which triggers
+//! (`record::apply`); from it the store decides which triggers
 //! fire (a trigger fires on every write of its type whose guard holds over
 //! the record after the write — `changed` and `previous` see the record
 //! before it; a guard that cannot be evaluated does not fire) and which

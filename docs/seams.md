@@ -76,13 +76,15 @@ Two rules shape the engine seam:
   fresh replay to that position.
 
 The traits are synchronous and `dyn`-compatible: storage work blocks, and
-the store runs an engine off its async callers. An engine may build on
-`lakelands-core`, and is expected to where this page names one of its
-functions as the definition of a behaviour. Every promise below is
-checked on every engine on the roster, either by an engine check through
-the seam or through the doors' suite; "Where each promise is checked"
-at the end of this section says which, and names the promises that have
-no check yet.
+the store runs an engine off its async callers. Where this page names a
+function of `lakelands-core` as the definition of a behaviour, the
+engines in this repository build on it. Those functions are
+`#[doc(hidden)]`, and no release promises them. An engine outside the
+repository holds to this seam and the conformance suite. Every promise
+below is checked on every engine on the roster, either by an engine
+check through the seam or through the doors' suite; "Where each promise
+is checked" at the end of this section says which, and names the
+promises that have no check yet.
 
 **Errors.** An engine answers with three kinds of error and no other:
 
