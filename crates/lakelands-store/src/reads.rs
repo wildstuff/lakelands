@@ -2360,13 +2360,35 @@ impl<'a> Reader<'a> {
         let only = |ty: &TypeName, f: &BTreeMap<_, _>| {
             self.sight.ty(ty).is_ok() && self.sight.admit(ty).holds(f)
         };
+        // To a holder of `only` on the type, the record as the accept
+        // plans it: its derived values computed (lakelands#914).
+        let o = &self.shape.ontology;
+        let view = self.view.as_ref();
+        let holder = |ty: &TypeName| {
+            o.ty(ty)
+                .is_ok_and(|t| lakelands_core::rights::only_holder(self.who, t, o))
+        };
+        let now = || {
+            let settings = crate::lake::settings_in(view, o).ok()?;
+            Some((settings, crate::lake::wall_clock()))
+        };
         let after = |ty: &TypeName, key: &RecordKey, patch: &lakelands_api::Patch| {
-            let stored = self.view.get(ty, key).ok().flatten().filter(|r| !r.retired);
-            let mut fields = stored.map(|r| r.fields).unwrap_or_default();
+            let stored = self.view.get(ty, key).ok().flatten();
+            if holder(ty) {
+                let Some((settings, now)) = now() else {
+                    return false;
+                };
+                let at = (view, &settings, now);
+                let planned =
+                    crate::writes::planned(self.lake, o, at, stored.as_ref(), (ty, key), patch);
+                return planned.ok().flatten().is_some_and(|r| only(ty, &r.fields));
+            }
+            let mut fields = (stored.filter(|r| !r.retired))
+                .map(|r| r.fields)
+                .unwrap_or_default();
             fields.extend(patch.clone());
             only(ty, &fields)
         };
-        let view = self.view.as_ref();
         let answered = |ty: &TypeName, key: &RecordKey| answered(view, self.sight, ty, key);
         match write {
             // A field the reader may not know of and a masked one both
@@ -2401,14 +2423,26 @@ impl<'a> Reader<'a> {
                     }) => set.iter().all(|a| sees.reads(on, &a.field)),
                     _ => true,
                 };
+                // A call to a holder of `only` is judged by what its
+                // assignments leave, the payload as proposed, as an upsert
+                // is (lakelands#914).
+                let leaves = |key: &RecordKey| {
+                    let Some((settings, now)) = (holder(&v.on)).then(now).flatten() else {
+                        return true;
+                    };
+                    let at = (view, &settings, now);
+                    let set = crate::writes::call_reads(o, at, v, Some(key), payload);
+                    set.is_ok_and(|(set, _)| after(&v.on, key, &set))
+                };
+                let whole = match key {
+                    Some(key) => answered(&v.on, key) && leaves(key),
+                    None => self.sight.ty(&v.on).is_ok(),
+                };
                 let force = Some((self.sight, &self.shape.ontology));
                 if ![force, then].into_iter().flatten().all(sets) {
                     payload.clear();
                 }
-                match key {
-                    Some(key) => answered(&v.on, key),
-                    None => self.sight.ty(&v.on).is_ok(),
-                }
+                whole
             }
             // The report names what the migration does to the type it was
             // proposed against. A reader kept from a field, where the type
