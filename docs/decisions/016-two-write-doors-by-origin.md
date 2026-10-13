@@ -39,6 +39,31 @@ the stream handed out) and the place of the first record of its window
 outage names no record, since it is no record's. An authored `upsert` is
 different on purpose: a write is a write, even with the same values.
 
+### A type may be written once by its source
+
+A type marked `insert_only` takes each of its records from its source
+once (lakelands#1044). Some sources deliver closed records: a finished
+event, a settled measurement, a line of an append-only log. One that
+comes back under its key with other values is a fault in the source, a
+device restored from an old copy or a log rewritten, and must never
+quietly replace what was stored. So an ingest that would write a key
+the type already holds, live or retired, or that its window wrote
+already, is refused as `written_once`, naming the record, and the
+stream ends there as at any refusal. The same record again is a
+duplicate, as on any type. A retired key stays written: re-making it
+would be the rewrite the mark is there to stop.
+
+The mark binds the source door alone. A type that sources its records
+often carries fields its people write, a verdict or a note, and closing
+those would forbid annotating a closed record; an author's write of an
+authored field is taken as before. A key held from its writer, and
+another's key to a holder of `only`, answer as on an unmarked type, so
+the mark tells nothing of them. Declaring the mark on a type that holds
+records, or taking it off, is a change of meaning
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`): no
+record changes, and from that position the type's keys are written once
+or freely.
+
 ### A record's key is checked before its fields, an empty record after the duplicate test
 
 Within a window, a record's key form (not empty, no NUL character) is
@@ -234,3 +259,6 @@ is just another caller later, not a change to the contract.
 - A refused record names itself and where its window began, so the
   caller's offset has a value: `index`, `from` and `record` beside the
   refusal (lakelands#1043).
+- A type may be marked `insert_only`: its source writes each record
+  once, a retired key included, and an author's fields stay writable
+  (lakelands#1044).

@@ -580,3 +580,109 @@ async fn an_ingest_refusal_names_its_record_and_where_its_window_began(store: St
     }
     Ok(())
 }
+
+check!(
+    INSERT_ONLY = an_insert_only_type_is_written_once_by_its_source,
+    "016 and 027, extended (lakelands#1044): a type marked `insert_only` takes a record from its source once: the same record again is a duplicate, other values for a key that holds a record, live or retired, or that the window wrote already, are refused as `written_once`, naming the record and appending nothing, while an author still writes its authored fields; a key held from its writer answers as on an unmarked type; `describe_type` says the mark; declared on a type that holds records it is taken with no migration, its version moving and its schema hash not, and taken off, a key moves its version again"
+);
+
+async fn an_insert_only_type_is_written_once_by_its_source(store: Store) -> Held {
+    use crate::conformance::fixture::{alike_renamed, principal, restrict};
+    use lakelands_api::error::{Case, RecordName};
+    let l = Lake::of(store.as_ref());
+    let marked = |name: &str, once: bool| TypeDecl {
+        insert_only: once,
+        ..TypeDecl {
+            name: name.into(),
+            ..feed()
+        }
+    };
+    l.declare(marked("feed", true)).await?;
+    l.declare(marked("plain", false)).await?;
+    // Each step: the records fed, and `w` written, `d` a duplicate, `x`
+    // refused as written once naming the last record, appending nothing.
+    let step = async |ty: &str, recs: &[(&str, &str)], want: char| -> Held {
+        let records = recs
+            .iter()
+            .map(|(k, b)| source_record(ty, k, json!({"body": b})))
+            .collect();
+        let before = store.head().await.must("reading the head")?;
+        let fed = lakelands_api::ingest_all(l.cat.as_ref(), &l.own, &"dev".into(), records).await;
+        let last = recs.last().map(|(k, _)| *k).unwrap_or_default();
+        let ok = match (&fed, want) {
+            (Ok(w), 'w') => committed(w) == (recs.len() as u32, 0),
+            (Ok(w), 'd') => committed(w) == (0, recs.len() as u32),
+            (
+                Err(
+                    e @ Error::Ingested {
+                        record: RecordName::Of { key, .. },
+                        ..
+                    },
+                ),
+                'x',
+            ) => {
+                key == last
+                    && matches!(e.case().map(|s| &s.case), Some(Case::WrittenOnce { .. }))
+                    && store.head().await.must("reading the head")? == before
+            }
+            _ => false,
+        };
+        ensure!(
+            ok,
+            "{ty} {recs:?} must answer `{want}`; it answered {fed:?}"
+        );
+        Ok(())
+    };
+    for (recs, want) in [
+        (&[("r1", "a")][..], 'w'),
+        (&[("r1", "a")], 'd'),
+        (&[("r1", "b")], 'x'),
+        (&[("w1", "a"), ("w1", "b")], 'x'),
+    ] {
+        step("feed", recs, want).await?;
+    }
+    // An author still writes its fields; a retired key stays written.
+    l.upsert("feed", "r1", json!({"verdict": "fine"})).await?;
+    l.retire("feed", "r1").await?;
+    step("feed", &[("r1", "a")], 'x').await?;
+    ensure!(
+        l.describe_type("feed").await?.lineage.insert_only,
+        "`describe_type` must say `feed` is insert-only"
+    );
+    // A held key answers a writer without `restricted` as on an unmarked type.
+    let feeder = principal(
+        store.as_ref(),
+        lakelands_api::PrincipalKind::Agent,
+        "feeder",
+        serde_json::from_value(json!({"default": "write", "ingest": true})).unwrap(),
+    );
+    let mut held = Vec::new();
+    for ty in ["feed", "plain"] {
+        step(ty, &[("h1", "a")], 'w').await?;
+        restrict(store.as_ref(), ty, "h1", "held").await?;
+        let records = vec![source_record(ty, "h1", json!({"body": "b"}))];
+        held.push(
+            crate::conformance::fixture::ingest(l.cat.as_ref(), &feeder, "dev", records).await,
+        );
+    }
+    match (&held[0], &held[1]) {
+        (Err(m), Err(p)) => alike_renamed("a held key", m, p, ("feed", "plain"))?,
+        _ => {
+            return Err(Failure::new(format!(
+                "a held key must be refused alike: {held:?}"
+            )));
+        }
+    }
+    // Marked while it holds `p1`, and the mark taken off again.
+    step("plain", &[("p1", "a")], 'w').await?;
+    let was = l.describe_type("plain").await?.lifecycle;
+    l.declare(marked("plain", true)).await?;
+    let is = l.describe_type("plain").await?.lifecycle;
+    ensure!(
+        (is.version, &is.schema_hash) == (was.version + 1, &was.schema_hash),
+        "the mark must move `plain`'s version by one and not its hash: {was:?}, {is:?}"
+    );
+    step("plain", &[("p1", "b")], 'x').await?;
+    l.declare(marked("plain", false)).await?;
+    step("plain", &[("p1", "b")], 'w').await
+}

@@ -953,6 +953,12 @@ pub struct TypeDecl {
     /// (`docs/decisions/010-provenance-per-field.md`).
     #[serde(default = "yes")]
     pub field_meta: bool,
+    /// Whether a source writes a record of it once: an ingest that would
+    /// change a record its key already holds, live or retired, is refused
+    /// (lakelands#1044). Its authored fields stay writable. Not part of
+    /// the schema hash.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub insert_only: bool,
     /// What the type means. Not part of the schema hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,

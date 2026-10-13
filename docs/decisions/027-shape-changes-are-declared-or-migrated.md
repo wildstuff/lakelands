@@ -22,6 +22,14 @@ migration, and none is offered. A migration whose `to` changes
 annotations together with the shape carries them like any other member
 (`docs/decisions/007-schema-hash-covers-shape.md`).
 
+### Marking a type written once is a change of meaning
+
+A revision that only marks a type `insert_only`, or takes the mark off,
+changes no stored record, so `declare` takes it as it takes a relabel:
+the type's version moves, its schema hash does not, and no migration is
+asked. From that position its source writes each key once
+(`docs/decisions/016-two-write-doors-by-origin.md`, lakelands#1044).
+
 ### A migration converts by a closed table, and only where converting back gives the same information
 
 The conversions a migration may make are a closed table: a value

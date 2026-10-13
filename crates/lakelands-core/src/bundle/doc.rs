@@ -52,6 +52,8 @@ pub(super) struct TypeDoc {
     #[serde(default = "yes")]
     pub field_meta: bool,
     pub language: Option<String>,
+    #[serde(default)]
+    pub insert_only: bool,
     pub description: Option<String>,
     pub label: Option<String>,
     #[serde(default)]

@@ -138,6 +138,7 @@ fn object_set(name: &str, filter: &str) -> ObjectSetDecl {
 fn projected(t: &TypeDescription) -> TypeDecl {
     TypeDecl {
         annotations: t.annotations.clone(),
+        insert_only: false,
         name: t.name.clone(),
         key: t.access.key.clone(),
         fields: t.fields.iter().map(field_projected).collect(),

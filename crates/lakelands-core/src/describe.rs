@@ -685,6 +685,7 @@ impl Sight<'_> {
             lineage: TypeLineage {
                 sourced: (fields.iter())
                     .any(|f| matches!(f.authority, Authority::Source | Authority::Shared)),
+                insert_only: t.insert_only,
                 view_of: t.view.as_ref().map(|v| v.source.clone()),
             },
             lifecycle: TypeLifecycle {
