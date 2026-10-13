@@ -103,8 +103,47 @@ pub(crate) fn seal_judged(
     fence: u64,
     d: Draft,
 ) -> (Event, CanonicalEvent, Option<Case>) {
+    let mut event = unsealed(lake, position, prev, fence, d);
+    // The event's value is built once: its members written once, hashed
+    // without `hash`, judged, and stored with it.
+    let mut value = serde_json::to_value(&event).expect("an event serialises to JSON");
+    let members = value.as_object_mut().expect("an event is an object");
+    members.remove("hash");
+    let (hash, bytes) = canonical::sealed(members, "hash");
+    event.hash = Digest(hash);
+    let out_of_years = [Some(event.known_at), event.seen_at]
+        .into_iter()
+        .flatten()
+        .find(|t| !t.in_years());
+    let fault = match canonical::integer_too_large(&value) {
+        Some(n) => Some(Case::IntegerTooLarge { n: n.clone() }),
+        None => out_of_years.map(|t| Case::NotDateTime {
+            value: t.to_string(),
+        }),
+    };
+    let stored = CanonicalEvent {
+        position,
+        id: event.id.clone(),
+        prev: event.prev.clone(),
+        hash: event.hash.clone(),
+        fence,
+        bytes,
+    };
+    (event, stored, fault)
+}
+
+/// The event `d` makes at `position`, not yet sealed: no hash, no bytes.
+/// What computes a record from an event reads its envelope and body, never
+/// its hash, so a plan builds this and the log seals it once.
+pub(crate) fn unsealed(
+    lake: &LakeId,
+    position: Position,
+    prev: &Digest,
+    fence: u64,
+    d: Draft,
+) -> Event {
     let id = d.id.unwrap_or_else(|| positional_id(lake, position));
-    let mut event = Event {
+    Event {
         upstream: d.upstream,
         v: LOG_FORMAT_VERSION,
         lake: lake.clone(),
@@ -128,35 +167,7 @@ pub(crate) fn seal_judged(
         idempotency_key: d.idempotency_key,
         body: d.body,
         hash: Digest(String::new()),
-    };
-    // The event's value is built once: hashed without `hash`, judged, and
-    // written with it.
-    let mut value = serde_json::to_value(&event).expect("an event serialises to JSON");
-    let members = value.as_object_mut().expect("an event is an object");
-    members.remove("hash");
-    event.hash = Digest(canonical::sha256_hex(&value));
-    let out_of_years = [Some(event.known_at), event.seen_at]
-        .into_iter()
-        .flatten()
-        .find(|t| !t.in_years());
-    let fault = match canonical::integer_too_large(&value) {
-        Some(n) => Some(Case::IntegerTooLarge { n: n.clone() }),
-        None => out_of_years.map(|t| Case::NotDateTime {
-            value: t.to_string(),
-        }),
-    };
-    let hash = serde_json::Value::String(event.hash.0.clone());
-    let members = value.as_object_mut().expect("an event is an object");
-    members.insert("hash".to_owned(), hash);
-    let stored = CanonicalEvent {
-        position,
-        id: event.id.clone(),
-        prev: event.prev.clone(),
-        hash: event.hash.clone(),
-        fence,
-        bytes: canonical::to_vec(&value),
-    };
-    (event, stored, fault)
+    }
 }
 
 /// The format version a stored event's line says, where it is JSON.

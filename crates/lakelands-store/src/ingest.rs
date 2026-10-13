@@ -78,6 +78,20 @@ pub fn window(
     let mut committed = 0u32;
     let mut window_links = Vec::new();
     let mut duplicates = 0u32;
+    // The window's records as the projection holds them, read a type at a
+    // time rather than one by one; a key the window names twice is read
+    // once, and its second record still reads the first as planned. Only
+    // the records up to the first whose type or key the loop refuses are
+    // read, so a key no engine can hold is refused, not sent.
+    let mut keys: std::collections::BTreeMap<&lakelands_api::TypeName, Vec<_>> = Default::default();
+    let formed =
+        |r: &&SourceRecord| sees.ty(&r.ty).is_ok() && crate::writes::check_key(&r.key).is_ok();
+    for r in records.iter().take_while(formed) {
+        keys.entry(&r.ty).or_default().push(r.key.clone());
+    }
+    for (ty, keys) in keys {
+        d.pending.prime(view.as_ref(), ty, &keys)?;
+    }
     for r in records {
         let decl = sees.ty(&r.ty)?;
         // The key's form before the door, as `upsert` checks it. Then the
