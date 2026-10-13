@@ -25,7 +25,7 @@ check!(
 
 check!(
     FIELD_PROVENANCE = every_field_carries_its_own_provenance,
-    "010: with meta, each field answers its origin, known_at, position and writer, and a value from a source also its source and seen_at"
+    "010: with meta, each field answers its origin, known_at, position and writer, and a value from a source also its source and seen_at; a record whose fields a source wrote in two ingests, an author in a third, and a mirror's ingest with its `upstream` answers each field's own provenance, a cleared field's too, at the head, as of an earlier position and after the projection is rebuilt, however a record keeps it (lakelands#1018)"
 );
 
 fn day(m: u32, d: u32) -> String {
@@ -142,25 +142,37 @@ async fn valid_at_and_as_of_combine_and_neither_stands_in_for_the_other(store: S
 async fn every_field_carries_its_own_provenance(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
-    let ty = type_decl(
-        "invoice",
-        vec![
-            FieldDecl {
-                authority: Authority::Source,
-                ..field("amount", StorageKind::Decimal)
-            },
-            field("status", StorageKind::Text),
-        ],
-    );
-    l.declare(ty).await?;
+    let sourced = |name: &str, kind| FieldDecl {
+        authority: Authority::Source,
+        ..field(name, kind)
+    };
+    let mut fields = vec![sourced("amount", StorageKind::Decimal)];
+    fields.extend(["ref", "memo", "x"].map(|n| sourced(n, StorageKind::Text)));
+    fields.push(field("status", StorageKind::Text));
+    l.declare(type_decl("invoice", fields)).await?;
 
     let seen = Timestamp::from_date(2026, 2, 3);
-    let mut rec = source_record("invoice", "i", json!({"amount": "12.50"}));
+    let all = json!({"amount": "12.50", "ref": "r1", "memo": "m", "x": "x1"});
+    let mut rec = source_record("invoice", "i", all);
     rec.seen_at = seen;
     let windows = l.ingest("bank", vec![rec]);
     let windows = windows.await.must("ingesting `i` from `bank`")?;
     windows_reach_head(store.as_ref(), &windows, "ingesting `i` from `bank`").await?;
     let ingested = windows.last().map(|w| w.position);
+    // A second ingest moves `ref` and `x` and clears `memo`; a mirror's
+    // record `j` carries its `upstream` on every field.
+    let again = source_record(
+        "invoice",
+        "i",
+        json!({"ref": "r2", "memo": null, "x": "x2"}),
+    );
+    let mut mirrored = source_record("invoice", "j", json!({"amount": "1", "ref": "r"}));
+    mirrored.upstream = Some(lakelands_api::record::Upstream {
+        lake: "far".into(),
+        position: Position(7),
+    });
+    let moved = l.ingest("bank", vec![again, mirrored]).await;
+    moved.must("ingesting `i` again and `j`")?;
     let clerk = field_writer(store.as_ref(), "clerk", "invoice", &["status"]);
     let authored = upsert(
         cat.as_ref(),
@@ -207,6 +219,69 @@ async fn every_field_carries_its_own_provenance(store: Store) -> Held {
         "`status` was learned after `amount`, but its known_at {} is earlier than {}",
         status.known_at,
         amount.known_at
+    );
+
+    let first = ingested.ok_or_else(|| Failure::new("an ingest answered no window"))?;
+    let pos = |r: &lakelands_api::Record, f: &str| r.meta.get(f).map(|m| m.position);
+    let j = l.read("invoice", "j").await?;
+    let far = (j.meta.values()).all(|m| {
+        m.upstream
+            .as_ref()
+            .is_some_and(|u| u.position == Position(7))
+    });
+    ensure!(
+        pos(&r, "ref") == pos(&r, "x")
+            && pos(&r, "ref") > Some(first)
+            && !r.fields.contains_key("memo")
+            && !r.meta.contains_key("memo")
+            && far
+            && j.meta.len() == 2,
+        "`ref` and `x` were written again and `memo` cleared after {first}, `amount` at \
+         {first}, and a cleared field answers no provenance; `j`'s two fields came with an \
+         `upstream`; they read {:?} and {:?}",
+        r.meta,
+        j.meta
+    );
+    // As of the first ingest each field reads as it was; after a rebuild
+    // every field reads as before.
+    let then = Get {
+        key: "i".into(),
+        with_meta: true,
+        at: ReadAt {
+            as_of: Some(first),
+            ..ReadAt::default()
+        },
+        params: Default::default(),
+    };
+    // A cleared field keeps the block of the write that cleared it, which
+    // an expression reads, though a read answers it no provenance.
+    let cleared = lakelands_api::Find {
+        filter: Some("known_at(memo) = known_at(ref)".into()),
+        ..Default::default()
+    };
+    let found = l.all_found("invoice", cleared).await?;
+    ensure!(
+        found.len() == 1 && found[0].key.as_str() == "i",
+        "`memo` was cleared by the write of `ref`, so its known_at is that write's; it found {found:?}"
+    );
+    let was = cat
+        .get(own, &"invoice".into(), then)
+        .await
+        .must("`i` as of the first ingest")?;
+    ensure!(
+        ["amount", "ref", "memo", "x"]
+            .iter()
+            .all(|f| pos(&was.data, f) == Some(first)),
+        "as of {first} every field of `i` was the first ingest's; it reads {:?}",
+        was.data.meta
+    );
+    store.rebuild().await.must("rebuilding the projection")?;
+    let (i2, j2) = (l.read("invoice", "i").await?, l.read("invoice", "j").await?);
+    ensure!(
+        i2 == r && j2 == j,
+        "a rebuilt projection answers `i` and `j` with meta as before; `i` read {:?}, then {:?}",
+        r.meta,
+        i2.meta
     );
 
     let plain = cat

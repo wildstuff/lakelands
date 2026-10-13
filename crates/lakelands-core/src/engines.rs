@@ -43,7 +43,7 @@ use lakelands_api::id::{FieldName, LakeId, Position, RecordKey, RelationName, Ty
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::Edge;
 use lakelands_api::read::{Direction, Order, OrderBy};
-use lakelands_api::record::{StoredRecord, Value};
+use lakelands_api::record::{FieldMeta, StoredRecord, Value};
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposedWrite};
 
@@ -1423,6 +1423,89 @@ pub fn decode<T: serde::de::DeserializeOwned>(state: &str, what: &str) -> Result
     serde_json::from_str(state).map_err(|e| {
         let (what, detail) = (what.to_owned(), Detail::json(&e));
         crate::damaged(Part::Projection, None, Flaw::Unreadable { what, detail })
+    })
+}
+
+/// A record as an engine keeps it: its provenance once, where its fields
+/// share it, and per field only where a field's differs (lakelands#1018).
+/// Every field a source or an author wrote in one event carries the same
+/// block, so a record keeps it once, not once a field.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct State {
+    #[serde(rename = "type")]
+    ty: TypeName,
+    key: RecordKey,
+    version: lakelands_api::id::Version,
+    fields: BTreeMap<FieldName, Value>,
+    /// The provenance most of the fields share.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base: Option<FieldMeta>,
+    /// Each field's whose differs from `base`, or that holds no value.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    meta: BTreeMap<FieldName, FieldMeta>,
+    /// The fields holding a value with no provenance, beside a `base`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    bare: Vec<FieldName>,
+    position: Position,
+    // Written even when false: an engine's statements read them.
+    #[serde(default)]
+    retired: bool,
+    #[serde(default)]
+    restricted: bool,
+}
+
+/// The state an engine keeps for a record: [`State`]'s form.
+pub fn record_state(r: &StoredRecord) -> String {
+    // The block most fields with a value share; ties to the first field's.
+    let mut shared: Vec<(&FieldMeta, usize)> = Vec::new();
+    for m in r.fields.keys().filter_map(|f| r.meta.get(f)) {
+        match shared.iter_mut().find(|(b, _)| *b == m) {
+            Some((_, n)) => *n += 1,
+            None => shared.push((m, 1)),
+        }
+    }
+    let base = (shared.iter().rev().max_by_key(|(_, n)| *n)).map(|(b, _)| (*b).clone());
+    let meta = (r.meta.iter())
+        .filter(|(f, m)| !r.fields.contains_key(*f) || base.as_ref() != Some(*m))
+        .map(|(f, m)| (f.clone(), m.clone()));
+    let bare = r
+        .fields
+        .keys()
+        .filter(|f| base.is_some() && !r.meta.contains_key(*f));
+    let state = State {
+        ty: r.ty.clone(),
+        key: r.key.clone(),
+        version: r.version,
+        fields: r.fields.clone(),
+        meta: meta.collect(),
+        bare: bare.cloned().collect(),
+        base,
+        position: r.position,
+        retired: r.retired,
+        restricted: r.restricted,
+    };
+    serde_json::to_string(&state).expect("a record serialises")
+}
+
+/// A record from the state [`record_state`] kept: each field with a value
+/// and no provenance of its own takes `base`, but a bare one.
+pub fn decode_record(state: &str) -> Result<StoredRecord> {
+    let s: State = decode(state, "a record")?;
+    let mut meta = s.meta;
+    if let Some(base) = &s.base {
+        for f in s.fields.keys().filter(|f| !s.bare.contains(f)) {
+            meta.entry(f.clone()).or_insert_with(|| base.clone());
+        }
+    }
+    Ok(StoredRecord {
+        ty: s.ty,
+        key: s.key,
+        version: s.version,
+        fields: s.fields,
+        meta,
+        position: s.position,
+        retired: s.retired,
+        restricted: s.restricted,
     })
 }
 

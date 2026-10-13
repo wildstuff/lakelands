@@ -312,7 +312,7 @@ pub(crate) fn routes(
 /// raised whenever a table changes so that a projection made before
 /// would answer wrongly, not fail: one made with another layout is never
 /// read, and is rebuilt from the log.
-pub(crate) const LAYOUT: u64 = 1;
+pub(crate) const LAYOUT: u64 = 2;
 
 /// The layout `conn`'s projection was made with: none where it holds no
 /// `meta`, or was made before projections were marked.
@@ -553,7 +553,7 @@ pub(crate) fn head_record(
 }
 
 pub(crate) fn decode_record(state: &str) -> Result<StoredRecord> {
-    engines::decode(state, "a record")
+    engines::decode_record(state)
 }
 
 /// Whether a record's state put at `position` is its latest.
@@ -673,7 +673,7 @@ pub(crate) type Kept = BTreeMap<TypeName, (Option<TypeDecl>, Vec<FieldName>)>;
 /// the type it names may be the settings' own; the caller forgets them at
 /// a declaration.
 pub(crate) fn put_record(conn: &Connection, kept: &mut Kept, r: &StoredRecord) -> Result<()> {
-    let state = serde_json::to_string(r).expect("a record serialises");
+    let state = engines::record_state(r);
     // A head-only name keeps one state for each key and no row beside it.
     if lakelands_api::seam::is_head_only(&r.ty) {
         let key = [r.ty.as_str(), r.key.as_str()];
