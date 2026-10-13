@@ -493,6 +493,7 @@ pub const ALL: &[Check] = &[
     rebuild::INDEXES_AFTER_REBUILD,
     rebuild::ONE_JSON_FORM,
     ingest::DUPLICATE_ACROSS_WINDOWS,
+    ingest::REFUSAL_NAMES,
     aging::MOVES_WHAT_HOLDS_FROM,
     aging::TWICE_IS_ONCE,
     aging::TODAY_IS_THE_DATE,

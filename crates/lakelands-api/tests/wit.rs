@@ -1357,6 +1357,10 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Error::Conflict { .. }
             | Error::Unbound { .. }
             | Error::Unavailable { .. } => {}
+            // A refused record of an ingest: the WIT's `ingest` answers it
+            // as an `ingest-error`, its places beside its refusal
+            // (lakelands#1043).
+            Error::Ingested { .. } => {}
             // A newer lake's kind, which a component built against this
             // WIT cannot be sent.
             Error::Unknown(_) => {}

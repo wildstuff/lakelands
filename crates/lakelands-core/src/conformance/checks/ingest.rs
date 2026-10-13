@@ -463,3 +463,120 @@ async fn an_ingested_record_carries_its_upstream_per_field(store: Store) -> Held
     );
     Ok(())
 }
+
+check!(
+    REFUSAL_NAMES = an_ingest_refusal_names_its_record_and_where_its_window_began,
+    "016, extended (lakelands#1043): a record an ingest refuses is named by the refusal, by its type and key as its source sent them, with its place in the stream and the place of the first record of its window, from which nothing was written while every window before it was: for a field the source is not the authority on, an empty record on a free key, a type its writer is not shown and a link past its relation's cardinality within the window, each the refusal it is without the stream, with `index`, `from` and `record` beside it on the wire"
+);
+
+async fn an_ingest_refusal_names_its_record_and_where_its_window_began(store: Store) -> Held {
+    use crate::conformance::fixture::{limits, principal};
+    use lakelands_api::PrincipalKind;
+    let l = Lake::of(store.as_ref());
+    l.declare(feed()).await?;
+    l.declare_json(json!({"declare": "type", "name": "box", "fields": [{"name": "n", "type": {"kind": "text"}}],
+        "relations": [{"name": "in", "target": "feed", "cardinality": "many_to_one", "authority": "source"}]}))
+        .await?;
+    l.upsert("box", "b1", json!({"n": "b"})).await?;
+    let window = limits().commit_window_events as u64;
+    let kept = principal(
+        store.as_ref(),
+        PrincipalKind::Agent,
+        "kept",
+        serde_json::from_value(
+            json!({"default": "write", "ingest": true, "types": {"box": {"default": "none"}}}),
+        )
+        .unwrap(),
+    );
+    let link = |to: &str| {
+        source_record(
+            "sys.link.box.in",
+            &format!("b1:{to}"),
+            json!({"from": "b1", "to": to}),
+        )
+    };
+    // Each refused record is the third after a full window: at
+    // `window + 2`, its window begun at `window`.
+    let cases = [
+        (
+            "an authored field",
+            &l.own,
+            source_record("feed", "x3", json!({"verdict": "no"})),
+        ),
+        (
+            "an empty record on a free key",
+            &l.own,
+            source_record("feed", "x3", json!({})),
+        ),
+        (
+            "a type its writer is not shown",
+            &kept,
+            source_record("box", "x3", json!({"n": "x"})),
+        ),
+        ("a second `in` from `b1` in the window", &l.own, link("y2")),
+    ];
+    for (round, (what, who, refused)) in cases.into_iter().enumerate() {
+        let mut records: Vec<_> = (0..window)
+            .map(|i| source_record("feed", &format!("r{round}-{i}"), json!({"body": "x"})))
+            .collect();
+        records.push(source_record(
+            "feed",
+            &format!("y{round}"),
+            json!({"body": "y"}),
+        ));
+        records.push(match round {
+            3 => link(&format!("y{round}")),
+            _ => source_record("feed", &format!("z{round}"), json!({"body": "z"})),
+        });
+        let (ty, key) = (refused.ty.clone(), refused.key.clone());
+        records.push(refused);
+        let fed = lakelands_api::ingest_all(l.cat.as_ref(), who, &"wire".into(), records).await;
+        let Err(e @ Error::Ingested { index, from, .. }) = &fed else {
+            return Err(Failure::new(format!(
+                "{what}: the stream must be refused naming the record; it answered {fed:?}"
+            )));
+        };
+        let mut wire = serde_json::to_value(e).map_err(|x| Failure::new(x.to_string()))?;
+        let inner = serde_json::to_value(e.unwrapped()).map_err(|x| Failure::new(x.to_string()))?;
+        let record = json!({"type": ty.as_str(), "key": key.as_str()});
+        let places = (wire
+            .as_object_mut()
+            .map(|m| (m.remove("index"), m.remove("from"), m.remove("record"))))
+        .unwrap_or_default();
+        let named = places
+            .2
+            .as_ref()
+            .is_some_and(|r| r["type"] == record["type"] && r["key"] == record["key"]);
+        ensure!(
+            (*index, *from) == (window + 2, window)
+                && wire == inner
+                && named
+                && places.0 == Some(json!(window + 2))
+                && places.1 == Some(json!(window)),
+            "{what}: the refusal must name `{ty}` `{key}` at {} from {window}, its own code and shape kept; it answered {e:?}",
+            window + 2
+        );
+        // The window before it is written, its own window is not.
+        let first = l
+            .cat
+            .get(
+                &l.own,
+                &"feed".into(),
+                serde_json::from_value(json!({"key": format!("r{round}-0")})).unwrap(),
+            )
+            .await;
+        let mate = l
+            .cat
+            .get(
+                &l.own,
+                &"feed".into(),
+                serde_json::from_value(json!({"key": format!("y{round}")})).unwrap(),
+            )
+            .await;
+        ensure!(
+            first.is_ok() && mate.is_err(),
+            "{what}: the first window must be written and the refused one not: {first:?}, {mate:?}"
+        );
+    }
+    Ok(())
+}

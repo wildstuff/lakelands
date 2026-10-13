@@ -1055,14 +1055,16 @@ impl Stream for Records {
 
 /// Feeds `records` from `source` and drains the answer: every window's
 /// acknowledgement, or the first error, whether `ingest` refused the
-/// call or a window failed.
+/// call or a window failed; a refused record's refusal, which the checks
+/// judge, as [`lakelands_api::Error::unwrapped`] answers it (lakelands#1043).
 pub async fn ingest(
     cat: &dyn Catalog,
     who: &Principal,
     source: &str,
     records: Vec<SourceRecord>,
 ) -> lakelands_api::Result<Vec<Committed>> {
-    lakelands_api::ingest_all(cat, who, &SourceId::from(source), records).await
+    let fed = lakelands_api::ingest_all(cat, who, &SourceId::from(source), records).await;
+    fed.map_err(|e| e.unwrapped().clone())
 }
 
 /// Fail unless the lake's head is still `before`: a refused write must

@@ -31,7 +31,12 @@ earlier in its window, appends nothing; so does a record that would change
 no field — a re-import of unchanged data appends nothing — and both count
 as duplicates. A window with a refused record appends nothing; the
 refusal is the stream's next item and the stream ends there, and the
-caller's own offset says where to resume. An authored `upsert` is
+caller's own offset says where to resume. The refusal says where that
+is (lakelands#1043): it names the record, by the type and key its source
+sent, its place in the stream (`index`, counted from 0 over every record
+the stream handed out) and the place of the first record of its window
+(`from`): every record before `from` is written, none from it on. An
+outage names no record, since it is no record's. An authored `upsert` is
 different on purpose: a write is a write, even with the same values.
 
 ### A record's key is checked before its fields, an empty record after the duplicate test
@@ -226,3 +231,6 @@ is just another caller later, not a change to the contract.
   without `restricted`, is not granted. The store refuses it last,
   once every other record check has passed, and the suite holds that a
   probe answers as on a free key before it.
+- A refused record names itself and where its window began, so the
+  caller's offset has a value: `index`, `from` and `record` beside the
+  refusal (lakelands#1043).

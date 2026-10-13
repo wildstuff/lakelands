@@ -71,6 +71,13 @@ Every failure is one of five errors, and the set is closed:
   is read-only here, its storage failed), with a message for the
   operator.
 
+A record an ingest refuses is no kind of its own: its refusal is one of
+these, with where the record stood beside it (`index`, `from`,
+`record`, `docs/decisions/016-two-write-doors-by-origin.md`). On the
+wire it keeps its kind's code and shape, so a reader that keys on the
+kind is answered as before; in Rust the refusal is wrapped once, and
+`Error::unwrapped` answers it (lakelands#1043).
+
 Each error has a sentence for a reader who is not an engineer. No error
 carries an engine's own code or a free-form error string as its type.
 

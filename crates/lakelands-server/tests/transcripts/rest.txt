@@ -471,6 +471,20 @@
 < {"duplicates":0,"position":27,"records":1}
 < {"duplicates":0,"position":28,"records":1}
 
+# A record the store refuses ends the ingest with its refusal, its own
+# code kept, naming the record and the first record of its window: every
+# record before that one is committed, none from it on.
+> POST /lakes/finance/ingest/bank
+> authorization: Bearer k-owner
+> content-type: application/x-ndjson
+> {"type":"invoice","key":"INV-13","fields":{"amount":"6"}}
+> {"type":"invoice","key":"INV-21","fields":{"status":"open"}}
+< 200
+< content-type: application/x-ndjson
+< lakelands-position: 28
+< {"duplicates":1,"position":28,"records":0}
+< {"error":"refused","field":"status","from":1,"index":1,"message":"refused on `status`: another authority writes this field","reason":{"refusal":"wrong_door"},"record":{"code":"of","key":"INV-21","message":"`invoice` `INV-21`","type":"invoice"},"todo":"source fields arrive through `lakelands ingest`; authored fields through writes and verbs; then send the stream again from record 1","what":"record 1 of the stream (`invoice` `INV-21`): refused on `status`: another authority writes this field; nothing from record 1 on was written"}
+
 > POST /lakes/finance/ingest/bank
 > authorization: Bearer k-owner
 > content-type: application/x-ndjson

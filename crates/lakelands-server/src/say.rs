@@ -105,6 +105,19 @@ fn advice(case: &Case) -> Option<String> {
 
 impl From<Error> for Failure {
     fn from(e: Error) -> Failure {
+        // A refused record of an ingest: what to do about its refusal, and
+        // where to send the stream again from (lakelands#1043).
+        if let Error::Ingested { from, error, .. } = &e {
+            let inner = Failure::from((**error).clone());
+            let todo = format!(
+                "{}; then send the stream again from record {from}",
+                inner.todo
+            );
+            return Failure {
+                what: e.to_string(),
+                todo,
+            };
+        }
         if let Some(todo) = e.case().and_then(|said| advice(&said.case)) {
             return Failure {
                 what: e.to_string(),
@@ -200,6 +213,7 @@ impl From<Error> for Failure {
                 "wait and retry, or check that no other process holds the lake".to_owned()
             }
             Error::Unknown(_) => "do what the message says".to_owned(),
+            Error::Ingested { .. } => unreachable!("a refused record is said above"),
         };
         Failure {
             what: e.to_string(),

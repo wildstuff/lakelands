@@ -37,6 +37,9 @@ fn intent(e: &Error) -> &'static str {
         Error::Conflict { .. } => "the record moved: retry against its version",
         Error::Unbound { .. } => "the host bound no seam for this",
         Error::Unavailable { .. } => "the lake cannot answer now; retrying may help",
+        Error::Ingested { .. } => {
+            "a record of an ingest was refused: its refusal, and where to resume"
+        }
         Error::Unknown(_) => "an error of a kind a newer lake knows: its message says it",
     }
 }

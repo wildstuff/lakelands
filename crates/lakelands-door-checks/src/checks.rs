@@ -7037,7 +7037,8 @@ pub async fn ingest_judges_a_record_around_its_duplicate_test(store: Arc<dyn Lak
                 fields: serde_json::from_value(fields).expect("a patch"),
                 seen_at: None,
             };
-            lakelands_api::ingest_all(c.as_ref(), &who, &"feed".into(), vec![r]).await
+            let fed = lakelands_api::ingest_all(c.as_ref(), &who, &"feed".into(), vec![r]).await;
+            fed.map_err(|e| e.unwrapped().clone())
         }
     };
     feed(importer, INVOICE, "INV-9", json!({"amount": "5"}))
@@ -10872,7 +10873,8 @@ pub async fn a_required_field_is_judged_over_the_record_whole(store: Arc<dyn Lak
             .ingest(&own, &"erp".into(), stream::of(vec![record]))
             .await)
             .expect("the stream opens");
-        stream::collect(&mut acks).await.pop().expect("an answer")
+        let answer = stream::collect(&mut acks).await.pop().expect("an answer");
+        answer.map_err(|e| e.unwrapped().clone())
     };
     let upsert = async |t: &str, k: &str, pairs: &[(&str, Value)]| {
         c.upsert(&own, &ty(t), &key(k), patch(pairs), WriteOpts::default())
