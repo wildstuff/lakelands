@@ -1,6 +1,6 @@
 //! The memory engine behind a wrapper that remembers what was asked of
 //! it and can fail a call: the most rows one `scan` handed out, a scan of a
-//! type to fail, the scans, the puts of records and the commits in the
+//! type to fail, the reads of a type by key to fail, the scans, the puts of records and the commits in the
 //! order they came, a commit, a `begin` or a view to refuse, a look at
 //! the lake before each commit, while its transaction is open, and a seal
 //! that hands another digest than the engine took or asks twice; and it
@@ -53,6 +53,8 @@ pub struct Probe {
     pub most: AtomicUsize,
     /// A scan to fail: the n-th of a type from now, counted from 1.
     pub fail: Mutex<Option<(TypeName, usize)>>,
+    /// A type whose every `get` and `get_many` fails while it is set.
+    pub fail_get: Mutex<Option<TypeName>>,
     /// The scans, the puts of records and the commits, in order.
     pub asked: Mutex<Vec<Asked>>,
     /// A commit to refuse: the n-th from now, counted from 1.
@@ -122,6 +124,21 @@ impl Probe {
         self.asked.lock().unwrap().push(what);
     }
 
+    /// A read of `ty`'s records by key, failed where `fail_get` names it.
+    fn got(&self, ty: &TypeName) -> Result<()> {
+        if self.fail_get.lock().unwrap().as_ref() != Some(ty) {
+            return Ok(());
+        }
+        let message = format!("the read of `{ty}` failed (planted)");
+        Err(lakelands_api::Error::unavailable(
+            lakelands_api::error::Situation::Storage {
+                doing: lakelands_api::error::Doing::Read,
+                part: lakelands_api::error::Part::Projection,
+                detail: lakelands_api::error::Detail::scrubbed(message),
+            },
+        ))
+    }
+
     /// Whether this call is the one `planted` names: it counts down.
     fn refused(planted: &Mutex<Option<usize>>) -> bool {
         let mut left = planted.lock().unwrap();
@@ -160,9 +177,11 @@ impl ProjectionView for ProbedView<'_> {
         self.inner.declarations()
     }
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
+        self.probe.got(ty)?;
         self.inner.get(ty, key)
     }
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
+        self.probe.got(ty)?;
         self.inner.get_many(ty, keys)
     }
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {

@@ -509,12 +509,25 @@ fn shaped(
         held.set(sees.withheld(&r));
         seen.is_ok().then_some((r.key, r.fields))
     });
-    // The record in hand is asked no read where it is held as it stands.
-    let answered =
-        |key: &RecordKey| !held.get() && crate::reads::answered(view, sees, &decl.name, key);
+    // The record in hand is asked no read where it is held as it stands. A
+    // read the engine fails is kept, and answered after (lakelands#927).
+    let failed = std::cell::RefCell::new(None);
+    let answered = |key: &RecordKey| {
+        let read = (!held.get()).then(|| crate::reads::answered(view, sees, &decl.name, key));
+        match read.transpose() {
+            Ok(shown) => shown.unwrap_or(false),
+            Err(e) => {
+                failed.borrow_mut().get_or_insert(e);
+                false
+            }
+        }
+    };
     let report = shape::preflight(decl, m, rows, &answered);
     walk.failed()?;
     seen?;
+    if let Some(e) = failed.into_inner() {
+        return Err(e);
+    }
     report.map_err(invalid)
 }
 
@@ -2550,7 +2563,7 @@ impl Call<'_> {
             write,
             (p.position, p.proposed_at),
             &Default::default(),
-        );
+        )?;
         listed.ok_or(Error::NotFound { missing })
     }
 
@@ -3936,8 +3949,9 @@ impl Call<'_> {
         // who reads each of them and is answered two of the records that
         // would take it, a collision it can see for itself.
         let reads = (m.to.key_fields().iter()).all(|f| rights::reads_both(self.who, &before, m, f));
-        let seen = |ty: &TypeName, keys: &[&RecordKey]| {
-            reads && crate::reads::answered_of(view, &sees, ty, keys, 2)
+        let seen = |ty: &TypeName, keys: &[&RecordKey]| match reads {
+            true => crate::reads::answered_of(view, &sees, ty, keys, 2),
+            false => Ok(false),
         };
         let plan = crate::rekey::plan(&after, view, &m.to.name, keyed, &m.renames, &seen)?;
         // With moves the memberships are decided again, under the keys and
@@ -4556,7 +4570,7 @@ impl Call<'_> {
                         // and in a field it reads, or it takes no place.
                         let shown = || crate::reads::answered(view, &sees, &name, &r.key);
                         let read = sees.reads(&name, &f.name) && !sees.withheld(&r);
-                        if first.len() < room && read && shown() {
+                        if first.len() < room && read && shown()? {
                             first.push(Misfit {
                                 ty: name.clone(),
                                 key: r.key.clone(),
@@ -4997,7 +5011,7 @@ pub fn cardinality(
     // link its writer is not answered.
     let shown = |end: &TypeName, key: RecordKey, link: RecordKey| -> Result<Option<RecordKey>> {
         let there = view.get(end, &key)?.is_some();
-        Ok((there && crate::reads::answered(view, sees, &lt, &link)).then_some(key))
+        Ok((there && crate::reads::answered(view, sees, &lt, &link)?).then_some(key))
     };
     if per_from
         && let Some(e) = view

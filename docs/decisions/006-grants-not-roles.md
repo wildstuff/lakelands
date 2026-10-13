@@ -2014,7 +2014,11 @@ does not find it, as a missing record is not found, and `find`, a
 leave it out, retired or not (lakelands#1024). To
 a principal with the grant it is answered with its fields unchanged, its
 history included, and lifting the hold brings it back for every reader,
-at every position.
+at every position. A hold is never inferred from a read the engine
+fails: where the store judges whether a key may be named (a proposal's
+listing, its accept and reject, a migration's report, a cardinality
+refusal), an engine that cannot read answers its outage, as at every
+other door (lakelands#927).
 
 What the other records say of a held record follows from that. An
 engine's full-text and vector candidates include restricted records, and
@@ -2659,3 +2663,7 @@ Of `only`:
   a holder's `only` is listed to that holder in part, its accept and
   reject not granted, where it was listed whole and its reject taken
   (lakelands#914).
+- A read the engine fails, where the store judges whether a key may be
+  named, answers the outage, where it was taken for a hold: the listing
+  left the entry out or listed it, and a report named no key
+  (lakelands#927).

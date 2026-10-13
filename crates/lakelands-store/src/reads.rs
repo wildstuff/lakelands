@@ -2138,7 +2138,7 @@ impl<'a> Reader<'a> {
                 continue;
             }
             if let Some(logged) = p.write.take() {
-                let Some(shown) = self.entry(asked, &logged, (p.position, p.proposed_at), &lake)
+                let Some(shown) = self.entry(asked, &logged, (p.position, p.proposed_at), &lake)?
                 else {
                     continue;
                 };
@@ -2179,14 +2179,16 @@ impl<'a> Reader<'a> {
     /// declares it, reads a field its reader may not read: `describe`
     /// does not name the verb, and the entry would tell that its
     /// `requires` held (024, extended). A migration's report counts every
-    /// owner's records, so a holder of `only` is listed none (051).
+    /// owner's records, so a holder of `only` is listed none (051). A read
+    /// the engine fails is the listing's error, never an entry left out
+    /// (lakelands#927).
     pub(crate) fn entry(
         &self,
         asked: &Principal,
         logged: &ProposedWrite,
         (at, proposed_at): (Position, Timestamp),
         lake: &OnceCell<LakeDescription>,
-    ) -> Option<(Option<ProposedWrite>, bool)> {
+    ) -> Result<Option<(Option<ProposedWrite>, bool)>> {
         let (o, mut logged) = (&self.shape.ontology, logged.clone());
         // A shape that is not in force is completed as one in force is
         // before it is judged or compared.
@@ -2208,7 +2210,7 @@ impl<'a> Reader<'a> {
                 });
                 let left = Sight::new(asked.clone(), &renames, None, o);
                 if rights::holds_only(self.who) || !left.would_show(&m.to) {
-                    return None;
+                    return Ok(None);
                 }
             }
             ProposedWrite::Declare { declarations } => {
@@ -2240,7 +2242,9 @@ impl<'a> Reader<'a> {
                 }
                 after = Some((put.declared(), put));
             }
-            ProposedWrite::MigrateValueType { .. } if rights::holds_only(self.who) => return None,
+            ProposedWrite::MigrateValueType { .. } if rights::holds_only(self.who) => {
+                return Ok(None);
+            }
             ProposedWrite::Call { .. } | ProposedWrite::MigrateValueType { .. } => {}
         }
         let subject = |d: &Declaration| match (d, &logged) {
@@ -2259,7 +2263,10 @@ impl<'a> Reader<'a> {
         let kept = !(reads(&g.default) && g.types.values().all(typed));
         // A lake that cannot be read there shows its entry to no one.
         let was = match moved && kept {
-            true => Some(self.ontology_at(at)?),
+            true => match self.ontology_at(at) {
+                Some(was) => Some(was),
+                None => return Ok(None),
+            },
             false => None,
         };
         let renames = &self.shape.renames;
@@ -2276,7 +2283,7 @@ impl<'a> Reader<'a> {
                 let on = o.ty(&v.on);
                 let far = |n: &TypeName| o.ty(n).ok();
                 if on.is_ok_and(|on| !rights::reads_what_verb_reads(sees.who(), on, v, &far)) {
-                    return None;
+                    return Ok(None);
                 }
                 named.push(v.on.clone());
             }
@@ -2286,7 +2293,7 @@ impl<'a> Reader<'a> {
             named.any(|ty| o.ty(ty).is_ok() && sees.ty(ty).is_err())
         };
         if [force, left, then].into_iter().flatten().any(hides) {
-            return None;
+            return Ok(None);
         }
         // Nor is one that names a record its reader is not answered beside
         // its own, by a reference or read across by a call, as it names it
@@ -2300,29 +2307,28 @@ impl<'a> Reader<'a> {
         // as to its writes, a free key.
         let (g, view) = (&self.who.grants, self.view.as_ref());
         if !g.restricted || rights::holds_only(self.who) {
-            let settings = crate::lake::settings_in(view, o).ok()?;
+            let settings = crate::lake::settings_in(view, o)?;
             let now = (view, &settings, crate::lake::wall_clock());
-            let mut named = crate::writes::reached(self.lake, o, now, &logged, true).ok()?;
+            let mut named = crate::writes::reached(self.lake, o, now, &logged, true)?;
             let since = self.shape.declared.iter().any(|d| d.since > at);
             if since || crate::writes::reaches_by_state(o, &logged) {
-                let then = self.lake.engine.view(Some(at)).ok()?;
+                let then = self.lake.engine.view(Some(at))?;
                 let lake = self.lake;
                 let was =
                     crate::writes::reached_then(lake, then.as_ref(), proposed_at, &logged, false);
-                named.extend(was.ok()?);
+                named.extend(was?);
             }
-            let held = |(t, k): &(TypeName, RecordKey)| {
-                let there = view.get(t, k).ok().flatten();
-                there.is_some_and(|r| !r.retired || self.sight.withheld(&r))
-                    && !answered(view, self.sight, t, k)
-            };
-            if named.iter().any(held) {
-                return None;
+            for (t, k) in &named {
+                let there = view.get(t, k)?;
+                let held = there.is_some_and(|r| !r.retired || self.sight.withheld(&r));
+                if held && !answered(view, self.sight, t, k)? {
+                    return Ok(None);
+                }
             }
         }
         // `more` is what the trim left out, not what the completion added.
         let mut shown = logged.clone();
-        let known = self.known_shape(asked, &mut shown, lake, at, (left, then));
+        let known = self.known_shape(asked, &mut shown, lake, at, (left, then))?;
         let shown = known.then_some(shown);
         // A value type's report is made again for its reader, its conditions
         // judged and its id made over what it is shown: the logged one is
@@ -2335,7 +2341,7 @@ impl<'a> Reader<'a> {
             self.value_type_shown(&all, &|_, _| true, &mut whole, at);
         }
         let more = shown.as_ref() != Some(&whole);
-        Some((shown, more))
+        Ok(Some((shown, more)))
     }
 
     /// A proposed write as its reader may know it (013 and 024, extended):
@@ -2351,7 +2357,7 @@ impl<'a> Reader<'a> {
         lake: &OnceCell<LakeDescription>,
         at: Position,
         (left, then): (Under<'_>, Under<'_>),
-    ) -> bool {
+    ) -> Result<bool> {
         let read = |ty: &TypeName, field: &FieldName| self.sight.reads(ty, field);
         // A record the reader is not answered: restricted, without the
         // grant, or one its `only` does not admit, before the write or
@@ -2369,25 +2375,39 @@ impl<'a> Reader<'a> {
                 .is_ok_and(|t| lakelands_core::rights::only_holder(self.who, t, o))
         };
         let now = || {
-            let settings = crate::lake::settings_in(view, o).ok()?;
-            Some((settings, crate::lake::wall_clock()))
+            Ok::<_, Error>((
+                crate::lake::settings_in(view, o)?,
+                crate::lake::wall_clock(),
+            ))
+        };
+        // A plan that fails on the engine is its outage (lakelands#927);
+        // one the write itself fails leaves the record not admitted.
+        let outage = |e: Error| match e {
+            Error::Unavailable { .. } => Err(e),
+            _ => Ok(false),
         };
         let after = |ty: &TypeName, key: &RecordKey, patch: &lakelands_api::Patch| {
-            let stored = self.view.get(ty, key).ok().flatten();
+            let stored = self.view.get(ty, key)?;
             if holder(ty) {
-                let Some((settings, now)) = now() else {
-                    return false;
-                };
+                let (settings, now) = now()?;
                 let at = (view, &settings, now);
-                let planned =
-                    crate::writes::planned(self.lake, o, at, stored.as_ref(), (ty, key), patch);
-                return planned.ok().flatten().is_some_and(|r| only(ty, &r.fields));
+                return match crate::writes::planned(
+                    self.lake,
+                    o,
+                    at,
+                    stored.as_ref(),
+                    (ty, key),
+                    patch,
+                ) {
+                    Ok(planned) => Ok(planned.is_some_and(|r| only(ty, &r.fields))),
+                    Err(e) => outage(e),
+                };
             }
             let mut fields = (stored.filter(|r| !r.retired))
                 .map(|r| r.fields)
                 .unwrap_or_default();
             fields.extend(patch.clone());
-            only(ty, &fields)
+            Ok::<_, Error>(only(ty, &fields))
         };
         let answered = |ty: &TypeName, key: &RecordKey| answered(view, self.sight, ty, key);
         match write {
@@ -2396,11 +2416,11 @@ impl<'a> Reader<'a> {
             // A retired record that is not held is a free key, as to the
             // reader's own writes.
             ProposedWrite::Upsert { ty, key, patch, .. } => {
-                let admitted = after(ty, key, patch);
+                let admitted = after(ty, key, patch)?;
                 patch.retain(|field, _| read(ty, field));
-                let stored = self.view.get(ty, key).ok().flatten();
+                let stored = self.view.get(ty, key)?;
                 let free = stored.is_some_and(|r| r.retired && !self.sight.withheld(&r));
-                admitted && (free || answered(ty, key))
+                Ok(admitted && (free || answered(ty, key)?))
             }
             ProposedWrite::Retire { ty, key, .. } => answered(ty, key),
             // A payload is what the verb's fields become: whole to a reader
@@ -2413,7 +2433,7 @@ impl<'a> Reader<'a> {
                 verb, key, payload, ..
             } => {
                 let Ok(v) = self.shape.ontology.verb(verb) else {
-                    return false;
+                    return Ok(false);
                 };
                 let sets = |(sees, o): (&Sight, &Ontology)| match o.verb(verb) {
                     Ok(VerbDecl {
@@ -2427,22 +2447,25 @@ impl<'a> Reader<'a> {
                 // assignments leave, the payload as proposed, as an upsert
                 // is (lakelands#914).
                 let leaves = |key: &RecordKey| {
-                    let Some((settings, now)) = (holder(&v.on)).then(now).flatten() else {
-                        return true;
-                    };
+                    if !holder(&v.on) {
+                        return Ok(true);
+                    }
+                    let (settings, now) = now()?;
                     let at = (view, &settings, now);
-                    let set = crate::writes::call_reads(o, at, v, Some(key), payload);
-                    set.is_ok_and(|(set, _)| after(&v.on, key, &set))
+                    match crate::writes::call_reads(o, at, v, Some(key), payload) {
+                        Ok((set, _)) => after(&v.on, key, &set),
+                        Err(e) => outage(e),
+                    }
                 };
                 let whole = match key {
-                    Some(key) => answered(&v.on, key) && leaves(key),
+                    Some(key) => answered(&v.on, key)? && leaves(key)?,
                     None => self.sight.ty(&v.on).is_ok(),
                 };
                 let force = Some((self.sight, &self.shape.ontology));
                 if ![force, then].into_iter().flatten().all(sets) {
                     payload.clear();
                 }
-                whole
+                Ok(whole)
             }
             // The report names what the migration does to the type it was
             // proposed against. A reader kept from a field, where the type
@@ -2454,7 +2477,7 @@ impl<'a> Reader<'a> {
             // made again at the head before the proposal.
             ProposedWrite::Migrate { migration, report } => {
                 let Ok(was) = self.sight.ty(&migration.to.name) else {
-                    return false;
+                    return Ok(false);
                 };
                 let (judge, listing) = then.unwrap_or((self.sight, &self.shape.ontology));
                 let made = listing.ty(&migration.to.name).unwrap_or(was);
@@ -2469,7 +2492,7 @@ impl<'a> Reader<'a> {
                 let before = Position(at.0.saturating_sub(1));
                 report.report_id = crate::writes::report_id(report, Some(before));
                 rights::known_migration(then, made, migration, &find);
-                true
+                Ok(true)
             }
             // Each declaration as `describe` would show it once the bundle
             // is in force; one it would not show leaves the list.
@@ -2478,7 +2501,7 @@ impl<'a> Reader<'a> {
                 // references (024, extended), from its grants as asked: a
                 // reference hidden by the lake as it stands may be shown.
                 let Some((sight, after)) = left else {
-                    return false;
+                    return Ok(false);
                 };
                 declarations.retain(|d| sight.lists(d));
                 for d in declarations.iter_mut() {
@@ -2486,12 +2509,12 @@ impl<'a> Reader<'a> {
                         rights::described_fields(sight.who(), t, &|n| after.ty(n).ok());
                     }
                 }
-                !declarations.is_empty()
+                Ok(!declarations.is_empty())
             }
             // Its uses and conditions as the reader may know them.
             ProposedWrite::MigrateValueType { .. } => {
                 self.value_type_shown(asked, &read, write, at);
-                true
+                Ok(true)
             }
         }
     }
@@ -4384,15 +4407,15 @@ impl expr::Scope for Ends<'_> {
 /// it is shown the type and answered the record at the key in `view`,
 /// retired or not, as `restricted` is judged, and a link with its ends,
 /// as a read of it answers (lakelands#871). A key no record holds keeps
-/// nothing from it; a record that cannot be read is not answered. One who
-/// holds `restricted` and no `only` is answered every record of a type it
-/// is shown, and is asked no read.
+/// nothing from it. A read the engine fails is the caller's error, never
+/// a hold (lakelands#927). One who holds `restricted` and no `only` is
+/// answered every record of a type it is shown, and is asked no read.
 pub(crate) fn answered(
     view: &dyn ProjectionView,
     sees: &Sight,
     ty: &TypeName,
     key: &RecordKey,
-) -> bool {
+) -> Result<bool> {
     answered_of(view, sees, ty, &[key], 1)
 }
 
@@ -4405,22 +4428,24 @@ pub(crate) fn answered_of(
     ty: &TypeName,
     keys: &[&RecordKey],
     need: usize,
-) -> bool {
+) -> Result<bool> {
     let (Ok(decl), who) = (sees.ty(ty), sees.who()) else {
-        return false;
+        return Ok(false);
     };
     if who.grants.restricted && !rights::holds_only(who) {
-        return keys.len() >= need;
+        return Ok(keys.len() >= need);
     }
     let mut found = 0;
     for page in keys.chunks(COUNT_PAGE) {
         let keys: Vec<RecordKey> = page.iter().map(|k| (*k).clone()).collect();
-        let Ok(rows) = view.get_many(ty, &keys) else {
-            return false;
-        };
-        let fields: Vec<_> = rows.iter().map(|r| &r.fields).collect();
-        let Ok(ends) = sees.ends(decl, &fields, &mut |end, keys| view.get_many(end, keys)) else {
-            return false;
+        let rows = view.get_many(ty, &keys)?;
+        // A page whose keys hold no record asks no end's type.
+        let ends = match rows.is_empty() {
+            true => Vec::new(),
+            false => {
+                let fields: Vec<_> = rows.iter().map(|r| &r.fields).collect();
+                sees.ends(decl, &fields, &mut |end, keys| view.get_many(end, keys))?
+            }
         };
         let held = rows
             .iter()
@@ -4428,10 +4453,10 @@ pub(crate) fn answered_of(
             .filter(|(r, ends)| !(*ends && sees.answers(ty, r)));
         found += page.len() - held.count();
         if found >= need {
-            return true;
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 /// The walks' view of the lake for one principal: a record is visible when
