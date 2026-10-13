@@ -42,7 +42,7 @@ fn a_system_type_in_the_closure_is_refused() {
         &"account".into(),
         keyed,
         &[],
-        &|_, _| true,
+        &|_, _| Ok(true),
     );
     assert!(
         matches!(invalid_case(&refused), Some(Case::RekeySystem { system, .. }) if system == "sys.hold"),
