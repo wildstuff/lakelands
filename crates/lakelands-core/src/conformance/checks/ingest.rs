@@ -201,6 +201,32 @@ async fn an_ingested_record_carrying_a_field_the_source_does_not_write_is_refuse
         "a source record with an empty key that carries `verdict` is refused for its key \
          first, as invalid naming no field; it answered {err:?}"
     );
+    // A key or a type holding NUL is refused as `upsert` refuses it, alone
+    // or among good records, never sent to the engine (lakelands#1030).
+    let good = || source_record("feed", "k3", json!({"body": "text"}));
+    let nul = || source_record("feed", "k\u{0}", json!({"body": "text"}));
+    for window in [vec![nul()], vec![good(), nul()], vec![nul(), good()]] {
+        let err = l.ingest("bank", window).await;
+        ensure!(
+            matches!(
+                &err,
+                Err(Error::Refused {
+                    reason: Refusal::Invalid(..),
+                    field: None
+                })
+            ),
+            "a window holding a key with NUL is refused for its key; it answered {err:?}"
+        );
+    }
+    let err = l.ingest(
+        "bank",
+        vec![source_record("fe\u{0}ed", "k3", json!({"body": "x"}))],
+    );
+    let err = err.await;
+    ensure!(
+        matches!(err, Err(Error::NotFound { .. })),
+        "a type holding NUL is no type; it answered {err:?}"
+    );
     // The grant, then the type, then (after the key) the door before the
     // values, whatever the fields' order (016, extended).
     let no_ingest = lakelands_api::Principal {

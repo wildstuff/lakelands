@@ -164,3 +164,24 @@ fn an_integer_too_large_is_found_with_its_path() {
     assert_eq!(at(json!([[1], [2, 1e20]])), found("[1][1]", "1e+20"));
     assert_eq!(at(json!({"a": [1e21, "1e16", 9007199254740991_u64]})), None);
 }
+
+/// An object sealed with `hash` is what hashing it and writing it again
+/// with `hash` give, wherever `hash` sorts: first, between, last, alone.
+#[test]
+fn a_sealed_object_writes_its_members_once_and_hash_where_it_sorts() {
+    for value in [
+        json!({"id": 1, "z": [2]}),
+        json!({"a": 1, "id": "x"}),
+        json!({"a": {"b": 1}}),
+        json!({}),
+    ] {
+        let members = value.as_object().unwrap();
+        let (digest, bytes) = sealed(members, "hash");
+        let mut with = members.clone();
+        with.insert("hash".into(), json!(sha256_hex(&value)));
+        assert_eq!(
+            (digest, bytes),
+            (sha256_hex(&value), to_vec(&Value::Object(with)))
+        );
+    }
+}

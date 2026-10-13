@@ -2310,6 +2310,39 @@ impl Reads {
         self.0.borrow_mut().insert(at, r.clone());
         Ok(r)
     }
+
+    /// Reads together the records of `ty` at `keys` not read yet, so that
+    /// [`Self::get`] answers each of them as it would have read it alone.
+    pub fn prime(
+        &self,
+        view: &dyn ProjectionView,
+        ty: &TypeName,
+        keys: &[RecordKey],
+    ) -> Result<()> {
+        let at = |key: &RecordKey| (view.position(), ty.clone(), key.clone());
+        let held = self.0.borrow();
+        let unread: BTreeSet<RecordKey> = keys
+            .iter()
+            .filter(|k| !held.contains_key(&at(k)))
+            .cloned()
+            .collect();
+        drop(held);
+        let unread: Vec<RecordKey> = unread.into_iter().collect();
+        let mut found: BTreeMap<RecordKey, StoredRecord> = BTreeMap::new();
+        for page in unread.chunks(1_000) {
+            found.extend(
+                view.get_many(ty, page)?
+                    .into_iter()
+                    .map(|r| (r.key.clone(), r)),
+            );
+        }
+        let mut held = self.0.borrow_mut();
+        for key in unread {
+            let r = found.remove(&key);
+            held.insert(at(&key), r);
+        }
+        Ok(())
+    }
 }
 
 /// The records of `ty` a view holds, a page at a time by key, restricted

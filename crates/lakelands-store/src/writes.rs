@@ -221,6 +221,18 @@ impl Pending {
         }
     }
 
+    /// Reads the records of `ty` at `keys` together, ahead of the writes
+    /// that will read them one by one; a record this append already
+    /// planned at one of them is still answered as planned.
+    pub fn prime(
+        &self,
+        view: &dyn ProjectionView,
+        ty: &TypeName,
+        keys: &[RecordKey],
+    ) -> Result<()> {
+        self.reads.prime(view, ty, keys)
+    }
+
     /// The records this append read from the projection, for its fold.
     pub fn into_reads(self) -> crate::lake::Reads {
         self.reads
@@ -942,7 +954,7 @@ pub(crate) fn retirement(ty: &TypeName, key: &RecordKey, was: Version) -> EventB
 
 /// A provisional event at `position`, to compute the record a draft makes.
 pub(crate) fn provisional(lake: &Lake, position: Position, d: &Draft) -> Event {
-    log::seal(&lake.id, position, &Digest::zero(), 0, d.clone()).0
+    log::unsealed(&lake.id, position, &Digest::zero(), 0, d.clone())
 }
 
 /// The record at a key as a principal's write reaches it: the one read of

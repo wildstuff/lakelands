@@ -95,6 +95,43 @@ pub fn sha256_hex(value: &Value) -> String {
     hex(&Sha256::digest(to_vec(value)))
 }
 
+/// An object's canonical bytes with the member `name` holding the SHA-256
+/// (64 lower-case hex digits) of its canonical bytes without it, and that
+/// digest: each member is written once, and `name` is placed where it
+/// sorts among them, as an event's `hash` is.
+pub fn sealed(members: &serde_json::Map<String, Value>, name: &str) -> (String, Vec<u8>) {
+    let mut sorted: Vec<(&String, &Value)> = members.iter().filter(|(k, _)| *k != name).collect();
+    sorted.sort_by(|(a, _), (b, _)| a.encode_utf16().cmp(b.encode_utf16()));
+    let (mut out, mut at) = (vec![b'{'], None);
+    for (i, (key, member)) in sorted.iter().enumerate() {
+        if at.is_none() && name.encode_utf16().lt(key.encode_utf16()) {
+            at = Some(out.len());
+        }
+        if i > 0 {
+            out.push(b',');
+        }
+        string(key, &mut out);
+        out.push(b':');
+        write(member, &mut out);
+    }
+    let end = out.len();
+    out.push(b'}');
+    let digest = hex(&Sha256::digest(&out));
+    let mut member = Vec::new();
+    string(name, &mut member);
+    member.push(b':');
+    string(&digest, &mut member);
+    // Before the member it sorts ahead of, or last.
+    let piece = match at {
+        Some(1) => [member, vec![b',']].concat(),
+        None if sorted.is_empty() => member,
+        _ => [vec![b','], member].concat(),
+    };
+    let at = at.unwrap_or(end);
+    out.splice(at..at, piece);
+    (digest, out)
+}
+
 /// Lower-case hexadecimal.
 pub fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
