@@ -6165,6 +6165,7 @@ pub async fn a_page_answers_its_total_and_jumps_by_offset(store: Arc<dyn LakeSto
             rows,
             next_cursor,
             total,
+            ..
         } => (
             rows.iter().map(|r| r.key.to_string()).collect::<Vec<_>>(),
             next_cursor,

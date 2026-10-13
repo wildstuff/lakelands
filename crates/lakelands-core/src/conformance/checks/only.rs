@@ -33,6 +33,11 @@ check!(
 );
 
 check!(
+    ONLY_RETIRED = a_count_of_the_retired_counts_what_its_reader_would_be_answered,
+    "045, 006 and 051, extended (lakelands#1024): `find`'s `retired` counts, beside `total` and at the answer's position, the retired records its reader would be answered were they live: a holder of `only` its own alone, another's retired record being a key that is free to it; a reader without `restricted` no held one; the owner each, and under a `where` those that hold it; as of a position before the retirements none; a view none, its records never retired; beside an aggregate it is refused as invalid"
+);
+
+check!(
     ONLY_SEARCH = a_search_finds_only_admitted_records,
     "051: a lexical, a vector and a hybrid search by a holder of `only` find only its admitted records, however they rank; a search as of a position keeps a candidate only where it is admitted then and at the head, a link by its ends, under the grant followed to the head, so a field renamed since changes nothing"
 );
@@ -548,6 +553,62 @@ fn link_said<T>(answer: lakelands_api::Result<T>) -> String {
         Some(Case::WindowLinksAlready { .. }) => "linked in the window".to_owned(),
         _ => said(answer),
     }
+}
+
+async fn a_count_of_the_retired_counts_what_its_reader_would_be_answered(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    claims(&l, true).await?;
+    l.upsert("claim", "c9", json!({"owner": "alice", "amount": 1}))
+        .await?;
+    let before = store.head().await.must("reading the head")?;
+    for k in ["c2", "c3", "c9"] {
+        l.retire("claim", k).await?;
+    }
+    restrict(store.as_ref(), "claim", "c9", "held").await?;
+    let (alice, carol) = (
+        alice(store.as_ref(), json!({})),
+        holder(store.as_ref(), "carol", json!({"default": "read"})),
+    );
+    let counts = async |who: &Principal, ty: &str, find: Value| {
+        let mut find = find;
+        (find["total"], find["retired"]) = (json!(true), json!(true));
+        match l.cat.find(who, &ty.into(), de(find)).await.map(|r| r.data) {
+            Ok(Found::Records { total, retired, .. }) => format!("{total:?} {retired:?}"),
+            other => format!("{other:?}"),
+        }
+    };
+    let rows = [
+        (counts(&alice, "claim", json!({})).await, "Some(1) Some(1)"),
+        (counts(&carol, "claim", json!({})).await, "Some(1) Some(2)"),
+        (counts(&l.own, "claim", json!({})).await, "Some(1) Some(3)"),
+        (
+            counts(&l.own, "claim", json!({"where": "owner = 'alice'"})).await,
+            "Some(1) Some(2)",
+        ),
+        (
+            counts(&l.own, "claim", json!({"as_of": before})).await,
+            "Some(4) Some(0)",
+        ),
+        (counts(&l.own, "spend", json!({})).await, "Some(1) Some(0)"),
+    ];
+    let wrong: Vec<_> = rows.iter().filter(|(said, want)| said != want).collect();
+    ensure!(
+        wrong.is_empty(),
+        "`retired` must count the retired records each reader would be answered: {wrong:?}"
+    );
+    let measures = json!([{"name": "n", "func": "count"}]);
+    let find = json!({"retired": true, "aggregate": {"measures": measures}});
+    let refused = l.cat.find(&l.own, &"claim".into(), de(find)).await;
+    let case = refused
+        .as_ref()
+        .err()
+        .and_then(Error::case)
+        .map(|s| &s.case);
+    ensure!(
+        matches!(case, Some(Case::RetiredWithAggregate)),
+        "`retired` beside an aggregate must be refused as invalid; it answered {refused:?}"
+    );
+    Ok(())
 }
 
 /// What a write answered, short: `applied`, `not found`, or its refusal.

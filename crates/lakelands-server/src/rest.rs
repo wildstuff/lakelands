@@ -189,13 +189,14 @@ enum Kind {
 }
 
 const AT: [(&str, Kind); 2] = [("as_of", Kind::Int), ("valid_at", Kind::Text)];
-const FIND: [(&str, Kind); 12] = [
+const FIND: [(&str, Kind); 13] = [
     ("where", Kind::Text),
     ("order_by", Kind::Order),
     ("limit", Kind::Int),
     ("cursor", Kind::Text),
     ("offset", Kind::Int),
     ("total", Kind::Flag),
+    ("retired", Kind::Flag),
     ("after", Kind::Json),
     ("aggregate", Kind::Json),
     ("with_meta", Kind::Flag),

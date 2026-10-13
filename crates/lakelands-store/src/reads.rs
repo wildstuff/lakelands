@@ -44,7 +44,7 @@
 //! what the read would compute (049). A walk's step reads a view so too,
 //! one with parameters only where the start bound them.
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
@@ -131,6 +131,9 @@ pub struct Reader<'a> {
     /// reads each record held as it is at the head ([`HeldNow`]): a kept
     /// view's face folded then is not read.
     pub held_now: bool,
+    /// Whether the records read are the retired ones too: set while
+    /// [`Self::retired_count`] counts.
+    retired: Cell<bool>,
 }
 
 mod held;
@@ -503,6 +506,7 @@ impl<'a> Reader<'a> {
             computes_known: RefCell::default(),
             head: None,
             held_now: false,
+            retired: Cell::new(false),
         })
     }
 
@@ -801,7 +805,7 @@ impl<'a> Reader<'a> {
     /// [`Self::live`] with what is admitted of `decl` worked out once for a
     /// batch.
     fn live_by(&self, decl: &TypeDecl, admit: &Admit, r: &StoredRecord) -> bool {
-        !r.retired
+        (!r.retired || self.retired.get())
             && !self.sight.withheld(r)
             && admit.holds(&r.fields)
             && (self.valid_at_for(decl))
@@ -1046,10 +1050,26 @@ impl<'a> Reader<'a> {
             filter: filter.cloned(),
             equal,
             valid_at: self.valid_at_for(decl),
+            retired: self.retired.get(),
             restricted: self.who.grants.restricted,
             ..Default::default()
         };
         self.view.count(&decl.name, &scan)
+    }
+
+    /// How many retired records of a type [`Self::count`] would count were
+    /// they live, under the same filter, grants and position: the count
+    /// with the retired ones, less the live count. A view's records are
+    /// computed and never retired (045).
+    fn retired_count(&self, decl: &TypeDecl, filter: Option<&Expr>) -> Result<u64> {
+        if decl.view.is_some() {
+            return Ok(0);
+        }
+        let live = self.count(decl, filter)?;
+        self.retired.set(true);
+        let all = self.count(decl, filter);
+        self.retired.set(false);
+        Ok(all?.saturating_sub(live))
     }
 
     /// The records [`Self::records`] would answer, handed to `each` one at
@@ -1126,6 +1146,7 @@ impl<'a> Reader<'a> {
             after: after.map(|(values, key)| After { values, key }),
             limit: u32::try_from(want).unwrap_or(u32::MAX),
             valid_at: self.valid_at_for(decl),
+            retired: self.retired.get(),
             restricted: self.who.grants.restricted,
             ..Default::default()
         };
@@ -1893,22 +1914,29 @@ impl<'a> Reader<'a> {
         let total = (find.total)
             .then(|| self.count(&decl, filter.as_ref()))
             .transpose()?;
+        let retired = (find.retired)
+            .then(|| self.retired_count(&decl, filter.as_ref()))
+            .transpose()?;
         Ok(Found::Records {
             rows,
             next_cursor,
             total,
+            retired,
         })
     }
 
     /// The rows `find` skips before its page: none unless it names an
     /// `offset`, which is refused beside a cursor, an `after` or an
     /// aggregate (each already says where the answer starts, or has no
-    /// rows), and past the lake's `max_offset` as too large; `total` is
-    /// refused beside an aggregate too
+    /// rows), and past the lake's `max_offset` as too large; `total` and
+    /// `retired` are refused beside an aggregate too
     /// (`docs/decisions/045-a-table-reads-a-page-and-its-total.md`).
     fn offset(&self, find: &Find) -> Result<usize> {
         if find.total && find.aggregate.is_some() {
             return Err(invalid(Case::TotalWithAggregate));
+        }
+        if find.retired && find.aggregate.is_some() {
+            return Err(invalid(Case::RetiredWithAggregate));
         }
         let Some(skip) = find.offset else {
             return Ok(0);

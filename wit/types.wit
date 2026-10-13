@@ -554,6 +554,8 @@ interface types {
         offset: option<u32>,
         /// Answer how many records match, at the answer's position.
         total: bool,
+        /// Answer how many retired records match, at the same position.
+        retired: bool,
         aggregate: option<aggregate>,
         with-meta: bool,
         /// The values bound to a view's parameters, each as JSON.
@@ -579,6 +581,8 @@ interface types {
         next-cursor: option<cursor>,
         /// How many records match, when `total` asked for it.
         total: option<u64>,
+        /// How many retired records match, when `retired` asked for it.
+        retired: option<u64>,
     }
 
     variant found {
