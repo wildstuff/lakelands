@@ -644,11 +644,7 @@ async fn a_migration_covers_retired_records_and_keeps_the_key() {
 
     let mut to = m.clone();
     to.fields[1] = field("n", StorageKind::Number);
-    let retyped = Migration {
-        to,
-        renames: vec![],
-        relation_renames: Vec::new(),
-    };
+    let retyped = Migration::to(to);
     let report = cat.migrate(&o, retyped.clone()).await.unwrap().data;
     assert!(
         !report.lossless,
@@ -671,16 +667,7 @@ async fn a_migration_covers_retired_records_and_keeps_the_key() {
 
     let mut rekeyed = m.clone();
     rekeyed.key = vec!["n".into()];
-    let r = cat
-        .migrate(
-            &o,
-            Migration {
-                to: rekeyed,
-                renames: vec![],
-                relation_renames: Vec::new(),
-            },
-        )
-        .await;
+    let r = cat.migrate(&o, Migration::to(rekeyed)).await;
     assert!(
         matches!(
             &r,

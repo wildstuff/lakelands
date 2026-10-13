@@ -595,6 +595,8 @@ pub(crate) async fn run(
                 #[serde(default)]
                 relation_renames: Vec<(RelationName, RelationName)>,
                 #[serde(default)]
+                fill: Vec<lakelands_api::FieldName>,
+                #[serde(default)]
                 report_id: Option<String>,
             }
             let m: M = args(label, &a)?;
@@ -608,9 +610,10 @@ pub(crate) async fn run(
                 (Some(to), None) => {
                     let renames = m.renames.into_iter();
                     let migration = Migration {
-                        to,
                         renames: renames.map(|(a, b)| (a.into(), b.into())).collect(),
                         relation_renames: m.relation_renames,
+                        fill: m.fill,
+                        ..Migration::to(to)
                     };
                     match m.report_id {
                         Some(r) => to_json(&c.migrate_apply(who, migration, &r).await?),
@@ -620,6 +623,9 @@ pub(crate) async fn run(
                 (None, Some(vt)) => {
                     if !m.relation_renames.is_empty() {
                         return Err(wrong("relation_renames", Case::ValueTypeNoRelations));
+                    }
+                    if let Some(field) = m.fill.first().cloned() {
+                        return Err(wrong("fill", Case::FillUnknown { field }));
                     }
                     let vm = ValueTypeMigration {
                         to: vt,

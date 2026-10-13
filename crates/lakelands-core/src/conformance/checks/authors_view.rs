@@ -220,9 +220,8 @@ async fn a_change_of_shape_never_names_a_field_its_author_may_not_know_of(store:
     );
 
     let shape = |to: TypeDecl, renames: &[(&str, &str)]| Migration {
-        to,
         renames: (renames.iter().map(|(a, b)| ((*a).into(), (*b).into()))).collect(),
-        relation_renames: Vec::new(),
+        ..Migration::to(to)
     };
     let mut settled = seen(&["no", "gross", "ref", "memo"]);
     settled
@@ -332,9 +331,9 @@ async fn a_migrations_faults_come_in_one_order_for_a_hidden_name_and_an_absent_o
             to.relations.push(RelationDecl::to(*new, "invoice"));
         }
         Migration {
-            to,
             renames: (renames.iter().map(|(a, b)| ((*a).into(), (*b).into()))).collect(),
             relation_renames: (relations.iter().map(|(a, b)| ((*a).into(), (*b).into()))).collect(),
+            ..Migration::to(to)
         }
     };
     let base = ["no", "gross", "ref"];

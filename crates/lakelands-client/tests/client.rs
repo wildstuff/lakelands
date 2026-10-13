@@ -107,6 +107,7 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
         references: Vec::new(),
         sample_collisions: Vec::new(),
         restated: Vec::new(),
+        filled: Vec::new(),
         lossless: false,
         report_id: "r".into(),
         more: true,

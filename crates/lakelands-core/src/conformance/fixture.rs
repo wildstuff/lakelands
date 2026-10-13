@@ -807,11 +807,7 @@ pub fn reactive(depth: u32, cause: Option<Position>) -> WriteContext {
 
 /// A migration of a type to `to`, with no field renamed.
 pub fn migration(to: TypeDecl) -> lakelands_api::write::Migration {
-    lakelands_api::write::Migration {
-        to,
-        renames: Vec::new(),
-        relation_renames: Vec::new(),
-    }
+    lakelands_api::write::Migration::to(to)
 }
 
 /// A value type `name` of `kind`, with no constraint, choices, format or

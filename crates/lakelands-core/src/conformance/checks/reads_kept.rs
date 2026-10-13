@@ -78,9 +78,10 @@ async fn a_migration_keeps_the_fields_a_declaration_reads(store: Store) -> Held 
         refused_like(&what, preflight, &case)?;
     }
     let renamed = Migration {
-        to: item(&["a", "b2", "c", "d", "e", "f", "g", "payload", "free"]),
         renames: vec![("b".into(), "b2".into())],
-        relation_renames: Vec::new(),
+        ..Migration::to(item(&[
+            "a", "b2", "c", "d", "e", "f", "g", "payload", "free",
+        ]))
     };
     let case = json!({"code": "migration_takes_read", "field": "b", "renamed": "b2",
                       "at": at("object_set", "s")});

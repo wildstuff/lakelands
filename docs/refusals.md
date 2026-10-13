@@ -573,6 +573,10 @@ What a refusal is about.
 | `rename_name_held` | — | the lake keeps the links of an earlier relation of that name; take another name | A relation rename to a name whose links the lake keeps. |
 | `rename_referred_links` | `type` (TypeName, optional), `links` (TypeName) | [`{type}`\|a declaration] refers to its link type `{links}`, whose records would move; retarget it first | A relation rename whose link type another declaration refers to. |
 | `rename_repeated` | `field` (FieldName) | the field `{field}` is renamed more than once | A field renamed from or to twice. |
+| `fill_unknown` | `field` (FieldName) | the migration fills `{field}`, which the new declaration does not declare | A field a migration fills that its new declaration does not declare. |
+| `fill_no_initial` | `field` (FieldName) | the migration fills `{field}`, which declares no `initial` to fill it with | A field a migration fills that declares no initial value. |
+| `fill_repeated` | `field` (FieldName) | the migration fills `{field}` more than once | A field a migration fills more than once. |
+| `fill_renamed` | `field` (FieldName), `to` (FieldName) | the migration renames `{field}` to `{to}`; fill it as `{to}` | A field a migration fills by the name a rename takes away. |
 | `rename_to_unknown` | `to` (FieldName) | rename to `{to}`: no such field after the migration | A field renamed to one the new declaration does not have. |
 | `rename_while_rekeying` | — | the same migration re-keys records; rename in one migration and re-key in another | A relation rename in a migration that re-keys. |
 | `remove_while_rekeying` | — | the same migration re-keys records; remove the relation in one migration and re-key in another | A relation carried by link records removed by a migration that re-keys records. |

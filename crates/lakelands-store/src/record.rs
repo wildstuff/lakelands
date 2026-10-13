@@ -148,6 +148,29 @@ impl Plans {
     }
 }
 
+/// The field's `initial`, as checked against its kind and value type.
+pub(crate) fn initial_of(
+    ontology: &Ontology,
+    f: &lakelands_api::ontology::FieldDecl,
+) -> Option<Value> {
+    let v = f.initial.as_ref()?;
+    let vt = f.ty.value_type.as_ref();
+    let vt = vt.and_then(|n| ontology.value_types.get(n.as_str()));
+    Some(value::check(v, &f.ty, vt.map(|e| &e.decl)).unwrap_or_else(|_| v.clone()))
+}
+
+/// The provenance of a field filled with its `initial` at `event`: at a
+/// create, and at a migration that fills it (050).
+pub(crate) fn initial_meta(event: &Event) -> FieldMeta {
+    FieldMeta {
+        upstream: None,
+        seen_at: None,
+        source: None,
+        procedure_version: None,
+        ..meta_of(event, Origin::Initial)
+    }
+}
+
 /// The provenance an event gives the fields it writes.
 pub(crate) fn meta_of(event: &Event, origin: Origin) -> FieldMeta {
     FieldMeta {
@@ -235,24 +258,12 @@ pub fn apply(
     // fold computes from it, as it computes every field at a create (050).
     if live_before.is_none() {
         for f in raw.fields.iter().filter(|f| f.initial.is_some()) {
-            if fields.contains_key(&f.name) {
-                continue;
+            if !fields.contains_key(&f.name)
+                && let Some(v) = initial_of(ontology, f)
+            {
+                fields.insert(f.name.clone(), v);
+                meta.insert(f.name.clone(), initial_meta(event));
             }
-            let (v, vt) = (
-                f.initial.as_ref().expect("initial"),
-                f.ty.value_type.as_ref(),
-            );
-            let vt = vt.and_then(|n| ontology.value_types.get(n.as_str()));
-            let v = value::check(v, &f.ty, vt.map(|e| &e.decl)).unwrap_or_else(|_| v.clone());
-            fields.insert(f.name.clone(), v);
-            let of_the_event = FieldMeta {
-                upstream: None,
-                seen_at: None,
-                source: None,
-                procedure_version: None,
-                ..meta_of(event, Origin::Initial)
-            };
-            meta.insert(f.name.clone(), of_the_event);
         }
     }
 

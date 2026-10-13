@@ -235,11 +235,7 @@ async fn a_computed_field_is_read_no_further_than_what_it_is_computed_from(
         computed("z", upper(), &[]),
     ];
     let to = serde_json::from_value(json!({"name": "by_expr", "fields": fields}));
-    let migration = Box::new(Migration {
-        to: to.expect("a type"),
-        renames: vec![],
-        relation_renames: Vec::new(),
-    });
+    let migration = Box::new(Migration::to(to.expect("a type")));
     let write = ProposedWrite::Migrate {
         migration,
         report: Default::default(),
@@ -311,11 +307,7 @@ async fn a_computed_field_is_read_no_further_than_what_it_is_computed_from(
         ..free.clone()
     };
     let view = serde_json::from_value(json!({"name": "by_pair", "fields": [text("a")]}));
-    let view = Migration {
-        to: view.expect("a type"),
-        renames: vec![],
-        relation_renames: Vec::new(),
-    };
+    let view = Migration::to(view.expect("a type"));
     let mut reads = Vec::new();
     for inputs in [&["a", "b"][..], &["a"], &["a", "b"]] {
         let of = if inputs.len() == 2 {

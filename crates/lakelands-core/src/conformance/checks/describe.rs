@@ -434,11 +434,7 @@ async fn a_description_says_only_what_its_reader_is_shown(store: Store) -> Held 
             declarations: vec![Declaration::Type(mine)],
         },
         ProposedWrite::Migrate {
-            migration: Box::new(Migration {
-                to: wider,
-                renames: Vec::new(),
-                relation_renames: Vec::new(),
-            }),
+            migration: Box::new(Migration::to(wider)),
             report: Default::default(),
         },
     ];
@@ -527,11 +523,7 @@ async fn a_description_says_only_what_its_reader_is_shown(store: Store) -> Held 
     }
     // Nor does a migration's refusal name the type of a relation not shown.
     let to = type_decl("salary", vec![field("code", StorageKind::Text)]);
-    let m = Migration {
-        to,
-        renames: Vec::new(),
-        relation_renames: Vec::new(),
-    };
+    let m = Migration::to(to);
     let dropped = l.cat.migrate(&hidden, m).await.map(drop);
     // No member of its wire form, its sentence among them, names `invoice`.
     let said = dropped.as_ref().err().map(|e| json!(e).to_string());

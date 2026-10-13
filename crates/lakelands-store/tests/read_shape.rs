@@ -390,9 +390,8 @@ async fn a_rename_is_followed_from_the_shapes_list() {
     let r = get().await;
     assert!(value(&r, "a").is_none() && value(&r, "n").is_some());
     let m = Migration {
-        to: type_of("t", &[("b", Text), ("n", Number)]),
         renames: vec![("a".into(), "b".into())],
-        relation_renames: Vec::new(),
+        ..Migration::to(type_of("t", &[("b", Text), ("n", Number)]))
     };
     let id = l
         .cat

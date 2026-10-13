@@ -51,9 +51,9 @@ use lakelands_api::principal::WriteContext;
 use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::seam::VerbExecutor;
 use lakelands_api::write::{
-    Carried, Carrier, Declaration, Migration, MigrationReport, Misfit, ObjectSetDecl, Outcome,
-    ProposalState, ProposedWrite, Recompute, RelationRename, ValueRenamed, ValueTypeMigration,
-    ValueTypeReport, ValueTypeUse, WriteOpts,
+    Carried, Carrier, Declaration, FieldFill, Migration, MigrationReport, Misfit, ObjectSetDecl,
+    Outcome, ProposalState, ProposedWrite, Recompute, RelationRename, ValueRenamed,
+    ValueTypeMigration, ValueTypeReport, ValueTypeUse, WriteOpts,
 };
 use lakelands_api::{
     Access, Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal, ProposalId,
@@ -3929,10 +3929,17 @@ impl Call<'_> {
         verbs_judged_again((&w.ontology, &after), &before, &m.to, &shows).map_err(after_it)?;
         // A record that does not convert is already not lossless; its
         // stored fields still tell whether it has a new key.
+        // A live record holds what the migration fills, as the fold leaves
+        // it, so its key and its memberships are decided with it (050).
         let convert = |decl: &TypeDecl, m: &Migration, r: &StoredRecord| {
             let fields = shape::migrate_record(decl, m, &r.fields);
-            let fields = fields.map_err(invalid)?;
-            Ok::<_, Error>(fields.unwrap_or_else(|| r.fields.clone()))
+            let mut fields = fields.map_err(invalid)?.unwrap_or_else(|| r.fields.clone());
+            for f in (m.to.fields.iter()).filter(|f| m.fill.contains(&f.name) && !r.retired) {
+                if !fields.contains_key(&f.name) {
+                    fields.extend(record::initial_of(&after, f).map(|v| (f.name.clone(), v)));
+                }
+            }
+            Ok::<_, Error>(fields)
         };
         // Applied, the migration decides again every record whose fields it
         // changes, as the fold leaves it (004, extended): converted, its
@@ -3967,10 +3974,29 @@ impl Call<'_> {
         // The renames as the author sent them are judged first, against the
         // type as it sees it: a field it may not know of is no field to it,
         // here, as an absent one is (lakelands#750).
+        // So is what it fills, against the fields it declared itself.
         if let Some(a) = author {
             a.sent.renamed_fields(&a.known).map_err(invalid)?;
+            a.sent.fills().map_err(invalid)?;
         }
+        m.fills().map_err(invalid)?;
+        // Each field the migration fills: the live records that hold no
+        // value for it, by the name they hold it under, and the first keys,
+        // in key order, of those its reader is answered.
+        let none = |f: &FieldName| (f.clone(), 0, Vec::new());
+        let mut fills: Vec<(FieldName, u64, Vec<RecordKey>)> = m.fill.iter().map(none).collect();
         let mut report = shaped(view, &sees, &before, m, |r| {
+            for (field, records, samples) in fills.iter_mut().filter(|_| !r.retired) {
+                let held = m.renames.iter().find(|(_, to)| to == field);
+                let held = held.map_or(&*field, |(from, _)| from);
+                if !r.fields.contains_key(held) {
+                    *records += 1;
+                    let shown = || crate::reads::answered(view, &sees, &m.to.name, &r.key);
+                    if samples.len() < 5 && !sees.withheld(r) && shown()? {
+                        samples.push(r.key.clone());
+                    }
+                }
+            }
             if m.to.key.is_empty() && sets.is_empty() {
                 return Ok(());
             }
@@ -3984,6 +4010,12 @@ impl Call<'_> {
                 None => Ok(()),
             }
         })?;
+        let filled = |(field, records, sample_keys)| FieldFill {
+            field,
+            records,
+            sample_keys,
+        };
+        report.filled = fills.into_iter().map(filled).collect();
         // A colliding key is the new key's fields' values: named to one
         // who reads each of them and is answered two of the records that
         // would take it, a collision it can see for itself.
@@ -4045,11 +4077,7 @@ impl Call<'_> {
         // their link types with the type: their records are checked here,
         // each field named with its relation.
         for (old, new) in changed_link_types(&w.ontology, m, false) {
-            let lm = Migration {
-                to: new,
-                renames: vec![],
-                relation_renames: Vec::new(),
-            };
+            let lm = Migration::to(new);
             let sets = held(&old.name)?;
             let lr = shaped(view, &sees, &old, &lm, |r| {
                 match now.filter(|_| !sets.is_empty()) {
@@ -4279,11 +4307,7 @@ impl Call<'_> {
             drafts.push(Draft::system(
                 now,
                 EventBody::Migrated {
-                    migration: Migration {
-                        to: new,
-                        renames: vec![],
-                        relation_renames: Vec::new(),
-                    },
+                    migration: Migration::to(new),
                     schema_hash: hash,
                     version,
                     report_id: report_id.clone(),

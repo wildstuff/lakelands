@@ -40,9 +40,8 @@ fn step(at: u64, before: TypeDecl, to: TypeDecl, moves: &[(&str, &str)]) -> Migr
     }
     let titled = before.fields.iter().any(|f| f.name.as_str() == "title");
     let migration = Migration {
-        to,
         renames: (titled.then(|| ("title".into(), "name".into())).into_iter()).collect(),
-        relation_renames: Vec::new(),
+        ..Migration::to(to)
     };
     let rekeyed: Vec<Rekey> = (moves.iter())
         .map(|(from, to)| Rekey {

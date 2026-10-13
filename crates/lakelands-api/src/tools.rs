@@ -1273,6 +1273,8 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                     ("value_type", json!({"type": "object"})),
                     ("renames", pairs.clone()),
                     ("relation_renames", pairs),
+                    ("fill", json!({"type": "array", "items": {"type": "string"},
+                        "description": "Fields of `to` whose `initial` each live record that holds no value takes; the report counts them (`filled`)."})),
                     ("report_id", json!({"type": "string"})),
                 ]),
                 &[],

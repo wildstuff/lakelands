@@ -48,6 +48,13 @@ covers them, and a record among them that would not convert makes the
 migration not lossless, refused before anything is appended, never
 discovered by the fold after the migration is in the log.
 
+A migration may also fill: each field it names in `fill`, declared by
+`to` with an `initial`, takes that value in every live record that holds
+none, at the migration's event (050). The preflight counts those records
+(`filled`); a field named in `fill` that `to` does not declare, that
+declares no `initial`, that is named twice, or that a rename takes away
+is refused before a record is read.
+
 ### A shape is its author's view
 
 A migration's `to`, and a type declared again, is read as its author's
@@ -780,3 +787,5 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
   reader, over what that reader is shown, and
   `a_schema_hash_is_that_of_the_shape_its_reader_is_shown` holds it
   (lakelands#644).
+- A migration may fill a field's `initial` into the records that hold
+  none, and its preflight counts them (lakelands#1023).

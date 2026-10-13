@@ -350,6 +350,8 @@ interface types {
         renames: list<tuple<field-name, field-name>>,
         /// Relations renamed, old name to new name: each keeps its edges.
         relation-renames: list<tuple<relation-name, relation-name>>,
+        /// Fields whose `initial` each live record without a value takes.
+        fill: list<field-name>,
     }
 
     /// A value type's migration: its new declaration and the values it
@@ -389,6 +391,13 @@ interface types {
         links: u64,
     }
 
+    /// The live records a migration fills a field's `initial` into.
+    record field-fill {
+        field: field-name,
+        records: u64,
+        sample-keys: list<record-key>,
+    }
+
     record field-conversion {
         field: field-name,
         %from: field-type,
@@ -414,6 +423,7 @@ interface types {
         references: list<reference-rewrite>,
         sample-collisions: list<record-ref>,
         restated: list<restated>,
+        filled: list<field-fill>,
         /// Every kept value converts and every moved record gets a key;
         /// it says nothing of what `dropped` removes.
         lossless: bool,

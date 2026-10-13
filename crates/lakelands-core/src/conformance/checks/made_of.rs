@@ -1216,11 +1216,7 @@ async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_kno
         f("cat", "text"), f("memo", "text")]});
     let to_ticket = serde_json::from_value(to_ticket).expect("a type");
     let migrate = ProposedWrite::Migrate {
-        migration: Box::new(lakelands_api::write::Migration {
-            to: to_ticket,
-            renames: Vec::new(),
-            relation_renames: Vec::new(),
-        }),
+        migration: Box::new(lakelands_api::write::Migration::to(to_ticket)),
         report: Default::default(),
     };
     for (write, why) in [

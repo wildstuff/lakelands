@@ -15,6 +15,12 @@ use crate::conformance::fixture::{
 use crate::conformance::{Failure, Held, Store};
 
 check!(
+    FILLED = a_migration_fills_a_fields_initial_into_the_records_that_hold_none,
+    "050 and 027, extended (lakelands#1023): a migration naming a field in `fill` writes its `initial`, of origin `initial` at the migration's position, into each live record that holds no value for it, a restricted one too and a retired one not, which takes it when written again; its preflight counts them in `filled`, naming only keys its reader is answered, and a field made required with `initial` is lossless with `fill` and refused without; an aging rule then moves the old records as the new; `fill` naming a field `to` does not declare, one without `initial`, one twice, or a renamed field by its old name is refused before a record is read; a trigger whose guard reads the field does not fire at the migration, as for every record a migration converts; and a rebuild and an imported copy answer the values and their origin alike",
+    given
+);
+
+check!(
     APPLY_NEEDS_ITS_REPORT = migrate_apply_requires_the_report_it_was_shown,
     "027: `migrate_apply` names the preflight's report; another report id, or a lake that moved since the report, is refused, after the preflight's own refusals (027, extended)"
 );
@@ -209,9 +215,8 @@ async fn migrated_values_follow_the_conversion_table_and_renames_keep_them(store
         }
     }
     let m = Migration {
-        to,
         renames: vec![("title".into(), "heading".into())],
-        relation_renames: Vec::new(),
+        ..Migration::to(to)
     };
     let report = preflight(store.as_ref(), &m).await?;
     let fut = cat.migrate_apply(own, m, &report.report_id);
@@ -382,9 +387,8 @@ async fn a_migration_taking_a_field_a_view_reads_is_refused(store: Store) -> Hel
             }
         }
         Migration {
-            to: t,
             renames: vec![(from.into(), to.into())],
-            relation_renames: Vec::new(),
+            ..Migration::to(t)
         }
     };
     let dropped = |t: &TypeDecl, name: &str| {
@@ -516,5 +520,285 @@ async fn the_preflight_names_every_dropped_field_and_an_empty_type_migrates_clea
         a.len() == 1 && a.get("title") == Some(&json!("A")),
         "the apply discards what `dropped` counts: `a` must hold its title alone; it holds {a:?}"
     );
+    Ok(())
+}
+
+async fn a_migration_fills_a_fields_initial_into_the_records_that_hold_none(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    use crate::conformance::checks::export::Scratch;
+    use crate::conformance::checks::report_names::preview;
+    use crate::conformance::fixture::{events_from, field_access, principal, restrict};
+    use lakelands_api::event::EventBody;
+    use lakelands_api::principal::{Access, Grants, PrincipalKind};
+    use lakelands_api::record::Origin;
+    use lakelands_api::write::{Declaration, Outcome, ProposedWrite, WriteOpts};
+    use serde_json::Value;
+    let l = Lake::of(store.as_ref());
+    let s = store.as_ref();
+    // `status` is declared before it has an `initial`: the records hold
+    // none. `loud` and `shout` are computed from it.
+    let computed: Vec<lakelands_api::ontology::FieldDecl> = serde_json::from_value(json!([
+        {"name": "loud", "type": {"kind": "text"}, "authority": "derived",
+         "derived": "concat(status, '!')", "depends_on": ["status"]},
+        {"name": "shout", "type": {"kind": "text"}, "authority": "derived",
+         "function": "shout", "depends_on": ["status"]}]))
+    .unwrap();
+    let task = |initial: Option<serde_json::Value>| {
+        let mut status = field("status", StorageKind::Text);
+        status.initial = initial;
+        let fields = [
+            vec![field("title", StorageKind::Text), status],
+            computed.clone(),
+        ];
+        type_decl("task", fields.concat())
+    };
+    l.declare_json(
+        json!({"declare": "function", "name": "shout", "backing": "expr",
+        "inputs": [{"name": "status", "type": {"kind": "text"}}], "expr": "upper(status)"}),
+    )
+    .await?;
+    l.declare(task(None)).await?;
+    for k in ["t1", "t2", "t4"] {
+        l.upsert("task", k, json!({"title": k})).await?;
+    }
+    l.upsert("task", "t0", json!({"title": "t0", "status": "done"}))
+        .await?;
+    restrict(s, "task", "t2", "held").await?;
+    l.retire("task", "t4").await?;
+    let opened =
+        json!({"declare": "trigger", "name": "opened", "on": "task", "when": "status = 'open'"});
+    l.cat
+        .declare(
+            &l.own,
+            serde_json::from_value::<Declaration>(opened).unwrap(),
+        )
+        .await
+        .must("the trigger")?;
+    l.declare_json(
+        json!({"declare": "object_set", "name": "open_tasks", "of": "task",
+        "where": "status = 'open'"}),
+    )
+    .await?;
+    let mut wrong = Vec::new();
+    // The refusals, before a record is read.
+    let m = |fill: &[&str], renames: &[(&str, &str)]| Migration {
+        fill: fill.iter().map(|f| (*f).into()).collect(),
+        renames: renames
+            .iter()
+            .map(|(a, b)| ((*a).into(), (*b).into()))
+            .collect(),
+        ..migration(task(Some(json!("open"))))
+    };
+    let mut bare = migration(task(None));
+    bare.fill = vec!["status".into()];
+    let mut renamed = m(&["title"], &[("title", "heading")]);
+    renamed.to.fields[0].name = "heading".into();
+    for (what, migration) in [
+        ("an undeclared field", m(&["nope"], &[])),
+        ("a field without `initial`", bare),
+        ("a field twice", m(&["status", "status"], &[])),
+        ("a renamed field's old name", renamed),
+    ] {
+        let refused = l.cat.migrate(&l.own, migration).await;
+        if !matches!(
+            invalid_case(&refused),
+            Some(
+                Case::FillUnknown { .. }
+                    | Case::FillNoInitial { .. }
+                    | Case::FillRepeated { .. }
+                    | Case::FillRenamed { .. }
+            )
+        ) {
+            wrong.push(format!("filling {what}: {refused:?}"));
+        }
+    }
+    // An author kept from `b` is refused it as a field that is not there,
+    // with or without its `initial`; a swap fills a name `to` still has.
+    let (a, mut b) = (field("a", StorageKind::Text), field("b", StorageKind::Text));
+    b.initial = Some(json!("x"));
+    l.declare(type_decl("pad", vec![a.clone(), b.clone()]))
+        .await?;
+    let mut hider = field_access(s, "hider", "pad", &[("b", Access::None)]);
+    hider.grants.schema = true;
+    let fills = |f: &str| Migration {
+        fill: vec![f.into()],
+        ..migration(type_decl("pad", vec![a.clone()]))
+    };
+    let hidden = format!("{:?}", l.cat.migrate(&hider, fills("b")).await);
+    let hidden = hidden.replace("`b`", "`nope`").replace("\"b\"", "\"nope\"");
+    let absent = format!("{:?}", l.cat.migrate(&hider, fills("nope")).await);
+    let swap = Migration {
+        fill: vec!["b".into()],
+        renames: vec![("a".into(), "b".into()), ("b".into(), "a".into())],
+        ..migration(type_decl("pad", vec![a, b]))
+    };
+    let swapped = l.cat.migrate(&l.own, swap).await;
+    if hidden != absent || !absent.contains("FillUnknown") || swapped.is_err() {
+        wrong.push(format!(
+            "kept from `b`: {hidden}, where {absent}; a swap: {swapped:?}"
+        ));
+    }
+    // Required with `initial`: lossy without `fill`, lossless with it.
+    let mut required = task(Some(json!("open")));
+    required
+        .fields
+        .iter_mut()
+        .for_each(|f| f.required |= f.name.as_str() == "status");
+    let lossy = preview(&l, &l.own, migration(required.clone())).await?;
+    let filling = Migration {
+        fill: vec!["status".into()],
+        ..migration(required)
+    };
+    // A reviewer kept from `status` is listed neither its fill nor its count.
+    let mut blind = field_access(s, "blind", "task", &[("status", Access::None)]);
+    (blind.grants.schema, blind.grants.review) = (true, true);
+    let migration = Box::new(filling.clone());
+    let write = ProposedWrite::Migrate {
+        migration,
+        report: Default::default(),
+    };
+    let proposed = l.cat.propose(&l.own, write, "fill".into()).await;
+    proposed.must("proposing the fill")?;
+    let listed = l.cat.proposals(&blind, Default::default()).await;
+    let blind: Vec<_> = (listed.must("listing")?.data.into_iter())
+        .filter_map(|p| match p.write {
+            Some(ProposedWrite::Migrate { migration, report }) => {
+                Some((migration.fill, report.filled))
+            }
+            _ => None,
+        })
+        .collect();
+    let report = preview(&l, &l.own, filling.clone()).await?;
+    // A reader with `schema` but no `restricted` is told the count, not `t2`.
+    let grants = Grants {
+        schema: true,
+        restricted: false,
+        ..Grants::owner()
+    };
+    let schemer = principal(s, PrincipalKind::Agent, "schemer", grants);
+    let told = preview(&l, &schemer, filling.clone()).await?;
+    let filled = |r: &MigrationReport| {
+        r.filled
+            .iter()
+            .map(|f| format!("{} {} {:?}", f.field, f.records, f.sample_keys))
+            .collect::<Vec<_>>()
+    };
+    if lossy.lossless
+        || !report.lossless
+        || filled(&report) != [r#"status 2 [RecordKey("t1"), RecordKey("t2")]"#]
+        || filled(&told) != [r#"status 2 [RecordKey("t1")]"#]
+        || !told.more
+        || blind != [(vec![], vec![])]
+    {
+        wrong.push(format!(
+            "the preflights: lossy {}, filling {} {:?}, told {:?} more {}, blind {blind:?}",
+            lossy.lossless,
+            report.lossless,
+            filled(&report),
+            filled(&told),
+            told.more
+        ));
+    }
+    let applied = l
+        .cat
+        .migrate_apply(&l.own, filling, &report.report_id)
+        .await
+        .must("the apply")?;
+    let Outcome::Applied {
+        position: at,
+        set_off,
+        ..
+    } = applied
+    else {
+        return Err(Failure::new(format!("the apply answered {applied:?}")));
+    };
+    let fired = set_off.fired;
+    // The records the fill moves into a set join it in the same append.
+    let joined: Vec<String> = (events_from(s, at).await?.into_iter())
+        .filter_map(|e| match e.body {
+            EventBody::ObjectSetChanged {
+                set,
+                key,
+                joined: true,
+                ..
+            } if set == "open_tasks" => Some(key.to_string()),
+            _ => None,
+        })
+        .collect();
+    l.upsert("task", "t3", json!({"title": "t3"})).await?;
+    l.upsert("task", "t4", json!({"title": "t4"})).await?;
+    // Each record's status and its origin, as `who` reads it.
+    let read = |who: lakelands_api::Principal, s: &dyn LakeStore| {
+        let cat = s.catalog(Default::default());
+        async move {
+            let mut out = Vec::new();
+            for k in ["t0", "t1", "t2", "t3", "t4"] {
+                let get = serde_json::from_value(json!({"key": k, "with_meta": true}));
+                let get = get.map_err(|e| Failure::new(e.to_string()))?;
+                let r = cat
+                    .get(&who, &"task".into(), get)
+                    .await
+                    .must("reading a task")?
+                    .data;
+                let meta = r.meta.get("status");
+                let filled = meta.is_some_and(|m| m.origin == Origin::Initial && m.position == at);
+                let shown = |f: &str| r.fields.get(f).map_or("-".into(), Value::to_string);
+                let computed = format!("{} {}", shown("loud"), shown("shout"));
+                out.push(format!("{k} {} {filled} {computed}", shown("status")));
+            }
+            Ok::<_, Failure>(out)
+        }
+    };
+    let own = owner(s);
+    let here = read(own.clone(), s).await?;
+    let (open, done) = ("\"open\"", "t0 \"done\" false \"done!\" \"DONE\"");
+    let filled = |k: &str, at: bool| format!("{k} {open} {at} \"open!\" \"OPEN\"");
+    let want = [done.into(), filled("t1", true), filled("t2", true)];
+    let want = [&want[..], &[filled("t3", false), filled("t4", false)]].concat();
+    if here != want || !fired.is_empty() || joined != ["t1", "t2"] {
+        wrong.push(format!(
+            "after the fill: {here:?}, the trigger fired {fired:?}, `open_tasks` joined {joined:?}"
+        ));
+    }
+    // A rebuild and an imported copy read the fill and its origin alike.
+    s.rebuild().await.must("rebuilding")?;
+    let rebuilt = read(own.clone(), s).await?;
+    let scratch = Scratch::new(given.scratch.clone());
+    let from = scratch.dir("from");
+    crate::export::write(s, &from).await.must("exporting")?;
+    let copy = (given.import)(from, store.lake().clone(), None, Default::default()).await;
+    let copy = copy
+        .map_err(|e| Failure::new(format!("importing: {e}")))?
+        .store;
+    let imported = read(owner(copy.as_ref()), copy.as_ref()).await?;
+    if rebuilt != here || imported != here {
+        wrong.push(format!(
+            "rebuilt {rebuilt:?} and imported {imported:?}, where {here:?}"
+        ));
+    }
+    // An aging rule moves the old records with the new.
+    let rule = json!({"name": "ages", "on": "task", "field": "status", "from": "open", "to": "late", "when": "true"});
+    let rule = serde_json::from_value(rule).unwrap();
+    l.cat
+        .upsert(
+            &l.own,
+            &"sys.aging_rule".into(),
+            &"ages".into(),
+            rule,
+            WriteOpts::default(),
+        )
+        .await
+        .must("the rule")?;
+    let aged = s
+        .age(lakelands_api::Timestamp(1_799_971_200_000_000))
+        .await
+        .must("aging")?;
+    let moved: u32 = aged.rules.iter().map(|r| r.moved).sum();
+    if moved != 4 {
+        wrong.push(format!("the aging rule moved {moved} of 4"));
+    }
+    ensure!(wrong.is_empty(), "{}", wrong.join("; "));
     Ok(())
 }

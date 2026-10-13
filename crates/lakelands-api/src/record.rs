@@ -26,7 +26,7 @@ pub enum Origin {
     /// The store itself: declarations, leases, checkpoints, triggers.
     System,
     /// The field's declared `initial` value, filled when the record came
-    /// to exist: no writer chose it.
+    /// to exist or by a migration's `fill`: no writer chose it.
     Initial,
 }
 
