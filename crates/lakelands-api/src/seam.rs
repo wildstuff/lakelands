@@ -280,6 +280,13 @@ pub fn sortable(kind: &crate::ontology::StorageKind) -> bool {
     )
 }
 
+/// The key prefix of the setting that asks for a type's exact-text index
+/// over more fields than its declarations look up by: the setting
+/// `lookup_index.<type>`, whose value is a JSON array of the type's text
+/// fields. A field the index keeps no rows for is found by a scan of the
+/// type (`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`).
+pub const LOOKUP_INDEX_SETTING: &str = "lookup_index.";
+
 /// The key prefix of the setting that asks for a type's vector index: the
 /// setting `vector_index.<type>`, whose value is a JSON array of the
 /// type's vector fields. An indexed field's search answers the index's
@@ -331,11 +338,12 @@ pub fn view_kept(value: Option<&Value>) -> bool {
 /// is about (a named field, else `key` or `value`) as its field, and why,
 /// said at the setting.
 ///
-/// - `sort_index.<type>` and `vector_index.<type>` name a declared stored
-///   type and hold an array of the names of fields it declares with a
-///   kind that index keeps ([`sortable`], [`indexable`]) and not computed
-///   at the read; `None` or `null` asks for no index. `sort_index` may
-///   name a declared view too: the index is kept of its kept records.
+/// - `sort_index.<type>`, `vector_index.<type>` and `lookup_index.<type>`
+///   name a declared stored type and hold an array of the names of fields
+///   it declares with a kind that index keeps ([`sortable`],
+///   [`indexable`], text) and not computed at the read; `None` or `null`
+///   asks for no index. `sort_index` may name a declared view too: the
+///   index is kept of its kept records.
 /// - `search_weights.<type>` names a declared stored type and holds an
 ///   object of `fields` (each a vector field it declares, with a weight)
 ///   and `text_weight`, one at least, every weight one a search may give
@@ -415,11 +423,14 @@ pub fn check_setting<'a>(
         }
         return Ok(());
     }
-    let (ty, order, keeps): (_, _, fn(&crate::ontology::StorageKind) -> bool) =
+    let text = |k: &crate::ontology::StorageKind| *k == crate::ontology::StorageKind::Text;
+    let (ty, (order, lookup), keeps): (_, _, &dyn Fn(&crate::ontology::StorageKind) -> bool) =
         if let Some(ty) = key.strip_prefix(SORT_INDEX_SETTING) {
-            (ty, true, sortable)
+            (ty, (true, false), &sortable)
         } else if let Some(ty) = key.strip_prefix(VECTOR_INDEX_SETTING) {
-            (ty, false, indexable)
+            (ty, (false, false), &indexable)
+        } else if let Some(ty) = key.strip_prefix(LOOKUP_INDEX_SETTING) {
+            (ty, (false, true), &text)
         } else {
             return Ok(());
         };
@@ -451,17 +462,21 @@ pub fn check_setting<'a>(
             },
             Some(f) if !keeps(&f.ty.kind) => {
                 let kind = f.ty.kind;
-                match order {
-                    true => Case::OrderIndexKind { field, kind },
-                    false => Case::VectorIndexKind { field, kind },
+                match (order, lookup) {
+                    (true, _) => Case::OrderIndexKind { field, kind },
+                    (_, true) => Case::LookupIndexKind { field, kind },
+                    _ => Case::VectorIndexKind { field, kind },
                 }
             }
             // As it is shown: one told nothing of how a field is computed
             // is not told so here either.
-            Some(f) if f.computed_at == Some(crate::ontology::ComputedAt::Read) => match order {
-                true => Case::OrderIndexAtRead { field },
-                false => Case::VectorIndexAtRead { field },
-            },
+            Some(f) if f.computed_at == Some(crate::ontology::ComputedAt::Read) => {
+                match (order, lookup) {
+                    (true, _) => Case::OrderIndexAtRead { field },
+                    (_, true) => Case::LookupIndexAtRead { field },
+                    _ => Case::VectorIndexAtRead { field },
+                }
+            }
             Some(_) => continue,
         };
         return refused(name, fault.into());

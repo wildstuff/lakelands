@@ -534,6 +534,8 @@ What a refusal is about.
 | `aging_not_text` | `member` (FieldName) | an aging rule's `{member}` is text | An aging rule's member that is no text. |
 | `aging_same_value` | — | `to` equals `from`; a rule moves a value to another | An aging rule that moves a value to itself. |
 | `aging_system_type` | `type` (TypeName) | `{type}` is a system type; aging never moves it | An aging rule on a system type. |
+| `lookup_index_at_read` | `field` (FieldName) | `{field}` is computed at the read; an exact-text index keeps stored values | An exact-text index of a field computed at the read. |
+| `lookup_index_kind` | `field` (FieldName), `kind` (StorageKind) | `{field}` is of kind {kind}; an exact-text index keeps text fields | An exact-text index of a field that is no text. |
 | `no_stored_type` | `type` (TypeName) | `{type}` is no declared stored type | A type named as a stored type that is none. |
 | `no_stored_type_or_view` | `type` (TypeName) | `{type}` is no declared stored type or view | A type named for an order index that is neither stored nor a view. |
 | `no_view` | `type` (TypeName) | `{type}` is no declared view | A type named as a view that is none. |
@@ -596,6 +598,7 @@ What a refusal is about.
 | `geo_unknown_type` | `name` (String) | not a GeoJSON geometry: "{name}" is not a geometry type | A geometry of a type GeoJSON does not have. |
 | `integer_too_large` | `n` (Number) | {n} is beyond ±(2^53 − 1), the largest integer every reader reads exactly | An integer beyond what every reader reads exactly. |
 | `not_base64` | — | not standard base64 with padding | Bytes that are not base64. |
+| `nul_in_text` | — | a text in it holds U+0000, which not every engine can store | A text holding U+0000, which not every store can hold. |
 | `not_date_time` | `value` (String) | not a UTC date-time: "{value}" | A date-time that is no UTC instant. |
 | `not_date` | `value` (String) | not a date: "{value}" is neither `YYYY-MM-DD` nor an instant at a UTC midnight | A date that is no calendar date. |
 | `not_decimal` | `value` (String) | not a decimal: "{value}" | A decimal that is not digits. |

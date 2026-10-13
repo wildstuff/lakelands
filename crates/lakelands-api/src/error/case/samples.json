@@ -1356,6 +1356,15 @@
    "type": "t"
   },
   {
+   "code": "lookup_index_at_read",
+   "field": "f"
+  },
+  {
+   "code": "lookup_index_kind",
+   "field": "f",
+   "kind": "text"
+  },
+  {
    "code": "no_stored_type",
    "type": "t"
   },
@@ -1629,6 +1638,9 @@
   },
   {
    "code": "not_base64"
+  },
+  {
+   "code": "nul_in_text"
   },
   {
    "code": "not_date_time",

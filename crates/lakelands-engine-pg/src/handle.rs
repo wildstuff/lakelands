@@ -63,6 +63,9 @@ struct Transaction {
     /// The types whose `vector_index.<type>` setting a page wrote, each with
     /// the setting's position: the commit builds their indexes, once.
     asked: BTreeMap<TypeName, Position>,
+    /// Whether it put a declaration or a `lookup_index.<type>` setting: the
+    /// commit decides the exact-text index's fields again.
+    relook: bool,
     /// The record states staged in it, and the order index rows a page's
     /// settings rebuilt, for the count that tells the planner: counted as
     /// they are staged and written, since the buffer is written and
@@ -570,6 +573,7 @@ impl ProjectionStore for PgLake {
             redeclared,
             mut asked,
             put,
+            relook,
             ..
         } = t;
         // The last page, then the records a declaration left to index and
@@ -577,6 +581,9 @@ impl ProjectionStore for PgLake {
         let written = buffer
             .write(&mut db, &self.names, &mut types, &mut asked)
             .and_then(|rebuilt| {
+                if relook {
+                    projection::relook(&mut db, &self.names, &mut types)?;
+                }
                 let older = |(ty, at): (&TypeName, &Position)| {
                     projection::index_older(&mut db, &self.names, &mut types, ty, *at)
                 };
@@ -628,6 +635,7 @@ impl ProjectionStore for PgLake {
         let mut transaction = lock(&self.transaction);
         let t = transaction.as_mut().ok_or_else(engines::unstaged)?;
         t.latest = t.latest.max(Some(at));
+        t.relook = true;
         let mut db = self.projecting(writing)?;
         if let Some(ty) = projection::put_declaration(&mut db, &self.names, &mut t.types, &d)? {
             t.redeclared.insert(ty, at);
@@ -644,6 +652,7 @@ impl ProjectionStore for PgLake {
         self.stage(record.position, |b| b.record(record))?;
         if let Some(t) = lock(&self.transaction).as_mut() {
             t.put += 1;
+            t.relook |= engines::lookup_index_type(record).is_some();
         }
         Ok(())
     }

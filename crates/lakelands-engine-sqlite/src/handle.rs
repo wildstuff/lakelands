@@ -45,6 +45,9 @@ struct Transaction {
     /// the transaction, and all forgotten when a declaration or a
     /// `sort_index.<type>` setting is put, which may change one.
     kept: projection::Kept,
+    /// Whether it put a declaration or a `lookup_index.<type>` setting: the
+    /// commit decides the exact-text index's fields again.
+    relook: bool,
 }
 
 /// One handle onto a lake kept by the SQLite engine.
@@ -460,6 +463,9 @@ impl ProjectionStore for SqliteLake {
                 let _ = conn.execute_batch("ROLLBACK");
                 return Err(refused);
             }
+            if t.relook {
+                projection::relook(conn)?;
+            }
             for (ty, at) in &t.redeclared {
                 projection::index_older(conn, ty, *at)?;
             }
@@ -493,6 +499,7 @@ impl ProjectionStore for SqliteLake {
         };
         self.stage(at, |conn, t| {
             t.kept.clear();
+            t.relook = true;
             let redeclared = projection::put_declaration(conn, &d)?;
             t.redeclared.extend(redeclared.map(|ty| (ty, at)));
             Ok(())
@@ -501,6 +508,7 @@ impl ProjectionStore for SqliteLake {
 
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
         self.stage(record.position, |conn, t| {
+            t.relook |= engines::lookup_index_type(record).is_some();
             projection::put_record(conn, &mut t.kept, record)
         })
     }
@@ -516,7 +524,9 @@ impl ProjectionStore for SqliteLake {
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         let state = serde_json::to_string(proposal).expect("a proposal serialises");
         self.stage(at, |conn, _| {
-            PROPOSALS.put(conn, &[&proposal.id.as_str()], at, &state)
+            PROPOSALS
+                .put(conn, &[&proposal.id.as_str()], at, &state)
+                .map(drop)
         })
     }
 
@@ -529,14 +539,18 @@ impl ProjectionStore for SqliteLake {
         at: Position,
     ) -> Result<()> {
         self.stage(at, |conn, _| {
-            MEMBERS.put(conn, &[&set, &ty.as_str(), &key.as_str()], at, &member)
+            MEMBERS
+                .put(conn, &[&set, &ty.as_str(), &key.as_str()], at, &member)
+                .map(drop)
         })
     }
 
     fn put_output(&self, seam: &str, input: &Digest, output: &Value, at: Position) -> Result<()> {
         let state = serde_json::to_string(output).expect("a value serialises");
         self.stage(at, |conn, _| {
-            OUTPUTS.put(conn, &[&seam, &input.0.as_str()], at, &state)
+            OUTPUTS
+                .put(conn, &[&seam, &input.0.as_str()], at, &state)
+                .map(drop)
         })
     }
 

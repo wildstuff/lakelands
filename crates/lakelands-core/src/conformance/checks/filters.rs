@@ -5,14 +5,15 @@
 
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::query::{Projection, QueryResult};
-use lakelands_api::read::{AggFunc, Aggregate, OrderBy};
+use lakelands_api::read::{AggFunc, Aggregate, Direction, OrderBy};
+use lakelands_api::seam::SETTING_TYPE;
 use lakelands_api::{Find, LakeStore, Refusal, Timestamp};
 use serde_json::json;
 
 use crate::conformance::fixture::{
     Lake, Must, agg, alike_renamed, computed_by, field, field_writer, find_where, no_such_field,
-    order, pattern, refused_on, source_record, sourced, try_upsert, type_decl, value, view_of,
-    windows_reach_head,
+    object_set_on, order, pattern, refused_on, source_record, sourced, try_upsert, type_decl,
+    value, view_of, windows_reach_head,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -41,6 +42,16 @@ check!(
     "010 and 017: `seen_at(f)` reads a field's provenance in `where`, and `order_by` may order by it"
 );
 
+check!(
+    LOOKED_UP_OR_SCANNED = a_text_scanned_for_answers_as_one_looked_up,
+    "057: a `where` on a text field the exact-text index keeps no rows for answers as it does once `lookup_index.<type>` or a set's condition looks the field up, and again once the setting is retired; the setting refuses a field that is no text, naming it"
+);
+
+check!(
+    LONG_TEXT_AND_NUL = a_long_text_is_found_and_a_text_holding_nul_is_refused,
+    "057: a text of 10 000 characters is found by equality whether its field is looked up or not, and the setting is written over it; a text holding U+0000 is refused as invalid, naming its field"
+);
+
 async fn lines(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     let ty = type_decl(
@@ -64,6 +75,93 @@ async fn keys_where(store: &dyn LakeStore, filter: &str) -> Result<Vec<String>, 
     let mut keys: Vec<String> = rows.into_iter().map(|r| r.key.0).collect();
     keys.sort();
     Ok(keys)
+}
+
+/// What `line` answers by its `label`, unordered, narrowed further and
+/// ordered by `qty`, and for a text none holds.
+async fn by_label(store: &dyn LakeStore) -> Result<Vec<Vec<String>>, Failure> {
+    let mut out = Vec::new();
+    for filter in ["label = 'x'", "label = 'x' and qty > 1", "label = 'z'"] {
+        out.push(keys_where(store, filter).await?);
+    }
+    let find = Find {
+        order_by: vec![order("qty", OrderBy::Value, Direction::Desc)],
+        ..find_where("label = 'x'")
+    };
+    let rows = Lake::of(store).all_found("line", find).await?;
+    out.push(rows.into_iter().map(|r| r.key.0).collect());
+    Ok(out)
+}
+
+async fn a_text_scanned_for_answers_as_one_looked_up(store: Store) -> Held {
+    let l = lines(store.as_ref()).await?;
+    for (key, label, qty) in [("l1", "x", 1), ("l2", "y", 2), ("l3", "x", 3)] {
+        l.upsert("line", key, json!({"label": label, "qty": qty}))
+            .await?;
+    }
+    let want = [vec!["l1", "l3"], vec!["l3"], vec![], vec!["l3", "l1"]];
+    let scanned = by_label(store.as_ref()).await?;
+    ensure!(
+        scanned == want,
+        "scanned for, `label` answered {scanned:?}, not {want:?}"
+    );
+    let setting = "lookup_index.line";
+    l.set(setting, json!(["label"])).await?;
+    let looked = by_label(store.as_ref()).await?;
+    l.retire(SETTING_TYPE, setting).await?;
+    let retired = by_label(store.as_ref()).await?;
+    l.declare_as(object_set_on("marked", "line", "label = 'x'"), "a set")
+        .await?;
+    let by_set = by_label(store.as_ref()).await?;
+    for (how, got) in [
+        ("the setting", looked),
+        ("its retirement", retired),
+        ("a set", by_set),
+    ] {
+        ensure!(
+            got == scanned,
+            "after {how}, `label` answered {got:?}, scanned {scanned:?}"
+        );
+    }
+    let qty = json!({"key": setting, "value": ["qty"]});
+    let refused = try_upsert(l.cat.as_ref(), &l.own, SETTING_TYPE, setting, qty).await;
+    ensure!(
+        refused_on(&refused).is_some_and(|(f, _)| f == "qty"),
+        "a number field asked of the exact-text index: {refused:?}"
+    );
+    Ok(())
+}
+
+async fn a_long_text_is_found_and_a_text_holding_nul_is_refused(store: Store) -> Held {
+    let l = lines(store.as_ref()).await?;
+    // Ten thousand characters no compression shortens much.
+    let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+    let long: String = (0..10_000)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            char::from(b"abcdefghijklmnopqrstuvwxyz0123456789"[(x % 36) as usize])
+        })
+        .collect();
+    l.upsert("line", "long", json!({"note": long})).await?;
+    for looked in [false, true] {
+        if looked {
+            l.set("lookup_index.line", json!(["note"])).await?;
+        }
+        let found = keys_where(store.as_ref(), &format!("note = '{long}'")).await?;
+        ensure!(
+            found == ["long"],
+            "looked up {looked}, a long text answered {found:?}"
+        );
+    }
+    let nul = json!({"note": "a\u{0}b"});
+    let refused = try_upsert(l.cat.as_ref(), &l.own, "line", "nul", nul).await;
+    ensure!(
+        refused_on(&refused).is_some_and(|(f, _)| f == "note"),
+        "a text holding U+0000: {refused:?}"
+    );
+    Ok(())
 }
 
 async fn absent_fields_never_match_not_even_not_equal(store: Store) -> Held {

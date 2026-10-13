@@ -1331,6 +1331,10 @@ catalog! {
         AgingSystemType { #[serde(rename = "type")] ty: TypeName } => "`{ty}` is a system type; aging never moves it",
 
         // ---- settings
+        /// An exact-text index of a field computed at the read.
+        LookupIndexAtRead { field: FieldName } => "`{field}` is computed at the read; an exact-text index keeps stored values",
+        /// An exact-text index of a field that is no text.
+        LookupIndexKind { field: FieldName, kind: StorageKind } => "`{field}` is of kind {kind}; an exact-text index keeps text fields",
         /// A type named as a stored type that is none.
         NoStoredType {
             #[serde(rename = "type")]
@@ -1474,6 +1478,8 @@ catalog! {
         IntegerTooLarge { n: Number } => "{n} is beyond ±(2^53 − 1), the largest integer every reader reads exactly",
         /// Bytes that are not base64.
         NotBase64 => "not standard base64 with padding",
+        /// A text holding U+0000, which not every store can hold.
+        NulInText => "a text in it holds U+0000, which not every engine can store",
         /// A date-time that is no UTC instant.
         NotDateTime { value: String } => "not a UTC date-time: \"{value}\"",
         /// A date that is no calendar date.
