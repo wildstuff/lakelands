@@ -31,6 +31,8 @@ pub(super) struct ValueTypeDoc {
     pub format: Option<String>,
     pub scale: Option<u32>,
     pub description: Option<String>,
+    #[serde(default)]
+    pub annotations: Annotations,
 }
 
 /// `types/<name>.yaml`.

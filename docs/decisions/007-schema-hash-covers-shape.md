@@ -56,15 +56,19 @@ logged, and a rejected proposal leaves it as it was
 
 ### A host's annotations are meaning
 
-A type, a field and a relation may carry `annotations`, the host's own
-marks by namespaced key (`acme.icon`, `acme.package`): presentation,
-policy flags the host enforces itself, provenance. They are meaning,
+A type, a field, a relation and a value type may carry `annotations`,
+the host's own marks by namespaced key (`acme.icon`, `acme.package`):
+presentation, policy flags the host enforces itself, provenance, the
+unit a value type's values are in (`acme.unit: EUR`), which the host
+then reads once for every field that names it (lakelands#1025). They are meaning,
 never shape. The hash is an allowlist of shape members, so annotations
 stay out of it without a rule of their own. A suite check holds this
 byte for byte, so that a member added to the allowlist later cannot
 pull them in unnoticed. A type whose annotations alone change keeps its
 schema hash, and its version counts the change like a changed
-description. Carrying annotations in the log is a new member, so it
+description. A value type has no hash of its own, and a type's hash
+names its fields' value type alone, so a value type's annotations move
+no hash either; its version counts their change. Carrying annotations in the log is a new member, so it
 came with a step of the log format (`docs/log-format.md` §6).
 
 ### A field's initial value is not shape

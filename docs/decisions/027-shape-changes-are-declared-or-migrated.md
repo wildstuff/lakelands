@@ -15,8 +15,9 @@ inferred from two declarations; only a migration names it.
 
 ### An annotation is a change of meaning
 
-A revision that changes only a declaration's `annotations` reshapes no
-stored record, so `declare` takes it like a relabel. It never needs a
+A revision that changes only a declaration's `annotations`, a value
+type's among them, reshapes no stored record, so `declare` takes it
+like a relabel. It never needs a
 migration, and none is offered. A migration whose `to` changes
 annotations together with the shape carries them like any other member
 (`docs/decisions/007-schema-hash-covers-shape.md`).

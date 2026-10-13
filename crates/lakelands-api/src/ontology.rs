@@ -114,7 +114,7 @@ impl std::fmt::Display for StorageKind {
 /// A value type: what a value means and what it must satisfy, declared
 /// in the bundle over a storage kind. The set is open; adding one needs
 /// no engine change.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ValueTypeDecl {
     /// The value type's name (`iban`, `money`, `email`).
@@ -141,6 +141,10 @@ pub struct ValueTypeDecl {
     /// What the value type means, for people and agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The host's own marks (a unit: `acme.unit: "EUR"`); never read by
+    /// Lakelands.
+    #[serde(default, skip_serializing_if = "Annotations::is_empty")]
+    pub annotations: Annotations,
 }
 
 /// A field's type: a storage kind, optionally refined by a value type
