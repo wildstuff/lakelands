@@ -1059,13 +1059,19 @@ impl<'a> Reader<'a> {
 
     /// How many retired records of a type [`Self::count`] would count were
     /// they live, under the same filter, grants and position: the count
-    /// with the retired ones, less the live count. A view's records are
-    /// computed and never retired (045).
-    fn retired_count(&self, decl: &TypeDecl, filter: Option<&Expr>) -> Result<u64> {
+    /// with the retired ones, less the live count, `live` where the read
+    /// counted it already. A view's records are computed and never
+    /// retired (045).
+    fn retired_count(
+        &self,
+        decl: &TypeDecl,
+        filter: Option<&Expr>,
+        live: Option<u64>,
+    ) -> Result<u64> {
         if decl.view.is_some() {
             return Ok(0);
         }
-        let live = self.count(decl, filter)?;
+        let live = live.map_or_else(|| self.count(decl, filter), Ok)?;
         self.retired.set(true);
         let all = self.count(decl, filter);
         self.retired.set(false);
@@ -1915,7 +1921,7 @@ impl<'a> Reader<'a> {
             .then(|| self.count(&decl, filter.as_ref()))
             .transpose()?;
         let retired = (find.retired)
-            .then(|| self.retired_count(&decl, filter.as_ref()))
+            .then(|| self.retired_count(&decl, filter.as_ref(), total))
             .transpose()?;
         Ok(Found::Records {
             rows,

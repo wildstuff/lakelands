@@ -16,6 +16,10 @@
 > {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"invoice_get","arguments":{"key":"INV-1"}}}
 < {"id":4,"jsonrpc":"2.0","result":{"content":[{"text":"position 8\n{\n  \"data\": {\n    \"fields\": {\n      \"status\": \"open\"\n    },\n    \"key\": \"INV-1\",\n    \"type\": \"invoice\",\n    \"version\": 1\n  },\n  \"position\": 8\n}","type":"text"}],"isError":false,"structuredContent":{"data":{"fields":{"status":"open"},"key":"INV-1","type":"invoice","version":1},"position":8}}}
 
+# find answers its total and its count of the retired beside it.
+> {"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"invoice_find","arguments":{"total":true,"retired":true,"limit":1}}}
+< {"id":40,"jsonrpc":"2.0","result":{"content":[{"text":"position 8\n{\n  \"data\": {\n    \"retired\": 0,\n    \"rows\": [\n      {\n        \"fields\": {\n          \"status\": \"open\"\n        },\n        \"key\": \"INV-1\",\n        \"type\": \"invoice\",\n        \"version\": 1\n      }\n    ],\n    \"shape\": \"records\",\n    \"total\": 1\n  },\n  \"position\": 8\n}","type":"text"}],"isError":false,"structuredContent":{"data":{"retired":0,"rows":[{"fields":{"status":"open"},"key":"INV-1","type":"invoice","version":1}],"shape":"records","total":1},"position":8}}}
+
 # Pin the head; a write lands after it, and pinned reads do not see it
 # until the pin is cleared.
 > {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"pin","arguments":{}}}

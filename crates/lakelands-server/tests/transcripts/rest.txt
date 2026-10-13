@@ -69,6 +69,14 @@
 < lakelands-position: 9
 < {"data":{"rows":[{"fields":{"status":"open"},"key":"INV-1","type":"invoice","version":1}],"shape":"records"},"position":9}
 
+# total and retired are flags: present without a value is true.
+> GET /lakes/finance/types/invoice/records?limit=1&total&retired
+> authorization: Bearer k-clerk
+< 200
+< content-type: application/json
+< lakelands-position: 9
+< {"data":{"retired":0,"rows":[{"fields":{"status":"open"},"key":"INV-1","type":"invoice","version":1}],"shape":"records","total":1},"position":9}
+
 # order_by also takes the JSON array the find tool takes.
 > GET /lakes/finance/types/invoice/records?order_by=%5B%7B%22field%22%3A%22status%22%2C%22dir%22%3A%22desc%22%7D%5D
 > authorization: Bearer k-clerk
