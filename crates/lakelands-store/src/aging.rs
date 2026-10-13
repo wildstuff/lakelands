@@ -27,7 +27,9 @@ use lakelands_api::ontology::Authority;
 use lakelands_api::principal::{WriteContext, WriteOrigin};
 use lakelands_api::record::Origin;
 use lakelands_api::write::{AgeReport, RuleRun};
-use lakelands_api::{FieldName, Patch, Position, Principal, Result, Timestamp, TypeName, Value};
+use lakelands_api::{
+    Error, FieldName, Patch, Position, Principal, Result, Timestamp, TypeName, Value,
+};
 use lakelands_core::derive;
 use lakelands_core::expr::{self, Place, RecordScope};
 use lakelands_core::rights::{self, Door};
@@ -238,9 +240,15 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
             }
             d.envelope.id = Some(id);
             let patch: Patch = [(rule.field.clone(), rule.to.clone())].into();
-            let Ok(plan) = d.record(&rule.on, &record.key, &patch, None, None) else {
-                ran.failed_guards += 1;
-                continue;
+            // An outage is never a guard that failed: it ends the run, as
+            // any read's outage does (lakelands#927, lakelands#950).
+            let plan = match d.record(&rule.on, &record.key, &patch, None, None) {
+                Ok(plan) => plan,
+                Err(e @ Error::Unavailable { .. }) => return Err(e),
+                Err(_) => {
+                    ran.failed_guards += 1;
+                    continue;
+                }
             };
             drafts.extend(d.planned(plan)?.drafts);
             ran.moved += 1;

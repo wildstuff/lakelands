@@ -386,7 +386,9 @@ pub trait LakeStore: Send + Sync {
     /// any other time is refused as invalid. Moves are records written by
     /// the store with the rule as their procedure, one append per rule,
     /// and a date aged twice is written once
-    /// (`docs/decisions/036-aging-runs-by-date-once.md`).
+    /// (`docs/decisions/036-aging-runs-by-date-once.md`). A read the engine
+    /// fails ends the run as the outage it is, never a guard that failed;
+    /// the rules appended before it stand.
     async fn age(&self, today: crate::time::Timestamp) -> Result<crate::write::AgeReport>;
 
     /// Retire, in one append, every live record the source brought in,

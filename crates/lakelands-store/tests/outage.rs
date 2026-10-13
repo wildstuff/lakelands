@@ -180,3 +180,36 @@ async fn an_engine_that_cannot_read_a_key_answers_its_outage_not_a_hold() {
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
+
+/// An aging run that cannot read a record it would move answers the
+/// outage and moves nothing, where a guard that fails is counted, and the
+/// run goes on (lakelands#950).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_aging_run_answers_an_outage_and_counts_a_failed_guard() {
+    let (store, probe) = lake("aging-outage").await;
+    let l = Lake::of(store.as_ref());
+    let rule = async |name: &str, when: &str| {
+        let fields = json!({"on": "doc", "field": "n", "from": "x", "to": "z", "when": when});
+        l.upsert(lakelands_api::seam::AGING_RULE_TYPE, name, fields)
+            .await
+    };
+    // A guard that fails for every record: it divides by zero.
+    rule("wrong", "1 / 0 = 1").await.unwrap();
+    let today = lakelands_api::Timestamp::from_date(2026, 10, 13).unwrap();
+    let ran = store.age(today).await.unwrap();
+    rule("wrong", "n = 'x'").await.unwrap();
+    *probe.fail_get.lock().unwrap() = Some(TypeName::from("doc"));
+    let head = store.head().await.unwrap();
+    let failing = said(store.age(today).await);
+    let unmoved = store.head().await.unwrap() == head;
+    *probe.fail_get.lock().unwrap() = None;
+    let healthy = store.age(today).await.unwrap();
+    assert!(
+        ran.failed_guards == 2 && failing == "unavailable" && unmoved && healthy.transitions == 2,
+        "a guard that fails counts {} failed guards, where 2 are due; an unreadable `doc` answers \
+         {failing} (the outage due) and moves {}; the healthy run moves {}, where 2 are due",
+        ran.failed_guards,
+        if unmoved { "nothing" } else { "something" },
+        healthy.transitions
+    );
+}
