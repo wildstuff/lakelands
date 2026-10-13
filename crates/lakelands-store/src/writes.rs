@@ -3298,8 +3298,13 @@ impl Call<'_> {
     fn types_shown(&self, o: &Ontology) -> Ontology {
         let (sees, mut seen) = (Sight::held(self.who, o), o.clone());
         (seen.types).retain(|name, _| sees.ty(name).is_ok());
-        for e in seen.types.values_mut().map(Arc::make_mut) {
-            rights::known_fields(self.who, &mut e.decl, &|n| o.ty(n).ok());
+        // A type copied only where its author is kept from some of it
+        // (lakelands#943): any other is the lake's own.
+        let find = |n: &TypeName| o.ty(n).ok();
+        for e in seen.types.values_mut() {
+            if rights::keeps_from(self.who, &e.decl, &find) {
+                rights::known_fields(self.who, &mut Arc::make_mut(e).decl, &find);
+            }
         }
         seen
     }

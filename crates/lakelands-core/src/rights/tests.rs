@@ -1,5 +1,5 @@
 use super::*;
-use lakelands_api::ontology::StorageKind;
+use lakelands_api::ontology::{RelationDecl, StorageKind};
 use lakelands_api::principal::{Grants, PrincipalKind, TypeGrants};
 use lakelands_api::{FieldMeta, Origin, Position, Timestamp, Version};
 use serde_json::json;
@@ -513,5 +513,56 @@ fn fields_that_list_each_other_have_one_answer_each_and_the_rule_holds_for_all()
         turned.fields.reverse();
         (turned.fields.iter_mut()).for_each(|f| f.depends_on.reverse());
         assert_eq!(answers(&who, &turned), all, "{decl:?}");
+    }
+}
+
+/// `keeps_from` says whether `known_fields` takes anything out, for a
+/// reader who knows everything, one kept from a field, from a link field,
+/// and from the type a relation reaches (lakelands#943).
+#[test]
+fn keeps_from_says_whether_known_fields_takes_anything_out() {
+    let mut paid = RelationDecl::to("paid", "payment");
+    paid.fields = vec![field("fee", Authority::Authored, false)];
+    let t = TypeDecl {
+        relations: vec![paid.clone()],
+        ..invoice()
+    };
+    let payment = TypeDecl {
+        fields: vec![field("sum", Authority::Authored, false)],
+        ..TypeDecl::named("payment")
+    };
+    let find = |n: &TypeName| (n.as_str() == "payment").then_some(&payment);
+    let link = crate::links::link_type(&t.name, &paid).name;
+    let kept = |ty: &TypeName, f: &str| {
+        let mut who = principal(Access::Read, &[]);
+        let fields = [(FieldName::from(f), Access::None)].into();
+        let grants = TypeGrants {
+            default: None,
+            fields,
+            ..Default::default()
+        };
+        who.grants.types.insert(ty.clone(), grants);
+        who
+    };
+    let mut unshown = principal(Access::Read, &[]);
+    let none = TypeGrants {
+        default: Some(Access::None),
+        ..Default::default()
+    };
+    unshown.grants.types.insert("payment".into(), none);
+    for (who, keeps) in [
+        (principal(Access::Read, &[]), false),
+        (principal(Access::Read, &[("note", Access::None)]), true),
+        (kept(&link, "fee"), true),
+        (unshown, true),
+    ] {
+        let mut known = t.clone();
+        known_fields(&who, &mut known, &find);
+        assert_eq!(
+            (keeps_from(&who, &t, &find), known != t),
+            (keeps, keeps),
+            "{:?}",
+            who.grants
+        );
     }
 }

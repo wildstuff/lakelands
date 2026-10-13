@@ -862,6 +862,9 @@ fn unread(who: &Principal, t: &TypeDecl, name: &FieldName) -> bool {
 /// too, and without the relations it is not shown. `find` answers a type
 /// by its name.
 pub fn known_fields<'a>(who: &Principal, t: &mut TypeDecl, find: Find<'_, 'a>) {
+    if !keeps_from(who, t, find) {
+        return;
+    }
     let whole = t.clone();
     (t.relations).retain(|r| crate::describe::relation_shown(&whole, r, find, who));
     t.fields
@@ -871,6 +874,18 @@ pub fn known_fields<'a>(who: &Principal, t: &mut TypeDecl, find: Find<'_, 'a>) {
         r.fields
             .retain(|f| field_access(who, &link, f) != Access::None);
     }
+}
+
+/// Whether [`known_fields`] takes anything out of `t` for `who`: a
+/// relation it is not shown, or a field or a link field it may not know
+/// of. Asked before a type is copied to take it out (lakelands#943).
+pub fn keeps_from(who: &Principal, t: &TypeDecl, find: Find<'_, '_>) -> bool {
+    let none = |d: &TypeDecl, f: &FieldDecl| field_access(who, d, f) == Access::None;
+    let relation = |r: &lakelands_api::ontology::RelationDecl| {
+        let link = crate::links::link_type(&t.name, r);
+        !crate::describe::relation_shown(t, r, find, who) || r.fields.iter().any(|f| none(&link, f))
+    };
+    t.fields.iter().any(|f| none(t, f)) || t.relations.iter().any(relation)
 }
 
 /// A type by its name, as the caller's ontology answers it.
