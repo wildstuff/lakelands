@@ -59,7 +59,7 @@ check!(
 
 check!(
     NOT_SHOWN_NOT_DECIDED = a_proposal_on_a_type_its_reviewer_is_not_shown_is_not_there,
-    "006 and 013, extended (lakelands#762): to a reviewer not shown a type a proposal names, or for a link type either end type, the proposal is not there: `proposals` does not list it, and `accept` and `reject` answer as for a proposal id that does not exist, word for word, before anything else of it is told: an upsert, a call on a link, a pinned one whose hidden end moved since, a migration, a bundle that redeclares the type, puts a verb on it, or relates or refers a new type to it, and a migration that drops a relation to it, pending or decided; a restatement of a type related to it through a computed link field, as a bundle and as a migration, is listed and decided; nothing is appended; every other proposal is listed as to a reviewer shown everything, and decided; a reviewer shown the type decides it"
+    "006 and 013, extended (lakelands#762): to a reviewer not shown a type a proposal names, or for a link type either end type, the proposal is not there: `proposals` does not list it, and `accept` and `reject` answer as for a proposal id that does not exist, word for word, before anything else of it is told: an upsert, a call on a link, a pinned one whose hidden end moved since, a migration, a bundle that redeclares the type, puts a verb on it, or relates or refers a new type to it, and a migration that drops a relation to it, pending or decided; a restatement of a type related to it through a computed link field, as a bundle and as a migration, is listed and decided; nothing is appended; every other proposal is listed as to a reviewer shown everything, and decided, a page of any size being the listing's first entries past the hidden ones (lakelands#888); a reviewer shown the type decides it"
 );
 
 check!(
@@ -810,6 +810,25 @@ async fn a_proposal_on_a_type_its_reviewer_is_not_shown_is_not_there(store: Stor
         json!(got),
         json!(want)
     );
+    // A page of any size is the listing's first entries, the hidden ones
+    // among the newest passed over, not counted (lakelands#888): the
+    // newest is one more upsert of `trip`.
+    propose(json!({"write": "upsert", "type": "trip", "key": "t2", "patch": {"name": "rome"}}))
+        .await?;
+    for limit in 1..=got.len() {
+        let filter = ProposalFilter {
+            limit: Some(limit as u32),
+            ..ProposalFilter::default()
+        };
+        let page = l.cat.proposals(&kept, filter).await;
+        let page = page.must("a page of proposals")?.data;
+        ensure!(
+            ids(&page) == ids(&got[..limit]),
+            "a page of {limit} lists the first {limit} of {:?}; it lists {:?}",
+            ids(&got),
+            ids(&page)
+        );
+    }
     let absent = |id: &ProposalId| -> lakelands_api::Result<()> {
         let missing = Missing::Proposal { id: id.clone() };
         Err(Error::NotFound { missing })
