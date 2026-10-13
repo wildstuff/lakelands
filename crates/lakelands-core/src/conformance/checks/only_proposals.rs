@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use super::only::{alice, claims, de, holder, said};
 use crate::conformance::backing::{KIND, plug, unplug};
 use crate::conformance::fixture::{
-    Lake, Must, computed_by, events_from, field, head_unmoved, type_decl,
+    Lake, Must, alike_renamed, computed_by, events_from, field, head_unmoved, type_decl,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -23,7 +23,7 @@ check!(
 
 check!(
     ONLY_DECIDES = a_holder_of_only_decides_what_it_is_shown_whole,
-    "051: a reviewer holding `only` accepts and rejects a proposal its listing shows it whole; one on another's record it is refused, a retirement by one who holds `restricted` too, appending nothing, before it is told the proposal is decided, so a guessed id tells it nothing; and its accept is refused where the write, its derived values computed, would leave the record outside its pairs"
+    "051: a reviewer holding `only` accepts and rejects a proposal its listing shows it whole; one on another's record, a retirement too and by one who holds `restricted` as well, is not there to it, its accept and reject answered as an id never made, decided or not, to the byte (lakelands#1016), appending nothing, so a guessed id tells it nothing; one listed to it in part, its own record handed to another or a free key made another's, it neither accepts nor rejects, each refused as not granted, appending nothing; a key whose record another retired, and which is not held, is free to it: a proposal that makes it the holder's is listed whole and accepted; and its accept is refused where the write, its derived values computed, would leave the record outside its pairs"
 );
 
 /// `who`'s proposal of the write `json`, its id or what refused it.
@@ -422,6 +422,8 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
         {"name": "owner", "type": {"kind": "text"}, "authority": "derived", "derived": "n"}]}))
         .await?;
     l.upsert("ticket", "t1", json!({"n": "alice"})).await?;
+    l.upsert("claim", "c4", json!({"owner": "bob"})).await?;
+    l.retire("claim", "c4").await?;
     let (carol, bob) = (
         holder(store.as_ref(), "carol", json!({"default": "write"})),
         holder(store.as_ref(), "bob", json!({"default": "write"})),
@@ -441,6 +443,11 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
             &bob,
             json!({"write": "retire", "type": "claim", "key": "c2"}),
         ),
+        // Listed to her in part: her `c1` handed to bob, a free key made
+        // his; and whole: bob's retired `c4`, a free key, made hers.
+        (&carol, upsert("claim", "c1", "owner", json!("bob"))),
+        (&carol, upsert("claim", "c9", "owner", json!("bob"))),
+        (&carol, upsert("claim", "c4", "owner", json!("alice"))),
     ] {
         ids.push(proposes(&l, who, write).await.map_err(Failure::new)?);
     }
@@ -459,18 +466,27 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
         rows.push((what.to_owned(), said, want.to_owned()));
     };
     let head = store.head().await.must("reading the head")?;
-    for (what, id) in [("bob's pending", &ids[3]), ("bob's decided", &ids[4])] {
-        let accepted = cat.accept(&alice, id).await.map(|_| ());
+    // A proposal on another's record is not there to her, decided or
+    // not: its accept and reject answer as an id never made, to the byte
+    // (lakelands#1016).
+    let none = ProposalId::from("none");
+    for (what, id) in [
+        ("bob's pending proposal", &ids[3]),
+        ("bob's decided proposal", &ids[4]),
+        ("a retirement of bob's `c2`", &ids[6]),
+    ] {
+        let decide = async |id: &ProposalId| {
+            let accepted = cat.accept(&alice, id).await;
+            [accepted, cat.reject(&alice, id, "no".into()).await]
+        };
+        let (decided, never) = (decide(id).await, decide(&none).await);
+        let as_never = decided.iter().zip(&never).all(|(d, n)| {
+            matches!((d, n), (Err(d), Err(n)) if alike_renamed("", d, n, ("none", id.as_str())).is_ok())
+        });
         row(
-            &format!("the accept of {what} proposal"),
-            said(accepted),
-            &ng,
-        );
-        let rejected = cat.reject(&alice, id, "no".into()).await.map(|_| ());
-        row(
-            &format!("the reject of {what} proposal"),
-            said(rejected),
-            &ng,
+            &format!("the accept and reject of {what}"),
+            format!("as an id never made: {as_never}; {decided:?}"),
+            &format!("as an id never made: true; {decided:?}"),
         );
     }
     let given = cat.accept(&alice, &ids[2]).await.map(|_| ());
@@ -485,13 +501,34 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
         said(derived),
         &ng,
     );
-    let retired = cat.accept(&alice, &ids[6]).await.map(|_| ());
-    row(
-        "the accept of a retirement of bob's `c2`",
-        said(retired),
-        &ng,
-    );
+    // An entry listed to her in part she neither accepts nor rejects.
+    let listed = cat.proposals(&alice, Default::default()).await;
+    let listed = listed.must("alice's listing")?.data;
+    let shown = |id: &ProposalId| {
+        let p = listed.iter().find(|p| &p.id == id);
+        format!("{:?}", p.map(|p| (p.write.is_some(), p.more)))
+    };
+    for (what, id) in [
+        ("her `c1` handed to bob", &ids[7]),
+        ("a free `c9` made bob's", &ids[8]),
+    ] {
+        row(&format!("{what}, listed"), shown(id), "Some((false, true))");
+        let accepted = cat.accept(&alice, id).await.map(|_| ());
+        row(&format!("the accept of {what}"), said(accepted), &ng);
+        let rejected = cat.reject(&alice, id, "no".into()).await.map(|_| ());
+        row(&format!("the reject of {what}"), said(rejected), &ng);
+    }
     head_unmoved(store.as_ref(), head, "every refused decision by alice").await?;
+    // Bob's retired `c4` is a free key to her, as to her writes: its
+    // remaking as hers is listed whole, and she accepts it.
+    let c4 = "bob's retired `c4` made hers";
+    row(
+        &format!("{c4}, listed"),
+        shown(&ids[9]),
+        "Some((true, false))",
+    );
+    let accepted = cat.accept(&alice, &ids[9]).await.map(|_| ());
+    row(&format!("the accept of {c4}"), said(accepted), "applied");
     let accepted = cat.accept(&alice, &ids[0]).await.map(|_| ());
     row(
         "the accept of a change to her `c1`",

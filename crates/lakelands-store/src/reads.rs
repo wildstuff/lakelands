@@ -2248,15 +2248,16 @@ impl<'a> Reader<'a> {
         // now or named it when proposed: a condition or a reference a
         // setting, the clock or the record decide may come to a record at
         // one and not at the other. It would tell of that record, and its
-        // accept is not granted (006). Nor, to one without `restricted`, is
-        // one whose own record or a link's end is held: an `only` lists
-        // another's in part (lakelands#867), a hold not at all
-        // (lakelands#1008).
+        // accept is not granted (006). Nor is one whose own record or a
+        // link's end it is not answered, held or another's (lakelands#1008,
+        // lakelands#1016): an `only` lists in part only what it is shown,
+        // trimmed (lakelands#867). A retired record that is not held is,
+        // as to its writes, a free key.
         let (g, view) = (&self.who.grants, self.view.as_ref());
         if !g.restricted || rights::holds_only(self.who) {
             let settings = crate::lake::settings_in(view, o).ok()?;
             let now = (view, &settings, crate::lake::wall_clock());
-            let mut named = crate::writes::reached(self.lake, o, now, &logged, false).ok()?;
+            let mut named = crate::writes::reached(self.lake, o, now, &logged, true).ok()?;
             let since = self.shape.declared.iter().any(|d| d.since > at);
             if since || crate::writes::reaches_by_state(o, &logged) {
                 let then = self.lake.engine.view(Some(at)).ok()?;
@@ -2266,19 +2267,11 @@ impl<'a> Reader<'a> {
                 named.extend(was.ok()?);
             }
             let held = |(t, k): &(TypeName, RecordKey)| {
-                view.get(t, k).ok().flatten().is_some() && !answered(view, self.sight, t, k)
+                let there = view.get(t, k).ok().flatten();
+                there.is_some_and(|r| !r.retired || self.sight.withheld(&r))
+                    && !answered(view, self.sight, t, k)
             };
-            let own = match g.restricted {
-                false => crate::writes::reached(self.lake, o, now, &logged, true).ok()?,
-                true => Vec::new(),
-            };
-            let withheld = |(t, k): &(TypeName, RecordKey)| {
-                view.get(t, k)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|r| self.sight.withheld(&r))
-            };
-            if named.iter().any(held) || own.iter().any(withheld) {
+            if named.iter().any(held) {
                 return None;
             }
         }
@@ -2333,10 +2326,14 @@ impl<'a> Reader<'a> {
         match write {
             // A field the reader may not know of and a masked one both
             // leave the patch: it holds values, and no place for a name.
+            // A retired record that is not held is a free key, as to the
+            // reader's own writes.
             ProposedWrite::Upsert { ty, key, patch, .. } => {
                 let admitted = after(ty, key, patch);
                 patch.retain(|field, _| read(ty, field));
-                admitted && answered(ty, key)
+                let stored = self.view.get(ty, key).ok().flatten();
+                let free = stored.is_some_and(|r| r.retired && !self.sight.withheld(&r));
+                admitted && (free || answered(ty, key))
             }
             ProposedWrite::Retire { ty, key, .. } => answered(ty, key),
             // A payload is what the verb's fields become: whole to a reader
