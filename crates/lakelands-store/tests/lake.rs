@@ -1533,7 +1533,10 @@ async fn an_ingest_that_carries_an_authored_field_is_refused_even_unchanged() {
         .await
         .expect("an answer");
     assert!(
-        matches!(first, Err(Error::Refused { .. })),
+        matches!(
+            first.as_ref().map_err(Error::unwrapped),
+            Err(Error::Refused { .. })
+        ),
         "the source is not the authority on `note`: {first:?}"
     );
 }

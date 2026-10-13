@@ -294,12 +294,22 @@ async fn ingest_answers_each_window_and_ends_on_a_refused_record() {
     for window in &out[..2] {
         assert_eq!(window.as_ref().map(|c| c.records), Ok(1));
     }
+    // The lake's own answer, not a failure of the wire: the refusal,
+    // naming the record and where its window began (lakelands#1043).
     assert_eq!(
         out[2],
-        Err(Error::NotFound {
-            missing: Missing::Type {
-                name: "nowhere".into()
-            }
+        Err(Error::Ingested {
+            index: 2,
+            from: 2,
+            record: lakelands_api::error::RecordName::Of {
+                ty: "nowhere".into(),
+                key: "N-1".into(),
+            },
+            error: Box::new(Error::NotFound {
+                missing: Missing::Type {
+                    name: "nowhere".into()
+                }
+            }),
         }),
         "the lake's own answer, not a failure of the wire"
     );

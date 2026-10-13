@@ -52,7 +52,7 @@ pub fn window(
     who: &Principal,
     context: WriteContext,
     source: &SourceId,
-    records: Vec<SourceRecord>,
+    (first, records): (u64, Vec<SourceRecord>),
 ) -> Result<Committed> {
     crate::writes::check_context(lake, &context)?;
     let mut w = lake.for_write()?;
@@ -92,68 +92,83 @@ pub fn window(
     for (ty, keys) in keys {
         d.pending.prime(view.as_ref(), ty, &keys)?;
     }
-    for r in records {
-        let decl = sees.ty(&r.ty)?;
-        // The key's form before the door, as `upsert` checks it. Then the
-        // door: a patch that carries a field the source is not the
-        // authority on is refused whole, even when that field's value is
-        // the one already stored.
-        let patch = d.checked(decl, &r.key, &r.fields)?;
-        stated(&r)?;
-        // A record a holder of `only` is not admitted is, to it, a key that
-        // is free: it is not compared, and the write is refused as on a
-        // free key with another's owner (051).
-        let t = d.target(decl, &r.key)?;
-        // A link type no relation carries, its relation renamed or
-        // removed, stays declared for its history and takes no link.
-        let types = w.ontology.types.values().map(|e| &e.decl);
-        let relation = (links::is_link_type(&r.ty)).then(|| links::relation_of(types, &r.ty));
-        if let Some(None) = relation {
-            let ty = r.ty.clone();
-            return Err(lakelands_core::invalid(Case::UnclaimedLinkType { ty }));
-        }
-        let other = t.own().is_none() && t.before.is_some();
-        let version_before = t.before.as_ref().map_or(0, |b| b.version.0);
-        let id = log::ingest_id(source, &r.ty, &r.key, version_before, &patch);
-        let unchanged = t.live().is_some_and(|b| {
-            patch.iter().all(|(f, v)| match b.fields.get(f) {
-                Some(stored) => stored == v,
-                None => v.is_null(),
-            })
-        });
-        if unchanged || !other && (seen.contains(&id) || view.applied(&id)?.is_some()) {
-            duplicates += 1;
-            continue;
-        }
-        if patch.is_empty() {
-            return Err(lakelands_core::invalid(Case::PatchEmpty));
-        }
-        // The record is applied as the source states it, so a guard reads
-        // the `seen_at` the fold keeps.
-        let stated = (Some(id.clone()), r.seen_at, r.upstream.clone());
-        (d.envelope.id, d.envelope.seen_at, d.envelope.upstream) = stated;
-        let plan = d.write(decl, &r.key, t, patch, None)?;
-        // A link holds its relation's cardinality, over the lake's live
-        // links and those earlier in this window: judged once the plan
-        // admitted the record its writer leaves,
-        // so that it names nothing of another's record and passes over no
-        // link a holder's `only` admits (051).
-        if let Some(Some((t, relation))) = relation {
-            // The ends as the record holds them: the key rule fills
-            // those the patch leaves out.
-            let end = |f: &str| {
-                let end = plan.after.fields.get(f).and_then(|v| v.as_str());
-                end.map(lakelands_api::RecordKey::from)
-            };
-            if let (Some(from), Some(to)) = (end(links::FROM), end(links::TO)) {
-                crate::writes::cardinality(view.as_ref(), &sees, &t.name, relation, &from, &to)?;
-                crate::writes::cardinality_among(&window_links, &r.ty, relation, &from, &to)?;
-                window_links.push((r.ty.clone(), from, to));
+    for (i, r) in records.iter().enumerate() {
+        let judged = (|| {
+            let decl = sees.ty(&r.ty)?;
+            // The key's form before the door, as `upsert` checks it. Then the
+            // door: a patch that carries a field the source is not the
+            // authority on is refused whole, even when that field's value is
+            // the one already stored.
+            let patch = d.checked(decl, &r.key, &r.fields)?;
+            stated(r)?;
+            // A record a holder of `only` is not admitted is, to it, a key that
+            // is free: it is not compared, and the write is refused as on a
+            // free key with another's owner (051).
+            let t = d.target(decl, &r.key)?;
+            // A link type no relation carries, its relation renamed or
+            // removed, stays declared for its history and takes no link.
+            let types = w.ontology.types.values().map(|e| &e.decl);
+            let relation = (links::is_link_type(&r.ty)).then(|| links::relation_of(types, &r.ty));
+            if let Some(None) = relation {
+                let ty = r.ty.clone();
+                return Err(lakelands_core::invalid(Case::UnclaimedLinkType { ty }));
             }
+            let other = t.own().is_none() && t.before.is_some();
+            let version_before = t.before.as_ref().map_or(0, |b| b.version.0);
+            let id = log::ingest_id(source, &r.ty, &r.key, version_before, &patch);
+            let unchanged = t.live().is_some_and(|b| {
+                patch.iter().all(|(f, v)| match b.fields.get(f) {
+                    Some(stored) => stored == v,
+                    None => v.is_null(),
+                })
+            });
+            if unchanged || !other && (seen.contains(&id) || view.applied(&id)?.is_some()) {
+                duplicates += 1;
+                return Ok(());
+            }
+            if patch.is_empty() {
+                return Err(lakelands_core::invalid(Case::PatchEmpty));
+            }
+            // The record is applied as the source states it, so a guard reads
+            // the `seen_at` the fold keeps.
+            let stated = (Some(id.clone()), r.seen_at, r.upstream.clone());
+            (d.envelope.id, d.envelope.seen_at, d.envelope.upstream) = stated;
+            let plan = d.write(decl, &r.key, t, patch, None)?;
+            // A link holds its relation's cardinality, over the lake's live
+            // links and those earlier in this window: judged once the plan
+            // admitted the record its writer leaves,
+            // so that it names nothing of another's record and passes over no
+            // link a holder's `only` admits (051).
+            if let Some(Some((t, relation))) = relation {
+                // The ends as the record holds them: the key rule fills
+                // those the patch leaves out.
+                let end = |f: &str| {
+                    let end = plan.after.fields.get(f).and_then(|v| v.as_str());
+                    end.map(lakelands_api::RecordKey::from)
+                };
+                if let (Some(from), Some(to)) = (end(links::FROM), end(links::TO)) {
+                    crate::writes::cardinality(
+                        view.as_ref(),
+                        &sees,
+                        &t.name,
+                        relation,
+                        &from,
+                        &to,
+                    )?;
+                    crate::writes::cardinality_among(&window_links, &r.ty, relation, &from, &to)?;
+                    window_links.push((r.ty.clone(), from, to));
+                }
+            }
+            drafts.extend(d.planned(plan)?.drafts);
+            seen.insert(id);
+            committed += 1;
+            Ok(())
+        })();
+        // A record refused names itself and where its window began, which
+        // nothing from was written (016, lakelands#1043); an outage does not.
+        if let Err(e) = judged {
+            return Err(ingested(e, first + i as u64, first, r));
         }
-        drafts.extend(d.planned(plan)?.drafts);
-        seen.insert(id);
-        committed += 1;
     }
     let reads = d.pending.into_reads();
     drop(view);
@@ -171,6 +186,29 @@ pub fn window(
         records: committed,
         duplicates,
     })
+}
+
+/// The refusal `e` of the record `r`, at `index` in its stream, its window
+/// begun at `first`; an outage as it is, since it is no record's.
+fn ingested(
+    e: lakelands_api::Error,
+    index: u64,
+    first: u64,
+    r: &SourceRecord,
+) -> lakelands_api::Error {
+    if matches!(e, lakelands_api::Error::Unavailable { .. }) {
+        return e;
+    }
+    let record = lakelands_api::error::RecordName::Of {
+        ty: r.ty.clone(),
+        key: r.key.clone(),
+    };
+    lakelands_api::Error::Ingested {
+        index,
+        from: first,
+        record,
+        error: Box::new(e),
+    }
 }
 
 /// What a source states of a record beside its fields is written as it
@@ -220,7 +258,7 @@ pub fn run(
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Committed>>(4);
     let size = lake.limits.commit_window_events.max(1) as usize;
     tokio::spawn(async move {
-        let mut ended = false;
+        let (mut ended, mut next) = (false, 0u64);
         while !ended {
             let mut batch = Vec::new();
             let mut deadline = None;
@@ -241,7 +279,9 @@ pub fn run(
                 continue;
             }
             let (l, w, s) = (lake.clone(), who.clone(), source.clone());
-            let run = move || crate::lake::owing(|| window(&l, &w, context, &s, batch));
+            let first = next;
+            next += batch.len() as u64;
+            let run = move || crate::lake::owing(|| window(&l, &w, context, &s, (first, batch)));
             let mut answer = exec::run(run).await;
             // The calls the window made due are made before it answers, so
             // its position is one the filled fields are visible from.

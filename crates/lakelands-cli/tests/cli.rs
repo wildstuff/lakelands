@@ -530,11 +530,12 @@ fn ingest_reads_csv_through_a_column_map() {
         // Refused as invalid: the CLI's framing, never the sentence.
         let s = sh.run(&["ingest", &empty, "--source", "bank", "--map", &map]);
         assert_eq!((s.code, s.out.as_str()), (1, ""));
+        // The record is named, and where to send the stream again from.
         assert!(
-            s.err.starts_with("error: refused: ")
-                && s.err.ends_with(
-                    "  what to do: correct the input and run the command again; nothing was written\n"
-                ),
+            s.err
+                .starts_with("error: record 0 of the stream (`invoice` `INV-4`): refused: ")
+                && s.err
+                    .ends_with("nothing was written; then send the stream again from record 0\n"),
             "{}",
             s.err
         );

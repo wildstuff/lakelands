@@ -292,6 +292,7 @@ belongs in the suite, not beside one engine:
 - `an_upsert_carrying_a_field_only_a_source_writes_is_refused_as_the_wrong_door` — 016 and 015: an author never overwrites a figure the source is the authority on; the patch is refused as the wrong door
 - `ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert` — 016 and the log format: an ingest that changes nothing appends nothing, and a record set back to an earlier value is a new change, not a redelivery
 - `a_record_delivered_twice_in_two_windows_is_written_once` — 016 and the log format: ingest is content-addressed across windows too, so a record delivered again in a later window of the same ingest appends nothing and the feed holds one event
+- `an_ingest_refusal_names_its_record_and_where_its_window_began` — 016, extended (lakelands#1043): a record an ingest refuses is named by the refusal, by its type and key as its source sent them, with its place in the stream and the place of the first record of its window, from which nothing was written while every window before it was: for a field the source is not the authority on, an empty record on a free key, a type its writer is not shown and a link past its relation's cardinality within the window, each the refusal it is without the stream, with `index`, `from` and `record` beside it on the wire
 
 **rebuild**
 

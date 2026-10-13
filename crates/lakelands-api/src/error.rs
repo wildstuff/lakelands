@@ -73,6 +73,23 @@ pub enum Error {
         #[serde(with = "closed")]
         situation: Box<Situation>,
     },
+    /// A record of an ingest's stream was refused (lakelands#1043): its
+    /// place in the stream, counted from 0; the place of the first record
+    /// of its window, from which nothing was written; the record, by the
+    /// type and key its source sent; and the refusal. On the wire it is
+    /// the refusal, its code and shape kept, with `index`, `from` and
+    /// `record` beside it; [`Error::unwrapped`] answers the refusal.
+    #[serde(skip)]
+    Ingested {
+        /// The record's place in the stream.
+        index: u64,
+        /// The place of the first record of its window.
+        from: u64,
+        /// The record, as its source named it.
+        record: RecordName,
+        /// The refusal.
+        error: Box<Error>,
+    },
     /// An error of a kind this build does not know: a newer lake's.
     #[serde(skip)]
     Unknown(Unknown),
@@ -93,10 +110,30 @@ impl Serialize for Plain {
     }
 }
 
-/// Its data, and `message`, its sentence.
+/// Its data, and `message`, its sentence; a refused record of an ingest
+/// as its refusal, with where it stood in the stream beside it.
 impl Serialize for Error {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        closed::serialize(&Plain(self.clone()), s)
+        let Error::Ingested {
+            index,
+            from,
+            record,
+            error,
+        } = self
+        else {
+            return closed::serialize(&Plain(self.clone()), s);
+        };
+        let custom = <S::Error as serde::ser::Error>::custom::<String>;
+        let mut map = match serde_json::to_value(error).map_err(|e| custom(e.to_string()))? {
+            Value::Object(map) => map,
+            other => return Err(custom(format!("{other} is no error"))),
+        };
+        let record = closed::serialize(record, serde_json::value::Serializer);
+        let record = record.map_err(|e| custom(e.to_string()))?;
+        map.insert("index".into(), Value::from(*index));
+        map.insert("from".into(), Value::from(*from));
+        map.insert("record".into(), record);
+        map.serialize(s)
     }
 }
 
@@ -105,7 +142,29 @@ impl Serialize for Error {
 /// said by the error's `message`.
 impl<'de> Deserialize<'de> for Error {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Error, D::Error> {
-        let map = Map::<String, Value>::deserialize(d)?;
+        let mut map = Map::<String, Value>::deserialize(d)?;
+        // A refused record of an ingest: its refusal, with its place beside.
+        if ["index", "from", "record"]
+            .iter()
+            .all(|k| map.contains_key(*k))
+        {
+            let custom = <D::Error as serde::de::Error>::custom::<String>;
+            let place = |v: Option<Value>| {
+                v.and_then(|v| v.as_u64())
+                    .ok_or_else(|| custom("a place is a number".into()))
+            };
+            let (index, from) = (place(map.remove("index"))?, place(map.remove("from"))?);
+            let record = closed::deserialize(map.remove("record").unwrap_or_default());
+            let record = record.map_err(|e: serde_json::Error| custom(e.to_string()))?;
+            let error = Error::deserialize(Value::Object(map));
+            let error = Box::new(error.map_err(|e| custom(e.to_string()))?);
+            return Ok(Error::Ingested {
+                index,
+                from,
+                record,
+                error,
+            });
+        }
         let message = map
             .get("message")
             .and_then(Value::as_str)
@@ -158,10 +217,19 @@ impl Error {
         }
     }
 
+    /// The error itself; of a refused record of an ingest, its refusal
+    /// (lakelands#1043).
+    pub fn unwrapped(&self) -> &Error {
+        match self {
+            Error::Ingested { error, .. } => error.unwrapped(),
+            e => e,
+        }
+    }
+
     /// What a refusal of `invalid`, `constraint`, `precondition` or
     /// `unanswered` says, if this is one.
     pub fn case(&self) -> Option<&Said> {
-        match self {
+        match self.unwrapped() {
             Error::Refused { reason, .. } => reason.said(),
             _ => None,
         }
@@ -447,6 +515,15 @@ impl fmt::Display for Missing {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Error::Ingested {
+                index,
+                from,
+                record,
+                error,
+            } => write!(
+                f,
+                "record {index} of the stream ({record}): {error}; nothing from record {from} on was written"
+            ),
             // A refusal of a kind this build does not know is its sentence.
             Error::Refused {
                 reason: reason @ Refusal::Unknown(_),

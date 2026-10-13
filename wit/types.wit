@@ -1149,6 +1149,18 @@ interface types {
         unavailable(said),
     }
 
+    /// What an ingest answers when it fails (lakelands#1043): the error,
+    /// and, for a record of the stream that was refused, its place in the
+    /// stream (from 0), the place of the first record of its window, from
+    /// which nothing was written, and the record as its source named it.
+    /// A refusal of the ingest itself, before any record, names none.
+    record ingest-error {
+        index: option<u64>,
+        %from: option<u64>,
+        %record: option<record-ref>,
+        error: error,
+    }
+
     // ------------------------------------------------------------------
     // The facade and the feed
     // ------------------------------------------------------------------
