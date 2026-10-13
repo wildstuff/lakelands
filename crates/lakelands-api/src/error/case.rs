@@ -1230,6 +1230,8 @@ catalog! {
         CausePastHead { cause: Position, head: Option<Position> } => "the cause {cause} is past the lake's head [{head}|(none)]",
         /// A type declared again since its migration was proposed.
         ChangedSinceProposed { #[serde(rename = "type")] ty: TypeName } => "`{ty}` changed since this migration was proposed; propose it again",
+        /// A bundle's declaration under a name declared again since it was proposed.
+        DeclaredSinceProposed { what: Naming, name: String } => "the {what} `{name}` was declared since this bundle was proposed; propose it again",
         /// A field added that the type has.
         FieldExists { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`{ty}` already has a field `{field}`",
         /// A new field whose name begins with `_`, which the lake keeps for its own columns.

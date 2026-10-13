@@ -2135,9 +2135,10 @@ impl<'a> Reader<'a> {
             ..filter.clone()
         })?;
         let me = self.who.writer();
-        // The lake as its reader is described it, read once for the
-        // listing and only where a proposal asks.
-        let lake = OnceCell::new();
+        // The lake as its reader is described it, and the types it is
+        // shown, each read once for the listing and only where a proposal
+        // asks.
+        let (lake, seen) = (OnceCell::new(), OnceCell::new());
         let stands = |ident: &str| stands(&self.shape.ontology, ident);
         // In the engine's order, newest first, a page is its first entries:
         // those past it are not judged, each a read of the past where its
@@ -2153,7 +2154,8 @@ impl<'a> Reader<'a> {
                 continue;
             }
             if let Some(logged) = p.write.take() {
-                let Some(shown) = self.entry(asked, &logged, (p.position, p.proposed_at), &lake)?
+                let Some(shown) =
+                    self.entry(asked, &logged, (p.position, p.proposed_at), (&lake, &seen))?
                 else {
                     continue;
                 };
@@ -2188,32 +2190,45 @@ impl<'a> Reader<'a> {
     /// [`TypeDecl::names_against`] names against the type in force; and
     /// the type each verb, trigger and object set of a bundle is on, with
     /// the type the one in force under its name stands on, which would be
-    /// gone with it (lakelands#893). A link type is shown only with both
-    /// its ends, and a type a bundle brings only as `describe` would show
-    /// it once in force. Nor is a call there whose verb, as either lake
-    /// declares it, reads a field its reader may not read: `describe`
-    /// does not name the verb, and the entry would tell that its
-    /// `requires` held (024, extended). A migration's report counts every
-    /// owner's records, so a holder of `only` is listed none (051). A read
-    /// the engine fails is the listing's error, never an entry left out
-    /// (lakelands#927).
+    /// gone with it (lakelands#893). Nor is a bundle there one of whose
+    /// names is held by a declaration `describe` does not list to its
+    /// reader, nor a set or a migration whose tool's name is taken by
+    /// what it is not shown (lakelands#915). A link type is shown only
+    /// with both its ends, and a type a bundle brings only as `describe`
+    /// would show it once in force. Nor is a call there whose verb, as
+    /// either lake declares it, reads a field its reader may not read:
+    /// `describe` does not name the verb, and the entry would tell that
+    /// its `requires` held (024, extended). A migration's report counts
+    /// every owner's records, so a holder of `only` is listed none (051).
+    /// A read the engine fails is the listing's error, never an entry
+    /// left out (lakelands#927).
     pub(crate) fn entry(
         &self,
         asked: &Principal,
         logged: &ProposedWrite,
         (at, proposed_at): (Position, Timestamp),
-        lake: &OnceCell<LakeDescription>,
+        (lake, seen): (&OnceCell<LakeDescription>, &OnceCell<Ontology>),
     ) -> Result<Option<(Option<ProposedWrite>, bool)>> {
         let (o, mut logged) = (&self.shape.ontology, logged.clone());
         // A shape that is not in force is completed as one in force is
         // before it is judged or compared.
         let names = |t: &TypeDecl| t.names_against(o.ty(&t.name).ok());
         let (mut named, mut after): (Vec<TypeName>, _) = (Vec::new(), None);
+        // A tool's name taken by what its reader is not shown: the entry is
+        // not there, as a bundle under such a verb's name is not
+        // (lakelands#915).
+        let tools_shown = |set: &[Declaration]| {
+            let seen = seen.get_or_init(|| crate::writes::types_shown(self.who, o));
+            crate::writes::tools_as_shown(self.who, o, seen, set).is_ok()
+        };
         match &mut logged {
             ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => {
                 named.push(ty.clone())
             }
             ProposedWrite::Migrate { migration: m, .. } => {
+                if !tools_shown(&[Declaration::Type(m.to.clone())]) {
+                    return Ok(None);
+                }
                 o.complete(&mut m.to);
                 named.extend(names(&m.to));
                 let mut renames = self.shape.renames.clone();
@@ -2229,6 +2244,13 @@ impl<'a> Reader<'a> {
                 }
             }
             ProposedWrite::Declare { declarations } => {
+                // One in force under a name the bundle declares, which its
+                // reader is not shown: the bundle would take its place, and
+                // its accept's refusal would name it (lakelands#915).
+                let mut held = declarations.iter().filter_map(|d| in_force_under(o, d));
+                if !tools_shown(declarations) || held.any(|d| !self.sight.lists(&d)) {
+                    return Ok(None);
+                }
                 let mut put = o.clone();
                 for d in declarations.iter() {
                     crate::writes::put_as_appended(&mut put, d, Some);
@@ -4420,6 +4442,25 @@ fn stands(o: &Ontology, ident: &str) -> Option<TypeName> {
         ("trigger", name) => o.triggers.get(name).map(|t| t.decl.on.clone()),
         ("object_set", name) => o.set(name).map(|s| s.of.clone()),
         _ => None,
+    }
+}
+
+/// The declaration in force under `d`'s name, of its kind; a value type
+/// is shown to every reader, and is left out.
+fn in_force_under(o: &Ontology, d: &Declaration) -> Option<Declaration> {
+    match d {
+        Declaration::Type(t) => o.ty(&t.name).ok().cloned().map(Declaration::Type),
+        Declaration::Verb(v) => o.verb(&v.name).ok().cloned().map(Declaration::Verb),
+        Declaration::Trigger(t) => o
+            .triggers
+            .get(t.name.as_str())
+            .map(|e| Declaration::Trigger(e.decl.clone())),
+        Declaration::ObjectSet(s) => o.set(&s.name).cloned().map(Declaration::ObjectSet),
+        Declaration::Function(f) => o
+            .functions
+            .get(&f.name)
+            .map(|e| Declaration::Function(e.decl.clone())),
+        Declaration::ValueType(_) => None,
     }
 }
 

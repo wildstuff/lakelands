@@ -40,7 +40,7 @@ use std::sync::Arc;
 
 use lakelands_api::engine::ProjectionView;
 use lakelands_api::error::{
-    Case, Flaw, Named, Part, Place, RecordName, Retry, Said, Seam, Situation,
+    Case, Flaw, Named, Naming, Part, Place, RecordName, Retry, Said, Seam, Situation,
 };
 use lakelands_api::event::{Digest, Event, EventBody, EventId, Procedure};
 use lakelands_api::ontology::{
@@ -1031,6 +1031,80 @@ fn held_then(
         }
     }
     Ok(false)
+}
+
+/// `o` with the types `who` is shown, each as it knows it.
+pub(crate) fn types_shown(who: &Principal, o: &Ontology) -> Ontology {
+    let (sees, mut seen) = (Sight::held(who, o), o.clone());
+    (seen.types).retain(|name, _| sees.ty(name).is_ok());
+    // A type copied only where its author is kept from some of it
+    // (lakelands#943): any other is the lake's own.
+    let find = |n: &TypeName| o.ty(n).ok();
+    for e in seen.types.values_mut() {
+        if rights::keeps_from(who, &e.decl, &find) {
+            rights::known_fields(who, &mut Arc::make_mut(e).decl, &find);
+        }
+    }
+    seen
+}
+
+/// A tool's name is taken as a trigger's is (lakelands#896): where the
+/// lake with `set` in it has a problem with its tools' names that the
+/// lake as `who` is shown it has not, a side of it is a type, a
+/// relation or a verb it is not shown, which the refusal would name.
+/// A type of `set` keeps the relations in force `who` is not
+/// shown: an author's view is completed with them ([`as_author`]),
+/// and a proposal holds them. `seen` is [`types_shown`] of `o`.
+/// A side its author is not shown is first looked for among the names
+/// of what `seen` does not hold ([`declare::unshown_tool_problems`]):
+/// a declaration that meets none there, as nearly every one, costs no
+/// copy of the lake and no pass over its names.
+pub(crate) fn tools_as_shown(
+    who: &Principal,
+    o: &Ontology,
+    seen: &Ontology,
+    set: &[Declaration],
+) -> Result<()> {
+    if declare::unshown_tool_problems(o, seen, set).is_empty() {
+        return Ok(());
+    }
+    let (declared, mut whole) = (o.declared(), set.to_vec());
+    let sees = Sight::held(who, &declared);
+    for d in &mut whole {
+        if let Declaration::Type(t) = d
+            && let Ok(was) = o.ty(&t.name)
+        {
+            let named = |r: &RelationDecl| t.relations.iter().any(|x| x.name == r.name);
+            let kept = |r: &&RelationDecl| !sees.relation(was, r) && !named(r);
+            let kept: Vec<_> = was.relations.iter().filter(kept).cloned().collect();
+            t.relations.extend(kept);
+        }
+    }
+    // With the link types the set brings, as its check reads them.
+    let problems = |mut o: Ontology, set: &[Declaration]| {
+        set.iter().for_each(|d| put_as_appended(&mut o, d, Some));
+        Vec::from_iter(set.iter().map(|d| declare::tool_problems(&o, d)))
+    };
+    // What it is shown is part of the lake: no problem there, none here.
+    let all = problems(o.clone(), &whole);
+    if all.iter().all(Vec::is_empty) {
+        return Ok(());
+    }
+    let mut seen = seen.clone();
+    (seen.verbs).retain(|_, v| sees.lists(&Declaration::Verb(v.decl.clone())));
+    granted(all == problems(seen, set))
+}
+
+/// What a declaration is and its name, as a refusal names them.
+fn naming(d: &Declaration) -> (Naming, String) {
+    match d {
+        Declaration::Type(t) => (Naming::Type, t.name.to_string()),
+        Declaration::ValueType(v) => (Naming::ValueType, v.name.to_string()),
+        Declaration::Verb(v) => (Naming::Verb, v.name.to_string()),
+        Declaration::Trigger(t) => (Naming::Trigger, t.name.to_string()),
+        Declaration::ObjectSet(o) => (Naming::ObjectSet, o.name.to_string()),
+        Declaration::Function(f) => (Naming::Function, f.name.to_string()),
+    }
 }
 
 /// Whether a type computes a reference field, at the write or by a
@@ -2570,12 +2644,8 @@ impl Call<'_> {
         let (sight, at) = (Sight::held(self.who, shape.as_ref()), Default::default());
         let read = crate::reads::Reader::open(self.lake, &sight, at, view, shape.clone())?;
         let missing = Missing::Proposal { id: p.id.clone() };
-        let listed = read.entry(
-            asked,
-            write,
-            (p.position, p.proposed_at),
-            &Default::default(),
-        )?;
+        let once = (&Default::default(), &Default::default());
+        let listed = read.entry(asked, write, (p.position, p.proposed_at), once)?;
         listed.ok_or(Error::NotFound { missing })
     }
 
@@ -2808,8 +2878,19 @@ impl Call<'_> {
             // pending. The proposer writes what it declares; the link types
             // the store derives stay the system's.
             ProposedWrite::Declare { declarations } => {
-                let seen = self.types_shown(&w.ontology);
-                self.tools_as_shown(&w.ontology, &seen, declarations)?;
+                // One declared since under a name the bundle declares was
+                // shown to no one at the proposal; the bundle would take
+                // its place as its proposer's (lakelands#915).
+                let key = lakelands_core::engines::declaration_key;
+                let since = view.declarations()?;
+                let since = |d: &Declaration| {
+                    let mut held = since.iter().filter(|x| x.since > p.position);
+                    !w.ontology.in_force(d) && held.any(|x| key(&x.declaration) == key(d))
+                };
+                if let Some(d) = declarations.iter().find(|d| since(d)) {
+                    let (what, name) = naming(d);
+                    return Err(invalid(Case::DeclaredSinceProposed { what, name }));
+                }
                 self.check_bundle(&w.ontology, declarations)?;
                 let mut changed = declarations.clone();
                 changed.retain(|d| !w.ontology.in_force(d));
@@ -2820,8 +2901,6 @@ impl Call<'_> {
                 // The shape is the type's whole: on a type changed since the
                 // proposal it would remove what was added, shown to no one
                 // (013, extended).
-                let (seen, to) = (self.types_shown(&w.ontology), migration.to.clone());
-                self.tools_as_shown(&w.ontology, &seen, &[Declaration::Type(to)])?;
                 let ty = &migration.to.name;
                 let head = shape::schema_hash(w.ontology.ty(ty)?).ok();
                 let changed = || invalid(Case::ChangedSinceProposed { ty: ty.clone() });
@@ -3188,7 +3267,7 @@ impl Call<'_> {
         // A type its author is not shown is a type that is not declared,
         // for whatever names it; to declare it is not granted, and names
         // nothing of it.
-        let mut seen = self.types_shown(o);
+        let mut seen = types_shown(self.who, o);
         let hidden = |d: &Declaration| matches!(d, Declaration::Type(t) if o.types.contains_key(&t.name) && seen.ty(&t.name).is_err());
         granted(!sent.iter().any(hidden))?;
         // A set its author is not shown is one that is not declared, as a
@@ -3213,7 +3292,7 @@ impl Call<'_> {
                 && held.any(|x| x.what() == d.what() && !sees.lists(x))
         };
         granted(!sent.iter().any(taken))?;
-        self.tools_as_shown(o, &seen, sent)?;
+        tools_as_shown(self.who, o, &seen, sent)?;
         // A valid time left out where the one in force names a field outside
         // its author's view stands as declared: left out of both sides, it is
         // checked whole at apply. A valid time its author sends, the one in
@@ -3292,63 +3371,6 @@ impl Call<'_> {
         report.fields.retain(|u| sees.reads(&u.ty, &u.field));
         report.first.retain(|m| sees.reads(&m.ty, &m.field));
         report
-    }
-
-    /// `o` with the types `self.who` is shown, each as it knows it.
-    fn types_shown(&self, o: &Ontology) -> Ontology {
-        let (sees, mut seen) = (Sight::held(self.who, o), o.clone());
-        (seen.types).retain(|name, _| sees.ty(name).is_ok());
-        // A type copied only where its author is kept from some of it
-        // (lakelands#943): any other is the lake's own.
-        let find = |n: &TypeName| o.ty(n).ok();
-        for e in seen.types.values_mut() {
-            if rights::keeps_from(self.who, &e.decl, &find) {
-                rights::known_fields(self.who, &mut Arc::make_mut(e).decl, &find);
-            }
-        }
-        seen
-    }
-
-    /// A tool's name is taken as a trigger's is (lakelands#896): where the
-    /// lake with `set` in it has a problem with its tools' names that the
-    /// lake as `self.who` is shown it has not, a side of it is a type, a
-    /// relation or a verb it is not shown, which the refusal would name.
-    /// A type of `set` keeps the relations in force `self.who` is not
-    /// shown: an author's view is completed with them ([`as_author`]),
-    /// and a proposal holds them. `seen` is [`Self::types_shown`] of `o`.
-    /// A side its author is not shown is first looked for among the names
-    /// of what `seen` does not hold ([`declare::unshown_tool_problems`]):
-    /// a declaration that meets none there, as nearly every one, costs no
-    /// copy of the lake and no pass over its names.
-    fn tools_as_shown(&self, o: &Ontology, seen: &Ontology, set: &[Declaration]) -> Result<()> {
-        if declare::unshown_tool_problems(o, seen, set).is_empty() {
-            return Ok(());
-        }
-        let (declared, mut whole) = (o.declared(), set.to_vec());
-        let sees = Sight::held(self.who, &declared);
-        for d in &mut whole {
-            if let Declaration::Type(t) = d
-                && let Ok(was) = o.ty(&t.name)
-            {
-                let named = |r: &RelationDecl| t.relations.iter().any(|x| x.name == r.name);
-                let kept = |r: &&RelationDecl| !sees.relation(was, r) && !named(r);
-                let kept: Vec<_> = was.relations.iter().filter(kept).cloned().collect();
-                t.relations.extend(kept);
-            }
-        }
-        // With the link types the set brings, as its check reads them.
-        let problems = |mut o: Ontology, set: &[Declaration]| {
-            set.iter().for_each(|d| put_as_appended(&mut o, d, Some));
-            Vec::from_iter(set.iter().map(|d| declare::tool_problems(&o, d)))
-        };
-        // What it is shown is part of the lake: no problem there, none here.
-        let all = problems(o.clone(), &whole);
-        if all.iter().all(Vec::is_empty) {
-            return Ok(());
-        }
-        let mut seen = seen.clone();
-        (seen.verbs).retain(|_, v| sees.lists(&Declaration::Verb(v.decl.clone())));
-        granted(all == problems(seen, set))
     }
 
     /// Reads a migration as its author's view of its type ([`as_author`]),

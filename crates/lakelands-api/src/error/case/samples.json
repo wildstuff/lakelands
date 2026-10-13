@@ -1106,6 +1106,11 @@
    "type": "t"
   },
   {
+   "code": "declared_since_proposed",
+   "name": "s",
+   "what": "type"
+  },
+  {
    "code": "field_exists",
    "field": "f",
    "type": "t"
