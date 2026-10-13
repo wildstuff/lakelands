@@ -646,9 +646,11 @@ async fn a_pattern_aggregate_reads_its_rows_by_their_paths(store: Store) -> Held
         s.ty = ty.map(Into::into);
         vec![s]
     };
+    // Untyped, it is bound under its relation's name and holds no field
+    // (lakelands#990): a path that reads one is refused.
     for (start, steps, path) in [
-        ("bill", both(None), "customer.tier"),
-        ("customer", into(None), "quote.x"),
+        ("bill", both(None), "of.tier"),
+        ("customer", into(None), "of.x"),
     ] {
         let untyped = rows(start, steps.clone(), &[path], path, path).await;
         let groups = grouped(start, steps, path).await;

@@ -330,7 +330,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 19
-< {"data":{"rows":[{"invoice._depth":0,"invoice.key":"INV-2","invoice.status":"paid"}],"shape":"rows"},"position":19}
+< {"data":{"rows":[{"invoice._depth":0,"invoice._type":"invoice","invoice.key":"INV-2","invoice.status":"paid"}],"shape":"rows"},"position":19}
 
 > POST /lakes/finance/query
 > authorization: Bearer k-clerk

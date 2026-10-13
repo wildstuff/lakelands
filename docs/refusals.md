@@ -474,7 +474,7 @@ What a refusal is about.
 | `search_not_vector` | `field` (FieldName), `kind` (StorageKind) | `{field}` is a {kind} field; a vector ranking reads a vector field | A vector ranking over a field that holds no vectors. |
 | `start_no_type` | `asks` (String) | `{asks}` needs the start's `type`; only `components` may leave it out, and then names no `key`, `where`, `search` or `params` | A start with no type where a type is needed. |
 | `step_reaches` | `reached` (TypeName), `type` (TypeName), `also` (Names, optional) | it reaches `{reached}`[, {also}], not `{type}` | A step that reaches another type than it names. |
-| `step_several_types` | — | it reaches several types, and a `where`, a row or the step after it reads one; name the step's `type` | A step reaching several types where a `where`, a row or the next step reads one. |
+| `step_several_types` | `reached` (TypeName, optional), `also` (Names, optional) | it reaches several types[, `{reached}`][, {also}], and a `where`, the step after it or a path that reads one of its fields reads one; name the step's `type` | A step reaching several types where a `where`, the next step or a path that reads a field reads one. |
 | `step_too_deep` | `max` (u32), `asked` (u32) | a step may walk at most {max} hops; this one asks for {asked} | A step deeper than the lake walks. |
 | `text_weight_range` | — | `text_weight` must be above 0 and at most 1000000 | A `text_weight` out of range. |
 | `total_with_aggregate` | — | `total` counts the records a page lists; an `aggregate` answers groups, so give one | A `total` beside an aggregate. |
@@ -487,7 +487,7 @@ What a refusal is about.
 | `cause_past_head` | `cause` (Position), `head` (Position, optional) | the cause {cause} is past the lake's head [{head}\|(none)] | A host's cause past the head. |
 | `changed_since_proposed` | `type` (TypeName) | `{type}` changed since this migration was proposed; propose it again | A type declared again since its migration was proposed. |
 | `field_exists` | `type` (TypeName), `field` (FieldName) | `{type}` already has a field `{field}` | A field added that the type has. |
-| `field_name_kept` | `type` (TypeName), `field` (FieldName) | a new field of `{type}` may not begin with `_`: the lake keeps such names for its own columns of a pattern's rows (`<name>._depth`); name it `{field}` without the `_` | A new field whose name begins with `_`, which the lake keeps for its own columns. |
+| `field_name_kept` | `type` (TypeName), `field` (FieldName) | a new field of `{type}` may not begin with `_`: the lake keeps such names for its own columns of a pattern's rows (`<name>._depth`, `<name>._type`); name it `{field}` without the `_` | A new field whose name begins with `_`, which the lake keeps for its own columns. |
 | `field_read_elsewhere` | `field` (FieldName), `type` (TypeName) | `{field}` is read by another part of `{type}` and cannot be removed | A field taken away that another part of the type reads. |
 | `is_a_view` | `type` (TypeName) | `{type}` is a view; it is computed, never written | A view at a door that writes or holds a record. |
 | `key_component_kind` | `part` (String), `kind` (StorageKind), `field` (FieldName) | the key component `{part}` is not a {kind} for `{field}` | A key component of a kind its field cannot read it as. |
