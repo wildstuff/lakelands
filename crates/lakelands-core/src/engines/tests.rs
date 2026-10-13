@@ -440,3 +440,42 @@ fn top_k_answers_what_rank_answers() {
         }
     }
 }
+
+/// A record's state keeps one block for the fields that share it, and
+/// reads back every field's: all one block, a tie, a block with no value,
+/// a value with no block beside a base, an authored field among source
+/// ones, no meta at all; a state of the form before it reads the same.
+#[test]
+fn a_state_keeps_shared_provenance_once_and_reads_every_fields_back() {
+    let record = |fields: serde_json::Value, meta: serde_json::Value| -> StoredRecord {
+        let r = json!({"type": "t", "key": "k", "version": 1, "fields": fields, "meta": meta, "position": 9});
+        serde_json::from_value(r).unwrap()
+    };
+    let block = |at: u64, origin: &str| json!({"origin": origin, "known_at": format!("2026-01-01T00:00:0{at}Z"), "position": at, "writer": "w"});
+    let (a, b) = (block(1, "source"), block(2, "authored"));
+    let failed = json!({"error": "down", "origin": "derived", "known_at": "2026-01-01T00:00:03Z", "position": 3, "writer": "w"});
+    let (xy, xyz) = (json!({"x": 1, "y": 1}), json!({"x": 1, "y": 1, "z": 1}));
+    let cases = [
+        record(xyz.clone(), json!({"x": a, "y": a, "z": a})),
+        record(xy.clone(), json!({"x": a, "y": b})),
+        record(xy.clone(), json!({"x": a, "y": a, "c": failed})),
+        record(xy.clone(), json!({"x": a, "y": a, "c": a})),
+        record(json!({"x": 1, "y": 1, "bare": 1}), json!({"x": a, "y": a})),
+        record(xyz.clone(), json!({"x": a, "y": b, "z": a})),
+        record(json!({"x": 1}), json!({})),
+    ];
+    for r in &cases {
+        let state = record_state(r);
+        assert_eq!(&decode_record(&state).unwrap(), r, "{state}");
+        assert_eq!(
+            &decode_record(&serde_json::to_string(r).unwrap()).unwrap(),
+            r
+        );
+    }
+    let shared = record_state(&cases[0]);
+    assert_eq!(
+        shared.matches("\"origin\"").count(),
+        1,
+        "one block for three fields: {shared}"
+    );
+}

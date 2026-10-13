@@ -316,7 +316,7 @@ belongs in the suite, not beside one engine:
 
 - `valid_at_and_as_of_combine_and_neither_stands_in_for_the_other` — 009 and the glossary: `valid_at` asks what was true in the world, `as_of` what the lake knew; a read may name both
 - `a_valid_time_names_a_stored_date_time_field` — 028, extended (lakelands#714, lakelands#702): `valid_from` and `valid_to` each name a field of kind `date_time` or `date`, so a value that only reads as an instant never sets a record's validity; a field of any other kind is refused as invalid on it, by `declare`, `apply`, a proposal and a migration, a derived `date_time` field and a view's `date_time` field are valid times as any is, and a read at `valid_at` admits by them; a `date` valid time holds from its first day's midnight up to, not through, its last day's
-- `every_field_carries_its_own_provenance` — 010: with meta, each field answers its origin, known_at, position and writer, and a value from a source also its source and seen_at
+- `every_field_carries_its_own_provenance` — 010: with meta, each field answers its origin, known_at, position and writer, and a value from a source also its source and seen_at; a record whose fields a source wrote in two ingests, an author in a third, and a mirror's ingest with its `upstream` answers each field's own provenance, a cleared field's too, at the head, as of an earlier position and after the projection is rebuilt, however a record keeps it (lakelands#1018)
 
 **masking**
 

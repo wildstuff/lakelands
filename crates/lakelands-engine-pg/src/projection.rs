@@ -87,6 +87,13 @@ impl Names {
     /// A record's key is compared bytewise (`COLLATE "C"`), so the primary
     /// keys of `records` and `records_head` hold the order keys are read
     /// in.
+    ///
+    /// `records_since` ends with the key, so a seek of one state by its
+    /// type, key and position uses every column of either index the
+    /// planner picks. Before a table is analysed the planner may pick it
+    /// for that seek; ending at `since`, it filtered a type's states put at
+    /// one position row by row, every head read paying for all of them
+    /// (lakelands#1018).
     pub(crate) fn schema_sql(&self) -> String {
         let (s, heads) = (&self.schema, heads_sql(&self.schema));
         format!(
@@ -116,7 +123,7 @@ CREATE TABLE IF NOT EXISTS {s}.records (
     state TEXT NOT NULL,
     PRIMARY KEY (ty, key, since)
 );
-CREATE INDEX IF NOT EXISTS records_since ON {s}.records (ty, since);
+CREATE INDEX IF NOT EXISTS records_since ON {s}.records (ty, since, key);
 CREATE TABLE IF NOT EXISTS {s}.proposals (
     id TEXT NOT NULL, since BIGINT NOT NULL, state TEXT NOT NULL,
     PRIMARY KEY (id, since)
@@ -200,7 +207,7 @@ fn heads_sql(s: &str) -> String {
 /// table changes so that a projection made before would answer wrongly,
 /// not fail: one made with another layout is never read, and is rebuilt
 /// from the log.
-pub(crate) const LAYOUT: u64 = 2;
+pub(crate) const LAYOUT: u64 = 3;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
@@ -464,7 +471,7 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
     let declared = declared_type(row.get(0))?;
     let setting = row
         .get::<_, Option<String>>(1)
-        .map(|state| decode::<StoredRecord>(&state, "a record"))
+        .map(|state| decode_record(&state))
         .transpose()?;
     let sorted = match &declared {
         Some(d) => engines::sorted_fields(ty, d, setting.as_ref().and_then(engines::setting_value)),
@@ -659,7 +666,7 @@ pub(crate) fn catch_up_sorted(db: &mut Db, names: &Names) -> Result<()> {
 }
 
 pub(crate) fn decode_record(state: &str) -> Result<StoredRecord> {
-    decode(state, "a record")
+    lakelands_core::engines::decode_record(state)
 }
 
 /// The declaration of a type in force at `at` (`None` for the head).
@@ -943,8 +950,7 @@ impl Buffer {
 
     pub(crate) fn record(&mut self, r: &StoredRecord) {
         if lakelands_api::seam::is_head_only(&r.ty) {
-            let state =
-                (!r.is_ended()).then(|| serde_json::to_string(r).expect("a record serialises"));
+            let state = (!r.is_ended()).then(|| lakelands_core::engines::record_state(r));
             let key = (r.ty.to_string(), r.key.to_string());
             self.heads.insert(key, (r.position.0 as i64, state));
             return;
@@ -1001,10 +1007,7 @@ impl Buffer {
         let records: BTreeMap<(Vec<String>, i64), String> = self
             .records
             .iter()
-            .map(|(k, r)| {
-                let state = serde_json::to_string(r).expect("a record serialises");
-                (k.clone(), state)
-            })
+            .map(|(k, r)| (k.clone(), lakelands_core::engines::record_state(r)))
             .collect();
         let heads = RECORDS.put_many(db, names, &records)?;
         // A head-only name's key is one row, written over in place, and its
