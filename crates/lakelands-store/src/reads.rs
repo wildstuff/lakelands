@@ -392,6 +392,22 @@ const COUNT_PAGE: usize = 1024;
 /// reach the record (018, extended).
 const DEPTH: &str = "_depth";
 
+/// A row's column under each bound name for the record's type (018,
+/// extended).
+const TYPE: &str = "_type";
+
+/// A step over several types, at `at`, refused where one is read: naming
+/// every type it reaches.
+fn several_types(at: &Place, reached: &BTreeSet<TypeName>) -> Error {
+    let mut all = reached.iter().cloned();
+    let reached = all.next().expect("several types");
+    let case = Case::StepSeveralTypes {
+        reached: Some(reached),
+        also: Some(all.collect()),
+    };
+    invalid(Said::from(case).within(at.clone()))
+}
+
 /// The most records a hop over a derived relation holds at once: a page of
 /// starts asks its matches a page of this many at a time (`derived_edges`).
 const MATCHED: u32 = 65_536;
@@ -3092,6 +3108,9 @@ impl<'a> Reader<'a> {
         let mut names = vec![start_name.unwrap_or_else(|| start_decl.name.to_string())];
         // The type each step reaches, checked against the declarations.
         let mut types = vec![start_decl.name.clone()];
+        // Each name bound over several types: where its step stands, and
+        // the types it reaches.
+        let mut several: Vec<Option<(Place, BTreeSet<TypeName>)>> = vec![None];
         let mut filters = Vec::new();
         let mut reach: Vec<Reach> = Vec::new();
         let measure = measures::is_measure(&p.project);
@@ -3152,8 +3171,14 @@ impl<'a> Reader<'a> {
                 false => self.neighbours(step, None, reach[i].owner.as_ref()),
             };
             // A row binds the step's records under one name, and the step
-            // after it in a chain is judged from one type.
-            let one = binds || (chain && !measure && i < last);
+            // after it in a chain is judged from one type. Rows and an
+            // aggregate may bind a last step over several types where no
+            // `where` reads it (018, extended): under the relation's name as
+            // its caller wrote it, its records hold their key, `_type` and
+            // `_depth` alone, and a path that reads a field is refused.
+            let open = binds && i == last && step.ty.is_none() && step.filter.is_none();
+            let open = open && all.len() > 1;
+            let one = (binds && !open) || (chain && !measure && i < last);
             let reached = self.neighbour_target(&at, step, &all, one)?.or(reached);
             // At a valid time a walk keeps each record it meets by its own
             // type's valid time, so a step of a hop or more probes every type
@@ -3170,14 +3195,32 @@ impl<'a> Reader<'a> {
             // (018): a step that arrives at one other than the start has no
             // values to read it with, whatever records the walk would reach,
             // so the pattern is refused before any record is read.
-            if reached != start_decl.name
-                && let Some(param) = decl.view.as_ref().and_then(|v| v.params.first())
+            // Every type the step reaches is a view it arrives at, not only
+            // the one it binds by.
+            for ty in all
+                .iter()
+                .chain([&reached])
+                .filter(|t| **t != start_decl.name)
             {
-                return Err(invalid(
-                    Said::from(unbound(&reached, param, true)).within(at),
-                ));
+                let decl = self.sight.ty(ty)?;
+                if let Some(param) = decl.view.as_ref().and_then(|v| v.params.first()) {
+                    return Err(invalid(
+                        Said::from(unbound(ty, param, true)).within(at.clone()),
+                    ));
+                }
             }
-            let name = step.named.clone().unwrap_or_else(|| reached.to_string());
+            // An open step's name is its relation as its caller wrote it,
+            // which its place keeps: the inverse's where it named that.
+            let written = match &at {
+                Place::Step { relation, .. } => relation.to_string(),
+                _ => step.relation.to_string(),
+            };
+            let name = match (&step.named, open) {
+                (Some(name), _) => name.clone(),
+                (None, true) => written,
+                (None, false) => reached.to_string(),
+            };
+            several.push(open.then(|| (at.clone(), all.clone())));
             if binds && names.contains(&name) {
                 let said = Said::from(Case::PatternBindsTwice { name });
                 return Err(invalid(said.within(at)));
@@ -3359,27 +3402,44 @@ impl<'a> Reader<'a> {
         // over values the principal may not read; a named key's fields are
         // probed as a field key's are.
         let bound = |n: &str| names.iter().any(|b| b == n);
-        let type_of = |n: &str| &types[names.iter().position(|b| b == n).expect("a bound name")];
+        // A name over several types holds no field: a path that reads
+        // one is refused, naming the types.
+        // Its `key`, `_type` and `_depth` are the lake's columns, read
+        // against no type and never probed (`None`).
+        let typed = |n: &str, f: FieldName| {
+            let i = names.iter().position(|b| b == n).expect("a bound name");
+            match &several[i] {
+                Some(_) if ["key", DEPTH, TYPE].contains(&f.as_str()) => Ok(None),
+                Some((at, all)) => Err(several_types(at, all)),
+                None => Ok(Some((types[i].clone(), f))),
+            }
+        };
         let path = |name: &str| {
             let (n, f) = aggregate::row_path(name, &bound).map_err(invalid)?;
-            Ok((type_of(&n).clone(), f))
+            typed(&n, f)
         };
-        let mut paths: Vec<(TypeName, FieldName)> = (p.order_by.iter())
+        let ordered: Vec<Option<_>> = (p.order_by.iter())
             .map(|o| path(o.field.as_str()))
             .collect::<Result<_>>()?;
-        let row = self.row_shape(&names, &types);
+        let mut paths: Vec<(TypeName, FieldName)> = ordered.into_iter().flatten().collect();
+        let orders = paths.len();
+        let open: Vec<bool> = several.iter().map(Option::is_some).collect();
+        let row = self.row_shape(&names, &types, &open);
         let mut over_rows = None;
         if let Projection::Aggregate(a) = &p.project {
             let (a, read) = aggregate::over_rows(a, &bound).map_err(invalid)?;
-            paths.extend(read.into_iter().map(|(n, f)| (type_of(&n).clone(), f)));
+            for (n, f) in read {
+                paths.extend(typed(&n, f)?);
+            }
             over_rows = Some(a);
         }
-        self.probe_rows(&paths, p.order_by.len())?;
+        self.probe_rows(&paths, orders)?;
         // A projected field is named, not probed: one its reader may not
         // know of is one its type does not have, and a masked one is left
         // out of the row, as an absent value is.
         if let Projection::Rows { fields } = &p.project {
-            for (t, f) in fields.iter().map(|f| path(f)).collect::<Result<Vec<_>>>()? {
+            let read = fields.iter().map(|f| path(f)).collect::<Result<Vec<_>>>()?;
+            for (t, f) in read.into_iter().flatten() {
                 let decl = self.shape.ontology.ty(&t)?;
                 if !self.lakes(decl, &f) {
                     rights::check_known(self.who, decl, [&f])?;
@@ -3417,9 +3477,15 @@ impl<'a> Reader<'a> {
         });
         let row = |start: &graph::Node, binding: &[graph::Reached]| -> Result<_> {
             let mut row = BTreeMap::new();
-            self.bind(&mut row, &names[0], (start, 0), hidden.record(start)?)?;
-            for (r, name) in binding.iter().zip(&names[1..]) {
-                self.bind(&mut row, name, (&r.node, r.depth), hidden.record(&r.node)?)?;
+            self.bind(
+                &mut row,
+                &names[0],
+                (start, 0, false),
+                hidden.record(start)?,
+            )?;
+            for ((r, name), open) in binding.iter().zip(&names[1..]).zip(&several[1..]) {
+                let at = (&r.node, r.depth, open.is_some());
+                self.bind(&mut row, name, at, hidden.record(&r.node)?)?;
             }
             if let Projection::Rows { fields } = &p.project
                 && !fields.is_empty()
@@ -3670,10 +3736,10 @@ impl<'a> Reader<'a> {
     }
 
     /// Whether a row's `<name>.<field>` is one of the lake's own columns,
-    /// not a field of the record: `_depth` always (018, extended), and its
-    /// key where [`Self::keyed`]. It is never probed.
+    /// not a field of the record: `_depth` and `_type` always (018,
+    /// extended), and its key where [`Self::keyed`]. It is never probed.
     fn lakes(&self, decl: &TypeDecl, field: &FieldName) -> bool {
-        field.as_str() == DEPTH || self.keyed(decl, field)
+        [DEPTH, TYPE].contains(&field.as_str()) || self.keyed(decl, field)
     }
 
     /// Whether a row's `<name>.<field>` is its record's key: the field is
@@ -3891,7 +3957,7 @@ impl<'a> Reader<'a> {
             }
             None if reached.len() < 2 => return Ok(Some(first.clone())),
             None if step.filter.is_none() && !one => return Ok(None),
-            None => Case::StepSeveralTypes,
+            None => return Err(several_types(at, reached)),
         };
         Err(invalid(Said::from(said).within(at.clone())))
     }
@@ -3936,17 +4002,19 @@ impl<'a> Reader<'a> {
     /// A pattern's row as one type: for each name bound to a type in
     /// `types`, each field of the type its reader may know of under its
     /// path, `<name>.<field>`, and `<name>.key`, the record's key where no
-    /// such field is named `key`. A field named `_depth` is left out: under
-    /// a bound name that path is the lake's column.
-    fn row_shape(&self, names: &[String], types: &[TypeName]) -> TypeDecl {
+    /// such field is named `key`. A field named `_depth` or `_type` is left
+    /// out: under a bound name that path is the lake's column. A name over
+    /// several types holds no field.
+    fn row_shape(&self, names: &[String], types: &[TypeName], open: &[bool]) -> TypeDecl {
         let mut row = TypeDecl::default();
-        for (name, ty) in names.iter().zip(types) {
+        for ((name, ty), open) in names.iter().zip(types).zip(open) {
             let Ok(t) = self.shape.ontology.ty(ty) else {
                 continue;
             };
             let at = |f: &str| FieldName::from(format!("{name}.{f}"));
+            let lakes = |f: &FieldName| [DEPTH, TYPE].contains(&f.as_str());
             let known =
-                (t.fields.iter()).filter(|f| self.knows(t, &f.name) && f.name.as_str() != DEPTH);
+                (t.fields.iter()).filter(|f| !open && self.knows(t, &f.name) && !lakes(&f.name));
             let fields: Vec<_> = known
                 .map(|f| lakelands_api::ontology::FieldDecl {
                     name: at(f.name.as_str()),
@@ -3968,27 +4036,30 @@ impl<'a> Reader<'a> {
     /// `<name>.<field>`. A row's `<name>.key` is the record's key, unless
     /// its type declares a field `key` its reader may know of: then that
     /// field's value, null where the record holds none. `<name>._depth`
-    /// is the hops its step took to reach it, 0 for the start, whatever
-    /// field of that name a lake written before the rule holds.
+    /// is the hops its step took to reach it, 0 for the start, and
+    /// `<name>._type` its type, whatever field of those names a lake
+    /// written before the rule holds. A name over several types (`open`)
+    /// binds the key, the type and the depth alone.
     fn bind(
         &self,
         row: &mut BTreeMap<String, Value>,
         name: &str,
-        (node, depth): (&graph::Node, u32),
+        (node, depth, open): (&graph::Node, u32, bool),
         rec: Option<StoredRecord>,
     ) -> Result<()> {
         let decl = self.shape.ontology.ty(&node.0)?;
         if let Some(rec) = rec.and_then(|r| rights::visible(self.sight, decl, &r, false)) {
             let decl = self.shape.ontology.ty(&node.0)?;
-            let key = match self.keyed(decl, &FieldName::from("key")) {
+            let key = match open || self.keyed(decl, &FieldName::from("key")) {
                 true => Value::String(node.1.to_string()),
                 false => Value::Null,
             };
             row.insert(format!("{name}.key"), key);
-            for (f, v) in rec.fields {
+            for (f, v) in rec.fields.into_iter().filter(|_| !open) {
                 row.insert(format!("{name}.{f}"), v);
             }
             row.insert(format!("{name}.{DEPTH}"), Value::from(depth));
+            row.insert(format!("{name}.{TYPE}"), Value::from(node.0.as_str()));
         }
         Ok(())
     }

@@ -1197,8 +1197,13 @@ catalog! {
         StartNoType { asks: String } => "`{asks}` needs the start's `type`; only `components` may leave it out, and then names no `key`, `where`, `search` or `params`",
         /// A step that reaches another type than it names.
         StepReaches { reached: TypeName, #[serde(rename = "type")] ty: TypeName, also: Option<Names> } => "it reaches `{reached}`[, {also}], not `{ty}`",
-        /// A step reaching several types where a `where`, a row or the next step reads one.
-        StepSeveralTypes => "it reaches several types, and a `where`, a row or the step after it reads one; name the step's `type`",
+        /// A step reaching several types where a `where`, the next step or a path that reads a field reads one.
+        StepSeveralTypes {
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            reached: Option<TypeName>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            also: Option<Names>,
+        } => "it reaches several types[, `{reached}`][, {also}], and a `where`, the step after it or a path that reads one of its fields reads one; name the step's `type`",
         /// A step deeper than the lake walks.
         StepTooDeep { max: u32, asked: u32 } => "a step may walk at most {max} hops; this one asks for {asked}",
         /// A `text_weight` out of range.
@@ -1226,7 +1231,7 @@ catalog! {
         /// A field added that the type has.
         FieldExists { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`{ty}` already has a field `{field}`",
         /// A new field whose name begins with `_`, which the lake keeps for its own columns.
-        FieldNameKept { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "a new field of `{ty}` may not begin with `_`: the lake keeps such names for its own columns of a pattern's rows (`<name>._depth`); name it `{field}` without the `_`",
+        FieldNameKept { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "a new field of `{ty}` may not begin with `_`: the lake keeps such names for its own columns of a pattern's rows (`<name>._depth`, `<name>._type`); name it `{field}` without the `_`",
         /// A field taken away that another part of the type reads.
         FieldReadElsewhere { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "`{field}` is read by another part of `{ty}` and cannot be removed",
         /// A view at a door that writes or holds a record.

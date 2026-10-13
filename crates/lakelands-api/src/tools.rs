@@ -909,6 +909,9 @@ fn verb_tool(verb: &VerbDescription, lake: &LakeDescription) -> ToolSpec {
 /// What a pattern's `as` says to the model that writes one.
 const BINDING: &str = "The name a row binds this record under, `<name>.<field>`; its type's name when left out. Two records of one type in a row need a name each.";
 
+/// [`BINDING`] for a step, which may reach several types.
+const STEP_BINDING: &str = "The name a row binds this step's records under, `<name>.<field>`, with `<name>.key`, `<name>._type` and `<name>._depth`; its type's name when left out, or its relation's where it reaches several types. Name a step that may reach several types: left out, its name follows the types its reader is shown.";
+
 fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
     let names = |pick: fn(&TypeDescription) -> bool| -> Value {
         one_of(
@@ -1033,7 +1036,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                     "depth": {"type": "object", "properties": {
                         "min": {"type": "integer", "minimum": 0},
                         "max": {"type": "integer", "minimum": 0}}},
-                    "as": {"type": "string", "description": BINDING}},
+                    "as": {"type": "string", "description": STEP_BINDING}},
                     "required": ["relation"]}}),
             ),
             (

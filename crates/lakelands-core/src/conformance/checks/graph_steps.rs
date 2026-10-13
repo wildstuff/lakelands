@@ -20,7 +20,7 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     ROW_DEPTH = a_row_says_the_hops_each_step_took_and_a_graph_each_nodes_depth,
-    "018 and 026, extended (lakelands#989): a row binds `<name>._depth` beside `<name>.key`, the hops its step took to reach the record and 0 for the start, which an order, a group key and `fields` read as any path and which nothing probes; a start a cycle reaches again is answered at the hop it comes back; a graph answers each node's depth in the order of its nodes, a start at 0 however a cycle comes back to it; a depth is counted over the records its reader is shown; and a new field whose name begins with `_` is refused, at `declare` and at `add_field`"
+    "018 and 026, extended (lakelands#989): a row binds `<name>._depth` beside `<name>.key`, the hops its step took to reach the record and 0 for the start, which an order, a group key and `fields` read as any path and which nothing probes; a start a cycle reaches again is answered at the hop it comes back; a graph answers each node's depth in the order of its nodes, a start at 0 however a cycle comes back to it; a depth is counted over the records its reader is shown, the longer way's where the shorter passes a restricted record; and a new field whose name begins with `_` is refused, at `declare` and at `add_field`"
 );
 
 check!(
@@ -35,7 +35,7 @@ check!(
 
 check!(
     GRAPH_STEPS = a_graph_honours_each_steps_direction_depth_and_where,
-    "018, extended: a graph whose steps all start at depth 0 walks each relation in its own step's direction to its own `max`, keeping and walking on from a record only where its step's `where`, read against the type its relation reaches wherever it is declared, holds, and a step that reaches several types and reads a `where`, or whose records rows bind (lakelands#680), names its `type`; any other is a chain walked as rows walk it, answered as the start, what rows bind, the records between and the links walked; an empty range and a chain's undeclared relation are refused; over a reference field and over link records alike"
+    "018, extended: a graph whose steps all start at depth 0 walks each relation in its own step's direction to its own `max`, keeping and walking on from a record only where its step's `where`, read against the type its relation reaches wherever it is declared, holds, and a step that reaches several types and reads a `where`, or one of whose fields rows read (lakelands#680, lakelands#990), names its `type`; any other is a chain walked as rows walk it, answered as the start, what rows bind, the records between and the links walked; an empty range and a chain's undeclared relation are refused; over a reference field and over link records alike"
 );
 
 check!(
@@ -330,9 +330,11 @@ async fn a_graph_honours_each_steps_direction_depth_and_where(store: Store) -> H
                 "spoke",
                 Some("s1"),
                 vec![st("owned_by", Walk::Both, 0, 1)],
-                Projection::Rows { fields: Vec::new() },
+                Projection::Rows {
+                    fields: vec!["owned_by.name".into()],
+                },
             ),
-            "rows over a step that reaches spokes and people, with no `type`",
+            "rows reading a field of a step that reaches spokes and people, with no `type`",
         ),
     ];
     refused(cat.as_ref(), own, cases).await
@@ -535,6 +537,31 @@ async fn a_row_says_the_hops_each_step_took_and_a_graph_each_nodes_depth(store: 
         )
         .join(", "),
     );
+    // Two ways to `s2` around a ring, the shorter through `r1`, which is
+    // restricted: a reader without `restricted` is answered the longer
+    // way's depth, as a walk that never met `r1`.
+    let edges = [
+        ("t0", "v4"),
+        ("r1", "t0"),
+        ("s2", "r1"),
+        ("u3", "s2"),
+        ("v4", "u3"),
+    ];
+    for (k, _) in edges {
+        l.upsert("node", k, json!({"name": k})).await?;
+    }
+    for (k, parent) in edges {
+        l.upsert("node", k, json!({"name": k, "parent": parent}))
+            .await?;
+    }
+    restrict(store.as_ref(), "node", "r1", "held").await?;
+    let ring = json!({"start": {"type": "node", "key": "t0"},
+        "steps": [{"relation": "parent", "walk": "both", "depth": {"min": 1, "max": 3}, "as": "up"}]});
+    let ring: Pattern = serde_json::from_value(ring).map_err(|e| Failure::new(e.to_string()))?;
+    for who in [own.clone(), reads_all(store.as_ref(), "plain")] {
+        let got = l.cat.query(&who, ring.clone()).await.must("the ring")?.data;
+        said.push(rows(got, &["up.key", "up._depth"]).join(", "));
+    }
     let want = [
         "0 c 1, 0 b 2, 0 a 3",
         "- a 3, - b 2, - c 1",
@@ -544,6 +571,8 @@ async fn a_row_says_the_hops_each_step_took_and_a_graph_each_nodes_depth(store: 
         "0 c 1, 0 b 2, 0 a 3, 0 d 4",
         "d 0, c 1, b 2, a 3",
         "0 c 1",
+        "r1 1, v4 1, s2 2, t0 2, u3 2",
+        "v4 1, t0 2, u3 2, s2 3",
     ];
     ensure!(
         said == want,

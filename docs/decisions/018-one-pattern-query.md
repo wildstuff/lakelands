@@ -129,24 +129,26 @@ the first record would not be possible.
 
 Each record a pattern binds has a name. The start and each step may
 give one with `as`. A record without one is bound under its type's name.
-A row holds `<name>.<field>`, `<name>.key` and `<name>._depth`, and every
-path a pattern names reads those names. `<name>._depth` is the hops the
-record's step took to reach it, 0 for the start: the depth the walk
-already orders by, which a caller could otherwise learn only by asking
-each depth on its own. A field is still judged on its record's type: a
+A row holds `<name>.<field>`, `<name>.key`, `<name>._depth` and
+`<name>._type`, and every path a pattern names reads those names.
+`<name>._depth` is the hops the record's step took to reach it, 0 for
+the start: the depth the walk already orders by, which a caller could
+otherwise learn only by asking each depth on its own. `<name>._type` is
+the record's type. A field is still judged on its record's type: a
 field its reader may not know of answers under any name as it does on
 the type, and a refusal names the type, not the name.
 
-A name that begins with `_` under a bound name is the lake's own column,
-never a field: a declaration, a set and a migration refuse a new field
-whose name begins with `_` (`field_name_kept`). A field the type already
-holds keeps its name, as a lake written before the rule holds it, and
-`get` and `find` answer it under that name; under a bound name its path
-reads the lake's column, so such a field is not reachable from a
-pattern's rows. Were the lake's columns bare words, a type's field
-`depth` would hide the record's depth wherever it is declared, and a name
-over several types would read the field for one type and the column for
-another.
+Under a bound name, `_depth` and `_type` are the lake's own columns,
+never fields. A field of either name that a lake already holds is not
+reachable from a pattern's rows, and `get` and `find` answer it under
+its name. So that the lake's columns never meet a declared field, a
+declaration, a set and a migration refuse a new field whose name begins
+with `_` (`field_name_kept`). A field the type already holds keeps its
+name, as a lake written before the rule holds it, and under a bound name
+any such field but `_depth` and `_type` is bound as a field. Were the
+lake's columns bare words, a type's field `depth` would hide the
+record's depth wherever it is declared, and a name over several types
+would read the field for one type and the column for another.
 
 A pattern that would bind two records under one name is refused before
 any record is read. A name is never numbered for the caller: an order or
@@ -156,13 +158,34 @@ means nothing to a graph, a path, a degree or components, which answer
 nodes or fixed columns, so it is refused there, as `to` is outside a
 graph.
 
-### Under one name a record has one type, so a step whose records are bound reaches one type or names its `type`
+### Under one name a record has one type where a path reads its fields, so a step whose fields are read reaches one type or names its `type`
 
 A type the pattern binds is the one type each step reaches. Under one
-name a record has one type, so a step whose records rows or an aggregate
-bind reaches one type or names its `type`, as it does when it reads a
-`where`, and is refused where it does not: under each name a row's paths
-are read against one type. With its `type` the step binds that type's
+name a record has one type where a path reads one of its fields, so a
+step whose records rows or an aggregate bind reaches one type or names
+its `type`, as it does when it reads a `where`, and is refused where it
+does not (`step_several_types`, naming every type it reaches): under
+each name a row's paths are read against one type.
+
+A last step over several types that names no `type` and reads no
+`where` may be bound all the same, where nothing reads its fields. Its
+records are bound under the step's `as`, or under its relation as the
+caller wrote it (the inverse's name where it named the inverse), and a
+row holds their `key`, `_type` and `_depth` alone, since a field would
+be read against one of the types. Its key is the record's key, whatever
+field `key` one of the types declares. An order, `fields`, a group key
+or a measure that reads one of its fields is refused as above. A plain
+`count` reads no field, so it counts what the step reaches over every
+type, and grouped by `<name>._type` it counts each type: the answer a
+caller would otherwise add up from one typed query a type. A step
+another follows still reaches one type or names it: the next step is
+read from one type. Its key, `_type` and `_depth` are the lake's
+columns, read against no type and never probed, so a field `key` one
+of the types declares turns nothing. A host names with `as` a step that
+may reach several types: left out, its name follows the types its
+reader is shown, so a reader shown one of them binds under that type's
+name, as on a lake without the others, and one query would not give two
+readers the same columns. With its `type` the step binds that type's
 records alone, and the step after it is read from that type. Were a
 chain's step to bind only the first type that declares its relation,
 which paths its rows could be read by would depend on the order of the
@@ -236,8 +259,8 @@ row's shape: one field for each path, of its declared kind.
 An order and a projected field read their path by the aggregate's rule,
 named whole: the longest name the pattern binds, then one of its fields
 or `key`. Any other name is refused as the aggregate refuses it.
-`<name>.key` is the record's key, as in the aggregate, and
-`<name>._depth` its depth; neither is ever probed. An order probes its field before a row is read (024). A
+`<name>.key` is the record's key, as in the aggregate, `<name>._depth`
+its depth and `<name>._type` its type; none is ever probed. An order probes its field before a row is read (024). A
 projected field is named, not computed over, so it is not probed. A
 field its reader may not know of is refused as one the type does not
 have. A masked one is left out of the row, as an absent value is: a row
@@ -604,3 +627,11 @@ used.
   by it, and the answer dropped it, so a caller asked one query a depth
   to learn it. A new field may not begin with `_`, the lake's names
   under a bound name, and a field a type already holds keeps its name.
+- A last step over several types is bound where nothing reads its fields
+  (lakelands#990): under its relation's name, with each record's key,
+  `_type` and `_depth`, counted over every type and grouped by `_type`,
+  where every such step was refused and a caller asked one typed query a
+  type. `step_several_types` names the types. 018 named every `_` name
+  under a bound name the lake's column, where only `_depth` and `_type`
+  are; a field an older lake holds under another `_` name is bound as a
+  field.

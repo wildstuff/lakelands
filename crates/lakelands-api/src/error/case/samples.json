@@ -1049,7 +1049,11 @@
    "type": "t"
   },
   {
-   "code": "step_several_types"
+   "also": [
+    "a"
+   ],
+   "code": "step_several_types",
+   "reached": "t"
   },
   {
    "asked": 1,
