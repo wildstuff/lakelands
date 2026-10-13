@@ -418,8 +418,8 @@ impl Declaration {
 
     /// Every annotation map the declaration holds, with where it sits
     /// (empty for the declaration's own): a type's, its fields', its
-    /// relations' and their link fields', a verb's payload fields', a
-    /// function's inputs'.
+    /// relations' and their link fields', a value type's, a verb's payload
+    /// fields', a function's inputs'.
     pub fn annotation_maps(&self) -> Vec<(String, &Annotations)> {
         let maps = self.annotated().into_iter();
         maps.map(|(at, _, map)| (at, map)).collect()
@@ -458,7 +458,8 @@ impl Declaration {
             }
             Declaration::Verb(v) => fields("payload", &[], &v.payload, &mut out),
             Declaration::Function(f) => fields("inputs", &[], &f.inputs, &mut out),
-            Declaration::ValueType(_) | Declaration::Trigger(_) | Declaration::ObjectSet(_) => {}
+            Declaration::ValueType(v) => out.push((String::new(), Vec::new(), &v.annotations)),
+            Declaration::Trigger(_) | Declaration::ObjectSet(_) => {}
         }
         out
     }

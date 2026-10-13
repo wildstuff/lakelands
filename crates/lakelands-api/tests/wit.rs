@@ -704,6 +704,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 format: Some("iban".into()),
                 scale: Some(2),
                 description: Some("d".into()),
+                annotations: [("acme.unit".to_owned(), serde_json::json!("EUR"))].into(),
             }),
         ),
         (
@@ -1047,11 +1048,8 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 value_types: vec![ValueTypeDecl {
                     name: "money".into(),
                     kind: StorageKind::Decimal,
-                    constraint: None,
-                    one_of: vec![],
-                    format: None,
                     scale: Some(2),
-                    description: None,
+                    ..Default::default()
                 }],
                 functions: vec![function_decl()],
                 triggers: vec![trigger_decl()],
@@ -1646,12 +1644,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     let _ = declarations;
     let value_type = ValueTypeDecl {
         name: "v".into(),
-        kind: StorageKind::Text,
-        constraint: None,
-        one_of: vec![],
-        format: None,
-        scale: None,
-        description: None,
+        ..Default::default()
     };
     checks.push((
         "declaration",

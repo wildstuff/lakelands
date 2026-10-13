@@ -820,11 +820,7 @@ pub fn value_type(name: &str, kind: StorageKind) -> lakelands_api::ontology::Val
     lakelands_api::ontology::ValueTypeDecl {
         name: name.into(),
         kind,
-        constraint: None,
-        one_of: Vec::new(),
-        format: None,
-        scale: None,
-        description: None,
+        ..Default::default()
     }
 }
 

@@ -324,6 +324,7 @@ pub const ALL: &[Check] = &[
     annotations::ROUND_TRIP,
     annotations::VERSION_NOT_HASH,
     annotations::MASKED_WITHOUT,
+    annotations::VALUE_TYPE,
     annotations::REFUSED_NAMING,
     proposals::VERB_PROCEDURE_VERSION,
     cursors::CURSOR_STAYS,

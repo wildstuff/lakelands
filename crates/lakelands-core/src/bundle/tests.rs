@@ -253,19 +253,15 @@ fn complete_declarations() -> Vec<Declaration> {
             name: ValueTypeName::new("iban"),
             kind: StorageKind::Text,
             constraint: Some(text("len(value) >= 15")),
-            one_of: Vec::new(),
             format: Some("iban".to_owned()),
-            scale: None,
             description: Some("An international bank account number.".to_owned()),
+            ..Default::default()
         }),
         Declaration::ValueType(ValueTypeDecl {
             name: ValueTypeName::new("invoice_status"),
             kind: StorageKind::Text,
-            constraint: None,
             one_of: vec!["open".to_owned(), "paid".to_owned()],
-            format: None,
-            scale: None,
-            description: None,
+            ..Default::default()
         }),
         Declaration::Type(invoice),
         Declaration::Type(TypeDecl {

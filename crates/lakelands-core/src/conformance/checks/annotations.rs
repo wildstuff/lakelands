@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use lakelands_api::describe::TypeDescription;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{
-    ANNOTATIONS_MAX_BYTES, Annotations, RelationDecl, StorageKind, TypeDecl,
+    ANNOTATIONS_MAX_BYTES, Annotations, RelationDecl, StorageKind, TypeDecl, ValueTypeDecl,
 };
 use lakelands_api::write::Declaration;
 use lakelands_api::{Access, LakeStore, Position, ReadAt, Refusal, TypeName};
@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 
 use crate::conformance::fixture::{
     Lake, Must, events_from, field, field_access, head_unmoved, invalid_like, reason, refused_on,
-    type_decl,
+    type_decl, value_type,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -41,6 +41,11 @@ check!(
 check!(
     MASKED_WITHOUT = a_masked_field_is_described_without_its_annotations,
     "024, extended: a field the principal may not read is described by its shape alone, without its annotations, and so is a relation's link field it may not read (no description, label or annotations); the type's and the relation's own annotations are still shown"
+);
+
+check!(
+    VALUE_TYPE = a_value_type_carries_annotations_as_a_type_does,
+    "007, 024 and 027, extended (lakelands#1025): a value type's annotations come back exactly in the feed's `declared` event and in `describe`; declaring it again with only its annotations changed is taken by `declare`, moves its version by one and leaves the schema hash of a type whose field names it byte-identical; and a key without a namespace on it is refused as invalid, naming the key, appending nothing"
 );
 
 check!(
@@ -299,6 +304,61 @@ async fn a_masked_field_is_described_without_its_annotations(store: Store) -> He
         note.label
     );
     Ok(())
+}
+
+async fn a_value_type_carries_annotations_as_a_type_does(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    let mut eur = ValueTypeDecl {
+        scale: Some(2),
+        annotations: marks(&[("acme.unit", json!("EUR"))]),
+        ..value_type("eur", StorageKind::Decimal)
+    };
+    let mut net = field("net", StorageKind::Decimal);
+    net.ty.value_type = Some("eur".into());
+    let mut hash = None;
+    for round in [1, 2] {
+        let before = store.head().await.must("reading the head")?;
+        let declared = cat.declare(own, Declaration::ValueType(eur.clone())).await;
+        declared.must("declaring `eur`")?;
+        if round == 1 {
+            l.declare(type_decl("invoice", vec![net.clone()])).await?;
+        }
+        let logged = events_from(store.as_ref(), before).await?;
+        let logged = logged.into_iter().find_map(|e| match e.body {
+            EventBody::Declared {
+                declaration: Declaration::ValueType(v),
+                version,
+                ..
+            } => Some((v.annotations, version)),
+            _ => None,
+        });
+        let described = cat.describe(own, ReadAt::default()).await;
+        let described = described.must("describing the lake")?.data.value_types;
+        let described = described.into_iter().find(|v| v.name == eur.name);
+        let invoice = l.describe_type("invoice").await?.lifecycle.schema_hash;
+        ensure!(
+            logged == Some((eur.annotations.clone(), round))
+                && described.is_some_and(|v| v.annotations == eur.annotations)
+                && hash.get_or_insert(invoice.clone()) == &invoice,
+            "declaration {round} of `eur` must log and describe its annotations {:?} at \
+             version {round}, and leave `invoice`'s schema hash as it was; the feed held \
+             {logged:?}, and `invoice`'s hash is {invoice} (was {hash:?})",
+            eur.annotations
+        );
+        eur.annotations = marks(&[("acme.unit", json!("EUR")), ("acme.label", json!("Euro"))]);
+    }
+    eur.annotations = marks(&[("unit", json!("EUR"))]);
+    let before = store.head().await.must("reading the head")?;
+    let refused = cat.declare(own, Declaration::ValueType(eur)).await;
+    let named =
+        json!({"code": "annotation_key_form", "at": [{"code": "annotation", "key": "unit"}]});
+    ensure!(
+        refused.as_ref().is_err_and(|e| invalid_like(e, &named)),
+        "a value type's key without a namespace must be refused naming it; it answered \
+         {refused:?}"
+    );
+    head_unmoved(store.as_ref(), before, "a refused value type").await
 }
 
 async fn an_unnamespaced_reserved_null_or_oversized_annotation_is_refused_naming_it(

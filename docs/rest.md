@@ -127,8 +127,8 @@ of the link type, so the version `If-Match` names is the link's.
   `GET …/types/sys.link.<type>.<relation>/records`.
 
 `describe` answers a type as the principal may see it. A host's
-`annotations` on a type, a field and a relation come back as they were
-declared, in canonical form. A field the principal may not read, a
+`annotations` on a type, a field, a relation and a value type come back
+as they were declared, in canonical form. A field the principal may not read, a
 relation's link field included, is described by its shape alone, without
 its annotations. An annotation grants nothing and restricts nothing:
 what a principal may read is decided by its grants alone

@@ -818,7 +818,8 @@ the first release with real installations
 - **The steps so far.** 14 → 15: none of an event's members change.
   Format 15 lets a verb's path read across a reference or a relation's
   link (`docs/decisions/055-a-path-steps-through-a-reference.md`), and a
-  log of format 14 holds no declaration that does. The step changes no
+  log of format 14 holds no declaration that does; a value type may
+  carry `annotations`, which no value type of format 14 holds. The step changes no
   fold, so the projection stays. A step that changes how an event folds
   says so here, and a writer's open then rebuilds the projection.
 - **A writer's open upgrades.** Where the newest event, read under the
@@ -918,7 +919,7 @@ with that declaration's members beside it. Every member not marked
 | a field's `type` | `kind` (required), `value_type`, `target`, `dimensions` (none) |
 | a relation | `name` and `target` (required), `cardinality` (`many_to_one`), `authority` (`authored`; who writes its links, when link records carry it), `inverse`, `via` (none), `fields` (`[]`), `description` (none), `annotations` (`{}`), `derived` (none: `{ "match": [ { "from", "to" } ], "where" }`, a field of the owner and one of the target per pair, and `where` (none) a condition over `from.<field>` and `to.<field>`) |
 | a `view` | `source` and `measures` (required; each measure `{ "name", "expr" }`), `where` (none), `group_by` (`[]`), `params` (`[]`: each `{ "name", "kind" }`, a kind of `text`, `number`, `decimal`, `boolean`, `date_time` or `date`), `merge` (`[]`: each `{ "source", "where", "group_by", "measures" }`; `source` and `measures` required, `where` none, `group_by` `[]`) |
-| `value_type` | `name` and `kind` (required), `constraint` (none), `one_of` (`[]`), `format`, `scale`, `description` (none) |
+| `value_type` | `name` and `kind` (required), `constraint` (none), `one_of` (`[]`), `format`, `scale`, `description` (none), `annotations` (`{}`) |
 | `verb` | `name`, `on`, `risk` and `effect` (required), `payload` (`[]`), `requires` (none), `description` (none); `effect: write` carries `set`, a list of `{ "field", "value" }`; `effect: external` carries `executor` |
 | `trigger` | `name` and `on` (required), `when`, `description` (none), `max_depth` (none: an integer at most the lake's `max_reactive_depth`) |
 | `object_set` | `name`, `of` and `where` (required), `description` (none) |

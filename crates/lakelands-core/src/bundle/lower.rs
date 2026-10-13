@@ -378,6 +378,7 @@ pub(super) fn value_type(l: &mut Lower<'_>, doc: ValueTypeDoc) -> ValueTypeDecl 
         format: doc.format,
         scale: doc.scale,
         description: doc.description,
+        annotations: doc.annotations,
     };
     l.annotated(&Declaration::ValueType(v.clone()));
     v
