@@ -1135,25 +1135,17 @@ pub(crate) fn reached(
     };
     let decl = o.ty(ty)?;
     if let (false, Some(key), true) = (refs.is_empty(), key, computes_a_reference(decl)) {
-        // The record as planned is the fold's: what it would make of this
-        // write, an initial value and a field waiting for its backing too.
         let before = view.get(ty, key)?;
-        let live = before.as_ref().filter(|b| !b.retired);
-        let (ty, key, patch, made) = (ty.clone(), key.clone(), refs.clone(), live.is_none());
-        let version = Version(before.as_ref().map_or(0, |b| b.version.0) + 1);
-        let body = EventBody::RecordUpserted {
-            ty,
-            key,
-            version,
-            patch,
-            made,
-        };
-        let event = provisional(lake, Position::GENESIS, &Draft::system(now, body));
-        let plans = record::Plans::default();
-        let outputs = &mut Outputs::planning(view, &plans);
-        if let Some(after) = record::apply(o, before.as_ref(), &event, settings, outputs)? {
+        if let Some(after) = planned(
+            lake,
+            o,
+            (view, settings, now),
+            before.as_ref(),
+            (ty, key),
+            &refs,
+        )? {
             let sent: Vec<FieldName> = refs.keys().cloned().collect();
-            let was = live.map(|b| &b.fields);
+            let was = before.as_ref().filter(|b| !b.retired).map(|b| &b.fields);
             refs.extend(computed_references(decl, was, &after.fields, &sent));
         }
     }
@@ -1170,12 +1162,39 @@ pub(crate) fn reached(
     Ok(out.iter().flat_map(|(t, k)| with_ends(o, t, k)).collect())
 }
 
+/// The record `before` at `key` of `ty` as the fold would leave it after a
+/// write of `patch`, with these settings at `now`: its derived values, an
+/// initial value and a field waiting for its backing too.
+pub(crate) fn planned(
+    lake: &Lake,
+    o: &Ontology,
+    (view, settings, now): (&dyn ProjectionView, &BTreeMap<String, Value>, Timestamp),
+    before: Option<&StoredRecord>,
+    (ty, key): (&TypeName, &RecordKey),
+    patch: &Patch,
+) -> Result<Option<StoredRecord>> {
+    let made = before.is_none_or(|b| b.retired);
+    let version = Version(before.map_or(0, |b| b.version.0) + 1);
+    let (ty, key, patch) = (ty.clone(), key.clone(), patch.clone());
+    let body = EventBody::RecordUpserted {
+        ty,
+        key,
+        version,
+        patch,
+        made,
+    };
+    let event = provisional(lake, Position::GENESIS, &Draft::system(now, body));
+    let plans = record::Plans::default();
+    let outputs = &mut Outputs::planning(view, &plans);
+    record::apply(o, before, &event, settings, outputs)
+}
+
 /// What a call of the verb `v` with `payload` would write to the record at
 /// `key` in `view`, with these settings at `now`, whatever form an
 /// assignment takes (one that cannot be computed refuses the accept by
 /// itself); and the records its `requires` and its values read across a
 /// reference there, whoever holds them.
-fn call_reads(
+pub(crate) fn call_reads(
     o: &Ontology,
     (view, settings, now): (&dyn ProjectionView, &BTreeMap<String, Value>, Timestamp),
     v: &VerbDecl,

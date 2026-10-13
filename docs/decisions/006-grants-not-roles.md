@@ -1873,16 +1873,16 @@ record that does not exist.
   which is positional and so can be guessed, tells it nothing. A key
   whose record another retired, and which is not held, is to it a free
   key, as to its own writes. Of the rest it accepts or rejects only
-  what the listing shows it whole: the record after the write as
-  proposed admitted, and every value the write carries one it may
-  read. One it is listed in part, its own record handed to another, a
+  what the listing shows it whole: the record the write would leave
+  admitted, planned as the accept plans it, its derived values computed
+  and a call's assignments made (lakelands#914), and every value the
+  write carries one it may read. One it is listed in part, its own
+  record handed to another by an upsert, a call or a derived value, a
   free key made another's or a value it may not read, is refused as not
   granted, its accept and its reject alike, before it is told whether
   the proposal is decided: what its listing leaves out is a record that
   would be another's, which its reject would decide as surely as its
-  accept. Its accept is judged by its own pairs too: a write that would
-  leave the record outside them, its derived values computed, is
-  refused as not granted, as its own write would be. Every reviewer
+  accept, as its own write would be refused. Every reviewer
   accepts only what it is listed whole (above, lakelands#867). So the
   listing tells a free key, where a write is listed in part, from
   another's record, where the same write is not listed: as a write
@@ -2655,3 +2655,7 @@ Of `only`:
   to that holder, where it was listed without its write and its accept
   and reject refused as not granted (lakelands#1016); a retired record
   of another's that is not held is a free key to it, as to its writes.
+- A proposal whose call or derived value would leave its record outside
+  a holder's `only` is listed to that holder in part, its accept and
+  reject not granted, where it was listed whole and its reject taken
+  (lakelands#914).

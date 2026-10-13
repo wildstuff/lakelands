@@ -23,8 +23,13 @@ check!(
 
 check!(
     ONLY_DECIDES = a_holder_of_only_decides_what_it_is_shown_whole,
-    "051: a reviewer holding `only` accepts and rejects a proposal its listing shows it whole; one on another's record, a retirement too and by one who holds `restricted` as well, is not there to it, its accept and reject answered as an id never made, decided or not, to the byte (lakelands#1016), appending nothing, so a guessed id tells it nothing; one listed to it in part, its own record handed to another or a free key made another's, it neither accepts nor rejects, each refused as not granted, appending nothing; a key whose record another retired, and which is not held, is free to it: a proposal that makes it the holder's is listed whole and accepted; and its accept is refused where the write, its derived values computed, would leave the record outside its pairs"
+    "051: a reviewer holding `only` accepts and rejects a proposal its listing shows it whole; one on another's record, a retirement too and by one who holds `restricted` as well, is not there to it, its accept and reject answered as an id never made, decided or not, to the byte (lakelands#1016), appending nothing, so a guessed id tells it nothing; one listed to it in part, its own record handed to another or a free key made another's, it neither accepts nor rejects, each refused as not granted, appending nothing; a key whose record another retired, and which is not held, is free to it: a proposal that makes it the holder's is listed whole and accepted; and one whose record the write would leave outside its pairs, as the accept plans it (its derived values computed, a call's assignments made, by a constant, from the payload or from the record, on a link too), is listed to it in part and neither accepted nor rejected, while a call that leaves the record its own is listed whole and accepted, and one that would make another's record its own is not there to it (lakelands#914)"
 );
+
+/// The call of `verb` on the record `key` with `payload`.
+fn call(verb: &str, key: &str, payload: Value) -> Value {
+    json!({"write": "call", "verb": verb, "key": key, "payload": payload})
+}
 
 /// `who`'s proposal of the write `json`, its id or what refused it.
 async fn proposes(l: &Lake, who: &Principal, json: Value) -> Result<ProposalId, String> {
@@ -409,12 +414,29 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let cat = l.cat.as_ref();
     claims(&l, false).await?;
-    let set = json!([{"field": "owner", "value": "'bob'"}]);
-    l.declare_json(
-        json!({"declare": "verb", "name": "give", "on": "claim", "risk": "high",
-                          "effect": "write", "set": set}),
-    )
-    .await?;
+    // Verbs that set the owner by a constant, from the payload, from the
+    // record, and a link's label (lakelands#914).
+    let to = json!([{"name": "to", "type": {"kind": "text"}}]);
+    for (name, on, field, value, payload) in [
+        ("give", "claim", "owner", "'bob'", json!([])),
+        ("hand", "claim", "owner", "payload.to", to),
+        (
+            "swap",
+            "claim",
+            "owner",
+            "if(amount > 5, 'bob', owner)",
+            json!([]),
+        ),
+        ("take", "claim", "owner", "'alice'", json!([])),
+        ("mark", "sys.link.claim.on_trip", "label", "'x'", json!([])),
+    ] {
+        let set = json!([{"field": field, "value": value}]);
+        l.declare_json(
+            json!({"declare": "verb", "name": name, "on": on, "risk": "high",
+                              "effect": "write", "set": set, "payload": payload}),
+        )
+        .await?;
+    }
     // `ticket`'s owner is derived from `n`: what a write leaves is known
     // only once it is computed.
     l.declare_json(json!({"declare": "type", "name": "ticket", "fields": [
@@ -432,10 +454,7 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
     for (who, write) in [
         (&carol, upsert("claim", "c1", "note", json!("q1"))),
         (&carol, upsert("claim", "c1", "note", json!("q2"))),
-        (
-            &carol,
-            json!({"write": "call", "verb": "give", "key": "c1", "payload": {}}),
-        ),
+        (&carol, call("give", "c1", json!({}))),
         (&bob, upsert("claim", "c2", "note", json!("q4"))),
         (&bob, upsert("claim", "c2", "note", json!("q5"))),
         (&carol, upsert("ticket", "t1", "n", json!("bob"))),
@@ -448,6 +467,11 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
         (&carol, upsert("claim", "c1", "owner", json!("bob"))),
         (&carol, upsert("claim", "c9", "owner", json!("bob"))),
         (&carol, upsert("claim", "c4", "owner", json!("alice"))),
+        (&carol, call("hand", "c1", json!({"to": "bob"}))),
+        (&carol, call("swap", "c1", json!({}))),
+        (&carol, call("swap", "c3", json!({}))),
+        (&carol, call("take", "c2", json!({}))),
+        (&carol, call("mark", "c1:t1", json!({}))),
     ] {
         ids.push(proposes(&l, who, write).await.map_err(Failure::new)?);
     }
@@ -455,7 +479,8 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
         .await
         .must("the owner's accept of bob's second proposal")?;
     let hers = json!({"only": {"owner": "alice"}});
-    let types = json!({"claim": hers, "ticket": hers});
+    let link = json!({"only": {"label": "trip"}});
+    let types = json!({"claim": hers, "ticket": hers, "sys.link.claim.on_trip": link});
     // With `restricted` she is judged by her `only` all the same: a
     // retirement names a record alone, and is judged by a read of it.
     let more = json!({"default": "write", "review": true, "restricted": true, "types": types});
@@ -474,6 +499,7 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
         ("bob's pending proposal", &ids[3]),
         ("bob's decided proposal", &ids[4]),
         ("a retirement of bob's `c2`", &ids[6]),
+        ("a call that would make bob's `c2` hers", &ids[13]),
     ] {
         let decide = async |id: &ProposalId| {
             let accepted = cat.accept(&alice, id).await;
@@ -489,19 +515,9 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
             &format!("as an id never made: true; {decided:?}"),
         );
     }
-    let given = cat.accept(&alice, &ids[2]).await.map(|_| ());
-    row(
-        "the accept of a call that hands her `c1` to bob",
-        said(given),
-        &ng,
-    );
-    let derived = cat.accept(&alice, &ids[5]).await.map(|_| ());
-    row(
-        "the accept of a write that derives bob her `t1`",
-        said(derived),
-        &ng,
-    );
-    // An entry listed to her in part she neither accepts nor rejects.
+    // An entry listed to her in part she neither accepts nor rejects: a
+    // record the write leaves outside her pairs, as the accept plans it
+    // (lakelands#914).
     let listed = cat.proposals(&alice, Default::default()).await;
     let listed = listed.must("alice's listing")?.data;
     let shown = |id: &ProposalId| {
@@ -511,6 +527,11 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
     for (what, id) in [
         ("her `c1` handed to bob", &ids[7]),
         ("a free `c9` made bob's", &ids[8]),
+        ("a call that hands her `c1` to bob", &ids[2]),
+        ("a write that derives bob her `t1`", &ids[5]),
+        ("a call that hands her `c1` to the payload's bob", &ids[10]),
+        ("a call that hands her `c1` to bob by its amount", &ids[11]),
+        ("a call that marks her link out", &ids[14]),
     ] {
         row(&format!("{what}, listed"), shown(id), "Some((false, true))");
         let accepted = cat.accept(&alice, id).await.map(|_| ());
@@ -520,15 +541,16 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
     }
     head_unmoved(store.as_ref(), head, "every refused decision by alice").await?;
     // Bob's retired `c4` is a free key to her, as to her writes: its
-    // remaking as hers is listed whole, and she accepts it.
-    let c4 = "bob's retired `c4` made hers";
-    row(
-        &format!("{c4}, listed"),
-        shown(&ids[9]),
-        "Some((true, false))",
-    );
-    let accepted = cat.accept(&alice, &ids[9]).await.map(|_| ());
-    row(&format!("the accept of {c4}"), said(accepted), "applied");
+    // remaking as hers is listed whole, and she accepts it, as a call
+    // that leaves her `c3` hers.
+    for (what, id) in [
+        ("bob's retired `c4` made hers", &ids[9]),
+        ("a call that leaves her `c3` hers by its amount", &ids[12]),
+    ] {
+        row(&format!("{what}, listed"), shown(id), "Some((true, false))");
+        let accepted = cat.accept(&alice, id).await.map(|_| ());
+        row(&format!("the accept of {what}"), said(accepted), "applied");
+    }
     let accepted = cat.accept(&alice, &ids[0]).await.map(|_| ());
     row(
         "the accept of a change to her `c1`",
