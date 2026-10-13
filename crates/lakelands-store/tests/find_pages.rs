@@ -42,6 +42,8 @@ struct Handed {
     gets: AtomicUsize,
     edges: AtomicUsize,
     scans: AtomicUsize,
+    /// Of `gets`, those that asked for one record alone.
+    ones: AtomicUsize,
 }
 
 struct Counting {
@@ -63,10 +65,14 @@ impl ProjectionView for CountingView<'_> {
     }
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
         self.handed.gets.fetch_add(1, Ordering::SeqCst);
+        self.handed.ones.fetch_add(1, Ordering::SeqCst);
         self.inner.get(ty, key)
     }
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
         self.handed.gets.fetch_add(1, Ordering::SeqCst);
+        if keys.len() == 1 {
+            self.handed.ones.fetch_add(1, Ordering::SeqCst);
+        }
         self.inner.get_many(ty, keys)
     }
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
@@ -513,6 +519,99 @@ async fn a_derived_walk_asks_one_scan_a_page_of_starts() {
             rows.len() == want && scans <= 4,
             "{what}: {} rows asked {scans} scans of the engine; a page of starts asks one scan of them and one for their matches",
             rows.len()
+        );
+    }
+}
+
+/// A step's `where` reads the records the walk's visibility read for the
+/// batch, in every walk that reads one, not each record again on its own
+/// (lakelands#1027): a chain's graph, a reach and rows ask no single
+/// record of the engine.
+#[tokio::test]
+async fn a_walk_with_a_where_reads_no_record_alone() {
+    use lakelands_api::query::{Pattern, QueryResult};
+    let (store, cat, who, handed) = notes("where-cache").await;
+    drop(store);
+    let ty = |name: &str, own: &str, up: Option<(&str, &str, &str)>| {
+        let mut t = json!({"declare": "type", "name": name, "fields": [{"name": own, "type": {"kind": "text"}}]});
+        if let Some((rel, field, target)) = up {
+            t["fields"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"name": field, "type": {"kind": "reference", "target": target}}));
+            t["relations"] = json!([{"name": rel, "target": target, "via": field}]);
+        }
+        serde_json::from_value::<Declaration>(t).unwrap()
+    };
+    for d in [
+        ty("region", "name", None),
+        ty("customer", "name", Some(("in_region", "region", "region"))),
+        ty("invoice", "status", Some(("of", "cust", "customer"))),
+        ty("payment", "amount", Some(("pays", "inv", "invoice"))),
+    ] {
+        cat.declare(&who, d).await.unwrap();
+    }
+    let put = |ty: &'static str, key: String, fields: serde_json::Value| {
+        let (cat, who) = (cat.clone(), who.clone());
+        async move {
+            let patch = serde_json::from_value(fields).unwrap();
+            let key = key.as_str().into();
+            cat.upsert(&who, &ty.into(), &key, patch, Default::default())
+                .await
+                .unwrap();
+        }
+    };
+    for i in 0..2 {
+        put("region", format!("r{i}"), json!({"name": "r"})).await;
+    }
+    for i in 0..10 {
+        put(
+            "customer",
+            format!("c{i}"),
+            json!({"name": "c", "region": format!("r{}", i % 2)}),
+        )
+        .await;
+    }
+    for i in 0..40 {
+        let status = if i % 2 == 0 { "open" } else { "paid" };
+        put(
+            "invoice",
+            format!("i{i:02}"),
+            json!({"status": status, "cust": format!("c{}", i % 10)}),
+        )
+        .await;
+    }
+    for i in 0..80 {
+        put(
+            "payment",
+            format!("p{i:02}"),
+            json!({"amount": "1", "inv": format!("i{:02}", i % 40)}),
+        )
+        .await;
+    }
+    let walk = |project: &str| -> Pattern {
+        serde_json::from_value(json!({"start": {"type": "region"}, "steps": [
+            {"relation": "in_region", "walk": "in"},
+            {"relation": "of", "walk": "in", "where": "status = 'open'"},
+            {"relation": "pays", "walk": "in"}], "project": {"as": project}, "limit": 1000}))
+        .unwrap()
+    };
+    // A chain's graph holds the five customers whose invoices are open.
+    for (project, want) in [
+        ("graph", 2 + 5 + 20 + 40),
+        ("reach", 10 + 20 + 40),
+        ("rows", 40),
+    ] {
+        handed.ones.store(0, Ordering::SeqCst);
+        let answered = match cat.query(&who, walk(project)).await.unwrap().data {
+            QueryResult::Rows { rows, .. } => rows.len(),
+            QueryResult::Graph { nodes, .. } => nodes.len(),
+            QueryResult::Groups { rows } => rows.len(),
+        };
+        let ones = handed.ones.load(Ordering::SeqCst);
+        assert!(
+            answered == want && ones == 0,
+            "a {project} over a step with a `where` answered {answered} where {want} are due, and asked {ones} records of the engine one at a time; it reads what its visibility read"
         );
     }
 }
