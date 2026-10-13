@@ -608,7 +608,11 @@ A host that already has a store of its own moves in four steps.
   by the far record starts from the far type, filters there, and walks
   back (a relation's inverse). Rows ordered by a record a step reaches,
   and an aggregate over rows, are read whole, at most `max_graph_nodes`
-  rows, and past it refused `too_large`.
+  rows, and past it refused `too_large`. A chain's graph walks its starts
+  a page of 256 at a time too, each step's records together, walks the
+  whole chain again for each page of its answer, and past
+  `max_graph_nodes` records is refused `too_large`; a neighbourhood
+  reads only the starts its page reaches (lakelands#1027, lakelands#963).
 - **A migration of a large type is a step for a quiet moment.** Applying
   one reads, converts and writes again every record of the type under
   the writer; other writes wait. The check before the append and the fold

@@ -3386,9 +3386,16 @@ impl<'a> Reader<'a> {
         };
         let at = [Place::Start, Place::Where];
         let filter = self.record_filter(&start_decl, p.start.filter.as_ref(), &at)?;
-        // A graph and a path read every start, and so do rows of a view,
-        // whose records are computed whole.
+        // A chain and a path read every start, and so do rows of a view,
+        // whose records are computed whole. A neighbourhood's starts are
+        // its first records, so it reads as many as its page reaches and
+        // one more (lakelands#963).
+        let hood = p.project == Projection::Graph && !chain && p.to.is_none();
         let few = match few {
+            None if hood && start_decl.view.is_none() => {
+                let want = offset.saturating_add(limit).saturating_add(1);
+                Some(self.page(&start_decl, filter.as_ref(), &[], None, want)?)
+            }
             None if !binds || start_decl.view.is_some() => {
                 Some(self.records(&start_decl, filter.as_ref())?)
             }
@@ -3424,12 +3431,11 @@ impl<'a> Reader<'a> {
         // hops any start reaches it in, ordered by (depth, type, key) as
         // one walk orders what it reaches (026, 029), a page at a time.
         if p.project == Projection::Graph {
-            let walk = if chain {
-                graph::spanned
-            } else {
-                graph::subgraph
+            let bound = (max_depth, self.lake.limits.max_graph_nodes);
+            let g = match chain {
+                true => graph::spanned(&hidden, &from, &p.steps, bound, offset, limit, keep)?,
+                false => graph::subgraph(&hidden, &from, &p.steps, max_depth, offset, limit, keep)?,
             };
-            let g = walk(&hidden, &from, &p.steps, max_depth, offset, limit, keep)?;
             let next = g
                 .truncated
                 .then(|| self.page_cursor(p, (offset + limit, None), params));

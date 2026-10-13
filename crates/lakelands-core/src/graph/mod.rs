@@ -180,6 +180,16 @@ pub fn check_depth(depth: Depth, max_depth: u32) -> Result<()> {
     Ok(())
 }
 
+/// What a walk that would hold more than `max` records is refused with,
+/// never cut (026).
+fn too_large(max: u32) -> lakelands_api::Error {
+    let reason = lakelands_api::Refusal::TooLarge { max };
+    lakelands_api::Error::Refused {
+        field: None,
+        reason,
+    }
+}
+
 /// The identity of a link, for deduplication and ordering:
 /// `(from, relation, to)`.
 type EdgeId = (Node, RelationName, Node);

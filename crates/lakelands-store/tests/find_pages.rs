@@ -526,7 +526,9 @@ async fn a_derived_walk_asks_one_scan_a_page_of_starts() {
 /// A step's `where` reads the records the walk's visibility read for the
 /// batch, in every walk that reads one, not each record again on its own
 /// (lakelands#1027): a chain's graph, a reach and rows ask no single
-/// record of the engine.
+/// record of the engine, and each walks a step's records together, one
+/// edge question a step. A neighbourhood's starts are its first records,
+/// so its first page reads those and one more (lakelands#963).
 #[tokio::test]
 async fn a_walk_with_a_where_reads_no_record_alone() {
     use lakelands_api::query::{Pattern, QueryResult};
@@ -603,15 +605,31 @@ async fn a_walk_with_a_where_reads_no_record_alone() {
         ("rows", 40),
     ] {
         handed.ones.store(0, Ordering::SeqCst);
+        handed.edges.store(0, Ordering::SeqCst);
         let answered = match cat.query(&who, walk(project)).await.unwrap().data {
             QueryResult::Rows { rows, .. } => rows.len(),
             QueryResult::Graph { nodes, .. } => nodes.len(),
             QueryResult::Groups { rows } => rows.len(),
         };
         let ones = handed.ones.load(Ordering::SeqCst);
+        let edges = handed.edges.load(Ordering::SeqCst);
         assert!(
-            answered == want && ones == 0,
-            "a {project} over a step with a `where` answered {answered} where {want} are due, and asked {ones} records of the engine one at a time; it reads what its visibility read"
+            answered == want && ones == 0 && edges == 3,
+            "a {project} over a step with a `where` answered {answered} where {want} are due, and asked {ones} records of the engine one at a time and {edges} edge questions; it reads what its visibility read, and walks a step's records together"
         );
     }
+    let hood: Pattern = serde_json::from_value(json!({"start": {"type": "payment"}, "steps": [
+        {"relation": "pays", "walk": "out", "depth": {"min": 0, "max": 1}}],
+        "project": {"as": "graph"}, "limit": 5}))
+    .unwrap();
+    handed.rows.store(0, Ordering::SeqCst);
+    let QueryResult::Graph { nodes, .. } = cat.query(&who, hood).await.unwrap().data else {
+        panic!("a graph");
+    };
+    let rows = handed.rows.load(Ordering::SeqCst);
+    assert!(
+        nodes.len() == 5 && rows <= 6,
+        "a neighbourhood of 80 payments answered {} on a page of 5 and read {rows} records by scan; it reads its page of starts and one more",
+        nodes.len()
+    );
 }
