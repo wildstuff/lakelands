@@ -47,13 +47,17 @@ while IFS= read -r line; do
     fail "$line reads an error from JSON outside the client, which makes free text of it"
 done <<< "$reads"
 
+# Each list is read from a string, never a pipe: `grep -q` stops at its
+# first match, and under `pipefail` the writer it leaves behind dies of a
+# broken pipe, which read as a missing line once in CI.
+names=$(listed)
 while IFS= read -r file; do
     [ -n "$file" ] || continue
-    listed | grep -qx -- "$file" || fail "$file scrubs foreign words and is not listed with why they are safe"
+    grep -qx -- "$file" <<< "$names" || fail "$file scrubs foreign words and is not listed with why they are safe"
 done <<< "$calls"
 
 while IFS= read -r file; do
-    printf '%s\n' "$calls" | grep -qx -- "$file" || fail "$file is listed and no longer scrubs foreign words; take it off the list"
-done < <(listed)
+    grep -qx -- "$file" <<< "$calls" || fail "$file is listed and no longer scrubs foreign words; take it off the list"
+done <<< "$names"
 
 verdict "$(printf '%s\n' "$calls" | grep -c . || true) file(s) scrub foreign words"
