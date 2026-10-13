@@ -64,9 +64,11 @@ use lakelands_core::rights::{self, Door};
 use lakelands_core::sight::Sight;
 use lakelands_core::{describe, invalid, links, shape, value};
 
-use crate::backed::Outputs;
+use crate::backed::{Outputs, is_backed};
 use crate::declare::{self, invalid_field};
-use crate::lake::{AGING_RULE_TYPE, Lake, SETTING_TYPE, Writer, every, find_proposal};
+use crate::lake::{
+    AGING_RULE_TYPE, Lake, SETTING_TYPE, Writer, computes_again, every, find_proposal,
+};
 use crate::log::{self, Draft};
 use crate::ontology::Ontology;
 use crate::record;
@@ -3505,6 +3507,14 @@ impl Call<'_> {
         for d in declarations.iter().filter(sets) {
             after.put(d.clone(), 0, None);
         }
+        // The records the bundle computes again, and the lake it leaves.
+        let again = declarations.iter();
+        let again: BTreeSet<TypeName> =
+            again.flat_map(|d| computes_again(&w.ontology, d)).collect();
+        let mut whole = w.ontology.clone();
+        declarations
+            .iter()
+            .for_each(|d| whole.put(d.clone(), 0, None));
         for declaration in declarations {
             let declared = position_after(w, first + drafts.len());
             // A type's hash and link types, or the memberships a set decides.
@@ -3513,6 +3523,9 @@ impl Call<'_> {
                     let hash = shape::schema_hash(t).map_err(invalid)?;
                     (Some(hash), link_type_drafts(&w.ontology, t, now)?)
                 }
+                // A set of a type computed again is decided by its walk, over
+                // the records as the bundle computes them.
+                Declaration::ObjectSet(set) if again.contains(&set.of) => (None, Vec::new()),
                 Declaration::ObjectSet(set) => {
                     let with = (w, &after, &mut decided);
                     (None, self.set_drafts(with, set, declared, now)?)
@@ -3543,7 +3556,104 @@ impl Call<'_> {
                 *with_the_set = computes;
             }
         }
+        // Their sets are decided in this append, caused by the last
+        // declaration, where the fold computes them again (lakelands#941).
+        if let Some(last) = last.filter(|_| !again.is_empty()) {
+            let event = provisional(self.lake, position_after(w, first + last), &drafts[last]);
+            let changes = self.recomputed_sets((w, &whole, &decided), &again, &event, now)?;
+            drafts.extend(changes);
+        }
         Ok(drafts)
+    }
+
+    /// The changes to the sets of `types`, as `whole` declares them, whose
+    /// filter reads a field they compute or that `whole` declares other
+    /// than the lake (a set naming one reads its filter too), but those
+    /// `decided`; each record as `whole` computes it again, a field
+    /// computed outside the lake kept as it was. Past `max_set_changes`,
+    /// refused `too_large` naming the set.
+    fn recomputed_sets(
+        &self,
+        (w, whole, decided): (&Writer, &Ontology, &[String]),
+        types: &BTreeSet<TypeName>,
+        event: &Event,
+        now: Timestamp,
+    ) -> Result<Vec<Draft>> {
+        let (view, max) = (
+            self.lake.engine.view(None)?,
+            self.lake.limits.max_set_changes,
+        );
+        let computing = whole.computing(&types.iter().cloned().collect::<Vec<_>>());
+        let (plans, mut out) = (record::Plans::default(), Vec::new());
+        for ty in types {
+            let computed: BTreeSet<&FieldName> = (whole.ty(ty)?.fields.iter())
+                .filter(|f| f.derived.is_some() || f.function.is_some() || f.embed.is_some())
+                .map(|f| &f.name)
+                .collect();
+            let reads = |s: &ObjectSetDecl| {
+                let at = [Place::ObjectSet {
+                    name: s.name.clone(),
+                }];
+                let filter =
+                    declare::filter(&|n| whole.set(n), &s.of, &s.filter, Eval::Record, &at);
+                filter.is_ok_and(|e| {
+                    lakelands_core::derive::reads(&e)
+                        .iter()
+                        .any(|f| computed.contains(f))
+                })
+            };
+            let moved = |s: &ObjectSetDecl| w.ontology.set(&s.name) != Some(s);
+            let mut sets = Vec::new();
+            for s in (whole.object_sets.values().map(|e| &e.decl)).filter(|s| &s.of == ty) {
+                let named = |m: &ObjectSetDecl| moved(m) && declare::names_set(whole, s, &m.name);
+                let bundled = whole.object_sets.values().any(|m| named(&m.decl));
+                if !decided.contains(&s.name) && (reads(s) || moved(s) || bundled) {
+                    let held = match w.ontology.set(&s.name) {
+                        Some(_) => view.members(&s.name, ty)?,
+                        None => BTreeSet::new(),
+                    };
+                    sets.push((s, held));
+                }
+            }
+            let outside = |f: &&FieldDecl| {
+                let backed = |n: &str| whole.functions.get(n).is_some_and(|f| is_backed(&f.decl));
+                f.embed.is_some() || f.function.as_deref().is_some_and(backed)
+            };
+            let outside: Vec<&FieldName> = (whole.ty(ty)?.fields.iter())
+                .filter(outside)
+                .map(|f| &f.name)
+                .collect();
+            if sets.is_empty() {
+                continue;
+            }
+            live(view.as_ref(), ty, |r| {
+                let mut outputs = Outputs::planning(view.as_ref(), &plans);
+                let mut is = record::rederive(&computing, r, event, &w.settings, &mut outputs)?
+                    .unwrap_or_else(|| r.clone());
+                for f in &outside {
+                    match r.fields.get(*f) {
+                        Some(v) => is.fields.insert((*f).clone(), v.clone()),
+                        None => is.fields.remove(*f),
+                    };
+                }
+                let is = &is;
+                for (s, held) in &sets {
+                    let member = member_of((s, whole), is, w, now)?;
+                    if held.contains(&r.key) == member {
+                        continue;
+                    }
+                    if out.len() as u64 >= u64::from(max) {
+                        let (field, reason) =
+                            (Some(s.name.as_str().into()), Refusal::TooLarge { max });
+                        return Err(Error::Refused { field, reason });
+                    }
+                    let change = (s.name.clone(), ty.clone(), r.key.clone(), member);
+                    out.push(self.changed(change, event.position, now));
+                }
+                Ok(())
+            })?;
+        }
+        Ok(out)
     }
 
     /// The membership a set's declaration decides for the records already

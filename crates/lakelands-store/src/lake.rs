@@ -1461,55 +1461,7 @@ impl Lake {
                 version,
                 with_the_set,
             } => {
-                // What computes a type's derived fields: its derived
-                // expressions, the functions its fields name, what its
-                // embeddings are made from, and which are computed at the
-                // read: saying `write` where nothing was said changes none.
-                let computes = |t: &lakelands_api::ontology::TypeDecl| -> Vec<_> {
-                    t.fields
-                        .iter()
-                        .filter(|f| {
-                            f.derived.is_some() || f.function.is_some() || f.embed.is_some()
-                        })
-                        .map(|f| {
-                            (
-                                f.name.clone(),
-                                f.derived.clone(),
-                                f.function.clone(),
-                                f.embed.clone(),
-                                f.at_read(),
-                            )
-                        })
-                        .collect()
-                };
-                let rederive: Vec<TypeName> = match declaration {
-                    Declaration::Function(f) => w
-                        .ontology
-                        .types
-                        .values()
-                        .filter(|t| {
-                            t.decl
-                                .fields
-                                .iter()
-                                .any(|d| d.function.as_deref() == Some(f.name.as_str()))
-                        })
-                        .map(|t| t.decl.name.clone())
-                        .collect(),
-                    // A type whose fields are computed outside the lake is
-                    // settled again whenever it is declared again: that is
-                    // how an operator retries a recorded failure (022,
-                    // extended).
-                    Declaration::Type(t) => match w.ontology.types.get(&t.name) {
-                        Some(old)
-                            if computes(&old.decl) != computes(t)
-                                || crate::backed::computed_outside(&w.ontology, t) =>
-                        {
-                            vec![t.name.clone()]
-                        }
-                        _ => vec![],
-                    },
-                    _ => vec![],
-                };
+                let rederive = computes_again(&w.ontology, declaration);
                 w.ontology
                     .put(declaration.clone(), *version, schema_hash.clone());
                 projection.put_declaration(
@@ -2570,6 +2522,46 @@ pub(crate) struct Recomputed {
     /// The plans its records are computed by: its own, since a read
     /// computes through it without the writer.
     plans: record::Plans,
+}
+
+/// The types whose records `declaration`, over `o`, computes again: whose
+/// fields name a function declared again, and a type in force declared
+/// again with other computed fields (saying `write` where nothing was said
+/// changes none) or with fields computed outside the lake, as an operator
+/// retries a recorded failure (022, extended). The fold computes them again
+/// and the declaration's append decides their sets (lakelands#941).
+pub(crate) fn computes_again(o: &Ontology, declaration: &Declaration) -> Vec<TypeName> {
+    let computes = |t: &TypeDecl| -> Vec<_> {
+        (t.fields.iter())
+            .filter(|f| f.derived.is_some() || f.function.is_some() || f.embed.is_some())
+            .map(|f| {
+                (
+                    f.name.clone(),
+                    f.derived.clone(),
+                    f.function.clone(),
+                    f.embed.clone(),
+                    f.at_read(),
+                )
+            })
+            .collect()
+    };
+    match declaration {
+        Declaration::Function(f) => (o.types.values())
+            .filter(|t| {
+                (t.decl.fields.iter()).any(|d| d.function.as_deref() == Some(f.name.as_str()))
+            })
+            .map(|t| t.decl.name.clone())
+            .collect(),
+        Declaration::Type(t) => match o.types.get(&t.name) {
+            Some(old)
+                if computes(&old.decl) != computes(t) || crate::backed::computed_outside(o, t) =>
+            {
+                vec![t.name.clone()]
+            }
+            _ => vec![],
+        },
+        _ => vec![],
+    }
 }
 
 impl Recomputed {

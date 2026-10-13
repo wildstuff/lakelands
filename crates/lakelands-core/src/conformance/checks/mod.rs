@@ -373,6 +373,7 @@ pub const ALL: &[Check] = &[
     reactions::VERB_WRITE_REACTS,
     reactions::SET_READ_BY_ITS_FILTER,
     set_declared::SET_DECLARED_OVER_RECORDS,
+    set_declared::SET_RECOMPUTED,
     judged::JUDGED_WITH_PROVENANCE,
     judged::NO_RECORD_NO_PROVENANCE,
     set_names::COMPOSED,

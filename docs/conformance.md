@@ -640,6 +640,7 @@ belongs in the suite, not beside one engine:
 **set declared**
 
 - `a_sets_declaration_decides_the_membership_of_the_records_there` — 004, extended: a set declared over records already written appends, in its declaration's append and caused by its `declared`, an `object_set_changed` joining each live record its filter holds for and no other; declared again with another filter, it joins and leaves exactly the records the change moves; declared again unchanged, it appends none; and a later write decides against the membership so kept; past the lake's `max_set_changes` a declaration is refused `too_large`, naming the set and the ceiling, and appends nothing, at `declare` and at the accept of its proposal, where a name that became a tool's since is refused first (013, lakelands#935)
+- `a_type_declared_again_decides_the_sets_its_computed_fields_move` — 004, extended (lakelands#941): a type declared again with another derived expression appends, in its declaration's append and caused by its `declared`, the `object_set_changed` of each record whose set the recomputed field moves, a set that names such a set too, and a later write of the record appends none; a set declared or declared again in the same bundle is decided by its new filter over the records as the bundle computes them; a field computed outside the lake keeps its value through that walk, and its set moves where its output lands; past the lake's `max_set_changes` the declaration is refused `too_large` naming a set, and appends nothing
 
 **judged**
 

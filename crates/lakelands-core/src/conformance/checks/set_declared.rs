@@ -22,6 +22,12 @@ check!(
     given
 );
 
+check!(
+    SET_RECOMPUTED = a_type_declared_again_decides_the_sets_its_computed_fields_move,
+    "004, extended (lakelands#941): a type declared again with another derived expression appends, in its declaration's append and caused by its `declared`, the `object_set_changed` of each record whose set the recomputed field moves, a set that names such a set too, and a later write of the record appends none; a set declared or declared again in the same bundle is decided by its new filter over the records as the bundle computes them; a field computed outside the lake keeps its value through that walk, and its set moves where its output lands; past the lake's `max_set_changes` the declaration is refused `too_large` naming a set, and appends nothing",
+    given
+);
+
 async fn a_sets_declaration_decides_the_membership_of_the_records_there(
     store: Store,
     given: Given,
@@ -165,4 +171,148 @@ async fn a_sets_declaration_decides_the_membership_of_the_records_there(
          too_large naming it; it answered {r:?}"
     );
     head_unmoved(store.as_ref(), before, "the refused declaration").await
+}
+
+async fn a_type_declared_again_decides_the_sets_its_computed_fields_move(
+    store: Store,
+    given: Given,
+) -> Held {
+    let bill = |k: u32| -> Declaration {
+        let twice = format!("amount * {k}");
+        serde_json::from_value(json!({"declare": "type", "name": "bill", "fields": [
+            {"name": "amount", "type": {"kind": "number"}},
+            {"name": "note", "type": {"kind": "text"}},
+            {"name": "twice", "type": {"kind": "number"}, "authority": "derived", "derived": twice}]}))
+        .expect("a type")
+    };
+    let l = Lake::of(store.as_ref());
+    (l.cat.declare(&l.own, bill(2)).await).must("bill")?;
+    l.declare_as(object_set_on("big", "bill", "twice > 150"), "big")
+        .await?;
+    l.declare_as(object_set_on("named", "bill", "in_set('big')"), "named")
+        .await?;
+    for (key, amount) in [("b1", 100), ("b2", 50), ("b3", 400)] {
+        l.upsert("bill", key, json!({"amount": amount})).await?;
+    }
+    // Twice now `amount`: `b1` leaves both sets, two changes; past a
+    // ceiling of one, the declaration is refused and appends nothing.
+    let lower = Limits {
+        max_set_changes: 1,
+        ..limits()
+    };
+    let opened = (given.relimit)(store, Seams::default(), lower).await;
+    let store = opened.map_err(|e| Failure::new(format!("opening at a ceiling of one: {e}")))?;
+    let (l, before) = (
+        Lake::of(store.as_ref()),
+        store.head().await.must("the head")?,
+    );
+    let r = l.cat.declare(&l.own, bill(1)).await;
+    ensure!(
+        matches!(
+            refused_on(&r),
+            Some(("big" | "named", Refusal::TooLarge { max: 1 }))
+        ),
+        "`bill` declared again, moving 2 memberships under a `max_set_changes` of 1, is refused \
+         too_large naming a set; it answered {r:?}"
+    );
+    head_unmoved(store.as_ref(), before, "the refused declaration").await?;
+    let backed = Seams {
+        backings: crate::conformance::backing::backings(),
+        ..Seams::default()
+    };
+    let opened = (given.relimit)(store, backed, limits()).await;
+    let store = opened.map_err(|e| Failure::new(format!("opening again: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    let from = store.head().await.must("the head")?.next();
+    (l.cat.declare(&l.own, bill(1)).await).must("bill again")?;
+    let after = store.head().await.must("the head")?.next();
+    l.upsert("bill", "b1", json!({"note": "1"})).await?;
+    let (moved, later) = (
+        changes(store.as_ref(), from).await?,
+        events_from(store.as_ref(), after).await?,
+    );
+    let late = (later.iter()).any(|e| matches!(e.body, EventBody::ObjectSetChanged { .. }));
+    ensure!(
+        moved == ["big b1 false", "named b1 false"] && !late,
+        "`bill` declared again leaves `b1` from `big` and from `named` in its own append, \
+         caused by its `declared`, and `b1`'s next write leaves nothing; it moved {moved:?}, \
+         and the write {}",
+        ["appended none", "appended a change"][usize::from(late)]
+    );
+    // A bundle decides its own sets by their new filters over the records
+    // as it computes them: `twice` doubled again (`b1` 200, `b2` 100, `b3`
+    // 800), `big` past 250, so `b1` does not join by the old filter, and
+    // `fresh` past 150 joins `b1` by its new `twice`.
+    let set = |name, filter| object_set_on(name, "bill", filter);
+    let bundle = vec![
+        bill(2),
+        set("big", "twice > 250"),
+        set("fresh", "twice > 150"),
+    ];
+    let bundled = store.head().await.must("the head")?.next();
+    (l.cat.apply(&l.own, bundle).await).must("the bundle")?;
+    let got = changes(store.as_ref(), bundled).await?;
+    ensure!(
+        got == ["fresh b1 true", "fresh b3 true"],
+        "a bundle of `bill` and its sets decides them by their new filters over the records \
+         it computes: `fresh` joins `b1` and `b3`, `big` and `named` move none; it moved {got:?}"
+    );
+    // A field computed outside the lake keeps its value through the walk:
+    // `ebig` reads `ext`, an echo of `twice`, and nothing moves at the
+    // declaration; `t1` leaves where its output lands, `t3` never.
+    let echo = json!({"declare": "function", "name": "echo", "backing": crate::conformance::backing::KIND,
+        "inputs": [{"name": "twice", "type": {"kind": "number"}}],
+        "config": {"token": "set_recomputed", "echo": "twice"}});
+    l.declare_json(echo).await?;
+    let tick = |k: u32| -> Declaration {
+        let twice = format!("amount * {k}");
+        serde_json::from_value(json!({"declare": "type", "name": "tick", "fields": [
+            {"name": "amount", "type": {"kind": "number"}},
+            {"name": "twice", "type": {"kind": "number"}, "authority": "derived", "derived": twice},
+            {"name": "ext", "type": {"kind": "number"}, "authority": "derived",
+             "function": "echo", "depends_on": ["twice"]}]}))
+        .expect("a type")
+    };
+    (l.cat.declare(&l.own, tick(2)).await).must("tick")?;
+    let ebig = object_set_on("ebig", "tick", "ext > 150");
+    l.declare_as(ebig, "ebig").await?;
+    for (key, amount) in [("t1", 100), ("t3", 400)] {
+        l.upsert("tick", key, json!({"amount": amount})).await?;
+    }
+    let from = store.head().await.must("the head")?.next();
+    (l.cat.declare(&l.own, tick(1)).await).must("tick again")?;
+    let at_declared = changes(store.as_ref(), from).await?;
+    let events = events_from(store.as_ref(), from).await?;
+    let left: Vec<String> = (events.iter())
+        .filter_map(|e| match &e.body {
+            EventBody::ObjectSetChanged { key, joined, .. } => Some(format!("{key} {joined}")),
+            _ => None,
+        })
+        .collect();
+    ensure!(
+        at_declared.is_empty() && !left.iter().any(|c| c == "t3 false"),
+        "a field computed outside the lake keeps its value through the walk: nothing moves \
+         at the declaration ({at_declared:?}) and `t3`, 800 either way, never leaves \
+         ({left:?})"
+    );
+    Ok(())
+}
+
+/// The set changes caused by the last `declared` of the appends from
+/// `from`, where a bundle's walk decides them, as `set key joined`.
+async fn changes(
+    store: &dyn lakelands_api::LakeStore,
+    from: lakelands_api::Position,
+) -> Result<Vec<String>, Failure> {
+    let events = events_from(store, from).await?;
+    let at = (events.iter())
+        .rfind(|e| matches!(e.body, EventBody::Declared { .. }))
+        .map(|e| e.position);
+    let changed = (events.iter()).filter_map(|e| match &e.body {
+        EventBody::ObjectSetChanged {
+            set, key, joined, ..
+        } if e.cause == at => Some(format!("{set} {key} {joined}")),
+        _ => None,
+    });
+    Ok(changed.collect())
 }
