@@ -3236,10 +3236,13 @@ impl<'a> Reader<'a> {
             graph::check_depth(s.depth, max_depth)?;
         }
         let (reader, reach) = (self, &reach[..]);
-        // Rows and a reach hold what the walk reads, a step's `where` reading
-        // each record its visibility read already brought (lakelands#940); a
-        // measure and a graph walk more records than they answer.
-        let records = (binds || reaches).then(RefCell::default);
+        // Rows, a reach and every walk a step's `where` reads hold what the
+        // walk reads, so that `where` reads each record its visibility read
+        // already brought for the batch, never one alone (lakelands#940,
+        // lakelands#1027). A graph or a measure without one walks more
+        // records than it answers, and holds none.
+        let wheres = p.steps.iter().any(|s| s.filter.is_some());
+        let records = (binds || reaches || wheres).then(RefCell::default);
         let hidden = Visible {
             reader,
             reach,
@@ -3993,12 +3996,6 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// The record a node names, as the principal may see it, if at all.
-    fn shown(&self, (ty, key): &graph::Node) -> Result<Option<Record>> {
-        let decl = self.shape.ontology.ty(ty)?;
-        Ok((self.get_one(ty, key)?).and_then(|r| rights::visible(self.sight, decl, &r, false)))
-    }
-
     /// A pattern's row as one type: for each name bound to a type in
     /// `types`, each field of the type its reader may know of under its
     /// path, `<name>.<field>`, and `<name>.key`, the record's key where no
@@ -4072,9 +4069,21 @@ impl<'a> Reader<'a> {
         edges: Vec<Edge>,
         next_cursor: Option<Cursor>,
     ) -> Result<QueryResult> {
+        // Each type's records read in one ask, never one by one
+        // (lakelands#1027).
+        let all: Vec<graph::Node> = nodes.iter().map(|r| r.node.clone()).collect();
+        let mut read: BTreeMap<graph::Node, StoredRecord> = BTreeMap::new();
+        for (ty, keys) in graph::by_type(&all) {
+            let rows = self.get_many(ty, &keys)?;
+            read.extend(rows.into_iter().map(|r| ((r.ty.clone(), r.key.clone()), r)));
+        }
         let (mut records, mut depths) = (Vec::new(), Vec::new());
         for r in &nodes {
-            if let Some(record) = self.shown(&r.node)? {
+            let Some(rec) = read.remove(&r.node) else {
+                continue;
+            };
+            let decl = self.shape.ontology.ty(&r.node.0)?;
+            if let Some(record) = rights::visible(self.sight, decl, &rec, false) {
                 records.push(record);
                 depths.push(r.depth);
             }
@@ -4371,8 +4380,9 @@ struct Visible<'r, 'a> {
     reader: &'r Reader<'a>,
     /// What each of the pattern's steps walks, by the step's index.
     reach: &'r [Reach],
-    /// For rows, the records the walk has read, each read once for the
-    /// walk, a step's `where` and a row (lakelands#940).
+    /// For rows, a reach and a walk a step's `where` reads, the records the
+    /// walk has read, each read once for the walk, a step's `where` and a
+    /// row (lakelands#940, lakelands#1027).
     records: Option<RefCell<BTreeMap<graph::Node, StoredRecord>>>,
 }
 
