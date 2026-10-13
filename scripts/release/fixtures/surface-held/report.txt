@@ -1,0 +1,51 @@
+=== lakelands-api
+--- failure enum_variant_added: enum variant added on exhaustive enum ---
+
+Failed in:
+  variant Case:New in /work/crates/lakelands-api/src/error.rs:3
+
+--- failure enum_tuple_variant_field_added: pub enum tuple variant field added ---
+
+Failed in:
+  field 1 of variant Credential::ApiKey in /work/crates/lakelands-api/src/seam.rs:9
+
+--- failure enum_no_repr_variant_discriminant_changed: enum variant had its discriminant change value ---
+
+Failed in:
+  variant Case::Later 4 -> 5 in /work/crates/lakelands-api/src/error.rs:9
+  variant Order::Desc 0 -> 1 in /work/crates/lakelands-api/src/read.rs:4
+
+--- failure pub_module_level_const_missing: pub module-level const is missing ---
+
+Failed in:
+  NAME in file /cache/semver-checks/git-v0_1_0/abc/crates/lakelands-api/src/one.rs:2
+  NAME in file /cache/semver-checks/git-v0_1_0/abc/crates/lakelands-api/src/two.rs:2
+
+--- failure enum_now_doc_hidden: pub enum is now #[doc(hidden)] ---
+
+Failed in:
+  enum Shape in file /work/crates/lakelands-api/src/shape.rs:5
+
+--- failure enum_marked_non_exhaustive: enum marked #[non_exhaustive] ---
+
+Failed in:
+  enum Shape in file /work/crates/lakelands-api/src/shape.rs:5
+
+     Summary semver requires new major version: 6 major and 0 minor checks failed
+=== lakelands-store
+--- failure function_missing: pub fn removed or renamed ---
+
+Failed in:
+  function lakelands_store::old_door, previously in file /cache/semver-checks/git-v0_1_0/abc/crates/lakelands-store/src/lib.rs:8
+  function lakelands_store::kept_door, previously in file /cache/semver-checks/git-v0_1_0/abc/crates/lakelands-store/src/lib.rs:11
+  function lakelands_store::named_door, previously in file /cache/semver-checks/git-v0_1_0/abc/crates/lakelands-store/src/lib.rs:14
+
+--- failure function_parameter_count_changed: pub fn parameter count changed ---
+
+Failed in:
+  lakelands_store::named_door now takes 2 parameters instead of 1, in /work/crates/lakelands-store/src/lib.rs:14
+
+     Summary semver requires new major version: 2 major and 0 minor checks failed
+=== own
+lakelands-api	struct_field_type_changed	field Shape.wider
+lakelands-api	function_signature_changed	function lakelands_api::named_fn

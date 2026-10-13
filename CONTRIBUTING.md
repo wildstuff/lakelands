@@ -57,6 +57,13 @@ its tests on macOS as well. You need:
   closed enum, a member a struct literal must set, a trait method to
   implement) is named in the pull request; the `host-changes` job lists
   them (`docs/development.md`, releases).
+- The host surface (`docs/decisions/056-the-host-surface-changes-by-one-release-of-deprecation.md`)
+  loses an item only after a release has shipped it
+  `#[deprecated(since = "0.X.0", note = "<what to use instead>")]`: a
+  pull request that would remove one deprecates it instead, and names
+  what replaces it. A break that cannot wait is a line of
+  `scripts/release/surface-accepted`, named in the pull request; the
+  `host-surface` job refuses any other.
 - The on-disk format is a specification. A change to it is a change to
   the spec document first, with a version bump, and to the code second.
 - No new query language, no calls to a model from inside the store, no

@@ -42,3 +42,25 @@ pub enum Write {
         count: u32,
     },
 }
+
+#[doc(hidden)]
+pub trait Shared {
+    fn wider(&self, n: u32);
+}
+
+/// Shared with the workspace's crates, no host's.
+#[doc(hidden)]
+pub fn shared(n: u32) -> u32 {
+    0
+}
+
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct Inner {
+    pub wider: u32,
+}
+
+impl Shape {
+    #[doc(hidden)]
+    pub fn shared(&self, n: u32) {}
+}

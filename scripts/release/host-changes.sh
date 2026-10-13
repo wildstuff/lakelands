@@ -4,6 +4,13 @@
 # builds against. Under 0.x a release may break a host; it must say how.
 # Usage: scripts/release/host-changes.sh [<baseline-tag>]
 #   (default: the nearest `v*` tag that is not a pre-release)
+#        scripts/release/host-changes.sh --reach <file> <item>
+#   (the module path a host names the item of the file by, or that none
+#   reaches it: what host-changes-test.sh holds `reach` by)
+#        scripts/release/host-changes.sh --own <baseline-tag>
+#   (the script's own checks alone, without the tool: one line a change,
+#   the crate, the check and the item apart by tabs; what
+#   scripts/release/surface-held.sh judges beside the tool's findings)
 #        scripts/release/host-changes.sh --compare <was.rs> <now.rs>
 #   (the script's own three comparisons over two files and nothing else:
 #   no baseline and no tool; what `host-changes-test.sh` holds it by)
@@ -21,7 +28,10 @@
 # (`Type.0`), the struct or variant written over several lines or on one,
 # which a literal, a pattern or a read of it must follow. An
 # item counts as public when every module on its way from the crate root
-# is `pub mod`, or a private one re-exports it with `pub use`. Only
+# is `pub mod`, or a private one re-exports it with `pub use`, and neither
+# the item nor a module or re-export on its way is `#[doc(hidden)]`: a
+# hidden item is the workspace's, no host's, as `cargo semver-checks`
+# reads it. Only
 # changes count: an addition asks nothing of a host, so it is not listed.
 # An item a line already names is not reported twice. With nothing found
 # it says so. It exits 0 whatever it finds, and 2 when it cannot run.
@@ -45,10 +55,19 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-CRATES=(lakelands-api lakelands-client lakelands-core lakelands-store)
+CRATES=(lakelands-api lakelands-client lakelands-core lakelands-store
+    lakelands-engine-mem lakelands-engine-sqlite lakelands-engine-pg)
 
 # `--compare` asks the tool nothing and reads no crate.
 compare=()
+own=false
+reaching=()
+if [ "${1:-}" = --own ]; then own=true; shift; fi
+if [ "${1:-}" = --reach ]; then
+    [ -f "${2:-}" ] && [ -n "${3:-}" ] ||
+        { echo "host-changes: cannot run: --reach takes a file and an item" >&2; exit 2; }
+    reaching=("$2" "$3"); set -- --compare "$2" "$2"
+fi
 if [ "${1:-}" = --compare ]; then
     [ -f "${2:-}" ] && [ -f "${3:-}" ] ||
         { echo "host-changes: cannot run: --compare takes two files" >&2; exit 2; }
@@ -58,7 +77,7 @@ else
     [ -n "$baseline" ] || { echo "host-changes: cannot run: no baseline tag" >&2; exit 2; }
     git rev-parse -q --verify "$baseline^{commit}" >/dev/null ||
         { echo "host-changes: cannot run: $baseline is not a revision" >&2; exit 2; }
-    command -v cargo-semver-checks >/dev/null ||
+    $own || command -v cargo-semver-checks >/dev/null ||
         { echo "host-changes: cannot run: cargo-semver-checks is not installed" >&2; exit 2; }
 fi
 
@@ -85,7 +104,9 @@ advice() {
 out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
 lines=()
-for crate in "${CRATES[@]}"; do
+rows=()
+$own && tool=() || tool=("${CRATES[@]}")
+for crate in "${tool[@]}"; do
     # Without colour: CI sets CARGO_TERM_COLOR=always, and escape codes
     # would hide every finding from the reading below.
     CARGO_TERM_COLOR=never cargo semver-checks check-release -p "$crate" \
@@ -233,6 +254,10 @@ methods() {
             print t "::" name "\t" kind "\t" sig "\t" unnamed(sig)
             sig = ""; reading = 0
         }
+        /^[ \t]*#\[doc\(hidden\)\][ \t]*$/ { hid = 1; next }
+        /^[ \t]*(#\[|\/\/)/ && !reading { next }
+        { h = hid; if (!reading) hid = 0 }
+        /^pub trait [A-Za-z]/ && h { intrait = 0; next }
         /^pub trait [A-Za-z]/ {
             t = $3; sub(/[:<{].*/, "", t); intrait = 1
             print t "\ttrait\t\t"
@@ -240,6 +265,7 @@ methods() {
         }
         !intrait { next }
         /^\}/ { intrait = 0; reading = 0; next }
+        !reading && h && /^    (async )?fn [A-Za-z_]/ { next }
         !reading && /^    (async )?fn [A-Za-z_]/ {
             name = $0; sub(/^    (async )?fn /, "", name); sub(/[^A-Za-z0-9_].*/, "", name)
             reading = 1; sig = ""
@@ -266,6 +292,9 @@ functions() {
             print name "\t" sig "\t" unnamed(sig)
             sig = ""; reading = 0
         }
+        /^[ \t]*#\[doc\(hidden\)\][ \t]*$/ { hid = 1; next }
+        /^[ \t]*(#\[|\/\/)/ && !reading { next }
+        { h = hid; if (!reading) hid = 0 }
         /^impl[ <]/ && !/ for / {
             ty = $0; sub(/^impl/, "", ty)
             # Past the impl block`s own generics, which may nest.
@@ -282,6 +311,7 @@ functions() {
             inimpl = 1; next
         }
         /^\}/ { inimpl = 0; reading = 0; next }
+        !reading && h && /^(    )?pub ((const|async|unsafe) )*fn [A-Za-z_]/ { next }
         !reading && !inimpl && /^pub ((const|async|unsafe) )*fn [A-Za-z_]/ {
             name = $0; sub(/^pub ((const|async|unsafe) )*fn /, "", name); sub(/[^A-Za-z0-9_].*/, "", name)
             reading = 1; sig = ""
@@ -351,16 +381,20 @@ fields() {
             if (braced) { name = part; sub(/:.*/, "", name); sub(/^[^:]*: */, "", part); pos = name }
             print prefix "." pos "\t" part
         }
+        /^[ \t]*#\[doc\(hidden\)\][ \t]*$/ { hid = 1; next }
         {
             line = $0
             if (line ~ /^[ \t]*(#\[|\/\/)/) next
             sub(/[ \t]*\/\/.*$/, "", line)
+            h = hid; if (!reading && !tuple) hid = 0
         }
         tuple {
             tbuf = tbuf " " line
             if (depth(tbuf) <= 0) places(tprefix, tbuf, tpub, 0)
             next
         }
+        !inside && h && /^pub (struct|enum) [A-Za-z_]/ { if ($0 ~ /\{[ \t]*$/) skip = 1; next }
+        skip { if ($0 ~ /^\}/) skip = 0; next }
         line ~ /^pub struct [A-Za-z_][A-Za-z0-9_]*(<.*>)? *\{.*\}[ \t]*$/ {
             item = $3; sub(/[^A-Za-z0-9_].*/, "", item); places(item, line, 1, 1); next
         }
@@ -418,7 +452,9 @@ fields() {
 # crate root (empty for the root itself): every module on the way is
 # `pub mod`, or a private `mod` whose parent re-exports the item with a
 # `pub use` of it (or of a glob), which takes that module out of the path.
-# Fails when the item is not reachable. Read from this tree.
+# A `pub mod` under `#[doc(hidden)]` is passed as a private one is: only a
+# re-export not itself hidden reaches a host through it. Fails when the
+# item is not reachable. Read from this tree.
 reach() {
     local file="$1" item="$2" src rel dir="" path="" decl seg
     src="${file%%/src/*}/src"
@@ -429,16 +465,30 @@ reach() {
         if [ -z "$dir" ]; then decl="$src/lib.rs"
         elif [ -f "$src/$dir.rs" ]; then decl="$src/$dir.rs"
         else decl="$src/$dir/mod.rs"; fi
-        if grep -Eq "^[[:space:]]*pub mod $seg;" "$decl"; then
+        if grep -Eq "^[[:space:]]*pub mod $seg;" "$decl" && ! awk -v m="$seg" '
+                /^[ \t]*#\[doc\(hidden\)\][ \t]*$/ { hid = 1; next }
+                /^[ \t]*(#\[|\/\/)/ { next }
+                $0 ~ "^[ \t]*pub mod " m ";" { found = hid; exit }
+                { hid = 0 }
+                END { exit !found }' "$decl"; then
             path="${path:+$path::}$seg"
-        elif ! awk '/^[ \t]*pub use / { s = ""; on = 1 } on { s = s " " $0 } on && /;/ { print s; on = 0 }' "$decl" |
-            grep -E "use $seg::" | grep -Eq "([^A-Za-z0-9_]$item[^A-Za-z0-9_]|::\*)"; then
+        elif ! awk '/^[ \t]*#\[doc\(hidden\)\][ \t]*$/ { hid = 1; next }
+                /^[ \t]*(#\[|\/\/)/ && !on { next }
+                /^[ \t]*pub use / && !hid { s = ""; on = 1 } !on { hid = 0 }
+                on { s = s " " $0 } on && /;/ { print s; on = 0; hid = 0 }' "$decl" |
+            grep -E "use $seg::" | sed -E "s/.*use $seg:://" |
+            grep -Eq "(^|[^A-Za-z0-9_])$item([^A-Za-z0-9_]|$)|^\*"; then
             return 1
         fi
         dir="${dir:+$dir/}$seg"
     done
     printf '%s\n' "$path"
 }
+
+if [ "${#reaching[@]}" -gt 0 ]; then
+    reach "${reaching[0]}" "${reaching[1]}" || echo "(no host reaches it)"
+    exit 0
+fi
 
 # Whether a line of the report already names `Trait::method`, `Type.field`
 # or a function's path, and not only a longer name it begins (`get` in
@@ -501,6 +551,7 @@ while read -r f; do
         reach "$f" "${m%%::*}" >/dev/null || continue
         named "$m" qualified && continue
         lines+=("\`$crate\`: trait method $m: an implementation of the trait must add it (trait_method_added)")
+        rows+=("$crate"$'\t'trait_method_added$'\t'"trait method $m")
     done < <(LC_ALL=C comm -13 \
         <(printf '%s\n' "$base" | awk -F '\t' '$2 == "required" { print $1 }' | LC_ALL=C sort -u) \
         <(printf '%s\n' "$head" | awk -F '\t' '$2 == "required" { print $1 }' | LC_ALL=C sort -u))
@@ -510,6 +561,7 @@ while read -r f; do
         reach "$f" "${m%%::*}" >/dev/null || continue
         named "$m" qualified && continue
         lines+=("\`$crate\`: trait method $m: an implementation of the trait must follow: was \`$was\`, now \`$now\` (trait_method_signature_changed)")
+        rows+=("$crate"$'\t'trait_method_signature_changed$'\t'"trait method $m")
     done < <(method_rows "$base" "$head")
 
     # A public function or inherent method in both, with another
@@ -523,6 +575,7 @@ while read -r f; do
         esac
         named "$k" qualified && continue
         lines+=("\`$crate\`: $what $k: every call must follow: was \`$was\`, now \`$now\` ($lint)")
+        rows+=("$crate"$'\t'"$lint"$'\t'"$what $k")
     done < <(function_rows "$was_src" "$f")
 
     # A field in both, with another type: a host that builds, matches or
@@ -540,8 +593,14 @@ while read -r f; do
         *) lint=struct_field_type_changed ;;
         esac
         lines+=("\`$crate\`: field $k: a literal, a pattern or a read of the field must follow: was \`$was\`, now \`$now\` ($lint)")
+        rows+=("$crate"$'\t'"$lint"$'\t'"field $k")
     done < <(field_rows "$was_src" "$f")
 done < <(git ls-tree -r --name-only "$baseline" -- "${CRATES[@]/#/crates/}" | grep '/src/.*\.rs$')
+
+if $own; then
+    [ "${#rows[@]}" -eq 0 ] || printf '%s\n' "${rows[@]}" | LC_ALL=C sort -u
+    exit 0
+fi
 
 echo "Changes a host must make, since $baseline:"
 echo
