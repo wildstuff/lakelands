@@ -8,6 +8,7 @@
 baseline v0.13.1
 lakelands-api	derive_trait_impl_removed	type Derived no longer derives Eq
 lakelands-api	derive_trait_impl_removed	type Derived no longer derives Hash
+lakelands-api	enum_unit_variant_changed_kind	variant Case::StepSeveralTypes
 lakelands-api	function_signature_changed	function lakelands_api::expr::kind::of
 lakelands-api	inherent_method_missing	Expr::record_fields_read
 lakelands-api	struct_field_type_changed	field Start.ty
