@@ -39,7 +39,7 @@ use lakelands_api::engine::{After, CanonicalEvent, Scan};
 use lakelands_api::error::{Case, Detail, Error, Flaw, Part, Place as At, Refusal, Result, Said};
 use lakelands_api::event::SegmentDigest;
 use lakelands_api::expr::Expr;
-use lakelands_api::id::{FieldName, LakeId, Position, RecordKey, RelationName, TypeName, VerbName};
+use lakelands_api::id::{FieldName, LakeId, Position, RecordKey, RelationName, TypeName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::Edge;
 use lakelands_api::read::{Direction, Order, OrderBy};
@@ -1354,25 +1354,34 @@ impl TopK {
     }
 }
 
+/// The types a declaration names for the proposal listing: a type's own
+/// name, and the type a verb, a trigger or a set acts on, with the type the
+/// one in force under its name stands on (`stands`, by its
+/// [`declaration_key`]), which the declaration would take away from it
+/// (lakelands#916).
+pub fn declared_on(d: &Declaration, stands: &impl Fn(&str) -> Option<TypeName>) -> Vec<TypeName> {
+    let on = match d {
+        Declaration::Type(t) => return vec![t.name.clone()],
+        Declaration::Verb(v) => v.on.clone(),
+        Declaration::Trigger(t) => t.on.clone(),
+        Declaration::ObjectSet(s) => s.of.clone(),
+        Declaration::ValueType(_) | Declaration::Function(_) => return Vec::new(),
+    };
+    let mut out = vec![on];
+    out.extend(stands(&declaration_key(d)).filter(|was| !out.contains(was)));
+    out
+}
+
 /// The types a proposed write touches: a record write's type, the type a
-/// called verb acts on, every type a declaration declares or acts on, and a
-/// migration's type.
-fn touched(
-    write: &ProposedWrite,
-    verb_on: &impl Fn(&VerbName) -> Option<TypeName>,
-) -> Vec<TypeName> {
+/// called verb acts on, every type a declaration names ([`declared_on`]),
+/// and a migration's type. `stands` answers the type a declaration in
+/// force stands on, by its [`declaration_key`].
+fn touched(write: &ProposedWrite, stands: &impl Fn(&str) -> Option<TypeName>) -> Vec<TypeName> {
     match write {
         ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => vec![ty.clone()],
-        ProposedWrite::Call { verb, .. } => verb_on(verb).into_iter().collect(),
-        ProposedWrite::Declare { declarations } => declarations
-            .iter()
-            .filter_map(|d| match d {
-                Declaration::Type(t) => Some(t.name.clone()),
-                Declaration::Verb(v) => Some(v.on.clone()),
-                Declaration::Trigger(t) => Some(t.on.clone()),
-                Declaration::ObjectSet(s) => Some(s.of.clone()),
-                Declaration::ValueType(_) | Declaration::Function(_) => None,
-            })
+        ProposedWrite::Call { verb, .. } => stands(&format!("verb {verb}")).into_iter().collect(),
+        ProposedWrite::Declare { declarations } => (declarations.iter())
+            .flat_map(|d| declared_on(d, stands))
             .collect(),
         ProposedWrite::Migrate { migration, .. } => vec![migration.to.name.clone()],
         // A value type's tightening names no type, as its declaration names none.
@@ -1385,29 +1394,29 @@ fn touched(
 pub fn matches(
     p: &Proposal,
     filter: &ProposalFilter,
-    verb_on: impl Fn(&VerbName) -> Option<TypeName>,
+    stands: impl Fn(&str) -> Option<TypeName>,
 ) -> bool {
     let write = p.write.as_ref();
     filter
         .kind
         .is_none_or(|k| write.is_some_and(|w| w.kind() == k))
         && (filter.ty.as_ref())
-            .is_none_or(|ty| write.is_some_and(|w| touched(w, &verb_on).contains(ty)))
+            .is_none_or(|ty| write.is_some_and(|w| touched(w, &stands).contains(ty)))
 }
 
 /// Proposals as a view answers them: those in `filter`'s state, of its
-/// kind and touching its type (`verb_on` says which type a verb acts on,
-/// as declared at the view's position), newest first, ties by id, at most
-/// `filter.limit`.
+/// kind and touching its type (`stands` says which type a verb, a trigger
+/// or a set in force stands on, by its [`declaration_key`], as declared at
+/// the view's position), newest first, ties by id, at most `filter.limit`.
 pub fn proposals<'a>(
     all: impl IntoIterator<Item = &'a Proposal>,
     filter: &ProposalFilter,
-    verb_on: impl Fn(&VerbName) -> Option<TypeName>,
+    stands: impl Fn(&str) -> Option<TypeName>,
 ) -> Vec<Proposal> {
     let mut found: Vec<&Proposal> = all
         .into_iter()
         .filter(|p| filter.state.is_none_or(|s| p.state == s))
-        .filter(|p| matches(p, filter, &verb_on))
+        .filter(|p| matches(p, filter, &stands))
         .collect();
     found.sort_by(|a, b| b.position.cmp(&a.position).then_with(|| a.id.cmp(&b.id)));
     found

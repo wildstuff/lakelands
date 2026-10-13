@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 use lakelands_api::engine::{Declared, Matched, ProjectionView, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
+use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::read::{Direction, Order};
@@ -708,18 +708,21 @@ impl Read<'_> {
         column(self.conn, query, args, Ok)
     }
 
-    fn verb_on(&self, verb: &VerbName) -> Option<TypeName> {
+    /// The type the verb, trigger or set in force under `ident` stands on.
+    fn stands(&self, ident: &str) -> Option<TypeName> {
         let state: String = one(
             self.conn,
             &format!(
                 "SELECT state FROM declarations WHERE ident = ?1 AND {}",
                 holds_at(2)
             ),
-            params![format!("verb {verb}"), self.at()],
+            params![ident, self.at()],
         )
         .ok()??;
         match decode::<Declared>(&state, "a state").ok()?.declaration {
             Declaration::Verb(v) => Some(v.on),
+            Declaration::Trigger(t) => Some(t.on),
+            Declaration::ObjectSet(s) => Some(s.of),
             _ => None,
         }
     }
@@ -965,7 +968,7 @@ impl ProjectionView for SqliteView<'_> {
                 params![r.at()],
                 |s: String| decode(&s, "a state"),
             )?;
-            Ok(engines::proposals(&all, filter, |v| r.verb_on(v)))
+            Ok(engines::proposals(&all, filter, |i| r.stands(i)))
         })
     }
 

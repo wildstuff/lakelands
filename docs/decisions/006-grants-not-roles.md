@@ -1455,7 +1455,10 @@ entry as its reader is shown it. A type the reader may not see answers
 what a type that is not declared answers, an empty listing; an entry
 without a write is of no kind. The unfiltered listing and `state` hold
 every entry the reader is listed. Ordering and paging are over the
-entry as shown.
+entry as shown. `type` finds what the entry is judged by: a bundle's
+verb, trigger or set by the type it is declared on and by the type the
+one in force under its name stands on, which the bundle would take
+away (lakelands#916).
 
 **A proposed bundle** shows each declaration `describe` would show its
 reader once the bundle is in force: a type it could see, with the fields
