@@ -632,7 +632,7 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
 | to declare the type itself is not granted, nor a set, a trigger, a verb or a function under the name of one its author is not shown (lakelands#538, lakelands#877, lakelands#893) | `006 § A declaration or a migration is its author's view` |
 | a tool's name is taken the same way (lakelands#896) | `006 § A declaration or a migration is its author's view` |
 | the test comes before the author's view is completed and before anything is appended (lakelands#538) | `006 § A declaration or a migration is its author's view` |
-| an accepter is answered as its listing shows it, decides a name taken since by what it is shown, and passes the line of the tools' names (lakelands#538, lakelands#893, lakelands#896) | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
+| an accepter is answered as its listing shows it; a bundle takes no place declared since it was proposed, and an entry whose tool's name was taken since by what its reviewer is not shown is not there to it (lakelands#538, lakelands#893, lakelands#896, lakelands#915) | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
 | a migration keeps what a declaration reads: the refusal names the reading declaration only to an author who is shown it, another is told that a declaration reads the field, and the field named is one the author knows of (lakelands#461, lakelands#475, lakelands#495) | `006 § A declaration or a migration is its author's view` |
 | the same refusal at an acceptance, to the one who accepts (lakelands#495) | `006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows` |
 | a view is such a reader, shown only when its definition is, and what an author not shown the view is told (lakelands#504) | `006 § A declaration or a migration is its author's view` |
@@ -760,6 +760,10 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
 - A trigger, a verb and a function under the name of one its author is
   not shown are not granted (lakelands#893), and a tool's name is taken
   the same way (lakelands#896).
+- A bundle is refused at its accept where a name it declares was
+  declared since it was proposed, as `declared_since_proposed`; before,
+  one proposed while the name was free took the place of what was
+  declared since, as its proposer's (lakelands#915).
 - Moved at the rewrite (lakelands#817): the sections and sentences on
   what a principal is shown and told left for 006, as "What moved" maps
   them, each leaving one sentence and its pointer where a rule here

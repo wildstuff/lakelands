@@ -1698,17 +1698,22 @@ An accepter is answered as its listing shows it: a proposal on a type
 it is not shown is to its accept an id that does not exist, and so is a
 proposed trigger, verb or set under the name of one that stands on such
 a type: its accept would take the place of the trigger or the verb, and
-be refused for the set in words that name the type (above). A proposal
-made while a name was free and accepted, after that name was declared on
-a type its proposer is not shown, by a reviewer shown both is that
-reviewer's to decide: it is applied, as its proposer's. And an accept
-passes the line of the tools' names (above) with its accepter as the one
-asked: a proposal, of a set or of a migration, whose tool's name was
-taken since by what its accepter is not shown is not granted to it,
-naming nothing, where the lake's own check would name it; an accepter
-shown both is refused, naming both. Its reject passes no such line, as
-it stands: the accepter is listed the proposal, with what it is not
-shown left out, and rejects what it is not granted to accept.
+be refused for the set in words that name the type (above). A bundle
+takes no place declared since it was proposed: where a type, a value
+type, a verb, a trigger, a function or a set it declares was declared
+after the proposal, its accept is refused as `declared_since_proposed`,
+naming what and which name, to a reviewer it is listed to whole, and it
+stays pending. Accepted, it would replace what no one was shown where
+it was proposed, as a migration of a type changed since would, and the
+accept cannot ask whether its proposer is shown what took the name,
+since a proposal keeps no grants. A reviewer that `describe` does not
+list what holds the name, a verb that reads a field it may not read
+among them, is not listed the bundle, and its accept and its reject
+answer as an id that does not exist (lakelands#915). So is a proposal,
+of a set or of a migration, whose tool's name was taken since by what
+its reviewer is not shown, as one under such a verb's name is
+(lakelands#915); a reviewer shown both is refused at the accept, naming
+both.
 
 #### An accept's refusal names what its reviewer's listing shows
 
