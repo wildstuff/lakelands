@@ -308,6 +308,7 @@ pub const ALL: &[Check] = &[
     proposal_names::NAMES_AS_THE_READERS_VIEW,
     proposal_names::LISTED_AS_SHOWN,
     decided_as_listed::DECIDED_AS_LISTED,
+    decided_as_listed::SHOWN_SINCE_A_REKEY,
     report_names::REPORT_AS_ITS_READERS_VIEW,
     report_names::NAMED_IN_KEY_ORDER,
     shown_hash::HASH_OF_THE_SHOWN_SHAPE,

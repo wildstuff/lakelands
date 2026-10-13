@@ -1574,9 +1574,14 @@ listing shows that answer, and the accept and the reject ask it
 under up to three sights, its grants followed to each: the lake in force
 where the entry is read; the lake as the entry would leave it, a
 bundle's whole and of a migration its `to`; and, where the type a
-migration reshapes or the verb a call calls was declared again since the
-proposal, the lake as it was proposed against. An entry is not there
-when any of them hides a type it names, or when its verb, as the lake
+migration reshapes or the verb a call calls was declared again since
+the proposal, or a type the entry's type rests on was re-keyed since,
+the lake as it was proposed against. A type rests on what it is made of
+and on the targets of the references it holds: a re-key of one of
+those can show a reader, in a key or a reference, an old key that was
+the value of a field it may not know of (lakelands#913). A declaration
+that keeps the key moves no old key, and asks no past. An entry is not
+there when any of them hides a type it names, or when its verb, as the lake
 declares it or as it was declared where the call was proposed, reads a
 field the reader may not read under that sight (above). A call's payload
 is shown only to a reader who reads each field the verb sets, under
@@ -1619,6 +1624,12 @@ stood before it (above).
   would say that the type was there and that someone proposed to
   reshape it, which a read as of that position does not answer that
   reader.
+- An upsert, a retirement, a call or a migration of a type shown to its
+  reader only since a type it rests on was re-keyed is not there: its
+  key was made under the old key, the value of a field that reader may
+  not know of. One whose type was shown then is listed without a
+  reference it could not read then, whose value is that old key, and
+  is not its reader's to accept (lakelands#913).
 - A migration of a type declared again since is judged, for a reader
   masked on a field and kept from none, on the type as it was proposed
   against, as for a reader kept from a field.
