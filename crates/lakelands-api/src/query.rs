@@ -116,8 +116,10 @@ pub enum Projection {
     },
     /// Nodes and edges. For viewers. A graph always includes the start
     /// node, the root a viewer draws from, whatever the steps' `min`;
-    /// `Rows` holds a start only where its steps reach a match from it
-    /// (`docs/decisions/026-the-store-walks-the-graph.md`).
+    /// `Rows` holds a start only where its steps reach a match from it.
+    /// A chain's graph is walked whole for every page, and one whose
+    /// records would number more than the lake's `max_graph_nodes` is
+    /// refused `too_large` (`docs/decisions/026-the-store-walks-the-graph.md`).
     Graph,
     /// Aggregates over the matches.
     Aggregate(Aggregate),

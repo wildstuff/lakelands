@@ -16,7 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::query::Walk;
-use lakelands_api::{Error, Refusal, RelationName, Result};
+use lakelands_api::{RelationName, Result};
 
 use super::{EdgeId, EdgeSource, Links, Node, PAGE, edge_id};
 
@@ -96,12 +96,7 @@ impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
     fn reach(&mut self, node: Node, index: usize) -> Result<()> {
         self.member_of.insert(node, index);
         if self.member_of.len() > self.max_nodes as usize {
-            return Err(Error::Refused {
-                field: None,
-                reason: Refusal::TooLarge {
-                    max: self.max_nodes,
-                },
-            });
+            return Err(super::too_large(self.max_nodes));
         }
         Ok(())
     }

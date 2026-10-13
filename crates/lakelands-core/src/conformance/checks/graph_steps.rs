@@ -3,20 +3,22 @@
 //! (`docs/decisions/018-one-pattern-query.md`, lakelands#556).
 
 use lakelands_api::error::Case;
+use lakelands_api::location::Limits;
 use lakelands_api::ontology::{RelationDecl, StorageKind};
 use lakelands_api::query::Walk::{Both, In, Out};
 use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Step, Walk};
 use lakelands_api::read::{AggFunc, Aggregate, Direction, OrderBy};
+use lakelands_api::seam::Seams;
 use lakelands_api::write::WriteOpts;
-use lakelands_api::{Access, Catalog, Cursor, Find, LakeStore, Principal, Value};
+use lakelands_api::{Access, Catalog, Cursor, Find, LakeStore, Principal, Refusal, Value};
 use serde_json::json;
 use std::collections::BTreeMap;
 
 use crate::conformance::fixture::{
-    Lake, Must, agg, field, field_access, invalid_case, is_invalid, order, patch, pattern,
-    reads_all, reason, reference, restrict, type_decl,
+    Lake, Must, agg, doors, field, field_access, invalid_case, is_invalid, order, owner, patch,
+    pattern, reads_all, reason, reference, restrict, type_decl,
 };
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::{Failure, Given, Held, Store};
 
 check!(
     ROW_DEPTH = a_row_says_the_hops_each_step_took_and_a_graph_each_nodes_depth,
@@ -25,7 +27,13 @@ check!(
 
 check!(
     GRAPH_PAGES = a_graph_cut_by_its_limit_pages_on_with_its_cursor,
-    "018 and 029, extended: a graph cut by `limit` answers `truncated` and a `next_cursor`, and the next page holds the next records of the one order with every link between a record of that page and one of this or an earlier page, read at the first page's position; several starts are one walk, cut together"
+    "018 and 029, extended: a graph cut by `limit` answers `truncated` and a `next_cursor`, and the next page holds the next records of the one order with every link between a record of that page and one of this or an earlier page, read at the first page's position; several starts are one walk, cut together, and their pages through the cursors are the graph read in one page, a neighbourhood's starts read a page at a time (lakelands#963)"
+);
+
+check!(
+    GRAPH_BOUND = a_chain_graph_past_max_graph_nodes_is_refused_too_large,
+    "026, extended (lakelands#963): a chain's graph is walked whole for every page, its starts a page at a time, and one whose walk would hold more records than the lake's `max_graph_nodes`, the starts and every record each walk reaches whether or not a match keeps it, is refused too_large naming the ceiling, nothing partial answered; within it, it answers",
+    given
 );
 
 check!(
@@ -198,6 +206,74 @@ async fn a_graph_cut_by_its_limit_pages_on_with_its_cursor(store: Store) -> Held
          its links and the second at the first's position; it answered {one:?} {one_edges:?} \
          ({cursor:?}), then {two:?} {two_edges:?} ({more:?})"
     );
+    // Ten spokes and the three people who own one, a record a page and in
+    // one page: `s0`, the first page, owns nothing.
+    let hood = |limit, cursor| Pattern {
+        limit: Some(limit),
+        cursor,
+        ..graph_of("spoke", None, vec![st("owned_by", Out, 0, 1)])
+    };
+    let whole = graph(cat.as_ref(), own, hood(20, None), "every spoke").await?;
+    let (mut nodes, mut edges, mut cursor) = (Vec::new(), Vec::new(), None);
+    loop {
+        let (n, e, next) =
+            graph(cat.as_ref(), own, hood(1, cursor), "every spoke, 1 a page").await?;
+        nodes.extend(n);
+        edges.extend(e);
+        cursor = next;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    let mut whole = whole;
+    whole.1.sort();
+    edges.sort();
+    ensure!(
+        whole.0.len() == 13 && (&whole.0, &whole.1) == (&nodes, &edges),
+        "a neighbourhood's pages of 1 are the graph read in one page; it answered {whole:?}, \
+         where its pages answered {nodes:?} {edges:?}"
+    );
+    Ok(())
+}
+
+async fn a_chain_graph_past_max_graph_nodes_is_refused_too_large(
+    store: Store,
+    given: Given,
+) -> Held {
+    lake(store.as_ref()).await?;
+    // What the walk holds counts, not what it answers: a chain through the
+    // nine spokes to owners named `nobody`, of whom there are none.
+    let mut nobody = st("owned_by", Out, 1, 1);
+    nobody.filter = Some("name = 'nobody'".into());
+    let chain = |to_nobody: bool| {
+        let mut steps = vec![st("of", In, 1, 1)];
+        steps.extend(to_nobody.then(|| nobody.clone()));
+        graph_of("hub", None, steps)
+    };
+    let mut store = store;
+    for (max, what) in [
+        (11, "two hubs and nine spokes under a cap of 11"),
+        (10, "past 10"),
+        (3, "walking nine spokes to no owner under a cap of 3"),
+    ] {
+        let limits = Limits {
+            max_graph_nodes: max,
+            ..crate::conformance::fixture::limits()
+        };
+        let opened = (given.relimit)(store, Seams::default(), limits).await;
+        store = opened.map_err(|e| Failure::new(format!("opening at a cap of {max}: {e}")))?;
+        let (cat, own) = (doors(store.as_ref()), owner(store.as_ref()));
+        let before = store.head().await.must("reading the head")?;
+        let answer = cat.query(&own, chain(max == 3)).await;
+        let fits = matches!(&answer, Ok(r) if matches!(&r.data, QueryResult::Graph { nodes, .. } if nodes.len() == 11));
+        let refused = matches!(&answer, Err(e) if matches!(reason(e), Some(Refusal::TooLarge { max: m }) if *m == max));
+        ensure!(
+            if max < 11 { refused } else { fits },
+            "a chain's graph of {what} answers its eleven records under 11 and is refused too_large \
+             naming its cap below what it walks; it answered {answer:?}"
+        );
+        crate::conformance::fixture::head_unmoved(store.as_ref(), before, what).await?;
+    }
     Ok(())
 }
 
@@ -309,6 +385,17 @@ async fn a_graph_honours_each_steps_direction_depth_and_where(store: Store) -> H
             );
         }
     }
+    // Several starts are one walk: each record at the fewest hops any start
+    // reaches it in, by the links each start's walk took (lakelands#1027).
+    let steps = vec![st("reports_to", Out, 1, 2), st("kept_by", In, 1, 1)];
+    let p = graph_of("person", None, steps);
+    let (nodes, edges, _) = graph(cat.as_ref(), own, p, "every person's bosses' spokes").await?;
+    let by = ["p0 reports_to p1", "p1 reports_to p2", "p3 reports_to p0"];
+    let kept = ["s1 kept_by p1", "s2 kept_by p0", "s5 kept_by p2"];
+    ensure!(
+        nodes.join(" ") == "p0 p1 p2 p3 s1 s2 s5" && edges == [by, kept].concat(),
+        "several starts walk a chain as one; it answered {nodes:?} {edges:?}"
+    );
     let of = |min, max| st("of", In, min, max);
     let mut both = st("owned_by", Walk::Both, 0, 1);
     both.filter = Some("name = 'p1'".into());

@@ -458,6 +458,7 @@ pub const ALL: &[Check] = &[
     graph_measures::MEASURE_IN_ONE_PAGE,
     graph_steps::ROW_DEPTH,
     graph_steps::GRAPH_PAGES,
+    graph_steps::GRAPH_BOUND,
     graph_steps::GRAPH_CURSORS,
     graph_steps::GRAPH_STEPS,
     graph_steps::PATH_STEPS,

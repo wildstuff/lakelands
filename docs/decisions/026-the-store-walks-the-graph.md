@@ -57,6 +57,22 @@ always fits that page. An absent `limit` stays the lake's default, so an
 agent that names none is not handed the whole answer. Small pages are
 still answered, at their price; the `query` tool says so.
 
+**A graph's page** (lakelands#1027, lakelands#963). A neighbourhood's
+starts are its first records, at depth 0 in key order, and its walk goes
+only as deep as its page's last record, so a page reads as many starts as
+it reaches and one more. A chain's graph is walked from a page of 256
+starts at a time, each step's records together, as rows are. Nothing
+shorter than the whole chain tells a page what it holds: a record's depth
+is the fewest hops of any match from any start, and a record or a link is
+in the graph only where a whole match runs through it. So the chain is
+walked whole for every page. What it holds, its starts and every record
+each walk reaches whether or not a match keeps it, is counted as it
+grows, as a reach's is, and past the lake's `max_graph_nodes` it is
+refused `too_large`, never cut. Measured on 10 000 records on PostgreSQL, a
+chain's page went from 1.2–2.6 s to 113–169 ms (5 508–9 007 statements
+to 57–72), and a neighbourhood's first page of 50 from 8 000 starts from
+53 to 4 ms.
+
 **A reach walks a step at a time** (lakelands#991). Each step is walked
 whole from every record the step before it kept, the links of a page of
 256 of them read together, before the next: "first reached" needs every
