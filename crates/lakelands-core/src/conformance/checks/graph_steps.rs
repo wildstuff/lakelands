@@ -2,17 +2,19 @@
 //! direction, depth, `type` and `where`, a page at a time
 //! (`docs/decisions/018-one-pattern-query.md`, lakelands#556).
 
+use lakelands_api::error::Case;
 use lakelands_api::ontology::{RelationDecl, StorageKind};
 use lakelands_api::query::Walk::{Both, In, Out};
 use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Step, Walk};
-use lakelands_api::read::{AggFunc, Aggregate};
+use lakelands_api::read::{AggFunc, Aggregate, Direction, OrderBy};
 use lakelands_api::write::WriteOpts;
-use lakelands_api::{Access, Catalog, Cursor, Find, LakeStore, Principal};
+use lakelands_api::{Access, Catalog, Cursor, Find, LakeStore, Principal, Value};
 use serde_json::json;
+use std::collections::BTreeMap;
 
 use crate::conformance::fixture::{
-    Lake, Must, agg, field, field_access, invalid_case, is_invalid, patch, pattern, reads_all,
-    reason, reference, restrict, type_decl,
+    Lake, Must, agg, field, field_access, invalid_case, is_invalid, order, patch, pattern,
+    reads_all, reason, reference, restrict, type_decl,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -44,6 +46,11 @@ check!(
 check!(
     GRAPH_RIGHTS = a_graph_shows_a_reader_no_more_than_its_rows,
     "024 and 026, extended: a graph's step `where` on a field the reader may not read is refused as in rows; a restricted record and its links are left out of a graph as out of rows, and a chain is not walked through a record the reader is not shown"
+);
+
+check!(
+    REACH_STEPS = reach_answers_each_record_at_the_first_step_that_reaches_it,
+    "018, extended (lakelands#991): `reach` answers what each step reaches from every record the step before it kept, a dead end included, each record once at the first step that reaches it with that step's fewest hops, the start only where a step reaches it (at depth 0 from a range at 0, at 2 back over its own link), ordered by (step, depth, type, key) and paged by `limit` and its cursor; over a reference field and over link records alike; a restricted record is neither answered nor walked through; `to`, `as`, `order_by` and no steps are refused as invalid"
 );
 
 /// Hubs `h1` (spokes `s1`..`s8`) and `h2` (`s9`); people `p3` → `p0` →
@@ -564,4 +571,105 @@ async fn a_row_says_the_hops_each_step_took_and_a_graph_each_nodes_depth(store: 
         "a new field `_x` and an added field `_y` must be refused as names the lake keeps: {declared:?}, {added:?}"
     );
     Ok(())
+}
+
+async fn reach_answers_each_record_at_the_first_step_that_reaches_it(store: Store) -> Held {
+    let l = lake(store.as_ref()).await?;
+    let Lake { cat, own } = &l;
+    // From p3: its bosses, who reports to them, the spokes they own (or
+    // keep), those spokes' hub, and the hub's spokes.
+    let walk = |owns: &str| {
+        let steps = vec![
+            st("reports_to", Out, 1, 2),
+            st("reports_to", In, 1, 1),
+            st(owns, In, 1, 1),
+            st("of", Out, 1, 1),
+            st("of", In, 1, 1),
+        ];
+        pattern("person", Some("p3"), steps, Projection::Reach)
+    };
+    // Each page as its rows' `step/depth/key`, until no cursor comes.
+    let read = |mut p: Pattern, who: Principal, what: &'static str| {
+        let cat = cat.clone();
+        async move {
+            let mut got = Vec::new();
+            loop {
+                let reply = cat.query(&who, p.clone()).await.must(what)?.data;
+                let QueryResult::Rows { rows, next_cursor } = reply else {
+                    return Err(Failure::new(format!("{what} answered another shape")));
+                };
+                let row = |r: &BTreeMap<String, Value>| {
+                    format!("{}/{}/{}", r["step"], r["depth"], r["key"])
+                };
+                let page: Vec<String> = rows.iter().map(row).collect();
+                got.push(page.join(" ").replace('"', ""));
+                p.cursor = next_cursor;
+                if p.cursor.is_none() {
+                    return Ok::<_, Failure>(got);
+                }
+            }
+        }
+    };
+    let want = [
+        "1/1/p0 1/2/p1 2/1/p3 3/1/s2 4/1/h1",
+        "5/1/s1 5/1/s3 5/1/s4 5/1/s5 5/1/s6",
+        "5/1/s7 5/1/s8",
+    ];
+    for owns in ["owned_by", "kept_by"] {
+        let paged = Pattern {
+            limit: Some(5),
+            ..walk(owns)
+        };
+        let got = read(paged, own.clone(), "a reach in pages of 5").await?;
+        ensure!(
+            got == want,
+            "over `{owns}`: p0 once at step 1 though step 2 reaches it again, p3 at step 2 that \
+             reaches it back, p1 walked on from nowhere past step 2, s9 never; pages of 5 \
+             {want:?}; it answered {got:?}"
+        );
+    }
+    // A step whose range starts at 2 keeps what each record it walks from
+    // reaches in 2, though another reaches it in 1: p2 from p0.
+    let mut two = walk("owned_by");
+    two.steps = vec![st("reports_to", Out, 1, 2), st("reports_to", Out, 2, 2)];
+    let got = read(two, own.clone(), "a reach of 2..2").await?;
+    ensure!(
+        got == ["1/1/p0 1/2/p1 2/2/p2"],
+        "p2 is 2 hops from p0, though 1 from p1; it answered {got:?}"
+    );
+    // The start at depth 0 where its step's range begins there, and at 2
+    // where a `both` step comes back over its own link.
+    for (step, want) in [
+        (st("reports_to", Out, 0, 1), "1/0/p3 1/1/p0"),
+        (st("reports_to", Both, 1, 4), "1/1/p0 1/2/p1 1/2/p3 1/3/p2"),
+    ] {
+        let mut one = walk("owned_by");
+        one.steps = vec![step];
+        let got = read(one, own.clone(), "a reach of one step").await?;
+        ensure!(
+            got == [want],
+            "p3 at the hop its step reaches it; it answered {got:?}"
+        );
+    }
+    restrict(store.as_ref(), "spoke", "s2", "hold").await?;
+    let reader = reads_all(store.as_ref(), "reader");
+    let got = read(walk("owned_by"), reader, "a reader's reach").await?;
+    ensure!(
+        got == ["1/1/p0 1/2/p1 2/1/p3"],
+        "s2, restricted, is neither answered nor walked through to h1; it answered {got:?}"
+    );
+    let mut to = walk("owned_by");
+    to.to = Some(("hub".into(), "h1".into()));
+    let mut named = walk("owned_by");
+    named.steps[0].named = Some("boss".into());
+    let mut ordered = walk("owned_by");
+    ordered.order_by = vec![order("p3.name", OrderBy::Value, Direction::Asc)];
+    let answer = cat.query(own, to).await;
+    refused_as!("reach with `to`", answer, Case::PatternToNotGraph)?;
+    let mut none = walk("owned_by");
+    none.steps.clear();
+    let answer = cat.query(own, none).await;
+    refused_as!("reach of no steps", answer, Case::MeasureNoSteps { measure: m } if m == "reach")?;
+    let cases = vec![(named, "with `as`"), (ordered, "with `order_by`")];
+    refused(cat.as_ref(), own, cases).await
 }

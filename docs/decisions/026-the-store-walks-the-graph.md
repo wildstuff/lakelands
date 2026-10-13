@@ -57,6 +57,24 @@ always fits that page. An absent `limit` stays the lake's default, so an
 agent that names none is not handed the whole answer. Small pages are
 still answered, at their price; the `query` tool says so.
 
+**A reach walks a step at a time** (lakelands#991). Each step is walked
+whole from every record the step before it kept, the links of a page of
+256 of them read together, before the next: "first reached" needs every
+earlier step. What it holds is counted as it grows, each source's walk
+apart, and refused `too_large` at the lake's `max_graph_nodes`. A step's
+`where` reads each record from the read that asked whether it is shown,
+none one by one. A page walks until it holds one record more than it
+answers and walks no step past that; its cursor names the last record
+answered, so a later page walks again the steps up to that record's. A
+page costs the steps up to its last, not the whole walk. Measured on
+10 000 records (100 regions, 1 000 customers, 5 000 bills, 3 900
+payments; three steps, the second with a `where`; pages of 1 000): a
+first page, which walks two steps, 76 ms on SQLite and 113 ms on
+PostgreSQL; a page in the third step 119 ms and 1 021 ms, most of the
+latter the shown-or-not read of the third step's records. Before each
+record a `where` read was read alone: 111 and 154 ms, 1 488 and
+2 372 ms.
+
 **A page of rows walks a page of starts** (lakelands#940). Rows are walked
 from a page of 256 starts at a time, each step's hops asked for the
 page together, and a record read once for the walk, a step's `where` and
@@ -124,3 +142,4 @@ answers identical.
   memory. The partition is the same.
 - With no start type, components grow from the records of every type
   that declares a step's relation (lakelands#992).
+- A reach walks a step at a time (lakelands#991).
