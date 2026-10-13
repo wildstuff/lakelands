@@ -303,8 +303,9 @@ pub fn eval(e: &Expr, scope: &dyn Scope) -> Result<Val> {
 }
 
 /// Where an expression is evaluated, which decides the functions it may
-/// use.
+/// use. A host names a place; it does not match on all of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Place {
     /// Over one record, outside a write: a filter, a constraint.
     Record,

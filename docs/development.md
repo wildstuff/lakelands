@@ -250,14 +250,25 @@ tag by a merge, the merges no earlier release tag reaches;
 `notes.sh --pulls <tag>` rehearses the list), followed
 by "Changes a host must make" since that tag
 (`scripts/release/host-changes.sh`: `cargo-semver-checks` over
-`lakelands-api`, `lakelands-client`, `lakelands-core` and
-`lakelands-store`, and the script's own checks of the same crates: a
+`lakelands-api`, `lakelands-client`, `lakelands-core`,
+`lakelands-store` and the three engines, and the script's own checks of
+the same crates, which pass over an item under `#[doc(hidden)]`: a
 required trait method added; a trait method, function or inherent
 method whose signature changed with its parameter count unchanged; and
 a public field, named or positional, whose type changed; one plain line
 per change, and a line saying so when there is none). The `host-changes` job of `ci.yml`
 reports the same list on every pull request, and never fails; a release
-pull request copies its report into its body. A
+pull request copies its report into its body. The `host-surface` job
+blocks: `scripts/release/surface-held.sh` refuses a change of the host
+surface that is neither an addition, nor the removal of an item the last
+release deprecated, nor a line of `scripts/release/surface-accepted`
+(`docs/decisions/056-the-host-surface-changes-by-one-release-of-deprecation.md`).
+The notes of a minor release name what the list holds; once its tag
+stands, the next pull request sets the file's `baseline` to it and
+empties the list. The job pins `cargo-semver-checks` and its compiler together
+(`ci.yml`, `host-surface`): the tool reads only the rustdoc formats it
+ships, so one moves with the other, in one pull request that shows the
+job green on both. A
 pre-release `vX.Y.Z-<suffix>` may be tagged on any branch to rehearse
 one. Nothing is published to crates.io yet.
 

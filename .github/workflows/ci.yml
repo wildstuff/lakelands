@@ -191,6 +191,28 @@ jobs:
       - run: scripts/release/host-changes-test.sh
       - run: scripts/release/host-changes.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
+  # The host surface changes only by its rule
+  # (docs/decisions/056-the-host-surface-changes-by-one-release-of-deprecation.md):
+  # against the release scripts/release/surface-accepted names, each change
+  # the tool finds is an addition, a removal the release deprecated, or a
+  # line of that list. Blocking. The tool and the compiler are pinned
+  # together: the tool reads only the rustdoc formats it ships, so a
+  # compiler it cannot read would turn every pull request red. Both move
+  # in one pull request (docs/development.md).
+  host-surface:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks@0.50.0
+      - run: scripts/release/surface-held-test.sh
+      - run: scripts/release/surface-held.sh | tee -a "$GITHUB_STEP_SUMMARY"
+        shell: bash
+
   # docs/conformance.md lists every registered check; this fails while the
   # page differs from the registries. The same job rehearses the release
   # notes' list of pull requests on a patch release that is in the

@@ -1,0 +1,7 @@
+# The fixture's list.
+baseline v0.1.0
+lakelands-store	function_missing	function lakelands_store::named_door
+lakelands-store	function_missing	function lakelands_store::gone_long_ago
+lakelands-api	function_signature_changed	function lakelands_api::named_fn
+lakelands-api	pub_module_level_const_missing	NAME in crates/lakelands-api/src/one.rs
+lakelands-api	enum_now_doc_hidden	enum Shape
