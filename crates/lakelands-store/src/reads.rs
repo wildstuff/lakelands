@@ -68,7 +68,7 @@ use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposedWrite};
 use lakelands_api::{
     Cursor, Error, FieldName, Missing, Position, Principal, Record, RecordKey, Refusal,
-    RelationName, Result, Timestamp, TypeName, Value, VerbName,
+    RelationName, Result, Timestamp, TypeName, Value,
 };
 use lakelands_core::expr::{self, Place as Eval, RecordScope, aggregate};
 use lakelands_core::graph::{self, EdgeSource};
@@ -2152,8 +2152,8 @@ impl<'a> Reader<'a> {
             }
             mine.push(p);
         }
-        let verb_on = |v: &VerbName| self.shape.ontology.verb(v).ok().map(|d| d.on.clone());
-        mine.retain(|p| core_engines::matches(p, filter, verb_on));
+        let stands = |ident: &str| stands(&self.shape.ontology, ident);
+        mine.retain(|p| core_engines::matches(p, filter, stands));
         Ok(ordered_proposals(mine, &filter.order_by)?
             .into_iter()
             .skip(offset)
@@ -2230,20 +2230,8 @@ impl<'a> Reader<'a> {
                             put.complete(t);
                             named.extend(names(t))
                         }
-                        Declaration::Verb(v) => {
-                            named.extend(o.verb(&v.name).ok().map(|x| x.on.clone()));
-                            named.push(v.on.clone())
-                        }
-                        Declaration::Trigger(t) => {
-                            let was = o.triggers.get(t.name.as_str());
-                            named.extend(was.map(|x| x.decl.on.clone()));
-                            named.push(t.on.clone())
-                        }
-                        Declaration::ObjectSet(s) => {
-                            named.extend(o.set(&s.name).map(|x| x.of.clone()));
-                            named.push(s.of.clone())
-                        }
-                        Declaration::ValueType(_) | Declaration::Function(_) => {}
+                        // As the listing's filter names it (lakelands#916).
+                        d => named.extend(core_engines::declared_on(d, &|i| stands(o, i))),
                     }
                 }
                 after = Some((put.declared(), put));
@@ -4412,6 +4400,17 @@ impl expr::Scope for Ends<'_> {
 
     fn now(&self) -> Timestamp {
         self.now
+    }
+}
+
+/// The type the verb, trigger or set in force under `ident` (its
+/// declaration's identity) stands on in `o`.
+fn stands(o: &Ontology, ident: &str) -> Option<TypeName> {
+    match ident.split_once(' ')? {
+        ("verb", name) => o.verb(&name.into()).ok().map(|v| v.on.clone()),
+        ("trigger", name) => o.triggers.get(name).map(|t| t.decl.on.clone()),
+        ("object_set", name) => o.set(name).map(|s| s.of.clone()),
+        _ => None,
     }
 }
 

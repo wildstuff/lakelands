@@ -24,7 +24,7 @@ check!(
 
 check!(
     LISTED_AS_SHOWN = a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_field,
-    "013 and 024, extended (lakelands#499): a proposal on a restricted record is not listed to a reader without the grant (lakelands#1008), nor one on a type its reader may not see (lakelands#762); `type` and `kind` are answered on the entry as shown, so a hidden type answers what an undeclared one answers and an entry without a write is of no kind, while the unfiltered listing and `state` hold it; an accepter who may not know of a field the migration takes away, which a declaration reads, is listed it in part and refused its accept as not granted, naming neither (lakelands#867)"
+    "013 and 024, extended (lakelands#499): a proposal on a restricted record is not listed to a reader without the grant (lakelands#1008), nor one on a type its reader may not see (lakelands#762); `type` and `kind` are answered on the entry as shown, a bundle that moves a verb or a trigger to another type found by the type it leaves as by the one it moves to (lakelands#916), so a hidden type answers what an undeclared one answers and an entry without a write is of no kind, while the unfiltered listing and `state` hold it; an accepter who may not know of a field the migration takes away, which a declaration reads, is listed it in part and refused its accept as not granted, naming neither (lakelands#867)"
 );
 
 /// The lake of the re-key checks with a type `doc`, and the proposals of
@@ -325,6 +325,37 @@ async fn a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_fi
          the four that name no `account`, and the owner six by the type and two upserts; they \
          list {counts:?}"
     );
+    // A bundle that moves a verb or a trigger off `doc` is found by `doc`
+    // as by the type it moves to, as its entry is judged (lakelands#916).
+    let verb = |on: &str, f: &str| {
+        json!({"declare": "verb", "name": "stamp", "on": on,
+        "risk": "low", "effect": "write", "set": [{"field": f, "value": "'x'"}]})
+    };
+    l.declare_json(verb("doc", "title")).await?;
+    l.declare_as(trigger_on("tick", "doc", None), "a trigger on `doc`")
+        .await?;
+    for (why, d) in [
+        ("moved verb", verb("account", "holder")),
+        ("moved trigger", json!(trigger_on("tick", "account", None))),
+    ] {
+        let write = ProposedWrite::Declare {
+            declarations: vec![serde_json::from_value(d).expect("a declaration")],
+        };
+        l.cat.propose(&l.own, write, why.into()).await.must(why)?;
+    }
+    for filter in [
+        json!({}),
+        json!({"type": "doc"}),
+        json!({"type": "account"}),
+        json!({"type": "doc", "kind": "declare"}),
+    ] {
+        let found = listed(&l, &l.own, filter.clone()).await?;
+        let moved = found.iter().filter(|p| p.why.starts_with("moved")).count();
+        ensure!(
+            moved == 2,
+            "the owner must list both moved declarations under {filter}; it lists {moved}"
+        );
+    }
     // The accept: a trigger declared since reads the field the migration drops.
     let watch = trigger_on("watch", "doc", Some("secret = 'x'"));
     l.declare_as(watch, "a trigger that reads `secret`").await?;

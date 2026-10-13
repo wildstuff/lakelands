@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use lakelands_api::engine::{Declared, Matched, ProjectionView, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
+use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName};
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::FeedFilter;
@@ -44,14 +44,13 @@ impl MemView {
 }
 
 /// The type a verb acts on, as declared at `at`.
-fn verb_on(proj: &Projection, at: Option<Position>, verb: &VerbName) -> Option<TypeName> {
-    match &proj
-        .declarations
-        .get(&format!("verb {verb}"))?
-        .at(at)?
-        .declaration
-    {
-        lakelands_api::write::Declaration::Verb(v) => Some(v.on.clone()),
+/// The type the verb, trigger or set in force under `ident` stands on.
+fn stands(proj: &Projection, at: Option<Position>, ident: &str) -> Option<TypeName> {
+    use lakelands_api::write::Declaration;
+    match &proj.declarations.get(ident)?.at(at)?.declaration {
+        Declaration::Verb(v) => Some(v.on.clone()),
+        Declaration::Trigger(t) => Some(t.on.clone()),
+        Declaration::ObjectSet(s) => Some(s.of.clone()),
         _ => None,
     }
 }
@@ -266,8 +265,8 @@ impl ProjectionView for MemView {
 
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
         Ok(self.read(|p, at| {
-            engines::proposals(p.proposals.values().filter_map(|h| h.at(at)), filter, |v| {
-                verb_on(p, at, v)
+            engines::proposals(p.proposals.values().filter_map(|h| h.at(at)), filter, |i| {
+                stands(p, at, i)
             })
         }))
     }

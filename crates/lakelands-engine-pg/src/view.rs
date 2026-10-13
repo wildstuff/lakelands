@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use lakelands_api::engine::{Declared, Matched, ProjectionView, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
+use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::read::{Direction, Order};
@@ -767,22 +767,28 @@ impl Read<'_> {
         )
     }
 
-    /// The type each verb declared at the view's position is on.
-    fn verbs(&mut self) -> Result<BTreeMap<VerbName, TypeName>> {
+    /// The type each verb, trigger and set declared at the view's
+    /// position stands on, by its declaration's identity.
+    fn stands(&mut self) -> Result<BTreeMap<String, TypeName>> {
+        let kinds =
+            "AND (ident LIKE 'verb %' OR ident LIKE 'trigger %' OR ident LIKE 'object_set %')";
         let rows = self.db.query(
             &format!(
                 "SELECT state FROM {}",
-                DECLARATIONS.in_force(self.names, 1, "AND ident LIKE 'verb %'")
+                DECLARATIONS.in_force(self.names, 1, kinds)
             ),
             &[&self.at],
         )?;
         let mut out = BTreeMap::new();
         for r in rows {
-            if let Declaration::Verb(v) =
-                decode::<Declared>(&r.get::<_, String>(0), "a declaration")?.declaration
-            {
-                out.insert(v.name, v.on);
-            }
+            let d = decode::<Declared>(&r.get::<_, String>(0), "a declaration")?.declaration;
+            let on = match &d {
+                Declaration::Verb(v) => v.on.clone(),
+                Declaration::Trigger(t) => t.on.clone(),
+                Declaration::ObjectSet(s) => s.of.clone(),
+                _ => continue,
+            };
+            out.insert(lakelands_core::engines::declaration_key(&d), on);
         }
         Ok(out)
     }
@@ -1061,8 +1067,8 @@ impl ProjectionView for PgView<'_> {
                 .iter()
                 .map(|row| decode(&row.get::<_, String>(0), "a proposal"))
                 .collect::<Result<_>>()?;
-            let verbs = r.verbs()?;
-            Ok(engines::proposals(&all, filter, |v| verbs.get(v).cloned()))
+            let stands = r.stands()?;
+            Ok(engines::proposals(&all, filter, |i| stands.get(i).cloned()))
         })
     }
 
