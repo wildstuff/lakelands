@@ -346,6 +346,7 @@ fn projection_name(p: &Projection) -> String {
         Projection::Aggregate(_) => "aggregate",
         Projection::Degree => "degree",
         Projection::Components => "components",
+        Projection::Reach => "reach",
     }
     .to_owned()
 }
@@ -3080,8 +3081,15 @@ impl<'a> Reader<'a> {
         // passed over: a path is a graph of one walk from one start. Rows
         // are told so before their steps are judged, which a path's, each
         // from depth 0, would not pass.
-        if binds && p.to.is_some() {
+        let reaches = p.project == Projection::Reach;
+        if (binds || reaches) && p.to.is_some() {
             return Err(invalid(Case::PatternToNotGraph));
+        }
+        // A reach of no steps could never answer a row: it is refused as a
+        // measure of none is.
+        if reaches && p.steps.is_empty() {
+            let measure = "reach".to_owned();
+            return Err(invalid(Case::MeasureNoSteps { measure }));
         }
         let start_name = p.start.named.clone();
         let mut names = vec![start_name.unwrap_or_else(|| start_decl.name.to_string())];
@@ -3092,8 +3100,9 @@ impl<'a> Reader<'a> {
         let measure = measures::is_measure(&p.project);
         // A graph whose steps all start at depth 0 is one walk over any of
         // their relations from the start (018): a step's relation may be
-        // declared by a type another step reaches. Any other is a chain.
-        let chain = p.steps.iter().any(|s| s.depth.min > 0);
+        // declared by a type another step reaches. Any other is a chain, and
+        // so is a reach, whatever its depths.
+        let chain = reaches || p.steps.iter().any(|s| s.depth.min > 0);
         let lenient = match p.project {
             Projection::Graph => !chain,
             _ => p.project == Projection::Components,
@@ -3187,9 +3196,10 @@ impl<'a> Reader<'a> {
             graph::check_depth(s.depth, max_depth)?;
         }
         let (reader, reach) = (self, &reach[..]);
-        // Only rows hold what the walk reads: a measure and a graph walk
-        // more records than they answer.
-        let records = binds.then(RefCell::default);
+        // Rows and a reach hold what the walk reads, a step's `where` reading
+        // each record its visibility read already brought (lakelands#940); a
+        // measure and a graph walk more records than they answer.
+        let records = (binds || reaches).then(RefCell::default);
         let hidden = Visible {
             reader,
             reach,
@@ -3290,6 +3300,60 @@ impl<'a> Reader<'a> {
                 .truncated
                 .then(|| self.page_cursor(p, (offset + limit, None), params));
             return self.graph_result(g.nodes, g.edges, next).map(Ok);
+        }
+        // What each step reaches (lakelands#991): a step walked whole before
+        // the next, each record once at the first step, in the order
+        // (step, depth, type, key). A page walks until it holds one row
+        // more than it answers, so a later page walks again the steps up
+        // to the one its cursor names; the cursor is the last row's.
+        if reaches {
+            type Row = (u64, u64, String, RecordKey);
+            let past: Option<Row> = match &after {
+                None => None,
+                Some((v, key)) => match v.as_slice() {
+                    [Value::Number(s), Value::Number(d), Value::String(t)] => {
+                        let (s, d) = (s.as_u64(), d.as_u64());
+                        let at = s.zip(d).map(|(s, d)| (s, d, t.clone(), key.clone()));
+                        Some(at.ok_or_else(|| invalid(Case::CursorForeign))?)
+                    }
+                    _ => return Err(invalid(Case::CursorForeign)),
+                },
+            };
+            let (mut rows, mut more): (Vec<Row>, bool) = (Vec::new(), false);
+            let bound = (max_depth, self.lake.limits.max_graph_nodes);
+            graph::reach(&hidden, &from, &p.steps, bound, keep, |step, first| {
+                for r in first {
+                    let row = (
+                        step as u64,
+                        u64::from(r.depth),
+                        r.node.0.to_string(),
+                        r.node.1,
+                    );
+                    if past.as_ref().is_some_and(|p| row <= *p) {
+                        continue;
+                    }
+                    if rows.len() == limit {
+                        more = true;
+                        return Ok(false);
+                    }
+                    rows.push(row);
+                }
+                Ok(true)
+            })?;
+            let next_cursor = (more.then(|| rows.last()).flatten()).map(|(s, d, t, k)| {
+                let at = vec![Value::from(*s), Value::from(*d), Value::String(t.clone())];
+                self.page_cursor(p, (0, Some((at, k.clone()))), params)
+            });
+            let cell = |(s, d, t, k): Row| {
+                BTreeMap::from([
+                    ("step".to_owned(), Value::from(s)),
+                    ("depth".to_owned(), Value::from(d)),
+                    ("type".to_owned(), Value::String(t)),
+                    ("key".to_owned(), Value::String(k.to_string())),
+                ])
+            };
+            let rows = rows.into_iter().map(cell).collect();
+            return Ok(Ok(QueryResult::Rows { rows, next_cursor }));
         }
         // Rows are ordered, projected and measured by their paths,
         // `name.field`, each read as the rows hold it, and a name they do

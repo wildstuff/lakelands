@@ -137,6 +137,14 @@ pub enum Projection {
     /// `max_graph_nodes` is refused `too_large`, never cut
     /// (`docs/decisions/026-the-store-walks-the-graph.md`).
     Components,
+    /// What each step reaches: one row per record, `step`, `depth`,
+    /// `type` and `key`. Step `i` walks from every record step `i - 1`
+    /// kept, a dead end included; each record is listed once, at the
+    /// first step that keeps it, with that step's fewest hops, and the
+    /// start only where a step reaches it. Ordered by `(step, depth, type,
+    /// key)`; a page that would walk past the lake's `max_graph_nodes` is
+    /// refused `too_large` (`docs/decisions/018-one-pattern-query.md`).
+    Reach,
 }
 
 impl<'de> Deserialize<'de> for Projection {
@@ -155,6 +163,7 @@ impl<'de> Deserialize<'de> for Projection {
             Aggregate(Aggregate),
             Degree {},
             Components {},
+            Reach {},
         }
         Ok(match Wire::deserialize(d)? {
             Wire::Rows { fields } => Projection::Rows { fields },
@@ -162,6 +171,7 @@ impl<'de> Deserialize<'de> for Projection {
             Wire::Aggregate(a) => Projection::Aggregate(a),
             Wire::Degree {} => Projection::Degree,
             Wire::Components {} => Projection::Components,
+            Wire::Reach {} => Projection::Reach,
         })
     }
 }

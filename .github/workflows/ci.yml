@@ -226,6 +226,7 @@ jobs:
           - refusals
           - records-resolve
           - vectors-kept
+          - conflict-markers
     name: gate (${{ matrix.gate }})
     steps:
       - uses: actions/checkout@v4

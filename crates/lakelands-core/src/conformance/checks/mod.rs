@@ -459,6 +459,7 @@ pub const ALL: &[Check] = &[
     graph_steps::GRAPH_STEPS,
     graph_steps::PATH_STEPS,
     graph_steps::GRAPH_RIGHTS,
+    graph_steps::REACH_STEPS,
     search::SEARCH_FOLLOWS_TEXT,
     search::WITHHELD_NEVER_HITS,
     search::VECTOR_LEAVES_THE_NEIGHBOURS,

@@ -794,6 +794,8 @@ interface types {
         degree,
         /// The weak components the start records are in.
         components,
+        /// What each step reaches, each record at the first step.
+        reach,
     }
 
     record pattern {

@@ -294,6 +294,30 @@ what needs it. A step's relation is one that a type the caller is shown
 declares, or that relation's `inverse`; another is refused
 `no_relation_anywhere`, whether it is absent or hidden.
 
+### What each step reaches is a projection
+
+`reach` answers, for a chain of steps, what each step reaches: step `i`
+walks from every record step `i - 1` kept, the start for the first, and
+a record no later step continues from stays in the answer. Rows are
+matches, a record for every step; rows that held a prefix would make a
+match mean two things and repeat a record once for every path to it,
+and a graph neither pages by step nor says which step reached a record.
+So `reach` is a projection of its own, as a measure is: rows with fixed
+columns `step` (from 1), `depth`, `type` and `key`, one per record, at
+the first step that reaches it with that step's fewest hops from any
+record it walked from. The start is listed only where a step reaches it:
+at depth 0 where that step's range begins at 0, and at the hop a walk
+comes back to it, as a chain reports a cycle back to its start; a step
+walked `both` comes back over its own link at 2. Each step honours its
+`depth`, `type` and `where` as a chain's does. Its
+order is `(step, depth, type, key)`, so it refuses `order_by`, and `as`,
+which names no column of it, and `to`, as every projection but a graph
+does, and a reach of no steps, which could never answer a row, as a
+measure of none is. It holds every record it reached, so a page whose
+walk would pass the lake's `max_graph_nodes` is refused `too_large`; a
+page that stops earlier is answered, because a reach row is exact
+whatever follows it.
+
 ### A view's records are computed when they are read
 
 A view type's records are computed when they are read: the source's
@@ -491,6 +515,8 @@ used.
 - `degree` and `components` joined the projections (lakelands#149).
 - `components` may leave the start's `type` out and grow from every
   linked record (lakelands#992).
+- `reach` joined the projections (lakelands#991): a host walking a path
+  of relations asked one rows query per prefix and compared them.
 - A pattern that starts on a view, or a walk that reaches one, reads its
   computed records (lakelands#281); a view is not searched
   (lakelands#290); a view declares exactly the fields it computes

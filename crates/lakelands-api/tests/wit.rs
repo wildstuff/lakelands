@@ -1566,7 +1566,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Projection::Graph
             | Projection::Aggregate(_)
             | Projection::Degree
-            | Projection::Components => {}
+            | Projection::Components
+            | Projection::Reach => {}
         }
     }
     let _ = projections;
@@ -1579,6 +1580,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 Projection::Aggregate(aggregate()),
                 Projection::Degree,
                 Projection::Components,
+                Projection::Reach,
             ],
             Some("as"),
         ),
