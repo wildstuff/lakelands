@@ -645,6 +645,11 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
                        "description": "Also answer how many records match, at the answer's position. Counted only when asked."}),
             ),
             (
+                "retired",
+                json!({"type": "boolean",
+                       "description": "Also answer how many retired records match, at the same position. Counted only when asked; not with aggregate."}),
+            ),
+            (
                 "after",
                 json!({"type": "object",
                        "description": "Resume strictly after a row: its values for the order_by keys, in order (null where it has none), and its key. Instead of a cursor.",
@@ -685,7 +690,8 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
                 "properties": {"shape": {"enum": ["records", "groups"]},
                                "rows": {"type": "array"},
                                "next_cursor": {"type": "string"},
-                               "total": {"type": "integer"}},
+                               "total": {"type": "integer"},
+                               "retired": {"type": "integer"}},
                 "required": ["shape", "rows"]})),
             door: Door::Find { ty: ty.name.clone() },
         });

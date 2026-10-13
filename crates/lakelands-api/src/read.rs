@@ -257,6 +257,12 @@ pub struct Find {
     /// refused.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub total: bool,
+    /// Answer, beside the page, how many retired records match, at the
+    /// answer's position: those its reader would be answered were they
+    /// live, none of a view's. Counted only when asked; given with
+    /// `aggregate`, it is refused.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retired: bool,
     /// Aggregate instead of listing records.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aggregate: Option<Aggregate>,
@@ -299,6 +305,10 @@ pub enum Found {
         /// answer's position, so every page of one walk says the same.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         total: Option<u64>,
+        /// How many retired records match, when `retired` asked for it, at
+        /// the same position.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retired: Option<u64>,
     },
     /// Aggregated groups.
     Groups {

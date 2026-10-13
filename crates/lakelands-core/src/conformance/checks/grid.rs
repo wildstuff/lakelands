@@ -19,7 +19,9 @@
 //! must stay red until its fix removes it.
 //!
 //! The features stand on one lake beside the plain claims, trips and
-//! links: a set of a set over each hidden field, a relation matched on
+//! links, and a retired claim of each hidden owner's, held where `c9`
+//! is, which a count of the retired must not tell: a set of a set over
+//! each hidden field, a relation matched on
 //! values, and one under a condition over the hidden field, a relation
 //! whose target is a link type, and a view over a
 //! valid-timed type, read at a valid time. Each asks the doors that read
@@ -54,7 +56,7 @@ use Hidden::*;
 
 check!(
     GRID = the_rights_grid_holds_over_every_feature,
-    "006, 024 and 051 (lakelands#962): on twin lakes that differ only in a held record, another's record, another's link, a link to a trip another's `only` keeps, a field kept from a reader or a type kept from a reviewer, either in its values (each record its own, ordered one way in one lake and the other way in the other) or in whether it is there at all (the second lake holding it, and each link that reaches it, as one record of a type no reader is shown), each reader not shown that part, every one of them holding `review` and `ingest` so that those doors reach the part (without `restricted`, `only` on a type, on a link type and on an end's type, masked, at `none` and `write_only` on a field, `review` and `schema` kept from a type) is answered alike to the byte by `get`, `get` as of a position, `find` with rows and total, a count and a group, a `where` and an order on the hidden field and its sum, min and max, a lexical and a vector search, a pattern's rows, graph, path, degree and components, `describe` and `describe_type`, the proposals listed, unfiltered, of a pair that hides a link as well, where the owner proposed a call on each link with its label, and the preview of a migration that makes the hidden field a number, sent as its author is shown the type, and of the value type of the hidden texts tightened, and through each feature that reaches the part: a set of a set over the hidden field, read by `find`, a count, a group and an order; a relation matched on owners, and one under a condition over the hidden field, each walked, a path taken over it and measured by degree and components, but toward the one claim of an owner, which no other is a peer of; a relation whose target is the link type, its links read at every door; and a view over valid-timed trips, read at a valid time by `find`, a count, a group, a `where` and an order, as is a trip whose valid time alone the twins hold otherwise, to a reader that reads it masked; after every read each reader writes, the owner last: the hidden field again, a link to the hidden record and from it, its unlinking and a link ingested, a verb's call, on a link too, and one whose `requires` reads the hidden field across a ticket's reference, a reference to it written and one computed from its key, a proposed retirement, an accept and a reject of the owner's proposal to write the hidden record again and of its call on the hidden link, and a retirement, each answered alike; the owner's answers differ at each of the 491 cells whose door shows the hidden part, so no twin is blind; twins whose logs part outside what they hide, in an event's kind, type, key or value, are a broken fixture, a set's memberships aside, which follow from the records; an instant the store stamps from its clock is compared by its rank among its answer's own, a fixture field bearing such a name refused, and the head an answer was read at, which those memberships move, is left out, with a proposal's id, which is a position, and how far a write's consequences reach, which a write tells on purpose (006: that something reacted), as an upsert in a pair of existence is not asked, a create on a free key, which a write tells on purpose too (006: what a holder's write tells), and a report's counts are left out, which 006 keeps whole on purpose, with what follows from them (`lossless`, `fits`, `more` and the report's id); the feed, the log as the host reads it, answers no principal and is no door of the grid; so a leak through an instant's absolute value, the head, a write's reach, a free key or a report's count is out of the grid's reach",
+    "006, 024 and 051 (lakelands#962): on twin lakes that differ only in a held record, another's record, another's link, a link to a trip another's `only` keeps, a field kept from a reader or a type kept from a reviewer, either in its values (each record its own, ordered one way in one lake and the other way in the other) or in whether it is there at all (the second lake holding it, and each link that reaches it, as one record of a type no reader is shown), each reader not shown that part, every one of them holding `review` and `ingest` so that those doors reach the part (without `restricted`, `only` on a type, on a link type and on an end's type, masked, at `none` and `write_only` on a field, `review` and `schema` kept from a type) is answered alike to the byte by `get`, `get` as of a position, `find` with rows, total and its count of the retired, over a held claim and one of another's that are retired beside the hidden ones (lakelands#1024), a count and a group, a `where` and an order on the hidden field and its sum, min and max, a lexical and a vector search, a pattern's rows, graph, path, degree and components, `describe` and `describe_type`, the proposals listed, unfiltered, of a pair that hides a link as well, where the owner proposed a call on each link with its label, and the preview of a migration that makes the hidden field a number, sent as its author is shown the type, and of the value type of the hidden texts tightened, and through each feature that reaches the part: a set of a set over the hidden field, read by `find`, a count, a group and an order; a relation matched on owners, and one under a condition over the hidden field, each walked, a path taken over it and measured by degree and components, but toward the one claim of an owner, which no other is a peer of; a relation whose target is the link type, its links read at every door; and a view over valid-timed trips, read at a valid time by `find`, a count, a group, a `where` and an order, as is a trip whose valid time alone the twins hold otherwise, to a reader that reads it masked; after every read each reader writes, the owner last: the hidden field again, a link to the hidden record and from it, its unlinking and a link ingested, a verb's call, on a link too, and one whose `requires` reads the hidden field across a ticket's reference, a reference to it written and one computed from its key, a proposed retirement, an accept and a reject of the owner's proposal to write the hidden record again and of its call on the hidden link, and a retirement, each answered alike; the owner's answers differ at each of the 491 cells whose door shows the hidden part, so no twin is blind; twins whose logs part outside what they hide, in an event's kind, type, key or value, are a broken fixture, a set's memberships aside, which follow from the records; an instant the store stamps from its clock is compared by its rank among its answer's own, a fixture field bearing such a name refused, and the head an answer was read at, which those memberships move, is left out, with a proposal's id, which is a position, and how far a write's consequences reach, which a write tells on purpose (006: that something reacted), as an upsert in a pair of existence is not asked, a create on a free key, which a write tells on purpose too (006: what a holder's write tells), and a report's counts are left out, which 006 keeps whole on purpose, with what follows from them (`lossless`, `fits`, `more` and the report's id); the feed, the log as the host reads it, answers no principal and is no door of the grid; so a leak through an instant's absolute value, the head, a write's reach, a free key or a report's count is out of the grid's reach",
     given
 );
 
@@ -88,7 +90,7 @@ const LATER: &str = "2022-01-01T00:00:00Z";
 const VAULT: &str = "vault";
 
 /// Every record's key, in the order its hidden values follow.
-const KEYS: [&str; 14] = [
+const KEYS: [&str; 16] = [
     "t1",
     "t2",
     "c1",
@@ -103,6 +105,8 @@ const KEYS: [&str; 14] = [
     "m1:c1%3At1",
     "m2:c2%3At1",
     "m9:c9%3At1",
+    "r:c9",
+    "r:c2",
 ];
 
 /// The value twin `b` holds for `v` of the record `key` where it is hidden:
@@ -494,7 +498,10 @@ impl Door {
                 let get = json!({"key": key, "with_meta": true, "as_of": mark});
                 said(cat.get(who, &t, de(get)).await)
             }
-            Rows => said(cat.find(who, &t, de(at(json!({"total": true})))).await),
+            Rows => {
+                let find = json!({"total": true, "retired": true});
+                said(cat.find(who, &t, de(at(find))).await)
+            }
             Count => {
                 let find = json!({"aggregate": {"measures": count}});
                 said(cat.find(who, &t, de(at(find))).await)
@@ -834,10 +841,17 @@ async fn plain(
         ("c2", "bob", 20),
         ("c3", "alice", 5),
         ("c9", "alice", 7),
+        ("r:c9", "alice", 3),
+        ("r:c2", "bob", 4),
     ] {
         let f = json!({"owner": owner, "amount": amount, "note": "taxi", "secret": key, "v": [0.6, 0.8]});
         l.upsert(in_vault("claim", key), key, put("claim", key, f)?)
             .await?;
+    }
+    // A retired claim of each hidden owner's, which a count of the
+    // retired must not tell either.
+    for key in ["r:c9", "r:c2"] {
+        l.retire(in_vault("claim", key), key).await?;
     }
     for (from, to) in [
         ("c1", "t1"),
@@ -863,7 +877,9 @@ async fn plain(
     }
     let mark = store.head().await.must("reading the head")?;
     l.upsert("claim", "c3", json!({"note": "hotel"})).await?;
-    restrict(store, in_vault("claim", "c9"), "c9", "a hold").await?;
+    for key in ["c9", "r:c9"] {
+        restrict(store, in_vault("claim", key), key, "a hold").await?;
+    }
     // The owner proposes each record a pair hides written again.
     let mut ids = Vec::new();
     for (ty, key, fields) in [

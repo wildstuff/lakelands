@@ -1185,6 +1185,8 @@ catalog! {
         ProposalOrder { members: Names, field: FieldName, by: OrderBy } => "`order_by` orders proposals by their members ({members}) and their values, and `{field}` by `{by}` is not one",
         /// A query vector of another length than the field declares.
         QueryDimensions { query: usize, held: usize } => "the query vector has {query} dimensions, and the field holds vectors of {held}",
+        /// A `retired` count beside an aggregate.
+        RetiredWithAggregate => "`retired` counts the retired records a page's `where` matches; an `aggregate` answers groups, so give one",
         /// A search's `fields` that names none.
         SearchFieldsEmpty => "`fields` names no field; leave it out to search every searchable field",
         /// A hybrid search without a vector over a vector field no model

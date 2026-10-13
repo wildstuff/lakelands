@@ -160,6 +160,7 @@ impl Kept {
                 rows,
                 next_cursor,
                 total,
+                ..
             } = found.expect("a page").data
             else {
                 panic!("a page of records");

@@ -1025,6 +1025,9 @@
    "query": 1
   },
   {
+   "code": "retired_with_aggregate"
+  },
+  {
    "code": "search_fields_empty"
   },
   {

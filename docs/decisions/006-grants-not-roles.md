@@ -1792,7 +1792,9 @@ record that does not exist.
 - **Every read.** `get` of another's record is not found, as a missing
   one is. `find` with a filter, an order, `total`, a count, a sum and a
   group read the engine under the pairs, so they count and fold the
-  holder's records alone. A search ranks the type and keeps the admitted
+  holder's records alone; its count of the retired counts the holder's
+  retired records alone, another's being a key that is free to it
+  (lakelands#1024). A search ranks the type and keeps the admitted
   candidates, pulling deeper until its page is full; the fused search's
   path that reads no record is not taken. A walk reaches only admitted
   records. A proposal on a record the holder is not admitted is not
@@ -2008,7 +2010,8 @@ through `unrestrict`; no caller's door writes either
 (`docs/log-format.md` §2.3). To a principal without the `restricted`
 grant a record under a hold, a restricted record, is not there: `get`
 does not find it, as a missing record is not found, and `find`, a
-`total`, a count, a view, a walk, a graph and a search leave it out. To
+`total`, a count of the retired, a view, a walk, a graph and a search
+leave it out, retired or not (lakelands#1024). To
 a principal with the grant it is answered with its fields unchanged, its
 history included, and lifting the hold brings it back for every reader,
 at every position.
