@@ -312,6 +312,7 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
         &who,
         Declaration::Type(TypeDecl {
             annotations: Default::default(),
+            insert_only: false,
             name: "note".into(),
             key: vec![],
             fields: vec![text],

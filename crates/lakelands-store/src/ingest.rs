@@ -92,6 +92,8 @@ pub fn window(
     for (ty, keys) in keys {
         d.pending.prime(view.as_ref(), ty, &keys)?;
     }
+    // The keys of an insert-only type this window writes, each once.
+    let mut once = BTreeSet::new();
     for (i, r) in records.iter().enumerate() {
         let judged = (|| {
             let decl = sees.ty(&r.ty)?;
@@ -128,6 +130,18 @@ pub fn window(
             }
             if patch.is_empty() {
                 return Err(lakelands_core::invalid(Case::PatchEmpty));
+            }
+            // An insert-only type's key is written once: a record stands
+            // at it, live or retired, or this window wrote it. Another's
+            // record and a held one are judged as before, so the mark
+            // tells nothing of them (lakelands#1044).
+            let stands = t.before.is_some() && !other;
+            if decl.insert_only && (stands || !once.insert((r.ty.clone(), r.key.clone()))) {
+                let (ty, key) = (r.ty.clone(), r.key.clone());
+                return Err(crate::writes::constraint(
+                    None,
+                    Case::WrittenOnce { ty, key },
+                ));
             }
             // The record is applied as the source states it, so a guard reads
             // the `seen_at` the fold keeps.

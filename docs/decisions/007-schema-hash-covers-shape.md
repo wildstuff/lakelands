@@ -71,6 +71,14 @@ names its fields' value type alone, so a value type's annotations move
 no hash either; its version counts their change. Carrying annotations in the log is a new member, so it
 came with a step of the log format (`docs/log-format.md` §6).
 
+### Being written once is not shape
+
+A type marked `insert_only` stores its records as an unmarked one does;
+the mark says how its source may write them, not what they hold. It is
+not a shape member, so the hash leaves it out without a rule of its
+own: a type marked or unmarked keeps its schema hash, and its version
+counts the change (lakelands#1044).
+
 ### A field's initial value is not shape
 
 A field may declare `initial`, the value its record takes when it is

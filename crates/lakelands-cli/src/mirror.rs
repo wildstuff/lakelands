@@ -177,6 +177,7 @@ pub fn mirror_type() -> TypeDecl {
         valid_from: None,
         valid_to: None,
         field_meta: true,
+        insert_only: false,
         language: None,
         description: Some(
             "Where one mirror connection stands for one source type: the next source position \

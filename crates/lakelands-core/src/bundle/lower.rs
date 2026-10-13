@@ -472,6 +472,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
         valid_from: doc.valid_from.map(FieldName::new),
         valid_to: doc.valid_to.map(FieldName::new),
         field_meta: doc.field_meta,
+        insert_only: doc.insert_only,
         language: doc.language,
         description: doc.description,
         label: doc.label,

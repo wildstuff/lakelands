@@ -1301,6 +1301,11 @@
    "to": "k"
   },
   {
+   "code": "written_once",
+   "key": "k",
+   "type": "t"
+  },
+  {
    "code": "write_changed_since_proposed",
    "key": "k",
    "type": "t"

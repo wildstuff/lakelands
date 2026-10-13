@@ -253,6 +253,8 @@ interface types {
         valid-to: option<field-name>,
         language: option<string>,
         field-meta: bool,
+        /// Whether a source writes each of its records once.
+        insert-only: bool,
         description: option<string>,
         label: option<string>,
         /// The host's own marks, by namespaced key (`acme.icon`), each a
@@ -910,6 +912,8 @@ interface types {
 
     record type-lineage {
         sourced: bool,
+        /// Whether a source writes each of its records once.
+        insert-only: bool,
         view-of: option<type-name>,
     }
 

@@ -289,6 +289,7 @@ fn relation_decl() -> RelationDecl {
 fn type_decl() -> TypeDecl {
     TypeDecl {
         annotations: [("acme.icon".to_owned(), serde_json::json!("x"))].into(),
+        insert_only: true,
         name: "invoice".into(),
         key: vec!["f".into()],
         fields: vec![field_decl()],
@@ -560,6 +561,7 @@ fn type_description() -> TypeDescription {
         verbs: vec!["pay".into()],
         lineage: TypeLineage {
             sourced: true,
+            insert_only: true,
             view_of: Some("t".into()),
         },
         lifecycle: TypeLifecycle {

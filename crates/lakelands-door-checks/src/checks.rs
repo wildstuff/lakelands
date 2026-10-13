@@ -321,6 +321,7 @@ fn text(name: &str) -> FieldDecl {
 pub fn fixture() -> Vec<Declaration> {
     let invoice = TypeDecl {
         annotations: Default::default(),
+        insert_only: false,
         name: INVOICE.into(),
         key: Vec::new(),
         fields: vec![
@@ -1998,6 +1999,7 @@ pub async fn every_door_refuses_a_view_alike(store: Arc<dyn LakeStore>) {
 fn partner_totals_view() -> TypeDecl {
     TypeDecl {
         annotations: Default::default(),
+        insert_only: false,
         name: "partner_totals".into(),
         key: vec!["partner".into()],
         fields: vec![text("partner"), text("count")],
@@ -5282,6 +5284,7 @@ pub async fn sys_types_cannot_be_declared(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let decl = TypeDecl {
         annotations: Default::default(),
+        insert_only: false,
         name: "sys.setting".into(),
         key: Vec::new(),
         fields: vec![text("value")],
@@ -7843,6 +7846,7 @@ pub async fn schema_hashes_and_proposal_ids_have_the_stores_form(store: Arc<dyn 
     // as text hashes to the one digest too.
     let open_by_partner = TypeDecl {
         annotations: Default::default(),
+        insert_only: false,
         name: "open_by_partner".into(),
         key: vec!["partner".into()],
         fields: vec![
@@ -9566,6 +9570,7 @@ pub async fn a_sort_index_setting_names_declared_scalar_fields_and_describe_show
     let owner = &f.cast.owner;
     let reading = TypeDecl {
         annotations: Default::default(),
+        insert_only: false,
         name: "reading".into(),
         key: Vec::new(),
         fields: vec![
@@ -11066,6 +11071,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
     };
     let doc = TypeDecl {
         annotations: Default::default(),
+        insert_only: false,
         name: "doc".into(),
         key: Vec::new(),
         fields: vec![
@@ -11355,6 +11361,7 @@ pub async fn an_order_by_latest_takes_no_field_and_no_view(store: Arc<dyn LakeSt
     }
     let totals = TypeDecl {
         annotations: Default::default(),
+        insert_only: false,
         name: "partner_totals".into(),
         key: vec!["partner".into()],
         fields: vec![text("partner"), text("count")],
@@ -11553,6 +11560,7 @@ pub async fn a_trigger_watches_a_link_type_and_not_a_reference_relations(
     let owner = &f.cast.owner;
     let doc = TypeDecl {
         annotations: Default::default(),
+        insert_only: false,
         name: "doc".into(),
         key: Vec::new(),
         fields: vec![text("title")],
@@ -12015,6 +12023,7 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
     let owner = &f.cast.owner;
     let doc = TypeDecl {
         annotations: Default::default(),
+        insert_only: false,
         name: "doc".into(),
         key: Vec::new(),
         fields: vec![
@@ -12191,6 +12200,7 @@ pub async fn a_search_limited_to_named_fields_matches_and_probes_only_those(
         valid_from: None,
         valid_to: None,
         field_meta: true,
+        insert_only: false,
         language: None,
         description: None,
         label: None,
@@ -12329,6 +12339,7 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
     let owner = &f.cast.owner;
     let doc = TypeDecl {
         annotations: Default::default(),
+        insert_only: false,
         name: "doc".into(),
         key: Vec::new(),
         fields: vec![

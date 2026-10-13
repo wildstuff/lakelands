@@ -494,6 +494,7 @@ pub const ALL: &[Check] = &[
     rebuild::ONE_JSON_FORM,
     ingest::DUPLICATE_ACROSS_WINDOWS,
     ingest::REFUSAL_NAMES,
+    ingest::INSERT_ONLY,
     aging::MOVES_WHAT_HOLDS_FROM,
     aging::TWICE_IS_ONCE,
     aging::TODAY_IS_THE_DATE,

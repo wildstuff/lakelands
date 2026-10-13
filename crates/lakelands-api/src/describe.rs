@@ -248,6 +248,9 @@ pub struct TypeRights {
 pub struct TypeLineage {
     /// Whether any field this principal is described is fed by a source.
     pub sourced: bool,
+    /// Whether a source writes each of its records once (lakelands#1044).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub insert_only: bool,
     /// For a view type: the type it is computed from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view_of: Option<TypeName>,

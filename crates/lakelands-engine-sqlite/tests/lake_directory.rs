@@ -67,6 +67,7 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
         &owner,
         Declaration::Type(TypeDecl {
             annotations: Default::default(),
+            insert_only: false,
             name: "entry".into(),
             key: vec![],
             fields: vec![note],
