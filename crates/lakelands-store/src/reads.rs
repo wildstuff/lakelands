@@ -2138,8 +2138,17 @@ impl<'a> Reader<'a> {
         // The lake as its reader is described it, read once for the
         // listing and only where a proposal asks.
         let lake = OnceCell::new();
+        let stands = |ident: &str| stands(&self.shape.ontology, ident);
+        // In the engine's order, newest first, a page is its first entries:
+        // those past it are not judged, each a read of the past where its
+        // subject was declared again since (lakelands#888). Another order
+        // judges every entry.
+        let end = (filter.order_by.is_empty()).then_some(offset.saturating_add(limit));
         let mut mine = Vec::new();
         for mut p in all {
+            if end.is_some_and(|end| mine.len() >= end) {
+                break;
+            }
             if !self.who.grants.review && p.proposer != me {
                 continue;
             }
@@ -2150,10 +2159,10 @@ impl<'a> Reader<'a> {
                 };
                 (p.write, p.more) = shown;
             }
-            mine.push(p);
+            if core_engines::matches(&p, filter, stands) {
+                mine.push(p);
+            }
         }
-        let stands = |ident: &str| stands(&self.shape.ontology, ident);
-        mine.retain(|p| core_engines::matches(p, filter, stands));
         Ok(ordered_proposals(mine, &filter.order_by)?
             .into_iter()
             .skip(offset)

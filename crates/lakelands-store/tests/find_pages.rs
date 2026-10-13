@@ -44,6 +44,8 @@ struct Handed {
     scans: AtomicUsize,
     /// Of `gets`, those that asked for one record alone.
     ones: AtomicUsize,
+    /// The views opened at a past position.
+    pasts: AtomicUsize,
 }
 
 struct Counting {
@@ -162,6 +164,9 @@ impl LakeEngine for Counting {
         self.inner.projection()
     }
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
+        if as_of.is_some() {
+            self.handed.pasts.fetch_add(1, Ordering::SeqCst);
+        }
         Ok(Box::new(CountingView {
             inner: self.inner.view(as_of)?,
             handed: self.handed.clone(),
@@ -632,4 +637,55 @@ async fn a_walk_with_a_where_reads_no_record_alone() {
         "a neighbourhood of 80 payments answered {} on a page of 5 and read {rows} records by scan; it reads its page of starts and one more",
         nodes.len()
     );
+}
+
+/// A listing of proposals judges the entries of its page and no more
+/// (lakelands#888): each decided entry costs a read of the past, so a
+/// listing of 50 over 80 decided calls reads the past at most 50 times.
+#[tokio::test]
+async fn a_listing_of_proposals_judges_its_page_and_no_more() {
+    let (store, cat, who, handed) = notes("listing").await;
+    let declare = |v: serde_json::Value| serde_json::from_value::<Declaration>(v).unwrap();
+    let mark = json!({"declare": "verb", "name": "mark", "on": "note", "risk": "high",
+                      "effect": "write", "set": [{"field": "text", "value": "'x'"}]});
+    cat.declare(&who, declare(mark)).await.unwrap();
+    for _ in 0..80 {
+        let (verb, key) = ("mark".into(), "n0000".into());
+        let called = cat.call(
+            &who,
+            &verb,
+            Some(&key),
+            Default::default(),
+            Default::default(),
+        );
+        let lakelands_api::Outcome::Proposed { proposal, .. } = called.await.unwrap() else {
+            panic!("a proposal");
+        };
+        cat.accept(&who, &proposal).await.unwrap();
+    }
+    let later = json!({"declare": "type", "name": "later", "fields": [{"name": "t", "type": {"kind": "text"}}]});
+    cat.declare(&who, declare(later)).await.unwrap();
+    let reviewer = Principal {
+        kind: PrincipalKind::Agent,
+        id: "reviewer".into(),
+        grants: Grants {
+            default: lakelands_api::Access::Read,
+            review: true,
+            ..Grants::default()
+        },
+        ..who.clone()
+    };
+    handed.pasts.store(0, Ordering::SeqCst);
+    let listed = cat
+        .proposals(&reviewer, Default::default())
+        .await
+        .unwrap()
+        .data;
+    let pasts = handed.pasts.load(Ordering::SeqCst);
+    assert!(
+        listed.len() == 50 && pasts <= 50,
+        "a listing of {} over 80 decided calls read the past {pasts} times; it judges its page of 50 and no more",
+        listed.len()
+    );
+    drop(store);
 }
