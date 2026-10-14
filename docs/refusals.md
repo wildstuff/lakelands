@@ -414,6 +414,7 @@ What a refusal is about.
 | `steps_into_reference` | `expr` (String), `field` (FieldName) | `{expr}` steps into `{field}`, which is a reference: a condition reads the record's own fields. Compare the reference's key, or walk to the record it names in a pattern | A path into a reference's members. |
 | `steps_into_scalar` | `expr` (String), `field` (FieldName) | `{expr}` steps into `{field}`, which is no `json` field, and has no members | A path into the members of what has none. |
 | `sum_not_number` | `value` (Operand) | sum() met {value}, which is not a number | A sum of what is no number. |
+| `measure_fails` | `group` (RecordKey), `why` (Case) | its value for the group `{group}` cannot be computed: {why} | A view's measure that cannot be computed over a group. |
 | `measure_unfit` | `group` (RecordKey), `why` (Case), `decimal` (bool) | its value for the group `{group}` does not fit its field: {why}[{?decimal}; a field of kind `decimal` takes it] | A measure's value for a group that its field would not take written. |
 | `kept_adds_kind` | `call` (String), `kind` (Kind) | `{call}` adds {kind}; it is kept where its argument is certainly a number | A sum or an average of a kind that is no number. |
 | `kept_adds_uncertain` | `call` (String) | `{call}` adds what is of no certain kind: it is kept where its argument is certainly a number | A sum or an average of what is of no certain kind. |

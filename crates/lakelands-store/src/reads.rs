@@ -1525,15 +1525,23 @@ impl<'a> Reader<'a> {
         }
         // One group's measures, seeing the values `given` by name.
         let settings = Some(&self.shape.settings);
+        // A measure that fails is named with its group, as one that does
+        // not land is (023, lakelands#925).
+        let failed = |group: &RecordKey, name: FieldName, why: Case| {
+            let (group, why) = (group.clone(), Box::new(why));
+            let said = Said::from(Case::MeasureFails { group, why });
+            let view = Place::View {
+                name: decl.name.clone(),
+            };
+            invalid(said.within(Place::Measure { name }).within(view))
+        };
         let measured = |folds: &aggregate::Folds,
                         by: &BTreeMap<FieldName, Value>,
                         measures: &[(FieldName, Expr)],
-                        given| {
-            aggregate::measures(folds, by, measures, given, settings, self.now).map_err(|e| {
-                invalid(Said::from(e).within(Place::View {
-                    name: decl.name.clone(),
-                }))
-            })
+                        given,
+                        key: &RecordKey| {
+            aggregate::named_measures(folds, by, measures, given, settings, self.now)
+                .map_err(|(name, why)| failed(key, name, why))
         };
         // Each merged source's measures by key; a key it lacks is measured
         // over its empty group below.
@@ -1555,7 +1563,7 @@ impl<'a> Reader<'a> {
                 let Some(key) = key_of(&by) else {
                     continue;
                 };
-                let values = measured(&folds, &own, &measures, BTreeMap::new())?;
+                let values = measured(&folds, &own, &measures, BTreeMap::new(), &key)?;
                 groups
                     .entry(key.clone())
                     .or_insert_with(|| (by, none.clone()));
@@ -1571,12 +1579,12 @@ impl<'a> Reader<'a> {
                     Some(values) => values.clone(),
                     None => {
                         let own = renamed(&by, &v.group_by, &m.group_by);
-                        measured(&none, &own, measures, BTreeMap::new())?
+                        measured(&none, &own, measures, BTreeMap::new(), &key)?
                     }
                 };
                 given.extend(values);
             }
-            let values = measured(&folds, &by, &measures, given)?;
+            let values = measured(&folds, &by, &measures, given, &key)?;
             // A measure that does not land fails as one that cannot be
             // computed: the read is refused, naming it and its group.
             let fields = landed(decl, by.clone(), values).map_err(|(name, why)| {

@@ -29,7 +29,13 @@ takes only I-Regexp (RFC 9485), refusing any other pattern syntax.
 What an evaluation error means belongs to the caller and is fixed per
 caller: a filter does not match the record, a trigger guard does not
 fire, a derived field is cleared, and a view's measure that fails over
-a group refuses the read of the view as invalid.
+a group refuses the read of the view as invalid, naming the view, the
+measure and the group (`measure_fails`), as one whose value does not
+land is named. The view stays refused whole, a `get` of another group
+and a page without the failing one alike: its answer is one
+computation, and one engine computes it in its query, so answering
+around a group would take a second path that catches each group's
+error, which this record exists to rule out (lakelands#925).
 
 A measure fails, too, where its value does not land in the field the
 view declares for it: what a field would not take written, it does not
@@ -91,3 +97,6 @@ what the writer of the filter meant.
   10^21 or more lands as its double, as one that is not whole did: a
   derived field held no value there, and a verb's set of one was
   refused as a value its field would not take (lakelands#839).
+- A measure that cannot be computed names its measure and its group in
+  the refusal, as one that does not land does; before, a division by
+  zero over a group named the view alone (lakelands#925).
