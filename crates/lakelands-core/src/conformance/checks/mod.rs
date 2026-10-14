@@ -223,6 +223,7 @@ pub const ALL: &[Check] = &[
     masking::WRITE_ONLY,
     masking::VIA_HIDDEN,
     authors_view::DECLARED_SINCE_NOT_TAKEN,
+    authors_view::HIDDEN_LINK_TYPE_NOT_GRANTED,
     authors_view::HIDDEN_FIELD_KEPT,
     authors_view::HIDDEN_NAME_NOT_LEARNED,
     authors_view::HIDDEN_NAME_JUDGED_AS_ABSENT,

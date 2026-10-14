@@ -23,6 +23,11 @@ check!(
 );
 
 check!(
+    HIDDEN_LINK_TYPE_NOT_GRANTED = a_link_type_its_author_is_not_shown_takes_no_field_from_it,
+    "027 and 024, extended (lakelands#965): a relation its author is shown whose link type it is not shown takes no link field from it: sent with one named as a field the link type holds, and with one named otherwise, by `declare`, `apply`, `propose` and a migration's preview, it is not granted, naming nothing, word for word alike, and the head does not move; sent without fields it is applied, the link type's field kept; the owner adds the field"
+);
+
+check!(
     HIDDEN_FIELD_KEPT = a_migration_keeps_the_fields_its_author_may_not_know_of,
     "027 and 024, extended: a migration's `to` is read as its author's view, so a field hidden from the author stays as declared, with its values, whether the migration is applied by a principal with the schema grant or proposed and accepted; `dropped` lists only what the author saw and removed; the proposer reads its own proposal without the field, a reviewer who may see it reads it there"
 );
@@ -1486,6 +1491,60 @@ async fn a_bundle_takes_no_place_declared_since_it_was_proposed(store: Store) ->
         listed.iter().all(|p| p.id != offer) && decided == [absent.clone(), absent],
         "`peek` on `pad`, taken since by a verb reading `safe.secret`, is not there to `mid`, \
          kept from that field: listed {listed:?}, decided {decided:?}"
+    );
+    Ok(())
+}
+
+async fn a_link_type_its_author_is_not_shown_takes_no_field_from_it(store: Store) -> Held {
+    use super::only::de;
+    use crate::conformance::fixture::head_unmoved;
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let t = |n: &str| json!({"name": n, "type": {"kind": "text"}});
+    let deal = |fields: serde_json::Value| -> TypeDecl {
+        let with = json!([{"name": "with", "target": "party", "fields": fields}]);
+        de(json!({"name": "deal", "fields": [t("name")], "relations": with}))
+    };
+    l.declare(de(json!({"name": "party", "fields": [t("name")]})))
+        .await?;
+    l.declare(deal(json!([t("note")]))).await?;
+    let types = json!({"sys.link.deal.with": {"default": "none"}});
+    let grants = json!({"default": "read", "schema": true, "restricted": true, "types": types});
+    let author = super::only::holder(s, "author", grants);
+    let declare =
+        async |who: &Principal, fields| l.cat.declare(who, Declaration::Type(deal(fields))).await;
+    let before = s.head().await.must("reading the head")?;
+    let mut told = Vec::new();
+    for field in ["note", "memo"] {
+        let d = Declaration::Type(deal(json!([t(field)])));
+        let write = ProposedWrite::Declare {
+            declarations: vec![d.clone()],
+        };
+        let moved = migration(deal(json!([t(field)])));
+        told.push(declare(&author, json!([t(field)])).await.err());
+        told.push(l.cat.apply(&author, vec![d]).await.err());
+        told.push(l.cat.propose(&author, write, "mine".into()).await.err());
+        told.push(l.cat.migrate(&author, moved).await.err());
+    }
+    let refused = lakelands_api::Error::Refused {
+        reason: lakelands_api::Refusal::NotGranted,
+        field: None,
+    };
+    ensure!(
+        told.iter().all(|t| t.as_ref() == Some(&refused)),
+        "`with` sent with `note` and with `memo` to a link type its author is not shown is not \
+         granted, naming nothing: {told:?}"
+    );
+    head_unmoved(s, before, "a link field sent to a hidden link type").await?;
+    let kept = declare(&author, json!([])).await;
+    let added = declare(&l.own, json!([t("note"), t("memo")])).await;
+    let link = "sys.link.deal.with".into();
+    let link = l.cat.describe_type(&l.own, &link, Default::default()).await;
+    let fields = link.must("describing the link type")?.data.fields;
+    let names: Vec<_> = fields.iter().map(|f| f.name.as_str()).collect();
+    ensure!(
+        kept.is_ok() && added.is_ok() && names == ["from", "to", "note", "memo"],
+        "`with` without fields is applied ({kept:?}) and keeps `note`, and the owner adds \
+         `memo` ({added:?}): the link type holds {names:?}"
     );
     Ok(())
 }
