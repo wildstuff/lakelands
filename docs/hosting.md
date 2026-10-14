@@ -194,6 +194,16 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   report names the source's records in other types that still refer
   into what went, and the id is of that purge alone. A view, and a type
   that keeps no per-field provenance, are refused there.
+  A purge retires and does not erase: `as_of` still reads what the
+  source wrote. Forgetting a source is decided for 0.15.0
+  (`docs/decisions/058-a-source-may-be-forgotten.md`): a source's values
+  in fields declared erasable kept under a key of its own, which the act
+  destroys. Source ids and record keys stay plaintext in the log, so a
+  lake made now is ready for it when:
+  - **a source id names no person:** an opaque id for a device or a feed,
+    the person kept in the host's own mapping;
+  - **a type that holds personal data is keyed by a surrogate:** a minted
+    id, never an e-mail address or a name.
   Rows that one act should remove, such as samples seeded beside a
   lake's own data, are written through `ingest` under a source id of
   their own, into fields declared `shared` (lakelands#611). An authored
