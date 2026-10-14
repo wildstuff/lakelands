@@ -1063,6 +1063,8 @@ catalog! {
         SumNotNumber { #[serde(with = "closed")] value: Box<Operand> } => "sum() met {value}, which is not a number",
 
         // ---- views
+        /// A view's measure that cannot be computed over a group.
+        MeasureFails { group: RecordKey, #[serde(with = "closed")] why: Box<Case> } => "its value for the group `{group}` cannot be computed: {why}",
         /// A measure's value for a group that its field would not take written.
         MeasureUnfit { group: RecordKey, #[serde(with = "closed")] why: Box<Case>, decimal: bool } => "its value for the group `{group}` does not fit its field: {why}[{?decimal}; a field of kind `decimal` takes it]",
         /// A sum or an average of a kind that is no number.

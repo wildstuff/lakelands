@@ -772,6 +772,15 @@
    }
   },
   {
+   "code": "measure_fails",
+   "group": "k",
+   "why": {
+    "code": "unknown_field",
+    "field": "f",
+    "type": "t"
+   }
+  },
+  {
    "code": "measure_unfit",
    "decimal": true,
    "group": "k",
