@@ -15,7 +15,9 @@ use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind, ValueTypeDecl};
 use lakelands_api::write::{Declaration, ValueTypeReport};
-use lakelands_api::{Access, Error, Grants, LakeStore, PrincipalKind, Refusal, WriteOpts};
+use lakelands_api::{
+    Access, Error, Grants, LakeStore, Principal, PrincipalKind, Refusal, WriteOpts,
+};
 use serde_json::{Value, json};
 
 use crate::conformance::fixture::{
@@ -28,6 +30,11 @@ use crate::conformance::{Failure, Held, Store};
 check!(
     VERSIONS_KEY_A_TYPE = a_value_types_version_is_answered_with_the_types_that_use_it,
     "lakelands#1058: `describe` answers each value type's version, and a type's lifecycle the version of each value type a field its reader is shown uses; a loosening and a migration of the value type move it, while the type's own `version` and `schema_hash` stay; a field its reader may not know of names no value type"
+);
+
+check!(
+    TYPE_TELLS_ITS_VALUE_TYPES = a_type_is_described_with_the_value_types_it_uses,
+    "lakelands#1060: `describe_type` answers the declaration of each value type its lifecycle's `value_types` names, once, in name order: those of the fields its reader is shown, a masked field's among them, a hidden field's not; a loosening shows the new declaration; `describe` names them once, in the lake's `value_types`, and none on a type"
 );
 
 check!(
@@ -70,6 +77,74 @@ check!(
         an_apply_that_loosens_one_value_type_and_tightens_another_is_refused_whole,
     "028 and 027: `apply` of a set that loosens one value type and tightens another is refused whole, naming `migrate`, and appends nothing"
 );
+
+async fn a_type_is_described_with_the_value_types_it_uses(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let state = |one_of: Value| vt(json!({"name": "state", "kind": "text", "one_of": one_of}));
+    let eur = vt(json!({"name": "eur", "kind": "decimal", "scale": 2, "constraint": "value >= 0"}));
+    for d in [state(json!(["open", "closed"])), eur.clone()] {
+        l.declare_as(Declaration::ValueType(d), "declaring a value type")
+            .await?;
+    }
+    l.declare_json(json!({"declare": "type", "name": "task", "fields": [
+        {"name": "state", "type": {"kind": "text", "value_type": "state"}},
+        {"name": "amount", "type": {"kind": "decimal", "value_type": "eur"}},
+        {"name": "title", "type": {"kind": "text"}}]}))
+        .await?;
+    l.declare(type_decl("note", vec![field("text", StorageKind::Text)]))
+        .await?;
+    let told = |who: &Principal| {
+        let (cat, who) = (l.cat.clone(), who.clone());
+        async move {
+            let t = describe_type(cat.as_ref(), &who, "task").await?;
+            let keyed: Vec<_> = t.lifecycle.value_types.into_keys().collect();
+            let named: Vec<_> = t.value_types.iter().map(|v| v.name.clone()).collect();
+            ensure!(
+                keyed == named,
+                "`task`'s key names {keyed:?} and it tells {named:?}"
+            );
+            Ok::<_, Failure>(t.value_types)
+        }
+    };
+    let both = told(&l.own).await?;
+    let note = l.describe_type("note").await?.value_types;
+    let lake = l.describe().await?;
+    let on_types = lake.types.iter().find(|t| !t.value_types.is_empty());
+    ensure!(
+        both == [eur.clone(), state(json!(["open", "closed"]))]
+            && note.is_empty()
+            && on_types.is_none()
+            && lake.value_types.len() == 2,
+        "`task` tells `eur` and `state` as declared, `note` none, and `describe` names them \
+         once: {both:?}, {note:?}, a type naming some: {on_types:?}"
+    );
+    // A masked field's value type is told, a hidden field's is not.
+    let masked = field_access(
+        store.as_ref(),
+        "masked",
+        "task",
+        &[("state", Access::Masked)],
+    );
+    let hid = field_access(store.as_ref(), "hid", "task", &[("state", Access::None)]);
+    let (masked, hid) = (told(&masked).await?, told(&hid).await?);
+    ensure!(
+        masked == both && hid == [eur.clone()],
+        "a reader of `task.state` masked is told {masked:?}, and one kept from it {hid:?}"
+    );
+    // A loosening is told as it stands.
+    let loosened = state(json!(["open", "closed", "overdue"]));
+    l.declare_as(
+        Declaration::ValueType(loosened.clone()),
+        "loosening `state`",
+    )
+    .await?;
+    let after = told(&l.own).await?;
+    ensure!(
+        after == [eur, loosened],
+        "after `state` is loosened, `task` tells {after:?}"
+    );
+    Ok(())
+}
 
 fn vt(value: Value) -> ValueTypeDecl {
     serde_json::from_value(value).expect("a value type")

@@ -155,3 +155,6 @@ change when and only when the shape does.
   type's version, and a type's lifecycle the versions of the value
   types its shown fields use, so a cache of what a type accepts keys on
   the three (lakelands#1058).
+- `describe_type` answers the declarations of the value types its key
+  names, so one type is rendered from one read, and `describe` keeps
+  naming them once, for the lake (lakelands#1060).

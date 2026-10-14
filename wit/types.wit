@@ -1028,6 +1028,9 @@ interface types {
         lifecycle: type-lifecycle,
         /// The host's own marks, to a principal who may see them.
         annotations: list<tuple<string, json>>,
+        /// From `describe-type`: the declaration of each value type the
+        /// lifecycle's `value-types` names, in name order.
+        value-types: list<value-type-decl>,
     }
 
     record verb-description {
