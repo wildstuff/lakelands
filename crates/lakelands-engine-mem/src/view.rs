@@ -294,11 +294,15 @@ impl ProjectionView for MemView {
     }
 
     fn applied(&self, id: &EventId) -> Result<Option<Position>> {
+        Ok(self.applied_many(std::slice::from_ref(id))?.remove(0))
+    }
+
+    fn applied_many(&self, ids: &[EventId]) -> Result<Vec<Option<Position>>> {
         Ok(self.read(|p, at| {
-            p.applied
-                .get(id)
-                .copied()
-                .filter(|applied| at.is_some_and(|at| *applied <= at))
+            let at = |applied: &Position| at.is_some_and(|at| *applied <= at);
+            (ids.iter())
+                .map(|id| p.applied.get(id).copied().filter(at))
+                .collect()
         }))
     }
 

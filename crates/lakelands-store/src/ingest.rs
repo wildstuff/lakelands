@@ -16,13 +16,14 @@
 //! log, or earlier in the same window, appends nothing and is counted as a
 //! duplicate; so does a record that would change no field — a full
 //! re-import of unchanged data appends nothing. At-least-once delivery is
-//! therefore safe. The unchanged test comes after the door's: a record that
-//! carries a field outside the source's authority is refused, not counted
-//! as a duplicate. A value that returns after a change is a new write, and
+//! therefore safe. A window is judged first, then asks the projection for
+//! all its ids in one call, and is judged again where one is applied. The
+//! unchanged test comes after the door's: a record that carries a field
+//! outside the source's authority is refused, not counted as a duplicate. A value that returns after a change is a new write, and
 //! the same key with different values moves its version on, within a
 //! window too, in stream order.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -30,17 +31,18 @@ use std::time::Duration;
 
 use futures_core::Stream;
 use lakelands_api::catalog::{CommitStream, SourceStream};
+use lakelands_api::engine::ProjectionView;
 use lakelands_api::error::{Case, Place, Said};
 use lakelands_api::event::{EventBody, EventId, Sealed};
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::Origin;
 use lakelands_api::write::Committed;
-use lakelands_api::{Principal, Result, SourceId, SourceRecord};
+use lakelands_api::{Principal, Result, SourceId, SourceRecord, Timestamp};
 use lakelands_core::rights::Door;
 
 use crate::exec;
-use crate::lake::Lake;
-use crate::log;
+use crate::lake::{Lake, Reads, Writer};
+use crate::log::{self, Draft};
 use crate::sealing::{USED, used_by, versions};
 use crate::writes::Call;
 use lakelands_core::{canonical, links};
@@ -70,11 +72,88 @@ pub fn window(
         shown: None,
     };
     let view = lake.engine.view(None)?;
+    let now = lake.clock(&mut w);
+    // The window is judged taking no id as applied, and the ids it asked
+    // are asked in one call; where one is applied, the window is judged
+    // again, each id asked as the record meets it, so every record is
+    // judged as its own ask would have it (lakelands#1036).
+    let mut asks = Asks::default();
+    let judged = loop {
+        let judged = judge(
+            &call,
+            &w,
+            (view.as_ref(), now),
+            (source, first, &records),
+            &mut asks,
+        );
+        // An outage too: the judgement may have met it past a record that
+        // an applied id refuses.
+        if asks.found.is_some() || asks.asked.is_empty() {
+            break judged;
+        }
+        let held = view.applied_many(&asks.asked)?.into_iter();
+        let found: BTreeMap<_, _> = (asks.asked.drain(..).zip(held))
+            .map(|(id, at)| (id, at.is_some()))
+            .collect();
+        if !found.values().any(|held| *held) {
+            break judged;
+        }
+        asks.found = Some(found);
+    };
+    let (drafts, reads, committed, duplicates) = judged?;
+    drop(view);
+    // A window that appends nothing committed no record, and answers the head.
+    let position = if drafts.is_empty() {
+        w.tip
+            .as_ref()
+            .map_or(lakelands_api::Position::GENESIS, |t| t.0)
+    } else {
+        let events = lake.append_after(&mut w, drafts, reads)?;
+        events.last().expect("appended").position
+    };
+    Ok(Committed {
+        position,
+        records: committed,
+        duplicates,
+    })
+}
+
+/// What a judgement of a window takes as applied: at first no id, each it
+/// meets kept in `asked`; judged again, the answers `found` for those, and
+/// any other id asked as the record meets it.
+#[derive(Default)]
+struct Asks {
+    asked: Vec<EventId>,
+    found: Option<BTreeMap<EventId, bool>>,
+}
+
+impl Asks {
+    fn applied(&mut self, view: &dyn ProjectionView, id: &EventId) -> Result<bool> {
+        match self.found.as_ref().map(|found| found.get(id)) {
+            None => {
+                self.asked.push(id.clone());
+                Ok(false)
+            }
+            Some(Some(held)) => Ok(*held),
+            Some(None) => Ok(view.applied(id)?.is_some()),
+        }
+    }
+}
+
+/// The window's records judged: their drafts, the reads they rest on, and
+/// how many were written and counted duplicates.
+fn judge(
+    call: &Call<'_>,
+    w: &Writer,
+    (view, now): (&dyn ProjectionView, Timestamp),
+    (source, first, records): (&SourceId, u64, &[SourceRecord]),
+    asks: &mut Asks,
+) -> Result<(Vec<Draft>, Reads, u32, u32)> {
+    let (lake, who) = (call.lake, call.who);
     // A forgotten source is never given a key again, and writes nothing
     // (058).
-    let forgotten = crate::lake::forgotten_list(view.as_ref(), &Default::default())?;
-    let now = lake.clock(&mut w);
-    let mut d = call.decide(&w, view.as_ref(), now, 0);
+    let forgotten = crate::lake::forgotten_list(view, &Default::default())?;
+    let mut d = call.decide(w, view, now, 0);
     (d.door, d.envelope.origin) = (Door::Source, Origin::Source);
     let sees = lakelands_core::sight::Sight::held(who, &w.ontology);
     let mut seen: BTreeSet<EventId> = BTreeSet::new();
@@ -87,14 +166,14 @@ pub fn window(
     // once, and its second record still reads the first as planned. Only
     // the records up to the first whose type or key the loop refuses are
     // read, so a key no engine can hold is refused, not sent.
-    let mut keys: std::collections::BTreeMap<&lakelands_api::TypeName, Vec<_>> = Default::default();
+    let mut keys: BTreeMap<&lakelands_api::TypeName, Vec<_>> = Default::default();
     let formed =
         |r: &&SourceRecord| sees.ty(&r.ty).is_ok() && crate::writes::check_key(&r.key).is_ok();
     for r in records.iter().take_while(formed) {
         keys.entry(&r.ty).or_default().push(r.key.clone());
     }
     for (ty, keys) in keys {
-        d.pending.prime(view.as_ref(), ty, &keys)?;
+        d.pending.prime(view, ty, &keys)?;
     }
     // The keys of an insert-only type this window writes, each once.
     let mut once = BTreeSet::new();
@@ -175,7 +254,7 @@ pub fn window(
                     None => v.is_null(),
                 })
             });
-            if unchanged || !other && (seen.contains(&id) || view.applied(&id)?.is_some()) {
+            if unchanged || !other && (seen.contains(&id) || asks.applied(view, &id)?) {
                 duplicates += 1;
                 return Ok(());
             }
@@ -213,14 +292,7 @@ pub fn window(
                     end.map(lakelands_api::RecordKey::from)
                 };
                 if let (Some(from), Some(to)) = (end(links::FROM), end(links::TO)) {
-                    crate::writes::cardinality(
-                        view.as_ref(),
-                        &sees,
-                        &t.name,
-                        relation,
-                        &from,
-                        &to,
-                    )?;
+                    crate::writes::cardinality(view, &sees, &t.name, relation, &from, &to)?;
                     crate::writes::cardinality_among(&window_links, &r.ty, relation, &from, &to)?;
                     window_links.push((r.ty.clone(), from, to));
                 }
@@ -236,22 +308,7 @@ pub fn window(
             return Err(ingested(e, first + i as u64, first, r));
         }
     }
-    let reads = d.pending.into_reads();
-    drop(view);
-    // A window that appends nothing committed no record, and answers the head.
-    let position = if drafts.is_empty() {
-        w.tip
-            .as_ref()
-            .map_or(lakelands_api::Position::GENESIS, |t| t.0)
-    } else {
-        let events = lake.append_after(&mut w, drafts, reads)?;
-        events.last().expect("appended").position
-    };
-    Ok(Committed {
-        position,
-        records: committed,
-        duplicates,
-    })
+    Ok((drafts, d.pending.into_reads(), committed, duplicates))
 }
 
 /// The refusal `e` of the record `r`, at `index` in its stream, its window
@@ -376,3 +433,6 @@ impl Stream for Receiver {
         self.0.poll_recv(cx)
     }
 }
+
+#[cfg(test)]
+mod tests;

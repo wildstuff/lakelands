@@ -137,7 +137,7 @@ engine_check!(
 
 engine_check!(
     EARLIER_STATES = declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position,
-    "seams §ProjectionView: declarations, membership (a record's, and a set's members of a type), recorded outputs and applied ids are kept states too, read at a view's own position"
+    "seams §ProjectionView: declarations, membership (a record's, and a set's members of a type), recorded outputs and applied ids are kept states too, read at a view's own position, applied ids one or many in one call"
 );
 
 engine_check!(
@@ -1381,10 +1381,11 @@ fn declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position(
     }));
     let key = RecordKey::from("k");
     let ty = TypeName::from("t");
-    let seen = EventId("seen".into());
+    let (seen, early) = (EventId("seen".into()), EventId("early".into()));
     fold(engine, 1, |p| {
         p.put_declaration(&v1, 1, None, Position(1))?;
-        p.put_membership("big", &ty, &key, true, Position(1))
+        p.put_membership("big", &ty, &key, true, Position(1))?;
+        p.mark_applied(&unrouted(&early, 1))
     })?;
     fold(engine, 3, |p| {
         p.put_declaration(&v2, 2, None, Position(3))?;
@@ -1462,6 +1463,22 @@ fn declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position(
         id_then.is_none() && id_now == Some(Position(3)),
         "an id applied at 3 read {id_then:?} at 2 and {id_now:?} at the head"
     );
+    // Many ids in one call: an answer an id, in their order, twice for an
+    // id asked twice, none for an id never applied.
+    let ids = [seen.clone(), EventId("never".into()), early, seen];
+    let (many_then, many_now) = (
+        then.applied_many(&ids).must("reading many ids at 2")?,
+        now.applied_many(&ids)
+            .must("reading many ids at the head")?,
+    );
+    let (p1, p3) = (Some(Position(1)), Some(Position(3)));
+    ensure!(
+        many_then == [None, None, p1, None] && many_now == [p3, None, p1, p3],
+        "ids applied at 3, never and at 1, the first asked again, read {many_then:?} at 2 and \
+         {many_now:?} at the head"
+    );
+    let none = now.applied_many(&[]).must("reading no id")?;
+    ensure!(none.is_empty(), "no id asked answered {none:?}");
     Ok(())
 }
 

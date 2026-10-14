@@ -1194,16 +1194,23 @@ impl ProjectionView for PgView<'_> {
     }
 
     fn applied(&self, id: &EventId) -> Result<Option<Position>> {
-        self.single(None, |r| {
-            Ok(r.db
-                .query_opt(
-                    &format!(
-                        "SELECT at FROM {} WHERE id = $1 AND at <= $2",
-                        r.names.t("applied")
-                    ),
-                    &[&id.0, &r.at],
-                )?
-                .map(|row| Position(row.get::<_, i64>(0) as u64)))
+        Ok(self.applied_many(std::slice::from_ref(id))?.remove(0))
+    }
+
+    fn applied_many(&self, ids: &[EventId]) -> Result<Vec<Option<Position>>> {
+        // One statement for every id: a round trip an id is most of an
+        // ingest window's time on a server.
+        let all: Vec<&str> = ids.iter().map(|id| id.0.as_str()).collect();
+        self.single(vec![None; ids.len()], |r| {
+            let query = format!(
+                "SELECT id, at FROM {} WHERE id = ANY($1) AND at <= $2",
+                r.names.t("applied")
+            );
+            let rows = r.db.query(&query, &[&all, &r.at])?;
+            let held: BTreeMap<String, i64> =
+                (rows.iter()).map(|row| (row.get(0), row.get(1))).collect();
+            let at = |id: &&str| held.get(*id).map(|p| Position(*p as u64));
+            Ok(all.iter().map(at).collect())
         })
     }
 

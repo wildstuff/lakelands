@@ -449,6 +449,12 @@ pub trait ProjectionView {
     /// The position an event id was applied at, if it was.
     fn applied(&self, id: &EventId) -> Result<Option<Position>>;
 
+    /// [`ProjectionView::applied`] for many ids, one answer an id in their
+    /// order: an ingest window asks its ids in one call.
+    fn applied_many(&self, ids: &[EventId]) -> Result<Vec<Option<Position>>> {
+        ids.iter().map(|id| self.applied(id)).collect()
+    }
+
     /// A seam's recorded output for this input, if recorded, with the
     /// position it was recorded at.
     fn output(&self, seam: &str, input: &Digest) -> Result<Option<(Position, Value)>>;
