@@ -541,10 +541,11 @@ fn member_of(
 /// and restricted ones included, read a page at a time. `each` sees every
 /// record before the report counts it. An error of a page read or of
 /// `each` ends the walk and is answered before the report is. A sample
-/// key is one of a record the principal of `sees` is answered.
+/// key is one of a record the principal of `sees` is answered; a
+/// retargeted reference converts onto a record `onto`'s principal is.
 fn shaped(
     view: &dyn ProjectionView,
-    sees: &Sight,
+    (sees, onto): (&Sight, &Sight),
     decl: &TypeDecl,
     m: &Migration,
     mut each: impl FnMut(&StoredRecord) -> Result<()>,
@@ -570,13 +571,134 @@ fn shaped(
             }
         }
     };
-    let report = shape::preflight(decl, m, rows, &answered);
+    // A reference given another target converts only where it names a
+    // live record of that target (032, lakelands#1071).
+    let gone = retargeted(view, onto, decl, m)?;
+    let dangling = |f: &FieldName, v: &Value| {
+        let key = v.as_str();
+        gone.get(f)
+            .is_some_and(|g| key.is_some_and(|k| g.contains(k)))
+    };
+    let report = shape::referring(decl, m, rows, &answered, &dangling);
     walk.failed()?;
     seen?;
     if let Some(e) = failed.into_inner() {
         return Err(e);
     }
     report.map_err(invalid)
+}
+
+/// Of each field of `m.to` whose reference target is not the one `decl`
+/// gave it, the values `decl`'s records hold there that name no record of
+/// the new target live to `sees`'s principal, as a write of the reference
+/// finds one ([`live_for`]): one read of the target per field, of the
+/// distinct values ([`retarget_values`]), and of a link's ends.
+fn retargeted(
+    view: &dyn ProjectionView,
+    sees: &Sight,
+    decl: &TypeDecl,
+    m: &Migration,
+) -> Result<BTreeMap<FieldName, BTreeSet<String>>> {
+    let mut gone = BTreeMap::new();
+    for (field, target, keys) in retarget_values(view, decl, m)? {
+        let asked: Vec<RecordKey> = keys.iter().map(|k| k.as_str().into()).collect();
+        let found = view.get_many(&target, &asked)?;
+        let rows: Vec<_> = found.iter().map(|r| &r.fields).collect();
+        let ends = match sees.ty(&target) {
+            Ok(d) => sees.ends(d, &rows, &mut |t, k| view.get_many(t, k))?,
+            Err(_) => vec![false; rows.len()],
+        };
+        let live: BTreeSet<String> = (found.iter().zip(ends))
+            .filter(|(r, ends)| *ends && !r.retired && sees.answers(&target, r))
+            .map(|(r, _)| r.key.to_string())
+            .collect();
+        gone.insert(
+            field,
+            keys.into_iter().filter(|k| !live.contains(k)).collect(),
+        );
+    }
+    Ok(gone)
+}
+
+/// Of each field of `m.to` whose reference target is not the one `decl`
+/// gave it, the new target and the distinct values `decl`'s records hold
+/// there: one walk of the type.
+fn retarget_values(
+    view: &dyn ProjectionView,
+    decl: &TypeDecl,
+    m: &Migration,
+) -> Result<Vec<(FieldName, TypeName, BTreeSet<String>)>> {
+    let moved = retargeted_fields(decl, m);
+    let mut named = vec![BTreeSet::new(); moved.len()];
+    if !moved.is_empty() {
+        crate::lake::walk(view, &decl.name, true, |r| {
+            for ((old, _, _), keys) in moved.iter().zip(named.iter_mut()) {
+                keys.extend(r.fields.get(old).and_then(Value::as_str).map(str::to_owned));
+            }
+            Ok(())
+        })?;
+    }
+    let values = moved.into_iter().zip(named);
+    Ok(values
+        .map(|((_, field, target), keys)| (field, target, keys))
+        .collect())
+}
+
+/// Of each field of `m.to` whose reference target is not the one `decl`
+/// gave it, renames followed: its name in `decl`, in `m.to`, and its new
+/// target.
+fn retargeted_fields(decl: &TypeDecl, m: &Migration) -> Vec<(FieldName, FieldName, TypeName)> {
+    let was = |to: &FieldName| {
+        let from = m
+            .renames
+            .iter()
+            .find(|(_, t)| t == to)
+            .map_or(to, |(f, _)| f);
+        decl.fields.iter().find(|f| &f.name == from)
+    };
+    (m.to.fields.iter())
+        .filter_map(|f| {
+            let (target, old) = (f.ty.target.as_ref()?, was(&f.name)?);
+            let other = old.ty.target.as_ref() != Some(target);
+            other.then(|| (old.name.clone(), f.name.clone(), target.clone()))
+        })
+        .collect()
+}
+
+/// A migration's type and each link type it changes, as each is migrated.
+fn retargets(o: &Ontology, m: &Migration) -> Result<Vec<(TypeDecl, Migration)>> {
+    let links = changed_link_types(o, m, false).into_iter();
+    let links = links.map(|(old, new)| (old, Migration::to(new)));
+    Ok(std::iter::once((o.ty(&m.to.name)?.clone(), m.clone()))
+        .chain(links)
+        .collect())
+}
+
+/// The types a proposed retarget reaches records of: each new target and,
+/// of a link type, its ends' types; none of any other write.
+pub(crate) fn retarget_types(o: &Ontology, write: &ProposedWrite) -> Result<BTreeSet<TypeName>> {
+    let ProposedWrite::Migrate { migration: m, .. } = write else {
+        return Ok(BTreeSet::new());
+    };
+    let mut out = BTreeSet::new();
+    let mut next: Vec<TypeName> = Vec::new();
+    for (decl, m) in retargets(o, m)? {
+        next.extend(retargeted_fields(&decl, &m).into_iter().map(|(.., t)| t));
+    }
+    while let Some(t) = next.pop() {
+        if let (true, Ok(link)) = (links::is_link_type(&t), o.ty(&t)) {
+            let ends = link
+                .fields
+                .iter()
+                .filter(|f| [links::FROM, links::TO].contains(&f.name.as_str()));
+            next.extend(
+                ends.filter_map(|f| f.ty.target.clone())
+                    .filter(|e| !out.contains(e)),
+            );
+        }
+        out.insert(t);
+    }
+    Ok(out)
 }
 
 /// The declarations that name a link type whose records a migration
@@ -1274,6 +1396,20 @@ pub(crate) fn reached(
             let (set, far) = call_reads(o, (view, settings, now), v, key.as_ref(), payload)?;
             across = far;
             (&v.on, key.as_ref(), set)
+        }
+        // A retarget reaches the records its values name in the new target,
+        // of the type's fields and of its link types' (lakelands#1071).
+        ProposedWrite::Migrate { migration: m, .. } => {
+            let mut out = Vec::new();
+            for (decl, m) in retargets(o, m)? {
+                for (_, target, keys) in retarget_values(view, &decl, &m)? {
+                    out.extend(
+                        keys.iter()
+                            .flat_map(|k| with_ends(o, &target, &k.as_str().into())),
+                    );
+                }
+            }
+            return Ok(out);
         }
         _ => return Ok(Vec::new()),
     };
@@ -2634,7 +2770,7 @@ impl Call<'_> {
             ProposedWrite::Migrate { migration, report } => {
                 let author = self.authored(&w.ontology, migration)?;
                 let found = self
-                    .preflight_plan(&w, view.as_ref(), (migration, author.as_ref()), None)?
+                    .preflight_plan(&w, view.as_ref(), (migration, author.as_ref(), None), None)?
                     .report;
                 if !found.lossless {
                     return Err(self.lossy(&w, migration, found));
@@ -2954,7 +3090,8 @@ impl Call<'_> {
                 }
                 // Judged as its author's at the proposal: the lake's own
                 // names are judged again.
-                let plan = self.preflight_plan(&w, view.as_ref(), (migration, None), Some(now))?;
+                let judged = (&**migration, None, Some(&proposer));
+                let plan = self.preflight_plan(&w, view.as_ref(), judged, Some(now))?;
                 // So would it take away a mark set since, which the hash
                 // does not cover: it restates what its report said, no more.
                 if plan.report.restated != report.restated {
@@ -3791,7 +3928,7 @@ impl Call<'_> {
         let mut m = m.clone();
         let author = self.authored(&w.ontology, &mut m)?;
         let report = self
-            .preflight_plan(w, view, (&m, author.as_ref()), None)?
+            .preflight_plan(w, view, (&m, author.as_ref(), None), None)?
             .report;
         self.shown(w, &m, report)
     }
@@ -3839,7 +3976,7 @@ impl Call<'_> {
         &self,
         w: &Writer,
         view: &dyn ProjectionView,
-        (m, author): (&Migration, Option<&Authored>),
+        (m, author, judged): (&Migration, Option<&Authored>, Option<&Principal>),
         now: Option<Timestamp>,
     ) -> Result<MigrationPlan> {
         let before = w.ontology.ty(&m.to.name)?.clone();
@@ -4158,7 +4295,10 @@ impl Call<'_> {
         // in key order, of those its reader is answered.
         let none = |f: &FieldName| (f.clone(), 0, Vec::new());
         let mut fills: Vec<(FieldName, u64, Vec<RecordKey>)> = m.fill.iter().map(none).collect();
-        let mut report = shaped(view, &sees, &before, m, |r| {
+        // A retarget is judged as its author is answered; at an accept, its
+        // proposer (lakelands#1071).
+        let onto = Sight::held(judged.unwrap_or(self.who), &w.ontology);
+        let mut report = shaped(view, (&sees, &onto), &before, m, |r| {
             for (field, records, samples) in fills.iter_mut().filter(|_| !r.retired) {
                 let held = m.renames.iter().find(|(_, to)| to == field);
                 let held = held.map_or(&*field, |(from, _)| from);
@@ -4252,7 +4392,7 @@ impl Call<'_> {
         for (old, new) in changed_link_types(&w.ontology, m, false) {
             let lm = Migration::to(new);
             let sets = held(&old.name)?;
-            let lr = shaped(view, &sees, &old, &lm, |r| {
+            let lr = shaped(view, (&sees, &onto), &old, &lm, |r| {
                 match now.filter(|_| !sets.is_empty()) {
                     Some(now) => {
                         let fields = convert(&old, &lm, r)?;
@@ -4421,7 +4561,8 @@ impl Call<'_> {
         let author = self.authored(&w.ontology, &mut m)?;
         let view = self.lake.engine.view(None)?;
         let now = self.lake.clock(&mut w);
-        let plan = self.preflight_plan(&w, view.as_ref(), (&m, author.as_ref()), Some(now))?;
+        let plan =
+            self.preflight_plan(&w, view.as_ref(), (&m, author.as_ref(), None), Some(now))?;
         if self.shown(&w, &m, plan.report.clone())?.report_id != report_id {
             return Err(invalid(Case::MigrationStale));
         }

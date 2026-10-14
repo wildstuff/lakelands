@@ -75,6 +75,7 @@ mod renamed_grants;
 mod report_names;
 mod restated;
 mod restriction;
+mod retarget;
 mod retire;
 mod row_pages;
 mod schema;
@@ -319,6 +320,7 @@ pub const ALL: &[Check] = &[
     decided_as_listed::SHOWN_SINCE_A_REKEY,
     report_names::REPORT_AS_ITS_READERS_VIEW,
     report_names::NAMED_IN_KEY_ORDER,
+    retarget::RETARGET_JUDGES_REFERENCES,
     shown_hash::HASH_OF_THE_SHOWN_SHAPE,
     shown_hash::STALE_BY_ITS_NAMES,
     restated::EVERY_MEMBER,

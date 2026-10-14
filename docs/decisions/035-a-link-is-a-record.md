@@ -118,7 +118,10 @@ link type as on any type.
   refused at `declare` and goes through `migrate` on the owner type.
   Its preflight reports the link records beside the type's, each field
   named with its relation, and `migrate_apply` migrates each changed
-  link type in the same append.
+  link type in the same append. A retargeted relation's live links convert only where
+  their `to` names a live record of the new target, as any reference
+  does (`docs/decisions/032-a-reference-names-a-live-record.md`,
+  lakelands#1071).
 - A link field is never renamed: a rename is a drop plus an add.
 - The link type is classified at every declaration, against the one in
   force. A relation dropped by `migrate` and declared again with

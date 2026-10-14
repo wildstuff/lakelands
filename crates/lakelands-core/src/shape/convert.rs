@@ -8,7 +8,7 @@
 //! | value → target | rule |
 //! |---|---|
 //! | any value already in the target's form | kept byte for byte, never rewritten |
-//! | same storage kind, other value type, target or length | kept when it fits the new type, else lossy |
+//! | same storage kind, other value type, target or length | kept when it fits the new type, else lossy; a reference given another target is kept where it names a live record of that target, which the store looks up, else lossy (lakelands#1071) |
 //! | number → text | its canonical number form (`42`, `4.5`, `1e+21`) |
 //! | boolean → text | `"true"` / `"false"` |
 //! | text or decimal → number | a numeral whose binary floating-point value is numerically the same (`"4.50"` → `4.5`; `"0.10000000000000001"` is lossy) |
@@ -145,6 +145,18 @@ pub fn preflight(
     records: impl IntoIterator<Item = (RecordKey, BTreeMap<FieldName, Value>)>,
     answered: &dyn Fn(&RecordKey) -> bool,
 ) -> Result<MigrationReport, Said> {
+    referring(before, migration, records, answered, &|_, _| false)
+}
+
+/// [`preflight`], where `dangling` says of a field's converted value that
+/// it names no live record of the field's new target (lakelands#1071).
+pub fn referring(
+    before: &TypeDecl,
+    migration: &Migration,
+    records: impl IntoIterator<Item = (RecordKey, BTreeMap<FieldName, Value>)>,
+    answered: &dyn Fn(&RecordKey) -> bool,
+    dangling: &dyn Fn(&FieldName, &Value) -> bool,
+) -> Result<MigrationReport, Said> {
     let plan = Plan::new(before, migration)?;
     let mut tallies: Vec<Tally> = plan.checked().map(|_| Tally::default()).collect();
     // Fields of the old declaration no step of the new one reads from:
@@ -170,9 +182,9 @@ pub fn preflight(
         }
         for (step, tally) in plan.checked().zip(tallies.iter_mut()) {
             match step.convert(&fields) {
-                Some(Some(_)) => tally.convertible += 1,
+                Some(Some(v)) if !dangling(&step.to.name, &v) => tally.convertible += 1,
                 Some(None) => {}
-                None => {
+                _ => {
                     tally.not_convertible += 1;
                     tally.sample(&key, answered);
                 }

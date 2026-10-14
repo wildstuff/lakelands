@@ -58,6 +58,37 @@ directly or through other computed fields, since it lands in the fold
 with that field. The refusal is the door's: the fold is not touched, and
 a log that holds such a declaration folds as before.
 
+**A migration that gives a reference another target converts it only
+where it names a live record of the new target.** A type's reference
+field retargeted, or a relation and so its link type's `to`, keeps each
+stored value that names a live record of the type it now refers to; a
+value that names none is one the migration would lose, so the
+migration is lossy, refused at its proposal and its apply, its report
+naming the records that hold such a value as it names any (lakelands#531).
+The values are looked up in the new target once per field, as distinct
+keys. Apply and accept plan the migration again at the head, so a
+target record retired after the preview makes them lossy there too.
+Live is judged as the migration's author is answered, as its write of
+that reference would be: a target record withheld from it, or a link
+whose end is, is not live to it, so its preview is lossy and its proposal and apply are refused,
+exactly as for an absent key, while an author who holds `restricted`
+converts onto such a record, since it could write the reference itself.
+A proposed retarget reaches the records its values name in the new
+target, of the type's fields and of its link types', so a reviewer not
+answered one is not listed the proposal and its accept and reject are
+not found (051), as for any write that reaches a held record: the
+listing would otherwise tell it, against its own preview, that the
+record exists. Where the new targets hold no restricted record and the
+reviewer holds no `only`, none of them can be withheld from it, and the
+listing does not walk the type for its values. An accept plans the
+migration as its proposer, not as
+the reviewer, holding `restricted` where a value it converted named a
+record restricted then; a report shown to another reader is cut to
+that reader, as every report is.
+Without it a reference came to name, under another target, a record
+of the old one, and a reader kept from the old type read its key
+(lakelands#1071).
+
 Retiring a record that others refer to stays allowed. The references
 then name a retired record, and a walk hides that end as it hides any
 retired record (`docs/decisions/026-the-store-walks-the-graph.md`).
@@ -102,3 +133,6 @@ for the partner to be committed.
   by a function's backing is refused at declare (lakelands#795).
 - A verb that reads across a reference reaches the far record by this
   rule (lakelands#567).
+- A migration that gives a reference another target converts only the
+  values that name a live record of it; before, every value was kept,
+  naming a record of the old target (lakelands#1071).
