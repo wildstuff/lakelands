@@ -576,7 +576,8 @@ So a handle keeps what a read builds. That is the ontology, the
 declarations as `describe` lists them, the settings and the lake's list
 of renames, kept for a range of positions over which no event changed
 them. Every read at a position in that range shares it. A handle keeps
-two: one at the head, and one at the last other position read.
+two: one at the head, and one at the last other position read, or after
+a declaring append the one before it.
 
 - **What ends a range is one function, `ends_a_range`.** These end one:
   - a `declared` of any kind: a type, its view, a value type, a
@@ -603,8 +604,27 @@ two: one at the head, and one at the last other position read.
 
   There the next read builds its own. A handle takes the lease only at
   its open, so no two handles write a lake in turn.
-- **Anywhere else, a read builds for its position.** This holds for a
-  read `as_of` an earlier position, a page of a walk at its cursor's
+- **A declaring append leaves the shape after it.** An append whose only
+  events that end a range are `declared`, and that follows a range the
+  handle holds a shape for, leaves the shape for its last position. It
+  keeps only the shape before and the declarations it appended, and the
+  first read of that position builds the shape from them: each
+  declaration put on the shape before, in the order of the log, as the
+  writer's fold puts it on its ontology, with the settings and renames of
+  the shape before, which no declaration moves. A chain of declarations
+  with no read between them builds nothing, and the read after them
+  reads no declaration from the engine. A chain holds 1 024 appends at
+  most (`LEFT_LINKS`): the append past them leaves nothing, and the next
+  read builds from the engine. So a chain keeps no more than 1 024
+  appends' declarations, and its first read puts no more than those
+  again. Measured before the bound on a chain of 1 200 appends, on a
+  lake that then held about 2 500 types, that read took 10 to 12 ms on memory and 11 to 19
+  ms on SQLite, where the engine's took 18 to 30 and 57 to 58 ms. A
+  chain is unlinked in a loop when it is dropped, whatever its length. A migration, a value type's migration or a
+  write of a setting leaves nothing, and neither does an append that
+  follows no held shape: the next read builds its own (lakelands#1056).
+- **Anywhere else, a read builds for its position from the projection.**
+  This holds for a read `as_of` an earlier position, a page of a walk at its cursor's
   position, and a read-only handle beside another process's writer.
   Each builds once for its position, and keeps what it built as the
   second.
@@ -614,8 +634,10 @@ two: one at the head, and one at the last other position read.
   read, as any read beside a rebuild does, but its shape is not kept.
   A built shape is kept only where no rebuild began or ended while it was
   built, and the projection is folded through its position. A rebuild
-  drops every shape the handle kept, when it begins and when it ends.
-  A read-only handle in another process sees no count of the writer's
+  drops every shape the handle kept, when it begins and when it ends. A
+  shape a declaring append left reads no projection: it is built from
+  the shape before and the log's declarations, and kept only in its own
+  place, which a rebuild drops. A read-only handle in another process sees no count of the writer's
   rebuilds, only the projection: a build there that began before the
   rebuild cleared it and ended after the refold passed its position is
   kept, until a declaration, a migration or a setting ends its range.
@@ -810,3 +832,5 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
 - `declare` and `apply` answer how each declaration sent stands in
   force: its version, the position it stands from, and whether the call
   appended it (lakelands#1059).
+- Added: a declaring append leaves the shape after it, built at the
+  first read of its position (lakelands#1056).
