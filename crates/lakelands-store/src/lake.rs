@@ -478,7 +478,7 @@ impl Lake {
                 lease,
                 tip: None,
                 last_known_at: Timestamp(i64::MIN),
-                ontology: Ontology::default(),
+                ontology: Ontology::default().named(),
                 settings: BTreeMap::new(),
                 owed: Vec::new(),
                 held: BTreeMap::new(),
@@ -655,7 +655,7 @@ impl Lake {
         (folded, w.tip) = ends(self.engine.as_ref())?;
         {
             let view = self.engine.view(None)?;
-            w.ontology = Ontology::at(view.as_ref())?;
+            w.ontology = Ontology::at(view.as_ref())?.named();
             w.settings = settings_in(view.as_ref(), &w.ontology)?;
         }
         // The last event's time.
@@ -1092,7 +1092,7 @@ impl Lake {
                     if let Ok(s) = settings_in(view.as_ref(), &o) {
                         w.settings = s;
                     }
-                    w.ontology = o;
+                    w.ontology = o.named();
                 }
                 Err(e)
             }
@@ -1419,7 +1419,7 @@ impl Lake {
         let folded = self.engine.projection().folded_through()?;
         {
             let view = self.engine.view(None)?;
-            w.ontology = Ontology::at(view.as_ref())?;
+            w.ontology = Ontology::at(view.as_ref())?.named();
             w.settings = settings_in(view.as_ref(), &w.ontology)?;
         }
         let from = folded.map_or(Position::GENESIS, Position::next);
@@ -1852,7 +1852,7 @@ impl Lake {
         lakelands_core::lock(&self.shapes).clear();
         let folded = (|| {
             self.engine.projection().clear()?;
-            w.ontology = Ontology::default();
+            w.ontology = Ontology::default().named();
             w.settings = BTreeMap::new();
             // A page at a time: a rebuild that stops is continued by the
             // next fold from where it committed, as a failed fold is.

@@ -909,7 +909,7 @@ fn path(name: &FieldName) -> Expr {
 
 /// A type's relations carried by link records, as the tool generator
 /// names their doors.
-fn link_relations(t: &TypeDecl) -> Vec<(TypeName, RelationName)> {
+pub(crate) fn link_relations(t: &TypeDecl) -> Vec<(TypeName, RelationName)> {
     t.relations
         .iter()
         .filter(|r| r.carried_by_links())
@@ -1328,9 +1328,13 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             // there). And it is classified too: a relation dropped by a
             // migration and declared again with another target, or with a
             // field retyped, would reshape the links it holds as history.
-            let mut probe = o.clone();
-            probe.put(d.clone(), 0, None);
-            for lt in links::link_types_of(t) {
+            // A type that brings none copies nothing.
+            let lts = links::link_types_of(t);
+            let mut probe = std::borrow::Cow::Borrowed(o);
+            if !lts.is_empty() {
+                probe.to_mut().put(d.clone(), 0, None);
+            }
+            for lt in lts {
                 let name = t.name.clone();
                 type_decl(&probe, &lt).map_err(|e| e.within(Place::Links { name }))?;
                 if let Some(current) = o.types.get(&lt.name)
@@ -1592,6 +1596,10 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
 /// Refuses `d` where the lake `o` with it declared has a problem among its
 /// tools' names.
 pub(crate) fn tool_names(o: &Ontology, d: &Declaration) -> Result<()> {
+    // Where the writer's names say so, the lake with `d` has none.
+    if o.tool_names().is_some_and(|names| names.clear(o, d)) {
+        return Ok(());
+    }
     let problems = tool_problems(o, d);
     match problems.is_empty() {
         true => Ok(()),

@@ -950,6 +950,17 @@ pub(crate) fn hide_unshown_references(
     }
 }
 
+/// Whether `who` reads every field of every type: no grant below `read`
+/// and no `only`. Such a principal is shown the lake whole, `sensitive`
+/// fields too, since only a `none` masks one.
+pub fn reads_all(who: &Principal) -> bool {
+    let reads = |a: &Access| a.reads();
+    let typed = |t: &TypeGrants| {
+        t.default.as_ref().is_none_or(reads) && t.fields.values().all(reads) && t.only.is_empty()
+    };
+    reads(&who.grants.default) && who.grants.types.values().all(typed)
+}
+
 /// Whether `who` may not know of some field: only a `none` its grants
 /// give, to the lake, a type or a field, hides one.
 pub fn hides_some(who: &Principal) -> bool {

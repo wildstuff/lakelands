@@ -2,11 +2,12 @@
 //! the questions the store asks on every write and read.
 
 use std::borrow::Borrow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use lakelands_api::engine::{Declared, ProjectionView};
 use lakelands_api::ontology::{FieldDecl, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl};
+use lakelands_api::tools::{self, MAX_TOOL_NAME, NameSource};
 use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl};
 use lakelands_api::{Error, FieldName, Missing, Position, TypeName, VerbName};
 
@@ -50,9 +51,140 @@ pub struct Ontology {
     /// Each type's `depends_on` lists as they were declared, field by
     /// field: the completed lists are made again from them.
     listed: BTreeMap<TypeName, Vec<Vec<FieldName>>>,
+    /// The writer's tool names, as these declarations make them; none in
+    /// a reader's ontology.
+    names: Option<Arc<ToolNames>>,
+}
+
+/// The tool names a lake's declarations make, each with what makes it,
+/// the names each type makes, and those that are a problem: what the
+/// writer's ontology keeps, so that a declaration's names are checked
+/// against the lake's alone ([`ToolNames::clear`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ToolNames {
+    names: BTreeMap<String, Vec<NameSource>>,
+    by: BTreeMap<TypeName, Vec<String>>,
+    problems: BTreeSet<String>,
+}
+
+impl ToolNames {
+    fn add(&mut self, name: &str, from: NameSource) {
+        let held = self.names.entry(name.to_owned()).or_default();
+        if !held.contains(&from) {
+            held.push(from);
+        }
+        self.judge(name);
+    }
+
+    /// Whether `name` is a problem: empty, too long, or made twice.
+    fn judge(&mut self, name: &str) {
+        let made = self.names.get(name).map_or(0, Vec::len);
+        let bad = made > 1 || made == 1 && (name.is_empty() || name.len() > MAX_TOOL_NAME);
+        match bad {
+            true => self.problems.insert(name.to_owned()),
+            false => self.problems.remove(name),
+        };
+    }
+
+    /// `t` in force: the names it made give way to those it makes.
+    fn put_type(&mut self, t: &TypeDecl) {
+        let of = |s: &NameSource| match s {
+            NameSource::Type { ty } | NameSource::Link { ty, .. } => ty == &t.name,
+            _ => false,
+        };
+        for name in self.by.remove(&t.name).unwrap_or_default() {
+            if let Some(held) = self.names.get_mut(&name) {
+                held.retain(|s| !of(s));
+                if held.is_empty() {
+                    self.names.remove(&name);
+                }
+            }
+            self.judge(&name);
+        }
+        let links = crate::declare::link_relations(t);
+        for (name, from) in tools::all_names(std::slice::from_ref(&t.name), &[], &links) {
+            for s in from.into_iter().filter(of) {
+                self.by
+                    .entry(t.name.clone())
+                    .or_default()
+                    .push(name.clone());
+                self.add(&name, s);
+            }
+        }
+    }
+
+    /// Whether the lake `o` with `d` declared has, for certain, no problem
+    /// among its tool names: none where `o` holds none, as a lake does (no
+    /// door leaves one, 027, extended), and none at a name `d` makes. `o`
+    /// is the writer's ontology or made from it, so it holds no name this
+    /// lacks; a source it does not hold is not counted.
+    pub fn clear(&self, o: &Ontology, d: &Declaration) -> bool {
+        let (types, verbs, links) = match d {
+            Declaration::Type(t) => {
+                let brought = lakelands_core::links::link_types_of(t).into_iter();
+                let types: Vec<_> = brought.map(|l| l.name).chain([t.name.clone()]).collect();
+                (types, Vec::new(), crate::declare::link_relations(t))
+            }
+            Declaration::Verb(v) => (Vec::new(), vec![v.name.clone()], Vec::new()),
+            _ => Default::default(),
+        };
+        let holds = |s: &&NameSource| match s {
+            NameSource::Generic { .. } => true,
+            NameSource::Type { ty } => o.types.contains_key(ty),
+            NameSource::Verb { verb } => o.verbs.contains_key(verb),
+            NameSource::Link { ty, relation } => {
+                let held = |e: &Arc<Entry<TypeDecl>>| {
+                    let mut rs = e.decl.relations.iter();
+                    rs.any(|r| &r.name == relation && r.carried_by_links())
+                };
+                o.types.get(ty).is_some_and(held)
+            }
+            NameSource::Unknown(_) => true,
+        };
+        let made = tools::all_names(&types, &verbs, &links);
+        let clear = |(name, mine): (String, Vec<NameSource>)| {
+            let mut from: Vec<&NameSource> = self
+                .names
+                .get(&name)
+                .into_iter()
+                .flatten()
+                .filter(holds)
+                .collect();
+            for s in &mine {
+                if !from.contains(&s) {
+                    from.push(s);
+                }
+            }
+            from.len() == 1 && !name.is_empty() && name.len() <= MAX_TOOL_NAME
+        };
+        self.problems.is_empty() && made.into_iter().all(clear)
+    }
 }
 
 impl Ontology {
+    /// This ontology with its tool names kept ([`ToolNames`]), as the
+    /// writer's is: each declaration put changes them.
+    pub fn named(mut self) -> Ontology {
+        let mut names = ToolNames::default();
+        for (name, from) in tools::all_names(&[], &[], &[]) {
+            from.into_iter().for_each(|s| names.add(&name, s));
+        }
+        self.types.values().for_each(|e| names.put_type(&e.decl));
+        for v in self.verbs.keys() {
+            names.add(
+                &tools::tool_base(v.as_str()),
+                NameSource::Verb { verb: v.clone() },
+            );
+        }
+        self.names = Some(Arc::new(names));
+        self
+    }
+
+    /// The tool names it keeps, if it is the writer's or made from it.
+    pub fn tool_names(&self) -> Option<&ToolNames> {
+        self.names.as_deref()
+    }
+
     /// The declarations in force at a view. Every shape the store shows or
     /// judges comes from here, so that each computed field lists what it
     /// is computed from (024, extended).
@@ -112,10 +244,20 @@ impl Ontology {
                 let listed = computed(&mut t).map(|f| f.depends_on.clone()).collect();
                 self.listed.insert(t.name.clone(), listed);
                 self.complete(&mut t);
+                if let Some(names) = &mut self.names {
+                    Arc::make_mut(names).put_type(&t);
+                }
                 put(&mut self.types, t.name.clone(), t, v, h, s);
             }
             Declaration::ValueType(t) => put(&mut self.value_types, t.name.to_string(), t, v, h, s),
-            Declaration::Verb(t) => put(&mut self.verbs, t.name.clone(), t, v, h, s),
+            Declaration::Verb(t) => {
+                if let Some(names) = &mut self.names {
+                    let verb = t.name.clone();
+                    Arc::make_mut(names)
+                        .add(&tools::tool_base(verb.as_str()), NameSource::Verb { verb });
+                }
+                put(&mut self.verbs, t.name.clone(), t, v, h, s)
+            }
             Declaration::Trigger(t) => put(&mut self.triggers, t.name.to_string(), t, v, h, s),
             Declaration::ObjectSet(t) => put(&mut self.object_sets, t.name.clone(), t, v, h, s),
             // A function's inputs are what its fields are computed from. Each
@@ -225,6 +367,28 @@ impl Ontology {
     /// The value types, as a list.
     pub fn value_type_list(&self) -> Vec<ValueTypeDecl> {
         self.value_types.values().map(|e| e.decl.clone()).collect()
+    }
+
+    /// The declaration in force of `d`'s kind and name, as
+    /// [`Ontology::declared`] lists it.
+    pub fn held(&self, d: &Declaration) -> Option<Declaration> {
+        fn of<T: Clone>(
+            e: Option<&impl Borrow<Entry<T>>>,
+            wrap: fn(T) -> Declaration,
+        ) -> Option<Declaration> {
+            e.map(|e| wrap(e.borrow().decl.clone()))
+        }
+        match d {
+            Declaration::Type(t) => of(self.types.get(&t.name), Declaration::Type),
+            Declaration::ValueType(v) => of(
+                self.value_types.get(v.name.as_str()),
+                Declaration::ValueType,
+            ),
+            Declaration::Verb(v) => of(self.verbs.get(&v.name), Declaration::Verb),
+            Declaration::Trigger(t) => of(self.triggers.get(t.name.as_str()), Declaration::Trigger),
+            Declaration::ObjectSet(s) => of(self.object_sets.get(&s.name), Declaration::ObjectSet),
+            Declaration::Function(f) => of(self.functions.get(&f.name), Declaration::Function),
+        }
     }
 
     /// The version and since of the entry of `declaration`'s kind and name.

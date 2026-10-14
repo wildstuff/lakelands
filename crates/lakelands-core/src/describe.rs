@@ -377,6 +377,26 @@ pub fn declaration_reads(
     names
 }
 
+/// The types `d` names, the only ones [`declaration_probes`] answers
+/// anything for.
+pub fn probed_types(d: &Declaration) -> std::collections::BTreeSet<TypeName> {
+    match d {
+        Declaration::Type(t) => {
+            let views = t
+                .view
+                .iter()
+                .flat_map(|v| view_reads(v).unwrap_or_default());
+            let targets = t.relations.iter().map(|r| r.target.clone());
+            let named = [t.name.clone()].into_iter().chain(targets);
+            named.chain(views.map(|(source, _)| source)).collect()
+        }
+        Declaration::ObjectSet(s) => [s.of.clone()].into(),
+        Declaration::Trigger(t) => [t.on.clone()].into(),
+        Declaration::Verb(v) => [v.on.clone()].into(),
+        _ => Default::default(),
+    }
+}
+
 /// The fields of `ty` whose values a declaration reads: a derived field's
 /// expression on `ty` itself, the fields a derived relation matches, its
 /// own and those of `ty` as its target, what a view reads of `ty` as a

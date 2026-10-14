@@ -268,7 +268,7 @@ fn link_tool(ty: &TypeName, relation: &RelationName, door: &str) -> String {
 /// Every tool name the lake's declarations would produce, for any
 /// principal, with the declaration each comes from. `links` are the
 /// relations carried by link records, by their type.
-fn all_names(
+pub fn all_names(
     types: &[TypeName],
     verbs: &[VerbName],
     links: &[(TypeName, RelationName)],
