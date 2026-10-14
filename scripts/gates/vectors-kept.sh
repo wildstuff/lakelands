@@ -12,7 +12,8 @@
 # from the tag's tree: a file changed, gone or added. And red when a kept
 # lake (`docs/log-format/lakes/<N>/`, or `<N>-<name>/` for another lake
 # of format N) has no line in `lakes/kept`, or its files are not the ones
-# that line's digest names.
+# that line's digest names; and when a line `lakes/kept` held where the
+# head branched is changed or gone.
 . "$(dirname "$0")/lib.sh"
 
 DIR=docs/log-format/vectors
@@ -57,4 +58,17 @@ for n in $lakes; do
     [ "$have" = "$want" ] || { fail "$LAKES/$n/ is not the lake $LAKES_LIST names: its digest is $have, the list says $want"; continue; }
     held=$((held + 1))
 done
+# A line the base's `lakes/kept` holds is never changed or taken away: a
+# lake edited together with its digest is still an edited lake. A new
+# line, a lake added, is the head's alone. The base is where the head
+# branched: a lake kept on the base branch since then is not one the
+# head took away.
+base="$(gate_base)"
+[ -n "$base" ] && base="$(git merge-base "$base" HEAD 2>/dev/null || true)"
+if [ -n "$base" ]; then
+    while read -r n digest; do
+        now=$(grep -E "^$n " "$LAKES_LIST" 2>/dev/null | awk '{ print $2 }' || true)
+        [ "$now" = "$digest" ] || fail "$LAKES_LIST changes the line of the kept lake $n: the base names $digest, the head ${now:-names none}"
+    done < <(git show "$base:$LAKES_LIST" 2>/dev/null | grep -v '^#' | LC_ALL=C sort || true)
+fi
 verdict "$kept kept format(s) as their tags hold them; $newest written; $held kept lake(s)"
