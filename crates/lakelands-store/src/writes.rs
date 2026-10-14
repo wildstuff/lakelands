@@ -3281,15 +3281,27 @@ impl Call<'_> {
         (seen.object_sets).retain(|_, e| shown(e.decl.clone()));
         // So for a trigger, a verb and a function that computes a field,
         // known by their name alone: the one in force would be gone with
-        // the one declared (lakelands#893).
+        // the one declared (lakelands#893). A function stands on the types
+        // whose fields it computes: one shown to every holder of `schema`
+        // is taken all the same where it computes a field of a type its
+        // author is not shown, whose records its new body would compute
+        // again (lakelands#917).
         let computed = |x: &FieldDecl, f: &str| x.function.as_deref() == Some(f);
-        let idle =
-            |f: &str| !(o.types.values()).any(|e| e.decl.fields.iter().any(|x| computed(x, f)));
+        let computes = |f: &str, unseen: bool| {
+            let mut types = o.types.values().map(|e| &e.decl);
+            let on = |t: &TypeDecl| !unseen || !seen.types.contains_key(&t.name);
+            types.any(|t| on(t) && t.fields.iter().any(|x| computed(x, f)))
+        };
         let taken = |d: &Declaration| {
             let mut held = declared.iter().map(|x| &x.declaration);
+            let f = match d {
+                Declaration::Function(f) => Some(f.name.as_str()),
+                _ => None,
+            };
             !matches!(d, Declaration::Type(_))
-                && !matches!(d, Declaration::Function(f) if idle(f.name.as_str()))
-                && held.any(|x| x.what() == d.what() && !sees.lists(x))
+                && f.is_none_or(|f| computes(f, false))
+                && (f.is_some_and(|f| computes(f, true))
+                    || held.any(|x| x.what() == d.what() && !sees.lists(x)))
         };
         granted(!sent.iter().any(taken))?;
         tools_as_shown(self.who, o, &seen, sent)?;

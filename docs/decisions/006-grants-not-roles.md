@@ -1177,10 +1177,13 @@ To its author such a type is one that is not declared:
   function that computes no field is shown to no one without `schema`
   and is not such a one: declared again it takes nothing from anyone and
   computes nothing again, so its name answers as a free one does. A
-  holder of `schema` is shown every function, so this line does not keep
-  it from one that computes a field of a type it is not shown. An author
-  that is shown the one in force moves it to another type, or gives it a
-  new body, by declaring it again.
+  holder of `schema` is shown every function, and is kept all the same
+  from declaring again one that computes a field of a type it is not
+  shown: a function stands on the types whose fields it computes, and
+  what `schema` may change follows its sight, where what it is told
+  stays whole (lakelands#917). An author that is shown the one in force
+  moves it to another type, or gives it a new body, by declaring it
+  again.
 - **A tool's name is taken the same way.** A type, a verb and a relation
   carried by links each give tools their names, and the lake refuses a
   declaration whose tool would bear the name of another's, naming both.
