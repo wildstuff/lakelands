@@ -673,6 +673,7 @@ pub const ALL: &[Check] = &[
     after::AFTER_RESUMES,
     describe::DESCRIBE_IS_THE_DECLARATION,
     describe::DESCRIBED_AS_SHOWN,
+    describe::SCHEMA_TOLD_AS_RECORDED,
     made_of::KEYED_BY_HIDDEN,
     made_of::VIEW_KEY_AT_SOURCES,
     backings::OUTPUT_NOT_A_VALUE,
