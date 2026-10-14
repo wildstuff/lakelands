@@ -514,24 +514,103 @@ pub fn sort_index_type(r: &StoredRecord) -> Option<TypeName> {
     setting_for(r, lakelands_api::seam::SORT_INDEX_SETTING)
 }
 
+/// The types whose exact-text index a declaration can move: those
+/// [`looked_up`] reads it for. A type's own, the targets of its derived
+/// relations, its view's sources; a set's type.
+pub fn looked_up_by(d: &Declaration) -> BTreeSet<TypeName> {
+    let mut out = BTreeSet::new();
+    match d {
+        Declaration::Type(t) => {
+            out.insert(t.name.clone());
+            let derived = t.relations.iter().filter(|r| r.derived.is_some());
+            out.extend(derived.map(|r| r.target.clone()));
+            for v in t.view.iter() {
+                out.insert(v.source.clone());
+                out.extend(v.merge.iter().map(|m| m.source.clone()));
+            }
+        }
+        Declaration::ObjectSet(o) => _ = out.insert(o.of.clone()),
+        _ => {}
+    }
+    out
+}
+
+/// What a transaction put that its commit decides the exact-text index
+/// again for: its declarations, in order, and the types whose
+/// `lookup_index.<type>` setting it put.
+#[derive(Default)]
+pub struct Relook {
+    declared: Vec<Declaration>,
+    settings: BTreeSet<TypeName>,
+}
+
+impl Relook {
+    /// A declaration put.
+    pub fn declared(&mut self, d: &Declaration) {
+        self.declared.push(d.clone());
+    }
+
+    /// A record put: a `lookup_index.<type>` setting moves its type.
+    pub fn record(&mut self, r: &StoredRecord) {
+        self.settings.extend(lookup_index_type(r));
+    }
+
+    /// Whether the commit decides anything again.
+    pub fn any(&self) -> bool {
+        !self.declared.is_empty() || !self.settings.is_empty()
+    }
+
+    /// The head's declarations once this transaction's are in, and the
+    /// types it moved: from `kept`, the head as the last commit left it,
+    /// or else from `read`, the head as this one leaves it, with every
+    /// type moved (`None`).
+    pub fn heads(
+        &self,
+        kept: Option<Heads>,
+        read: impl FnOnce() -> Result<Vec<Declaration>>,
+    ) -> Result<(Heads, Option<BTreeSet<TypeName>>)> {
+        let Some(mut kept) = kept else {
+            let decls = read()?.into_iter().map(|d| (declaration_key(&d), d));
+            return Ok((decls.collect(), None));
+        };
+        let mut moved = self.settings.clone();
+        for d in &self.declared {
+            let old = kept.insert(declaration_key(d), d.clone());
+            moved.extend(old.iter().chain([d]).flat_map(looked_up_by));
+        }
+        Ok((kept, Some(moved)))
+    }
+}
+
+/// The declarations at the head, by [`declaration_key`], as a writing
+/// handle keeps them from one commit to the next: the next decides the
+/// exact-text index again without reading them (057).
+pub type Heads = BTreeMap<String, Declaration>;
+
 /// The fields of the exact-text index that come (`true`) and go, as
-/// `(type, field)`: those [`looked_up`] decides for each type `decls`
-/// declares, under its `lookup_index.<type>` setting's state at the head
-/// (`setting`), against those the engine keeps, `was`.
+/// `(type, field)`: those [`looked_up`] decides for each type `heads`
+/// declares that `moved` names (`None`, every one), under its
+/// `lookup_index.<type>` setting's state at the head (`setting`), against
+/// those the engine keeps of them, `was`. A type no put moved keeps its
+/// fields (057).
 pub fn relooked(
-    decls: &[Declaration],
+    heads: &Heads,
+    moved: Option<&BTreeSet<TypeName>>,
     was: &BTreeSet<(String, String)>,
     mut setting: impl FnMut(&str) -> Result<Option<StoredRecord>>,
 ) -> Result<Vec<(String, String, bool)>> {
-    let mut now = BTreeSet::new();
-    for d in decls {
+    let (mut now, decls) = (BTreeSet::new(), heads.values());
+    for d in decls.clone() {
         let Declaration::Type(t) = d else { continue };
+        if moved.is_some_and(|m| !m.contains(&t.name)) {
+            continue;
+        }
         let s = setting(&format!(
             "{}{}",
             lakelands_api::seam::LOOKUP_INDEX_SETTING,
             t.name
         ))?;
-        let fields = looked_up(&t.name, decls, s.as_ref().and_then(setting_value));
+        let fields = looked_up(&t.name, decls.clone(), s.as_ref().and_then(setting_value));
         now.extend(
             fields
                 .into_iter()

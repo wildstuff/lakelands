@@ -54,6 +54,26 @@ The engine then fills the rows of each field that came, from the type's
 head states, and drops those of each field that went. It does this once,
 at the commit of the transaction that put them.
 
+**The commit decides again only for the types the transaction moved.**
+A type's set depends on three things:
+- its own declaration;
+- the setting;
+- the declarations that name it: a derived relation onto it, a view
+  over it or merging it, a set of it.
+
+So a put moves the types named by the declaration it replaces and by
+the one it puts (`engines::looked_up_by`), and a written setting moves
+its own type. Every other type keeps its set and its rows.
+
+The writing handle keeps the head's declarations, decoded, as of its
+last commit, so the commit reads none of them from storage. A position
+names the same declarations whoever folded through it, since they are
+the log's. Where the
+projection was folded through another position since then, it reads
+them all and decides for every type, as it did before. That happens
+after another handle committed, after a rebuild, after a failed commit,
+and on the first commit of a handle.
+
 ### A record new to the projection drops no rows
 
 A record the projection has never held has no index rows to drop. Its

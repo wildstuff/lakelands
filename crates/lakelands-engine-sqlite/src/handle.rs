@@ -45,9 +45,9 @@ struct Transaction {
     /// the transaction, and all forgotten when a declaration or a
     /// `sort_index.<type>` setting is put, which may change one.
     kept: projection::Kept,
-    /// Whether it put a declaration or a `lookup_index.<type>` setting: the
-    /// commit decides the exact-text index's fields again.
-    relook: bool,
+    /// The declarations and the `lookup_index.<type>` settings it put: the
+    /// commit decides the exact-text index's fields again for what they move.
+    relook: engines::Relook,
 }
 
 /// One handle onto a lake kept by the SQLite engine.
@@ -61,6 +61,9 @@ pub struct SqliteLake {
     writer: Mutex<Option<Connection>>,
     pub(crate) reader: Mutex<Connection>,
     transaction: Mutex<Option<Transaction>>,
+    /// The head's declarations as the last commit left them, and the
+    /// position it folded through, for the next one's relook.
+    heads: Mutex<Option<(Position, engines::Heads)>>,
 }
 
 /// How long a statement waits for another connection's lock.
@@ -176,6 +179,7 @@ impl SqliteLake {
             writer: Mutex::new(writer),
             reader: Mutex::new(reader),
             transaction: Mutex::new(None),
+            heads: Mutex::new(None),
         })
     }
 
@@ -457,22 +461,31 @@ impl ProjectionStore for SqliteLake {
         let t = transaction
             .take()
             .ok_or_else(|| invalid(Case::CommitUnbegun))?;
-        self.write(|conn| {
+        let kept = lock(&self.heads).take();
+        let heads = self.write(|conn| {
             let folded = projection::folded(conn)?;
             if let Some(refused) = engines::commit_refusal(folded, t.latest, through) {
                 let _ = conn.execute_batch("ROLLBACK");
                 return Err(refused);
             }
-            if t.relook {
-                projection::relook(conn)?;
+            let held = |(at, _): &(Position, _)| Some(*at) == folded;
+            let mut heads = kept.filter(held).map(|(_, heads)| heads);
+            if t.relook.any() {
+                let read = || projection::head_declarations(conn);
+                let (after, moved) = t.relook.heads(heads, read)?;
+                projection::relook(conn, &after, moved.as_ref())?;
+                heads = Some(after);
             }
             for (ty, at) in &t.redeclared {
                 projection::index_older(conn, ty, *at)?;
             }
             projection::set_folded(conn, through)?;
             projection::mark_sorted(conn, through)?;
-            conn.execute_batch("COMMIT").map_err(sql)
-        })
+            conn.execute_batch("COMMIT").map_err(sql)?;
+            Ok(heads)
+        })?;
+        *lock(&self.heads) = heads.map(|heads| (through, heads));
+        Ok(())
     }
 
     fn rollback(&self) {
@@ -499,7 +512,7 @@ impl ProjectionStore for SqliteLake {
         };
         self.stage(at, |conn, t| {
             t.kept.clear();
-            t.relook = true;
+            t.relook.declared(&d.declaration);
             let redeclared = projection::put_declaration(conn, &d)?;
             t.redeclared.extend(redeclared.map(|ty| (ty, at)));
             Ok(())
@@ -508,7 +521,7 @@ impl ProjectionStore for SqliteLake {
 
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
         self.stage(record.position, |conn, t| {
-            t.relook |= engines::lookup_index_type(record).is_some();
+            t.relook.record(record);
             projection::put_record(conn, &mut t.kept, record)
         })
     }
