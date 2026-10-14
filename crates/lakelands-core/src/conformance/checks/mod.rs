@@ -615,6 +615,7 @@ pub const ALL: &[Check] = &[
     upgrade::FORMAT_14_UPGRADED,
     upgrade::LAKE_14_READ,
     upgrade::LAKE_14_MIGRATED_READ,
+    upgrade::LAKE_15_READ,
     vocabulary::HOST_TYPES_AT_OPEN,
     vocabulary::RESERVED_NAME_REFUSES_OPEN,
     vocabulary::TOOL_NAME_REFUSES_OPEN,

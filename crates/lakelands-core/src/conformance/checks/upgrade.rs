@@ -100,16 +100,40 @@ check!(
     given
 );
 
+check!(
+    LAKE_15_READ = the_lake_of_format_15_is_read_as_it_answered,
+    "054 (lakelands#962): the lake v0.14.0 made through its doors (`docs/log-format/lakes/15/`), in format 15, imported on this engine, keeps its events as written and is read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; and the walk over its relation with the link's fields; the lake verifies",
+    given
+);
+
 async fn a_lake_the_release_before_made_is_read_as_it_answered(store: Store, given: Given) -> Held {
+    kept_lake_answers(store, given, 14).await
+}
+
+async fn the_lake_of_format_15_is_read_as_it_answered(store: Store, given: Given) -> Held {
+    kept_lake_answers(store, given, 15).await
+}
+
+/// The kept lake of `format` (`docs/log-format/lakes/<format>/`), imported
+/// on this engine: its events stay in their format, a writer's open
+/// upgrades an older one, the lake verifies, and it answers as the
+/// release that made it did.
+async fn kept_lake_answers(store: Store, given: Given, format: u32) -> Held {
     use crate::conformance::fixture::{find_where, pattern, step};
     use lakelands_api::query::{Projection, QueryResult, Walk};
     store.head().await.must("reading the head")?;
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/lakes/14");
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/log-format/lakes")
+        .join(format.to_string());
     let said = std::fs::read(dir.join("answers.json"))
-        .map_err(|e| Failure::new(format!("reading the answers v0.13.1 gave: {e}")))?;
+        .map_err(|e| Failure::new(format!("reading the answers of lake {format}: {e}")))?;
     let answers: serde_json::Value = serde_json::from_slice(&said)
         .map_err(|e| Failure::new(format!("the answers are no JSON: {e}")))?;
-    let lake = lakelands_api::LakeId::from("kept14");
+    let by = answers["made_by"]
+        .as_str()
+        .unwrap_or("its release")
+        .to_owned();
+    let lake = lakelands_api::LakeId::from(format!("kept{format}").as_str());
     let imported = (given.import)(dir, lake, None, Seams::default()).await;
     let imported = imported.map_err(|e| Failure::new(format!("importing the lake: {e}")))?;
     let copy = imported.store;
@@ -120,17 +144,20 @@ async fn a_lake_the_release_before_made_is_read_as_it_answered(store: Store, giv
         .skip(made as usize + 1)
         .map(|e| e.body.kind())
         .collect();
+    // An older lake is upgraded by a writer's open; one of this format is not.
+    let upgraded = match format < LOG_FORMAT_VERSION {
+        true => tail.starts_with(&["lease_taken", "lake_upgraded"]),
+        false => !tail.contains(&"lake_upgraded"),
+    };
     ensure!(
-        log.iter()
-            .take(made as usize + 1)
-            .all(|e| e.v == OLDEST_LOG_FORMAT)
-            && tail.starts_with(&["lease_taken", "lake_upgraded"])
+        log.iter().take(made as usize + 1).all(|e| e.v == format)
+            && upgraded
             && log
                 .iter()
                 .skip(made as usize + 1)
                 .all(|e| e.v == LOG_FORMAT_VERSION),
-        "the lake's {} events stay in format {OLDEST_LOG_FORMAT}, then a writer's \
-         `lease_taken` and `lake_upgraded`, and every later event in {LOG_FORMAT_VERSION}; \
+        "the lake's {} events stay in format {format}, a writer's open upgrades it \
+         only from an older format, and every later event is in {LOG_FORMAT_VERSION}; \
          after them come {tail:?}",
         made + 1
     );
@@ -175,14 +202,14 @@ async fn a_lake_the_release_before_made_is_read_as_it_answered(store: Store, giv
     for part in ["records", "open", "walk_from_i1"] {
         if now[part] != answers[part] {
             red.push(format!(
-                "{part}: v0.13.1 answered {} and this release {}",
+                "{part}: {by} answered {} and this release {}",
                 answers[part], now[part]
             ));
         }
     }
     ensure!(
         red.is_empty(),
-        "the lake v0.13.1 made answers as it did: {}",
+        "the lake {by} made answers as it did: {}",
         red.join("; ")
     );
     Ok(())
