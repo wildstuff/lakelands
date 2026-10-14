@@ -19,11 +19,16 @@ use lakelands_api::{Access, Error, Grants, LakeStore, PrincipalKind, Refusal, Wr
 use serde_json::{Value, json};
 
 use crate::conformance::fixture::{
-    Lake, Must, events_after, field, field_access, head_unmoved, invalid_case, invalid_like,
-    log_events, object_set_on, principal, reason, refused_on, reviewer, trigger_on, try_upsert,
-    type_decl,
+    Lake, Must, describe_type, events_after, field, field_access, head_unmoved, invalid_case,
+    invalid_like, log_events, object_set_on, principal, reason, refused_on, reviewer, trigger_on,
+    try_upsert, type_decl,
 };
 use crate::conformance::{Failure, Held, Store};
+
+check!(
+    VERSIONS_KEY_A_TYPE = a_value_types_version_is_answered_with_the_types_that_use_it,
+    "lakelands#1058: `describe` answers each value type's version, and a type's lifecycle the version of each value type a field its reader is shown uses; a loosening and a migration of the value type move it, while the type's own `version` and `schema_hash` stay; a field its reader may not know of names no value type"
+);
 
 check!(
     LOOSEN_BY_DECLARE = a_value_type_that_accepts_more_is_declared_and_no_record_changes,
@@ -727,6 +732,88 @@ async fn a_trigger_or_set_on_a_value_the_type_no_longer_admits_never_holds(store
         reacted.is_empty(),
         "the trigger on `late` and the set of `late` records stay declared and never hold: \
          after the tightening, writes of paid, void and open, and a new record, made {reacted:?}"
+    );
+    Ok(())
+}
+
+async fn a_value_types_version_is_answered_with_the_types_that_use_it(store: Store) -> Held {
+    use lakelands_api::write::ValueTypeMigration;
+    let l = Lake::of(store.as_ref());
+    let status = |one_of: Value| -> ValueTypeDecl {
+        let v = json!({"name": "status", "kind": "text", "one_of": one_of});
+        serde_json::from_value(v).expect("the check's value type reads")
+    };
+    l.declare_as(
+        Declaration::ValueType(status(json!(["open", "closed"]))),
+        "declaring `status`",
+    )
+    .await?;
+    l.declare_json(json!({"declare": "type", "name": "task", "fields": [
+        {"name": "status", "type": {"kind": "text", "value_type": "status"}},
+        {"name": "title", "type": {"kind": "text"}}]}))
+        .await?;
+    l.declare(type_decl("note", vec![field("text", StorageKind::Text)]))
+        .await?;
+    l.upsert("task", "t1", json!({"status": "closed"})).await?;
+    let first = l.describe_type("task").await?.lifecycle;
+    let versions = |at: u32| {
+        [("status".into(), at)]
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let held = |at: u32, what: &str| {
+        let (l, first) = (&l, &first);
+        let what = what.to_owned();
+        async move {
+            let lake = l.describe().await?.value_type_versions;
+            let task = l.describe_type("task").await?.lifecycle;
+            let note = l.describe_type("note").await?.lifecycle.value_types;
+            ensure!(
+                lake == versions(at)
+                    && task.value_types == versions(at)
+                    && note.is_empty()
+                    && (task.version, &task.schema_hash) == (first.version, &first.schema_hash),
+                "{what}: `status` is at version {at} in `describe` ({lake:?}) and in `task`'s \
+                 lifecycle ({:?}), `note` names none ({note:?}), and `task` stays at version {} \
+                 and hash {}: it is at {} and {}",
+                task.value_types,
+                first.version,
+                first.schema_hash,
+                task.version,
+                task.schema_hash
+            );
+            Ok::<_, Failure>(())
+        }
+    };
+    held(1, "declared").await?;
+    let loosened = status(json!(["open", "closed", "overdue"]));
+    l.declare_as(
+        Declaration::ValueType(loosened.clone()),
+        "loosening `status`",
+    )
+    .await?;
+    held(2, "loosened by `declare`").await?;
+    let m = ValueTypeMigration {
+        to: status(json!(["open", "done", "overdue"])),
+        renames: vec![("closed".into(), "done".into())],
+    };
+    let report = l.cat.migrate_value_type(&l.own, m.clone()).await;
+    let report = report.must("the preflight of `closed` to `done`")?.data;
+    let applied = l
+        .cat
+        .migrate_value_type_apply(&l.own, m, &report.report_id)
+        .await;
+    applied.must("migrating `closed` to `done`")?;
+    held(3, "migrated").await?;
+    // A reader kept from `task.status` is told no value type of it.
+    let hid = field_access(store.as_ref(), "hid", "task", &[("status", Access::None)]);
+    let shown = describe_type(l.cat.as_ref(), &hid, "task")
+        .await?
+        .lifecycle
+        .value_types;
+    ensure!(
+        shown.is_empty(),
+        "a reader kept from `task.status` is told its value type: {shown:?}"
     );
     Ok(())
 }

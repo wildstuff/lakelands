@@ -944,6 +944,9 @@ interface types {
         /// For a view: whether its records are kept (its
         /// `view_kept.<type>` setting) or computed at each read, and why.
         kept: option<kept>,
+        /// The version of each value type a field shown uses: what the type
+        /// accepts is keyed by `version`, `schema-hash` and these.
+        value-types: list<tuple<value-type-name, u32>>,
     }
 
     /// Whether a view's records are kept as its sources are written, or
@@ -1034,6 +1037,8 @@ interface types {
         types: list<type-description>,
         verbs: list<verb-description>,
         value-types: list<value-type-decl>,
+        /// Each value type by its version.
+        value-type-versions: list<tuple<value-type-name, u32>>,
         /// Functions, triggers and object sets in force, each listed to a
         /// principal who reads every field it names or holds the schema
         /// grant.
