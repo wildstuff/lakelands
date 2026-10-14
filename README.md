@@ -76,45 +76,36 @@ of changes without polling, `propose`, `proposals`, `accept` and
 (stdio and HTTP) and REST from one catalog. Agents never write a query
 language.
 
-> **Status: `0.13.0`.** Lakelands `0.13.0` is the `lakelands` CLI, its
+> **Status: `0.14.0`.** Lakelands `0.14.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the
-> whole conformance suite (532 checks through the doors and 67 through
-> the engine seam), with 54 decision records and the event log at
-> format version 14, installable from the release. Its budgets: the
+> whole conformance suite (583 checks through the doors and 68 through
+> the engine seam), with 58 decision records and the event log at
+> format version 15, installable from the release. Its budgets: the
 > store facade and engine traits hold 59 of 110 methods, the core
-> crates' product code 52 918 of 53 000 lines and their specification
-> 74 589 of 75 000, and 2 of 20 `cfg(feature)` sites. A ceiling rises
-> only by a recorded rule (decision 047): for this round the operator
-> set both as a reserve, to 52 500 and 69 000, and the round's rights
-> and integrity fixes raised the specification's ten times, to 75 000,
-> and the product's once, to 53 000, row by row. Beside what `0.12.0`
-> held, a lake is written in one log format a release: every event
-> carries it, a lake or an export of another release is refused by
-> name before anything of it is read, and there is no upgrade path
-> until the first release with real installations. The log holds only
-> numbers every reader reads exactly: a value is judged in the form it
-> is written in at every door, and what is computed, declared, landed
-> by a view's measure or verified is held to the same bound. Part of a
-> lake without its events is damage, and a projection is read only by
-> the layout that made it. Every door asks one judgement of what a
-> principal is shown: a record is judged once, by what its grant
-> admits and by its ends as deep as they go, and a proposal is decided
-> as it is listed. A reference a record computes names a live record;
-> a report names what its reader is answered, in the order of the new
-> key; a name its author is not shown is not granted, and no door
-> leaves a lake with a problem among its tools' names. A row binds each
-> record under a name of its own, every path a pattern names is one
-> its rows hold, an order reads no provenance where no record stands,
-> and a walk or a view at a valid time probes every type it can meet.
-> A search as of a position ranks by the head's declaration, and a
-> migration keeps the vector index under the head's names and keys. A
-> verb names no system type but a link type, a view's key is its
-> `group_by`, and a derived relation has no link door. A filtered poll
-> reads only what it answers, and a client reads an ingest's answer as
-> it uploads. The in-memory mock is retired and the door crates test
-> against the store; every decision record says what holds and how it
-> came to be, and one record holds what a principal is shown.
+> crates' product code 57 474 of 57 500 lines and their specification
+> 84 734 of 85 000, and 3 of 20 `cfg(feature)` sites. A ceiling rises
+> only by a recorded rule (decision 047): the operator set the round's
+> reserve at 56 000 and 82 000, and the round's rights, integrity and
+> host fixes raised the product's twice, to 57 500, and the
+> specification's five times, to 85 000, row by row. Beside what
+> `0.13.0` held, a lake is kept from this release on: a writer's open
+> upgrades a format-14 log to 15 by appending, never rewriting, the
+> lake each release writes is kept as a vector every later release
+> must read as it answered, and the host surface is named and changes
+> only by one release of deprecation. A reader is answered only what it
+> is shown at every door a proposal, a migration or a report reaches,
+> the targets a retarget turns on included. A verb reads across a
+> reference, a link and a derived relation; a walk answers what each
+> step reaches, its depth and its type, and grows components from
+> every linked record. A migration fills a field's starting value into
+> the records that hold none, and a declaration or a migration that
+> computes a field again decides its sets in its own append. An ingest
+> takes a source for each record, keeps an exact-text index only where
+> a host looks a field up, and refuses a source id the log format
+> would not hold. A served PostgreSQL lake recovers from a dropped
+> connection, and a read the engine fails is answered `unavailable`.
+> Decision 058 says how a source will be forgotten, built in `0.15.0`.
 
 ## Try it
 
