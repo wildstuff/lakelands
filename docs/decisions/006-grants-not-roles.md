@@ -1199,6 +1199,14 @@ To its author such a type is one that is not declared:
   its proposal. Between what its author is shown a collision is refused,
   naming both, and a relation under the name of one its author is not
   shown is one declared twice, as a field is.
+- **A link type its author is not shown takes no field from it.** A
+  relation its author is shown keeps, declared again, the link fields
+  it may not know of. But where the link type itself is one it is not
+  shown, a field it sends there would be told against fields it may not
+  know of: one named like one of them refused as declared twice, one
+  named otherwise added beside them. So such a declaration is not
+  granted, naming nothing, as declaring that type is; sent without
+  fields, the relation keeps its link type's (lakelands#965).
 - **No door leaves a lake with a problem among its tools' names.** The
   line above rests on it: a problem the set brings then has a side
   among the set's own names, and the other is looked for among the

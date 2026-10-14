@@ -4898,6 +4898,10 @@ fn as_author(
         let shown = |o: &&RelationDecl| &o.name == name && !unshown(o);
         if let Some(old) = before.relations.iter().find(shown) {
             let link = links::link_type(&before.name, old);
+            // A link type its author may not know of is a type it is not
+            // shown: to give it a field is not granted, naming nothing, as
+            // to declare it is (lakelands#965).
+            granted(r.fields.is_empty() || sees.ty(&link.name).is_ok())?;
             put_back(&old.fields, |f| hidden(&link, f), &mut r.fields);
         }
     }

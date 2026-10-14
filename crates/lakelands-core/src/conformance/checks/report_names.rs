@@ -285,8 +285,20 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(store: Store)
         ..Default::default()
     };
     far.grants.types.insert("sys.link.box.kept_by".into(), link);
-    let far = preview(&l, &far, migrate_to(boxed("code", "number"))).await?;
-    let far = json!(far).to_string();
+    // Its migration gives the link type's field a kind: to a link type
+    // its author is not shown, not granted (lakelands#965).
+    let far = l
+        .cat
+        .migrate(&far, migrate_to(boxed("code", "number")))
+        .await;
+    let ng = lakelands_api::Error::Refused {
+        reason: lakelands_api::Refusal::NotGranted,
+        field: None,
+    };
+    ensure!(
+        far.as_ref().err() == Some(&ng),
+        "one not shown the link type previews: {far:?}"
+    );
     let read = json!(read).to_string();
     // Per row: the report, the names it must show and those it must not.
     let (more, id, owners) = ("\"more\":true", id.as_str(), owners.as_str());
@@ -308,13 +320,12 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(store: Store)
         "an author's preview of a boolean",
         "the accept of a link field as a number",
         "the same, to one who sees everything",
-        "its preview by one not shown the link type",
         "the preview of the re-key by one masked on the new key",
         "the preview of a re-key whose colliding link has an end held from its reader",
         "the same, to one who sees everything",
     ];
     let visible = "[\"1\",\"2\",\"5\",\"6\"]";
-    let rows: [Row; 12] = [
+    let rows: [Row; 11] = [
         (&held_whole, &[both], &["more"]),
         (&rekeyed_whole, &[more, "entry", "DE1:1", held_key], &[]),
         (
@@ -331,7 +342,6 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(store: Store)
         (&boolean, &[more, visible], &["\"4\""]),
         (&since, &[more, kept, two, five], &["b1:x", "b2:x"]),
         (&since_whole, &[more, kept, two, "b1:x", "b2:x"], &[]),
-        (&far, &[more, kept, two], &["b1:x", "b2:x"]),
         (
             &masked,
             &[more, counts, "\"collisions\":2"],
