@@ -62,6 +62,12 @@ A forgotten source id is never given a key again, so an ingest from it is refuse
 - a key field: its value is the record key, in every event and every reference;
 - a `reference` field: its value is another record's key, and a walk reads it.
 
+Also refused: `erasable` on a field only authors or the fold write, whose
+values the key of no source seals, and on a relation's field. A field
+once erasable is never declared without it: a source's later values would
+enter the log in plaintext, and a declaration cannot unseal what is
+sealed (lakelands#1042).
+
 A type whose key holds personal data is given a surrogate key. `hosting.md` says so, and also asks for **opaque source ids**: the source id is plaintext in every event's envelope, and in `source_forgotten` itself.
 
 **The value form.** An event marks out of band which patch members are ciphertext, in a new member `sealed: { "key": <key id>, "fields": [..] }`. The marking cannot be in the value: a `json` field may hold any object, so an in-band marker could be taken for a value. The member holds the base64 of the AEAD's output.
@@ -74,6 +80,8 @@ A type whose key holds personal data is given a surrogate key. `hosting.md` says
 - **Equality does not leak** across records or versions, since the nonce differs. Within one record at one state it would, which is the redelivery the id is for.
 
 **Recorded outputs.** A function backing or an embedding that reads an erasable value records an output computed from it (`output_recorded`). That output is encrypted under the same source's key, and is erased with it.
+- Its `input`, the digest a replay finds the output by, is an HMAC under a key derived from the source's key, the version it first sealed with. A SHA-256 of the call would be a digest of plaintext that outlives the key (lakelands#1042).
+- **What equality still tells.** A value's own ciphertext tells no equality across records or versions. An output is recorded once for one call (053), so its `input` is the same for two records of one source whose call reads the same values: the log tells that they are equal, never what they are, and never across sources. That is the price of recording once.
 - An output whose inputs hold erasable values of two sources records no value, and names the reason in its `error`. One key per output is all the first version carries.
 
 ### The projection holds plaintext, and the act scrubs it
@@ -108,6 +116,11 @@ All four are built from the projection, which holds plaintext. They work on eras
 **What nothing makes possible** is searching the log itself without the keys: a verifier or an export reader without them sees the ciphertext and the plaintext members.
 
 ### Exports and mirrors made before
+
+**The feed** delivers events as the log holds them, sealed values
+included: an export reads through it and its hashes need the stored
+bytes. A reader that needs plaintext reads the records through the
+doors, or opens the values with the key store (lakelands#1042).
 
 **Exports:**
 - An export carries the log, so one made after the feature holds the source's values only as ciphertext, and the destroyed key covers it.

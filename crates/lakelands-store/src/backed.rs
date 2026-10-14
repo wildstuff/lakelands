@@ -104,6 +104,9 @@ pub struct Due {
     pub seam: String,
     /// The call's digest.
     pub input: Digest,
+    /// The key its output is sealed under, where the call reads a source's
+    /// erasable values (058).
+    pub sealed: Option<lakelands_api::event::Sealed>,
     /// The call.
     pub call: Call,
     /// Whether a recorded failure for the call is called again: the
@@ -135,6 +138,9 @@ pub struct Outputs<'a> {
     pub waiting: bool,
     /// The plans the records are computed by.
     pub plans: &'a crate::record::Plans,
+    /// The sources' keys, where the reader has the writer's: a call that
+    /// reads a source's erasable values is digested under its key (058).
+    pub keys: Option<&'a crate::sealing::Keys>,
 }
 
 /// The outputs one transaction recorded, by seam and input: every
@@ -146,6 +152,7 @@ impl Outputs<'_> {
     pub(crate) fn planning<'a>(
         view: &'a dyn ProjectionView,
         plans: &'a crate::record::Plans,
+        keys: &'a crate::sealing::Keys,
     ) -> Outputs<'a> {
         let (staged, before, due, waiting) = (None, None, None, false);
         Outputs {
@@ -155,6 +162,7 @@ impl Outputs<'_> {
             due,
             waiting,
             plans,
+            keys: Some(keys),
         }
     }
 
@@ -346,6 +354,91 @@ fn backed_fields<'o>(
     })
 }
 
+/// What a call's digest is (058).
+enum Input {
+    /// SHA-256 of its canonical bytes: it reads no erasable value.
+    Plain(Digest),
+    /// HMAC under the key of the one source whose erasable values it
+    /// reads, and that key's version, which seals its output.
+    Sealed(Digest, lakelands_api::event::Sealed),
+    /// It reads erasable values of two sources: no output is recorded.
+    Two,
+    /// It reads a source's erasable values and the reader holds no keys.
+    Keyless,
+}
+
+/// Why a field computed from two sources' erasable values holds none.
+const TWO_SOURCES: &str = "its inputs hold erasable values of two sources, and an output is sealed under one source's key";
+
+/// The digest of `call`, as `computer` makes it from `fields`: by the
+/// sources of the erasable values it reads, through the fields it reads
+/// and those they are derived from. One source's are digested under the
+/// version of its key `version` names, a recorded output's own, else the
+/// first its log sealed with ([`crate::sealing::USED`]), so the digest is
+/// a function of the log, whatever the key store holds now. On a source's
+/// first sealed write that is the version `event` seals with, which a plan
+/// reads before the fold has recorded it; a source that sealed nothing has
+/// no key to digest under.
+fn input_of(
+    (decl, computer): (&TypeDecl, &Computer<'_>),
+    (fields, metas): (&BTreeMap<FieldName, Value>, &BTreeMap<FieldName, FieldMeta>),
+    (outputs, event): (&Outputs<'_>, &Event),
+    version: Option<&lakelands_api::id::KeyId>,
+    call: &Value,
+) -> Result<Input> {
+    let mut todo: Vec<&FieldName> = match computer {
+        Computer::Function(f) => f.decl.inputs.iter().map(|i| &i.name).collect(),
+        Computer::Embed(e, _) => e.from.iter().collect(),
+    };
+    let (mut seen, mut sources) = (BTreeSet::new(), BTreeSet::new());
+    while let Some(n) = todo.pop() {
+        let Some(f) = decl
+            .fields
+            .iter()
+            .find(|f| &f.name == n)
+            .filter(|_| seen.insert(n))
+        else {
+            continue;
+        };
+        if f.erasable && fields.contains_key(n) {
+            sources.extend(metas.get(n).and_then(|m| m.source.clone()));
+        }
+        todo.extend(&f.depends_on);
+    }
+    let mut sources = sources.into_iter();
+    let (source, two) = (sources.next(), sources.next().is_some());
+    let Some(source) = source.filter(|_| !two) else {
+        return Ok(if two {
+            Input::Two
+        } else {
+            Input::Plain(digest(call))
+        });
+    };
+    let used = outputs.recorded(crate::sealing::USED, &crate::sealing::used_by(&source))?;
+    let first = crate::sealing::versions(used.as_ref()).into_iter().next();
+    let sealing = (event.sealed.as_ref())
+        .filter(|_| matches!(event.body, EventBody::RecordIngested { .. }))
+        .filter(|s| s.source.as_ref().or(event.source.as_ref()) == Some(&source));
+    let Some(key) = version
+        .cloned()
+        .or(first)
+        .or(sealing.map(|s| s.key.clone()))
+    else {
+        return Ok(Input::Plain(digest(call)));
+    };
+    let Some(keys) = outputs.keys else {
+        return Ok(Input::Keyless);
+    };
+    let k = keys.key(&source, &key)?;
+    let source = Some(source);
+    let sealed = lakelands_api::event::Sealed {
+        key,
+        source,
+        fields: Vec::new(),
+    };
+    Ok(Input::Sealed(crate::sealing::digest(&k, call), sealed))
+}
+
 /// The metadata of a value an output filled, or of a field it cleared.
 fn meta(event: &Event, version: String, error: Option<String>) -> FieldMeta {
     FieldMeta {
@@ -529,7 +622,24 @@ pub fn settle_fields(
             continue;
         };
         let seam = computer.seam();
-        let input = digest(&call);
+        let input = input_of(
+            (decl, &computer),
+            (fields, metas),
+            (outputs, event),
+            None,
+            &call,
+        )?;
+        let (input, sealed) = match input {
+            Input::Plain(input) => (input, None),
+            Input::Sealed(input, sealed) => (input, Some(sealed)),
+            two @ (Input::Two | Input::Keyless) => {
+                fields.remove(&name);
+                let error = matches!(two, Input::Two).then(|| TWO_SOURCES.to_owned());
+                metas.insert(name.clone(), meta(event, computer.version(), error));
+                changed.push(name.clone());
+                continue;
+            }
+        };
         let recorded = outputs.recorded(&seam, &input)?;
         // A value type's rename is forced so that a call it moved is
         // seen, and calls no recorded failure again: that call is as it was.
@@ -582,6 +692,7 @@ pub fn settle_fields(
                 },
                 seam,
                 input,
+                sealed,
                 call,
                 retry,
                 cause: event.position,
@@ -606,16 +717,35 @@ pub fn put_output(
     event: &Event,
     fields: &mut BTreeMap<FieldName, Value>,
     metas: &mut BTreeMap<FieldName, FieldMeta>,
-) -> bool {
+    outputs: &Outputs<'_>,
+) -> Result<bool> {
     let Some((f, computer)) = backed_fields(ontology, decl).find(|(f, _)| &f.name == field) else {
-        return false;
+        return Ok(false);
     };
-    if computer.seam() != seam_name
-        || computer.call(fields).map(|c| digest(&c)).as_ref() != Some(input)
-    {
-        return false;
+    let Some(call) = computer
+        .call(fields)
+        .filter(|_| computer.seam() == seam_name)
+    else {
+        return Ok(false);
+    };
+    // Digested under the version the output names, as it was recorded.
+    let version = event.sealed.as_ref().map(|s| &s.key);
+    let now = match input_of(
+        (decl, &computer),
+        (fields, metas),
+        (outputs, event),
+        version,
+        &call,
+    )? {
+        Input::Plain(d) | Input::Sealed(d, _) => d,
+        Input::Two | Input::Keyless => return Ok(false),
+    };
+    if &now != input {
+        return Ok(false);
     }
-    put(ontology, decl, f, computer, output, event, fields, metas)
+    Ok(put(
+        ontology, decl, f, computer, output, event, fields, metas,
+    ))
 }
 
 /// What an append left owed to the backings, until the drain has recorded
@@ -738,6 +868,7 @@ pub fn page(lake: &Lake, o: &Owed) -> Result<(Vec<(RecordKey, Vec<(Due, Option<V
                 due: Some(&mut due),
                 waiting: true,
                 plans: &w.plans,
+                keys: Some(&lake.keys),
             };
             let sweep = matches!(
                 o.of,
@@ -1147,10 +1278,14 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
         .filter(|(_, v)| *v == output && !is_failure(v))
         .map(|(p, _)| p);
     let context = d.context;
+    // An output computed from a source's erasable values is sealed under
+    // that source's key, as they are (058).
+    let sealed = d.sealed.clone().filter(|_| output_at.is_none());
     let draft = Draft {
         cause: Some(d.cause),
         procedure: Some(d.procedure.clone()),
         context,
+        sealed,
         ..Draft::system(
             now,
             EventBody::OutputRecorded {
@@ -1187,6 +1322,7 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
                 due: None,
                 waiting: false,
                 plans: &w.plans,
+                keys: Some(&lake.keys),
             },
         )?;
         if let Some(after) = after {

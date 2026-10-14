@@ -107,10 +107,32 @@ pub struct Event {
     /// The caller's idempotency key, for an authored write that gave one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<IdempotencyKey>,
+    /// Which members of the body's `patch`, or its `output`, are sealed
+    /// under the source's key, from format 16 on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed: Option<Sealed>,
     /// The kind and its payload.
     pub body: EventBody,
     /// SHA-256 over the event's canonical bytes without this field.
     pub hash: Digest,
+}
+
+/// The members of an event a source's key seals: the patch members it
+/// names, or the recorded output where `fields` is empty. Each holds the
+/// base64 of AES-256-GCM-SIV's output over the value's canonical bytes
+/// (`docs/log-format.md` §1.4).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sealed {
+    /// The version of the source's key that sealed them.
+    pub key: crate::id::KeyId,
+    /// The source whose key it is, for an event whose envelope names none:
+    /// a recorded output computed from that source's values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::id::SourceId>,
+    /// The patch members sealed, in name order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<FieldName>,
 }
 
 /// Every kind of event, and its payload. The set is closed per format

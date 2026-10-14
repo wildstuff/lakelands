@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::engine::EngineOpener;
 use crate::error::{Case, Place, Refusal, Result, Said};
 use crate::event::Event;
-use crate::id::{LakeId, Position, TypeName, VerbName};
+use crate::id::{KeyId, LakeId, Position, SourceId, TypeName, VerbName};
 use crate::ontology::TypeDecl;
 use crate::principal::Principal;
 use crate::record::{Patch, Record, Value};
@@ -199,6 +199,42 @@ pub trait SystemVocabulary: Send + Sync {
 
     /// Whether a lake may hold a `sys.` type.
     fn may_hold(&self, lake: &LakeId, ty: &TypeName) -> bool;
+}
+
+/// A source's data key: 32 bytes for AES-256-GCM-SIV, wiped when dropped,
+/// never in the lake (`docs/decisions/058-a-source-may-be-forgotten.md`).
+#[derive(Clone)]
+pub struct DataKey(pub [u8; 32]);
+
+impl Drop for DataKey {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+impl std::fmt::Debug for DataKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DataKey(..)")
+    }
+}
+
+/// The host's key store: one data key per source of a lake, in versions,
+/// kept outside the lake (`docs/decisions/058-a-source-may-be-forgotten.md`).
+/// Synchronous: the writer asks it on the store's blocking threads, at a
+/// source's first sealed value of an open lake, and keeps the key in
+/// memory while the lake is open.
+pub trait KeyStore: Send + Sync {
+    /// Make a new version of the source's key and answer its id.
+    fn create(&self, lake: &LakeId, source: &SourceId) -> Result<KeyId>;
+
+    /// The key of that version, or none once it is destroyed.
+    fn key(&self, lake: &LakeId, source: &SourceId, id: &KeyId) -> Result<Option<DataKey>>;
+
+    /// Destroy every version of the source's key.
+    fn destroy(&self, lake: &LakeId, source: &SourceId) -> Result<()>;
+
+    /// The versions of the source's key, oldest first; none destroyed.
+    fn ids(&self, lake: &LakeId, source: &SourceId) -> Result<Vec<KeyId>>;
 }
 
 /// The type holding a lake's named settings: `setting('key')` reads the
@@ -545,6 +581,9 @@ pub struct Seams {
     pub executors: Vec<Arc<dyn VerbExecutor>>,
     /// The host's system vocabulary, if it adds one.
     pub vocabulary: Option<Arc<dyn SystemVocabulary>>,
+    /// The key store a source's erasable values are sealed with, if any:
+    /// without one such a value is refused as `Unbound`.
+    pub keys: Option<Arc<dyn KeyStore>>,
 }
 
 impl std::fmt::Debug for Seams {
@@ -564,6 +603,7 @@ impl std::fmt::Debug for Seams {
                 &self.executors.iter().map(|e| e.name()).collect::<Vec<_>>(),
             )
             .field("vocabulary", &self.vocabulary.is_some())
+            .field("keys", &self.keys.is_some())
             .finish()
     }
 }
@@ -577,5 +617,6 @@ fn seams_are_dyn_compatible(
     _: &dyn VerbExecutor,
     _: &dyn ChangeFeed,
     _: &dyn SystemVocabulary,
+    _: &dyn KeyStore,
 ) {
 }

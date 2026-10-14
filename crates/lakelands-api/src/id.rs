@@ -95,6 +95,9 @@ name! {
     TriggerName,
     /// A parameter a view declares and a read binds.
     ParamName,
+    /// A version of a source's data key, as the host's key store names it
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
+    KeyId,
 }
 
 /// The log coordinate: the exact place in a lake's history an answer

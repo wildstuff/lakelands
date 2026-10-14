@@ -481,12 +481,17 @@ fn outcome_of(events: &[Event]) -> Outcome {
 /// computes its fields again as of `event`; a field computed outside the
 /// lake keeps its value, which lands with its output (004).
 fn computed_again(
-    (computing, view, plans): (&Ontology, &dyn ProjectionView, &record::Plans),
+    (computing, view, plans, keys): (
+        &Ontology,
+        &dyn ProjectionView,
+        &record::Plans,
+        &crate::sealing::Keys,
+    ),
     r: &StoredRecord,
     event: &Event,
     settings: &BTreeMap<String, Value>,
 ) -> Result<StoredRecord> {
-    let mut outputs = Outputs::planning(view, plans);
+    let mut outputs = Outputs::planning(view, plans, keys);
     let is = record::rederive(computing, r, event, settings, &mut outputs)?;
     let mut is = is.unwrap_or_else(|| r.clone());
     let backed = |n: &str| {
@@ -1492,7 +1497,7 @@ pub(crate) fn planned(
     };
     let event = provisional(lake, Position::GENESIS, &Draft::system(now, body));
     let plans = record::Plans::default();
-    let outputs = &mut Outputs::planning(view, &plans);
+    let outputs = &mut Outputs::planning(view, &plans, &lake.keys);
     record::apply(o, before, &event, settings, outputs)
 }
 
@@ -1951,6 +1956,8 @@ pub(crate) struct Envelope {
     pub seen_at: Option<Timestamp>,
     /// Where the source read them.
     pub upstream: Option<lakelands_api::Upstream>,
+    /// What the source's key seals of a `record_ingested`'s patch.
+    pub sealed: Option<lakelands_api::event::Sealed>,
 }
 
 impl Envelope {
@@ -1965,6 +1972,7 @@ impl Envelope {
             source: None,
             seen_at: None,
             upstream: None,
+            sealed: None,
         }
     }
 }
@@ -1995,8 +2003,10 @@ impl Decide<'_> {
     /// One of the decision's own events.
     pub(crate) fn draft(&self, body: EventBody) -> Draft {
         let e = self.envelope.clone();
+        let ingested = matches!(body, EventBody::RecordIngested { .. });
         let own = self.call.draft(self.now, e.origin, body);
         Draft {
+            sealed: e.sealed.filter(|_| ingested),
             writer: e.writer.unwrap_or(own.writer),
             cause: e.cause,
             procedure: e.procedure,
@@ -2297,7 +2307,7 @@ impl Decide<'_> {
     /// the fold's own function, which hands out no call here.
     fn apply(&self, before: Option<&StoredRecord>, d: &Draft) -> Result<StoredRecord> {
         let (w, event) = (self.w, provisional(self.call.lake, self.next, d));
-        let outputs = &mut Outputs::planning(self.view, &w.plans);
+        let outputs = &mut Outputs::planning(self.view, &w.plans, &self.call.lake.keys);
         let after = record::apply(&w.ontology, before, &event, &w.settings, outputs)?;
         Ok(after.expect("a record event makes a record"))
     }
@@ -3852,8 +3862,12 @@ impl Call<'_> {
                 continue;
             }
             live(view.as_ref(), ty, |r| {
-                let is =
-                    &computed_again((&computing, view.as_ref(), &plans), r, event, &w.settings)?;
+                let is = &computed_again(
+                    (&computing, view.as_ref(), &plans, &self.lake.keys),
+                    r,
+                    event,
+                    &w.settings,
+                )?;
                 for (s, held) in &sets {
                     let member = member_of((s, whole), is, w, now)?;
                     if held.contains(&r.key) == member {
@@ -4308,7 +4322,12 @@ impl Call<'_> {
                 ..r.clone()
             };
             if let Some(e) = event.as_ref().filter(|_| r.ty == m.to.name) {
-                is = computed_again((&computing, view, &plans), &is, e, &w.settings)?;
+                is = computed_again(
+                    (&computing, view, &plans, &self.lake.keys),
+                    &is,
+                    e,
+                    &w.settings,
+                )?;
             }
             decide(sets, &r.key, &is, (w, now, limit), members)
         };
@@ -5000,7 +5019,7 @@ impl Call<'_> {
                 let Some(now) = now.filter(|_| !sets.is_empty()) else {
                     return Ok(());
                 };
-                let mut outputs = Outputs::planning(view, &w.plans);
+                let mut outputs = Outputs::planning(view, &w.plans, &self.lake.keys);
                 let is = record::rederive(&computing, &is, &event, &w.settings, &mut outputs)?
                     .unwrap_or(is);
                 for (s, held) in &sets {

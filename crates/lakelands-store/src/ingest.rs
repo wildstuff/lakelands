@@ -31,7 +31,7 @@ use std::time::Duration;
 use futures_core::Stream;
 use lakelands_api::catalog::{CommitStream, SourceStream};
 use lakelands_api::error::{Case, Place, Said};
-use lakelands_api::event::EventId;
+use lakelands_api::event::{EventBody, EventId, Sealed};
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::Origin;
 use lakelands_api::write::Committed;
@@ -41,6 +41,7 @@ use lakelands_core::rights::Door;
 use crate::exec;
 use crate::lake::Lake;
 use crate::log;
+use crate::sealing::{USED, used_by, versions};
 use crate::writes::Call;
 use lakelands_core::{canonical, links};
 
@@ -123,7 +124,44 @@ pub fn window(
             // The record's own source, else the call's: its event and its id.
             let source = r.source.as_ref().unwrap_or(source);
             d.envelope.source = Some(source.clone());
-            let id = log::ingest_id(source, &r.ty, &r.key, version_before, &patch);
+            // Its values of an erasable field enter the log sealed under its
+            // key, and its id is the sealed patch's: no digest of a plaintext
+            // value enters the log (058).
+            let mut fields: Vec<_> = (decl.fields.iter())
+                .filter(|f| f.erasable && patch.get(&f.name).is_some_and(|v| !v.is_null()))
+                .map(|f| f.name.clone())
+                .collect();
+            fields.sort();
+            let used = |s| view.output(USED, &used_by(s));
+            let sealing = match fields.is_empty() {
+                true => None,
+                false => {
+                    let used = versions(used(source)?.map(|(_, v)| v).as_ref());
+                    Some(lake.keys.sealing(source, &used)?)
+                }
+            };
+            let sealed = (sealing.as_ref()).map(|(key, _)| Sealed {
+                key: key.clone(),
+                source: None,
+                fields,
+            });
+            let id = match (&sealed, &sealing) {
+                (Some(s), Some((_, k))) => {
+                    let mut body = EventBody::RecordIngested {
+                        ty: r.ty.clone(),
+                        key: r.key.clone(),
+                        version: lakelands_api::Version(version_before + 1),
+                        patch: patch.clone(),
+                        made: false,
+                    };
+                    crate::sealing::seal(&mut body, s, source, k);
+                    let EventBody::RecordIngested { patch: stored, .. } = &body else {
+                        unreachable!("the body sealed is a record_ingested")
+                    };
+                    log::ingest_id(source, &r.ty, &r.key, version_before, stored)
+                }
+                _ => log::ingest_id(source, &r.ty, &r.key, version_before, &patch),
+            };
             let unchanged = t.live().is_some_and(|b| {
                 patch.iter().all(|(f, v)| match b.fields.get(f) {
                     Some(stored) => stored == v,
@@ -153,6 +191,7 @@ pub fn window(
             // the `seen_at` the fold keeps.
             let stated = (Some(id.clone()), r.seen_at, r.upstream.clone());
             (d.envelope.id, d.envelope.seen_at, d.envelope.upstream) = stated;
+            d.envelope.sealed = sealed;
             let plan = d.write(decl, &r.key, t, patch, None)?;
             // A link holds its relation's cardinality, over the lake's live
             // links and those earlier in this window: judged once the plan

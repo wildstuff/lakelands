@@ -20,6 +20,7 @@ feed, positions consecutive from 0 and naming their files in 20 digits,
 the hash chain from 64 zeros, every checkpoint against the position,
 the hash and the files before it, every line in the one format, `cause`
 never inside `context`, `upstream` only on a `record_ingested` event,
+`sealed` only on a `record_ingested` or an `output_recorded`,
 and every `known_at` in its one form and never before the `known_at`
 before it (log-format §1.3). It prints one line per file and the last
 position and hash, or the position where the files stop being the log,
@@ -211,6 +212,9 @@ def ingest_id(e):
                       str(b["version"] - 1).encode(), canonical(b["patch"]))
 
 
+# The base64 a sealed value is written in (058), and the kinds that carry one.
+BASE64 = re.compile(r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?")
+SEALS = ("record_ingested", "output_recorded")
 BY_A_WIDTH = re.compile(r"date_bucket\([^,]+, [0-9.]+[dhms],")
 # What each line of `further.json` is there to show, by its `shows`.
 SHOWS = {
@@ -282,6 +286,15 @@ SHOWS = {
         lambda e: e["body"]["kind"] == "output_recorded" and "output" in e["body"] and "output_at" not in e["body"]),
     "output_named": shows("a recorded output that names its output by `output_at`")(
         lambda e: e["body"]["kind"] == "output_recorded" and "output_at" in e["body"] and "output" not in e["body"]),
+    "erasable": shows("a declared type with a field declared `erasable`")(
+        lambda e: any(f.get("erasable") is True for f in declaration(e).get("fields", []))),
+    "sealed_ingest": shows("an ingest whose `sealed` names its patch's sealed members, its id made from the patch as stored")(
+        lambda e: e["body"]["kind"] == "record_ingested" and bool(e.get("sealed", {}).get("fields"))
+        and all(isinstance(e["body"]["patch"].get(f), str) and BASE64.fullmatch(e["body"]["patch"][f]) for f in e["sealed"]["fields"])
+        and ingest_id(e) == e["id"]),
+    "sealed_output": shows("a recorded output sealed under the key of the source `sealed` names")(
+        lambda e: e["body"]["kind"] == "output_recorded" and "source" in e.get("sealed", {})
+        and isinstance(e["body"].get("output"), str) and BASE64.fullmatch(e["body"]["output"]) is not None),
     "lake_upgraded": shows("a `lake_upgraded` from the format before to the one this lake is written in")(
         lambda e: e["body"]["kind"] == "lake_upgraded" and e["body"]["from"] == e["v"] - 1 and e["body"]["to"] == e["v"]),
 }
@@ -291,6 +304,8 @@ MISPLACED = {
         lambda e: "upstream" in e and e["body"]["kind"] != "record_ingested"),
     "cause_in_context": shows("`cause` inside `context`, which a reader refuses")(
         lambda e: "cause" in e["context"]),
+    "sealed_on_another_kind": shows("`sealed` on an event that is neither a `record_ingested` nor an `output_recorded`, which a reader refuses")(
+        lambda e: "sealed" in e and e["body"]["kind"] not in SEALS),
     "output_twice": shows("both `output` and `output_at`, which a reader refuses")(
         lambda e: e["body"]["kind"] == "output_recorded" and "output" in e["body"] and "output_at" in e["body"]),
 }
@@ -354,6 +369,9 @@ def verify_dir(root):
                  "`context` carries `cause`, which the envelope carries")
             need("upstream" not in event or event["body"].get("kind") == "record_ingested",
                  f"a `{event['body'].get('kind')}` event carries `upstream`, which only a `record_ingested` event carries")
+            need("sealed" not in event or event["body"].get("kind") in SEALS,
+                 f"a `{event['body'].get('kind')}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries")
+            need("sealed" not in event or v >= 16, f"an event of format {v} carries `sealed`, which format 16 added")
             # known_at in its one form (§1.3), whose text orders as its
             # instant does, and never before the event before it.
             k = event.get("known_at")

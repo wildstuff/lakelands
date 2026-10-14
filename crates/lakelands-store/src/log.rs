@@ -43,6 +43,9 @@ pub struct Draft {
     /// Chosen id, for content-derived and keyed events; positional when
     /// absent.
     pub id: Option<EventId>,
+    /// What the source's key seals of the body, which the draft holds in
+    /// plaintext: the append seals it, and the fold opens it.
+    pub sealed: Option<lakelands_api::event::Sealed>,
     /// The kind and payload.
     pub body: EventBody,
 }
@@ -62,6 +65,7 @@ impl Draft {
             cause: None,
             idempotency_key: None,
             id: None,
+            sealed: None,
             body,
         }
     }
@@ -165,6 +169,7 @@ pub(crate) fn unsealed(
         cause: d.cause.or(d.context.cause),
         fence,
         idempotency_key: d.idempotency_key,
+        sealed: d.sealed,
         body: d.body,
         hash: Digest(String::new()),
     }

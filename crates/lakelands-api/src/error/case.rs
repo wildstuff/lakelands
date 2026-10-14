@@ -31,7 +31,7 @@ use super::outage::{Aimless, Exchange, closed, named};
 use crate::expr::Condition;
 use crate::expr::kind::Kind;
 use crate::id::{
-    FieldName, LakeId, ParamName, Position, ProposalId, RecordKey, RelationName, SourceId,
+    FieldName, KeyId, LakeId, ParamName, Position, ProposalId, RecordKey, RelationName, SourceId,
     TriggerName, TypeName, ValueTypeName, VerbName,
 };
 use crate::ontology::{Authority, Cardinality, FieldType, StorageKind};
@@ -309,6 +309,7 @@ said_by_display!(
     VerbName => verbs,
     ProposalId,
     SourceId,
+    KeyId => nothing,
     Timestamp => nothing,
     super::Detail,
 );
@@ -598,6 +599,8 @@ catalog! {
         Constraint => "`constraint`",
         /// A field's `initial` value.
         Initial => "`initial`",
+        /// A field's `erasable`.
+        Erasable => "`erasable`",
         /// The link types of a type's relations.
         Links { name: TypeName } => "the links of `{name}`",
         /// A pattern's start.
@@ -801,6 +804,16 @@ catalog! {
         EmbedNotDerived => "an embedding has the authority `derived`",
         /// An embedding that is not a vector with dimensions.
         EmbedNotVector => "only a vector with dimensions is the embedding of text",
+        /// A field declared erasable that only its authors or the fold write.
+        ErasableAuthored => "only a source's values are sealed under its key; an author's stay plaintext",
+        /// A field that was erasable declared without it.
+        ErasableDropped => "a source's later values would enter the log in plaintext, and the ones sealed stay sealed",
+        /// A field of no type declared erasable.
+        ErasableNotOfType => "only a field of a type declares it",
+        /// A key field declared erasable.
+        ErasableKey => "a key's field is the record's key, which stays plaintext in every event",
+        /// A field that names a record declared erasable.
+        ErasableReference => "a field that names a record is read by every walk, so it stays plaintext",
         /// An `expr` function with no expression.
         ExprNoExpression => "it is backed by `expr` and has no expression",
         /// An expression on a function another backing computes.
@@ -1291,6 +1304,8 @@ catalog! {
         SetEmpty => "nothing to apply: the set holds no declaration",
         /// A set of declarations with several problems.
         SetRefused { count: usize, problems: Vec<super::Error> } => "the set of `declarations` is refused whole, with {count} problems: {problems}",
+        /// A source whose keys were destroyed, asked for a new one.
+        KeyDestroyed { source: SourceId } => "the keys of the source `{source}` were destroyed, and a forgotten source is never given a key again",
         /// A source id that is empty or holds a NUL.
         SourceIdForm => "a source id is not empty and holds no NUL character",
         /// A trigger's ceiling above the lake's.

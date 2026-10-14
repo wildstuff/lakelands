@@ -155,6 +155,7 @@ pub fn mirror_type() -> TypeDecl {
         initial: None,
         sensitive: false,
         searchable: false,
+        erasable: false,
         description: None,
         label: None,
         embed: None,

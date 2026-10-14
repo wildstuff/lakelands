@@ -19,6 +19,8 @@ serde_json.workspace = true
 serde_path_to_error.workspace = true
 # The schema hash and every other digest over canonical bytes.
 sha2.workspace = true
+# A data key is wiped when dropped.
+zeroize.workspace = true
 
 [dev-dependencies]
 # Parses the WIT package in `wit/` for the drift check (tests/wit.rs).

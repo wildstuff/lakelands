@@ -121,6 +121,9 @@ pub fn reads_format(v: u64) -> bool {
     (u64::from(OLDEST_LOG_FORMAT)..=u64::from(LOG_FORMAT_VERSION)).contains(&v)
 }
 
+/// The log format that first holds `sealed` (058).
+const SEALED_FROM: u32 = 16;
+
 /// An event as log format `v` wrote it, its members as the format this
 /// release writes says them, for the release's own structs to read. Its
 /// `v` stays the one it was written in, and its bytes and hash are the
@@ -131,7 +134,9 @@ pub fn reads_format(v: u64) -> bool {
 ///   reference or a relation's link (055); a log of format 14 holds no
 ///   such declaration, and nothing else of an event changed.
 /// - **15 → 16:** none. Format 16 is 0.15.0's one step: a log of format
-///   15 holds none of the forms it adds, each named here by its change.
+///   15 holds none of the forms it adds, each named here by its change:
+///   an event's `sealed` and a field's `erasable` (058), so each value of
+///   format 15 is plaintext.
 #[doc(hidden)]
 pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
     debug_assert!(reads_format(v), "format {v} is not one this release reads");
@@ -243,7 +248,10 @@ pub fn created_in_another(event: &Event) -> Option<Flaw> {
 /// origin `initial`, a field's provenance alone, never an event's
 /// (`docs/decisions/050-a-field-declares-its-initial-value.md`); and an
 /// output both carried and named by `output_at`, or neither
-/// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`). No door
+/// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`); and
+/// `sealed` on any kind but `record_ingested` and `output_recorded`, or
+/// on an event of a format before 16
+/// (`docs/decisions/058-a-source-may-be-forgotten.md`). No door
 /// puts any there; a reader holds the rule for a log written by something
 /// else.
 #[doc(hidden)]
@@ -262,6 +270,17 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
         return Some(Flaw::InitialOrigin);
     }
     let kind = event_kind(&event.body);
+    let seals = matches!(
+        event.body,
+        EventBody::RecordIngested { .. } | EventBody::OutputRecorded { .. }
+    );
+    if event.sealed.is_some() && !seals {
+        return Some(Flaw::SealedOn { kind });
+    }
+    if event.sealed.is_some() && event.v < SEALED_FROM {
+        let v = event.v;
+        return Some(Flaw::SealedBefore { v });
+    }
     (event.upstream.is_some() && !matches!(event.body, EventBody::RecordIngested { .. }))
         .then_some(Flaw::UpstreamOn { kind })
 }

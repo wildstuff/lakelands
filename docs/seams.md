@@ -21,7 +21,7 @@ enforce them.
 
 ## The roster
 
-Seven seams, this roster and no other. Adding one is a change to the
+Eight seams, this roster and no other. Adding one is a change to the
 contract and to this page.
 
 | Seam | Trait(s) | Default in Lakelands | A host plugs in |
@@ -33,6 +33,7 @@ contract and to this page.
 | Verb execution | `VerbExecutor` | None: external verbs are refused as `Unbound` | What its external verbs do |
 | Change feed | `ChangeFeed` | The log, read by kind from a position | A relay of the feed onto its own bus, as its own code |
 | System vocabulary | `SystemVocabulary` | Lakelands' four `sys.` types, allowed in every lake | Its own `sys.` types and which lakes may hold them |
+| Keys | `KeyStore` | None: a source's value of an erasable field is refused as `Unbound` | Its KMS; `lakelands-backings` ships `FileKeyring`, a key file per lake |
 
 `Location` is not a seam. It is the configuration every seam and every
 engine is configured through, passed at the call site; Lakelands reads no
@@ -41,8 +42,8 @@ environment (`docs/decisions/005-no-environment-reads.md`).
 The seams do not all point the same way:
 
 - **A host implements and passes in** the engines (`Seams::engines`),
-  function backings, an embedding backend, verb executors and a system
-  vocabulary. Every slot but `engines` may stay empty and has a default;
+  function backings, an embedding backend, verb executors, a system
+  vocabulary and a key store. Every slot but `engines` may stay empty and has a default;
   `engines` needs at least the opener of the engine a lake's `Location`
   names, and Lakelands' own openers are what a host usually passes.
 - **The doors hold** the `PrincipalResolver`: the CLI and the server
@@ -339,7 +340,7 @@ state again); it never adds a second one.
 | `end_head_only(name, at)` | Every key of a head-only name (`put_record`, above) ends at once, at `at`: whatever the keys held, put before the transaction or earlier in it, is deleted, and a key put after it in the same transaction is kept. A disk engine deletes them in one statement, whatever their number. The fold calls it where a kept view ends, so ending a view writes nothing for each entry of its order. A rollback leaves what the keys held. |
 | `put_proposal(proposal, at)` | A proposal's state from `at`, the position of its latest event; earlier states kept. A view at a position inside a multi-event append sees each state from its own event, not from the commit. |
 | `put_membership(…, at)` | Whether a record is in an object set from a position on; earlier membership kept. |
-| `put_output(…, at)` | A seam's recorded output, by seam and input digest, valid from `at`, the position of the event that recorded it. A later output for the same seam and input replaces the earlier one from its position on (022, extended: a redeclaration retries a failure). One seam name is the store's own, `sys:renames`: under it the fold keeps the lake's list of field renames, as one output, put at the position of each `migrated` event that renames. No seam records under it and no event holds it; an engine keeps it as any other (`docs/decisions/006-grants-not-roles.md`, extended). A read of an output takes the latest state of its seam and input at or before the view's position and reads none of their other states, so an output recorded often is read as one recorded once. |
+| `put_output(…, at)` | A seam's recorded output, by seam and input digest, valid from `at`, the position of the event that recorded it. A later output for the same seam and input replaces the earlier one from its position on (022, extended: a redeclaration retries a failure). Two seam names are the store's own. Under `sys:renames` the fold keeps the lake's list of field renames, as one output, put at the position of each `migrated` event that renames. Under `sys:sealed` it keeps, for each source (its input the SHA-256 of the source id's canonical bytes), the versions of its key the log sealed with, in the order first used, put at the first `record_ingested` sealed under each (`docs/decisions/058-a-source-may-be-forgotten.md`). No seam records under either and no event holds them; an engine keeps them as any other (`docs/decisions/006-grants-not-roles.md`, extended). A read of an output takes the latest state of its seam and input at or before the view's position and reads none of their other states, so an output recorded often is read as one recorded once. |
 | `mark_applied(applied)` | Remember an applied event's id at its position, so a redelivery is recognised (the first position marked for an id is kept), and keep the feed's index of it: its kind and what it is about (`lakelands_core::feed::about`), one entry a type it concerns. `clear` takes the index with the rest; `compact` keeps it. |
 | `clear` | Delete everything, kept history and the vector index included, for a rebuild; `folded_through` is none afterwards. |
 | `compact` | Give back the storage the projection no longer uses, outside a transaction (`Invalid` inside one), and answer its size in bytes before and after as the engine measures it, or none. No view answers otherwise afterwards: no state, kept history included, no applied id and no recorded output goes. A compact that fails leaves every answer as it was (`docs/decisions/040-maintenance-never-changes-an-answer.md`). |
@@ -1982,6 +1983,42 @@ Without an `aging` section `serve` ages nothing: a host, or
 line per rule (`<rule>: moved N, M guard(s) failed`, or `<rule>:
 skipped, <why>`) and `aged <date> through position P`. No MCP tool calls `age`:
 like `rebuild` and `checkpoint`, it is the host's.
+
+## `KeyStore`
+
+A source's values of a field declared `erasable` are kept in the log
+sealed under that source's data key, so destroying the key forgets them
+without touching a byte of the log
+(`docs/decisions/058-a-source-may-be-forgotten.md`). The keys are the
+host's, never in the lake: not in its log, its projection or its export.
+
+| Method | Contract |
+|---|---|
+| `create(lake, source)` | Make a new version of the source's key and answer its id. A source whose keys were destroyed is never given one again (`key_destroyed`). |
+| `key(lake, source, id)` | The key of that version: 32 bytes, or none once destroyed. |
+| `destroy(lake, source)` | Destroy every version of the source's key. |
+| `ids(lake, source)` | The versions the store holds, oldest first; none once destroyed. |
+
+The calls are synchronous: the writer makes them on the store's blocking
+threads, at a source's first sealed value of an open lake, and at a read
+that computes a call through a kept step. The lake keeps each key in
+memory while it is open, wiped when dropped, and seals a source's new
+values with the newest version. A key the store does not give where the
+log holds a value it sealed fails the fold closed, `unavailable`
+(`key_missing`), naming the source and the version: a lost key is never
+read as an erasure. Nor is a new key made for a source whose sealed
+values the log holds while the store lacks the version it last sealed
+with: its next write is refused `key_missing`, so a wrong path, a fresh
+machine or an old backup fails at once. A version's id is the store's
+and is never given twice: `FileKeyring` makes it at random. Without a key store, a value that would be sealed is
+refused as `Unbound`, and a lake whose log holds one is folded only by a
+writer that holds the key.
+
+`lakelands_backings::FileKeyring::new(dir)` keeps one file per lake,
+`<lake>.keys.json`, in a directory the operator keeps outside every lake
+directory, readable by its owner alone and written whole. Its backups are
+the operator's to keep honest: a key restored from a backup restores what
+it sealed.
 
 ## The facade and the doors
 

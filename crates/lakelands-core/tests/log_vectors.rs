@@ -190,7 +190,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 311, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 337, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -392,7 +392,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 33] = [
+const SHOWN: [&str; 36] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -426,17 +426,21 @@ const SHOWN: [&str; 33] = [
     "output_carried",
     "output_named",
     "lake_upgraded",
+    "erasable",
+    "sealed_ingest",
+    "sealed_output",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 40;
+const LAST: u64 = 43;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
-const MISPLACED: [&str; 3] = [
+const MISPLACED: [&str; 4] = [
     "upstream_on_another_kind",
     "cause_in_context",
     "output_twice",
+    "sealed_on_another_kind",
 ];
 
 /// Whether the event is what its entry of `further.json` says it shows,
@@ -582,6 +586,23 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
             &event.body,
             B::LakeUpgraded { from, to } if *to == event.v && *from + 1 == *to
         ),
+        "erasable" => {
+            matches!(declared, Some(D::Type(t)) if t.fields.iter().any(|f| f.erasable))
+        }
+        "sealed_ingest" => {
+            let sealed = event.sealed.as_ref().map(|s| s.fields.as_slice());
+            matches!(&event.body, B::RecordIngested { .. }) && sealed == Some(&["email".into()])
+        }
+        "sealed_output" => {
+            let source = event.sealed.as_ref().and_then(|s| s.source.as_ref());
+            matches!(
+                &event.body,
+                B::OutputRecorded {
+                    output: Some(_),
+                    ..
+                }
+            ) && source.is_some()
+        }
         other => panic!("`further.json` shows `{other}`, which this test has no check for"),
     }
 }
@@ -667,6 +688,7 @@ fn every_misplaced_line_is_refused_for_the_member_it_misplaces() {
             "upstream_on_another_kind" => assert!(why.contains("`record_retired`"), "{why}"),
             "cause_in_context" => assert!(why.contains("`context` carries `cause`"), "{why}"),
             "output_twice" => assert_eq!(flaw, Flaw::OutputOnce),
+            "sealed_on_another_kind" => assert!(why.contains("carries `sealed`"), "{why}"),
             other => panic!("`further.json` misplaces `{other}`, which this test has no check for"),
         }
     }

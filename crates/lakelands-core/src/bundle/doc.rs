@@ -89,6 +89,8 @@ pub(super) struct FieldBody {
     pub sensitive: bool,
     #[serde(default)]
     pub searchable: bool,
+    #[serde(default)]
+    pub erasable: bool,
     pub description: Option<String>,
     pub label: Option<String>,
     pub embed: Option<EmbedDoc>,

@@ -32,6 +32,7 @@ mod derived_relations;
 mod describe;
 mod durations;
 mod embeddings;
+mod erasable;
 mod export;
 mod feed;
 mod fields;
@@ -488,6 +489,11 @@ pub const ALL: &[Check] = &[
     search::SEARCH_READS_A_VECTOR_FIELD,
     search::SEARCH_RANKS_BY_THE_HEAD,
     search::HYBRID_THROUGH_BACKEND,
+    erasable::SEALED_IN_THE_LOG,
+    erasable::ERASABLE_DECLARED,
+    erasable::KEY_MISSING,
+    erasable::SEALED_OUTPUT,
+    erasable::FIRST_SEALED,
     embeddings::EMBED_WRITE,
     embeddings::VECTOR_COVERAGE,
     embeddings::EMBED_ONCE,

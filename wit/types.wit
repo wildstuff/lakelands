@@ -164,6 +164,8 @@ interface types {
         initial: option<json>,
         sensitive: bool,
         searchable: bool,
+        /// Whether a source's values are sealed under its key.
+        erasable: bool,
         description: option<string>,
         label: option<string>,
         embed: option<embed-decl>,
@@ -1004,6 +1006,7 @@ interface types {
         filterable: bool,
         searchable: bool,
         sensitive: bool,
+        erasable: bool,
         description: option<string>,
         label: option<string>,
         embed: option<embed-decl>,

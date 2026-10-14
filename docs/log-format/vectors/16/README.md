@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 40, each
+- `further.json`: the lake's next events, positions 8 to 43, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -65,14 +65,20 @@ The files:
     call that names it by `output_at` (38, 39);
   - a `lake_upgraded` from format 15 to 16 (40), its members alone: in a
     whole lake it follows a writer's `lease_taken` after events of the
-    format before, which this lake does not hold.
+    format before, which this lake does not hold;
+  - a type whose `email` is declared `erasable`, an ingest of `crm` whose
+    `sealed` names `email`, sealed under `crm`'s key `1`, and an output
+    computed from it, sealed under the same key with an HMAC `input`
+    (41 to 43). The key is SHA-256 of `lakelands:vectors:key`, so a
+    reader that holds it opens them; `verify.py` holds the members'
+    form, and the ingest's id over the patch as stored.
 
-  Its `misplaced` holds three lines that are not of the lake. Each
+  Its `misplaced` holds four lines that are not of the lake. Each
   stands at its position after the event before it, in the release's
   format and with its hash made right, and carries one member where it
   never sits, so a reader refuses it for that alone: `upstream` on a
-  `record_retired`, `cause` inside `context`, and an `output_recorded`
-  with both `output` and `output_at`.
+  `record_retired`, `cause` inside `context`, an `output_recorded`
+  with both `output` and `output_at`, and `sealed` on a `record_retired`.
 - `schema-hash.json`: a view type whose conditions are written as text,
   the shape object it hashes (conditions in typed form, Appendix B), the
   shape's canonical bytes, and the schema hash; and the hash of the same

@@ -214,6 +214,7 @@ Where in a declaration or a request a case is said.
 | `requires` | — | `requires` | A verb's `requires`. |
 | `constraint` | — | `constraint` | A value type's or a type's `constraint`. |
 | `initial` | — | `initial` | A field's `initial` value. |
+| `erasable` | — | `erasable` | A field's `erasable`. |
 | `links` | `name` (TypeName) | the links of `{name}` | The link types of a type's relations. |
 | `start` | — | the start | A pattern's start. |
 | `step` | `step` (usize), `relation` (RelationName) | step {step} over `{relation}` | A pattern's step, by its number from 1 and its relation. |
@@ -285,6 +286,11 @@ What a refusal is about.
 | `embed_no_model` | — | an embedding names its model | An embedding that names no model. |
 | `embed_not_derived` | — | an embedding has the authority `derived` | An embedding whose authority is not `derived`. |
 | `embed_not_vector` | — | only a vector with dimensions is the embedding of text | An embedding that is not a vector with dimensions. |
+| `erasable_authored` | — | only a source's values are sealed under its key; an author's stay plaintext | A field declared erasable that only its authors or the fold write. |
+| `erasable_dropped` | — | a source's later values would enter the log in plaintext, and the ones sealed stay sealed | A field that was erasable declared without it. |
+| `erasable_not_of_type` | — | only a field of a type declares it | A field of no type declared erasable. |
+| `erasable_key` | — | a key's field is the record's key, which stays plaintext in every event | A key field declared erasable. |
+| `erasable_reference` | — | a field that names a record is read by every walk, so it stays plaintext | A field that names a record declared erasable. |
 | `expr_no_expression` | — | it is backed by `expr` and has no expression | An `expr` function with no expression. |
 | `expression_not_expr` | `backing` (String) | it has an expression but is backed by `{backing}` | An expression on a function another backing computes. |
 | `function_input_kind` | `function` (String), `input` (FieldName), `kind` (StorageKind), `type` (TypeName), `held` (StorageKind) | the function `{function}` takes `{input}` as a {kind}, and `{type}` holds it as a {held} | A function's input the type holds as another kind. |
@@ -516,6 +522,7 @@ What a refusal is about.
 | `set_declares_twice` | — | the set declares it more than once | A set of declarations that names one twice. |
 | `set_empty` | — | nothing to apply: the set holds no declaration | A set of no declarations. |
 | `set_refused` | `count` (usize), `problems` (list of Error) | the set of `declarations` is refused whole, with {count} problems: {problems} | A set of declarations with several problems. |
+| `key_destroyed` | `source` (SourceId) | the keys of the source `{source}` were destroyed, and a forgotten source is never given a key again | A source whose keys were destroyed, asked for a new one. |
 | `source_id_form` | — | a source id is not empty and holds no NUL character | A source id that is empty or holds a NUL. |
 | `trigger_too_deep` | `depth` (u32), `max` (u32) | its `max_depth` {depth} is above the lake's `max_reactive_depth` {max} | A trigger's ceiling above the lake's. |
 | `unanswered` | `position` (Position), `accepted` (bool) | [{?accepted}the acceptance\|the call] is in the log at position {position}, and no answer of the verb's executor is recorded for it, so this retry runs nothing; if the call is still running, or its answer is held, its answer will be recorded and a retry then answers it, unless the handle that ran it is dropped or loses its lease first; if its first answer said that the verb's executor was not handed the call, [{?accepted}propose the call again\|call the verb again under another key or with none] | A retry that finds no answer of the verb's executor recorded. |
@@ -758,6 +765,7 @@ A seam the call needs and the host has not bound.
 | `executor` | `name` (String) | the verb executor `{name}` | A verb's executor, by the name the verb declares. |
 | `embedding` | `model` (String), `dimensions` (u32), `type` (TypeName), `field` (String), `bound` (Bound, optional) | the embedding model `{model}` with {dimensions} dimensions, for `{type}.{field}` [(the bound one is {bound})\|(none is bound)] | An embedding backend for a field's model: none is bound, or one of another model or length. |
 | `function_backing` | `kind` (String) | the `{kind}` function backing (the host bound none of that kind) | A function backing of a kind. |
+| `key_store` | — | a key store, which seals a source's values of an erasable field (the host bound none) | A key store, which seals a source's values of an erasable field. |
 | `vector_index` | — | a vector index (this engine keeps none) | A vector index, which this engine keeps none of. |
 | `engine` | `name` (String) | the engine `{name}` (no opener for it was passed in) | An engine, whose opener was not passed in. |
 | `operation` | `op` (String) | the host operation `{op}`, which this door does not offer | An operation of the host's that this door does not offer. |
@@ -837,6 +845,8 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `format_step` | `v` (u64), `before` (u64) | written in log format {v} after an event in format {before}: a lake's format rises only at a new writer's `lease_taken`, whose next event is the `lake_upgraded` from the one to the other | Its log format differs from the event's before it where no new writer upgraded the lake. |
 | `cause_in_context` | — | `context` carries `cause`, which the envelope carries | `context` carries `cause`, which the envelope carries. |
 | `initial_origin` | — | the envelope carries the origin `initial`, a field's alone | The envelope carries the origin `initial`, a field's alone. |
+| `sealed_on` | `kind` (String) | a `{kind}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries | An event other than `record_ingested` and `output_recorded` carries `sealed`. |
+| `sealed_before` | `v` (u32) | an event of format {v} carries `sealed`, which format 16 added | An event of a format before 16 carries `sealed`. |
 | `upstream_on` | `kind` (String) | a `{kind}` event carries `upstream`, which only a `record_ingested` event carries | An event other than `record_ingested` carries `upstream`. |
 | `hash_mismatch` | — | the hash does not match the event | The hash does not match the event. |
 | `disagrees` | — | the engine's record of the event disagrees with its bytes | The engine's record of the event disagrees with its bytes. |
@@ -906,6 +916,8 @@ Why the lake cannot answer now. Retrying may help; the sentence says what the op
 | `log_upgrade_owed` | `lake` (String), `found` (u64), `reads` (u64) | lake `{lake}` is written in log format {found}, and this release writes format {reads}: a writer's open upgrades it, so open it once for writing or run `lakelands upgrade {lake}`, and it is read; nothing was read from it | The lake's log is written in an older format this release reads, and only a writer's open upgrades it. |
 | `busy` | `lake` (String) | lake `{lake}` could not be compacted: a reader holds a snapshot of its projection; nothing a read answers has changed, so compact again when the reader is done | The lake could not be compacted while a reader holds a snapshot. |
 | `behind` | `cause` (Error, optional) | the lake's projection is behind its log and could not catch up; nothing was appended[ ({cause})] | The projection is behind the log and could not catch up; nothing was appended. |
+| `key_missing` | `source` (SourceId), `key` (KeyId) | the key store does not give the key `{key}` of the source `{source}`, and no act forgot that source; a lost key is never read as an erasure | A key of a source that the key store does not give, with no act that forgot the source. |
+| `unsealable` | `position` (Position) | a sealed value of the event at position {position} does not open under the key it names: the key store gives another key under that id, or the event was changed | A sealed value that does not open under the key its event names. |
 | `decided_behind` | — | this write was decided while the lake's projection was behind its log; nothing was appended | The write was decided while the projection was behind the log; nothing was appended. |
 | `not_folded` | `from` (Position), `cause` (Error) | what was appended is in the log from position {from} and is not folded yet; the next write folds it, and a write is sent again only under its idempotency key ({cause}) | What was appended from a position is in the log and not folded yet. |
 | `moved` | — | the lake's names moved while this write waited; send it again | The lake's names moved while the write waited; send it again. |
@@ -1004,7 +1016,7 @@ its own sentence. The other types:
 
 - **text** (`String`), a **name** (`TypeName`, `FieldName`, `RelationName`,
   `VerbName`, `ParamName`, `TriggerName`, `ValueTypeName`, `LakeId`,
-  `SourceId`) or a **record key** (`RecordKey`): a string;
+  `SourceId`, `KeyId`) or a **record key** (`RecordKey`): a string;
 - a **number** (`u16`, `u32`, `u64`, `usize`, `i32`, `i64`, `Number`) or
   a **position** (`Position`): a JSON number;
 - an **instant** (`Timestamp`): an RFC 3339 string in UTC; a

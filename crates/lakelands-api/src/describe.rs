@@ -148,6 +148,10 @@ pub struct FieldDescription {
     /// Whether its value is masked, not dropped, for a principal who may
     /// not read it.
     pub sensitive: bool,
+    /// Whether a source's values of it are sealed under that source's key
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub erasable: bool,
     /// What it means.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -190,6 +194,7 @@ impl FieldDescription {
             initial: decl.initial,
             searchable: decl.searchable,
             sensitive: decl.sensitive,
+            erasable: decl.erasable,
             description: decl.description,
             label: decl.label,
             embed: decl.embed,
