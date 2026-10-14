@@ -33,11 +33,13 @@ use serde_json::{Value, json};
 
 pub use deliver::{DeliverConfig, Deliverer, EndpointConfig, Start};
 pub use embed::{Embed, EmbedConfig};
+pub use keyring::FileKeyring;
 
 pub mod deliver;
 pub mod embed;
 pub mod exec;
 pub mod http;
+pub mod keyring;
 pub mod lock;
 mod transport;
 

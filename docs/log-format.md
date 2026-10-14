@@ -50,6 +50,7 @@ every kind, and `body`, which holds the kind and its payload.
 | `cause` | integer | consequences | The position of the event this one follows from: a verb's write names its `verb_called`, an accepted proposal's write names its `write_accepted`, a fired trigger names the write that fired it. An event of a host's write that the store sets no cause for names the position the host gave, at or below the head when it was appended (`docs/decisions/021-the-write-context-belongs-to-the-host.md`); any kind may carry it. |
 | `fence` | integer | always | The fencing token of the writer lease the event was appended under (§4); `0` for the event at position 0, which is written before any lease exists in the lake. |
 | `idempotency_key` | string | when given | The caller's idempotency key of an authored write. |
+| `sealed` | object | from format 16, when a source's key seals a value | `{ "key", "fields" }`, or `{ "key", "source" }`: the version of the source's key, and the members of the patch it seals, or, with `source`, the recorded output it seals (§1.4). Only on `record_ingested` and `output_recorded`; a reader refuses it on any other kind, naming the kind. |
 | `body` | object | always | The kind and its payload (§2). |
 | `hash` | string | always | SHA-256 of the event's canonical bytes without `hash`, as 64 lower-case hex digits (§1.2). |
 
@@ -208,6 +209,54 @@ log had at an instant by a binary search (`LakeStore::position_at`).
 source reported it. The lake checks that it lies in the years above and
 compares it with nothing, `known_at` included.
 
+### 1.4 Sealed values
+
+From format 16, a source's value of a field declared `erasable` enters
+the log sealed under that source's key
+(`docs/decisions/058-a-source-may-be-forgotten.md`). The key is the
+host's, in its key store, never in the lake; `sealed.key` names its
+version, which the key store answers by.
+
+- **The value.** The patch member holds a string: the standard base64,
+  with padding, of AES-256-GCM-SIV's output over the value's canonical
+  bytes (§1.2). Every other member stays plaintext, and so does the rest
+  of the envelope and the body.
+- **The nonce** is the first 12 bytes of SHA-256 over the source, the
+  type, the record key, `version - 1` in decimal digits and the field,
+  joined by `0x00`. The same value against the same state of a record
+  seals to the same bytes, and two records or two versions never share a
+  nonce. A reader makes the nonce again from where the value stands, so a
+  sealed value moved elsewhere does not open.
+- **The ingest id** is made from the patch as stored, ciphertext
+  included (§3): no digest of a plaintext value enters the log.
+- **A recorded output** computed from one source's erasable values is
+  sealed under the same key: `sealed` names the key and the `source`,
+  the `output` is a sealed value whose nonce is made from the source, the
+  seam and the `input`, and the `input` is HMAC-SHA-256 under a key
+  derived from the source's (HKDF-SHA-256 with an empty salt, info
+  `lakelands:output:v1`), always under the version of the key the
+  source first sealed with, which the fold keeps, so a rebuild finds the
+  output again whatever the key store holds now. A call whose inputs hold
+  erasable values of two sources is not made; the field holds no value
+  and says why.
+- **What equality tells.** A value's own ciphertext tells no equality
+  across records or versions: its nonce is its place's. A recorded output
+  is recorded once for one call (`docs/decisions/053-a-recorded-output-is-recorded-once.md`),
+  so its `input` is the same for two records of one source whose call
+  reads the same values: it tells that they are equal, never what they
+  are, and never across two sources, whose keys differ.
+
+The fold opens what it seals, so the projection holds plaintext. A key
+the key store does not give fails the fold closed, naming the source and
+the key: a lost key is never read as an erasure. A writer never asks for
+a new key of a source whose sealed values the log holds when the key
+store has lost the version it last sealed with: the write is refused the
+same way, so a wrong key store fails at the write, not at a later
+rebuild. A verifier without the
+keys checks every hash and id over the bytes as stored, and the form of
+each sealed member. `docs/log-format/vectors/16/` holds a sealed ingest
+and a sealed output under a key its README names.
+
 ## 2. Kinds
 
 The set of kinds is closed. A reader that meets a
@@ -259,6 +308,11 @@ this object:
   record is made, and changes neither how a stored record is stored nor
   how it is validated, so declaring or changing one leaves the hash as it
   was (`docs/decisions/050-a-field-declares-its-initial-value.md`).
+  Nor is `erasable` (from format 16): it says how a source's values are
+  kept in the log (§1.4), not what a record holds. It is refused on a key
+  field, on a field that names a record, on a field only authors or the
+  fold write and on a relation's field, and a field that was erasable is
+  never declared without it (`docs/decisions/058-a-source-may-be-forgotten.md`).
 - A relation is exactly `{ "name", "target", "cardinality", "fields" }`.
   `cardinality` is always written, `many_to_one` when the declaration
   leaves it out; `fields` is `[]` when the relation has none.
@@ -490,7 +544,10 @@ is the SHA-256 of the canonical bytes of everything the seam received
 except the lake (which the event already names): for a function,
 `{ "function", "inputs", "config" }`; for an embedding, `{ "texts" }`;
 for a verb, `{ "verb", "record", "payload", "position" }`, `record`
-null for a verb called on its type. Two calls with
+null for a verb called on its type. A call that reads a source's
+erasable values, directly or through the fields they are derived into,
+is digested by HMAC under that source's key instead, and its output is
+sealed (§1.4). Two calls with
 the same `seam` and `input` are the same call, and a replay reads the
 recorded output for it.
 
@@ -822,7 +879,9 @@ the first release with real installations
   carry `annotations`, which no value type of format 14 holds. 15 → 16:
   none either. Format 16 is 0.15.0's one step; each form it adds is
   said here by the change that adds it, and a log of format 15 holds
-  none of them. Neither step changes a fold, so the projection stays. A step that changes how an event folds
+  none of them: an event's `sealed` and a field's `erasable` (§1.4,
+  `docs/decisions/058-a-source-may-be-forgotten.md`), so each value of
+  format 15 is plaintext. Neither step changes a fold, so the projection stays. A step that changes how an event folds
   says so here, and a writer's open then rebuilds the projection.
 - **A writer's open upgrades.** Where the newest event, read under the
   writer's lease, is in an older format the release reads, the open

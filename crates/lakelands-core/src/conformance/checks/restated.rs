@@ -57,7 +57,7 @@ type Kind = (&'static str, Vec<&'static str>, fn(&str) -> bool);
 fn kinds() -> [Kind; 3] {
     [
         ("the type", members!(TypeDecl { name, key, fields, relations, view, valid_from, valid_to, language, field_meta, insert_only, description, label, annotations }), |t| t == "-"),
-        ("a field", members!(FieldDecl { name, ty, required, authority, derived, function, computed_at, depends_on, on_input_change, initial, sensitive, searchable, description, label, embed, annotations }), |t| t != "-" && !RELATIONS.contains(&t)),
+        ("a field", members!(FieldDecl { name, ty, required, authority, derived, function, computed_at, depends_on, on_input_change, initial, sensitive, searchable, erasable, description, label, embed, annotations }), |t| t != "-" && !RELATIONS.contains(&t)),
         ("a relation", members!(RelationDecl { name, target, cardinality, inverse, via, fields, authority, description, annotations, derived }), |t| RELATIONS.contains(&t)),
     ]
 }
@@ -84,7 +84,7 @@ const ROWS: &str = r#"
 secret type {"kind":"number"} fields
 title required true fields
 secret required null restated
-secret authority "authored" restated
+secret authority "source" restated
 loud derived "lower(title)" restated
 loud depends_on null nothing
 loud computed_at "write" restated
@@ -94,6 +94,7 @@ verdict on_input_change "keep" restated
 title initial null restated
 secret sensitive null restated
 secret searchable null restated
+secret erasable null refused
 secret description null restated
 secret label null restated
 near embed {"from":["body"],"model":"MODEL"} restated
@@ -129,7 +130,7 @@ fn note() -> Value {
     let marks = json!({"acme.icon": "card"});
     let secret = json!({
         "name": "secret", "type": {"kind": "text"}, "required": true, "authority": "shared",
-        "sensitive": true, "searchable": true, "description": "What is kept.",
+        "sensitive": true, "searchable": true, "erasable": true, "description": "What is kept.",
         "label": "Secret", "annotations": marks,
     });
     let verdict = json!({

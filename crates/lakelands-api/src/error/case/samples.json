@@ -168,6 +168,21 @@
    "code": "embed_not_vector"
   },
   {
+   "code": "erasable_authored"
+  },
+  {
+   "code": "erasable_dropped"
+  },
+  {
+   "code": "erasable_not_of_type"
+  },
+  {
+   "code": "erasable_key"
+  },
+  {
+   "code": "erasable_reference"
+  },
+  {
    "code": "expr_no_expression"
   },
   {
@@ -1265,6 +1280,10 @@
    ]
   },
   {
+   "code": "key_destroyed",
+   "source": "src"
+  },
+  {
    "code": "source_id_form"
   },
   {
@@ -2139,6 +2158,9 @@
   },
   {
    "code": "initial"
+  },
+  {
+   "code": "erasable"
   },
   {
    "code": "links",

@@ -382,7 +382,8 @@ pub fn fill(
         event,
         &mut fields,
         &mut meta,
-    ) {
+        outputs,
+    )? {
         return Ok(None);
     }
     compute(

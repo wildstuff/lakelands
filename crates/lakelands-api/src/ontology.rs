@@ -273,6 +273,12 @@ pub struct FieldDecl {
     /// Whether full-text search covers this field.
     #[serde(default)]
     pub searchable: bool,
+    /// Whether a source's values of the field are kept in the log sealed
+    /// under that source's key, so forgetting the source erases them
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`). Not part of
+    /// the schema hash: it says how values are kept, not what they are.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub erasable: bool,
     /// What the field means, for people and agents. Not part of the
     /// schema hash (`docs/decisions/007-schema-hash-covers-shape.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]

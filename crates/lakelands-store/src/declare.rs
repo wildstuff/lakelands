@@ -475,6 +475,30 @@ fn initial(o: &Ontology, owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) 
     Err(invalid_field(&f.name, at(&on, why)))
 }
 
+/// `erasable` stands on a type's own field that a source writes and that
+/// is neither a key nor names a record, and a field once erasable stays
+/// so (`docs/decisions/058-a-source-may-be-forgotten.md`).
+fn erasable(o: &Ontology, owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) -> Result<()> {
+    let was = |t: &TypeDecl| {
+        let now = o.types.get(&t.name).map(|c| &c.decl.fields);
+        now.is_some_and(|fs| fs.iter().any(|g| g.name == f.name && g.erasable))
+    };
+    let names = |t: &TypeDecl| t.relations.iter().any(|r| r.via.as_ref() == Some(&f.name));
+    let why = match of {
+        Some(t) if !f.erasable && was(t) => Case::ErasableDropped,
+        _ if !f.erasable => return Ok(()),
+        None => Case::ErasableNotOfType,
+        Some(_) if !matches!(f.authority, Authority::Source | Authority::Shared) => {
+            Case::ErasableAuthored
+        }
+        Some(t) if t.key.contains(&f.name) => Case::ErasableKey,
+        Some(t) if f.ty.kind == StorageKind::Reference || names(t) => Case::ErasableReference,
+        Some(_) => return Ok(()),
+    };
+    let on = [owner, &[of_field(&f.name), Place::Erasable]].concat();
+    Err(invalid_field(&f.name, at(&on, why)))
+}
+
 /// Refuse `computed_at` on a field no record holds: a verb's payload's, a
 /// function's input.
 fn computed_here(on: &[Place], f: &FieldDecl) -> Result<()> {
@@ -498,6 +522,7 @@ fn field_type(
 ) -> Result<()> {
     name(Naming::Field, f.name.as_str())?;
     initial(o, owner, f, of)?;
+    erasable(o, owner, f, of)?;
     let ty = &f.ty;
     let on = [owner, &[of_field(&f.name)]].concat();
     let wrong = |c: Case| invalid_field(&f.name, at(&on, c));

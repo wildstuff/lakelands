@@ -168,6 +168,7 @@ impl<'a> Lower<'a> {
             initial: body.initial,
             sensitive: body.sensitive,
             searchable: body.searchable,
+            erasable: body.erasable,
             description: body.description,
             label: body.label,
             embed,

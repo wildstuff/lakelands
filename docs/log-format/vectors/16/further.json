@@ -198,6 +198,24 @@
       "about": "A `lake_upgraded` from format 15 to 16 (§6), as a writer's open appends it right after its `lease_taken` where the lake's newest event was in 15. It stands here to show its members alone: in a whole lake it follows events of the format before, which this lake of one format does not hold.",
       "line": "{\"body\":{\"from\":15,\"kind\":\"lake_upgraded\",\"to\":16},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"cc6a34b3fc279675efd44cdf2293f19800ff3d0f661da671494bb3a45b06e96c\",\"id\":\"00000000000000000000000000000028\",\"known_at\":\"2026-10-05T09:00:11.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":40,\"prev\":\"5def3eefc00ed75808818267d53b27a7008b0a1fd8aabee3897ab752fd116c2b\",\"v\":16,\"writer\":\"system:lakelands\"}",
       "hash": "cc6a34b3fc279675efd44cdf2293f19800ff3d0f661da671494bb3a45b06e96c"
+    },
+    {
+      "shows": "erasable",
+      "about": "A `declared` type whose `email` is declared `erasable` (058): a source's values of it enter the log sealed under that source's key.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"source\",\"name\":\"id\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"source\",\"erasable\":true,\"name\":\"email\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"derived\",\"depends_on\":[\"email\"],\"function\":\"shout\",\"name\":\"loud\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"key\":[\"id\"],\"name\":\"contact\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"706614273c7f6bad54f5c8e6a2d5a8b61fb35c368757e1520c020f91deadebe2\",\"id\":\"5c3e8a1f2b7d4e9a0c6f1b3d8e2a7c41\",\"known_at\":\"2026-10-05T09:00:12.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":41,\"prev\":\"cc6a34b3fc279675efd44cdf2293f19800ff3d0f661da671494bb3a45b06e96c\",\"v\":16,\"writer\":\"human:owner\"}",
+      "hash": "706614273c7f6bad54f5c8e6a2d5a8b61fb35c368757e1520c020f91deadebe2"
+    },
+    {
+      "shows": "sealed_ingest",
+      "about": "A `record_ingested` whose `sealed` names the key `1` of its source and the member `email`, which the patch holds as the base64 of AES-256-GCM-SIV over the value's canonical bytes (§1.4); its id is made from the patch as stored. The vectors' key is SHA-256 of `lakelands:vectors:key`.",
+      "line": "{\"body\":{\"key\":\"c1\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"email\":\"7UznJB/dSYmb/ymD7WMsqVK99xq5zyUwORU0Knp96RoL\",\"id\":\"c1\"},\"type\":\"contact\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"6abf0f9e769ae4a0b190250007a0c1174772a3e025e2809a0138c478441e5bc6\",\"id\":\"2c936f69cf5a059a0662dd7875cf8886\",\"known_at\":\"2026-10-05T09:00:13.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":42,\"prev\":\"706614273c7f6bad54f5c8e6a2d5a8b61fb35c368757e1520c020f91deadebe2\",\"sealed\":{\"fields\":[\"email\"],\"key\":\"1\"},\"source\":\"crm\",\"v\":16,\"writer\":\"service:crm\"}",
+      "hash": "6abf0f9e769ae4a0b190250007a0c1174772a3e025e2809a0138c478441e5bc6"
+    },
+    {
+      "shows": "sealed_output",
+      "about": "A recorded output computed from `crm`'s erasable value: `sealed` names the key and the source, the `output` is sealed, and the `input` is an HMAC under a key derived from the source's (§1.4).",
+      "line": "{\"body\":{\"field\":[\"contact\",\"c1\",\"loud\"],\"input\":\"485a52cd131c3a003a51dbf1bc558f53255ccf11f12da73be680d0545b0888b0\",\"kind\":\"output_recorded\",\"output\":\"VGlIWoOFpr1x7HCPVB174ML9+wiFL3lSTiNWClGfoT8Z\",\"seam\":\"function:http:shout\"},\"cause\":42,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"5ffb0b1bcdbd34f8bdd1d018169ef872aec2fd8fa78a2a998af4f4e152b699d9\",\"id\":\"0000000000000000000000000000002b\",\"known_at\":\"2026-10-05T09:00:14.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":43,\"prev\":\"6abf0f9e769ae4a0b190250007a0c1174772a3e025e2809a0138c478441e5bc6\",\"procedure\":{\"name\":\"shout\",\"version\":\"1\"},\"sealed\":{\"key\":\"1\",\"source\":\"crm\"},\"v\":16,\"writer\":\"system:lakelands\"}",
+      "hash": "5ffb0b1bcdbd34f8bdd1d018169ef872aec2fd8fa78a2a998af4f4e152b699d9"
     }
   ],
   "misplaced": [
@@ -215,6 +233,11 @@
       "shows": "output_twice",
       "about": "Position 39 carrying both `output` and `output_at`: a reader refuses it, since a fill carries its output or names it, never both (§2.5).",
       "line": "{\"body\":{\"field\":[\"due\",\"d2\",\"day\"],\"input\":\"bbbfae40a0d202fc24345d252fdc472570c51bda8c8aded3c9ce5ffd4512e14c\",\"kind\":\"output_recorded\",\"output\":\"Sunday\",\"output_at\":38,\"seam\":\"function:http:label\"},\"cause\":37,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"9659615e56bf486eda5382533ad22a0da87eb42e2a297c539be1e3dbb412af96\",\"id\":\"00000000000000000000000000000027\",\"known_at\":\"2026-10-05T09:00:10.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":39,\"prev\":\"5c166b75a7febca454de2fd6ecc0569c5e337b930e24c6da272b109f97152e76\",\"procedure\":{\"name\":\"http\",\"version\":\"1\"},\"v\":16,\"writer\":\"system:lakelands\"}"
+    },
+    {
+      "shows": "sealed_on_another_kind",
+      "about": "`sealed` on an event that is neither a `record_ingested` nor an `output_recorded`, which a reader refuses.",
+      "line": "{\"body\":{\"key\":\"r1\",\"kind\":\"record_retired\",\"type\":\"reading\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"e13c94a4749a4f5c05bda7cbb79ec1900075197c26958f89e8e356831fa1490e\",\"id\":\"710183001aa81e61bd20094ab98d5da5\",\"known_at\":\"2026-09-25T08:00:03.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":11,\"prev\":\"35f40718b046abfbeab64d810f5b627ea12585edb1ee6aeb20c895d423c07b6b\",\"sealed\":{\"fields\":[\"email\"],\"key\":\"1\"},\"v\":16,\"writer\":\"human:owner\"}"
     }
   ]
 }

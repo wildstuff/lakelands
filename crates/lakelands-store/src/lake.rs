@@ -214,6 +214,8 @@ pub struct Lake {
     /// Moved when a rebuild begins and when it ends: a shape built across
     /// either read a projection cleared or half folded, and is not kept.
     rebuilds: AtomicU64,
+    /// The sources' keys the lake was given, and the key store (058).
+    pub(crate) keys: Arc<crate::sealing::Keys>,
 }
 
 /// The opener `seams` passes for the engine `location` names.
@@ -463,6 +465,7 @@ impl Lake {
         engine: Arc<dyn LakeEngine>,
         lease: Option<Lease>,
     ) -> Lake {
+        let seams_keys = seams.keys.clone();
         Lake {
             id: location.lake.clone(),
             engine,
@@ -485,6 +488,7 @@ impl Lake {
                 plans: record::Plans::default(),
                 lost: false,
             }),
+            keys: Arc::new(crate::sealing::Keys::new(location.lake.clone(), seams_keys)),
             head: AtomicU64::new(0),
             heads: tokio::sync::watch::Sender::new(0),
             holds_lease: AtomicBool::new(false),
@@ -912,6 +916,13 @@ impl Lake {
             } else {
                 lease.fence
             };
+            let mut d = d;
+            if let Some(sealed) = &d.sealed
+                && let Some(source) = sealed.source.as_ref().or(d.source.as_ref())
+            {
+                let key = self.keys.key(source, &sealed.key)?;
+                crate::sealing::seal(&mut d.body, sealed, source, &key);
+            }
             let (event, canon, fault) = log::seal_judged(&self.id, position, &prev_hash, fence, d);
             if let Some(case) = fault {
                 return Err(lakelands_core::invalid(case));
@@ -1014,6 +1025,7 @@ impl Lake {
         let mut kept = carries.then(|| w.owed.clone());
         let mut staged = Staged {
             reads,
+            keys: Some(self.keys.clone()),
             ..Staged::default()
         };
         let result = (|| {
@@ -1042,6 +1054,7 @@ impl Lake {
                     // No door drafts one inside a set; a foreign log may.
                     staged = Staged {
                         with_the_set: std::mem::take(&mut staged.with_the_set),
+                        keys: Some(self.keys.clone()),
                         ..Staged::default()
                     };
                     view = self.engine.view(None)?;
@@ -1426,7 +1439,45 @@ impl Lake {
         e: &Event,
         owes: bool,
     ) -> Result<()> {
+        let opened;
+        let source = (e.sealed.as_ref()).and_then(|s| s.source.as_ref().or(e.source.as_ref()));
+        let e = match (&e.sealed, source) {
+            (Some(sealed), Some(source)) => {
+                let mut plain = e.clone();
+                let key = self.keys.key(source, &sealed.key)?;
+                crate::sealing::open(&mut plain, &key)?;
+                opened = plain;
+                &opened
+            }
+            _ => e,
+        };
         let projection = self.engine.projection();
+        // The versions of each source's key the log sealed with, in the
+        // order first used ([`crate::sealing::USED`]).
+        if let (EventBody::RecordIngested { .. }, Some(sealed), Some(source)) =
+            (&e.body, &e.sealed, &e.source)
+        {
+            let at = (
+                crate::sealing::USED.to_owned(),
+                crate::sealing::used_by(source),
+            );
+            let staged_list = staged.outputs.get(&at).and_then(|l| l.last());
+            let list = match staged_list {
+                Some((_, v)) => Some(v.clone()),
+                None => view.output(&at.0, &at.1)?.map(|(_, v)| v),
+            };
+            let mut used = crate::sealing::versions(list.as_ref());
+            if !used.contains(&sealed.key) {
+                used.push(sealed.key.clone());
+                let list = serde_json::to_value(&used).expect("key ids serialise");
+                projection.put_output(&at.0, &at.1, &list, e.position)?;
+                staged
+                    .outputs
+                    .entry(at)
+                    .or_default()
+                    .push((e.position, list));
+            }
+        }
         // A name of the kept form, and a seam that begins `sys:`, are the
         // store's own, and a view's records are computed: no door declares,
         // writes or records under the one, nor writes the other, so only a
@@ -1573,6 +1624,7 @@ impl Lake {
                     due: owes.then_some(&mut due),
                     waiting: false,
                     plans: &w.plans,
+                    keys: Some(&self.keys),
                 };
                 let after =
                     record::apply(&w.ontology, before.as_ref(), e, &w.settings, &mut outputs)?;
@@ -1665,6 +1717,7 @@ impl Lake {
                         due: owes.then_some(&mut due),
                         waiting: false,
                         plans: &w.plans,
+                        keys: Some(&self.keys),
                     };
                     let next = record::fill(
                         &w.ontology,
@@ -2544,6 +2597,8 @@ pub(crate) struct Recomputed {
     /// The plans its records are computed by: its own, since a read
     /// computes through it without the writer.
     plans: record::Plans,
+    /// The lake's keys, for a call that reads a source's erasable values.
+    keys: Option<Arc<crate::sealing::Keys>>,
 }
 
 /// The types whose records `declaration`, over `o`, computes again: whose
@@ -2618,6 +2673,7 @@ impl Recomputed {
             due,
             waiting: false,
             plans: &self.plans,
+            keys: self.keys.as_deref(),
         };
         record::rederive(&self.entries, r, &self.event, &self.settings, &mut outputs)
     }
@@ -2918,6 +2974,8 @@ pub struct Staged {
     /// The entries of the kept views' orders this append put or ended, by
     /// the name they are kept under.
     pub(crate) orders: BTreeMap<TypeName, crate::kept::Orders>,
+    /// The lake's keys, which a recomputation it keeps computes with.
+    keys: Option<Arc<crate::sealing::Keys>>,
 }
 
 impl Staged {
@@ -2937,6 +2995,7 @@ impl Staged {
             entries: w.ontology.computing(types),
             settings,
             plans: record::Plans::default(),
+            keys: self.keys.clone(),
         });
     }
 

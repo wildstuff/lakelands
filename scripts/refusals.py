@@ -262,7 +262,7 @@ its own sentence. The other types:
 
 - **text** (`String`), a **name** (`TypeName`, `FieldName`, `RelationName`,
   `VerbName`, `ParamName`, `TriggerName`, `ValueTypeName`, `LakeId`,
-  `SourceId`) or a **record key** (`RecordKey`): a string;
+  `SourceId`, `KeyId`) or a **record key** (`RecordKey`): a string;
 - a **number** (`u16`, `u32`, `u64`, `usize`, `i32`, `i64`, `Number`) or
   a **position** (`Position`): a JSON number;
 - an **instant** (`Timestamp`): an RFC 3339 string in UTC; a
@@ -284,8 +284,8 @@ These types are said by a name of a closed list:
 SCALARS = {
     "String", "char", "u16", "u32", "u64", "usize", "i64", "bool", "Number", "Value",
     "Position", "TypeName", "FieldName", "RelationName", "VerbName", "RecordKey",
-    "ParamName", "TriggerName", "ValueTypeName", "LakeId", "SourceId", "Names", "Detail",
-    "Error", "i32", "Timestamp", "ProposalId", "FieldType", "Bound",
+    "ParamName", "TriggerName", "ValueTypeName", "LakeId", "SourceId", "KeyId", "Names",
+    "Detail", "Error", "i32", "Timestamp", "ProposalId", "FieldType", "Bound",
 }
 
 
@@ -584,7 +584,7 @@ SAMPLE = {
     "String": "s", "char": "c", "u16": 1, "u32": 1, "u64": 1, "usize": 1, "i32": 1, "i64": 1,
     "bool": True, "Number": 1, "Value": 1, "Position": 1, "TypeName": "t", "FieldName": "f",
     "RelationName": "r", "VerbName": "v", "RecordKey": "k", "ParamName": "p",
-    "TriggerName": "g", "ValueTypeName": "vt", "LakeId": "lake", "SourceId": "src",
+    "TriggerName": "g", "ValueTypeName": "vt", "LakeId": "lake", "SourceId": "src", "KeyId": "1",
     "Names": ["a"], "Detail": "d", "Error": {"error": "refused", "reason": {"refusal": "not_granted"}},
     "Timestamp": "2026-01-01T00:00:00Z", "ProposalId": "p-1", "FieldType": {"kind": "text"},
     "Bound": {"model": "m", "dimensions": 2},

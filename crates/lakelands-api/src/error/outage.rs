@@ -18,7 +18,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 
 use super::{Error, Param, catalog, render};
-use crate::id::{Position, ProposalId, RecordKey, TypeName};
+use crate::id::{KeyId, Position, ProposalId, RecordKey, SourceId, TypeName};
 use crate::time::Timestamp;
 use crate::tools::NameProblem;
 
@@ -350,6 +350,8 @@ catalog! {
         } => "the embedding model `{model}` with {dimensions} dimensions, for `{ty}.{field}` [(the bound one is {bound})|(none is bound)]",
         /// A function backing of a kind.
         FunctionBacking { kind: String } => "the `{kind}` function backing (the host bound none of that kind)",
+        /// A key store, which seals a source's values of an erasable field.
+        KeyStore => "a key store, which seals a source's values of an erasable field (the host bound none)",
         /// A vector index, which this engine keeps none of.
         VectorIndex => "a vector index (this engine keeps none)",
         /// An engine, whose opener was not passed in.
@@ -669,6 +671,10 @@ catalog! {
         CauseInContext => "`context` carries `cause`, which the envelope carries",
         /// The envelope carries the origin `initial`, a field's alone.
         InitialOrigin => "the envelope carries the origin `initial`, a field's alone",
+        /// An event other than `record_ingested` and `output_recorded` carries `sealed`.
+        SealedOn { kind: String } => "a `{kind}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries",
+        /// An event of a format before 16 carries `sealed`.
+        SealedBefore { v: u32 } => "an event of format {v} carries `sealed`, which format 16 added",
         /// An event other than `record_ingested` carries `upstream`.
         UpstreamOn { kind: String } => "a `{kind}` event carries `upstream`, which only a `record_ingested` event carries",
         /// The hash does not match the event.
@@ -871,6 +877,10 @@ catalog! {
             #[serde(default, skip_serializing_if = "Option::is_none")]
             cause: Option<Box<Error>>,
         } => "the lake's projection is behind its log and could not catch up; nothing was appended[ ({cause})]",
+        /// A key of a source that the key store does not give, with no act that forgot the source.
+        KeyMissing { source: SourceId, key: KeyId } => "the key store does not give the key `{key}` of the source `{source}`, and no act forgot that source; a lost key is never read as an erasure",
+        /// A sealed value that does not open under the key its event names.
+        Unsealable { position: Position } => "a sealed value of the event at position {position} does not open under the key it names: the key store gives another key under that id, or the event was changed",
         /// The write was decided while the projection was behind the log; nothing was appended.
         DecidedBehind => "this write was decided while the lake's projection was behind its log; nothing was appended",
         /// What was appended from a position is in the log and not folded yet.

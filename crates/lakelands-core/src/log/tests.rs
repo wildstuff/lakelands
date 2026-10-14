@@ -187,3 +187,23 @@ fn a_lake_created_says_its_own_line_s_format() {
         );
     }
 }
+
+#[test]
+fn sealed_belongs_to_format_16_on() {
+    let line = |v: u32| -> Event {
+        serde_json::from_value(json!({
+            "v": v, "lake": "l", "position": 1, "id": "0".repeat(32),
+            "prev": "0".repeat(64), "known_at": "2026-01-01T00:00:00.000000Z",
+            "writer": "service:crm", "origin": "source", "source": "crm",
+            "context": {"origin": "direct", "depth": 0}, "fence": 1,
+            "sealed": {"key": "1", "fields": ["f"]},
+            "body": {"kind": "record_ingested", "type": "t", "key": "k", "version": 1,
+                     "patch": {"f": "AAAA"}},
+            "hash": "0".repeat(64)
+        }))
+        .unwrap()
+    };
+    assert_eq!(misplaced(&line(16)), None);
+    let why = misplaced(&line(15)).expect("refused");
+    assert_eq!(why, lakelands_api::error::Flaw::SealedBefore { v: 15 });
+}
