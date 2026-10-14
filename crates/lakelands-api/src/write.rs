@@ -383,6 +383,16 @@ pub enum DeclarationKind {
 }
 
 impl DeclarationKind {
+    /// Every kind.
+    pub(crate) const ALL: [DeclarationKind; 6] = [
+        DeclarationKind::Type,
+        DeclarationKind::ValueType,
+        DeclarationKind::Verb,
+        DeclarationKind::Trigger,
+        DeclarationKind::ObjectSet,
+        DeclarationKind::Function,
+    ];
+
     /// Its name, as the declaration's `declare` member writes it.
     pub fn as_str(self) -> &'static str {
         match self {
