@@ -770,6 +770,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         (
             "source_record",
             members(&SourceRecord {
+                source: Some("meter".into()),
                 upstream: Some(upstream()),
                 ty: "invoice".into(),
                 key: "k".into(),

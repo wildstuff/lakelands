@@ -28,7 +28,8 @@ use crate::write::{
     ProposedWrite, Recompute, ValueTypeMigration, ValueTypeReport, WriteOpts,
 };
 
-/// A stream of records from one source, as `ingest` takes it.
+/// A stream of records, as `ingest` takes it: each from the source it
+/// names, else from the call's.
 pub type SourceStream = Pin<Box<dyn Stream<Item = SourceRecord> + Send>>;
 
 /// The answer to `ingest`: one [`Committed`] per group-commit window, in
@@ -254,7 +255,8 @@ pub trait Catalog: Send + Sync {
         report_id: &str,
     ) -> Result<Outcome>;
 
-    /// Feed the lake from a source. Records are chunked into group-commit
+    /// Feed the lake from a source. The call's source is the default; a
+    /// record may name its own. Records are chunked into group-commit
     /// windows; each window answers once it is durable. Content-addressed:
     /// a record delivered twice appends nothing the second time, so
     /// at-least-once delivery is safe. The source's own offset is the

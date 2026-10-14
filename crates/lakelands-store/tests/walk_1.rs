@@ -66,6 +66,7 @@ fn records(csv: &str, map: &str) -> Vec<SourceRecord> {
                 })
                 .collect();
             SourceRecord {
+                source: None,
                 upstream: None,
                 ty: map["type"].as_str().unwrap().into(),
                 key: cells[col(map["key"].as_str().unwrap())].into(),

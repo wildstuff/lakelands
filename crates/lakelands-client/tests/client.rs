@@ -252,6 +252,7 @@ async fn ingest_answers_each_window_and_ends_on_a_refused_record() {
     assert_ne!(remote.limits(), store.limits());
     let f = setup(remote.clone()).await;
     let record = |ty: &str, k: &str, amount: &str| SourceRecord {
+        source: None,
         upstream: None,
         ty: ty.into(),
         key: k.into(),
@@ -405,6 +406,7 @@ async fn a_poll_over_the_wire_that_matches_nothing_reaches_the_head() {
     let remote: Arc<dyn LakeStore> = Arc::new(common::remote(addr, store.lake(), keys));
     let f = setup(store.clone()).await;
     let records = (0..4200).map(|i| SourceRecord {
+        source: None,
         upstream: None,
         ty: "invoice".into(),
         key: RecordKey::from(format!("B-{i}").as_str()),

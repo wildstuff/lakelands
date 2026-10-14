@@ -104,6 +104,7 @@ impl Kept {
     /// key, its site and its value.
     async fn feed(&self, records: Vec<(String, String, &str)>) {
         let reading = |(key, site, value): (String, String, &str)| lakelands_api::SourceRecord {
+            source: None,
             upstream: None,
             ty: "reading".into(),
             key: key.as_str().into(),

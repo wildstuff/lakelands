@@ -9,12 +9,12 @@
 //! patch that crosses the line is refused whole.
 
 use lakelands_api::ontology::{StorageKind, TypeDecl};
-use lakelands_api::{Error, Refusal, TypeName, Version};
+use lakelands_api::{Error, Refusal, SourceId, SourceRecord, TypeName, Version};
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, committed, delivered, events_from, field, get_at, head_unmoved, log_events,
-    refused_on, refused_unmoved, source_record, sourced, try_upsert, type_decl, value,
+    Lake, Must, all, committed, delivered, events_from, field, get_at, head_unmoved, log_events,
+    read, refused_on, refused_unmoved, source_record, sourced, try_upsert, type_decl, value,
     windows_reach_head,
 };
 use crate::conformance::{Failure, Held, Store};
@@ -51,10 +51,77 @@ check!(
     "010, 016 and log-format §1.1: a record ingested with `upstream` names that lake and position on every field it sets, the event carries the member, and the member is not in the event's id; a later write of a field without it leaves that field without it"
 );
 
+check!(
+    A_SOURCE_PER_RECORD = one_ingest_carries_a_source_per_record,
+    "016 and 039: one ingest may name a source per record, the call's where a record names none: each record's provenance holds its own, a redelivery under it is a duplicate, the same record under another source is a duplicate unchanged and a new event under it changed, and `purge_source` of one takes only its records"
+);
+
 /// `feed`: a source's `body` and an author's `verdict`.
 fn feed() -> TypeDecl {
     let body = sourced("body", StorageKind::Text);
     type_decl("feed", vec![body, field("verdict", StorageKind::Text)])
+}
+
+async fn one_ingest_carries_a_source_per_record(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(feed()).await?;
+    let sources = [("k1", None), ("k2", Some("dev-a")), ("k3", Some("dev-b"))];
+    let batch = || {
+        let own = |(key, source): (&str, Option<&str>)| SourceRecord {
+            source: source.map(SourceId::from),
+            ..source_record("feed", key, json!({"body": key}))
+        };
+        sources.into_iter().map(own).collect::<Vec<_>>()
+    };
+    let what = "ingesting three sources in one call";
+    let first = delivered(store.as_ref(), &l, "bank", batch(), what).await?;
+    ensure!(committed(&first) == (3, 0), "{what} answered {first:?}");
+    for (key, source) in sources {
+        let r = read(l.cat.as_ref(), &l.own, "feed", key).await?;
+        let got = r.meta.get("body").and_then(|m| m.source.clone());
+        let want = SourceId::from(source.unwrap_or("bank"));
+        ensure!(
+            got.as_ref() == Some(&want),
+            "`{key}`'s source is {got:?}, not {want}"
+        );
+    }
+    let again = delivered(store.as_ref(), &l, "bank", batch(), "delivering them again").await?;
+    ensure!(
+        committed(&again) == (0, 3),
+        "delivered again, they answered {again:?}"
+    );
+    // Under another source, `k1` unchanged appends nothing and keeps its
+    // source; changed, it is a new event under that source.
+    let under_c = |body: &str| {
+        vec![SourceRecord {
+            source: Some("dev-c".into()),
+            ..source_record("feed", "k1", json!({ "body": body }))
+        }]
+    };
+    for (body, want, source) in [("k1", (0, 1), "bank"), ("k1 again", (1, 0), "dev-c")] {
+        let what = format!("delivering `k1` as {body:?} under `dev-c`");
+        let got = delivered(store.as_ref(), &l, "bank", under_c(body), &what).await?;
+        let r = read(l.cat.as_ref(), &l.own, "feed", "k1").await?;
+        let held = r.meta.get("body").and_then(|m| m.source.clone());
+        ensure!(
+            committed(&got) == want && held == Some(SourceId::from(source)),
+            "{what} answered {got:?} and left `k1`'s source {held:?}, not {source}"
+        );
+    }
+    store
+        .purge_source(&"dev-a".into(), None, None)
+        .await
+        .must("purging `dev-a`")?;
+    let live: Vec<String> = all(l.cat.as_ref(), &l.own, "feed")
+        .await?
+        .into_iter()
+        .map(|r| r.key.0)
+        .collect();
+    ensure!(
+        live == ["k1", "k3"],
+        "after purging `dev-a`, `feed` holds {live:?}"
+    );
+    Ok(())
 }
 
 async fn the_same_content_ingested_twice_appends_nothing_the_second_time(store: Store) -> Held {

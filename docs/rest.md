@@ -201,7 +201,9 @@ for review.
 `POST …/ingest/<source>` takes `application/x-ndjson` (or
 `application/jsonl`, `application/json`, or no `Content-Type`), one
 source record per line (`{"type":…,"key":…,"fields":{…},"seen_at":…}`),
-and is read as it arrives. The answer is NDJSON too: one line per commit
+and is read as it arrives. A line may name its own `"source"`; one that
+does not is the path's. One call so carries the batches of many sources,
+each record's event stamped with its own. The answer is NDJSON too: one line per commit
 window as it becomes durable,
 `{"position":…,"records":…,"duplicates":…}`. Where a window is cut is
 the store's: a client cannot make two records share one, so what is
