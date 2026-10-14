@@ -566,3 +566,31 @@ fn keeps_from_says_whether_known_fields_takes_anything_out() {
         );
     }
 }
+
+#[test]
+fn one_reads_all_whom_no_grant_holds_below_read_and_no_only_bounds() {
+    let reads = |default, fields: &[(&str, Access)]| reads_all(&principal(default, fields));
+    assert!(reads(Access::Write, &[]) && reads(Access::Read, &[("iban", Access::Write)]));
+    for (default, field) in [
+        (Access::None, Access::Read),
+        (Access::Masked, Access::Read),
+        (Access::WriteOnly, Access::Read),
+        (Access::Write, Access::None),
+        (Access::Write, Access::Masked),
+        (Access::Write, Access::WriteOnly),
+    ] {
+        assert!(
+            !reads(default, &[("iban", field)]),
+            "{default:?} with iban {field:?}"
+        );
+    }
+    let mut typed = principal(Access::Write, &[]);
+    typed.grants.types.get_mut("invoice").unwrap().default = Some(Access::Masked);
+    let mut only = principal(Access::Write, &[]);
+    let invoice = only.grants.types.get_mut("invoice").unwrap();
+    invoice.only.insert("team".into(), json!("a"));
+    assert!(
+        !reads_all(&typed) && !reads_all(&only),
+        "a type's default, an `only`"
+    );
+}

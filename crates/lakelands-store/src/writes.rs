@@ -3380,7 +3380,10 @@ impl Call<'_> {
     fn declare_granted(&self, mut declaration: Declaration) -> Result<Outcome> {
         let mut w = self.writer()?;
         self.redeclared(&w.ontology, std::slice::from_mut(&mut declaration))?;
-        declare::check_declaration(&w.ontology, &declaration, false)?;
+        // One who reads every field was judged against the lake itself.
+        if !rights::reads_all(self.who) {
+            declare::check_declaration(&w.ontology, &declaration, false)?;
+        }
         self.check_bound(&declaration, Some(&w.ontology))?;
         self.verbs_still_read(&w.ontology, std::slice::from_ref(&declaration))?;
         let (sent, from) = ([declaration.clone()], head(&w).next());
@@ -3409,7 +3412,18 @@ impl Call<'_> {
             _ => None,
         }))
         .collect();
-        if changed.is_empty() {
+        // No verb on or into a changed type, in force or in the set: nothing
+        // is judged, and the lake is not copied.
+        let verbs = || {
+            let sent = set.iter().filter_map(|d| match d {
+                Declaration::Verb(v) => Some(v),
+                _ => None,
+            });
+            (held.verbs.values().map(|e| &e.decl)).chain(sent)
+        };
+        let judged =
+            |(was, t, _): &(&TypeDecl, &TypeDecl, Place)| verbs().any(judged_by(held, was, t));
+        if !changed.iter().any(judged) {
             return Ok(());
         }
         let mut after = held.clone();
@@ -3497,6 +3511,37 @@ impl Call<'_> {
     /// a name, or with a tool's name, that what its author is not shown
     /// holds is not granted.
     fn reads_as_author(&self, o: &Ontology, sent: &[Declaration], reshapes: bool) -> Result<()> {
+        // One who reads every field and holds `schema` is shown the lake
+        // whole: its view is the lake, and nothing it adds or changes
+        // probes a field it may not read.
+        let set = |seen: &Ontology, shaped: &[Declaration]| match self.check_set((seen, o), shaped)
+        {
+            Err(e) if reshapes => declare::unless_a_migration(e),
+            checked => checked,
+        };
+        if rights::reads_all(self.who) && self.who.grants.schema {
+            // But what stands in force listed to no one, as a verb whose
+            // `requires` does not parse, is not its to declare again; nor is
+            // a tool's name that such a verb bears (the slow path's `taken`).
+            let sees = Sight::held(self.who, o);
+            let computes = |f: &str| {
+                let mut types = o.types.values();
+                types.any(|e| {
+                    e.decl
+                        .fields
+                        .iter()
+                        .any(|x| x.function.as_deref() == Some(f))
+                })
+            };
+            let unlisted = |d: &Declaration| match d {
+                Declaration::Type(_) => false,
+                Declaration::Function(f) if !computes(&f.name) => false,
+                d => o.held(d).is_some_and(|x| !sees.lists(&x)),
+            };
+            granted(!sent.iter().any(unlisted))?;
+            tools_as_shown(self.who, o, o, sent)?;
+            return set(o, sent);
+        }
         // A type its author is not shown is a type that is not declared,
         // for whatever names it; to declare it is not granted, and names
         // nothing of it.
@@ -3564,17 +3609,14 @@ impl Call<'_> {
             }
         }
         // A migration's shape is refused as a declaration; its preflight is next.
-        match self.check_set((&seen, o), &shaped) {
-            Err(e) if reshapes => declare::unless_a_migration(e)?,
-            checked => checked?,
-        }
-        let (before, mut after) = (o.declared(), o.clone());
+        set(&seen, &shaped)?;
+        let mut after = o.clone();
         sent.iter().for_each(|d| after.put(d.clone(), 0, None));
-        let key = lakelands_core::engines::declaration_key;
         for d in sent {
             // Only what its author adds or changes: of a type, the fields,
             // the relations and the view that do not stand as they are.
-            let mut was = before.iter().map(|b| &b.declaration);
+            let key = lakelands_core::engines::declaration_key;
+            let mut was = declared.iter().map(|b| &b.declaration);
             let (was, mut new) = (was.find(|b| key(b) == key(d)), d.clone());
             match (&mut new, was) {
                 (Declaration::Type(t), Some(Declaration::Type(w))) => {
@@ -3586,7 +3628,8 @@ impl Call<'_> {
                 (_, Some(w)) if w == d => continue,
                 _ => {}
             }
-            for t in o.types.values().map(|e| &e.decl) {
+            let named = describe::probed_types(&new);
+            for t in named.iter().filter_map(|n| o.ty(n).ok()) {
                 let sets = |n: &str| after.set(n).map(|s| s.filter.clone());
                 let mut names = describe::declaration_probes(&new, &t.name, &sets);
                 // A function's inputs and what an embedding is made from.
@@ -3643,11 +3686,11 @@ impl Call<'_> {
     fn redeclared(&self, o: &Ontology, declarations: &mut [Declaration]) -> Result<()> {
         self.reads_as_author(o, declarations, false)?;
         // An `initial` is read against the value types the set declares.
-        let mut after = o.clone();
+        let mut after = std::borrow::Cow::Borrowed(o);
         let types = declarations
             .iter()
             .filter(|d| matches!(d, Declaration::ValueType(_)));
-        types.for_each(|d| after.put(d.clone(), 0, None));
+        types.for_each(|d| after.to_mut().put(d.clone(), 0, None));
         for d in declarations {
             let Declaration::Type(t) = d else { continue };
             initials(&after, t);
@@ -3689,7 +3732,7 @@ impl Call<'_> {
             }
         }
         for (i, d) in declarations.iter().enumerate() {
-            let mut probe = ontology.clone();
+            let mut probe = std::borrow::Cow::Borrowed(ontology);
             for (j, other) in declarations.iter().enumerate() {
                 if identities[j] != identities[i] {
                     // A link type the lake holds is brought as the set's
@@ -3705,7 +3748,7 @@ impl Call<'_> {
                         t.fields.retain(|f| has(seen, f) || !has(&h.decl, f));
                         Some(t)
                     };
-                    put_as_appended(&mut probe, other, shown);
+                    put_as_appended(probe.to_mut(), other, shown);
                 }
             }
             if let Err(e) = declare::check_declaration(&probe, d, false)
@@ -3737,8 +3780,7 @@ impl Call<'_> {
         first: usize,
     ) -> Result<Vec<Draft>> {
         let mut drafts = Vec::with_capacity(declarations.len());
-        // A set is decided over the sets it names as the bundle leaves them.
-        let (mut after, mut decided) = (w.ontology.clone(), Vec::new());
+        let mut decided = Vec::new();
         // Only a function, or a type the lake holds, computes records again
         // when it is declared: a set without one is written as before.
         let computes = declarations.iter().any(|d| match d {
@@ -3746,18 +3788,23 @@ impl Call<'_> {
             Declaration::Type(t) => w.ontology.types.contains_key(&t.name),
             _ => false,
         });
-        let sets = |d: &&Declaration| matches!(d, Declaration::ObjectSet(_));
-        for d in declarations.iter().filter(sets) {
-            after.put(d.clone(), 0, None);
-        }
+        // A set is decided over the sets it names as the bundle leaves them,
+        // and the lake is copied only for a bundle that declares one.
+        let sets = (declarations.iter()).filter(|d| matches!(d, Declaration::ObjectSet(_)));
+        let after = sets.clone().next().map(|_| {
+            let mut after = w.ontology.clone();
+            sets.for_each(|d| after.put(d.clone(), 0, None));
+            after
+        });
         // The records the bundle computes again, and the lake it leaves.
         let again = declarations.iter();
         let again: BTreeSet<TypeName> =
             again.flat_map(|d| computes_again(&w.ontology, d)).collect();
-        let mut whole = w.ontology.clone();
-        declarations
-            .iter()
-            .for_each(|d| whole.put(d.clone(), 0, None));
+        let whole = (!again.is_empty()).then(|| {
+            let mut whole = w.ontology.clone();
+            (declarations.iter()).for_each(|d| whole.put(d.clone(), 0, None));
+            whole
+        });
         for declaration in declarations {
             let declared = position_after(w, first + drafts.len());
             // A type's hash and link types, or the memberships a set decides.
@@ -3770,7 +3817,8 @@ impl Call<'_> {
                 // the records as the bundle computes them.
                 Declaration::ObjectSet(set) if again.contains(&set.of) => (None, Vec::new()),
                 Declaration::ObjectSet(set) => {
-                    let with = (w, &after, &mut decided);
+                    let after = after.as_ref().expect("a bundle with a set has its copy");
+                    let with = (w, after, &mut decided);
                     (None, self.set_drafts(with, set, declared, now)?)
                 }
                 _ => (None, Vec::new()),
@@ -3801,9 +3849,9 @@ impl Call<'_> {
         }
         // Their sets are decided in this append, caused by the last
         // declaration, where the fold computes them again (lakelands#941).
-        if let Some(last) = last.filter(|_| !again.is_empty()) {
+        if let (Some(last), Some(whole)) = (last, &whole) {
             let event = provisional(self.lake, position_after(w, first + last), &drafts[last]);
-            let changes = self.recomputed_sets((w, &whole, &decided), &again, &event, now)?;
+            let changes = self.recomputed_sets((w, whole, &decided), &again, &event, now)?;
             drafts.extend(changes);
         }
         Ok(drafts)
@@ -5331,17 +5379,8 @@ fn verbs_judged_again(
     to: &TypeDecl,
     shows: &dyn Fn(&Declaration) -> bool,
 ) -> std::result::Result<(), Said> {
-    let mut moved = vec![to.name.clone()];
-    for t in [was, to] {
-        moved.extend(links::link_types_of(t).into_iter().map(|l| l.name));
-    }
-    let into = |v: &VerbDecl| {
-        let far = o.ty(&v.on).ok();
-        let far = far.and_then(|on| v.reads_across(on, &|n| o.ty(n).ok()));
-        far.is_some_and(|far| far.iter().any(|(t, _)| moved.contains(&t.name)))
-    };
-    let judged = (after.verbs.values()).filter(|e| moved.contains(&e.decl.on) || into(&e.decl));
-    let judged: Vec<_> = judged.collect();
+    let judges = judged_by(o, was, to);
+    let judged: Vec<_> = (after.verbs.values()).filter(|e| judges(&e.decl)).collect();
     if judged.is_empty() {
         return Ok(());
     }
@@ -5356,6 +5395,26 @@ fn verbs_judged_again(
         }
     }
     Ok(())
+}
+
+/// Whether [`verbs_judged_again`] judges a verb where `was` becomes `to`:
+/// one on it or on a link type its relations carry, before or after, or
+/// one reading across into one of them, as `o`, the lake before, reads it.
+fn judged_by<'o>(
+    o: &'o Ontology,
+    was: &TypeDecl,
+    to: &TypeDecl,
+) -> impl Fn(&VerbDecl) -> bool + 'o {
+    let mut moved = vec![to.name.clone()];
+    for t in [was, to] {
+        moved.extend(links::link_types_of(t).into_iter().map(|l| l.name));
+    }
+    move |v| {
+        let far = o.ty(&v.on).ok();
+        let far = far.and_then(|on| v.reads_across(on, &|n| o.ty(n).ok()));
+        let into = far.is_some_and(|far| far.iter().any(|(t, _)| moved.contains(&t.name)));
+        moved.contains(&v.on) || into
+    }
 }
 
 /// Puts `d` into `o` as an append leaves it: a type with the link types

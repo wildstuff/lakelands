@@ -238,6 +238,7 @@ pub const ALL: &[Check] = &[
     authors_view::TAKEN_NAME_NOT_GRANTED,
     authors_view::TAKEN_TOOL_NOT_GRANTED,
     authors_view::NO_TOOL_PROBLEM_LEFT,
+    authors_view::UNLISTED_NOT_TAKEN,
     values::DATE_TIME_CANONICAL,
     dates::DATE_KIND,
     dates::DATE_MIGRATES,

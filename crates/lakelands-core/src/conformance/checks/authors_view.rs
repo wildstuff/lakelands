@@ -1561,3 +1561,140 @@ async fn a_link_type_its_author_is_not_shown_takes_no_field_from_it(store: Store
     );
     Ok(())
 }
+
+check!(
+    UNLISTED_NOT_TAKEN = a_declaration_in_force_listed_to_no_one_is_declared_again_by_no_one,
+    "027 and 024, extended (lakelands#1055): a verb in force that is listed to no one, as one a log the store did not write holds with a `requires` that does not parse, is not granted to be declared again, naming nothing, to the owner, who reads every field, word for word as to an author kept from a field; nor is a type whose tool would bear the name of such a verb's; and the head does not move",
+    given
+);
+
+async fn a_declaration_in_force_listed_to_no_one_is_declared_again_by_no_one(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    use crate::conformance::Lines;
+    use crate::conformance::fixture::{head_unmoved, log_events, write_verb};
+    use lakelands_api::engine::{CanonicalEvent, OpenMode};
+    use lakelands_api::event::{Digest, Event, EventBody, EventId};
+    use lakelands_api::seam::Seams;
+    let l = Lake::of(store.as_ref());
+    l.declare(type_of(
+        "job",
+        &[("state", StorageKind::Text), ("secret", StorageKind::Text)],
+    ))
+    .await?;
+    let events = log_events(store.as_ref()).await?;
+    let template = events
+        .last()
+        .cloned()
+        .ok_or_else(|| Failure::new("the lake holds a log"))?;
+    // `close` declared below the store, its `requires` not parsing.
+    let mut close = write_verb("close", "job", "state", "'shut'");
+    if let Declaration::Verb(v) = &mut close {
+        v.requires = Some("state = ((".into());
+    }
+    // And a verb whose tool bears the name of `job2`'s `find` door.
+    let door = format!("{}_{}", lakelands_api::tools::tool_base("job2"), "find");
+    let mut found = write_verb(&door, "job", "state", "'seen'");
+    if let Declaration::Verb(v) = &mut found {
+        v.requires = Some("state = ((".into());
+    }
+    let declared = [close.clone(), found];
+    let lines: Lines = Box::new(move |(mut tip, mut prev), fence| {
+        let mut lines = Vec::new();
+        for declaration in declared {
+            let position = tip.next();
+            let body = EventBody::Declared {
+                declaration,
+                schema_hash: None,
+                version: 1,
+                with_the_set: false,
+            };
+            let event = Event {
+                position,
+                id: EventId(format!("{:032x}", position.0)),
+                prev: prev.clone(),
+                fence,
+                body,
+                ..template.clone()
+            };
+            let mut value = json!(event);
+            value.as_object_mut().map(|m| m.remove("hash"));
+            let hash = Digest(crate::canonical::sha256_hex(&value));
+            value["hash"] = json!(hash);
+            let bytes = crate::canonical::to_vec(&value);
+            let id = event.id;
+            lines.push(CanonicalEvent {
+                position,
+                id,
+                prev,
+                hash: hash.clone(),
+                fence,
+                bytes,
+            });
+            (tip, prev) = (position, hash);
+        }
+        (lines, 0)
+    });
+    let (lake, mode) = (store.lake().clone(), OpenMode::Write);
+    let c = (given.continued)(Some(store), lake, lines, mode, Seams::default());
+    let c = c
+        .await
+        .map_err(|e| Failure::new(format!("continuing the lake below the store: {e}")))?;
+    let store = c
+        .opened
+        .map_err(|e| Failure::new(format!("opening the lake again: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    let hidden = [(FieldName::from("secret"), Access::None)].into();
+    let mut grants = lakelands_api::Grants {
+        default: Access::Write,
+        schema: true,
+        ..Default::default()
+    };
+    grants.types.insert(
+        "job".into(),
+        TypeGrants {
+            fields: hidden,
+            ..Default::default()
+        },
+    );
+    let kept = crate::conformance::fixture::principal(
+        store.as_ref(),
+        lakelands_api::PrincipalKind::Agent,
+        "kept",
+        grants,
+    );
+    let mut again = write_verb("close", "job", "state", "'done'");
+    if let Declaration::Verb(v) = &mut again {
+        v.requires = Some("state = 'open'".into());
+    }
+    let head = store.head().await.must("reading the head")?;
+    let by = |who: Principal| {
+        let (cat, d) = (l.cat.clone(), again.clone());
+        async move { cat.declare(&who, d).await }
+    };
+    let (owner, other) = (by(l.own.clone()).await, by(kept.clone()).await);
+    let refused = Err(lakelands_api::Error::Refused {
+        field: None,
+        reason: lakelands_api::Refusal::NotGranted,
+    });
+    ensure!(
+        owner == refused && other == refused,
+        "`close`, listed to no one, is declared again by neither the owner nor one kept from \
+         `job.secret`, each refused as not granted naming nothing; the owner was answered \
+         {owner:?}, the other {other:?}"
+    );
+    // Nor does a type take the name of its tool.
+    let job2 = || Declaration::Type(type_of("job2", &[("state", StorageKind::Text)]));
+    let (owner, other) = (
+        l.cat.declare(&l.own, job2()).await,
+        l.cat.declare(&kept, job2()).await,
+    );
+    ensure!(
+        owner == refused && other == refused,
+        "`job2`, whose `find` bears the name of a verb's tool, listed to no one, is \
+         declared by neither, each refused as not granted naming nothing; the owner was \
+         answered {owner:?}, the other {other:?}"
+    );
+    head_unmoved(store.as_ref(), head, "the refused declarations").await
+}
