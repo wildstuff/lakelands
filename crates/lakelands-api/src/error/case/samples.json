@@ -1172,6 +1172,14 @@
    "type": "t"
   },
   {
+   "code": "forget_plaintext",
+   "count": 1,
+   "source": "src"
+  },
+  {
+   "code": "forget_report_stale"
+  },
+  {
    "code": "idempotency_key_nul"
   },
   {
@@ -1300,6 +1308,10 @@
      }
     }
    ]
+  },
+  {
+   "code": "source_forgotten",
+   "source": "src"
   },
   {
    "code": "key_destroyed",

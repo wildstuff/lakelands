@@ -228,6 +228,7 @@ pub(crate) fn meta_of(event: &Event, origin: Origin) -> FieldMeta {
         source: event.source.clone(),
         procedure_version: event.procedure.as_ref().map(|p| p.version.clone()),
         error: None,
+        erased: false,
     }
 }
 

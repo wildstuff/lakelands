@@ -1,0 +1,502 @@
+//! A source is forgotten in one act
+//! (`docs/decisions/058-a-source-may-be-forgotten.md`): its keys are
+//! destroyed, the projection is rebuilt, and every value it sealed reads
+//! as erased at every position, what was computed from it included. A
+//! crash between the act's steps leaves the rest to the next writer's
+//! open. The checks bring the key store of [`super::erasable`].
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use lakelands_api::event::{Event, EventBody};
+use lakelands_api::id::KeyId;
+use lakelands_api::ontology::{FieldDecl, StorageKind};
+use lakelands_api::read::Found;
+use lakelands_api::seam::{DataKey, KeyStore, Seams};
+use lakelands_api::write::ForgetReport;
+use lakelands_api::{Error, LakeId, LakeStore, Position, SourceId};
+use serde_json::{Value, json};
+
+use super::erasable::{Keys, again, person, read, with};
+use crate::conformance::fixture::{
+    Lake, Must, events_after, find_at, get_at, refused_like, source_record, sourced,
+};
+use crate::conformance::{Failure, Held, Reopen, Store};
+
+check!(
+    FORGOTTEN = a_forgotten_sources_values_read_as_erased_at_every_position,
+    "058: `forget_preflight` names the records holding a source's erasable values, the values per field, the records it retires and those another hand co-owns, what is computed again, no plaintext, and the time it expects to hold the writer's lock; `forget_source` with that report appends `source_forgotten` naming the key's version and retires the records the source alone brought, destroys its keys and reclaims the storage; after it the source's values read as erased, with provenance saying `erased`, at the head and `as_of` before the act, and so do a derived field, a function's recorded output and a kept view's group computed from them, while a field that is not erasable keeps its history and another source's values stay; a rebuild answers the same; an ingest from the source is refused and appends nothing, as is a stale report, and forgetting it again answers it done and appends nothing",
+    reopens
+);
+
+check!(
+    FORGET_CRASH = a_forgetting_a_crash_stopped_is_finished_by_the_next_writers_open,
+    "058: a forgetting stopped after its event, before its keys are destroyed, and one stopped after its keys are destroyed, before its rebuild, each leave the source's ingest refused; the first is finished by the act's repeat on the same handle, the second by the writer's next open, each destroying the keys, rebuilding and reclaiming, appending no second event, and the values read as erased at every position; an open after that changes nothing",
+    reopens
+);
+
+check!(
+    FORGET_PLAINTEXT = a_source_with_plaintext_values_in_the_log_is_not_forgotten,
+    "058: a source's value written before its field was erasable is plaintext in the log; the preflight counts it, and `forget_source` is refused naming the count, appending nothing; so is a value written under a field's old name, before a migration renamed it to a field that is erasable now",
+    reopens
+);
+
+/// A key store over [`Keys`] that fails on cue: `destroy`, or a key of
+/// `erp` once a destroy has run, as a crash would stop the act there.
+struct Faulty {
+    keys: Arc<Keys>,
+    destroy_fails: AtomicBool,
+    after_destroy_fails: AtomicBool,
+    destroyed: AtomicBool,
+}
+
+impl Faulty {
+    fn new(keys: &Arc<Keys>) -> Faulty {
+        Faulty {
+            keys: keys.clone(),
+            destroy_fails: AtomicBool::new(false),
+            after_destroy_fails: AtomicBool::new(false),
+            destroyed: AtomicBool::new(false),
+        }
+    }
+}
+
+fn crashed() -> Error {
+    let lake = "the key store".to_owned();
+    Error::unavailable(lakelands_api::error::Situation::Busy { lake })
+}
+
+impl KeyStore for Faulty {
+    fn create(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<KeyId> {
+        self.keys.create(lake, source)
+    }
+    fn key(
+        &self,
+        lake: &LakeId,
+        source: &SourceId,
+        id: &KeyId,
+    ) -> lakelands_api::Result<Option<DataKey>> {
+        let late = self.after_destroy_fails.load(Ordering::SeqCst);
+        if late && self.destroyed.load(Ordering::SeqCst) && source.as_str() == "erp" {
+            return Err(crashed());
+        }
+        self.keys.key(lake, source, id)
+    }
+    fn destroy(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<()> {
+        if self.destroy_fails.load(Ordering::SeqCst) {
+            return Err(crashed());
+        }
+        self.keys.destroy(lake, source)?;
+        self.destroyed.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+    fn ids(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<Vec<KeyId>> {
+        self.keys.ids(lake, source)
+    }
+}
+
+/// `person` with `initial`, derived from `name`, and `loud`, which the
+/// suite's backing computes from it; the kept view `by_name` counts the
+/// people of each name.
+async fn lake(l: &Lake) -> Held {
+    let kind = crate::conformance::backing::KIND;
+    let text = json!({"kind": "text"});
+    let config = json!({"token": "forgotten", "echo": "name"});
+    l.declare_json(
+        json!({"declare": "function", "name": "shout", "backing": kind,
+        "inputs": [{"name": "name", "type": text}], "config": config}),
+    )
+    .await?;
+    let mut t = person();
+    let initial =
+        json!({"name": "initial", "type": text, "authority": "derived", "derived": "name"});
+    t.fields
+        .push(serde_json::from_value(initial).expect("a field reads"));
+    t.fields.push(crate::conformance::fixture::computed_by(
+        "loud",
+        StorageKind::Text,
+        "shout",
+        &["name"],
+    ));
+    l.declare(t).await?;
+    let view = json!({"source": "person", "group_by": ["name"],
+                      "measures": [{"name": "n", "expr": "count()"}]});
+    l.declare_json(
+        json!({"declare": "type", "name": "by_name", "key": ["name"], "view": view,
+        "fields": [{"name": "name", "type": text}, {"name": "n", "type": {"kind": "number"}}]}),
+    )
+    .await?;
+    l.set("view_kept.by_name", json!(true)).await?;
+    Ok(())
+}
+
+/// `p1` from `crm` alone, `p2` from `crm` with an author's `note`, `p3`
+/// from `erp`: the position after.
+async fn people(store: &dyn LakeStore, l: &Lake) -> Result<Position, Failure> {
+    let ada = source_record(
+        "person",
+        "p1",
+        json!({"id": "p1", "name": "Ada", "city": "Rome"}),
+    );
+    let bob = source_record("person", "p2", json!({"id": "p2", "name": "Bob"}));
+    l.ingest("crm", vec![ada, bob])
+        .await
+        .must("ingesting from crm")?;
+    l.upsert("person", "p2", json!({"note": "kept"})).await?;
+    let cy = source_record("person", "p3", json!({"id": "p3", "name": "Cy"}));
+    l.ingest("erp", vec![cy]).await.must("ingesting from erp")?;
+    store.head().await.must("reading the head")
+}
+
+/// The fields of `person` `key` as of `at` (the head when `None`), with
+/// provenance.
+async fn person_at(
+    l: &Lake,
+    key: &str,
+    at: Option<Position>,
+) -> Result<lakelands_api::Record, Failure> {
+    let r = l.cat.get(&l.own, &"person".into(), get_at(key, at)).await;
+    Ok(r.must(&format!("reading `{key}` as of {at:?}"))?.data)
+}
+
+/// The groups `by_name` holds as of `at`.
+async fn names(l: &Lake, at: Option<Position>) -> Result<Vec<Value>, Failure> {
+    let found = l.cat.find(&l.own, &"by_name".into(), find_at(at)).await;
+    let Found::Records { rows, .. } = found.must("reading `by_name`")?.data else {
+        return Err(Failure::new("`by_name` answers records".to_owned()));
+    };
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| r.fields.get("name").cloned())
+        .collect())
+}
+
+/// Whether `crm`'s values read as erased as of `at`: `p2`'s `name`,
+/// `initial` and `loud` hold none, `name`'s provenance says `erased` and
+/// names `crm`, `by_name` has no group of Ada or Bob, and `p3` reads Cy.
+async fn erased(l: &Lake, at: Option<Position>) -> Held {
+    let p2 = person_at(l, "p2", at).await?;
+    let held: Vec<&str> = ["name", "initial", "loud"]
+        .into_iter()
+        .filter(|f| p2.fields.contains_key(*f))
+        .collect();
+    ensure!(
+        held.is_empty(),
+        "as of {at:?}, `p2` holds no value of crm's: it holds {held:?} in {p2:?}"
+    );
+    let meta = p2.meta.get("name");
+    ensure!(
+        meta.is_some_and(|m| m.erased && m.source.as_ref().is_some_and(|s| s == "crm")),
+        "as of {at:?}, `p2`'s `name` says it was erased and came from crm; its provenance is {meta:?}"
+    );
+    ensure!(
+        p2.fields.get("note") == Some(&json!("kept")),
+        "as of {at:?}, `p2` keeps its author's note: {p2:?}"
+    );
+    let groups = names(l, at).await?;
+    ensure!(
+        !groups.contains(&json!("Ada"))
+            && !groups.contains(&json!("Bob"))
+            && groups.contains(&json!("Cy")),
+        "as of {at:?}, the kept view `by_name` has a group for Cy and none for crm's names: {groups:?}"
+    );
+    let p3 = person_at(l, "p3", at).await?;
+    ensure!(
+        p3.fields.get("name") == Some(&json!("Cy")),
+        "as of {at:?}, erp's `p3` reads Cy: {p3:?}"
+    );
+    Ok(())
+}
+
+/// What a report names, for comparison.
+fn shape(r: &ForgetReport) -> Value {
+    json!({
+        "types": r.types.iter().map(|t| json!([t.ty, t.records])).collect::<Vec<_>>(),
+        "fields": r.fields.iter().map(|f| json!([f.ty, f.field, f.values])).collect::<Vec<_>>(),
+        "retired": r.retired.iter().map(|t| json!([t.ty, t.retired])).collect::<Vec<_>>(),
+        "co_owned": r.co_owned.iter().map(|t| json!([t.ty, t.first])).collect::<Vec<_>>(),
+        "recomputed": r.recomputed.iter().map(|f| json!(f.field)).collect::<Vec<_>>(),
+        "views": r.views,
+        "plaintext": r.plaintext,
+    })
+}
+
+/// The `source_forgotten` events after `after`.
+async fn forgettings(store: &dyn LakeStore, after: Position) -> Result<Vec<Event>, Failure> {
+    let events = events_after(store, after).await?;
+    let forgot = |e: &Event| matches!(e.body, EventBody::SourceForgotten { .. });
+    Ok(events.into_iter().filter(forgot).collect())
+}
+
+/// An ingest from `crm` is refused, appending nothing.
+async fn refused(store: &dyn LakeStore, l: &Lake) -> Held {
+    let before = store.head().await.must("reading the head")?;
+    let dee = source_record("person", "p4", json!({"id": "p4", "name": "Dee"}));
+    refused_like(
+        "an ingest from the forgotten crm",
+        l.ingest("crm", vec![dee]).await,
+        &json!({"code": "source_forgotten", "source": "crm"}),
+    )?;
+    let head = store.head().await.must("reading the head")?;
+    ensure!(head == before, "the refused ingest appended up to {head}");
+    Ok(())
+}
+
+async fn a_forgotten_sources_values_read_as_erased_at_every_position(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    let keys = Arc::new(Keys::default());
+    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    lake(&l).await?;
+    let before = people(store.as_ref(), &l).await?;
+    let p2 = read(&l, "p2", "loud").await?;
+    ensure!(
+        p2 == json!("Bob"),
+        "before the act `p2`'s `loud` reads Bob; it reads {p2}"
+    );
+    let crm: SourceId = "crm".into();
+    let k = super::erasable::first(&keys, store.as_ref(), "crm")?;
+    let report = store.forget_preflight(&crm).await.must("the preflight")?;
+    let want = json!({
+        "types": [["person", 2]], "fields": [["person", "name", 2]], "retired": [["person", 1]],
+        "co_owned": [["person", ["p2"]]], "recomputed": ["initial", "loud"], "views": ["by_name"],
+        "plaintext": 0,
+    });
+    ensure!(
+        shape(&report) == want,
+        "the preflight names {want}; it names {} in {report:?}",
+        shape(&report)
+    );
+    ensure!(
+        report.outputs == 2
+            && report.events > 0
+            && !report.report_id.is_empty()
+            && report.reclaimed.is_none(),
+        "the preflight counts crm's two recorded outputs and the log's events, carries an id and reclaims nothing: {report:?}"
+    );
+    let rate = report.events.saturating_mul(1000) / report.expected_ms.max(1);
+    ensure!(
+        rate > 0,
+        "the preflight expects a time under the lock: {report:?}"
+    );
+    // A report of another head is refused.
+    l.upsert("person", "p3", json!({"note": "moved"})).await?;
+    refused_like(
+        "forgetting crm with a report of another head",
+        store.forget_source(&crm, Some(&report.report_id)).await,
+        &json!({"code": "forget_report_stale"}),
+    )?;
+    let at = store.head().await.must("reading the head")?;
+    let report = store
+        .forget_preflight(&crm)
+        .await
+        .must("the preflight again")?;
+    let done = store
+        .forget_source(&crm, Some(&report.report_id))
+        .await
+        .must("forgetting crm")?;
+    ensure!(
+        done.reclaimed.is_some() && done.position > at,
+        "the act appends and reclaims: {done:?}"
+    );
+    let forgot = forgettings(store.as_ref(), at).await?;
+    let named = forgot.iter().map(|e| &e.body).collect::<Vec<_>>();
+    ensure!(
+        matches!(named.as_slice(), [EventBody::SourceForgotten { source, keys }] if source == "crm" && keys == &vec![k.clone()]),
+        "one `source_forgotten` names crm and its key `{k}`; the log holds {named:?}"
+    );
+    let left = keys.ids(store.lake(), &crm).ok().unwrap_or_default();
+    ensure!(
+        left.is_empty(),
+        "the key store holds no key of crm after the act: {left:?}"
+    );
+    let p1 = l
+        .cat
+        .get(&l.own, &"person".into(), get_at("p1", None))
+        .await;
+    ensure!(
+        p1.is_err(),
+        "`p1`, which crm alone brought, is retired: it reads {p1:?}"
+    );
+    let p1 = person_at(&l, "p1", Some(before)).await?;
+    ensure!(
+        !p1.fields.contains_key("name") && p1.fields.get("city") == Some(&json!("Rome")),
+        "as of before the act `p1` holds no name, and its city, which is not erasable, stays: {p1:?}"
+    );
+    for at in [None, Some(before)] {
+        erased(&l, at).await?;
+    }
+    store.rebuild().await.must("rebuilding after the act")?;
+    for at in [None, Some(before)] {
+        erased(&l, at).await?;
+    }
+    refused(store.as_ref(), &l).await?;
+    // A repeat of the done act answers it done and appends nothing.
+    let head = store.head().await.must("reading the head")?;
+    let again = store
+        .forget_source(&crm, None)
+        .await
+        .must("forgetting crm again")?;
+    let after = store.head().await.must("reading the head")?;
+    ensure!(
+        after == head && again.types.is_empty() && again.retired.is_empty(),
+        "forgetting crm again answers the act done, appending nothing; it answered {again:?}, the head moving {head} to {after}"
+    );
+    Ok(())
+}
+
+async fn a_forgetting_a_crash_stopped_is_finished_by_the_next_writers_open(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    let keys = Arc::new(Keys::default());
+    let faulty = Arc::new(Faulty::new(&keys));
+    let seams = || Seams {
+        keys: Some(faulty.clone() as Arc<dyn KeyStore>),
+        backings: crate::conformance::backing::backings(),
+        ..Seams::default()
+    };
+    let mut store = again(&reopen, store, seams(), "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    lake(&l).await?;
+    let before = people(store.as_ref(), &l).await?;
+    let eve = source_record("person", "p5", json!({"id": "p5", "name": "Eve"}));
+    l.ingest("crm2", vec![eve])
+        .await
+        .must("ingesting from crm2")?;
+    let eve_at = store.head().await.must("reading the head")?;
+    // `crm` stops after its event, `crm2` after its keys are destroyed,
+    // where the rebuild asks for erp's key.
+    for (source, stop, flag) in [
+        ("crm", "after its event", &faulty.destroy_fails),
+        (
+            "crm2",
+            "after its keys are destroyed",
+            &faulty.after_destroy_fails,
+        ),
+    ] {
+        let source: SourceId = source.into();
+        faulty.destroyed.store(false, Ordering::SeqCst);
+        flag.store(true, Ordering::SeqCst);
+        let at = store.head().await.must("reading the head")?;
+        let stopped = store.forget_source(&source, None).await;
+        flag.store(false, Ordering::SeqCst);
+        ensure!(
+            stopped.is_err(),
+            "the act stopped {stop} answers its failure; it answered {stopped:?}"
+        );
+        // The first is finished by the act's repeat; the second, whose
+        // rebuild stopped and left the head behind the log, by the open.
+        if source == "crm" {
+            let done = store.forget_source(&source, None).await;
+            ensure!(
+                done.as_ref().is_ok_and(|r| r.reclaimed.is_some()),
+                "the repeat of the act stopped {stop} finishes it and reclaims: {done:?}"
+            );
+        }
+        store = again(&reopen, store, seams(), "after the stop").await?;
+        let forgot = forgettings(store.as_ref(), at).await?;
+        ensure!(
+            forgot.len() == 1,
+            "the act stopped {stop} has its event in the log: {forgot:?}; it answered {stopped:?}"
+        );
+        let l = Lake::of(store.as_ref());
+        let left = keys.ids(store.lake(), &source).ok().unwrap_or_default();
+        ensure!(
+            left.is_empty(),
+            "the open after a stop {stop} destroyed {source}'s keys: {left:?}"
+        );
+        let p5 = person_at(&l, "p5", Some(eve_at)).await?;
+        ensure!(
+            p5.fields.contains_key("name") == (source == "crm"),
+            "after the open, crm2's `p5` holds its name only while crm2 is not forgotten: {p5:?}"
+        );
+        if source == "crm" {
+            refused(store.as_ref(), &l).await?;
+            for at in [None, Some(before)] {
+                erased(&l, at).await?;
+            }
+        }
+        let head = store.head().await.must("reading the head")?;
+        store = again(&reopen, store, seams(), "once more").await?;
+        let moved = events_after(store.as_ref(), head).await?;
+        let other = moved
+            .iter()
+            .filter(|e| !matches!(e.body, EventBody::LeaseTaken { .. }));
+        ensure!(
+            other.count() == 0,
+            "an open after the finished act appends nothing but its lease: {moved:?}"
+        );
+    }
+    Ok(())
+}
+
+async fn a_source_with_plaintext_values_in_the_log_is_not_forgotten(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    let keys = Arc::new(Keys::default());
+    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    let mut t = person();
+    t.fields.retain(|f| f.name != "name");
+    t.fields.push(sourced("name", StorageKind::Text));
+    l.declare(t).await?;
+    let ada = source_record("person", "p1", json!({"id": "p1", "name": "Ada"}));
+    l.ingest("crm", vec![ada]).await.must("ingesting p1")?;
+    l.declare(person()).await?;
+    let report = store
+        .forget_preflight(&"crm".into())
+        .await
+        .must("the preflight")?;
+    ensure!(
+        report.plaintext == 1,
+        "the preflight counts one plaintext value of crm: {report:?}"
+    );
+    let before = store.head().await.must("reading the head")?;
+    refused_like(
+        "forgetting crm with a plaintext value in the log",
+        store.forget_source(&"crm".into(), None).await,
+        &json!({"code": "forget_plaintext", "source": "crm", "count": 1}),
+    )?;
+    let head = store.head().await.must("reading the head")?;
+    ensure!(head == before, "the refused act appended up to {head}");
+    // A value written under `email`, which a migration renamed to `mail`,
+    // erasable since: the log holds it under the old name, in plaintext.
+    let contact = |erasable: bool, name: &str| {
+        let f = FieldDecl {
+            erasable,
+            ..sourced(name, StorageKind::Text)
+        };
+        let id = FieldDecl {
+            required: true,
+            ..sourced("id", StorageKind::Text)
+        };
+        lakelands_api::ontology::TypeDecl {
+            key: vec!["id".into()],
+            ..crate::conformance::fixture::type_decl("contact", vec![id, f])
+        }
+    };
+    l.declare(contact(false, "email")).await?;
+    let c1 = source_record("contact", "c1", json!({"id": "c1", "email": "a@b"}));
+    l.ingest("web", vec![c1]).await.must("ingesting c1")?;
+    l.migrate_renaming(contact(false, "mail"), &[("email", "mail")])
+        .await?;
+    l.declare(contact(true, "mail")).await?;
+    let report = store
+        .forget_preflight(&"web".into())
+        .await
+        .must("the preflight of web")?;
+    ensure!(
+        report.plaintext == 1,
+        "the preflight counts web's plaintext value written as `email`, now `mail` and erasable: {report:?}"
+    );
+    refused_like(
+        "forgetting web with a plaintext value under a renamed field",
+        store.forget_source(&"web".into(), None).await,
+        &json!({"code": "forget_plaintext", "source": "web", "count": 1}),
+    )?;
+    Ok(())
+}

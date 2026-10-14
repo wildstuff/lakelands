@@ -14,7 +14,7 @@ interface store {
     use types.{
         lake-id, type-name, record-key, relation-name, verb-name, proposal-id, source-id, position,
         principal, write-context, limits, verification, error, timestamp, age-report, purge-report,
-        compact-report, vector-coverage,
+        compact-report, vector-coverage, forget-report,
         find, found-reply, get, record-reply, patch, write-opts, outcome,
         proposed-write, proposal-filter, proposals-reply, source-record, committed, ingest-error,
         feed-filter, feed-batch,
@@ -55,6 +55,14 @@ interface store {
         purge-source: func(source: source-id, %type: option<type-name>, report-id: option<string>) -> result<purge-report, error>;
         /// What `purge-source` would do, appending nothing.
         purge-preflight: func(source: source-id, %type: option<type-name>) -> result<purge-report, error>;
+        /// Forget a source: its keys destroyed, every value it sealed
+        /// erased at every position, the storage reclaimed, in one act
+        /// under the writer's lock. With a preflight's id, refused unless
+        /// that report is of this source at this head.
+        forget-source: func(source: source-id, report-id: option<string>) -> result<forget-report, error>;
+        /// What `forget-source` would do, appending nothing, with the time
+        /// it is expected to hold the writer's lock.
+        forget-preflight: func(source: source-id) -> result<forget-report, error>;
         /// Give back the storage the projection no longer uses; appends
         /// nothing and changes no answer.
         compact: func() -> result<compact-report, error>;

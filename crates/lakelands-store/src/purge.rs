@@ -51,7 +51,7 @@ type Names<'a> = Vec<(&'a FieldName, &'a TypeName)>;
 /// Whether `r` came in, at least in part, from `source`: a field that
 /// holds a value came from it. A record whose values from the source were
 /// all cleared since holds none of it.
-fn brought_by(r: &StoredRecord, source: &SourceId) -> bool {
+pub(crate) fn brought_by(r: &StoredRecord, source: &SourceId) -> bool {
     r.fields.keys().any(|f| {
         r.meta
             .get(f)
@@ -64,7 +64,7 @@ fn brought_by(r: &StoredRecord, source: &SourceId) -> bool {
 /// holds no value and co-owns nothing, and neither does one that declares
 /// an `initial` value, whoever wrote it last: it is there because the
 /// record is (`docs/decisions/050-a-field-declares-its-initial-value.md`).
-fn co_owned(decl: &TypeDecl, r: &StoredRecord, source: &SourceId) -> bool {
+pub(crate) fn co_owned(decl: &TypeDecl, r: &StoredRecord, source: &SourceId) -> bool {
     let starts = |f: &FieldName| {
         decl.fields
             .iter()

@@ -177,6 +177,8 @@ impl LakeStore for DownStore {
     refuse!(age<>(today: lakelands_api::Timestamp) -> lakelands_api::write::AgeReport);
     refuse!(purge_source<'life1, 'life2, 'life3>(source: &'life1 lakelands_api::SourceId, ty: Option<&'life2 TypeName>, id: Option<&'life3 str>) -> lakelands_api::write::PurgeReport);
     refuse!(purge_preflight<'life1, 'life2>(source: &'life1 lakelands_api::SourceId, ty: Option<&'life2 TypeName>) -> lakelands_api::write::PurgeReport);
+    refuse!(forget_source<'life1, 'life2>(source: &'life1 lakelands_api::SourceId, id: Option<&'life2 str>) -> lakelands_api::write::ForgetReport);
+    refuse!(forget_preflight<'life1>(source: &'life1 lakelands_api::SourceId) -> lakelands_api::write::ForgetReport);
     refuse!(compact<>() -> lakelands_api::write::CompactReport);
     refuse!(position_at<>(known_at: lakelands_api::Timestamp) -> Option<Position>);
     refuse!(vector_coverage<'life1>(ty: &'life1 TypeName) -> Vec<lakelands_api::read::VectorCoverage>);

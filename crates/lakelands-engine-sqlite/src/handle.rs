@@ -31,7 +31,7 @@ use crate::projection::{self, MEMBERS, OUTPUTS, PROPOSALS};
 use crate::view::SqliteView;
 use lakelands_api::error::{Case, Detail, Doing, Error, Part, Situation};
 
-use crate::{NAME, invalid, io_error, lock, sql};
+use crate::{NAME, REBUILD_RATE, invalid, io_error, lock, sql};
 
 /// The open transaction of the fold: the latest position a put in it
 /// names, which the commit must reach.
@@ -321,6 +321,10 @@ impl Drop for SqliteLake {
 impl LakeEngine for SqliteLake {
     fn name(&self) -> &str {
         NAME
+    }
+
+    fn rebuild_rate(&self) -> u64 {
+        REBUILD_RATE
     }
 
     fn lake(&self) -> &LakeId {
@@ -630,9 +634,14 @@ impl ProjectionStore for SqliteLake {
                 Error::unavailable(Situation::CompactFailed { lake, detail })
             })?;
             // The rewrite is committed. A reader that holds a snapshot now
-            // keeps the journal from being truncated: the compact is done
-            // all the same, and `after` counts the journal it left.
-            truncate_journal(conn)?;
+            // keeps the journal from being truncated, and the journal still
+            // holds the pages the rewrite freed: the compact answers busy,
+            // so what is owed of it (058) stays owed, and the next one
+            // truncates. No answer has changed.
+            if !truncate_journal(conn)? {
+                let lake = self.lake.to_string();
+                return Err(Error::unavailable(Situation::Busy { lake }));
+            }
             Ok(Reclaimed {
                 before: Some(before),
                 after: Some(self.size()?),

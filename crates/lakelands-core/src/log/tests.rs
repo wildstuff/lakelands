@@ -207,3 +207,21 @@ fn sealed_belongs_to_format_16_on() {
     let why = misplaced(&line(15)).expect("refused");
     assert_eq!(why, lakelands_api::error::Flaw::SealedBefore { v: 15 });
 }
+
+#[test]
+fn source_forgotten_belongs_to_format_16_on() {
+    let line = |v: u32| -> Event {
+        serde_json::from_value(json!({
+            "v": v, "lake": "l", "position": 1, "id": "0".repeat(32),
+            "prev": "0".repeat(64), "known_at": "2026-01-01T00:00:00.000000Z",
+            "writer": "system:lakelands", "origin": "system",
+            "context": {"origin": "direct", "depth": 0}, "fence": 1,
+            "body": {"kind": "source_forgotten", "source": "crm", "keys": ["1"]},
+            "hash": "0".repeat(64)
+        }))
+        .unwrap()
+    };
+    assert_eq!(misplaced(&line(16)), None);
+    let why = misplaced(&line(15)).expect("refused");
+    assert_eq!(why, lakelands_api::error::Flaw::ForgottenBefore { v: 15 });
+}

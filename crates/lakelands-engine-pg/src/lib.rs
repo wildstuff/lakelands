@@ -62,6 +62,10 @@ pub use view::{few_holders_statements, holding_statements, read_statements};
 /// `EngineConfig::Postgres`.
 pub(crate) const NAME: &str = "pg";
 
+/// The events a rebuild folds a second, as measured: 20 000 events in 8.1 s, a release
+/// build on the development machine (lakelands#1042).
+pub(crate) const REBUILD_RATE: u64 = 2_500;
+
 pub(crate) use lakelands_core::{invalid, lock};
 
 /// A failed statement, for the host. Of an error the server sends, only

@@ -70,6 +70,9 @@ pub fn window(
         shown: None,
     };
     let view = lake.engine.view(None)?;
+    // A forgotten source is never given a key again, and writes nothing
+    // (058).
+    let forgotten = crate::lake::forgotten_list(view.as_ref(), &Default::default())?;
     let now = lake.clock(&mut w);
     let mut d = call.decide(&w, view.as_ref(), now, 0);
     (d.door, d.envelope.origin) = (Door::Source, Origin::Source);
@@ -123,6 +126,10 @@ pub fn window(
             let version_before = t.before.as_ref().map_or(0, |b| b.version.0);
             // The record's own source, else the call's: its event and its id.
             let source = r.source.as_ref().unwrap_or(source);
+            if forgotten.contains_key(source) {
+                let source = source.clone();
+                return Err(lakelands_core::invalid(Case::SourceForgotten { source }));
+            }
             d.envelope.source = Some(source.clone());
             // Its values of an erasable field enter the log sealed under its
             // key, and its id is the sealed patch's: no digest of a plaintext

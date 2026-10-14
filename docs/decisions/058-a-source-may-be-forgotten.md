@@ -19,13 +19,13 @@ The unit is the source, as for a purge (039), because a source is what a host ca
 
 ### A host forgets a source in one act, and the act is in the log
 
-`forget_source(source)` works in this order:
-1. It appends one `source_forgotten` event: the source, the key's id, the writer and the time. The act is recorded as a purge is, and nothing leaves the log.
-2. The fold scrubs the projection (below).
-3. The engine reclaims the storage the scrubbed values held (below).
-4. The host's key store is asked to destroy the source's keys, every version of them.
+`forget_source(source)` works in this order, under the writer's lock:
+1. It appends one `source_forgotten` event: the source, the versions of its key, the writer and the time, with a `record_retired` for each record the source alone brought. The act is recorded as a purge is, and nothing leaves the log.
+2. The source's keys are dropped from memory, and the host's key store is asked to destroy them, every version.
+3. The projection is rebuilt from the log (below).
+4. The engine reclaims the storage the erased values held (below).
 
-**A crash between the steps** leaves the event in the log. The writer's next open finishes what is owed, and each step is idempotent.
+**A crash between the steps** leaves the event in the log. The writer's next open finishes what is owed, and each step is idempotent: destroying what is destroyed changes nothing, and a rebuild folds the same log to the same state. Nothing reads the source's values from the log in between, since its keys are out of memory; the projection holds them until the rebuild, and an ingest from the source is refused from the event on. The projection keeps, under a name of the store's own, which acts are owed, so the open knows what is left, and a repeat of the act finishes it too, appending nothing again. A handle opened only to read finishes nothing: after a crash between the event and the rebuild it answers the plaintext the projection still holds until a writer opens, and `hosting.md` tells the host to open one.
 
 **After the act:**
 - every value the source wrote to an erasable field reads as **erased**, at every position, `as_of` included;
@@ -84,16 +84,18 @@ A type whose key holds personal data is given a surrogate key. `hosting.md` says
 - **What equality still tells.** A value's own ciphertext tells no equality across records or versions. An output is recorded once for one call (053), so its `input` is the same for two records of one source whose call reads the same values: the log tells that they are equal, never what they are, and never across sources. That is the price of recording once.
 - An output whose inputs hold erasable values of two sources records no value, and names the reason in its `error`. One key per output is all the first version carries.
 
-### The projection holds plaintext, and the act scrubs it
+### The projection holds plaintext, and the act rebuilds it
 
 **Why plaintext:** the projection decrypts at the fold, so reads, filters, orders, search and indexes work on values as they do today. It never holds a key.
 
-**At `source_forgotten`,** the fold:
-- removes every value whose per-field provenance names the source, from every state the projection keeps, history included;
-- removes the index entries those values made: the text and sort indexes, full text, vectors;
-- recomputes the derived fields and views that read them.
+**The act scrubs by rebuilding.** After the keys are destroyed, the projection is folded again from the log. The fold meets each sealed value of the source with no key to open it, and a `source_forgotten` of that source in the log, so it folds the value as erased: cleared, its provenance kept and marked. So every state the projection keeps holds the erasure, history included, and with it:
+- the derived fields and views computed from the value, which the fold computes without it;
+- an output a backing recorded under the source's key, which is dropped, and a fill that names it, which fills nothing;
+- the index entries the value made: the text and sort indexes, full text, vectors, which the rebuild never makes.
 
-**A rebuild after the act** reaches the same state by itself: the fold meets ciphertext whose key is destroyed, and the event says the source is forgotten. So the projection stays a function of the log (001), the log including the act.
+**A key the key store does not give, with no act in the log,** is lost, not destroyed: the fold fails closed, and the value is never read as erased. A rebuild meets the values before the act that forgot them, so where a key is missing it looks ahead in the log for that act.
+
+The projection is the fold of the log and the key store by construction (001), the log including the act: there is no second path, an incremental scrub of the states kept, that would have to come out equal to a rebuild.
 
 **Reads after:**
 - **An erased value is absent:** the field holds no value, as if cleared.
@@ -102,8 +104,8 @@ A type whose key holds personal data is given a surrogate key. `hosting.md` says
 
 ### The engine's storage is reclaimed
 
-Deleting a row leaves its bytes in free pages until the engine reclaims them. So after the scrub, the act runs the engine's own reclaim, and its report says it ran:
-- **SQLite:** `secure_delete` on, then `VACUUM`, then a WAL truncate;
+Deleting a row leaves its bytes in free pages until the engine reclaims them. So after the rebuild, the act runs the engine's own reclaim, and its report says what it measured:
+- **SQLite:** `VACUUM`, which writes the database anew, so no freed page survives it, then a WAL truncate, which drops the old pages from the journal;
 - **PostgreSQL:** `VACUUM` of the tables it touched;
 - **pgvector:** the `VACUUM` repairs the index graph after deletes (040's one exception).
 
@@ -136,13 +138,14 @@ The first version carries no per-copy erasure across lakes.
 
 ### An erasure is read before it is made
 
-`forget_preflight(source)` answers what the act would take and appends nothing. Its report carries an id that `forget_source` may repeat, as a purge's may (039). Its report:
+`forget_preflight(source)` answers what the act would take and appends nothing. Its report carries an id that `forget_source` may repeat, as a purge's may (039); the act refuses a report of another head. Its report:
 - per type, the records holding a value of the source in an erasable field: a count, and the first ten keys;
 - the records it would retire, which the source alone brought, with the co-owned records named apart;
 - per field, the values it would erase, and the recorded outputs;
 - the derived fields and views that recompute;
 - the mirror connections whose types it would stop;
-- **the values of the source that are plaintext in the log**: written before the field was erasable, or before the feature. Shredding cannot reach them, so the act refuses while they exist and names the count.
+- **the values of the source that are plaintext in the log**: written before the field was erasable, or before the feature. Shredding cannot reach them, so the act refuses while they exist and names the count;
+- **the time it expects to hold the writer's lock**: the log's events at the engine's measured rebuild rate, so a host can choose its moment. Every write waits while the act rebuilds.
 
 ### A lake 0.14.0 writes holds plaintext, and the feature starts where it starts
 
@@ -180,3 +183,7 @@ What it gives up is plaintext in the log for the fields that opt in. Those field
 - **It does not reach** data written before a field was erasable, copies outside the lake (backups, archives, a host's own copies, an export made before), or values a person authored.
 - **It does not erase keys, types, positions or source ids**, which stay plaintext by design.
 - **It is not a signature, and not access control.** Grants and masks are unchanged.
+
+## How it came to be
+
+- The act scrubs by rebuilding the projection after the keys are destroyed, where it was first written as an incremental scrub of every kept state before the keys were destroyed. The operator decided it (lakelands#1042): the projection is then the fold of the log and the key store by construction, and no second path has to stay equal to a rebuild. The price is the rebuild's time under the writer's lock, which the preflight names; an incremental scrub, for hosts that forget often on large lakes, is its own later step.

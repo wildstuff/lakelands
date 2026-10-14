@@ -38,6 +38,7 @@ mod export;
 mod feed;
 mod fields;
 mod filters;
+mod forgotten;
 mod fusion;
 mod graph_measures;
 mod graph_steps;
@@ -512,6 +513,9 @@ pub const ALL: &[Check] = &[
     erasable::KEY_MISSING,
     erasable::SEALED_OUTPUT,
     erasable::FIRST_SEALED,
+    forgotten::FORGOTTEN,
+    forgotten::FORGET_CRASH,
+    forgotten::FORGET_PLAINTEXT,
     embeddings::EMBED_WRITE,
     embeddings::VECTOR_COVERAGE,
     embeddings::EMBED_ONCE,

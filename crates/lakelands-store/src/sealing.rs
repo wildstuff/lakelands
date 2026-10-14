@@ -92,16 +92,94 @@ impl Keys {
     /// The key of `source` of version `id`. One the key store does not
     /// give fails closed: a lost key is never read as an erasure.
     pub fn key(&self, source: &SourceId, id: &KeyId) -> Result<DataKey> {
+        self.opened(source, id)?.ok_or_else(|| {
+            let (source, key) = (source.clone(), id.clone());
+            Error::unavailable(Situation::KeyMissing { source, key })
+        })
+    }
+
+    /// The key of `source` of version `id`, or `None` where the key store
+    /// gives none: destroyed, which only a forgetting in the log makes an
+    /// erasure ([`FORGOTTEN`]).
+    pub fn opened(&self, source: &SourceId, id: &KeyId) -> Result<Option<DataKey>> {
         let at = (source.clone(), id.clone());
         if let Some(k) = lock(&self.held).by.get(&at) {
-            return Ok(k.clone());
+            return Ok(Some(k.clone()));
         }
         let Some(k) = self.store()?.key(&self.lake, source, id)? else {
-            let (source, key) = at;
-            return Err(Error::unavailable(Situation::KeyMissing { source, key }));
+            return Ok(None);
         };
         lock(&self.held).by.insert(at, k.clone());
-        Ok(k)
+        Ok(Some(k))
+    }
+
+    /// The versions of `source`'s key the key store holds; none without
+    /// a key store, which seals nothing.
+    pub fn ids(&self, source: &SourceId) -> Result<Vec<KeyId>> {
+        match &self.store {
+            Some(store) => store.ids(&self.lake, source),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Drop `source`'s keys from memory, then have the key store destroy
+    /// every version of them (058). Destroying what is destroyed is no
+    /// change.
+    pub fn destroy(&self, source: &SourceId) -> Result<()> {
+        {
+            let mut held = lock(&self.held);
+            held.by.retain(|(s, _), _| s != source);
+            held.sealing.remove(source);
+        }
+        match &self.store {
+            Some(store) if !store.ids(&self.lake, source)?.is_empty() => {
+                store.destroy(&self.lake, source)
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// The store's own seam under which the fold keeps the sources the log
+/// forgot, each with what of its act is still owed: `owed` where the
+/// projection may hold its values, `rebuilt` where a rebuild after its
+/// keys were destroyed erased them and the reclaim is owed, `done`.
+pub const FORGOTTEN: &str = "sys:forgotten";
+
+/// The input [`FORGOTTEN`] keeps its one list under.
+pub fn forgotten_at() -> Digest {
+    crate::backed::digest(&Value::from("forgotten"))
+}
+
+/// What of a forgetting is owed, by source, from the list [`FORGOTTEN`]
+/// keeps.
+pub fn forgotten(list: Option<&Value>) -> BTreeMap<SourceId, String> {
+    let all = list.and_then(Value::as_object).into_iter().flatten();
+    all.filter_map(|(s, v)| Some((SourceId::from(s.as_str()), v.as_str()?.to_owned())))
+        .collect()
+}
+
+/// Erase in place what `event`'s `sealed` names, a forgotten source's
+/// values: each patch member is cleared, and a recorded output dropped.
+/// The fields erased, for their provenance to say so.
+pub fn erase(event: &mut Event) -> Vec<lakelands_api::FieldName> {
+    let Some(sealed) = event.sealed.take() else {
+        return Vec::new();
+    };
+    match &mut event.body {
+        EventBody::RecordIngested { patch, .. } => {
+            for f in &sealed.fields {
+                if let Some(v) = patch.get_mut(f) {
+                    *v = Value::Null;
+                }
+            }
+            sealed.fields
+        }
+        EventBody::OutputRecorded { output, .. } => {
+            *output = None;
+            Vec::new()
+        }
+        _ => Vec::new(),
     }
 }
 

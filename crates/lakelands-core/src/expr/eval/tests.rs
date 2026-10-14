@@ -414,6 +414,7 @@ fn settings_and_provenance_come_from_the_scope() {
             source: None,
             procedure_version: None,
             error: None,
+            erased: false,
         },
     )]
     .into();

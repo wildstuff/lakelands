@@ -108,7 +108,7 @@ impl KeyStore for Keys {
 }
 
 /// The first version of `source`'s key `keys` holds for the lake.
-fn first(keys: &Keys, store: &dyn LakeStore, source: &str) -> Result<KeyId, Failure> {
+pub(super) fn first(keys: &Keys, store: &dyn LakeStore, source: &str) -> Result<KeyId, Failure> {
     let ids = keys
         .ids(store.lake(), &source.into())
         .ok()
@@ -119,7 +119,7 @@ fn first(keys: &Keys, store: &dyn LakeStore, source: &str) -> Result<KeyId, Fail
 }
 
 /// Seams with `keys` as the key store, and the suite's backing.
-fn with(keys: &Arc<Keys>) -> Seams {
+pub(super) fn with(keys: &Arc<Keys>) -> Seams {
     Seams {
         keys: Some(keys.clone()),
         backings: crate::conformance::backing::backings(),
@@ -129,7 +129,7 @@ fn with(keys: &Arc<Keys>) -> Seams {
 
 /// `person`, keyed by `id`: `name` erasable and `city` not, each a
 /// source's, and `note` an author's.
-fn person() -> lakelands_api::ontology::TypeDecl {
+pub(super) fn person() -> lakelands_api::ontology::TypeDecl {
     let name = FieldDecl {
         erasable: true,
         ..sourced("name", StorageKind::Text)
@@ -165,13 +165,18 @@ fn stored(e: &Event, f: &str) -> Value {
 }
 
 /// The value of `f` in `person` `key` at the head.
-async fn read(l: &Lake, key: &str, f: &str) -> Result<Value, Failure> {
+pub(super) async fn read(l: &Lake, key: &str, f: &str) -> Result<Value, Failure> {
     let r = l.read("person", key).await?;
     Ok(r.fields.get(f).cloned().unwrap_or(Value::Null))
 }
 
 /// Opens the lake again with `seams`, naming `what` if that fails.
-async fn again(reopen: &Reopen, store: Store, seams: Seams, what: &str) -> Result<Store, Failure> {
+pub(super) async fn again(
+    reopen: &Reopen,
+    store: Store,
+    seams: Seams,
+    what: &str,
+) -> Result<Store, Failure> {
     (reopen)(store, seams)
         .await
         .map_err(|e| Failure::new(format!("opening the lake again {what} failed: {e}")))

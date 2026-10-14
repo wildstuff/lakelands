@@ -303,6 +303,9 @@ SHOWS = {
     "constraints": shows("a declared type with a constraint that admits at ingest and one that reads `previous`")(
         lambda e: [c.get("at_ingest", "refuse") for c in declaration(e).get("constraints", [])] == ["admit", "refuse"]
         and "previous(" in declaration(e)["constraints"][1]["holds"]),
+    "source_forgotten": shows("a `source_forgotten` naming the source and the versions of its key")(
+        lambda e: e["body"]["kind"] == "source_forgotten" and e["body"].get("source") == "crm"
+        and e["body"].get("keys") == ["1"] and "sealed" not in e),
     "lake_upgraded": shows("a `lake_upgraded` from the format before to the one this lake is written in")(
         lambda e: e["body"]["kind"] == "lake_upgraded" and e["body"]["from"] == e["v"] - 1 and e["body"]["to"] == e["v"]),
 }
@@ -380,6 +383,8 @@ def verify_dir(root):
             need("sealed" not in event or event["body"].get("kind") in SEALS,
                  f"a `{event['body'].get('kind')}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries")
             need("sealed" not in event or v >= 16, f"an event of format {v} carries `sealed`, which format 16 added")
+            need(event["body"].get("kind") != "source_forgotten" or v >= 16,
+                 f"an event of format {v} is a `source_forgotten`, which format 16 added")
             # known_at in its one form (§1.3), whose text orders as its
             # instant does, and never before the event before it.
             k = event.get("known_at")

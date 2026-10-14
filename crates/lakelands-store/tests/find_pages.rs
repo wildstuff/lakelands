@@ -128,6 +128,9 @@ impl LakeEngine for Counting {
     fn name(&self) -> &str {
         self.inner.name()
     }
+    fn rebuild_rate(&self) -> u64 {
+        self.inner.rebuild_rate()
+    }
     fn lake(&self) -> &LakeId {
         self.inner.lake()
     }

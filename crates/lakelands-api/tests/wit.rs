@@ -444,6 +444,7 @@ fn field_meta() -> FieldMeta {
         source: Some("erp".into()),
         procedure_version: Some("1".into()),
         error: Some("the backing failed".into()),
+        erased: true,
     }
 }
 
@@ -625,6 +626,29 @@ fn purge_moved() -> lakelands_api::write::PurgeMoved {
         field: "state".into(),
         records: 1,
         first: vec!["o1".into()],
+    }
+}
+
+fn forget_records() -> lakelands_api::write::ForgetRecords {
+    lakelands_api::write::ForgetRecords {
+        ty: "ord".into(),
+        records: 1,
+        first: vec!["o1".into()],
+    }
+}
+
+fn forget_field() -> lakelands_api::write::ForgetField {
+    lakelands_api::write::ForgetField {
+        ty: "ord".into(),
+        field: "name".into(),
+        values: 1,
+    }
+}
+
+fn record_field() -> lakelands_api::write::RecordField {
+    lakelands_api::write::RecordField {
+        ty: "ord".into(),
+        field: "label".into(),
     }
 }
 
@@ -1221,6 +1245,32 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             }),
         ),
         ("purge_reference", members(&purge_reference())),
+        (
+            "forget_report",
+            members(&lakelands_api::write::ForgetReport {
+                source: "erp".into(),
+                types: vec![forget_records()],
+                fields: vec![forget_field()],
+                outputs: 1,
+                retired: vec![],
+                co_owned: vec![forget_records()],
+                recomputed: vec![record_field()],
+                views: vec!["v".into()],
+                plaintext: 0,
+                events: 9,
+                expected_ms: 1,
+                position: Position(3),
+                reclaimed: Some(lakelands_api::write::CompactReport {
+                    before: Some(2),
+                    after: Some(1),
+                    head: Position(3),
+                }),
+                report_id: "r".into(),
+            }),
+        ),
+        ("forget_records", members(&forget_records())),
+        ("forget_field", members(&forget_field())),
+        ("record_field", members(&record_field())),
         ("purge_moved", members(&purge_moved())),
         (
             "vector_coverage",

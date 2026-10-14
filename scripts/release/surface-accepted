@@ -6,3 +6,5 @@
 # baseline becomes the new tag and the list empties
 # (docs/decisions/056-the-host-surface-changes-by-one-release-of-deprecation.md).
 baseline v0.14.0
+lakelands-api	trait_method_added	trait method LakeStore::forget_preflight
+lakelands-api	trait_method_added	trait method LakeStore::forget_source

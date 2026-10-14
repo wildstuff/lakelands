@@ -47,11 +47,16 @@ struct Failing {
     /// Refuse every read of the log from this position on (`u64::MAX`:
     /// none).
     read_fail_from: Arc<AtomicU64>,
+    /// Refuse this many compactions, and count those done.
+    compact: (Arc<AtomicU32>, Arc<AtomicU32>),
 }
 
 impl LakeEngine for Failing {
     fn name(&self) -> &str {
         self.inner.name()
+    }
+    fn rebuild_rate(&self) -> u64 {
+        self.inner.rebuild_rate()
     }
     fn lake(&self) -> &LakeId {
         self.inner.lake()
@@ -198,6 +203,15 @@ impl ProjectionStore for Failing {
         self.inner.projection().clear()
     }
     fn compact(&self) -> Result<lakelands_api::engine::Reclaimed> {
+        let (fails, done) = &self.compact;
+        if fails.load(Ordering::SeqCst) > 0 {
+            fails.fetch_sub(1, Ordering::SeqCst);
+            let lake = self.lake().to_string();
+            return Err(Error::unavailable(lakelands_api::error::Situation::Busy {
+                lake,
+            }));
+        }
+        done.fetch_add(1, Ordering::SeqCst);
         self.inner.projection().compact()
     }
 }
@@ -209,6 +223,7 @@ struct FailingOpener {
     sealed: Arc<AtomicU32>,
     fail_from: Arc<AtomicU64>,
     read_fail_from: Arc<AtomicU64>,
+    compact: (Arc<AtomicU32>, Arc<AtomicU32>),
 }
 
 impl EngineOpener for FailingOpener {
@@ -226,6 +241,7 @@ impl EngineOpener for FailingOpener {
             sealed: self.sealed.clone(),
             fail_from: self.fail_from.clone(),
             read_fail_from: self.read_fail_from.clone(),
+            compact: self.compact.clone(),
         }))
     }
 }
@@ -247,6 +263,7 @@ struct Lake {
     sealed: Arc<AtomicU32>,
     fail_from: Arc<AtomicU64>,
     read_fail_from: Arc<AtomicU64>,
+    compact: (Arc<AtomicU32>, Arc<AtomicU32>),
 }
 
 /// A lake with the type `note`, and the switch that makes its folds fail.
@@ -270,6 +287,7 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
     let sealed = Arc::new(AtomicU32::new(0));
     let fail_from = Arc::new(AtomicU64::new(u64::MAX));
     let read_fail_from = Arc::new(AtomicU64::new(u64::MAX));
+    let compact = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
     let seams = Seams {
         engines: vec![Arc::new(FailingOpener {
             inner: MemoryOpener::new(),
@@ -278,6 +296,7 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
             sealed: sealed.clone(),
             fail_from: fail_from.clone(),
             read_fail_from: read_fail_from.clone(),
+            compact: compact.clone(),
         })],
         ..Seams::default()
     };
@@ -342,6 +361,7 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
             sealed,
             fail_from,
             read_fail_from,
+            compact,
         },
     )
 }
@@ -670,5 +690,76 @@ async fn a_rebuild_whose_log_read_fails_leaves_the_lake_behind_until_a_fold_catc
         notes_at(cat.as_ref(), &who, Some(head)).await.unwrap(),
         at_head,
         "every event the rebuild could not read is folded"
+    );
+}
+
+/// A forgetting stopped between its rebuild and its reclaim
+/// (`docs/decisions/058-a-source-may-be-forgotten.md`) is reclaimed by the
+/// act's repeat, which appends nothing, or by the next writer's open, and
+/// an open after that reclaims nothing again: only
+/// an engine's fault can stop the reclaim, so the suite holds the other
+/// stops and this one stands here.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_forgetting_stopped_before_its_reclaim_is_reclaimed_by_the_next_open() {
+    let (store, cat, who, l) = lake_with_switches().await;
+    write(cat.as_ref(), &who, "n1").await.unwrap();
+    let (fails, done) = &l.compact;
+    fails.store(1, Ordering::SeqCst);
+    let stopped = store.forget_source(&"crm".into(), None).await;
+    assert!(
+        stopped.is_err(),
+        "the act stopped at its reclaim answers {stopped:?}"
+    );
+    let before = done.load(Ordering::SeqCst);
+    // The act's repeat finishes what is owed, and appends nothing again.
+    let head = store.head().await.unwrap();
+    let finished = store.forget_source(&"crm".into(), None).await.unwrap();
+    assert!(
+        finished.reclaimed.is_some(),
+        "the repeat reclaims: {finished:?}"
+    );
+    assert_eq!(
+        store.head().await.unwrap(),
+        head,
+        "the repeat appends nothing"
+    );
+    assert_eq!(
+        done.load(Ordering::SeqCst),
+        before + 1,
+        "the repeat reclaims once"
+    );
+    let again = store.forget_source(&"crm".into(), None).await.unwrap();
+    assert!(
+        again.reclaimed.is_none(),
+        "a repeat of the done act reclaims nothing: {again:?}"
+    );
+    // A stop the open finishes.
+    fails.store(1, Ordering::SeqCst);
+    store.forget_source(&"erp".into(), None).await.unwrap_err();
+    let before = done.load(Ordering::SeqCst);
+    let reopen = || async {
+        lakelands_store::open(
+            Location::memory(l.name.as_str()),
+            l.seams.clone(),
+            OpenMode::Write,
+        )
+        .await
+        .unwrap()
+    };
+    store.close().await.unwrap();
+    drop((store, cat));
+    let store = reopen().await;
+    assert_eq!(
+        done.load(Ordering::SeqCst),
+        before + 1,
+        "the open reclaims what the act owed"
+    );
+    store.close().await.unwrap();
+    drop(store);
+    let _store = reopen().await;
+    assert_eq!(
+        done.load(Ordering::SeqCst),
+        before + 1,
+        "the next open owes nothing"
     );
 }

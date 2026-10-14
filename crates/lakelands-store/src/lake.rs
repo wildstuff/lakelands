@@ -39,7 +39,7 @@ use lakelands_api::seam::{EmbedBackend, Seams};
 use lakelands_api::write::{Declaration, Migration, Proposal, ProposalFilter, ProposalState};
 use lakelands_api::{
     Error, FieldName, LakeId, Position, Principal, ProposalId, RecordKey, Refusal, Result,
-    Timestamp, TypeName, Value, ValueTypeName, WriteContext,
+    SourceId, Timestamp, TypeName, Value, ValueTypeName, WriteContext,
 };
 use lakelands_core::sight::{InForce, Sight};
 use lakelands_core::{damaged, shape};
@@ -91,6 +91,12 @@ pub struct Writer {
     /// or compaction takes the lease again before it decides anything
     /// ([`Lake::regain`]); until its `lease_taken` is appended this stays.
     pub lost: bool,
+    /// The sources the log forgot that a fold has met (058): a fact of
+    /// the log, so kept over a rebuild.
+    pub forgotten: BTreeSet<SourceId>,
+    /// A rebuild is folding: an act it meets after its source's keys were
+    /// destroyed has erased what they sealed.
+    pub rebuilding: bool,
 }
 
 /// What the lake declares at one position, as a read needs it and before
@@ -150,6 +156,7 @@ pub(crate) fn ends_a_range(body: &EventBody) -> bool {
         | EventBody::WriteRejected { .. }
         | EventBody::TriggerFired { .. }
         | EventBody::ObjectSetChanged { .. }
+        | EventBody::SourceForgotten { .. }
         | EventBody::Checkpoint { .. } => false,
     }
 }
@@ -510,6 +517,8 @@ impl Lake {
                 ));
             }
             lake.append(&mut w, drafts)?;
+            // What a crash left of a forgetting is finished first (058).
+            lake.finish_forgetting(&mut w)?;
         }
         {
             // A read-only handle keeps the folded position `catch_up`
@@ -552,6 +561,8 @@ impl Lake {
                 answers: Vec::new(),
                 plans: record::Plans::default(),
                 lost: false,
+                forgotten: BTreeSet::new(),
+                rebuilding: false,
             }),
             keys: Arc::new(crate::sealing::Keys::new(location.lake.clone(), seams_keys)),
             head: AtomicU64::new(0),
@@ -581,6 +592,8 @@ impl Lake {
             answers: Vec::new(),
             plans: record::Plans::default(),
             lost: false,
+            forgotten: BTreeSet::new(),
+            rebuilding: false,
         })
     }
 
@@ -1585,12 +1598,25 @@ impl Lake {
         owes: bool,
     ) -> Result<()> {
         let opened;
+        // What a forgotten source sealed is erased: its key is destroyed,
+        // and the log says it was forgotten. A key gone without that is
+        // lost, and fails closed (058).
+        let (mut erased, mut dropped) = (Vec::new(), false);
         let source = (e.sealed.as_ref()).and_then(|s| s.source.as_ref().or(e.source.as_ref()));
         let e = match (&e.sealed, source) {
             (Some(sealed), Some(source)) => {
                 let mut plain = e.clone();
-                let key = self.keys.key(source, &sealed.key)?;
-                crate::sealing::open(&mut plain, &key)?;
+                match self.keys.opened(source, &sealed.key)? {
+                    Some(key) => crate::sealing::open(&mut plain, &key)?,
+                    None if self.forgot(w, view, staged, source, e.position)? => {
+                        dropped = matches!(plain.body, EventBody::OutputRecorded { .. });
+                        erased = crate::sealing::erase(&mut plain);
+                    }
+                    None => {
+                        let (source, key) = (source.clone(), sealed.key.clone());
+                        return Err(Error::unavailable(Situation::KeyMissing { source, key }));
+                    }
+                }
                 opened = plain;
                 &opened
             }
@@ -1643,6 +1669,23 @@ impl Lake {
             | EventBody::Checkpoint { .. }
             | EventBody::VerbCalled { .. }
             | EventBody::TriggerFired { .. } => {}
+            // The act is owed until a rebuild after its keys were
+            // destroyed has erased what they sealed, and the reclaim ran.
+            EventBody::SourceForgotten { source, .. } => {
+                w.forgotten.insert(source.clone());
+                let erased = w.rebuilding && self.keys.ids(source)?.is_empty();
+                let mut list = forgotten_list(view, staged)?;
+                let state = if erased { "rebuilt" } else { "owed" };
+                list.insert(source.clone(), state.to_owned());
+                let (seam, at) = (crate::sealing::FORGOTTEN, crate::sealing::forgotten_at());
+                let list = serde_json::to_value(&list).expect("a list serialises");
+                projection.put_output(seam, &at, &list, e.position)?;
+                staged
+                    .outputs
+                    .entry((seam.to_owned(), at))
+                    .or_default()
+                    .push((e.position, list));
+            }
             EventBody::Declared {
                 declaration,
                 schema_hash,
@@ -1777,7 +1820,12 @@ impl Lake {
                     w.owed
                         .push(Owed::new(e, ty.clone(), Of::Record(key.clone())));
                 }
-                if let Some(after) = after {
+                if let Some(mut after) = after {
+                    for f in &erased {
+                        if let Some(m) = after.meta.get_mut(f) {
+                            m.erased = true;
+                        }
+                    }
                     if ty.as_str() == SETTING_TYPE {
                         match after.fields.get("value").filter(|_| !after.retired) {
                             Some(v) => w.settings.insert(key.to_string(), v.clone()),
@@ -1841,17 +1889,28 @@ impl Lake {
                 output_at,
                 field,
             } => {
+                // An output a forgotten source's key sealed is erased, and
+                // a fill that names it fills nothing.
+                let held;
                 let output = match (output, output_at) {
+                    _ if dropped => None,
                     (Some(output), None) => {
                         projection.put_output(seam, input, output, e.position)?;
                         let recorded = staged.outputs.entry((seam.clone(), input.clone()));
                         recorded.or_default().push((e.position, output.clone()));
-                        output
+                        Some(output)
                     }
-                    (None, Some(at)) => &named(view, &staged.outputs, seam, input, *at, e)?,
+                    (None, Some(at)) => match named(view, &staged.outputs, seam, input, *at, e) {
+                        Ok(named) => {
+                            held = named;
+                            Some(&held)
+                        }
+                        Err(_) if self.erased_output(w, view, staged, *at)? => None,
+                        Err(e) => return Err(e),
+                    },
                     _ => return Err(damaged(Part::Log, Some(e.position), Flaw::OutputOnce)),
                 };
-                if let Some((ty, key, name)) = field
+                if let (Some(output), Some((ty, key, name))) = (output, field)
                     && let Some(r) = staged.record(view, ty, key)?
                 {
                     let mut due = Vec::new();
@@ -1889,6 +1948,54 @@ impl Lake {
             }
         }
         kept::settle(&kept_at!(w, view, projection), staged, e)
+    }
+
+    /// Whether the log forgot `source` (058): its list says so, or an act
+    /// from `from` on, which a rebuild meets after the values it erases.
+    /// A source once forgotten stays so.
+    fn forgot(
+        &self,
+        w: &mut Writer,
+        view: &dyn ProjectionView,
+        staged: &Staged,
+        source: &SourceId,
+        from: Position,
+    ) -> Result<bool> {
+        if w.forgotten.contains(source) || forgotten_list(view, staged)?.contains_key(source) {
+            return Ok(true);
+        }
+        for page in self.pages(from) {
+            for e in page? {
+                if matches!(&e.body, EventBody::SourceForgotten { source: s, .. } if s == source) {
+                    w.forgotten.insert(source.clone());
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// Whether the output recorded at `at` was erased: sealed under the
+    /// key of a source the log forgot.
+    fn erased_output(
+        &self,
+        w: &mut Writer,
+        view: &dyn ProjectionView,
+        staged: &Staged,
+        at: Position,
+    ) -> Result<bool> {
+        let Some(e) = self.read_events(at, 1)?.pop().filter(|e| e.position == at) else {
+            return Ok(false);
+        };
+        let sealed = e
+            .sealed
+            .as_ref()
+            .filter(|_| matches!(e.body, EventBody::OutputRecorded { .. }));
+        let Some((sealed, source)) = sealed.and_then(|s| Some((s, s.source.as_ref()?))) else {
+            return Ok(false);
+        };
+        Ok(self.keys.opened(source, &sealed.key)?.is_none()
+            && self.forgot(w, view, staged, source, at)?)
     }
 
     /// Keep the engine's vector index in step with a record's vector
@@ -1992,6 +2099,13 @@ impl Lake {
         if w.lease.is_none() {
             return Err(no_lease());
         }
+        self.rebuild_held(&mut w)?;
+        self.finish_forgetting(&mut w)?;
+        Ok(w.tip.as_ref().map_or(Position::GENESIS, |t| t.0))
+    }
+
+    /// [`Self::rebuild`], under the writer's lock its caller holds.
+    fn rebuild_held(&self, w: &mut Writer) -> Result<()> {
         // No shape is kept from here until the fold is whole again.
         self.rebuilds.fetch_add(1, Ordering::SeqCst);
         lakelands_core::lock(&self.shapes).clear();
@@ -2004,14 +2118,59 @@ impl Lake {
             // It reads the recorded outputs and makes no call due but a
             // failed append's; the calls a write before it made due stay
             // that write's.
-            self.fold_from(&mut w, Position::GENESIS)
+            w.rebuilding = true;
+            let folded = self.fold_from(w, Position::GENESIS);
+            w.rebuilding = false;
+            folded
         })();
         self.rebuilds.fetch_add(1, Ordering::SeqCst);
         lakelands_core::lock(&self.shapes).clear();
         folded?;
         // Everything the log holds is folded again: the head is its tip.
-        self.publish(&w);
-        Ok(w.tip.as_ref().map_or(Position::GENESIS, |t| t.0))
+        self.publish(w);
+        Ok(())
+    }
+
+    /// Finish what a forgetting left owed (058), as the act itself does
+    /// and the writer's open after a crash between its steps: each source
+    /// whose act the projection may still hold the values of has its keys
+    /// destroyed, the projection is rebuilt, and the storage reclaimed.
+    /// Each step is idempotent. `None` where nothing was owed.
+    pub(crate) fn finish_forgetting(
+        &self,
+        w: &mut Writer,
+    ) -> Result<Option<lakelands_api::write::CompactReport>> {
+        let listed = |lake: &Lake| {
+            let view = lake.engine.view(None)?;
+            forgotten_list(view.as_ref(), &Staged::default())
+        };
+        let list = listed(self)?;
+        if list.values().all(|s| s == "done") {
+            return Ok(None);
+        }
+        if list.values().any(|s| s == "owed") {
+            for (source, _) in list.iter().filter(|(_, s)| *s == "owed") {
+                self.keys.destroy(source)?;
+            }
+            self.rebuild_held(w)?;
+        }
+        let mut list = listed(self)?;
+        let reclaimed = self.engine.projection().compact()?;
+        for state in list.values_mut().filter(|s| *s == "rebuilt") {
+            *state = "done".to_owned();
+        }
+        let head = self.head();
+        let projection = self.engine.projection();
+        let list = serde_json::to_value(&list).expect("a list serialises");
+        let at = crate::sealing::forgotten_at();
+        projection.begin()?;
+        projection.put_output(crate::sealing::FORGOTTEN, &at, &list, head)?;
+        projection.commit(head)?;
+        Ok(Some(lakelands_api::write::CompactReport {
+            before: reclaimed.before,
+            after: reclaimed.after,
+            head,
+        }))
     }
 
     /// Check the hash chain between two positions, every checkpoint in
@@ -2643,6 +2802,23 @@ fn set_mark(e: &Event) -> Option<bool> {
     }
 }
 
+/// The sources the log forgot, each with what of its act is owed
+/// ([`crate::sealing::FORGOTTEN`]), as the transaction leaves the list.
+pub(crate) fn forgotten_list(
+    view: &dyn ProjectionView,
+    staged: &Staged,
+) -> Result<BTreeMap<SourceId, String>> {
+    let at = (
+        crate::sealing::FORGOTTEN.to_owned(),
+        crate::sealing::forgotten_at(),
+    );
+    let list = match staged.outputs.get(&at).and_then(|l| l.last()) {
+        Some((_, v)) => Some(v.clone()),
+        None => view.output(&at.0, &at.1)?.map(|(_, v)| v),
+    };
+    Ok(crate::sealing::forgotten(list.as_ref()))
+}
+
 /// Whether the fold of an event reads a record: such an event is folded
 /// only after the recomputations pending before it are flushed
 /// ([`Lake::fold_all`]), so it reads what they left. Every kind is named: a
@@ -2678,7 +2854,10 @@ fn reads_a_record(body: &EventBody) -> bool {
         | EventBody::WriteRejected { .. }
         // A membership is put by the key the event names; the record at
         // that key is not read.
-        | EventBody::ObjectSetChanged { .. } => false,
+        | EventBody::ObjectSetChanged { .. }
+        // The list of forgotten sources is put; the records it erases are
+        // erased by the rebuild after it.
+        | EventBody::SourceForgotten { .. } => false,
     }
 }
 

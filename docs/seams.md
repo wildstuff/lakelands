@@ -104,6 +104,7 @@ promises that have no check yet.
 | Method | Contract |
 |---|---|
 | `name` | The engine's name, as `EngineConfig` selects it. |
+| `rebuild_rate` | The events a rebuild folds a second on this engine, as measured: the store tells a host from it how long an act that rebuilds holds the writer's lock (`forget_preflight`, `docs/decisions/058-a-source-may-be-forgotten.md`). A constant of the engine, never a promise. |
 | `lake` | The lake this handle keeps. |
 | `take_lease(holder)` | Take the writer lease with a fencing token greater than every token this lake ever handed out. **Fails at once** while the lease is held — by another process, another handle, or this one — with `Unavailable` whose message names the holder; never waits. `Unavailable` on a handle opened read-only. |
 | `release_lease(lease)` | Give the lease up; the next taker gets a greater token. The lease is always released; an engine that also records the holder in storage reports a failure to clear that record as `Unavailable`, after releasing. Releasing a lease that is no longer the current one does nothing, so a writer that lost the lease cannot release its successor's. A handle that is dropped releases the lease it took and still holds, so a writer that ends without closing does not keep the lake from every later writer. |
@@ -2172,6 +2173,18 @@ log₂ N reads; it relies on `known_at` never decreasing along the log,
 which the verifiers check (`docs/log-format.md` §1.3). It is no door's
 yet, only the host's: `lakelands-client` answers it `unbound`, naming it
 (client test: `every_host_operation_is_unbound_naming_it`).
+
+`LakeStore::forget_source(source, report_id)` forgets a source whose
+values of erasable fields the log holds sealed
+(`docs/decisions/058-a-source-may-be-forgotten.md`): under the writer's
+lock it appends `source_forgotten` with the retirements of the records
+the source alone brought, has the key store destroy the source's keys,
+rebuilds the projection and reclaims the storage. `forget_preflight`
+answers the same report, appending nothing, with the time the act is
+expected to hold the lock (`events` at the engine's `rebuild_rate`).
+The act is refused while the log holds a value of the source in an
+erasable field in plaintext, and a forgotten source's ingest is
+refused. It is no door's; `lakelands-client` answers it `unbound`.
 
 `LakeStore::purge_source(source, None, None)` retires every live record
 one source brought in, across every type it reached, restricted records and the
