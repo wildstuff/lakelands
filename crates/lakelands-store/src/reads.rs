@@ -2644,8 +2644,15 @@ impl<'a> Reader<'a> {
                 }
                 Ok(!declarations.is_empty())
             }
-            // Its uses and conditions as the reader may know them.
-            ProposedWrite::MigrateValueType { .. } => {
+            // Its uses and conditions as the reader may know them, to one
+            // `describe` lists the value type to; to another, nothing of it,
+            // as a type's migration to one not shown the type
+            // (lakelands#1088).
+            ProposedWrite::MigrateValueType { to, .. } => {
+                let vt = Declaration::ValueType(lakelands_api::ontology::ValueTypeDecl::clone(to));
+                if !self.sight.lists(&vt) {
+                    return Ok(false);
+                }
                 self.value_type_shown(asked, &read, write, at);
                 Ok(true)
             }

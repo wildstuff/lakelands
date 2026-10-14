@@ -542,6 +542,7 @@ pub const ALL: &[Check] = &[
     purge::CLEARED_STAYS,
     value_types::VERSIONS_KEY_A_TYPE,
     value_types::TYPE_TELLS_ITS_VALUE_TYPES,
+    value_types::VALUE_TYPES_BY_USE,
     value_types::LOOSEN_BY_DECLARE,
     value_types::DECLARE_REFUSES_TIGHTENING,
     value_types::PREFLIGHT_COUNTS,

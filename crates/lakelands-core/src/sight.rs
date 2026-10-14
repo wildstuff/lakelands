@@ -17,7 +17,7 @@
 //! fields.
 
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::Declared;
@@ -25,7 +25,9 @@ use lakelands_api::ontology::{RelationDecl, TypeDecl, VerbDecl, VerbEffect};
 use lakelands_api::principal::Renamed;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::Declaration;
-use lakelands_api::{Error, FieldName, Missing, Position, Principal, RecordKey, TypeName, Value};
+use lakelands_api::{
+    Error, FieldName, Missing, Position, Principal, RecordKey, TypeName, Value, ValueTypeName,
+};
 
 use crate::{describe, rights};
 
@@ -70,6 +72,8 @@ pub struct Sight<'o> {
     hidden: Vec<(TypeName, FieldName)>,
     /// Each type asked for, judged once.
     shown: RefCell<BTreeMap<TypeName, bool>>,
+    /// The value types a use of which it is shown, found in one pass.
+    pub(crate) used: OnceCell<BTreeSet<ValueTypeName>>,
 }
 
 impl<'o> Sight<'o> {
@@ -90,6 +94,7 @@ impl<'o> Sight<'o> {
             force,
             hidden,
             shown: RefCell::default(),
+            used: OnceCell::new(),
         }
     }
 
@@ -104,6 +109,7 @@ impl<'o> Sight<'o> {
             force,
             hidden: Vec::new(),
             shown: RefCell::default(),
+            used: OnceCell::new(),
         }
     }
 

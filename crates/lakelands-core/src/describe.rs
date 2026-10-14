@@ -14,6 +14,11 @@
 //! what its fields are compared with and a function's inputs say what is
 //! computed from them; a principal who may not read those fields learns
 //! neither. A field's own `function` still names its function.
+//!
+//! A value type is answered whole, and only to a principal shown a field
+//! that uses it, where `describe` shows that field (a masked one too, whose
+//! shape names it), or who holds `schema` (lakelands#1088). Its `one_of`
+//! and `constraint` say what those fields' values may be.
 
 use lakelands_api::describe::{
     ExecutorDescription, FieldDescription, LakeDescription, LakeRights, TypeAccess,
@@ -43,7 +48,7 @@ impl Sight<'_> {
             _ => None,
         });
         let value_types = each(&declared, |d| match &d.declaration {
-            Declaration::ValueType(v) => Some(v.clone()),
+            Declaration::ValueType(v) if self.uses_shown(&v.name, &declared) => Some(v.clone()),
             _ => None,
         });
         let value_type_versions = value_types
@@ -200,7 +205,6 @@ impl Sight<'_> {
             Declaration::Type(t) => self.ty(&t.name).is_ok_and(|s| {
                 t.view.is_none() || s.view.as_deref().is_some_and(|v| self.view_visible(v))
             }),
-            Declaration::ValueType(_) => true,
             _ => {
                 let declared = self.force.declared();
                 let mut named = declared.iter().map(|x| &x.declaration);
@@ -289,8 +293,54 @@ impl Sight<'_> {
                     && (who.grants.schema || set.iter().all(all))
             }
             Declaration::Function(f) => self.function_visible(f),
-            Declaration::ValueType(_) => true,
+            Declaration::ValueType(v) => self.uses_shown(&v.name, declared),
         }
+    }
+
+    /// Whether its principal holds `schema`, or is shown, in `declared`
+    /// (the sight's declarations), a field whose value type is `vt`: a
+    /// field of a type it is shown, a link type's among them, a verb's
+    /// payload field or a function's input, each where `describe`
+    /// shows it (lakelands#1088). The uses are found in one pass a sight.
+    fn uses_shown(&self, vt: &ValueTypeName, declared: &[Declared]) -> bool {
+        let who = self.who();
+        who.grants.schema
+            || self
+                .used
+                .get_or_init(|| self.used_in(declared))
+                .contains(vt)
+    }
+
+    /// The value types of the uses [`Self::uses_shown`] counts.
+    fn used_in(&self, declared: &[Declared]) -> std::collections::BTreeSet<ValueTypeName> {
+        type Field = lakelands_api::ontology::FieldDecl;
+        let who = self.who();
+        let of = |fs: &mut dyn Iterator<Item = &Field>| -> Vec<ValueTypeName> {
+            fs.filter_map(|f| f.ty.value_type.clone()).collect()
+        };
+        let known = |t: &TypeDecl| {
+            let mut fs = t
+                .fields
+                .iter()
+                .filter(|f| field_access(who, t, f) != Access::None);
+            of(&mut fs)
+        };
+        let mut used = std::collections::BTreeSet::new();
+        for d in declared {
+            match &d.declaration {
+                // A link type is declared as its own: its fields are judged
+                // as a link row is, on it (lakelands#1092).
+                Declaration::Type(t) if self.ty(&t.name).is_ok() => used.extend(known(t)),
+                Declaration::Verb(v) if self.verb_description(v).is_some() => {
+                    used.extend(of(&mut v.payload.iter()))
+                }
+                Declaration::Function(f) if self.function_visible(f) => {
+                    used.extend(of(&mut f.inputs.iter()))
+                }
+                _ => {}
+            }
+        }
+        used
     }
 
     /// Whether a condition over type `ty` may be shown to its principal.
