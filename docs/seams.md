@@ -385,7 +385,11 @@ indexes describe the head, and `ranked` reads them (below).
   way (`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`).
   At the head an engine may look a string value up in its exact-text
   index (`lakelands_core::engines::text_lookup`): the index names
-  candidates, and this rule still decides each;
+  candidates, and this rule still decides each. The index keeps rows
+  only for the fields `lakelands_core::engines::looked_up` names, decided
+  from the declarations and the `lookup_index.<type>` setting at the
+  head, never from which rows exist; a string of any other field is
+  read by narrowing the type's states in storage, not by a lookup;
 - `scan.filter` holds for it, exactly as the one evaluator
   (`lakelands_core::expr::holds`) decides over the record's own fields,
   with no settings, no clock and no provenance. A filter the evaluator cannot evaluate
@@ -398,10 +402,10 @@ indexes describe the head, and `ranked` reads them (below).
   it evaluates any other filter itself. When the filter is, or has as
   one of its `and` terms, `field = 'text'` with a text that reads neither
   as a number nor as an instant
-  (`lakelands_core::engines::exact_text_term`), only records holding
+  (`lakelands_core::engines::exact_text_terms`), only records holding
   exactly that string can qualify, and at the head an engine may look
-  them up in its exact-text index as it does for `equal`; it still
-  evaluates the whole filter on each.
+  them up in its exact-text index as it does for `equal`, by a field
+  the index keeps; it still evaluates the whole filter on each.
 
 The qualifying records come ordered by `scan.order_by` — each key the
 field's value, or its `known_at` or `seen_at`, or, with no field,
@@ -1771,6 +1775,20 @@ declaration at the head and from this setting
 puts each kept record, and rebuilds them when the setting is written
 (lakelands#668). A view that is computed has no records to index. It
 changes no answer, only the price of an ordered page.
+
+Another is **`lookup_index.<type>`**: a JSON array of text fields of
+`<type>` whose exact texts a `where` or a derived relation's match finds
+by the engine's exact-text index, besides those the declarations look up
+by: the type's key and references, the fields a derived relation matches
+at either end, and those a set's condition or a view's `where` over it
+compares to a text at the top level (`lakelands_core::engines::looked_up`;
+`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`).
+A text of any other field is found by a scan of the type, narrowed in
+storage. A write of it is refused as `sort_index.<type>`'s is, naming a
+field that is no text (`lookup_index_kind`) or computed at the read. The
+fold that puts it, or a declaration that changes the fields looked up,
+fills or drops that type's rows in the same transaction. It changes no
+answer, only the price of a `where` on that field.
 
 Another is **`view_kept.<type>`**: it holds `true` and asks for the
 records of the view `<type>` to be kept as its sources are written, so

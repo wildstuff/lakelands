@@ -871,7 +871,7 @@ The rule says which refusal comes first, not what a write checks.
 #### A setting the store reads is judged by what its writer is shown
 
 A setting the store reads is judged the same way. `sort_index.<type>`,
-`vector_index.<type>` and `view_kept.<type>` name a type, its fields
+`vector_index.<type>`, `lookup_index.<type>` and `view_kept.<type>` name a type, its fields
 and, for a view, what its measures read, and the judge's sentences say
 whether each is declared, of which kind, and why a view cannot be kept.
 An applied write tells as much as a sentence does, and it acts: an index

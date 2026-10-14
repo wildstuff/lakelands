@@ -204,6 +204,8 @@ pub const ALL: &[Check] = &[
     filters::KINDS_THAT_DO_NOT_COMPARE,
     filters::PROBING_REFUSED,
     filters::PROVENANCE_IN_WHERE_AND_ORDER,
+    filters::LOOKED_UP_OR_SCANNED,
+    filters::LONG_TEXT_AND_NUL,
     provenance::TWO_TIME_AXES,
     provenance::VALID_TIME_IS_A_DATE_TIME,
     provenance::FIELD_PROVENANCE,

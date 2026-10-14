@@ -53,7 +53,12 @@ It also refuses a line of the list that no change answers.
 
 The list is the reviewed exception: a change the pull request names,
 and the next release's notes name. Once a release is tagged, the
-baseline becomes the new tag and the list empties. `scripts/release/surface-held-test.sh`
+baseline becomes the new tag and the list empties.
+
+The job judges a pull request against develop as it stood when its CI
+ran. Two merges may each hold alone and break develop together, so a
+pull request merges only on a judgement that is still current
+(`scripts/release/surface-fresh.sh`). `scripts/release/surface-held-test.sh`
 holds the judgement to a fixture.
 
 ## Why
@@ -82,3 +87,7 @@ late for the pull request that broke a host.
   the repository's own.
 - **Not a promise about behaviour beyond the types.** A changed answer
   that compiles is said in the notes, not refused by the job.
+
+## How it came to be
+
+- A merge whose judgement predated the job, or develop's last surface change, broke develop; a pull request now merges only on a current judgement (`surface-fresh.sh`, lakelands#1019).

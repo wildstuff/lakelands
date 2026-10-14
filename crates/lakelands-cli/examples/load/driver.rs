@@ -108,6 +108,9 @@ pub struct Scale {
     pub rounds: usize,
     /// Records in the streamed ingest.
     pub ingest: usize,
+    /// Records each window's lake takes in the ingest's rate (window 1
+    /// takes at most 3 000: its cost is the commit).
+    pub rate: usize,
     /// Times the feed and the lagging session are dropped and resumed.
     pub reconnects: usize,
     /// Times the stdio session subscribes again while it is told.
@@ -123,6 +126,7 @@ impl Scale {
             clients: 2,
             rounds: 6,
             ingest: 300,
+            rate: 2_000,
             reconnects: 2,
             resubscribes: 2,
             silence: false,
@@ -135,6 +139,7 @@ impl Scale {
             clients: 8,
             rounds: 500,
             ingest: 200_000,
+            rate: 50_000,
             reconnects: 10,
             resubscribes: 5,
             silence: true,
@@ -147,6 +152,7 @@ impl Scale {
             clients: 8,
             rounds: 2_000,
             ingest: 2_000_000,
+            rate: 500_000,
             reconnects: 25,
             resubscribes: 10,
             silence: true,
@@ -2595,6 +2601,112 @@ async fn drive(plan: &Plan, dir: &Path, report: &mut Report) -> Result<(), Strin
             }
             Err(e) => report.defect("export", e),
         }
+    }
+    ingest_rate(plan, dir, report).await
+}
+
+/// The ingest's rate in rows a second, for lakelands#1019's shape (one
+/// source-mirrored type of ten text fields and a number, keyed by one of
+/// them), on a lake of its own opened in this process for each window: 1,
+/// 100 and 10 000 records a commit, fed 10 000 records a call. Said per
+/// 50 000 records and overall; measured, never asserted. A PostgreSQL
+/// lake's schema is left behind, named.
+async fn ingest_rate(plan: &Plan, dir: &Path, report: &mut Report) -> Result<(), String> {
+    use lakelands_api::ontology::StorageKind::{Number, Text};
+    use lakelands_core::conformance::fixture::{self as f, Lake};
+    let phase = "ingest/rate";
+    for window in [1u32, 100, 10_000] {
+        let total = plan
+            .scale
+            .rate
+            .min(if window == 1 { 3_000 } else { usize::MAX });
+        let mut location = match &plan.engine {
+            Engine::Sqlite => Location::sqlite(LAKE, dir.join(format!("rate-{window}"))),
+            Engine::Memory => Location::memory(LAKE),
+            Engine::Postgres { url, plain } => {
+                let schema = format!("lakelands_load_rate_{}_{window}", std::process::id());
+                report.line(
+                    phase,
+                    format!("postgres schema {schema} is left behind"),
+                    json!({"schema": schema}),
+                );
+                let mode = if *plain {
+                    PgTlsMode::Disable
+                } else {
+                    PgTlsMode::Require
+                };
+                let tls = PgTls {
+                    mode,
+                    ..PgTls::default()
+                };
+                let tuning = PgTuning::default();
+                let engine = EngineConfig::Postgres {
+                    url: url.clone(),
+                    schema: Some(schema),
+                    tls,
+                    tuning,
+                };
+                Location {
+                    engine,
+                    ..Location::memory(LAKE)
+                }
+            }
+        };
+        location.limits.commit_window_events = window;
+        let seams = lakelands_api::seam::Seams {
+            engines: lakelands_cli::engines(),
+            ..Default::default()
+        };
+        let mode = lakelands_api::engine::OpenMode::Create;
+        let store = lakelands_store::open(location, seams, mode)
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        let l = Lake::of(store.as_ref());
+        let mut fields: Vec<_> = (0..10)
+            .map(|i| f::sourced(&format!("t{i}"), Text))
+            .collect();
+        fields.push(f::sourced("n", Number));
+        let ty = lakelands_api::ontology::TypeDecl {
+            key: vec!["t0".into()],
+            ..f::type_decl("rate", fields)
+        };
+        l.declare(ty).await.map_err(|e| format!("{phase}: {e:?}"))?;
+        let (start, mut segment, mut from, mut done) = (Instant::now(), Instant::now(), 0, 0);
+        while done < total {
+            let end = (done + 10_000).min(total);
+            let records = (done..end).map(|i| {
+                // `t0` is the key, so the record's key is its value.
+                let key = format!("{i:09}");
+                let mut v = json!({"n": i, "t0": key});
+                for t in 1..10 {
+                    v[format!("t{t}")] = json!(format!("{t}-{:09}-xxxxxxxx", i % 997));
+                }
+                f::source_record("rate", &key, v)
+            });
+            l.ingest("rate", records.collect())
+                .await
+                .map_err(|e| format!("{phase}: {e:?}"))?;
+            if end / 50_000 != done / 50_000 && end < total {
+                let rate = (end - from) as f64 / segment.elapsed().as_secs_f64();
+                let text =
+                    format!("window {window}: at {end} records, {rate:.0} rows/s since {from}");
+                report.line(
+                    phase,
+                    text,
+                    json!({"window": window, "records": end, "per_second": rate}),
+                );
+                (segment, from) = (Instant::now(), end);
+            }
+            done = end;
+        }
+        let rate = total as f64 / start.elapsed().as_secs_f64();
+        let text = format!("window {window}: {total} records, {rate:.0} rows/s overall");
+        report.line(
+            phase,
+            text,
+            json!({"window": window, "records": total, "per_second": rate}),
+        );
+        store.close().await.map_err(|e| format!("{e:?}"))?;
     }
     Ok(())
 }

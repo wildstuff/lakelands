@@ -79,7 +79,8 @@ impl Names {
     /// The statements that create the lake's tables, if absent.
     ///
     /// `text_index` has no primary key: a record's value is in it once by
-    /// the unique index `text_index_value`, whose last column is the key
+    /// the unique index `text_index_value`, which holds the value's `md5`,
+    /// so no text is too long for a btree row, and whose last column is the key
     /// in byte order, so the records holding a text are read from it in
     /// key order (`in_key_order` in `view.rs`). A lake made with a primary
     /// key there keeps it and gains the index.
@@ -151,8 +152,11 @@ CREATE TABLE IF NOT EXISTS {s}.text_index (
     ty TEXT NOT NULL, field TEXT NOT NULL, value TEXT NOT NULL, key TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS text_index_value
-    ON {s}.text_index (ty, field, value, key COLLATE \"C\");
+    ON {s}.text_index (ty, field, md5(value), key COLLATE \"C\");
 CREATE INDEX IF NOT EXISTS text_index_key ON {s}.text_index (ty, key);
+CREATE TABLE IF NOT EXISTS {s}.lookup_fields (
+    ty TEXT NOT NULL, field TEXT NOT NULL, PRIMARY KEY (ty, field)
+);
 CREATE TABLE IF NOT EXISTS {s}.edges (
     src_ty TEXT NOT NULL, src_key TEXT NOT NULL, relation TEXT NOT NULL,
     dst_ty TEXT NOT NULL, dst_key TEXT NOT NULL
@@ -211,7 +215,7 @@ pub(crate) const LAYOUT: u64 = 3;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
-pub(crate) const LAKE_TABLES: [&str; 18] = [
+pub(crate) const LAKE_TABLES: [&str; 19] = [
     "meta",
     "lease",
     "segments",
@@ -224,6 +228,7 @@ pub(crate) const LAKE_TABLES: [&str; 18] = [
     "applied",
     "routes",
     "text_index",
+    "lookup_fields",
     "edges",
     "full_text",
     "sort_index",
@@ -431,11 +436,13 @@ impl History {
 #[derive(Default)]
 pub(crate) struct HeadTypes(HashMap<TypeName, HeadType>);
 
-/// A type's declaration at the head and the fields its order index keeps.
+/// A type's declaration at the head, its order index's fields, and its
+/// exact-text index's (`None`, every field, for a kept name).
 #[derive(Clone, Default)]
 pub(crate) struct HeadType {
     pub(crate) decl: Option<TypeDecl>,
     pub(crate) sorted: Vec<FieldName>,
+    pub(crate) looked: Option<BTreeSet<FieldName>>,
 }
 
 impl HeadTypes {
@@ -458,16 +465,20 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
     let row = db.query_one(
         &format!(
             "SELECT (SELECT r.state FROM {d} WHERE h.ident = $1), \
-             (SELECT r.state FROM {r} WHERE h.ty = $2 AND h.key = $3)",
+             (SELECT r.state FROM {r} WHERE h.ty = $2 AND h.key = $3), \
+             (SELECT array_agg(field) FROM {l} WHERE ty = $4)",
             d = DECLARATIONS.at_head(names),
             r = RECORDS.at_head(names),
+            l = names.t("lookup_fields"),
         ),
         &[
             &format!("type {}", view.as_ref().unwrap_or(ty)),
             &SETTING_TYPE,
             &engines::sort_index_key(ty),
+            &ty.as_str(),
         ],
     )?;
+    let looked: Option<Vec<String>> = row.get(2);
     let declared = declared_type(row.get(0))?;
     let setting = row
         .get::<_, Option<String>>(1)
@@ -478,7 +489,62 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
         None => Vec::new(),
     };
     let decl = declared.filter(|_| view.is_none());
-    Ok(HeadType { decl, sorted })
+    let looked = decl
+        .as_ref()
+        .map(|_| looked.into_iter().flatten().map(FieldName::from).collect());
+    Ok(HeadType {
+        decl,
+        sorted,
+        looked,
+    })
+}
+
+/// Decide again which fields the exact-text index keeps ([`engines::relooked`])
+/// and fill or drop each field's rows from the head records: at the commit
+/// of a transaction that put a declaration or a `lookup_index.<type>`, after
+/// its last page; the types it read are read again after it.
+pub(crate) fn relook(db: &mut Db, names: &Names, types: &mut HeadTypes) -> Result<()> {
+    types.0.clear();
+    let states = db.query(
+        &format!("SELECT r.state FROM {}", DECLARATIONS.at_head(names)),
+        &[],
+    )?;
+    let decls = (states
+        .iter()
+        .map(|row| decode::<Declared>(row.get(0), "a declaration")))
+    .map(|d| d.map(|d| d.declaration))
+    .collect::<Result<Vec<_>>>()?;
+    let lookup = names.t("lookup_fields");
+    let rows = db.query(&format!("SELECT ty, field FROM {lookup}"), &[])?;
+    let was = rows.iter().map(|row| (row.get(0), row.get(1))).collect();
+    let heads = RECORDS.at_head(names);
+    let changes = engines::relooked(&decls, &was, |key| {
+        let sql = format!("SELECT r.state FROM {heads} WHERE h.ty = $1 AND h.key = $2");
+        let row = db.query_opt(&sql, &[&SETTING_TYPE, &key])?;
+        (row.map(|row| decode::<StoredRecord>(row.get(0), "a record"))).transpose()
+    })?;
+    let text = names.t("text_index");
+    for (ty, f, comes) in changes {
+        let statements = match comes {
+            true => [
+                format!(
+                    "INSERT INTO {text} (ty, field, value, key) \
+                     SELECT h.ty, $2, r.state::jsonb -> 'fields' ->> $2, h.key FROM {heads} \
+                     WHERE h.ty = $1 AND jsonb_typeof(r.state::jsonb -> 'fields' -> $2) = 'string' \
+                     ON CONFLICT DO NOTHING"
+                ),
+                format!("INSERT INTO {lookup} (ty, field) VALUES ($1, $2)"),
+            ],
+            false => [
+                format!("DELETE FROM {text} WHERE ty = $1 AND field = $2"),
+                format!("DELETE FROM {lookup} WHERE ty = $1 AND field = $2"),
+            ],
+        };
+        for statement in statements {
+            db.execute(&statement, &[&ty, &f])?;
+        }
+    }
+    Ok(())
 }
 
 /// The statement of a feed filter's positions in `routes` from `$2`
@@ -783,6 +849,9 @@ pub(crate) fn index_records(
         let decl = head.decl.as_ref();
         let (ty, key) = (r.ty.as_str(), r.key.as_str());
         for (field, value) in &r.fields {
+            if head.looked.as_ref().is_some_and(|l| !l.contains(field)) {
+                continue;
+            }
             if let Some(value) = value.as_str() {
                 for (column, v) in rows.text.iter_mut().zip([ty, field.as_str(), value, key]) {
                     column.push(v);

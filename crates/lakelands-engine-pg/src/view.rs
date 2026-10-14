@@ -55,6 +55,12 @@ struct Read<'c> {
     head: bool,
 }
 
+/// The texts a key-ordered read looks up, and else the text it narrows by.
+type Asked<'a> = (
+    &'a Option<(FieldName, Vec<String>)>,
+    &'a Option<(FieldName, String)>,
+);
+
 /// The records in force at the position `$2`, `r`, each beside its head
 /// `h`, from the table `records` and its heads: read in key order, they
 /// are a walk of the heads' primary key, each head's state sought by a
@@ -82,8 +88,25 @@ fn in_force_sql(records: &str, head: bool) -> String {
 /// before their states are sought: a walk of one table's primary key, which
 /// the planner takes in its order whether it holds statistics of the table
 /// or not.
-fn records_after_sql(records: &str, head: bool, after: bool) -> String {
-    let from = if after { "AND h.key > $4" } else { "" };
+fn records_after_sql(records: &str, head: bool, after: bool, narrow: bool) -> String {
+    let from = match (after, narrow) {
+        (false, _) => "",
+        (true, false) => "AND h.key > $4",
+        (true, true) => "AND h.key > $6",
+    };
+    let text = if narrow {
+        "AND r.state::jsonb -> 'fields' ->> $4 = $5"
+    } else {
+        ""
+    };
+    if head && narrow {
+        return format!(
+            "SELECT r.state FROM {records}_head h \
+             CROSS JOIN LATERAL (SELECT x.state FROM {records} x \
+             WHERE x.ty = h.ty AND x.key = h.key AND x.since = h.since LIMIT 1) r \
+             WHERE h.ty = $1 AND h.since <= $2 {from} {text} ORDER BY h.key LIMIT $3"
+        );
+    }
     if head {
         return format!(
             "SELECT r.state FROM (SELECT * FROM {records}_head h \
@@ -94,7 +117,7 @@ fn records_after_sql(records: &str, head: bool, after: bool) -> String {
         );
     }
     format!(
-        "SELECT r.state FROM {} WHERE h.ty = $1 {from} ORDER BY h.key LIMIT $3",
+        "SELECT r.state FROM {} WHERE h.ty = $1 {from} {text} ORDER BY h.key LIMIT $3",
         in_force_sql(records, false)
     )
 }
@@ -205,13 +228,13 @@ fn sorted_after_sql(
             String::new(),
             format!(
                 "{sorted} s WHERE EXISTS (SELECT 1 FROM {text} t \
-                 WHERE t.ty = $1 AND t.field = $4 AND t.value = $5 AND t.key = s.key) AND"
+                 WHERE t.ty = $1 AND t.field = $4 AND md5(t.value) = md5($5) AND t.key = s.key) AND"
             ),
         ),
         Holders::Few(..) => (
             format!(
                 "WITH t AS MATERIALIZED \
-                 (SELECT key FROM {text} WHERE ty = $1 AND field = $4 AND value = $5) "
+                 (SELECT key FROM {text} WHERE ty = $1 AND field = $4 AND md5(value) = md5($5)) "
             ),
             format!("t JOIN {sorted} s ON s.key = t.key WHERE"),
         ),
@@ -236,7 +259,7 @@ fn few_cursor_sql([sorted, text, records]: &[String; 3], dir: Direction) -> Stri
     let (seek, by) = after_and_order(dir, 6, 7);
     format!(
         "DECLARE {FEW_CURSOR} NO SCROLL CURSOR FOR WITH t AS MATERIALIZED \
-         (SELECT key FROM {text} WHERE ty = $1 AND field = $4 AND value = $5) \
+         (SELECT key FROM {text} WHERE ty = $1 AND field = $4 AND md5(value) = md5($5)) \
          SELECT s.sort_key, r.state FROM \
          (SELECT s.sort_key, s.key FROM t CROSS JOIN LATERAL \
           (SELECT s.sort_key, s.key FROM {sorted} s \
@@ -262,7 +285,7 @@ fn unsorted_holding_sql([sorted, text, records]: &[String; 3], after: bool) -> S
     format!(
         "SELECT r.state FROM \
          (SELECT t.key FROM {text} t \
-          WHERE t.ty = $1 AND t.field = $4 AND t.value = $5 {from} \
+          WHERE t.ty = $1 AND t.field = $4 AND md5(t.value) = md5($5) {from} \
           AND (SELECT 1 FROM {sorted} s \
           WHERE s.ty = $1 AND s.field = $2 AND s.key = t.key) IS NULL \
           ORDER BY t.key COLLATE \"C\" LIMIT $3) t \
@@ -310,8 +333,8 @@ pub fn few_holders_statements(schema: &str) -> [String; 2] {
 pub fn read_statements(schema: &str, head: bool) -> [String; 5] {
     let records = format!("{schema}.records");
     [
-        records_after_sql(&records, head, false),
-        records_after_sql(&records, head, true),
+        records_after_sql(&records, head, false, false),
+        records_after_sql(&records, head, true, false),
         count_in_force_sql(&records, head),
         records_by_key_sql(&records),
         output_sql(&format!("{schema}.outputs")),
@@ -445,7 +468,7 @@ impl Read<'_> {
 
     /// Every record of a type at the view's position, in key order.
     fn records(&mut self, ty: &TypeName) -> Result<Vec<StoredRecord>> {
-        self.records_after(ty, None, None)
+        self.records_after(ty, None, None, None)
     }
 
     /// How many records of a type are in force at the view's position, the
@@ -467,22 +490,47 @@ impl Read<'_> {
     fn records_after(
         &mut self,
         ty: &TypeName,
+        narrow: Option<&(FieldName, String)>,
         after: Option<&str>,
         n: Option<u32>,
     ) -> Result<Vec<StoredRecord>> {
         let limit = n.map(i64::from);
-        let query = records_after_sql(&self.names.t("records"), self.head, after.is_some());
-        // `$4` is bound only when the statement names it.
-        let args: [&(dyn ToSql + Sync); 4] = [&ty.as_str(), &self.at, &limit, &after];
-        self.db
-            .records(&query, &args[..3 + usize::from(after.is_some())])
+        let narrow = narrow.filter(|_| !is_kept_name(ty));
+        let records = self.names.t("records");
+        let query = records_after_sql(&records, self.head, after.is_some(), narrow.is_some());
+        // Each argument is bound only where the statement names it.
+        let name = ty.as_str();
+        let mut args: Vec<&(dyn ToSql + Sync)> = vec![&name, &self.at, &limit];
+        let field = narrow.map(|(f, _)| f.as_str());
+        args.extend(field.as_ref().map(|f| f as &(dyn ToSql + Sync)));
+        args.extend(narrow.map(|(_, t)| t as &(dyn ToSql + Sync)));
+        args.extend(after.as_ref().map(|a| a as &(dyn ToSql + Sync)));
+        self.db.records(&query, &args)
+    }
+
+    /// The fields of `ty` the exact-text index keeps; `None`, every field,
+    /// for a kept name or off the head, where no read looks a text up.
+    fn looked(
+        &mut self,
+        ty: &TypeName,
+        decl: Option<&TypeDecl>,
+    ) -> Result<Option<BTreeSet<FieldName>>> {
+        if decl.is_none() || !self.head {
+            return Ok(None);
+        }
+        let query = format!(
+            "SELECT field FROM {} WHERE ty = $1",
+            self.names.t("lookup_fields")
+        );
+        let fields: Vec<String> = self.db.column(&query, &[&ty.as_str()])?;
+        Ok(Some(fields.into_iter().map(FieldName::from).collect()))
     }
 
     /// What a key-ordered scan or count reads from, at most `n` records
     /// in key order, bytewise, after `after`: with a `lookup`, the head
     /// records whose field holds exactly one of its texts; else the type's
     /// records. One text is a walk of the exact-text index's unique index
-    /// `text_index_value`, `(ty, field, value, key COLLATE "C")`, a batch.
+    /// `text_index_value`, `(ty, field, md5(value), key COLLATE "C")`, a batch.
     /// Several are looked up once for the whole scan (`held`), the keys in
     /// key order, and each batch reads its records by key: a batch never
     /// sorts what is left, so the read grows with the matches, not their
@@ -490,13 +538,13 @@ impl Read<'_> {
     fn in_key_order(
         &mut self,
         ty: &TypeName,
-        lookup: &Option<(FieldName, Vec<String>)>,
+        (lookup, narrow): Asked<'_>,
         held: &mut Option<Vec<String>>,
         after: Option<&str>,
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
         let Some((field, texts)) = lookup else {
-            return self.records_after(ty, after, Some(n));
+            return self.records_after(ty, narrow.as_ref(), after, Some(n));
         };
         if texts.len() > 1 {
             let keys = match held {
@@ -505,7 +553,7 @@ impl Read<'_> {
                     // After the scan's first key where it starts after one.
                     let query = format!(
                         "SELECT t.key FROM unnest($3::text[]) v(value) JOIN {} t \
-                         ON t.ty = $1 AND t.field = $2 AND t.value = v.value {} \
+                         ON t.ty = $1 AND t.field = $2 AND md5(t.value) = md5(v.value) {} \
                          ORDER BY t.key COLLATE \"C\"",
                         self.names.t("text_index"),
                         after.map_or("", |_| "AND t.key COLLATE \"C\" > $4")
@@ -538,7 +586,7 @@ impl Read<'_> {
         let query = format!(
             "SELECT r.state FROM \
              (SELECT t.key FROM {text} t \
-              WHERE t.ty = $1 AND t.field = $2 AND t.value = $3 {from} \
+              WHERE t.ty = $1 AND t.field = $2 AND md5(t.value) = md5($3) {from} \
               ORDER BY t.key COLLATE \"C\" LIMIT $4) t \
              {head} ORDER BY t.key COLLATE \"C\"",
             text = self.names.t("text_index"),
@@ -685,7 +733,7 @@ impl Read<'_> {
     fn holders(&mut self, ty: &TypeName, field: &FieldName, text: &str, n: u64) -> Result<u64> {
         let query = format!(
             "SELECT COUNT(*) FROM (SELECT 1 FROM {} \
-             WHERE ty = $1 AND field = $2 AND value = $3 LIMIT $4) h",
+             WHERE ty = $1 AND field = $2 AND md5(value) = md5($3) LIMIT $4) h",
             self.names.t("text_index")
         );
         let n = n as i64;
@@ -878,9 +926,12 @@ impl ProjectionView for PgView<'_> {
             // At the head, a count that must hold a text reads the records
             // holding it, not the type.
             let decl = r.type_decl(ty)?;
-            let (lookup, mut held) = (engines::text_lookups(scan).filter(|_| r.head), None);
+            let looked = r.looked(ty, decl.as_ref())?;
+            let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
+            let lookup = engines::text_lookups(scan, &kept).filter(|_| r.head);
+            let (narrow, mut held) = (engines::text_lookup(scan, &|_| true), None);
             engines::count_in_key_order(decl.as_ref(), scan, |after, n| {
-                r.in_key_order(ty, &lookup, &mut held, after, n)
+                r.in_key_order(ty, (&lookup, &narrow), &mut held, after, n)
             })
         })
     }
@@ -888,14 +939,17 @@ impl ProjectionView for PgView<'_> {
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         self.read(Vec::new(), |r| {
             let decl = r.type_decl(ty)?;
-            let lookup = engines::text_lookup(scan).filter(|_| r.head);
+            let looked = r.looked(ty, decl.as_ref())?;
+            let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
+            let lookup = engines::text_lookup(scan, &kept).filter(|_| r.head);
             // Ordered by the key alone, the page is read from `after` in
             // key order and stops when it is full: at the head, with a text
             // the scan must hold, from the records holding it.
             if scan.order_by.is_empty() {
-                let (lookup, mut held) = (engines::text_lookups(scan).filter(|_| r.head), None);
+                let lookup = engines::text_lookups(scan, &kept).filter(|_| r.head);
+                let (narrow, mut held) = (engines::text_lookup(scan, &|_| true), None);
                 return engines::scan_in_key_order(decl.as_ref(), scan, |after, n| {
-                    r.in_key_order(ty, &lookup, &mut held, after, n)
+                    r.in_key_order(ty, (&lookup, &narrow), &mut held, after, n)
                 });
             }
             let sorted = r.sorted_fields(ty, decl.as_ref())?;
@@ -945,7 +999,7 @@ impl ProjectionView for PgView<'_> {
                 None => match &lookup {
                     Some((field, text)) => {
                         let query = format!(
-                            "SELECT key FROM {} WHERE ty = $1 AND field = $2 AND value = $3",
+                            "SELECT key FROM {} WHERE ty = $1 AND field = $2 AND md5(value) = md5($3)",
                             r.names.t("text_index")
                         );
                         let keys =

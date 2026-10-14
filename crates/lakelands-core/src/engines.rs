@@ -38,9 +38,9 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use lakelands_api::engine::{After, CanonicalEvent, Scan};
 use lakelands_api::error::{Case, Detail, Error, Flaw, Part, Place as At, Refusal, Result, Said};
 use lakelands_api::event::SegmentDigest;
-use lakelands_api::expr::Expr;
+use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::id::{FieldName, LakeId, Position, RecordKey, RelationName, TypeName};
-use lakelands_api::ontology::TypeDecl;
+use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
 use lakelands_api::query::Edge;
 use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::record::{FieldMeta, StoredRecord, Value};
@@ -86,9 +86,14 @@ pub fn declaration_key(d: &Declaration) -> String {
 /// then look the candidates up by that value; it still evaluates the whole
 /// filter on each.
 pub fn exact_text_term(filter: &Expr) -> Option<(FieldName, String)> {
+    exact_text_terms(filter).into_iter().next()
+}
+
+/// Every such narrowing of a filter, its `and` terms in order.
+pub fn exact_text_terms(filter: &Expr) -> Vec<(FieldName, String)> {
     use lakelands_api::expr::{CmpOp, Literal};
     match filter {
-        Expr::And { args } => args.iter().find_map(exact_text_term),
+        Expr::And { args } => args.iter().flat_map(exact_text_terms).collect(),
         Expr::Cmp {
             cmp: CmpOp::Eq,
             lhs,
@@ -109,11 +114,11 @@ pub fn exact_text_term(filter: &Expr) -> Option<(FieldName, String)> {
                 && t.parse::<rust_decimal::Decimal>().is_err()
                 && Timestamp::denoted(t).is_err() =>
             {
-                Some((path[0].clone(), t.clone()))
+                vec![(path[0].clone(), t.clone())]
             }
-            _ => None,
+            _ => Vec::new(),
         },
-        _ => None,
+        _ => Vec::new(),
     }
 }
 
@@ -230,26 +235,34 @@ pub fn holds_exactly(record: &StoredRecord, equal: &[(FieldName, Value)]) -> boo
 }
 
 /// The one field and text an engine may look candidates up by in its text
-/// index at the head: a string the scan must hold exactly, else the
-/// filter's [`exact_text_term`]. The engine still admits each candidate.
-pub fn text_lookup(scan: &Scan) -> Option<(FieldName, String)> {
-    scan.equal
-        .iter()
-        .find_map(|(f, v)| v.as_str().map(|t| (f.clone(), t.to_owned())))
-        .or_else(|| scan.filter.as_ref().and_then(exact_text_term))
+/// index at the head, of the fields `kept` says it keeps rows for
+/// ([`looked_up`]): a string the scan must hold exactly, else one of the
+/// filter's [`exact_text_terms`]. The engine still admits each candidate.
+/// Asked with every field kept, it is the text a scan of the type may
+/// narrow its storage's read by.
+pub fn text_lookup(scan: &Scan, kept: &dyn Fn(&FieldName) -> bool) -> Option<(FieldName, String)> {
+    let terms = scan.filter.iter().flat_map(exact_text_terms);
+    (scan.equal.iter())
+        .filter_map(|(f, v)| Some((f.clone(), v.as_str()?.to_owned())))
+        .chain(terms)
+        .find(|(f, _)| kept(f))
 }
 
 /// The one field and the texts an engine may look candidates up by in its
 /// text index at the head, in one ask: those of `equal_any` where each of
 /// its tuples holds a string for the same field, else [`text_lookup`]'s
 /// one. The engine still admits each candidate.
-pub fn text_lookups(scan: &Scan) -> Option<(FieldName, Vec<String>)> {
+pub fn text_lookups(
+    scan: &Scan,
+    kept: &dyn Fn(&FieldName) -> bool,
+) -> Option<(FieldName, Vec<String>)> {
     let first = |t: &[(FieldName, Value)]| {
         t.first()
             .and_then(|(f, v)| Some((f.clone(), v.as_str()?.to_owned())))
     };
-    let Some((field, _)) = scan.equal_any.first().and_then(|t| first(t)) else {
-        return text_lookup(scan).map(|(f, t)| (f, vec![t]));
+    let Some((field, _)) = (scan.equal_any.first().and_then(|t| first(t))).filter(|(f, _)| kept(f))
+    else {
+        return text_lookup(scan, kept).map(|(f, t)| (f, vec![t]));
     };
     let texts = scan
         .equal_any
@@ -259,7 +272,60 @@ pub fn text_lookups(scan: &Scan) -> Option<(FieldName, Vec<String>)> {
     texts
         .collect::<Option<Vec<String>>>()
         .map(|texts| (field, texts))
-        .or_else(|| text_lookup(scan).map(|(f, t)| (f, vec![t])))
+        .or_else(|| text_lookup(scan, kept).map(|(f, t)| (f, vec![t])))
+}
+
+/// The text fields of `ty` its exact-text index keeps rows for, of the
+/// lake's declarations at the head `decls` and its `lookup_index.<type>`
+/// setting's value: those its declarations look its records up by (its
+/// key, its references, the fields a derived relation matches at either
+/// end, those a set's condition or a view's `where` over it compares to a
+/// text at the top level) and those the setting names
+/// (`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`).
+/// `None`, every field, for a name no type declares: a view's kept records.
+pub fn looked_up<'a>(
+    ty: &TypeName,
+    decls: impl IntoIterator<Item = &'a Declaration>,
+    setting: Option<&Value>,
+) -> Option<BTreeSet<FieldName>> {
+    let (mut own, mut out) = (None, BTreeSet::new());
+    let mut terms = |c: &Option<Condition>| {
+        let e = c.as_ref().and_then(|c| c.typed().ok());
+        out.extend(e.iter().flat_map(exact_text_terms).map(|(f, _)| f));
+    };
+    let mut matched = Vec::new();
+    for d in decls {
+        match d {
+            Declaration::Type(t) => {
+                own = own.or((t.name == *ty).then_some(t));
+                for r in &t.relations {
+                    for p in r.derived.iter().flat_map(|d| &d.pairs) {
+                        (t.name == *ty).then(|| matched.push(p.from.clone()));
+                        (r.target == *ty).then(|| matched.push(p.to.clone()));
+                    }
+                }
+                for v in t.view.iter().filter(|v| v.source == *ty) {
+                    terms(&v.r#where);
+                }
+                for m in t.view.iter().flat_map(|v| &v.merge) {
+                    (m.source == *ty).then(|| terms(&m.r#where));
+                }
+            }
+            Declaration::ObjectSet(o) if o.of == *ty => terms(&Some(o.filter.clone())),
+            _ => {}
+        }
+    }
+    let t = own?;
+    let refs = t
+        .fields
+        .iter()
+        .filter(|f| f.ty.kind == StorageKind::Reference);
+    out.extend(matched.into_iter().chain(t.key.iter().cloned()));
+    out.extend(refs.map(|f| f.name.clone()));
+    out.extend(index_fields(t, setting, false, |k| *k == StorageKind::Text));
+    let texts = |f: &FieldDecl| matches!(f.ty.kind, StorageKind::Text | StorageKind::Reference);
+    out.retain(|f| t.fields.iter().any(|d| d.name == *f && texts(d)));
+    Some(out)
 }
 
 /// How many rows a key-ordered scan asks its storage for at a time: the
@@ -446,6 +512,48 @@ fn index_fields(
 /// `sort_index.<type>` setting.
 pub fn sort_index_type(r: &StoredRecord) -> Option<TypeName> {
     setting_for(r, lakelands_api::seam::SORT_INDEX_SETTING)
+}
+
+/// The fields of the exact-text index that come (`true`) and go, as
+/// `(type, field)`: those [`looked_up`] decides for each type `decls`
+/// declares, under its `lookup_index.<type>` setting's state at the head
+/// (`setting`), against those the engine keeps, `was`.
+pub fn relooked(
+    decls: &[Declaration],
+    was: &BTreeSet<(String, String)>,
+    mut setting: impl FnMut(&str) -> Result<Option<StoredRecord>>,
+) -> Result<Vec<(String, String, bool)>> {
+    let mut now = BTreeSet::new();
+    for d in decls {
+        let Declaration::Type(t) = d else { continue };
+        let s = setting(&format!(
+            "{}{}",
+            lakelands_api::seam::LOOKUP_INDEX_SETTING,
+            t.name
+        ))?;
+        let fields = looked_up(&t.name, decls, s.as_ref().and_then(setting_value));
+        now.extend(
+            fields
+                .into_iter()
+                .flatten()
+                .map(|f| (t.name.to_string(), f.to_string())),
+        );
+    }
+    let gone = was
+        .difference(&now)
+        .map(|(t, f)| (t.clone(), f.clone(), false));
+    Ok(gone
+        .chain(
+            now.difference(was)
+                .map(|(t, f)| (t.clone(), f.clone(), true)),
+        )
+        .collect())
+}
+
+/// The type whose exact-text index a setting's state asks for, if it is a
+/// `lookup_index.<type>` setting.
+pub fn lookup_index_type(r: &StoredRecord) -> Option<TypeName> {
+    setting_for(r, lakelands_api::seam::LOOKUP_INDEX_SETTING)
 }
 
 /// The type whose vector index a setting's state asks for, if it is a

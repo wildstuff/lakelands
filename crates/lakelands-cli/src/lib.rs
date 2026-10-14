@@ -75,8 +75,10 @@ fn memory() -> lakelands_engine_mem::MemoryOpener {
 
 /// The engines this binary carries: SQLite, in-memory and, with the `pg`
 /// feature, PostgreSQL. Opening and importing a lake both take them from
-/// here, so the two cannot differ.
-fn engines() -> Vec<Arc<dyn lakelands_api::engine::EngineOpener>> {
+/// here, so the two cannot differ; the load example opens its own lakes
+/// with them too.
+#[doc(hidden)]
+pub fn engines() -> Vec<Arc<dyn lakelands_api::engine::EngineOpener>> {
     #[allow(unused_mut)]
     let mut engines: Vec<Arc<dyn lakelands_api::engine::EngineOpener>> = vec![
         Arc::new(lakelands_engine_sqlite::SqliteOpener),
