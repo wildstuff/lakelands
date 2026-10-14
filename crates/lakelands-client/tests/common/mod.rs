@@ -49,6 +49,14 @@ pub fn cast(lake: &LakeId) -> Vec<Principal> {
 /// Serve `store` on loopback, resolving the cast by the keys `k-<id>`;
 /// answer the address and the keys by principal id.
 pub async fn serve(store: Arc<dyn LakeStore>) -> (SocketAddr, BTreeMap<String, ApiKey>) {
+    serve_pausing(store, 20).await
+}
+
+/// [`serve`], a caught-up feed waiting at most `feed_poll_millis`.
+pub async fn serve_pausing(
+    store: Arc<dyn LakeStore>,
+    feed_poll_millis: u64,
+) -> (SocketAddr, BTreeMap<String, ApiKey>) {
     let cast = cast(store.lake());
     let entries = cast
         .iter()
@@ -72,7 +80,8 @@ pub async fn serve(store: Arc<dyn LakeStore>) -> (SocketAddr, BTreeMap<String, A
         bind: "127.0.0.1:0".parse().unwrap(),
         allowed_origins: Vec::new(),
         session_idle_secs: 1800,
-        feed_poll_millis: 20,
+        feed_poll_millis,
+        feed_floor_millis: 25,
     };
     let server = serve_http(config, Arc::new(StaticResolver::new(entries)), open)
         .await

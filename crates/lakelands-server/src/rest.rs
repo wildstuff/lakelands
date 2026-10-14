@@ -1134,8 +1134,8 @@ async fn feed(
         }));
     }
     let (tx, rx) = mpsc::channel(16);
-    let (source, pause) = (store.feed(), state.feed_poll);
-    tokio::spawn(tail(source, from, filter, pause, tx));
+    let (source, pace) = (store.feed(), (state.feed_poll, state.feed_floor));
+    tokio::spawn(tail(source, from, filter, pace, tx));
     let mut r = with_position(streamed("text/event-stream", rx), Some(head));
     r.headers_mut()
         .insert("cache-control", HeaderValue::from_static("no-store"));
@@ -1148,10 +1148,13 @@ async fn tail(
     source: Arc<dyn ChangeFeed>,
     mut at: Position,
     filter: FeedFilter,
-    pause: Duration,
+    (pause, floor): (Duration, Duration),
     tx: mpsc::Sender<Bytes>,
 ) {
     let mut last_sent = Instant::now();
+    // Whether the next read follows a wake by an append, and when the
+    // last such read ended: the floor counts from it (lakelands#1061).
+    let (mut woken, mut paced) = (false, None);
     // The `next` last told, so a client that stops when caught up hears it
     // once per position, not once per pause.
     let mut told: Option<Position> = None;
@@ -1167,6 +1170,9 @@ async fn tail(
                 return;
             }
         };
+        if woken {
+            paced = Some(tokio::time::Instant::now());
+        }
         for e in &batch.events {
             let data = serde_json::to_string(&to_json(e)).expect("JSON prints");
             let event = format!(
@@ -1204,7 +1210,22 @@ async fn tail(
                 }
                 last_sent = Instant::now();
             }
-            tokio::time::sleep(pause).await;
+            // Past the head it waits for the next append, the pause
+            // bounding the wait (lakelands#1061); a batch that did not
+            // move waits the pause out.
+            woken = match batch.next > batch.head {
+                true => (source.wait(batch.head, pause).await).is_ok_and(|h| h > batch.head),
+                false => {
+                    tokio::time::sleep(pause).await;
+                    false
+                }
+            };
+            // Woken by an append, it reads once the floor has passed since
+            // the last read an append woke: a busy lake's appends come in
+            // batches, and one after a quiet spell is read at once.
+            if let (true, Some(at)) = (woken, paced) {
+                tokio::time::sleep_until(at + floor).await;
+            }
             if tx.is_closed() {
                 return;
             }

@@ -422,6 +422,8 @@ pub struct Mirror {
     start: Start,
     batch: u32,
     poll: Duration,
+    // The source's head the last round read up to, where it caught up.
+    caught: Option<Position>,
     journal: File,
     // Held for the mirror's life: a second mirror of the same connection
     // is refused at start.
@@ -829,6 +831,7 @@ impl Mirror {
             start: connection.start,
             batch: config.batch,
             poll: Duration::from_millis(config.poll_millis),
+            caught: None,
             journal,
             _lock: lock,
         };
@@ -932,14 +935,15 @@ impl Mirror {
         &self.kept
     }
 
-    /// Mirror until the process ends: poll, ingest what came, and wait
-    /// `poll_millis` once caught up. A round that fails is tried again
-    /// after the same wait, from the position kept.
+    /// Mirror until the process ends: poll, ingest what came, and once
+    /// caught up wait for the source's next append, `poll_millis` at most.
+    /// A round that fails is tried again after `poll_millis`, from the
+    /// position kept.
     pub async fn run(mut self) {
         loop {
             match self.round().await {
                 Ok(true) => {}
-                Ok(false) => tokio::time::sleep(self.poll).await,
+                Ok(false) => self.caught_up().await,
                 Err(why) => {
                     self.say(&why);
                     tokio::time::sleep(self.poll).await;
@@ -948,10 +952,26 @@ impl Mirror {
         }
     }
 
+    /// Wait for the source's next append past the head its last round
+    /// read up to, `poll_millis` at most (lakelands#1061): an append that
+    /// landed while the round wrote to the target ends it at once. A round
+    /// that stopped short of the head without moving, and a wait that
+    /// fails, wait `poll_millis` out.
+    async fn caught_up(&self) {
+        let waited = match self.caught {
+            Some(head) => self.source.feed().wait(head, self.poll).await.is_ok(),
+            None => false,
+        };
+        if !waited {
+            tokio::time::sleep(self.poll).await;
+        }
+    }
+
     /// One round: copy the types still to be copied, or read the feed from
     /// the lowest position of the running types and bring each change
     /// across, in order. Answers whether more may be waiting.
     pub async fn round(&mut self) -> Result<bool, String> {
+        self.caught = None;
         let unsettled: Vec<TypeName> = self
             .map
             .keys()
@@ -985,6 +1005,7 @@ impl Mirror {
         // A poll may stop short of the head with no events: read on, unless
         // it did not move.
         let more = batch.next <= batch.head && batch.next.0 > from;
+        self.caught = (batch.next > batch.head).then_some(batch.head);
         let mut run = Run::default();
         for e in &batch.events {
             if let EventBody::ValueTypeMigrated { types, .. } = &e.body {

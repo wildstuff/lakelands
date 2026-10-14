@@ -172,39 +172,100 @@ impl ChangeFeed for RemoteFeed {
         for k in &filter.keys {
             query.push_str(&format!("&key={}", enc(k.as_str())));
         }
-        let path = "feed".to_owned();
-        let call = Call::new(Method::GET, path.clone())
+        let mut stream = Stream::open(wire, key, query).await?;
+        let mut events: Vec<Event> = Vec::new();
+        let next = loop {
+            match stream.said().await? {
+                Said::Event(e) => {
+                    events.push(*e);
+                    if events.len() >= limit as usize {
+                        break Position(events[events.len() - 1].position.0 + 1);
+                    }
+                }
+                Said::Next(n) => break n,
+                Said::Failed(e) => return Err(e),
+                Said::Nothing => {}
+            }
+        };
+        let head = stream.head;
+        // The stream's head is the one it opened at; what it sent since
+        // may lie past it.
+        let head = Position(head.0.max(next.0.saturating_sub(1)));
+        Ok(FeedBatch { events, next, head })
+    }
+
+    /// The server keeps no consumer state; a consumer keeps its own
+    /// position.
+    async fn ack(&self, _consumer: &str, _through: Position) -> Result<()> {
+        Ok(())
+    }
+
+    /// The feed's stream from `after + 1`, held open until it sends an
+    /// event or a `next` past that, or until `within` has passed: the
+    /// server's tail waits on its lake for the next append
+    /// (lakelands#1061).
+    async fn wait(&self, after: Position, within: std::time::Duration) -> Result<Position> {
+        let wire = &self.wire;
+        let key = wire.feed_key()?;
+        let query = format!("from={}", after.next().0);
+        let mut stream = Stream::open(wire, key, query).await?;
+        let past = async {
+            loop {
+                match stream.said().await? {
+                    Said::Event(e) => return Ok(e.position),
+                    Said::Next(n) if n > after.next() => return Ok(Position(n.0 - 1)),
+                    Said::Failed(e) => return Err(e),
+                    Said::Next(_) | Said::Nothing => {}
+                }
+            }
+        };
+        let head = tokio::time::timeout(within, past).await;
+        let head = head.unwrap_or(Ok(Position(0)))?;
+        Ok(head.max(stream.head))
+    }
+}
+
+/// The feed's stream, as the server sends it from the position asked.
+struct Stream<'w> {
+    wire: &'w Wire,
+    body: hyper::body::Incoming,
+    blocks: Blocks,
+    /// The head the server read as the stream began.
+    head: Position,
+}
+
+impl<'w> Stream<'w> {
+    async fn open(wire: &'w Wire, key: &crate::ApiKey, query: String) -> Result<Stream<'w>> {
+        let call = Call::new(Method::GET, "feed".to_owned())
             .query(query)
             .header("accept", "text/event-stream".into());
         let r = wire.send(key, call).await?;
         if !r.status().is_success() {
             return Err(wire.failure(r).await);
         }
-        let head = position_of(&r);
-        let mut body = r.into_body();
-        let head = head.ok_or_else(|| wire.unavailable(Exchange::NoPosition))?;
-        let mut events: Vec<Event> = Vec::new();
-        let mut blocks = Blocks::default();
+        let head = position_of(&r).ok_or_else(|| wire.unavailable(Exchange::NoPosition))?;
+        let (body, blocks) = (r.into_body(), Blocks::default());
+        Ok(Stream {
+            wire,
+            body,
+            blocks,
+            head,
+        })
+    }
+
+    /// What the next block says, as it arrives.
+    async fn said(&mut self) -> Result<Said> {
+        let wire = self.wire;
         let not_sse = |_| wire.unavailable(Exchange::LineNotTheContract);
-        let next = 'read: loop {
-            while let Some(lines) = blocks.next().map_err(not_sse)? {
-                match block(&lines).map_err(not_sse)? {
-                    Said::Event(e) => {
-                        events.push(*e);
-                        if events.len() >= limit as usize {
-                            break 'read Position(events[events.len() - 1].position.0 + 1);
-                        }
-                    }
-                    Said::Next(n) => break 'read n,
-                    Said::Failed(e) => return Err(e),
-                    Said::Nothing => {}
-                }
+        loop {
+            if let Some(lines) = self.blocks.next().map_err(not_sse)? {
+                return block(&lines).map_err(not_sse);
             }
             // A block that never ends must not grow without bound.
-            if blocks.held > wire.cap {
+            if self.blocks.held > wire.cap {
                 return Err(wire.too_long());
             }
-            let frame = match tokio::time::timeout(wire.silence, body.frame()).await {
+            let frame = match tokio::time::timeout(wire.silence, self.body.frame()).await {
                 Err(_) => {
                     let secs = wire.silence.as_secs();
                     return Err(wire.unavailable(Exchange::Silent { secs }));
@@ -217,19 +278,9 @@ impl ChangeFeed for RemoteFeed {
                 Ok(Some(Ok(frame))) => frame,
             };
             if let Ok(data) = frame.into_data() {
-                blocks.push(&data);
+                self.blocks.push(&data);
             }
-        };
-        // The stream's head is the one it opened at; what it sent since
-        // may lie past it.
-        let head = Position(head.0.max(next.0.saturating_sub(1)));
-        Ok(FeedBatch { events, next, head })
-    }
-
-    /// The server keeps no consumer state; a consumer keeps its own
-    /// position.
-    async fn ack(&self, _consumer: &str, _through: Position) -> Result<()> {
-        Ok(())
+        }
     }
 }
 

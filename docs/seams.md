@@ -1306,10 +1306,18 @@ extended).
 
 ## `ChangeFeed`
 
-`poll(from, filter, limit) -> batch` and `ack(consumer, through)`. The
-feed is the log filtered by kind and type, read from a position
+`poll(from, filter, limit) -> batch`, `ack(consumer, through)` and
+`wait(after, within) -> head`. The feed is the log filtered by kind and
+type, read from a position
 (`docs/decisions/004-the-change-feed-is-the-log.md`). `poll` answers at
-once, possibly empty, never waiting for new events. A filter that names
+once, possibly empty, never waiting for new events. `wait` is how a
+consumer waits for them: it answers the head once the log is past
+`after` or once `within` has passed, never past the head a `poll`
+reads, so a consumer caught up at `next` waits on `next - 1` and polls
+again (lakelands#1061). The store's feed wakes at the append its handle
+publishes. A read-only handle's head moves only when it opens again, so
+its wait ends at `within`, as its poll answers nothing new. The trait's
+own `wait` answers at once, so a feed written elsewhere keeps working. A filter that names
 something is answered from the projection's index of the log up to the
 view's position (`ProjectionView::matching`): only the events it names
 are read from the log, each opened, verified and checked again by the

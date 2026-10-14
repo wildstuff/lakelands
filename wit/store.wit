@@ -102,5 +102,8 @@ interface store {
     resource change-feed {
         poll: func(%from: position, filter: feed-filter, limit: u32) -> result<feed-batch, error>;
         ack: func(consumer: string, through: position) -> result<_, error>;
+        /// The head once the log is past `after`, or once `within-millis`
+        /// have passed; never past the head `poll` reads.
+        wait: func(after: position, within-millis: u64) -> result<position, error>;
     }
 }

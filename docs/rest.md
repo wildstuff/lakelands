@@ -250,9 +250,12 @@ time the stream catches up at a position it has not named before, it
 sends the comment `: next <position>`: the first position not yet
 examined, the `next` a poll of the change feed would answer, so a client
 that reads what is there and stops knows where to stop. A quiet stream
-sends the comment `: keep-alive` every fifteen seconds. How long a
-caught-up stream waits before it reads the log again is the
-configuration's `feed_poll_millis` (250 unless stated).
+sends the comment `: keep-alive` every fifteen seconds. A caught-up
+stream waits for the lake's next append and sends it at once; the
+configuration's `feed_poll_millis` (250 unless stated) bounds that wait,
+after which it reads the log again, and `feed_floor_millis` (250 unless
+stated) is the most often it reads the log, counted from the end of its
+last read, so a busy lake's appends reach it in batches (lakelands#1061).
 
 The feed is the log itself, unmasked, so only a principal that reads
 every field of every record, withheld records included

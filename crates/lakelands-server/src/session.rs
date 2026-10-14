@@ -88,18 +88,20 @@ impl Session {
     }
 
     /// The pump that tells this session of changes, sending into `queue`
-    /// until it is dropped; `pause` is how long a caught-up pump waits.
+    /// until it is dropped; `pause` is how long a caught-up pump waits for
+    /// the next append, `floor` how often at most it reads the log.
     pub fn pump(
         &self,
         queue: tokio::sync::mpsc::Sender<crate::watch::Queued>,
         pause: std::time::Duration,
+        floor: std::time::Duration,
     ) -> impl std::future::Future<Output = ()> + Send + 'static {
         crate::watch::pump(
             self.store.clone(),
             self.who.clone(),
             self.watch.clone(),
             queue,
-            pause,
+            (pause, floor),
         )
     }
 
