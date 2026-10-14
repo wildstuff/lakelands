@@ -134,6 +134,9 @@ pub struct Reader<'a> {
     /// Whether the records read are the retired ones too: set while
     /// [`Self::retired_count`] counts.
     retired: Cell<bool>,
+    /// By type, its declarations' positions and key fields, newest first,
+    /// read back as far as an entry asks ([`Self::rekeyed`]).
+    keys: RefCell<BTreeMap<TypeName, KeyChain>>,
 }
 
 mod held;
@@ -507,6 +510,7 @@ impl<'a> Reader<'a> {
             head: None,
             held_now: false,
             retired: Cell::new(false),
+            keys: RefCell::default(),
         })
     }
 
@@ -692,6 +696,42 @@ impl<'a> Reader<'a> {
                 .insert(ty.clone(), (canonical.clone(), literals));
         }
         Ok(canonical)
+    }
+
+    /// Whether `ty` was re-keyed since `at`: a declaration of it made
+    /// since keys it otherwise than the one before. A type's declarations
+    /// are read back once a read, and only as far as asked.
+    fn rekeyed(&self, ty: &TypeName, at: Position) -> Result<bool> {
+        let mut keys = self.keys.borrow_mut();
+        let chain = keys.entry(ty.clone()).or_default();
+        if chain.is_empty() {
+            let mut held = self
+                .shape
+                .declared
+                .iter()
+                .filter_map(|d| match &d.declaration {
+                    Declaration::Type(t) if &t.name == ty => {
+                        Some((d.since, t.key_fields().to_vec()))
+                    }
+                    _ => None,
+                });
+            chain.extend(held.next());
+        }
+        while let Some((since, key)) = chain.last().filter(|(s, _)| *s > at).cloned() {
+            let before = self.lake.engine.view(Some(Position(since.0 - 1)))?;
+            let was = before
+                .declarations()?
+                .into_iter()
+                .find_map(|d| match d.declaration {
+                    Declaration::Type(t) if &t.name == ty => {
+                        Some((d.since, t.key_fields().to_vec()))
+                    }
+                    _ => None,
+                });
+            // Not declared before: as one that keeps its key.
+            chain.push(was.unwrap_or((Position::GENESIS, key)));
+        }
+        Ok(chain.windows(2).any(|w| w[0].0 > at && w[0].1 != w[1].1))
     }
 
     /// The declarations in force at `at`, if the lake can be read there.
@@ -2183,8 +2223,9 @@ impl<'a> Reader<'a> {
     /// force here; the lake as the entry would leave it, a bundle's whole
     /// and of a migration its `to`; and the lake as it was proposed
     /// against, where the type a migration reshapes or the verb a call
-    /// calls was declared again since, read only for a reader its grants
-    /// keep from a field. An entry is not there when one of them hides a
+    /// calls was declared again since, or a type the entry's type rests on
+    /// ([`lakelands_core::describe::shown_by`]) was re-keyed since, read
+    /// only for a reader its grants keep from a field. An entry is not there when one of them hides a
     /// type it names: the type it writes or a called verb is on; of a
     /// migration's `to` and of each type a bundle declares, what
     /// [`TypeDecl::names_against`] names against the type in force; and
@@ -2272,6 +2313,18 @@ impl<'a> Reader<'a> {
             }
             ProposedWrite::Call { .. } | ProposedWrite::MigrateValueType { .. } => {}
         }
+        // The type an entry writes, reshapes or calls a verb on, and what
+        // its sight rests on (lakelands#913).
+        let ty = match &logged {
+            ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => Some(ty),
+            ProposedWrite::Migrate { migration: m, .. } => Some(&m.to.name),
+            ProposedWrite::Call { verb, .. } => o.verb(verb).ok().map(|v| &v.on),
+            _ => None,
+        };
+        let find = |n: &TypeName| o.ty(n).ok();
+        let by = ty
+            .and_then(find)
+            .map(|t| lakelands_core::describe::shown_by(t, &find));
         let subject = |d: &Declaration| match (d, &logged) {
             (Declaration::Type(t), ProposedWrite::Migrate { migration: m, .. }) => {
                 t.name == m.to.name
@@ -2280,12 +2333,21 @@ impl<'a> Reader<'a> {
             _ => false,
         };
         let mut declared = self.shape.declared.iter();
-        let moved = declared.any(|d| d.since > at && subject(&d.declaration));
         let reads = |a: &Access| a.reads();
         let typed =
             |t: &TypeGrants| t.default.as_ref().is_none_or(reads) && t.fields.values().all(reads);
         let g = &self.who.grants;
         let kept = !(reads(&g.default) && g.types.values().all(typed));
+        // Or one of the types its sight rests on was re-keyed since: an old
+        // key, in a key or a reference, may be a value of a field its
+        // reader may not know of, where it now shows (lakelands#913).
+        let mut moved = declared.any(|d| d.since > at && subject(&d.declaration));
+        for n in by.iter().flatten().take_while(|_| kept) {
+            if moved {
+                break;
+            }
+            moved = self.rekeyed(n, at)?;
+        }
         // A lake that cannot be read there shows its entry to no one.
         let was = match moved && kept {
             true => match self.ontology_at(at) {
@@ -2438,11 +2500,14 @@ impl<'a> Reader<'a> {
         match write {
             // A field the reader may not know of and a masked one both
             // leave the patch: it holds values, and no place for a name.
-            // A retired record that is not held is a free key, as to the
-            // reader's own writes.
+            // So does one it could not read where the write was proposed,
+            // a reference to a type re-keyed since among them: its value
+            // is the old key (lakelands#913). A retired record that is not
+            // held is a free key, as to the reader's own writes.
             ProposedWrite::Upsert { ty, key, patch, .. } => {
                 let admitted = after(ty, key, patch)?;
-                patch.retain(|field, _| read(ty, field));
+                let then_reads = |f: &FieldName| then.is_none_or(|(s, _)| s.reads(ty, f));
+                patch.retain(|field, _| read(ty, field) && then_reads(field));
                 let stored = self.view.get(ty, key)?;
                 let free = stored.is_some_and(|r| r.retired && !self.sight.withheld(&r));
                 Ok(admitted && (free || answered(ty, key)?))
@@ -4433,6 +4498,10 @@ impl expr::Scope for Ends<'_> {
         self.now
     }
 }
+
+/// A type's declarations, newest first, each with its position and the
+/// fields it is keyed by.
+type KeyChain = Vec<(Position, Vec<FieldName>)>;
 
 /// The type the verb, trigger or set in force under `ident` (its
 /// declaration's identity) stands on in `o`.

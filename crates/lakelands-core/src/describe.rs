@@ -553,6 +553,36 @@ pub(crate) fn type_shown<'a>(
     own(t)
 }
 
+/// The types `t`'s sight and its fields' rest on, `t` first: what
+/// [`type_shown`] judges it by, what it is made of, and the target of
+/// every reference it holds, its own and its relations' link fields, as
+/// `rights::hide_unshown_references` hides one to a type its
+/// reader is not shown. One of them re-keyed may show a value of a field
+/// that reader may not know of as a key (lakelands#913).
+pub fn shown_by<'a>(
+    t: &'a TypeDecl,
+    find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
+) -> Vec<&'a TypeName> {
+    let (mut asked, mut next) = (vec![&t.name], vec![t]);
+    while let Some(t) = next.pop() {
+        let owner = crate::links::link_type_parts(&t.name).map(|p| p.0);
+        let links = t.relations.iter().flat_map(|r| &r.fields);
+        let targets = t
+            .fields
+            .iter()
+            .chain(links)
+            .filter_map(|f| f.ty.target.as_ref());
+        let sources = t.key_sources().into_iter().map(|(s, _)| s);
+        for o in owner.iter().chain(targets).chain(sources).filter_map(find) {
+            if !asked.contains(&&o.name) {
+                asked.push(&o.name);
+                next.push(o);
+            }
+        }
+    }
+    asked
+}
+
 /// Whether `who` is shown relation `r` of `owner` (006, extended): it is
 /// shown both ends, it may know of the reference field that carries it,
 /// and of a derived relation it may know of every field the match pairs,
