@@ -569,10 +569,12 @@ impl Server {
 /// Stops the killer before a check, so that no kill lands on the check's
 /// own reads: a check judges the lake, and a read a kill cuts off is no
 /// finding. Whether the server still runs; where the killer had fired,
-/// it waits for the process to end and answers `false`.
+/// it waits for the process to end and answers `false`. The killer is
+/// left an idle task, so a later pause, or an abort, finds one to stop.
 async fn paused(killer: &mut tokio::task::JoinHandle<()>, server: &mut Server) -> bool {
     killer.abort();
-    match killer.await {
+    let idle = tokio::spawn(std::future::pending());
+    match std::mem::replace(killer, idle).await {
         Ok(()) => !server.ended().await,
         Err(_) => server.alive(),
     }
@@ -1369,7 +1371,7 @@ async fn drive(plan: &Plan, dir: &Path, report: &mut Report) -> Result<(), Strin
     let (mut kills, mut stops, mut drops, mut deeps) = (0u64, 0u64, 0u64, 0u64);
     let mut feed_next = Position(0);
     let mut next_day = Instant::now();
-    while t0.elapsed() < plan.length || !desk.owed.is_empty() || !server.alive() {
+    loop {
         let ending = t0.elapsed() >= plan.length;
         if ending && !killer.is_finished() {
             paused(&mut killer, &mut server).await;
@@ -1514,6 +1516,13 @@ async fn drive(plan: &Plan, dir: &Path, report: &mut Report) -> Result<(), Strin
                     "records": desk.ledger.len(), "resent": desk.resent, "restricted": book.restricted.len(), "memory": server.memory(), "size_bytes": size(plan, &root), "deep": deep, "timings": desk.timings.take()}),
             );
             killer = arm(&server, &mut rng);
+        }
+        // The run ends once its time is up, nothing is owed and a pause
+        // finds the server running: a kill armed before the time was up
+        // lands on no last check, and one that fired is a turn more.
+        let done = t0.elapsed() >= plan.length && desk.owed.is_empty();
+        if done && paused(&mut killer, &mut server).await {
+            break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
