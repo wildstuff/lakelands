@@ -401,6 +401,7 @@ pub const ALL: &[Check] = &[
     sets_across::SET_ACROSS_EDGES,
     sets_across::SET_ACROSS_BOUND,
     sets_across::SET_ACROSS_DECLARED,
+    sets_across::SET_ACROSS_READ,
     sets_across::SET_ACROSS_HELD,
     link_triggers::LINK_TRIGGER_FIRES,
     link_triggers::VIA_LINK_TYPE_REFUSED,

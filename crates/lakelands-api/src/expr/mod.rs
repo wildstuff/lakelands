@@ -96,7 +96,7 @@ pub mod kind;
 mod rewrite;
 pub use kept::keepable;
 pub use parse::{ParseError, arity, func_name, parse, print};
-pub use rewrite::{expand, rewrite};
+pub use rewrite::{expand, expand_kept, rewrite};
 
 /// An expression in the one grammar, typed. A member this form does not
 /// know is refused, never ignored.

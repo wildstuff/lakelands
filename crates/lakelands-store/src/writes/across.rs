@@ -439,3 +439,13 @@ fn reads_into(
     o.ty(of)
         .is_ok_and(|on| reaches(o, on, &e).iter().any(|r| types.contains(r.ty)))
 }
+
+/// Whether a set's `where` reads across an edge: one of its paths reaches
+/// another record.
+pub(crate) fn reads_across(o: &Ontology, s: &ObjectSetDecl) -> bool {
+    let e = declare::set_filter(&|n| o.set(n), s, &[]);
+    let (Ok(on), Ok(e)) = (o.ty(&s.of), e) else {
+        return false;
+    };
+    !reaches(o, on, &e).is_empty()
+}

@@ -17,7 +17,7 @@ use lakelands_api::{
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, events_from, field, find_where, head_unmoved, ingest, limits, migration,
+    Lake, Must, events_from, field, find_at, find_where, head_unmoved, ingest, limits, migration,
     object_set_on, patch, principal, reads_all, reference, refused_like, refused_on, restrict,
     source_record, sourced, trigger_on, type_decl,
 };
@@ -25,7 +25,7 @@ use crate::conformance::{Failure, Given, Held, Store};
 
 check!(
     SET_ACROSS = a_sets_where_reads_a_field_across_an_edge,
-    "055 and 004, extended (lakelands#567): a set's `where` and a trigger's `when` read a field of the record a reference names, by one step and by two, the far record read at the head whoever is answered it, one not live reading null, and over the append's own drafts: declared over records there, the set joins those it holds for; a write of the far record that moves a field the set reads there decides again, in its own append and caused by its event, every record that reaches it, and its answer names the set; a write that moves nothing read there appends nothing more; a write of an intermediate record moves the records two steps back; retiring the far record takes its referrers out and writing it again brings them back; a referrer's own write reads across too; the trigger fires once for each referrer whose `when` holds after the far write, its answer naming it once, and a retry of the write answers the same however many reactions it set off; a rebuild keeps the members, so a later write decides against them",
+    "055 and 004, extended (lakelands#567): a set's `where` and a trigger's `when` read a field of the record a reference names, by one step and by two, the far record read at the head whoever is answered it, one not live reading null, and over the append's own drafts: declared over records there, the set joins those it holds for; a write of the far record that moves a field the set reads there decides again, in its own append and caused by its event, every record that reaches it, and its answer names the set; a write that moves nothing read there appends nothing more; a write of an intermediate record moves the records two steps back; retiring the far record takes its referrers out and writing it again brings them back; a referrer's own write reads across too; the trigger fires once for each referrer whose `when` holds after the far write, its answer naming it once, and a retry of the write answers the same however many reactions it set off, and after later writes that set off reactions of their own reads no further than a page past its append, holding as much after four times as many of them as after the first, give or take a quarter and 1 MiB; a rebuild keeps the members, so a later write decides against them",
     given
 );
 
@@ -52,9 +52,17 @@ check!(
 );
 
 check!(
+    SET_ACROSS_READ = a_reads_in_set_of_a_set_across_an_edge_reads_its_kept_members,
+    "055 and 004, extended (lakelands#567): a read's `in_set` of a set whose `where` reads across an edge answers the set's kept membership, not its filter read again: at the head, as of an earlier position, in a count, beside the read's own conditions, and through a set that names it; a far write moves what it answers as it moves the members, and a far record held from no one changes nothing it answers"
+);
+
+check!(
     SET_ACROSS_HELD = a_set_across_an_edge_is_a_readers_only_where_nothing_far_is_held,
     "055 and 024, extended (lakelands#567): a set or a trigger whose condition reads across an edge is a reader's only where nothing of the far type is held from it: to one without `restricted`, or holding `only` on the far type, or kept from a far field, the set is `set_undeclared` in a read's `in_set` and `describe` names neither, whether a far record is restricted or not, so twin lakes that differ in a held customer answer it alike; to a reader holding `restricted` and every field both are described; a writer is told a set moved, or a trigger fired, at a record other than its own only where it is answered one of the records moved"
 );
+
+/// The later writes a retry is read after, and four times as many.
+const LATER: usize = 500;
 
 /// The membership changes in the events from `at`: (set, key, joined).
 async fn moves(s: &dyn LakeStore, at: Position) -> Result<Vec<(String, String, bool)>, Failure> {
@@ -142,7 +150,7 @@ async fn graded(l: &Lake) -> Held {
     Ok(())
 }
 
-async fn a_sets_where_reads_a_field_across_an_edge(store: Store, _: Given) -> Held {
+async fn a_sets_where_reads_a_field_across_an_edge(store: Store, given: Given) -> Held {
     let (s, l) = (store.as_ref(), lake(&store).await?);
     let at = next(s).await?;
     graded(&l).await?;
@@ -272,6 +280,40 @@ async fn a_sets_where_reads_a_field_across_an_edge(store: Store, _: Given) -> He
         "`c9` graded `x` sets off 20 reactions and names `hot` and `graded` once, and its \
          retry answers the same; they answered {first:?} and {again:?}"
     );
+    // Later writes that set off reactions of their own end its paging:
+    // the retry reads a page past its append at most, so it holds as much
+    // after four times as many of them as after the first.
+    let mut held = Vec::new();
+    for (from, to) in [(0, LATER), (LATER, 4 * LATER)] {
+        for i in from..to {
+            let fields = json!({"status": "open", "customer": "c9"});
+            l.upsert("invoice", &format!("w{i}"), fields).await?;
+        }
+        let meter = given.meter.as_ref();
+        let before = meter.map(|m| {
+            m.reset_peak();
+            m.live()
+        });
+        let late = l
+            .cat
+            .upsert(&l.own, &ty, &c9, patch(json!({"grade": "x"})), keyed());
+        let late = late
+            .await
+            .must("`c9` graded `x` again after later writes")?;
+        held.push(meter.zip(before).map(|(m, b)| m.peak().saturating_sub(b)));
+        ensure!(
+            late == first,
+            "after {to} later writes the retry answers {first:?}; it answered {late:?}"
+        );
+    }
+    if let [Some(one), Some(four)] = held[..] {
+        ensure!(
+            four <= one + one / 4 + (1 << 20),
+            "the retry holds {one} bytes after {LATER} later writes and {four} after {}: \
+             it reads past its own append",
+            4 * LATER
+        );
+    }
     // A rebuild keeps the members: `c1` graded `y` takes `i1` out.
     store.rebuild().await.must("rebuilding the projection")?;
     let at = next(s).await?;
@@ -894,6 +936,69 @@ async fn a_set_across_a_reference_to_its_own_type_steps_back_by_the_path(store: 
         got == rows(&[("parented", "of_child", true)]),
         "`p` graded `x` takes its child's invoice into `parented` and not its own; it moved \
          {got:?}"
+    );
+    Ok(())
+}
+
+/// The keys `find` answers `l`'s owner of `invoice` under `filter`, at
+/// `as_of`, and the total it counts.
+async fn found(
+    l: &Lake,
+    filter: &str,
+    as_of: Option<Position>,
+) -> Result<(Vec<String>, Option<u64>), Failure> {
+    let find = lakelands_api::Find {
+        filter: Some(filter.into()),
+        total: true,
+        ..find_at(as_of)
+    };
+    let ty = TypeName::from("invoice");
+    let reply = l.cat.find(&l.own, &ty, find).await;
+    match reply.must(&format!("finding `{filter}`"))?.data {
+        lakelands_api::Found::Records { rows, total, .. } => {
+            Ok((rows.into_iter().map(|r| r.key.to_string()).collect(), total))
+        }
+        other => Err(Failure::new(format!("`{filter}` answered {other:?}"))),
+    }
+}
+
+async fn a_reads_in_set_of_a_set_across_an_edge_reads_its_kept_members(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), lake(&store).await?);
+    graded(&l).await?;
+    let named = object_set_on(
+        "open_graded",
+        "invoice",
+        "in_set('graded') or status = 'none'",
+    );
+    l.declare_as(named, "open_graded").await?;
+    let before = s.head().await.must("the head")?;
+    l.upsert("customer", "c2", json!({"grade": "x"})).await?;
+    let keys = |k: &[&str]| k.iter().map(|k| (*k).to_owned()).collect::<Vec<_>>();
+    for (filter, as_of, want) in [
+        ("in_set('graded')", None, keys(&["i1", "i3"])),
+        ("in_set('graded')", Some(before), keys(&["i1"])),
+        ("in_set('graded') and customer = 'c2'", None, keys(&["i3"])),
+        (
+            "not in_set('graded') and status = 'open'",
+            None,
+            keys(&["i4"]),
+        ),
+        ("in_set('open_graded')", None, keys(&["i1", "i3"])),
+        ("in_set('north')", None, keys(&["i1", "i2"])),
+    ] {
+        let (got, total) = found(&l, filter, as_of).await?;
+        let n = Some(want.len() as u64);
+        ensure!(
+            got == want && total == n,
+            "`{filter}` at {as_of:?} answers {want:?}, {n:?} in all; it answered {got:?}, \
+             {total:?}"
+        );
+    }
+    restrict(s, "customer", "c2", "a hold").await?;
+    let (got, _) = found(&l, "in_set('graded')", None).await?;
+    ensure!(
+        got == keys(&["i1", "i3"]),
+        "a hold on `c2` changes nothing the set answers; it answered {got:?}"
     );
     Ok(())
 }

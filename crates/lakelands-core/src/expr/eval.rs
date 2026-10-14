@@ -136,6 +136,12 @@ pub trait Scope {
         None
     }
 
+    /// In a read: whether the record is a member of the set `set` as it
+    /// is kept, where its `where` reads across an edge. `None` elsewhere.
+    fn in_set(&self, _set: &str) -> Option<bool> {
+        None
+    }
+
     /// An aggregate function over the set of records in scope. `None` where
     /// no set is in scope: over one record an aggregate has no meaning.
     fn aggregate(&self, _func: Func, _args: &[Expr]) -> Option<Result<Val>> {
@@ -769,6 +775,12 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
                 .exists(relation)
                 .map_or(err(Case::ExistsHere), |b| Ok(Val::Bool(b)));
         }
+        Func::InSet => {
+            let Some(set) = quoted(args.first()) else {
+                return err(Case::CallTakesQuoted { name: name.into() });
+            };
+            return (scope.in_set(set)).map_or(err(Case::InSetHere), |b| Ok(Val::Bool(b)));
+        }
         Func::Count | Func::Sum | Func::Min | Func::Max | Func::Avg => {
             if let Some(v) = scope.aggregate(func, args) {
                 return v;
@@ -799,11 +811,9 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
                 });
             }
         },
-        // A set's filter stands in the call's place before a condition is
-        // evaluated ([`expand`]); a call that is left names no place for it.
-        Func::InSet => {
-            return err(Case::InSetHere);
-        }
+        // Answered above, from the scope, where the set's filter did not
+        // stand in the call's place before ([`expand`]).
+        Func::InSet => return err(Case::InSetHere),
         // Answered above, from the scope.
         Func::Exists => return err(Case::ExistsHere),
         Func::Param => match &vals[0] {

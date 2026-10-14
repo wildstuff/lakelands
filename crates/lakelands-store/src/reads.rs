@@ -137,6 +137,9 @@ pub struct Reader<'a> {
     /// By type, its declarations' positions and key fields, newest first,
     /// read back as far as an entry asks ([`Self::rekeyed`]).
     keys: RefCell<BTreeMap<TypeName, KeyChain>>,
+    /// The kept members of each set across an edge a read's `in_set` names,
+    /// read once a read where its condition is read ([`Self::named_sets`]).
+    members: RefCell<BTreeMap<String, BTreeSet<RecordKey>>>,
 }
 
 mod held;
@@ -419,14 +422,15 @@ fn several_types(at: &Place, reached: &BTreeSet<TypeName>) -> Error {
 const MATCHED: u32 = 65_536;
 
 /// Whether an expression needs something only the store knows or does:
-/// the clock, the settings, per-field provenance, or a pattern match,
-/// which is never handed to an engine (`docs/seams.md`, `scan`).
+/// the clock, the settings, per-field provenance, a pattern match, or a
+/// set's kept membership, which is never handed to an engine
+/// (`docs/seams.md`, `scan`).
 fn needs_store(e: &Expr) -> bool {
     use Func::*;
     matches!(
         e,
         Expr::Call {
-            func: Now | Today | Setting | KnownAt | SeenAt | Matches,
+            func: Now | Today | Setting | KnownAt | SeenAt | Matches | InSet,
             ..
         }
     ) || expr::children(e).any(needs_store)
@@ -477,6 +481,37 @@ pub(crate) fn holds(
     expr::holds(e, &scope).unwrap_or(false)
 }
 
+/// A read's scope over one record: its own, and the kept members of each
+/// set across an edge its condition names by `in_set`
+/// (`docs/decisions/055-a-path-steps-through-a-reference.md`).
+struct Members<'a> {
+    record: RecordScope<'a>,
+    key: &'a RecordKey,
+    members: &'a BTreeMap<String, BTreeSet<RecordKey>>,
+}
+
+impl expr::Scope for Members<'_> {
+    fn value(&self, path: &[FieldName]) -> Option<Value> {
+        self.record.value(path)
+    }
+
+    fn meta(&self, field: &FieldName) -> Option<lakelands_api::FieldMeta> {
+        self.record.meta(field)
+    }
+
+    fn setting(&self, key: &str) -> Option<Value> {
+        self.record.setting(key)
+    }
+
+    fn now(&self) -> Timestamp {
+        self.record.now
+    }
+
+    fn in_set(&self, set: &str) -> Option<bool> {
+        Some(self.members.get(set)?.contains(self.key))
+    }
+}
+
 /// What [`Reader::kept_read`] answers of a kept view: its state, and how
 /// many of its groups and its sources' are not exact.
 type KeptRead = (kept::State, u64);
@@ -511,6 +546,7 @@ impl<'a> Reader<'a> {
             held_now: false,
             retired: Cell::new(false),
             keys: RefCell::default(),
+            members: RefCell::default(),
         })
     }
 
@@ -850,7 +886,7 @@ impl<'a> Reader<'a> {
             && admit.holds(&r.fields)
             && (self.valid_at_for(decl))
                 .is_none_or(|t| valid_time::record_holds(decl, &r.fields, t))
-            && (self.valid_for(decl).1).is_none_or(|b| self.holds(&b, &r.fields, None))
+            && (self.valid_for(decl).1).is_none_or(|b| self.holds(&b, r, false))
     }
 
     /// Whether a view's records are computed for this reader from the
@@ -920,7 +956,20 @@ impl<'a> Reader<'a> {
             }) && self.sight.set_across_unheld(s)
         };
         let set = |n: &str| self.shape.ontology.set(n).filter(shown);
-        let e = crate::declare::filter(&set, ty, c, Eval::Record, at)?;
+        // A set across an edge is read by its kept membership, its members
+        // read once a read (055, extended).
+        let across =
+            |n: &str| set(n).is_some_and(|s| crate::writes::reads_across(&self.shape.ontology, s));
+        let e = crate::declare::filter_kept(&set, &across, ty, c, Eval::Record, at)?;
+        let mut kept = Vec::new();
+        lakelands_core::describe::in_sets(&e, &mut kept);
+        for n in kept
+            .into_iter()
+            .filter(|n| !self.members.borrow().contains_key(n))
+        {
+            let held = self.view.members(&n, ty)?;
+            self.members.borrow_mut().insert(n, held);
+        }
         let view = self.shape.ontology.ty(ty).is_ok_and(|t| t.view.is_some());
         crate::declare::record_stands(!view, e, at)
     }
@@ -1029,13 +1078,23 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn holds(
-        &self,
-        e: &Expr,
-        fields: &BTreeMap<FieldName, Value>,
-        meta: Option<&BTreeMap<FieldName, lakelands_api::FieldMeta>>,
-    ) -> bool {
-        holds(e, fields, meta, &self.shape.settings, self.now)
+    /// Whether a read's condition holds over `r`, with its provenance
+    /// where `meta`: a set across an edge it names is answered by the
+    /// set's kept membership.
+    fn holds(&self, e: &Expr, r: &StoredRecord, meta: bool) -> bool {
+        let record = RecordScope {
+            fields: &r.fields,
+            meta: meta.then_some(&r.meta),
+            settings: Some(&self.shape.settings),
+            now: self.now,
+        };
+        let members = self.members.borrow();
+        let scope = Members {
+            record,
+            key: &r.key,
+            members: &members,
+        };
+        expr::holds(e, &scope).unwrap_or(false)
     }
 
     /// The records of a type at this read's position that the principal
@@ -1058,7 +1117,7 @@ impl<'a> Reader<'a> {
             // The engine counts the stored records; a group whose whole
             // face reads otherwise is counted by that face instead.
             let n = self.count(&stored, filter)?;
-            let passes = |r: &StoredRecord| filter.is_none_or(|e| self.holds(e, &r.fields, None));
+            let passes = |r: &StoredRecord| filter.is_none_or(|e| self.holds(e, r, false));
             let differ = self.differing(&stored, &decl.name, whole)?;
             let own = differ.iter().filter(|(r, _)| passes(r)).count() as u64;
             let faces = differ.iter().filter_map(|(_, w)| w.as_ref());
@@ -1138,9 +1197,8 @@ impl<'a> Reader<'a> {
         // (lakelands#942).
         if let Some(all) = self.computed(&decl.name)? {
             let bounded = self.with_bound(decl, filter);
-            let held = |r: &&StoredRecord| {
-                (bounded.as_ref()).is_none_or(|e| self.holds(e, &r.fields, None))
-            };
+            let held =
+                |r: &&StoredRecord| (bounded.as_ref()).is_none_or(|e| self.holds(e, r, false));
             return all.iter().filter(held).try_for_each(each);
         }
         self.each_stored(decl, filter, page, &mut each)
@@ -1228,9 +1286,7 @@ impl<'a> Reader<'a> {
             }
             let ends = self.admitted_ends(decl, &rows)?;
             for (r, _) in rows.into_iter().zip(ends).filter(|(_, ends)| *ends) {
-                if self.live_by(decl, &admit, &r)
-                    && here.is_none_or(|e| self.holds(e, &r.fields, Some(&r.meta)))
-                {
+                if self.live_by(decl, &admit, &r) && here.is_none_or(|e| self.holds(e, &r, true)) {
                     out.push(r);
                     if out.len() >= want {
                         return Ok(out);
@@ -1315,7 +1371,7 @@ impl<'a> Reader<'a> {
             page,
             &mut |r| match kept::shown(r.clone(), view, whole) {
                 Some(r)
-                    if filter.is_none_or(|e| self.holds(e, &r.fields, None))
+                    if filter.is_none_or(|e| self.holds(e, &r, false))
                         && admit.holds(&r.fields) =>
                 {
                     each(&r)
@@ -1453,7 +1509,7 @@ impl<'a> Reader<'a> {
         )?;
         let at = |r: &StoredRecord| (Self::sort_values(order, r), r.key.clone());
         let later = |r: &&StoredRecord| {
-            filter.is_none_or(|e| self.holds(e, &r.fields, None))
+            filter.is_none_or(|e| self.holds(e, r, false))
                 && after
                     .as_ref()
                     .is_none_or(|a| Self::compare(order, &at(r), a).is_gt())
@@ -1613,7 +1669,7 @@ impl<'a> Reader<'a> {
             });
         }
         if let Some(e) = filter {
-            out.retain(|r| self.holds(e, &r.fields, None));
+            out.retain(|r| self.holds(e, r, false));
         }
         Ok(out)
     }
@@ -1643,7 +1699,7 @@ impl<'a> Reader<'a> {
         let keys = group_by.iter().map(|f| (f.clone(), None)).collect();
         let mut members = aggregate::Grouping::new(keys, &measures, self.now);
         self.each_member(&source, down, COUNT_PAGE, |r| {
-            if here.is_none_or(|w| self.holds(w, &r.fields, Some(&r.meta))) {
+            if here.is_none_or(|w| self.holds(w, r, true)) {
                 members.add((&r.fields, Some(&r.meta)), Some(&self.shape.settings));
             }
             Ok(())
@@ -3183,7 +3239,7 @@ impl<'a> Reader<'a> {
             if !self.live_by(decl, &admit, &r) {
                 continue;
             }
-            if filter.is_some_and(|e| !self.holds(e, &r.fields, Some(&r.meta))) {
+            if filter.is_some_and(|e| !self.holds(e, &r, true)) {
                 continue;
             }
             if let Some(record) = rights::visible(self.sight, decl, &r, with_meta) {
@@ -3486,18 +3542,16 @@ impl<'a> Reader<'a> {
         // Whether a record reached over step `i` is kept and walked from:
         // it is of the step's `type`, and its `where`, read against the type
         // the step reaches, holds of it.
-        let keep =
-            |i: usize, node: &lakelands_core::graph::Node| -> Result<bool> {
-                if p.steps[i].ty.as_ref().is_some_and(|t| *t != node.0) {
-                    return Ok(false);
-                }
-                let Some(f) = &filters[i] else {
-                    return Ok(true);
-                };
-                let r = hidden.record(node)?;
-                Ok(node.0 == types[i + 1]
-                    && r.is_some_and(|r| self.holds(f, &r.fields, Some(&r.meta))))
+        let keep = |i: usize, node: &lakelands_core::graph::Node| -> Result<bool> {
+            if p.steps[i].ty.as_ref().is_some_and(|t| *t != node.0) {
+                return Ok(false);
+            }
+            let Some(f) = &filters[i] else {
+                return Ok(true);
             };
+            let r = hidden.record(node)?;
+            Ok(node.0 == types[i + 1] && r.is_some_and(|r| self.holds(f, &r, true)))
+        };
         // The start: the one record a key names, what a search finds, or
         // the records of the start's type a filter (or none) selects, which
         // rows read a page at a time.

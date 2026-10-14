@@ -251,8 +251,16 @@ write's own only where it is answered one of them, as a write's own
 record is its writer's. Then no two lakes that differ only in a record
 held from a reader answer that reader differently.
 
-Until a read's `in_set` reads the kept membership, `in_set` of such a
-set in a read's `where` keeps the refusal of a path there.
+**A read's `in_set` of such a set reads its kept membership.** In a
+read's `where`, a set across an edge stays `in_set('name')`, not its
+filter (a path is no read's filter), and is answered by the members the
+writes kept: at the read's position, as of an earlier one too, the
+members read once a read through the seam's `members`. It is the one
+place a set's members are read beside the feed. The store evaluates such
+a condition itself, as it does one that reads the clock: no engine is
+handed it, and no engine changes. A set that names such a set is read the
+same way through it. To a reader it is not shown it stays
+`set_undeclared`.
 
 ## Why
 

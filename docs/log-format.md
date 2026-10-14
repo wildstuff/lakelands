@@ -1132,7 +1132,10 @@ value, the windows counted from the origin in both directions,
 takes no third argument and a width takes one. And `in_set`, with one
 argument, an object set's name as a string literal: true for a record
 where that set's filter holds for it, the filter read in the call's
-place when the condition is read, never stored membership; in an object
+place when the condition is read, never stored membership, but in a
+read's `where` a set whose own reads across an edge, which is answered
+by its kept membership
+(`docs/decisions/055-a-path-steps-through-a-reference.md`); in an object
 set's `where`, a trigger's `when` and a read's `where` only, a set of
 the record's type, and no set through itself.
 
