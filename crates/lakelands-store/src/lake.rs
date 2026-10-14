@@ -206,11 +206,12 @@ pub struct Lake {
     /// The head again, for a wait on the next one (`ChangeFeed::wait`).
     heads: tokio::sync::watch::Sender<u64>,
     holds_lease: AtomicBool,
-    /// The shapes reads were answered with, at most two, each with the
-    /// positions it holds for: no event among them ends a range
-    /// ([`ends_a_range`]). The lock is held to find or put one, never
-    /// across a build or a read.
-    shapes: Mutex<Vec<(RangeInclusive<u64>, Arc<Shape>)>>,
+    /// The shapes reads were answered with or a declaring append left, at
+    /// most two, each with the positions it holds for: no event among them
+    /// ends a range ([`ends_a_range`]). One a declaring append left is
+    /// built at the first read of its position. The lock is held to find
+    /// or put one, never across a build or a read.
+    shapes: Mutex<Vec<(RangeInclusive<u64>, HeldShape)>>,
     /// Moved when a rebuild begins and when it ends: a shape built across
     /// either read a projection cleared or half folded, and is not kept.
     rebuilds: AtomicU64,
@@ -316,6 +317,70 @@ pub fn settings_in(
         .into_iter()
         .filter_map(|r| Some((r.key.to_string(), r.fields.get("value")?.clone())))
         .collect())
+}
+
+/// A shape the lake holds for a range: built, or left by an append whose
+/// only events that end a range declare, and built at the first read of
+/// its position (lakelands#1056).
+#[derive(Clone)]
+enum HeldShape {
+    Built(Arc<Shape>),
+    Left(Arc<Left>),
+}
+
+/// The appends a chain of left shapes holds at most. Past them an append
+/// leaves nothing, and the next read builds from the engine. That bounds
+/// what a chain keeps, and what its first read puts again: the
+/// declarations of 1 024 appends (lakelands#1056).
+const LEFT_LINKS: usize = 1024;
+
+/// What makes the shape a declaring append leaves: the shape held for the
+/// range just before it, whose settings and renames no declaration moves,
+/// and the declarations the append made, each since its own position.
+struct Left {
+    /// None only while its chain is dropped.
+    before: Option<HeldShape>,
+    declared: Vec<lakelands_api::engine::Declared>,
+    /// The links of its chain, itself included.
+    links: usize,
+}
+
+impl Drop for Left {
+    /// A chain is unlinked in a loop: dropped by each link's own drop in
+    /// turn, it would take a frame of the stack a link.
+    fn drop(&mut self) {
+        let mut next = self.before.take();
+        while let Some(HeldShape::Left(left)) = next {
+            next = Arc::into_inner(left).and_then(|mut l| l.before.take());
+        }
+    }
+}
+
+impl Left {
+    /// The shape: the one held before, each declaration put on it in the
+    /// order the appends made them, as the writer's fold put them on its
+    /// ontology; no declaration is read from the engine.
+    fn build(&self) -> Shape {
+        let (mut lefts, mut before) = (vec![self], self.before.as_ref());
+        while let Some(HeldShape::Left(left)) = before {
+            lefts.push(left);
+            before = left.before.as_ref();
+        }
+        let Some(HeldShape::Built(base)) = before else {
+            unreachable!("a chain of left shapes ends at a built one")
+        };
+        let mut ontology = base.ontology.clone();
+        for d in lefts.iter().rev().flat_map(|left| &left.declared) {
+            let (decl, hash) = (d.declaration.clone(), d.schema_hash.clone());
+            ontology.put_at(decl, d.version, hash, d.since);
+        }
+        Shape {
+            declared: ontology.declared(),
+            settings: base.settings.clone(),
+            renames: base.renames.clone(),
+            ontology,
+        }
+    }
 }
 
 /// What the kept views' hooks are handed in the fold of one event.
@@ -702,18 +767,35 @@ impl Lake {
     }
 
     /// The shape at `view`'s position: the one known for a range that
-    /// holds it, or one built from the view, kept in place of the known
-    /// one that ends first. A built shape is kept only if no rebuild began
+    /// holds it, built there first if a declaring append left it, or one
+    /// built from the view, kept in place of the known one that ends
+    /// first. A shape built from the view is kept only if no rebuild began
     /// or ended while it was read and the projection is folded through its
     /// position: one read from a projection cleared or half folded again
-    /// answers its read and nothing after it.
+    /// answers its read and nothing after it. A left one reads no
+    /// projection, and is kept only in its own place.
     pub(crate) fn shape(&self, view: &dyn ProjectionView) -> Result<Arc<Shape>> {
         let at = view.position().map_or(0, |p| p.0);
         let held = lakelands_core::lock(&self.shapes);
-        if let Some((_, shape)) = held.iter().find(|(range, _)| range.contains(&at)) {
-            return Ok(shape.clone());
-        }
+        let found = held.iter().find(|(range, _)| range.contains(&at));
+        let left = match found.map(|(_, shape)| shape.clone()) {
+            Some(HeldShape::Built(shape)) => return Ok(shape),
+            Some(HeldShape::Left(left)) => Some(left),
+            None => None,
+        };
         drop(held);
+        // A left shape is built once, and put in its place unless it was
+        // dropped meanwhile.
+        if let Some(left) = left {
+            let shape = Arc::new(left.build());
+            let mut held = lakelands_core::lock(&self.shapes);
+            for (_, kept) in held.iter_mut() {
+                if matches!(kept, HeldShape::Left(l) if Arc::ptr_eq(l, &left)) {
+                    *kept = HeldShape::Built(shape.clone());
+                }
+            }
+            return Ok(shape);
+        }
         let rebuilds = self.rebuilds.load(Ordering::SeqCst);
         let ontology = Ontology::from_declared(&view.declarations()?);
         let shape = Arc::new(Shape {
@@ -734,7 +816,7 @@ impl Lake {
         if held.len() > 1 {
             held.remove(0);
         }
-        held.push((at..=at, shape.clone()));
+        held.push((at..=at, HeldShape::Built(shape.clone())));
         Ok(shape)
     }
 
@@ -975,12 +1057,53 @@ impl Lake {
         // range; it is carried only from where it stands, so a fold that
         // began after its range's end (another handle wrote, or a fold failed
         // and was caught up) leaves it to its own range.
-        if let (Some(first), Some(last)) = (events.first(), events.last())
-            && !events.iter().any(|e| ends_a_range(&e.body))
-        {
+        // An append whose only such events declare leaves what makes the
+        // shape after it, the shape before and its declarations, for the
+        // first read of its position to build (lakelands#1056).
+        let declares = |e: &&Event| matches!(e.body, EventBody::Declared { .. });
+        if let (Some(first), Some(last)) = (events.first(), events.last()) {
             let (first, mut held) = (first.position.0, lakelands_core::lock(&self.shapes));
-            for (range, _) in held.iter_mut().filter(|(r, _)| r.end() + 1 == first) {
-                *range = *range.start()..=last.position.0;
+            let mut ending = events.iter().filter(|e| ends_a_range(&e.body)).peekable();
+            if ending.peek().is_none() {
+                for (range, _) in held.iter_mut().filter(|(r, _)| r.end() + 1 == first) {
+                    *range = *range.start()..=last.position.0;
+                }
+            } else if ending.all(|e| declares(&e)) {
+                let before = held.iter().find(|(r, _)| r.end() + 1 == first);
+                let links = |before: &HeldShape| match before {
+                    HeldShape::Built(_) => 1,
+                    HeldShape::Left(left) => left.links + 1,
+                };
+                let before = before.filter(|(_, b)| links(b) <= LEFT_LINKS);
+                if let Some((_, before)) = before {
+                    let declared = (events.iter())
+                        .filter_map(|e| match &e.body {
+                            EventBody::Declared {
+                                declaration,
+                                schema_hash,
+                                version,
+                                ..
+                            } => Some(lakelands_api::engine::Declared {
+                                declaration: declaration.clone(),
+                                version: *version,
+                                schema_hash: schema_hash.clone(),
+                                since: e.position,
+                            }),
+                            _ => None,
+                        })
+                        .collect();
+                    let left = Left {
+                        before: Some(before.clone()),
+                        declared,
+                        links: links(before),
+                    };
+                    held.sort_by_key(|(range, _)| *range.end());
+                    if held.len() > 1 {
+                        held.remove(0);
+                    }
+                    let at = last.position.0..=last.position.0;
+                    held.push((at, HeldShape::Left(Arc::new(left))));
+                }
             }
         }
         // Published only once the fold has committed: a position `head()`

@@ -468,3 +468,135 @@ fn a_value_step_renames_every_field_but_a_backed_one_and_nothing_else() {
     let other = record("u", "k", json!({"x": "a"}), 4);
     assert_eq!(step.apply(other.clone()), other);
 }
+
+/// A memory lake, its catalog and its owner.
+fn owned(
+    name: &str,
+) -> (
+    Arc<Lake>,
+    Arc<dyn lakelands_api::Catalog>,
+    lakelands_api::Principal,
+) {
+    use lakelands_api::LakeStore;
+    let seams = Seams {
+        engines: vec![Arc::new(lakelands_engine_mem::MemoryOpener::new())],
+        ..Seams::default()
+    };
+    let lake = Lake::open(&Location::memory(name), seams, OpenMode::Create);
+    let lake = Arc::new(lake.expect("the lake opens"));
+    let cat = crate::doors::Store { lake: lake.clone() }.catalog(Default::default());
+    let owner = lakelands_api::Principal {
+        kind: lakelands_api::principal::PrincipalKind::Human,
+        id: "owner".into(),
+        lake: name.into(),
+        grants: lakelands_api::principal::Grants::owner(),
+    };
+    (lake, cat, owner)
+}
+
+/// A type of text fields.
+fn text_type(name: &str, fields: &[&str]) -> serde_json::Value {
+    let fields: Vec<_> = (fields.iter())
+        .map(|f| json!({"name": f, "type": {"kind": "text"}}))
+        .collect();
+    json!({"declare": "type", "name": name, "fields": fields})
+}
+
+/// The shape a chain of declaring appends leaves, built at the first read
+/// of its position, is the one the projection makes there in every member:
+/// each declaration in force since its own position, put in the log's
+/// order, with the settings and renames of the shape before it
+/// (lakelands#1056).
+#[tokio::test]
+async fn a_left_shape_is_the_one_the_projection_makes() {
+    let (lake, cat, owner) = owned("left");
+    let declare = async |d: serde_json::Value| cat.declare(&owner, declaration(d)).await.unwrap();
+    declare(text_type("t", &["a"])).await;
+    let f = |expr: &str| {
+        json!({"declare": "function", "name": "f", "backing": "expr", "expr": expr,
+               "inputs": [{"name": "n", "type": {"kind": "decimal"}}]})
+    };
+    declare(f("n * 2")).await;
+    declare(json!({"declare": "type", "name": "w", "fields": [
+        {"name": "n", "type": {"kind": "decimal"}},
+        {"name": "twice", "type": {"kind": "decimal"}, "authority": "derived", "function": "f"}]}))
+    .await;
+    let floor = serde_json::from_value(json!({"key": "floor", "value": 3})).unwrap();
+    let setting = (TypeName::from("sys.setting"), "floor".into());
+    let set = cat.upsert(&owner, &setting.0, &setting.1, floor, Default::default());
+    set.await.unwrap();
+    let head = || lake.engine.view(None).unwrap();
+    lake.shape(head().as_ref()).unwrap();
+    for fields in [&["a"][..], &["a", "b"]] {
+        declare(text_type("u", fields)).await;
+    }
+    declare(f("n * 3")).await;
+    declare(text_type("t", &["a", "c"])).await;
+    let at = lake.head().0;
+    let left = lakelands_core::lock(&lake.shapes)
+        .iter()
+        .any(|(range, held)| range.contains(&at) && matches!(held, HeldShape::Left(_)));
+    assert!(left, "the last append left the shape");
+    let (view, left) = {
+        let view = head();
+        let left = lake.shape(view.as_ref()).unwrap();
+        (view, left)
+    };
+    let o = Ontology::from_declared(&view.declarations().unwrap());
+    assert_eq!(left.ontology, o);
+    assert_eq!(left.declared, o.declared(), "each since its own position");
+    let settings = settings_in(view.as_ref(), &o).unwrap();
+    assert_eq!(
+        (&left.settings, &left.renames),
+        (&settings, &lake.renames(None).unwrap())
+    );
+    assert_eq!(left.settings.get("floor"), Some(&json!(3)));
+}
+
+/// A chain of left shapes holds `LEFT_LINKS` appends at most: the append
+/// past them leaves nothing, and the next read builds from the engine. A
+/// whole chain is read and dropped on a thread of 64 KiB, unlinked in a
+/// loop; dropped by each link's own drop in turn, it overflows that stack
+/// (lakelands#1056).
+#[tokio::test]
+async fn a_chain_of_left_shapes_is_bounded_and_unlinked_in_a_loop() {
+    let (lake, cat, owner) = owned("chain");
+    let declare = async |d: serde_json::Value| cat.declare(&owner, declaration(d)).await.unwrap();
+    declare(text_type("t", &["a"])).await;
+    let types = lake.shape(lake.engine.view(None).unwrap().as_ref());
+    let types = types.unwrap().ontology.types.len();
+    for i in 0..=LEFT_LINKS {
+        declare(text_type(&format!("u{i}"), &["a"])).await;
+    }
+    let held = |at: u64| {
+        let held = lakelands_core::lock(&lake.shapes);
+        let left = |(range, held): &(RangeInclusive<u64>, HeldShape)| match held {
+            HeldShape::Left(left) if range.contains(&at) => Some(left.links),
+            _ => None,
+        };
+        held.iter().find_map(left)
+    };
+    let head = lake.head().0;
+    assert_eq!((held(head - 1), held(head)), (Some(LEFT_LINKS), None));
+    drop(cat);
+    let read_and_drop = move || {
+        let then = lake.engine.view(Some(Position(head - 1))).unwrap();
+        assert_eq!(
+            lake.shape(then.as_ref()).unwrap().ontology.types.len(),
+            types + LEFT_LINKS
+        );
+        let now = lake.engine.view(None).unwrap();
+        assert_eq!(
+            lake.shape(now.as_ref()).unwrap().ontology.types.len(),
+            types + LEFT_LINKS + 1
+        );
+        drop((then, now));
+        drop(lake);
+    };
+    let small = std::thread::Builder::new().stack_size(64 * 1024);
+    small
+        .spawn(read_and_drop)
+        .unwrap()
+        .join()
+        .expect("read and dropped in 64 KiB");
+}
