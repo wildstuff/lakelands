@@ -2402,22 +2402,57 @@ impl<'a> Reader<'a> {
         // as to its writes, a free key.
         let (g, view) = (&self.who.grants, self.view.as_ref());
         if !g.restricted || rights::holds_only(self.who) {
-            let settings = crate::lake::settings_in(view, o)?;
-            let now = (view, &settings, crate::lake::wall_clock());
-            let mut named = crate::writes::reached(self.lake, o, now, &logged, true)?;
-            let since = self.shape.declared.iter().any(|d| d.since > at);
-            if since || crate::writes::reaches_by_state(o, &logged) {
-                let then = self.lake.engine.view(Some(at))?;
-                let lake = self.lake;
-                let was =
-                    crate::writes::reached_then(lake, then.as_ref(), proposed_at, &logged, false);
-                named.extend(was?);
+            // A retarget reaches records of its new targets alone: where none
+            // holds a restricted record, none is withheld from a reader who
+            // holds no `only`, and its values are not walked (lakelands#1071).
+            let types = crate::writes::retarget_types(o, &logged)?;
+            let mut free = !types.is_empty() && !rights::holds_only(self.who);
+            for t in &types {
+                if !free {
+                    break;
+                }
+                let open = Scan {
+                    restricted: false,
+                    ..crate::lake::every(true)
+                };
+                let all = view.count(t, &crate::lake::every(true))?;
+                free = self.sight.ty(t).is_ok() && view.count(t, &open)? == all;
             }
-            for (t, k) in &named {
-                let there = view.get(t, k)?;
-                let held = there.is_some_and(|r| !r.retired || self.sight.withheld(&r));
-                if held && !answered(view, self.sight, t, k)? {
-                    return Ok(None);
+            if !free {
+                let settings = crate::lake::settings_in(view, o)?;
+                let now = (view, &settings, crate::lake::wall_clock());
+                let mut named = crate::writes::reached(self.lake, o, now, &logged, true)?;
+                let since = self.shape.declared.iter().any(|d| d.since > at);
+                if since || crate::writes::reaches_by_state(o, &logged) {
+                    let then = self.lake.engine.view(Some(at))?;
+                    let lake = self.lake;
+                    let was = crate::writes::reached_then(
+                        lake,
+                        then.as_ref(),
+                        proposed_at,
+                        &logged,
+                        false,
+                    );
+                    named.extend(was?);
+                }
+                // Each type's records once, a page at a time.
+                let mut by: BTreeMap<TypeName, BTreeSet<RecordKey>> = BTreeMap::new();
+                for (t, k) in named {
+                    by.entry(t).or_default().insert(k);
+                }
+                for (t, keys) in &by {
+                    let keys: Vec<RecordKey> = keys.iter().cloned().collect();
+                    for page in keys.chunks(COUNT_PAGE) {
+                        let there = view.get_many(t, page)?;
+                        let held = there
+                            .iter()
+                            .filter(|r| !r.retired || self.sight.withheld(r));
+                        let held: Vec<&RecordKey> = held.map(|r| &r.key).collect();
+                        if !held.is_empty() && !answered_of(view, self.sight, t, &held, held.len())?
+                        {
+                            return Ok(None);
+                        }
+                    }
                 }
             }
         }
