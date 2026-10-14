@@ -970,6 +970,25 @@ pub fn holds(t: &TypeDecl, name: &FieldName) -> bool {
     }
 }
 
+/// Whether `who` may know what a migration's report names by `name` in a
+/// shape: a field or a relation `known`, the shape as `who` knows it,
+/// holds; or a link field `relation.field` of a relation `known` holds,
+/// judged on its link type as `whole` declares it, under the grants on
+/// that link type, its ends `from` and `to` included (lakelands#1092).
+pub fn link_known(who: &Principal, whole: &TypeDecl, known: &TypeDecl, name: &FieldName) -> bool {
+    let Some((r, f)) = name.as_str().split_once('.') else {
+        return holds(known, name);
+    };
+    let shown = known.relations.iter().any(|x| x.name.as_str() == r);
+    let relation = whole.relations.iter().find(|x| x.name.as_str() == r);
+    shown
+        && relation.is_some_and(|relation| {
+            let link = crate::links::link_type(&whole.name, relation);
+            let field = link.fields.iter().find(|x| x.name.as_str() == f);
+            field.is_some_and(|x| field_access(who, &link, x) != Access::None)
+        })
+}
+
 /// Whether `who` reads the field `f` of the type `m` leaves, there and as
 /// `was` declares it, under the name it had.
 pub fn reads_both(who: &Principal, was: &TypeDecl, m: &Migration, f: &FieldName) -> bool {
@@ -985,7 +1004,9 @@ pub fn reads_both(who: &Principal, was: &TypeDecl, m: &Migration, f: &FieldName)
 /// and know of the field: a conversion in the shape the migration leaves,
 /// and by the name it took its values from where it was renamed, as is a
 /// rewritten reference of the migrated type itself, and a member restated,
-/// with what was declared and what `to` states, as `describe` shows a
+/// with what was declared and what `to` states (a link field's entry,
+/// `relation.field`, judged on its link type by [`link_known`]), as
+/// `describe` shows a
 /// field member by member: one of [`FieldDecl::UNREAD`] only where the
 /// reader reads the field in `to` and as the type stands, under the name
 /// it had, since a field's access is built from what it is computed from
@@ -1022,9 +1043,11 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
         let found = sees(ty).and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)));
         found.is_some_and(|(t, f)| field_access(who, t, f) != Access::None)
     };
+    // A link field's row is judged on its link type (lakelands#1092).
+    let in_to = |f: &FieldName| link_known(who, &m.to, &to, f);
     report
         .fields
-        .retain(|c| holds(&to, &c.field) && sourced(&c.field));
+        .retain(|c| in_to(&c.field) && sourced(&c.field));
     // A member restated is the type's, or shown as its field's conversion
     // is, and one beyond the shape where the field is read in both shapes.
     let read = |f: &FieldName| reads_both(who, stands, m, f);
@@ -1034,11 +1057,13 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
         |v: &serde_json::Value, t: &TypeDecl| v.as_str().is_none_or(|f| holds(t, &f.into()));
     report.restated.retain(|r| {
         let shape = !FieldDecl::UNREAD.contains(&r.member.as_str());
-        let shown = |f| holds(&to, f) && sourced(f) && (shape || read(f));
+        let shown = |f| in_to(f) && sourced(f) && (shape || read(f));
         let timed = r.field.is_none() && matches!(r.member.as_str(), "valid_from" | "valid_to");
         r.field.as_ref().is_none_or(shown) && (!timed || named(&r.was, &was) && named(&r.to, &to))
     });
-    report.dropped.retain(|(f, _)| holds(&was, f));
+    report
+        .dropped
+        .retain(|(f, _)| link_known(who, stands, &was, f));
     // A renamed relation is shown as a dropped one is: by the name it had.
     let named = |r: &lakelands_api::write::RelationRename| holds(&was, &r.from.as_str().into());
     report.relations.retain(named);
@@ -1057,7 +1082,7 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
         });
     }
     report.rekeyed.retain(|r| sees(&r.ty).is_some());
-    report.filled.retain(|f| holds(&to, &f.field));
+    report.filled.retain(|f| in_to(&f.field));
     report.references.retain(|r| match r.ty == m.to.name {
         true => holds(&to, &r.field) && sourced(&r.field),
         false => known(&r.ty, &r.field),

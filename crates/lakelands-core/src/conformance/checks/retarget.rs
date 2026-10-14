@@ -2,7 +2,7 @@
 //! (`docs/decisions/032-a-reference-names-a-live-record.md`, extended).
 
 use lakelands_api::write::{Migration, Outcome, ProposedWrite, WriteOpts};
-use lakelands_api::{Principal, ProposalId, ReadAt};
+use lakelands_api::{Error, Principal, ProposalId, ReadAt, Refusal};
 use serde_json::json;
 
 use super::only::{de, holder, not_found};
@@ -165,6 +165,119 @@ async fn a_retarget_converts_a_reference_only_onto_a_live_record(store: Store) -
         leaked.is_empty(),
         "`kept` is told a key of `trip`: {leaked:?}"
     );
+    Ok(())
+}
+
+check!(
+    LINK_ROWS = a_relations_retarget_is_listed_whole_to_a_reviewer_shown_its_link_type,
+    "027 and 013, extended (lakelands#1092): a migration's report names a link type's field `<relation>.<field>` to a reader shown the relation who may know of that field on the link type, its ends included: a retarget, whose report names the link's `to` as `q.to`, is listed whole, `more` false and `q.to` named, to a reviewer shown everything, who accepts it and so applies it, and in part, `more` true and `q.to` not named, to a reviewer whose grant on the link type leaves `to` at `none`, whose accept is not granted; a link field `q.since` dropped, and one restated, are named to the first and listed in part, unnamed, to a reviewer whose grant leaves `since` at `none`"
+);
+
+async fn a_relations_retarget_is_listed_whole_to_a_reviewer_shown_its_link_type(
+    store: Store,
+) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let (cat, own) = (l.cat.as_ref(), &l.own);
+    let name = json!({"name": "name", "type": {"kind": "text"}});
+    let since = json!({"name": "since", "type": {"kind": "text"}});
+    let pq = |to: &str, fields: serde_json::Value| {
+        let q = json!({"name": "q", "target": to, "fields": fields});
+        json!({"name": "pq", "fields": [name], "relations": [q]})
+    };
+    for n in ["trip", "tour"] {
+        l.declare(de(json!({"name": n, "fields": [name]}))).await?;
+        l.upsert(n, "t1", json!({ "name": n })).await?;
+    }
+    l.declare(de(pq("trip", json!([since])))).await?;
+    l.upsert("pq", "p1", json!({"name": "p"})).await?;
+    let (none, opts) = (Default::default(), WriteOpts::default());
+    let (ty, from, relation, to) = ("pq".into(), "p1".into(), "q".into(), "t1".into());
+    let linked = cat.link(own, &ty, &from, &relation, &to, none, opts).await;
+    linked.must("linking p1 to t1")?;
+    let grants = |link: serde_json::Value| {
+        let mut g = json!({"default": "write", "review": true, "schema": true, "restricted": true});
+        g["types"] = json!({ "sys.link.pq.q": link });
+        g
+    };
+    let keeper = holder(s, "keeper", grants(json!({})));
+    let blind = holder(s, "blind", grants(json!({"fields": {"to": "none"}})));
+    let quiet = holder(s, "quiet", grants(json!({"fields": {"since": "none"}})));
+    let propose = async |to: serde_json::Value, why: &str| {
+        let write = ProposedWrite::Migrate {
+            migration: Box::new(migration(de(to))),
+            report: Default::default(),
+        };
+        proposal_of(cat.propose(own, write, why.into()).await)
+    };
+    // What a reviewer is listed of a proposal: whether more, and whether
+    // its report names `field`.
+    let listed = async |who: &Principal, id: &ProposalId, field: &str| {
+        let all = cat.proposals(who, Default::default()).await;
+        let all = all.must("listing the proposals")?.data;
+        let p = all.into_iter().find(|p| &p.id == id);
+        let p =
+            p.ok_or_else(|| Failure::new(format!("`{}` is not listed the proposal", who.id)))?;
+        let named = match &p.write {
+            Some(ProposedWrite::Migrate { report, .. }) => {
+                let report = serde_json::to_string(report).unwrap_or_default();
+                report.contains(&format!("\"{field}\""))
+            }
+            _ => false,
+        };
+        Ok::<_, Failure>((p.more, named))
+    };
+    let id = propose(pq("tour", json!([since])), "onto tour").await?;
+    let seen = listed(&blind, &id, "q.to").await?;
+    ensure!(
+        seen == (true, false),
+        "kept from the link type's `to`, a reviewer is listed the retarget in part, `q.to` not named; it is listed (more, named) {seen:?}"
+    );
+    let refused = cat.accept(&blind, &id).await;
+    ensure!(
+        matches!(
+            &refused,
+            Err(Error::Refused {
+                reason: Refusal::NotGranted,
+                ..
+            })
+        ),
+        "its accept by that reviewer is not granted; it answered {refused:?}"
+    );
+    let seen = listed(&keeper, &id, "q.to").await?;
+    ensure!(
+        seen == (false, true),
+        "a reviewer shown everything is listed the retarget whole, `q.to` named; it is listed (more, named) {seen:?}"
+    );
+    cat.accept(&keeper, &id)
+        .await
+        .must("accepting the retarget as a reviewer shown everything")?;
+    let d = l.describe_type("pq").await?;
+    let target = d
+        .relations
+        .iter()
+        .find(|r| r.name.as_str() == "q")
+        .map(|r| r.target.to_string());
+    ensure!(
+        target.as_deref() == Some("tour"),
+        "the accepted retarget is applied: `q` targets {target:?}"
+    );
+    // A link field dropped (`dropped`) and one restated (`restated`) are
+    // judged on the link type as a conversion is.
+    let described = json!({"name": "since", "type": {"kind": "text"}, "description": "When."});
+    for (to, what) in [
+        (pq("tour", json!([])), "a dropped link field"),
+        (pq("tour", json!([described])), "a restated link field"),
+    ] {
+        let id = propose(to, what).await?;
+        let (whole, part) = (
+            listed(&keeper, &id, "q.since").await?,
+            listed(&quiet, &id, "q.since").await?,
+        );
+        ensure!(
+            whole == (false, true) && part == (true, false),
+            "{what}: `q.since` is named whole to a reviewer shown everything ({whole:?}) and left out, with `more`, for one kept from `since` ({part:?}), as (more, named)"
+        );
+    }
     Ok(())
 }
 

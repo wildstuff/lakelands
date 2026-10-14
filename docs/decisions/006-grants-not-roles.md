@@ -1278,6 +1278,11 @@ The rule is the listing's (below). Beyond it:
 
 - **A removed relation** is listed under `dropped` by its own name, to
   one who sees the type and is shown the relation (above).
+- **A link field's entry**, named `<relation>.<field>`, is answered to
+  one shown the relation who may know of that field of the link type,
+  under its grants on the link type: a declared link field, and the ends
+  `from` and `to`, whose conversion a retarget of the relation names as
+  `<relation>.to` (lakelands#1092).
 - **A renamed reference field.** For the migrated type, a reference
   field the same migration renames is listed in `references` under its
   new name (027), and the entry is answered to a reader who may know of
@@ -2702,3 +2707,7 @@ Of `only`:
   named, answers the outage, where it was taken for a hold: the listing
   left the entry out or listed it, and a report named no key
   (lakelands#927).
+- A report's entry for a link type's end, `<relation>.to` of a retarget,
+  was left out for every reader, so a reviewer shown everything was
+  listed the proposal with `more` and its accept was not granted; it is
+  answered as the link type's field (lakelands#1092).

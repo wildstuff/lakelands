@@ -322,6 +322,7 @@ pub const ALL: &[Check] = &[
     report_names::REPORT_AS_ITS_READERS_VIEW,
     report_names::NAMED_IN_KEY_ORDER,
     retarget::RETARGET_JUDGES_REFERENCES,
+    retarget::LINK_ROWS,
     shown_hash::HASH_OF_THE_SHOWN_SHAPE,
     shown_hash::STALE_BY_ITS_NAMES,
     restated::EVERY_MEMBER,
