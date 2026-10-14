@@ -802,7 +802,7 @@ async fn a_shape_names_no_field_its_author_may_not_know_of(store: Store) -> Held
 check!(
     TAKEN_NAME_NOT_GRANTED =
         a_trigger_or_a_verb_under_a_name_its_author_is_not_shown_is_not_granted,
-    "027 and 024, extended (lakelands#893): a trigger and a verb are known by their name alone, so one declared under the name of one its author is not shown would take its place; it is not granted, naming nothing and word for word alike, to a holder of `schema` kept from the type it stands on by `declare` and by `apply`, to a proposer kept from that type by `propose`, and to a proposer that is shown the type and may not know of the field the trigger's `when` reads and the verb sets, a verb being judged by what it names and not by who may call it, so that one who reads the type and may not call the verb proposes it; so is a function proposed under the name of one that computes a field of that type, by one kept from the type and by one shown it that may not know of that field or of its input, where one that computes no field is proposed again, alone and with a type that uses it, as a new one is; the head does not move, so nothing is computed again, and `describe` shows them as they stood; proposed by one shown both types, the trigger and the verb under those names, and a set whose name was taken on that type since, are not there to a reviewer kept from the type the one in force stands on, in its listing, at its accept and at its reject, word for word as an id that does not exist, appending nothing, and the trigger still fires there; a name none bears is declared and proposed; and an author shown both types moves its trigger by declaring it again, after which a write to the type it stood on fires it no more"
+    "027 and 024, extended (lakelands#893): a trigger and a verb are known by their name alone, so one declared under the name of one its author is not shown would take its place; it is not granted, naming nothing and word for word alike, to a holder of `schema` kept from the type it stands on by `declare` and by `apply`, to a proposer kept from that type by `propose`, and to a proposer that is shown the type and may not know of the field the trigger's `when` reads and the verb sets, a verb being judged by what it names and not by who may call it, so that one who reads the type and may not call the verb proposes it; so is a function proposed under the name of one that computes a field of that type, by one kept from the type and by one shown it that may not know of that field or of its input, and declared or applied by a holder of `schema` kept from the type, which is shown every function, with a new body and with an input named as the field it computes, where it declares one that computes no field again (lakelands#917), where one that computes no field is proposed again, alone and with a type that uses it, as a new one is; the head does not move, so nothing is computed again, and `describe` shows them as they stood; proposed by one shown both types, the trigger and the verb under those names, and a set whose name was taken on that type since, are not there to a reviewer kept from the type the one in force stands on, in its listing, at its accept and at its reject, word for word as an id that does not exist, appending nothing, and the trigger still fires there; a name none bears is declared and proposed; and an author shown both types moves its trigger by declaring it again, after which a write to the type it stood on fires it no more"
 );
 
 async fn a_trigger_or_a_verb_under_a_name_its_author_is_not_shown_is_not_granted(
@@ -866,6 +866,17 @@ async fn a_trigger_or_a_verb_under_a_name_its_author_is_not_shown_is_not_granted
         }
     }
     told.push(proposed(&proposer, vec![half("half", "n * 3")]).await.err());
+    // Nor to a holder of `schema` kept from `vault`, shown every function
+    // (lakelands#917), and so before an input named as the field it
+    // computes would tell that the field reads itself.
+    let mut own = half("half", "h / 3");
+    if let Declaration::Function(f) = &mut own {
+        f.inputs[0].name = "h".into();
+    }
+    for d in [half("half", "n * 3"), own] {
+        told.push(l.cat.declare(&author, d.clone()).await.err());
+        told.push(l.cat.apply(&author, vec![d]).await.err());
+    }
     // One shown `vault` that may not know of the field `half` computes, or
     // of its input, is not shown the function either.
     for f in ["h", "n"] {
@@ -883,7 +894,8 @@ async fn a_trigger_or_a_verb_under_a_name_its_author_is_not_shown_is_not_granted
          a holder of `schema` and proposed by one without, each kept from `vault`, and \
          proposed by one kept from the field they read, and a function under the name of the \
          one that computes a field of `vault`, proposed by one kept from it, from that field \
-         and from its input, are not granted, \
+         and from its input, and declared and applied by the holder of `schema`, are not \
+         granted, \
          naming nothing ({told:?}), and what is declared stands as it stood ({was:?}); it stands \
          as {stands:?}"
     );
@@ -939,6 +951,7 @@ async fn a_trigger_or_a_verb_under_a_name_its_author_is_not_shown_is_not_granted
     // both types moves its own trigger by declaring it again.
     let [heed, stow] = on("heed", "stow", "desk");
     let declared = l.cat.declare(&author, heed).await;
+    let idle = l.cat.declare(&author, half("third", "n * 5")).await;
     let shelf = |by: &str| {
         let fields = vec![field("n", number), computed_by("h", number, by, &["n"])];
         vec![
@@ -966,11 +979,12 @@ async fn a_trigger_or_a_verb_under_a_name_its_author_is_not_shown_is_not_granted
     let new = fired(l.upsert("desk", "d1", json!({"state": "a"})).await?);
     ensure!(
         declared.is_ok()
+            && idle.is_ok()
             && free
                 .iter()
                 .all(|o| matches!(o, Ok(Outcome::Proposed { .. })))
             && (still && !old && new),
-        "a trigger `heed` is declared ({declared:?}); a verb `stow`, twice, `seal` on `desk` by \
+        "a trigger `heed` and `third` are declared ({declared:?}, {idle:?}); a verb `stow`, twice, `seal` on `desk` by \
          one that reads `vault`, and `third`, which computes no field, alone, with a type that \
          uses it, and as a new `fourth` is, are proposed ({free:?}); `watch` fires on `vault` \
          until it is moved ({still}), then no more ({old}), and on `desk` ({new})"
