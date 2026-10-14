@@ -12,7 +12,7 @@ use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::principal::PrincipalKind;
 use lakelands_api::query::{Hits, QueryResult};
 use lakelands_api::read::Found;
-use lakelands_api::write::Outcome;
+use lakelands_api::write::{Declaration, Outcome, ProposedWrite};
 use lakelands_api::{
     Error, LakeStore, Position, Principal, ProposalId, RecordKey, Refusal, RelationName, TypeName,
     Value, VerbName,
@@ -22,8 +22,8 @@ use serde_json::json;
 
 use crate::conformance::backing::EXECUTOR;
 use crate::conformance::fixture::{
-    Lake, Must, alike_renamed, field, head_unmoved, principal, restrict, searchable, type_decl,
-    vector, view_of,
+    Lake, Must, alike_renamed, field, head_unmoved, invalid_like, migration, principal, restrict,
+    searchable, type_decl, vector, view_of,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -1513,7 +1513,7 @@ fn as_never<T>(
 
 check!(
     ONLY_LINKS_OF_LINKS = a_link_whose_end_is_a_link_is_answered_where_that_link_is,
-    "051 and 006: a link whose end is a link is answered where that link is, by its own ends as deep as they go (lakelands#879). A holder of `only` on a type two links down, with `restricted` or without, is answered by `get`, `find`, `total`, a count, a view over the link type, a search and a walk only the links whose ends' ends are admitted, and `describe_type` says `only some` of the view; three links down, `find` and `total` answer it so too and `get` of another's is not found; one whose grant admits nothing counts none at either depth, and one who holds `restricted` and no `only` is answered every link and the view as kept. To the holder a reference to any other link, and a link onto it, answer as one to a link no record holds, a verb of low risk, one that reaches outside the lake and an `unlink` on it are not found, and a reference to its own is taken; a second link where one is allowed names the first only where its writer is answered it, at both depths; a call proposed on one is not there to it, not listed and rejected as an id never made (lakelands#1016); its own proposal is pinned, accepted where nothing moved and no more once an end's end moved; a read and a search as of a position judge the ends as they stood then and at the head. One without `restricted` is not answered a link whose end's end is held, is named none by a second link while it is named another's, finds none by a low verb, an external verb or an `unlink`, and a call on one is not there to it, its accept and reject answered as an id never made (lakelands#1008), while it decides another and a call proposed with `restricted` is applied. Two link types a migration made each other's end are each asked once: a link between them is answered, a second link names no end that no record holds, and the link is not answered once an end's end in the ring is held; the inner link's relation is not removed while the outer relation targets its link type (lakelands#920), and the outer link is still not answered to one without `restricted`, who decides no call on it, and a call proposed with `restricted` is still applied"
+    "051 and 006: a link whose end is a link is answered where that link is, by its own ends as deep as they go (lakelands#879). A holder of `only` on a type two links down, with `restricted` or without, is answered by `get`, `find`, `total`, a count, a view over the link type, a search and a walk only the links whose ends' ends are admitted, and `describe_type` says `only some` of the view; three links down, `find` and `total` answer it so too and `get` of another's is not found; one whose grant admits nothing counts none at either depth, and one who holds `restricted` and no `only` is answered every link and the view as kept. To the holder a reference to any other link, and a link onto it, answer as one to a link no record holds, a verb of low risk, one that reaches outside the lake and an `unlink` on it are not found, and a reference to its own is taken; a second link where one is allowed names the first only where its writer is answered it, at both depths; a call proposed on one is not there to it, not listed and rejected as an id never made (lakelands#1016); its own proposal is pinned, accepted where nothing moved and no more once an end's end moved; a read and a search as of a position judge the ends as they stood then and at the head. One without `restricted` is not answered a link whose end's end is held, is named none by a second link while it is named another's, finds none by a low verb, an external verb or an `unlink`, and a call on one is not there to it, its accept and reject answered as an id never made (lakelands#1008), while it decides another and a call proposed with `restricted` is applied. A migration, previewed and proposed, and a set that would make two or three link types each other's ends, or a relation its own link type's end, are refused as `link_type_ring` (lakelands#919); a link onto a link is answered, and not once its end's end is held; the inner link's relation is not removed while the outer relation targets its link type (lakelands#920), and the outer link is still not answered to one without `restricted`, who decides no call on it, and a call proposed with `restricted` is still applied"
 );
 
 const DEEP: &str = r#"
@@ -1857,8 +1857,9 @@ async fn a_link_whose_end_is_a_link_is_answered_where_that_link_is(store: Store)
         .accept(&l.own, &call(free.clone(), "seen", g1).await?)
         .await;
     held.push(said(accepted.is_ok(), format!("a call on a link onto a link of a held claim, proposed with `restricted`, is accepted: {accepted:?}")));
-    // Two link types a migration made each other's end are each asked
-    // once, and a link between them is judged as far as its records go.
+    // A link onto a link is judged as far as its records go; a ring of
+    // link types, whose links none could write, is not declared
+    // (lakelands#919).
     let ring = |name: &str, r: &str, target: &str| {
         let mut t = type_decl(name, vec![field("name", Text)]);
         let mark = json!({"name": "mark", "type": {"kind": "text"}});
@@ -1866,12 +1867,6 @@ async fn a_link_whose_end_is_a_link_is_answered_where_that_link_is(store: Store)
         t
     };
     let own = &l.own;
-    let migrated = |to| async move {
-        let m = crate::conformance::fixture::migration(to);
-        let report = cat.migrate(own, m.clone()).await.must("previewing")?;
-        let done = cat.migrate_apply(own, m, &report.data.report_id).await;
-        done.must("migrating a type of the ring").map(drop)
-    };
     l.declare(ring("ringb", "s", "trip")).await?;
     l.declare(ring("ringa", "r", "sys.link.ringb.s")).await?;
     for (ty, from, on, to) in [("ringb", "b1", "s", "t1"), ("ringa", "a1", "r", "b1:t1")] {
@@ -1881,16 +1876,50 @@ async fn a_link_whose_end_is_a_link_is_answered_where_that_link_is(store: Store)
         let linked = cat.link(&l.own, &ty, &from, &on, &to, none, opts);
         linked.await.must("linking in the ring")?;
     }
-    migrated(ring("ringb", "s", "sys.link.ringa.r")).await?;
-    let rows = r#"sys.link.ringa.r | a ring of link types | {"total": true} | a1:b1%3At1 total=1"#;
+    for (t, r, to) in [
+        ("sr", "r", "trip"),
+        ("t3c", "z", "trip"),
+        ("t3b", "y", "sys.link.t3c.z"),
+        ("t3a", "x", "sys.link.t3b.y"),
+    ] {
+        l.declare(ring(t, r, to)).await?;
+    }
+    let closes = migration(ring("ringb", "s", "sys.link.ringa.r"));
+    let (migration_, report) = (Box::new(closes.clone()), Default::default());
+    let proposed = ProposedWrite::Migrate {
+        migration: migration_,
+        report,
+    };
+    let pair = [
+        ring("pa", "r", "sys.link.pb.s"),
+        ring("pb", "s", "sys.link.pa.r"),
+    ];
+    let closing = [
+        cat.migrate(own, closes).await.err(),
+        cat.propose(own, proposed, "a ring".into()).await.err(),
+        cat.migrate(own, migration(ring("t3c", "z", "sys.link.t3a.x")))
+            .await
+            .err(),
+        cat.migrate(own, migration(ring("sr", "r", "sys.link.sr.r")))
+            .await
+            .err(),
+        cat.apply(own, pair.map(Declaration::Type).to_vec())
+            .await
+            .err(),
+    ];
+    let ringed = |e: &Option<Error>| {
+        let code = json!({"code": "link_type_ring"});
+        e.as_ref().is_some_and(|e| invalid_like(e, &code))
+    };
+    // The set names each of its two types' ring.
+    let set = format!("{:?}", closing[4]).matches("LinkTypeRing").count();
+    held.push(said(closing[..4].iter().all(ringed) && set == 2, format!("a ring of two by a migration, previewed and proposed, of three and of one by a migration, and of two by a set are refused: {closing:?}")));
+    let rows = r#"sys.link.ringa.r | a link onto a link | {"total": true} | a1:b1%3At1 total=1"#;
     held.push(finds(&l, &plain, rows, Position::GENESIS).await);
-    // The end of `b1`'s link is a key no record holds now, and is named
-    // to no one; with `b1` held, the link onto its link is not there.
-    let second = [["ringb", "b1", "s", "a1:b1%3At1", no_end]];
-    held.extend(links_said(&l, &plain, &second).await);
+    // With `b1` held, the link onto its link is not there.
     restrict(s, "ringb", "b1", "held").await?;
     let rows =
-        r#"sys.link.ringa.r | a ring's link, an end's end held | {"total": true} |  total=0"#;
+        r#"sys.link.ringa.r | a link onto a link, an end's end held | {"total": true} |  total=0"#;
     held.push(finds(&l, &plain, rows, Position::GENESIS).await);
     // The relation `s` is not removed while `r` targets its link type
     // (lakelands#920); a call on the link onto `b1`'s reaches the held

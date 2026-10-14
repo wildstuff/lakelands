@@ -120,6 +120,32 @@ fn source_cycle(o: &Ontology, t: &TypeDecl, v: &ViewDecl) -> std::result::Result
     Err(chain.into_iter().collect())
 }
 
+/// The link types of a ring `t` closes, from the link type of one of its
+/// relations to the one whose end it is, each the end of the one before
+/// (lakelands#919). A link of a ring needs a live link of the next one as
+/// its end, so none can be written: the declaration that closes it is
+/// refused, whether by a type, a set or a migration.
+fn link_ring(o: &Ontology, t: &TypeDecl) -> Option<Names> {
+    for r in &t.relations {
+        let start = links::link_type_name(&t.name, &r.name);
+        let (mut ring, mut end) = (vec![start.clone()], r.target.clone());
+        while let Some((owner, relation)) = links::link_type_parts(&end) {
+            if end == start {
+                return Some(ring.into_iter().collect());
+            }
+            if ring.contains(&end) {
+                break;
+            }
+            ring.push(end.clone());
+            let owner = (owner == t.name).then_some(t).or_else(|| o.ty(&owner).ok());
+            let next = owner.and_then(|d| d.relations.iter().find(|x| x.name == relation));
+            let Some(next) = next else { break };
+            end = next.target.clone();
+        }
+    }
+    None
+}
+
 /// The field `g` of `source` a view groups by, one a key may be, since the
 /// grouping values are the view record's key; refused naming it at `at`.
 fn grouped_field<'a>(source: &'a TypeDecl, g: &FieldName, on: &[Place]) -> Result<&'a FieldDecl> {
@@ -717,6 +743,9 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             let target = r.target.clone();
             return Err(invalid(at(&owner, Case::InverseTwice { inverse, target })));
         }
+    }
+    if let Some(ring) = link_ring(o, t) {
+        return Err(invalid(at(&owner, Case::LinkTypeRing { ring })));
     }
     if let Some(v) = &t.view {
         source_cycle(o, t, v).map_err(|chain| invalid(at(&owner, Case::ViewCycle { chain })))?;

@@ -837,6 +837,8 @@ catalog! {
         LinkFieldAuthority { field: FieldName, authority: Authority } => "its links arrive from a source, so its field `{field}` is `source` (or derived); an `{authority}` field of a link no door could write",
         /// A link field named as a link's end.
         LinkFieldIsEnd { field: FieldName } => "a link's `{field}` is its end; the relation cannot name a field of its own so",
+        /// Relations whose link types are each other's ends, in a ring.
+        LinkTypeRing { ring: Names } => "its relations close a ring of link types, each the end of the one before: {ring}; no link of a ring can be written",
         /// A verb reading a derived relation whose match is not its
         /// target's key.
         MatchNotKey { relation: RelationName, target: TypeName } => "`{relation}` matches fields of `{target}` other than its key, so it may reach several records; a verb reads a derived relation whose match names every key field of its target",
