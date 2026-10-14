@@ -1,0 +1,17 @@
+# Every `cargo nextest run` in the workspace reads this file, both in CI
+# and locally.
+#
+# A test still running after 60 s is reported SLOW, and again every 60 s
+# after that. A test still running after 25 periods is killed and fails.
+# So a hung test ends at about 25 minutes, and a job no longer waits on
+# it until the run is cancelled by hand.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 25 }
+
+# The conformance aggregates run every registered check of an engine in
+# one test. pg's takes about 14 minutes on a CI runner, so a slow runner
+# can take it past 25 minutes. These tests get 50 periods instead. The
+# jobs' own `timeout-minutes` still bounds the run as a whole.
+[[profile.default.overrides]]
+filter = 'test(/every_registered_check|every_engine_check/)'
+slow-timeout = { period = "60s", terminate-after = 50 }
