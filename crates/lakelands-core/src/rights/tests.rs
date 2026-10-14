@@ -59,6 +59,7 @@ fn stored() -> StoredRecord {
         source: None,
         procedure_version: None,
         error: None,
+        erased: false,
     };
     StoredRecord {
         ty: "invoice".into(),

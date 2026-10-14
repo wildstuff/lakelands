@@ -60,6 +60,11 @@ pub struct FieldMeta {
     /// backing failed: why (`docs/decisions/010-provenance-per-field.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// For a value its source wrote that holds none, because the source
+    /// was forgotten: it was written, and is erased for every reader
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub erased: bool,
 }
 
 /// One record, as one principal may see it.

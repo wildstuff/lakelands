@@ -47,7 +47,7 @@ use lakelands_api::id::{LakeId, Position, RecordKey, SourceId, TypeName};
 use lakelands_api::location::Limits;
 use lakelands_api::seam::ChangeFeed;
 use lakelands_api::time::Timestamp;
-use lakelands_api::write::{AgeReport, CompactReport, PurgeReport};
+use lakelands_api::write::{AgeReport, CompactReport, ForgetReport, PurgeReport};
 use lakelands_api::{Catalog, LakeStore, Verification, WriteContext};
 
 use crate::wire::Wire;
@@ -269,6 +269,14 @@ impl LakeStore for RemoteLake {
         _ty: Option<&TypeName>,
     ) -> Result<PurgeReport> {
         Err(host_only("purge_preflight"))
+    }
+
+    async fn forget_source(&self, _source: &SourceId, _id: Option<&str>) -> Result<ForgetReport> {
+        Err(host_only("forget_source"))
+    }
+
+    async fn forget_preflight(&self, _source: &SourceId) -> Result<ForgetReport> {
+        Err(host_only("forget_preflight"))
     }
 
     async fn position_at(&self, _known_at: Timestamp) -> Result<Option<Position>> {

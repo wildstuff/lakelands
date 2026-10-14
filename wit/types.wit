@@ -504,6 +504,9 @@ interface types {
         /// For a field a function computes that holds no value because
         /// its backing failed: why.
         error: option<string>,
+        /// For a value of a source that was forgotten: it was written,
+        /// and is erased for every reader.
+        erased: bool,
     }
 
     /// One field and its value.
@@ -1320,6 +1323,49 @@ interface types {
     record type-retired {
         %type: type-name,
         retired: u32,
+    }
+
+    /// What one forgetting of a source erased, or its preflight says it
+    /// would: the records and values it erases, the outputs, the records
+    /// it retires and those it keeps co-owned, what is computed again,
+    /// the values the log holds in plaintext (which refuse it), the
+    /// events its rebuild folds and the time it is expected to hold the
+    /// writer's lock, the position, the act's reclaim, and a preflight's id.
+    record forget-report {
+        source: source-id,
+        types: list<forget-records>,
+        fields: list<forget-field>,
+        outputs: u64,
+        retired: list<type-retired>,
+        co-owned: list<forget-records>,
+        recomputed: list<record-field>,
+        views: list<type-name>,
+        plaintext: u64,
+        events: u64,
+        expected-ms: u64,
+        position: position,
+        reclaimed: option<compact-report>,
+        report-id: string,
+    }
+
+    /// Records of one type a forgetting reads: how many, and the first ten.
+    record forget-records {
+        %type: type-name,
+        records: u64,
+        first: list<record-key>,
+    }
+
+    /// The values one field of one type loses to a forgetting.
+    record forget-field {
+        %type: type-name,
+        field: field-name,
+        values: u64,
+    }
+
+    /// A field of a type.
+    record record-field {
+        %type: type-name,
+        field: field-name,
     }
 
     record limits {

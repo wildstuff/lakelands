@@ -22,7 +22,7 @@ use lakelands_api::write::{Declaration, Proposal};
 use crate::projection::Put;
 use crate::vectors::Indexed;
 use crate::view::MemView;
-use crate::{Lake, NAME, invalid, lock};
+use crate::{Lake, NAME, REBUILD_RATE, invalid, lock};
 
 /// One handle onto a lake held in memory.
 pub struct MemoryLake {
@@ -99,6 +99,10 @@ impl MemoryLake {
 impl LakeEngine for MemoryLake {
     fn name(&self) -> &str {
         NAME
+    }
+
+    fn rebuild_rate(&self) -> u64 {
+        REBUILD_RATE
     }
 
     fn lake(&self) -> &LakeId {

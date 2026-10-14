@@ -504,6 +504,8 @@ What a refusal is about.
 | `field_exists` | `type` (TypeName), `field` (FieldName) | `{type}` already has a field `{field}` | A field added that the type has. |
 | `field_name_kept` | `type` (TypeName), `field` (FieldName) | a new field of `{type}` may not begin with `_`: the lake keeps such names for its own columns of a pattern's rows (`<name>._depth`, `<name>._type`); name it `{field}` without the `_` | A new field whose name begins with `_`, which the lake keeps for its own columns. |
 | `field_read_elsewhere` | `field` (FieldName), `type` (TypeName) | `{field}` is read by another part of `{type}` and cannot be removed | A field taken away that another part of the type reads. |
+| `forget_plaintext` | `source` (SourceId), `count` (u64) | the log holds {count} value(s) of `{source}` in erasable fields in plaintext, written before the field was erasable or before the log sealed them; destroying its key cannot reach them, so it is not forgotten: export the lake, leave the source out and import that as a new lake | A forgetting refused while the log holds plaintext values of the source in erasable fields. |
+| `forget_report_stale` | — | that report is not of this forgetting at this head; run the preflight again | A forgetting's report of another source or head. |
 | `idempotency_key_nul` | — | an idempotency key holds no NUL character | An idempotency key holding a NUL. |
 | `is_a_view` | `type` (TypeName) | `{type}` is a view; it is computed, never written | A view at a door that writes or holds a record. |
 | `key_component_kind` | `part` (String), `kind` (StorageKind), `field` (FieldName) | the key component `{part}` is not a {kind} for `{field}` | A key component of a kind its field cannot read it as. |
@@ -528,6 +530,7 @@ What a refusal is about.
 | `set_declares_twice` | — | the set declares it more than once | A set of declarations that names one twice. |
 | `set_empty` | — | nothing to apply: the set holds no declaration | A set of no declarations. |
 | `set_refused` | `count` (usize), `problems` (list of Error) | the set of `declarations` is refused whole, with {count} problems: {problems} | A set of declarations with several problems. |
+| `source_forgotten` | `source` (SourceId) | the source `{source}` was forgotten, and is never given a key again: it writes nothing more; a device that comes back is a new source | A write from a source that was forgotten. |
 | `key_destroyed` | `source` (SourceId) | the keys of the source `{source}` were destroyed, and a forgotten source is never given a key again | A source whose keys were destroyed, asked for a new one. |
 | `source_id_form` | — | a source id is not empty and holds no NUL character | A source id that is empty or holds a NUL. |
 | `trigger_too_deep` | `depth` (u32), `max` (u32) | its `max_depth` {depth} is above the lake's `max_reactive_depth` {max} | A trigger's ceiling above the lake's. |
@@ -868,6 +871,7 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `initial_origin` | — | the envelope carries the origin `initial`, a field's alone | The envelope carries the origin `initial`, a field's alone. |
 | `sealed_on` | `kind` (String) | a `{kind}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries | An event other than `record_ingested` and `output_recorded` carries `sealed`. |
 | `sealed_before` | `v` (u32) | an event of format {v} carries `sealed`, which format 16 added | An event of a format before 16 carries `sealed`. |
+| `forgotten_before` | `v` (u32) | an event of format {v} is a `source_forgotten`, which format 16 added | A `source_forgotten` in a format before the one that added it. |
 | `upstream_on` | `kind` (String) | a `{kind}` event carries `upstream`, which only a `record_ingested` event carries | An event other than `record_ingested` carries `upstream`. |
 | `hash_mismatch` | — | the hash does not match the event | The hash does not match the event. |
 | `disagrees` | — | the engine's record of the event disagrees with its bytes | The engine's record of the event disagrees with its bytes. |

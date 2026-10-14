@@ -420,6 +420,25 @@ pub trait LakeStore: Send + Sync {
         ty: Option<&TypeName>,
     ) -> Result<crate::write::PurgeReport>;
 
+    /// Forget a source (`docs/decisions/058-a-source-may-be-forgotten.md`):
+    /// append `source_forgotten` with the records it alone brought retired,
+    /// destroy its keys, rebuild the projection, in which every value it
+    /// sealed reads as erased at every position, and reclaim the storage,
+    /// all under the writer's lock. Refused while the log holds its values
+    /// of an erasable field in plaintext. With a preflight's id, refused
+    /// unless that report is of this source at this head. A step a crash
+    /// left owed is finished by the next writer's open.
+    async fn forget_source(
+        &self,
+        source: &SourceId,
+        report_id: Option<&str>,
+    ) -> Result<crate::write::ForgetReport>;
+
+    /// What [`Self::forget_source`] would do, appending nothing, with the
+    /// time it is expected to hold the writer's lock, under an id the act
+    /// may repeat.
+    async fn forget_preflight(&self, source: &SourceId) -> Result<crate::write::ForgetReport>;
+
     /// Give back the storage the projection no longer uses. It appends
     /// nothing and changes no answer, no event and no byte of an export;
     /// it prunes no history and does not seal. Only the writer's handle

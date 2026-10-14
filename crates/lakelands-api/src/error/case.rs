@@ -1273,6 +1273,10 @@ catalog! {
         FieldNameKept { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "a new field of `{ty}` may not begin with `_`: the lake keeps such names for its own columns of a pattern's rows (`<name>._depth`, `<name>._type`); name it `{field}` without the `_`",
         /// A field taken away that another part of the type reads.
         FieldReadElsewhere { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "`{field}` is read by another part of `{ty}` and cannot be removed",
+        /// A forgetting refused while the log holds plaintext values of the source in erasable fields.
+        ForgetPlaintext { source: SourceId, count: u64 } => "the log holds {count} value(s) of `{source}` in erasable fields in plaintext, written before the field was erasable or before the log sealed them; destroying its key cannot reach them, so it is not forgotten: export the lake, leave the source out and import that as a new lake",
+        /// A forgetting's report of another source or head.
+        ForgetReportStale => "that report is not of this forgetting at this head; run the preflight again",
         /// An idempotency key holding a NUL.
         IdempotencyKeyNul => "an idempotency key holds no NUL character",
         /// A view at a door that writes or holds a record.
@@ -1325,6 +1329,8 @@ catalog! {
         SetEmpty => "nothing to apply: the set holds no declaration",
         /// A set of declarations with several problems.
         SetRefused { count: usize, problems: Vec<super::Error> } => "the set of `declarations` is refused whole, with {count} problems: {problems}",
+        /// A write from a source that was forgotten.
+        SourceForgotten { source: SourceId } => "the source `{source}` was forgotten, and is never given a key again: it writes nothing more; a device that comes back is a new source",
         /// A source whose keys were destroyed, asked for a new one.
         KeyDestroyed { source: SourceId } => "the keys of the source `{source}` were destroyed, and a forgotten source is never given a key again",
         /// A source id that is empty or holds a NUL.

@@ -21,6 +21,7 @@ mod backing;
 mod declare;
 mod doors;
 mod exec;
+mod forget;
 mod import;
 mod ingest;
 mod kept;

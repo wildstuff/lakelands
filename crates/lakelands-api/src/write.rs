@@ -1403,6 +1403,87 @@ pub struct TypeRetired {
     pub retired: u32,
 }
 
+/// What `LakeStore::forget_source` erased, or what
+/// `LakeStore::forget_preflight` says it would
+/// (`docs/decisions/058-a-source-may-be-forgotten.md`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForgetReport {
+    /// The source forgotten.
+    pub source: SourceId,
+    /// Per type, in name order, the records holding a value of the source
+    /// in an erasable field; types with none are left out.
+    pub types: Vec<ForgetRecords>,
+    /// Per type and field, in that order, how many values it erases.
+    pub fields: Vec<ForgetField>,
+    /// How many outputs a backing recorded under the source's key: they
+    /// are erased with it.
+    pub outputs: u64,
+    /// Per type, in name order, the records it retires: those the source
+    /// alone brought, as a purge retires them.
+    pub retired: Vec<TypeRetired>,
+    /// Per type, in name order, the records another hand wrote too: they
+    /// stay, with that hand's values.
+    pub co_owned: Vec<ForgetRecords>,
+    /// The computed fields that read an erasable field holding the
+    /// source's values, each computed again, in type then field order.
+    pub recomputed: Vec<RecordField>,
+    /// The views over a type holding the source's values, computed again.
+    pub views: Vec<TypeName>,
+    /// The source's values in erasable fields that the log holds in
+    /// plaintext. Destroying its key cannot reach them, so while there
+    /// are any the act is refused.
+    pub plaintext: u64,
+    /// The events the act's rebuild folds again: the log's length.
+    pub events: u64,
+    /// How long the act is expected to hold the writer's lock, in
+    /// milliseconds: `events` at the engine's measured rebuild rate.
+    pub expected_ms: u64,
+    /// The head after the act, or the head the preflight read.
+    pub position: Position,
+    /// The projection's storage in bytes before and after the act's
+    /// reclaim, where the engine measures it; absent on a preflight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaimed: Option<CompactReport>,
+    /// Names a preflight's report; `forget_source` may repeat it. Empty
+    /// on the act's own report.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub report_id: String,
+}
+
+/// Records of one type a forgetting reads, with the first keys.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForgetRecords {
+    /// The type.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// How many records.
+    pub records: u64,
+    /// The first ten keys, in key order.
+    pub first: Vec<RecordKey>,
+}
+
+/// The values one field of one type loses to a forgetting.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForgetField {
+    /// The type.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// The erasable field.
+    pub field: FieldName,
+    /// How many of its values the source wrote.
+    pub values: u64,
+}
+
+/// A field of a type.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct RecordField {
+    /// The type.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// The field.
+    pub field: FieldName,
+}
+
 /// The preflight of a value type's migration: what its new declaration
 /// would refuse among the values stored under it, computed before
 /// anything changes (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).

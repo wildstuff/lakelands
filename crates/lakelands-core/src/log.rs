@@ -121,7 +121,7 @@ pub fn reads_format(v: u64) -> bool {
     (u64::from(OLDEST_LOG_FORMAT)..=u64::from(LOG_FORMAT_VERSION)).contains(&v)
 }
 
-/// The log format that first holds `sealed` (058).
+/// The log format that first holds `sealed` and `source_forgotten` (058).
 const SEALED_FROM: u32 = 16;
 
 /// An event as log format `v` wrote it, its members as the format this
@@ -281,6 +281,10 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
     if event.sealed.is_some() && event.v < SEALED_FROM {
         let v = event.v;
         return Some(Flaw::SealedBefore { v });
+    }
+    if matches!(event.body, EventBody::SourceForgotten { .. }) && event.v < SEALED_FROM {
+        let v = event.v;
+        return Some(Flaw::ForgottenBefore { v });
     }
     (event.upstream.is_some() && !matches!(event.body, EventBody::RecordIngested { .. }))
         .then_some(Flaw::UpstreamOn { kind })

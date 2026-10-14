@@ -535,6 +535,7 @@ fn a_scan_orders_by_when_a_field_was_learned() {
         source: None,
         procedure_version: None,
         error: None,
+        erased: false,
     };
     fold(e.as_ref(), 0, |p| {
         for (key, t) in [("a", 300), ("b", 100), ("c", 200)] {

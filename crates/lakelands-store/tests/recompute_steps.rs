@@ -185,6 +185,7 @@ fn stamped(n: u32, who: &str, position: Position, version: Option<&str>) -> Fiel
         procedure_version: Some(version.map_or(format!("p{n}"), str::to_owned)),
         upstream: Some(upstream(n)),
         error: None,
+        erased: false,
     }
 }
 

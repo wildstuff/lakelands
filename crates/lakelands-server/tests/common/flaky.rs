@@ -170,6 +170,19 @@ impl LakeStore for Store {
     ) -> Result<lakelands_api::write::PurgeReport> {
         self.inner.purge_preflight(source, ty).await
     }
+    async fn forget_source(
+        &self,
+        source: &lakelands_api::SourceId,
+        id: Option<&str>,
+    ) -> lakelands_api::Result<lakelands_api::write::ForgetReport> {
+        self.inner.forget_source(source, id).await
+    }
+    async fn forget_preflight(
+        &self,
+        source: &lakelands_api::SourceId,
+    ) -> lakelands_api::Result<lakelands_api::write::ForgetReport> {
+        self.inner.forget_preflight(source).await
+    }
     async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
         self.inner.compact().await
     }

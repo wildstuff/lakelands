@@ -230,12 +230,13 @@ pub fn visible(
             // A computed field whose function failed holds no value; its
             // metadata says why, to whoever may read the field. An
             // embedding with nothing to embed keeps metadata without an
-            // error, which says so.
+            // error, which says so, and an erased value says it was
+            // written (058).
             if with_meta
                 && let Some(m) = stored
                     .meta
                     .get(&f.name)
-                    .filter(|m| m.error.is_some() || f.embed.is_some())
+                    .filter(|m| m.error.is_some() || m.erased || f.embed.is_some())
                 && field_access(who, decl, f).reads()
             {
                 meta.insert(f.name.clone(), m.clone());

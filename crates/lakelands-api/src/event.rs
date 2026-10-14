@@ -241,6 +241,15 @@ pub enum EventBody {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         made: bool,
     },
+    /// A host forgot a source: its keys are destroyed, and every value it
+    /// sealed reads as erased, at every position
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
+    SourceForgotten {
+        /// The source.
+        source: SourceId,
+        /// The versions of its key the act destroys.
+        keys: Vec<crate::id::KeyId>,
+    },
     /// A record was retired.
     RecordRetired {
         /// The record's type.
@@ -403,6 +412,7 @@ kinds! {
     ValueTypeMigrated => "value_type_migrated",
     RecordUpserted => "record_upserted",
     RecordIngested => "record_ingested",
+    SourceForgotten => "source_forgotten",
     RecordRetired => "record_retired",
     RecordRestricted => "record_restricted",
     RecordUnrestricted => "record_unrestricted",

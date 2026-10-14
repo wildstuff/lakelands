@@ -675,6 +675,8 @@ catalog! {
         SealedOn { kind: String } => "a `{kind}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries",
         /// An event of a format before 16 carries `sealed`.
         SealedBefore { v: u32 } => "an event of format {v} carries `sealed`, which format 16 added",
+        /// A `source_forgotten` in a format before the one that added it.
+        ForgottenBefore { v: u32 } => "an event of format {v} is a `source_forgotten`, which format 16 added",
         /// An event other than `record_ingested` carries `upstream`.
         UpstreamOn { kind: String } => "a `{kind}` event carries `upstream`, which only a `record_ingested` event carries",
         /// The hash does not match the event.

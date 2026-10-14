@@ -20,9 +20,9 @@ use lakelands_api::seam::{
     ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter, Seams, VerbInvocation,
 };
 use lakelands_api::write::{
-    AgeReport, CompactReport, Declaration, Migration, MigrationReport, Outcome, Proposal,
-    ProposalFilter, ProposedWrite, PurgeReport, Recompute, ValueTypeMigration, ValueTypeReport,
-    WriteOpts,
+    AgeReport, CompactReport, Declaration, ForgetReport, Migration, MigrationReport, Outcome,
+    Proposal, ProposalFilter, ProposedWrite, PurgeReport, Recompute, ValueTypeMigration,
+    ValueTypeReport, WriteOpts,
 };
 use lakelands_api::{
     Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
@@ -827,6 +827,18 @@ impl LakeStore for Store {
             report.position = report.position.max(last);
         }
         Ok(report)
+    }
+
+    async fn forget_source(&self, source: &SourceId, id: Option<&str>) -> Result<ForgetReport> {
+        writes::check_source(source)?;
+        let (lake, source, id) = (self.lake.clone(), source.clone(), id.map(str::to_owned));
+        exec::run(move || crate::forget::run(&lake, &source, id.as_deref())).await
+    }
+
+    async fn forget_preflight(&self, source: &SourceId) -> Result<ForgetReport> {
+        writes::check_source(source)?;
+        let (lake, source) = (self.lake.clone(), source.clone());
+        exec::run(move || crate::forget::preflight(&lake, &source)).await
     }
 
     async fn position_at(&self, known_at: Timestamp) -> Result<Option<Position>> {

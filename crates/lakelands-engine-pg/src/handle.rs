@@ -47,7 +47,7 @@ use crate::connect::{self, Db, Target};
 use crate::projection::{self, Buffer, HeadTypes, Names, PROJECTION_TABLES};
 use crate::vector_index::{self, Pgvector};
 use crate::view::PgView;
-use crate::{NAME, invalid, lease, lock, log};
+use crate::{NAME, REBUILD_RATE, invalid, lease, lock, log};
 
 /// The open transaction of the fold: the latest position a put in it
 /// names, which the commit must reach, the head declarations it read, and
@@ -387,6 +387,10 @@ impl Drop for PgLake {
 impl LakeEngine for PgLake {
     fn name(&self) -> &str {
         NAME
+    }
+
+    fn rebuild_rate(&self) -> u64 {
+        REBUILD_RATE
     }
 
     fn lake(&self) -> &LakeId {

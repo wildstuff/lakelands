@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 46, each
+- `further.json`: the lake's next events, positions 8 to 47, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -77,7 +77,9 @@ The files:
     and asks `exists` (44, 45): forms format 16 holds and 15 does not
     (`docs/decisions/055-a-path-steps-through-a-reference.md`);
   - a type declared with two constraints, one that admits at ingest and
-    one that reads `previous` (46).
+    one that reads `previous` (46);
+  - a `source_forgotten` of `crm`, naming its key's version `1` (47):
+    a reader that folds the lake reads every value `crm` sealed as erased.
 
   Its `misplaced` holds four lines that are not of the lake. Each
   stands at its position after the event before it, in the release's

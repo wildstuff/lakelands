@@ -51,6 +51,10 @@ pub use view::{few_holders_statements, first_page_statements, read_statements, s
 /// [`LakeEngine::name`].
 pub(crate) const NAME: &str = "sqlite";
 
+/// The events a rebuild folds a second, as measured: 50 000 events in 2.9 s, a release
+/// build on the development machine (lakelands#1042).
+pub(crate) const REBUILD_RATE: u64 = 17_000;
+
 pub(crate) use lakelands_core::{damaged, invalid, lock};
 
 /// A failed file operation, for the host.
