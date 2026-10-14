@@ -84,10 +84,21 @@ impl Sight<'_> {
     /// of it.
     pub fn describe_type(&self, ty: &TypeName) -> Option<TypeDescription> {
         let declared = self.force.declared();
-        declared.iter().find_map(|d| match &d.declaration {
+        let mut t = declared.iter().find_map(|d| match &d.declaration {
             Declaration::Type(t) if &t.name == ty => self.type_description(t, d, &declared),
             _ => None,
-        })
+        })?;
+        // The declarations its key names: those of the fields as shown
+        // (lakelands#1060).
+        let named = t.lifecycle.value_types.keys();
+        let declaration = |n| {
+            declared.iter().find_map(|d| match &d.declaration {
+                Declaration::ValueType(v) if &v.name == n => Some(v.clone()),
+                _ => None,
+            })
+        };
+        t.value_types = named.filter_map(declaration).collect();
+        Some(t)
     }
 
     /// Whether its principal reads every one of `names` on type `ty`.
@@ -697,6 +708,8 @@ impl Sight<'_> {
         let schema_hash = crate::rights::shown_hash(who, t, view.is_some(), whole, find);
         Some(TypeDescription {
             name: t.name.clone(),
+            // `describe_type` fills them; `describe` names them once.
+            value_types: Vec::new(),
             description: t.description.clone(),
             label: t.label.clone(),
             language: t.language.clone(),

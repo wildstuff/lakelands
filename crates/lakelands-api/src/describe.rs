@@ -102,6 +102,11 @@ pub struct TypeDescription {
     pub lineage: TypeLineage,
     /// Lifecycle: version and shape.
     pub lifecycle: TypeLifecycle,
+    /// From `describe_type`: the declaration of each value type the
+    /// lifecycle's `value_types` names, in name order. `describe` answers
+    /// them once, in the lake's `value_types`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub value_types: Vec<ValueTypeDecl>,
 }
 
 /// One field, as the principal may see it: the declaration whole for a

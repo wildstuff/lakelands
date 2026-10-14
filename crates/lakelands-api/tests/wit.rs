@@ -545,6 +545,12 @@ fn field_description() -> FieldDescription {
 
 fn type_description() -> TypeDescription {
     TypeDescription {
+        value_types: vec![ValueTypeDecl {
+            name: "money".into(),
+            kind: StorageKind::Decimal,
+            scale: Some(2),
+            ..Default::default()
+        }],
         annotations: [("acme.icon".to_owned(), serde_json::json!("x"))].into(),
         name: "invoice".into(),
         description: Some("d".into()),
