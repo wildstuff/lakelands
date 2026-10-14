@@ -150,3 +150,8 @@ change when and only when the shape does.
   migration" was said of every change of shape; 027 declares the ones
   no stored record can stop fitting, an added optional field among
   them, and the hash covers the fields.
+- A value type's change moves neither a type's version nor its hash,
+  yet changes what the type accepts: `describe` answers each value
+  type's version, and a type's lifecycle the versions of the value
+  types its shown fields use, so a cache of what a type accepts keys on
+  the three (lakelands#1058).

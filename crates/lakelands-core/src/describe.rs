@@ -25,7 +25,7 @@ use lakelands_api::ontology::{
     Authority, Derived, RelationDecl, Risk, TypeDecl, VerbDecl, VerbEffect, ViewDecl,
 };
 use lakelands_api::write::{Declaration, FunctionDecl};
-use lakelands_api::{Access, FieldName, LakeId, Principal, TypeName};
+use lakelands_api::{Access, FieldName, LakeId, Principal, TypeName, ValueTypeName};
 
 use crate::rights::{field_access, granted_access, only_holder, pinnable, type_access};
 use crate::sight::Sight;
@@ -46,6 +46,10 @@ impl Sight<'_> {
             Declaration::ValueType(v) => Some(v.clone()),
             _ => None,
         });
+        let value_type_versions = value_types
+            .iter()
+            .filter_map(|v| Some((v.name.clone(), version_of(&declared, &v.name)?)))
+            .collect();
         let listed = |d: &Declared| self.listed(&d.declaration, &declared);
         let functions = each(&declared, |d| match &d.declaration {
             Declaration::Function(f) if listed(d) => Some(f.clone()),
@@ -64,6 +68,7 @@ impl Sight<'_> {
             types,
             verbs,
             value_types,
+            value_type_versions,
             functions,
             triggers,
             object_sets,
@@ -104,6 +109,14 @@ impl Sight<'_> {
         self.reads(ty, n)
             || named.any(|(t, r)| r.name.as_str() == n.as_str() && self.relation(t, r))
     }
+}
+
+/// The version of the value type `name` among `declared`.
+fn version_of(declared: &[Declared], name: &ValueTypeName) -> Option<u32> {
+    declared.iter().find_map(|d| match &d.declaration {
+        Declaration::ValueType(v) if &v.name == name => Some(d.version),
+        _ => None,
+    })
 }
 
 /// An object set's filter by the set's name, as a caller holds the sets.
@@ -724,6 +737,11 @@ impl Sight<'_> {
                 sorted: vec![],
                 indexed: vec![],
                 kept: None,
+                // Of the fields as shown, as the hash is (024, extended).
+                value_types: (fields.iter())
+                    .filter_map(|f| f.ty.value_type.as_ref())
+                    .filter_map(|n| Some((n.clone(), version_of(declared, n)?)))
+                    .collect(),
             },
             fields,
         })

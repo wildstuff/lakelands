@@ -530,6 +530,7 @@ pub const ALL: &[Check] = &[
     purge::REACTS_AS_RETIRE,
     purge::LINKS_STAY,
     purge::CLEARED_STAYS,
+    value_types::VERSIONS_KEY_A_TYPE,
     value_types::LOOSEN_BY_DECLARE,
     value_types::DECLARE_REFUSES_TIGHTENING,
     value_types::PREFLIGHT_COUNTS,

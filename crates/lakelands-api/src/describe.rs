@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::expr::Condition;
-use crate::id::{FieldName, LakeId, RelationName, TypeName, VerbName};
+use crate::id::{FieldName, LakeId, RelationName, TypeName, ValueTypeName, VerbName};
 use crate::ontology::{
     Annotations, Authority, ComputedAt, EmbedDecl, FieldDecl, FieldType, OnInputChange,
     RelationDecl, Risk, TriggerDecl, ValueTypeDecl, VerbScope, ViewDecl,
@@ -35,6 +35,10 @@ pub struct LakeDescription {
     /// The value types in use.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub value_types: Vec<ValueTypeDecl>,
+    /// Each of `value_types` by its version: one more for every
+    /// declaration or migration of it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub value_type_versions: BTreeMap<ValueTypeName, u32>,
     /// The functions in force.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub functions: Vec<FunctionDecl>,
@@ -283,6 +287,12 @@ pub struct TypeLifecycle {
     /// `indexed` it describes the projection, not the log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kept: Option<Kept>,
+    /// The version of each value type a field its reader is shown uses.
+    /// A value type decides the values its fields accept, yet changing it
+    /// moves neither `version` nor `schema_hash`: what a type accepts is
+    /// keyed by the three together.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub value_types: BTreeMap<ValueTypeName, u32>,
 }
 
 /// Whether a view's records are kept as its sources are written, or

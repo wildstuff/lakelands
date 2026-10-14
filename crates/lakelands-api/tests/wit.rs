@@ -576,6 +576,7 @@ fn type_description() -> TypeDescription {
             sorted: vec!["amount".into()],
             indexed: vec!["embedding".into()],
             kept: Some(Kept::Kept),
+            value_types: [("money".into(), 2)].into(),
         },
     }
 }
@@ -1061,6 +1062,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     scale: Some(2),
                     ..Default::default()
                 }],
+                value_type_versions: [("money".into(), 2)].into(),
                 functions: vec![function_decl()],
                 triggers: vec![trigger_decl()],
                 object_sets: vec![object_set_decl()],
