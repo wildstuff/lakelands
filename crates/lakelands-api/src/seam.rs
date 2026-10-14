@@ -187,6 +187,19 @@ pub trait ChangeFeed: Send + Sync {
     /// no-op; a feed that relays elsewhere (a remote client, a bus
     /// bridge) may use it to release what it holds.
     async fn ack(&self, consumer: &str, through: Position) -> Result<()>;
+
+    /// The head, once the log is past `after` or once `within` has passed,
+    /// whichever comes first: never past the head a `poll` would read, so
+    /// a consumer caught up at `next` waits on `next - 1` and polls again.
+    /// A feed that cannot wait answers at once, as this default does
+    /// (`docs/decisions/004-the-change-feed-is-the-log.md`).
+    async fn wait(&self, after: Position, within: std::time::Duration) -> Result<Position> {
+        let _ = within;
+        Ok(self
+            .poll(after.next(), &FeedFilter::default(), 0)
+            .await?
+            .head)
+    }
 }
 
 /// The `sys.` types a host adds, and where they may be held

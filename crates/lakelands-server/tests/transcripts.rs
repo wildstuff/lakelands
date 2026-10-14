@@ -163,6 +163,7 @@ async fn streamable_http_answers_byte_for_byte_on(backend: Backend) {
         allowed_origins: vec!["http://localhost:3000".into()],
         session_idle_secs: 1800,
         feed_poll_millis: 250,
+        feed_floor_millis: 25,
     };
     let server = serve_http(config, common::resolver(), open).await.unwrap();
     let addr = server.local_addr().unwrap();
@@ -232,6 +233,7 @@ async fn sessions_end_idle_are_replaced_and_never_orphaned_on(backend: Backend) 
                 allowed_origins: Vec::new(),
                 session_idle_secs: idle,
                 feed_poll_millis: 250,
+                feed_floor_millis: 25,
             };
             let server = serve_http(config, resolver, open).await.unwrap();
             let addr = server.local_addr().unwrap();

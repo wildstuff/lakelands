@@ -357,6 +357,18 @@ set again with the new key; that declaration decides the records
 type's object sets was carried as it stood, so a set whose filter reads
 a converted field kept members its filter no longer holds for.
 
+### A consumer waits on the feed
+
+A consumer that has caught up waits for the next append with
+`wait(after, within)`, instead of sleeping and polling again. The wait
+answers the head once the log is past `after`, or once `within` has
+passed. It never answers past the head a poll reads, so a poll after it
+answers what woke it. The lake knows the moment it appends, and every
+consumer that slept found that moment again at its own pace, a quarter
+of a second late by default and four times a second while the lake was
+idle. Positions and acknowledgements stay the consumer's; only the
+waiting moved into the lake (lakelands#1061).
+
 ## Why
 
 A feed kept beside the log can disagree with it. If it lives in the
@@ -439,3 +451,7 @@ own pace, and adding one changes nothing in the lake.
   nothing more is caught up in one poll" was said of every filter; the
   engines decide one that names types and kinds and no key 65 536
   positions a poll.
+- A consumer may wait on the feed: `wait(after, within)` answers the
+  head once the log is past `after`, never past what a poll reads, and
+  the store's own consumers wait so instead of sleeping. Positions and
+  acknowledgements stay the consumer's (lakelands#1061).

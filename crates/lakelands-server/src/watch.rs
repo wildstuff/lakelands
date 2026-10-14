@@ -83,7 +83,7 @@ use lakelands_api::event::{Event, EventBody};
 use lakelands_api::id::{Position, RecordKey, TypeName};
 use lakelands_api::principal::{Grants, PrincipalKind};
 use lakelands_api::read::{Get, ReadAt};
-use lakelands_api::seam::{FeedBatch, FeedFilter};
+use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter};
 use lakelands_api::tools::CHANGE_KINDS;
 use lakelands_api::{Catalog, LakeStore, Principal, WriteContext};
 use serde_json::{Map, Value, json};
@@ -295,7 +295,7 @@ pub async fn pump(
     who: Principal,
     watch: Arc<Watch>,
     queue: mpsc::Sender<Queued>,
-    pause: Duration,
+    (pause, floor): (Duration, Duration),
 ) {
     let catalog = store.catalog(WriteContext::default());
     let feed = store.feed();
@@ -311,7 +311,7 @@ pub async fn pump(
                 if queue.is_closed() {
                     return;
                 }
-                wait(&watch, &queue, pause).await;
+                let _ = wait(&watch, &queue, pause, None).await;
             }
         }
     }
@@ -319,6 +319,9 @@ pub async fn pump(
     let mut view = View::new(catalog.as_ref(), &who, &host);
     // Where the view's reads go on from; `None` after a pass broke off.
     let mut view_at: Option<Position> = None;
+    // Whether the next read follows a wake by an append, and when the last
+    // such read ended: the floor counts from it (lakelands#1061).
+    let (mut woken, mut paced) = (false, None);
     'poll: loop {
         if queue.is_closed() {
             return;
@@ -345,10 +348,14 @@ pub async fn pump(
             Ok(b) => b,
             Err(_) => {
                 // The lake cannot be read now; try again after the pause.
-                wait(&watch, &queue, pause).await;
+                let _ = wait(&watch, &queue, pause, None).await;
                 continue;
             }
         };
+        if woken {
+            paced = Some(tokio::time::Instant::now());
+        }
+        woken = false;
         // The view holds only while the passes read on without a gap.
         if view_at != Some(from) {
             view.forget();
@@ -384,7 +391,7 @@ pub async fn pump(
                             Seen::Retry => {
                                 // Not past this event: read it again.
                                 view_at = Some(e.position);
-                                wait(&watch, &queue, pause).await;
+                                let _ = wait(&watch, &queue, pause, None).await;
                                 continue 'poll;
                             }
                         }
@@ -401,8 +408,18 @@ pub async fn pump(
         }
         watch.advance(generation, batch.next);
         view_at = Some(batch.next);
+        // Past the head it waits for the next append, which the lake tells
+        // it, the pause bounding the wait (lakelands#1061); a batch that
+        // did not move waits the pause out.
         if caught_up(&batch, from) {
-            wait(&watch, &queue, pause).await;
+            let after = (batch.next > batch.head).then_some(batch.head);
+            woken = wait(&watch, &queue, pause, after.map(|a| (feed.as_ref(), a))).await;
+            // Woken by an append, it reads once the floor has passed since
+            // the last read an append woke: a busy lake's appends come in
+            // batches, and one after a quiet spell is read at once.
+            if let (true, Some(at)) = (woken, paced) {
+                tokio::time::sleep_until(at + floor).await;
+            }
         }
     }
 }
@@ -425,12 +442,28 @@ fn host(lake: &lakelands_api::LakeId) -> Principal {
     }
 }
 
-/// Wait for the pause, a new subscription, or the queue's end.
-async fn wait(watch: &Watch, queue: &mpsc::Sender<Queued>, pause: Duration) {
+/// Wait for the pause, or for the lake's next append past `next`'s
+/// position, bounded by the pause; for a new subscription; or for the
+/// queue's end. Whether an append ended it.
+async fn wait(
+    watch: &Watch,
+    queue: &mpsc::Sender<Queued>,
+    pause: Duration,
+    next: Option<(&dyn ChangeFeed, Position)>,
+) -> bool {
+    let next = async {
+        match next {
+            Some((feed, after)) => (feed.wait(after, pause).await).is_ok_and(|h| h > after),
+            None => {
+                tokio::time::sleep(pause).await;
+                false
+            }
+        }
+    };
     tokio::select! {
-        _ = tokio::time::sleep(pause) => {}
-        _ = watch.wake.notified() => {}
-        _ = queue.closed() => {}
+        woken = next => woken,
+        _ = watch.wake.notified() => false,
+        _ = queue.closed() => false,
     }
 }
 

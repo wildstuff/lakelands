@@ -84,6 +84,14 @@ async fn rest_lake(backend: Backend) -> Arc<dyn LakeStore> {
 }
 
 async fn serve(store: Arc<dyn LakeStore>) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    serve_pausing(store, (20, 25)).await
+}
+
+/// [`serve`], a caught-up feed waiting at most `feed_poll_millis`.
+async fn serve_pausing(
+    store: Arc<dyn LakeStore>,
+    (feed_poll_millis, feed_floor_millis): (u64, u64),
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let open = Arc::new(
         move |_: &lakelands_api::LakeId| -> lakelands_api::Result<Arc<dyn LakeStore>> {
             Ok(store.clone())
@@ -93,7 +101,8 @@ async fn serve(store: Arc<dyn LakeStore>) -> (SocketAddr, tokio::task::JoinHandl
         bind: "127.0.0.1:0".parse().unwrap(),
         allowed_origins: vec!["http://localhost:3000".into()],
         session_idle_secs: 1800,
-        feed_poll_millis: 20,
+        feed_poll_millis,
+        feed_floor_millis,
     };
     let server = serve_http(config, common::resolver(), open).await.unwrap();
     let addr = server.local_addr().unwrap();
@@ -759,6 +768,7 @@ async fn a_lake_that_cannot_be_opened_is_503() {
         allowed_origins: vec![],
         session_idle_secs: 1800,
         feed_poll_millis: 20,
+        feed_floor_millis: 25,
     };
     let server = serve_http(config, common::resolver(), open).await.unwrap();
     let addr = server.local_addr().unwrap();
@@ -830,10 +840,130 @@ async fn a_quiet_feed_sends_a_keep_alive_every_fifteen_seconds() {
     );
 }
 
+/// A caught-up feed waits for the lake's next append, and the pause only
+/// bounds the wait: a write reaches the stream at once, whatever
+/// `feed_poll_millis` says (lakelands#1061).
+#[tokio::test]
+async fn a_caught_up_feed_sends_the_next_append_at_once() {
+    for backend in BACKENDS {
+        let store = common::lake_on(backend).await;
+        let head = store.head().await.unwrap().0;
+        let (addr, task) = serve_pausing(store.clone(), (10_000, 25)).await;
+        let from = format!("GET /lakes/finance/feed?from={}", head + 1);
+        let (status, _, events) =
+            Events::open(addr, &[&from, "authorization: Bearer k-owner"]).await;
+        assert_eq!(status, "200", "{backend:?}");
+        let mut events = events.unwrap();
+        // Caught up: the tail now waits, its pause ten seconds.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let t = std::time::Instant::now();
+        let c = store.catalog(WriteContext::default());
+        let patch = lakelands_door_checks::checks::patch(&[("status", json!("held"))]);
+        c.upsert(
+            &common::owner(),
+            &"invoice".into(),
+            &"INV-9".into(),
+            patch,
+            WriteOpts::default(),
+        )
+        .await
+        .unwrap();
+        let (id, _, _, _) = events.next().await;
+        let after = t.elapsed();
+        assert!(
+            id > head && after < std::time::Duration::from_secs(2),
+            "{backend:?}: the append at {id} reached the stream after {after:?}, with a pause of 10 s"
+        );
+        task.abort();
+    }
+}
+
 /// The server's configuration: a caught-up feed polls the lake every 250
 /// milliseconds unless the configuration says otherwise.
 #[test]
 fn the_feed_polls_every_250_milliseconds_unless_configured() {
     let config: HttpConfig = serde_json::from_value(json!({"bind": "127.0.0.1:7700"})).unwrap();
     assert_eq!(config.feed_poll_millis, 250);
+    assert_eq!(config.feed_floor_millis, 250);
+}
+
+/// A stream's idle re-reads start no floor: after a quiet spell an append
+/// reaches it at once, however long the floor (lakelands#1061).
+#[tokio::test]
+async fn an_append_after_a_quiet_spell_is_read_at_once_whatever_the_floor() {
+    let store = common::lake_on(Backend::Memory).await;
+    let head = store.head().await.unwrap().0;
+    let (addr, task) = serve_pausing(store.clone(), (200, 1_000)).await;
+    let from = format!("GET /lakes/finance/feed?from={}", head + 1);
+    let (status, _, events) = Events::open(addr, &[&from, "authorization: Bearer k-owner"]).await;
+    assert_eq!(status, "200");
+    let mut events = events.unwrap();
+    // Quiet: the stream reads again every 200 ms, its pause.
+    tokio::time::sleep(std::time::Duration::from_millis(1_300)).await;
+    let c = store.catalog(WriteContext::default());
+    let patch = lakelands_door_checks::checks::patch(&[("status", json!("held"))]);
+    let t = std::time::Instant::now();
+    c.upsert(
+        &common::owner(),
+        &"invoice".into(),
+        &"INV-Q".into(),
+        patch,
+        WriteOpts::default(),
+    )
+    .await
+    .unwrap();
+    let (id, _, _, _) = events.next().await;
+    let after = t.elapsed();
+    assert!(
+        id > head && after < std::time::Duration::from_millis(500),
+        "after a quiet spell the append reached the stream after {after:?}, with a floor of 1 s"
+    );
+    task.abort();
+}
+
+/// A stream reads the log at most once a floor: woken by an append long
+/// after its last read it reads at once, and an append that follows at
+/// once waits for the floor (lakelands#1061).
+#[tokio::test]
+async fn a_feed_stream_reads_the_log_at_most_once_a_floor() {
+    let store = common::lake_on(Backend::Memory).await;
+    let head = store.head().await.unwrap().0;
+    let (addr, task) = serve_pausing(store.clone(), (10_000, 1_000)).await;
+    let from = format!("GET /lakes/finance/feed?from={}", head + 1);
+    let (status, _, events) = Events::open(addr, &[&from, "authorization: Bearer k-owner"]).await;
+    assert_eq!(status, "200");
+    let mut events = events.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    let c = store.catalog(WriteContext::default());
+    let write = |key: &'static str| {
+        let (c, patch) = (
+            c.clone(),
+            lakelands_door_checks::checks::patch(&[("status", json!("held"))]),
+        );
+        async move {
+            c.upsert(
+                &common::owner(),
+                &"invoice".into(),
+                &key.into(),
+                patch,
+                WriteOpts::default(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let t = std::time::Instant::now();
+    write("INV-A").await;
+    let (a, _, _, _) = events.next().await;
+    let first = t.elapsed();
+    write("INV-B").await;
+    let (b, _, _, _) = events.next().await;
+    let second = t.elapsed();
+    assert!(
+        b > a
+            && first < std::time::Duration::from_millis(500)
+            && second >= std::time::Duration::from_millis(900),
+        "the first append reached the stream after {first:?}, the second after {second:?}, with a floor of 1 s"
+    );
+    task.abort();
 }

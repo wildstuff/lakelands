@@ -344,6 +344,7 @@ pub const ALL: &[Check] = &[
     cursors::CURSOR_ONE_READ,
     feed::FEED_IS_THE_LOG,
     feed::REBUILD_LEAVES_THE_FEED,
+    feed::WAIT_ENDS_AT_THE_NEXT_APPEND,
     feed::TRIGGER_FIRES,
     feed::OBJECT_SET_CHANGES,
     feed::HIDDEN_TRIGGER,

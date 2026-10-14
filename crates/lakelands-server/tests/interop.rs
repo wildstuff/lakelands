@@ -133,6 +133,7 @@ async fn the_sdk_client_works_over_streamable_http_on(backend: Backend) {
         allowed_origins: Vec::new(),
         session_idle_secs: 1800,
         feed_poll_millis: 250,
+        feed_floor_millis: 25,
     };
     let server = serve_http(config, common::resolver(), open).await.unwrap();
     let url = format!("http://{}/lakes/finance/mcp", server.local_addr().unwrap());

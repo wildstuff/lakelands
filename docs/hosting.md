@@ -104,8 +104,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   by kind and type, from a position; each poll answers at once with the
   position to poll from next. A poll examines at most `FEED_EXAMINED`
   (4 096) events, so it may answer none short of the head: the host is
-  caught up when `next` is past `head`, not when a batch is empty. It
-  acknowledges on its own side. The host keeps the
+  caught up when `next` is past `head`, not when a batch is empty. A
+  caught-up host calls `wait(next - 1, within)`, which ends at the
+  lake's next append, instead of sleeping and polling (lakelands#1061).
+  It acknowledges on its own side. The host keeps the
   position it has read up to; the store keeps no consumer state. A relay onto a message bus is the
   host's code, never Lakelands'; the dedup key of a change is
   `{lake}:{position}`. For webhooks, `lakelands serve` has a consumer of
@@ -121,7 +123,24 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   position in the target's `sys.mirror` records, which its principal
   needs the write grant on; `find sys.mirror` shows where every
   connection stands and why a type stopped (`docs/seams.md`, the
-  mirror). An agent on MCP is told of changes without polling:
+  mirror). The store's own consumers wait for the next append once
+  caught up, so a change reaches them at once, and each setting bounds
+  only that wait (lakelands#1061):
+  - the `mirror` section's `poll_millis` (1 000 ms), for its source's
+    next append;
+  - the `deliver` section's `poll_millis` (1 000 ms), for the lake's;
+  - the `server` section's `feed_poll_millis` (250 ms), for a feed
+    stream's or an MCP session's, beside its `feed_floor_millis` (250 ms):
+    the most often such a consumer reads the log, counted from the end of
+    its last read. An append after a quiet spell is read at once; on a
+    busy lake each consumer reads what came in batches, so hundreds of
+    them cost its writer no more than when they slept. A lower floor
+    trades the writer's time for the latency of a busy lake's changes:
+    with 1 000 streams, SQLite's writer took 7–8 s for 300 upserts at
+    250 ms, 18–23 s at 100 ms and 30–35 s at 25 ms.
+
+  An in-process host that calls `wait` paces its own reads the same way.
+  An agent on MCP is told of changes without polling:
   every session receives `notifications/tools/list_changed` when the
   lake's declarations change. Until the session lists its tools again,
   each stream it opens begins with that notification, so one taken by a

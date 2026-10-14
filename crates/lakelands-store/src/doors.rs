@@ -942,6 +942,10 @@ impl ChangeFeed for Feed {
         // position.
         Ok(())
     }
+
+    async fn wait(&self, after: Position, within: std::time::Duration) -> Result<Position> {
+        Ok(self.lake.wait_past(after, within).await)
+    }
 }
 
 #[cfg(test)]

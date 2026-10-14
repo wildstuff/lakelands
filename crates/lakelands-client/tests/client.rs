@@ -396,6 +396,39 @@ async fn poll_reads_what_the_stores_own_feed_reads() {
     assert_eq!(remote.head().await.unwrap(), written.position());
 }
 
+/// A wait over the wire holds the feed's stream until the lake's next
+/// append, which the server's tail waits for: it ends at the append,
+/// whatever the server's pause, and one that nothing moves ends at its
+/// bound, answering the head (lakelands#1061).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wait_over_the_wire_ends_at_the_next_append() {
+    use std::time::{Duration, Instant};
+    let store = common::memory_lake("finance", Limits::default()).await;
+    let (addr, keys) = common::serve_pausing(store.clone(), 10_000).await;
+    let remote = common::remote(addr, store.lake(), keys);
+    let f = setup(store.clone()).await;
+    let (head, feed) = (store.head().await.unwrap(), remote.feed());
+    let (t, bound) = (Instant::now(), Duration::from_millis(300));
+    let idle = feed.wait(head, bound).await.unwrap();
+    let idled = t.elapsed();
+    assert!(idle == head && idled >= bound, "{idle} after {idled:?}");
+    let t = Instant::now();
+    let write = async {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let status = patch(&[("status", json!("open"))]);
+        let at = (&f.cast.owner, &"invoice".into(), &"INV-9".into());
+        f.catalog
+            .upsert(at.0, at.1, at.2, status, WriteOpts::default())
+            .await
+    };
+    let (woke, written) = tokio::join!(feed.wait(head, Duration::from_secs(30)), write);
+    let (woke, written, after) = (woke.unwrap(), written.unwrap().position(), t.elapsed());
+    assert!(
+        woke == written && after < Duration::from_secs(2),
+        "the append at {written} ended the wait at {woke} after {after:?}, the pause 10 s"
+    );
+}
+
 /// A poll over the wire whose filter matches nothing reaches the head and
 /// ends: the server reads the log a bounded poll at a time
 /// (lakelands#558). No `limit` answers more than the bound, as on the

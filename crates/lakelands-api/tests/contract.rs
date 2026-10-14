@@ -71,3 +71,40 @@ fn the_event_kinds_are_distinct_and_each_is_on_the_log_format_page() {
         );
     }
 }
+
+/// A feed written outside the repository, which never waits: its `wait`
+/// is the trait's own, and answers at once with the head its poll reads
+/// (lakelands#1061).
+#[test]
+fn a_feed_that_cannot_wait_answers_at_once() {
+    use lakelands_api::Position;
+    use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter};
+    struct Relay;
+    #[async_trait::async_trait]
+    impl ChangeFeed for Relay {
+        async fn poll(
+            &self,
+            from: Position,
+            _: &FeedFilter,
+            _: u32,
+        ) -> lakelands_api::Result<FeedBatch> {
+            let head = Position(7);
+            Ok(FeedBatch {
+                events: Vec::new(),
+                next: from.max(head.next()),
+                head,
+            })
+        }
+        async fn ack(&self, _: &str, _: Position) -> lakelands_api::Result<()> {
+            Ok(())
+        }
+    }
+    let wait = Relay.wait(Position(3), std::time::Duration::from_secs(3600));
+    let mut wait = std::pin::pin!(wait);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    let answered = wait.as_mut().poll(&mut cx);
+    assert!(
+        matches!(answered, std::task::Poll::Ready(Ok(Position(7)))),
+        "{answered:?}"
+    );
+}

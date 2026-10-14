@@ -584,6 +584,7 @@ fn prepare(plan: &Plan, root: &Path) -> Result<Option<String>, String> {
         allowed_origins: Vec::new(),
         session_idle_secs: 1800,
         feed_poll_millis: 250,
+        feed_floor_millis: 25,
     })
     .unwrap();
     std::fs::write(&file, serde_json::to_vec_pretty(&config).unwrap())

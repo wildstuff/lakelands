@@ -203,6 +203,8 @@ pub struct Lake {
     /// change the writer made: read without the writer's lock, which an
     /// append holds across the engine's append and the whole fold.
     head: AtomicU64,
+    /// The head again, for a wait on the next one (`ChangeFeed::wait`).
+    heads: tokio::sync::watch::Sender<u64>,
     holds_lease: AtomicBool,
     /// The shapes reads were answered with, at most two, each with the
     /// positions it holds for: no event among them ends a range
@@ -484,6 +486,7 @@ impl Lake {
                 lost: false,
             }),
             head: AtomicU64::new(0),
+            heads: tokio::sync::watch::Sender::new(0),
             holds_lease: AtomicBool::new(false),
             shapes: Mutex::new(Vec::new()),
             rebuilds: AtomicU64::new(0),
@@ -492,8 +495,7 @@ impl Lake {
 
     /// Make the writer's tip and lease readable without its lock.
     fn publish(&self, w: &Writer) {
-        self.head
-            .store(w.tip.as_ref().map_or(0, |t| t.0.0), Ordering::Release);
+        self.set_head(w.tip.as_ref().map_or(0, |t| t.0.0));
         let holds = w.lease.is_some() && !w.lost;
         self.holds_lease.store(holds, Ordering::Release);
     }
@@ -667,8 +669,7 @@ impl Lake {
         } else {
             // A read-only handle reads what the writer folded: its head is
             // the projection's position, which it can be read at.
-            self.head
-                .store(folded.map_or(0, |p| p.0), Ordering::Release);
+            self.set_head(folded.map_or(0, |p| p.0));
             self.holds_lease.store(false, Ordering::Release);
         }
         Ok(())
@@ -1387,8 +1388,7 @@ impl Lake {
             // `head()` promises.
             w.behind = true;
             let through = self.engine.projection().folded_through().ok().flatten();
-            self.head
-                .store(through.map_or(0, |p| p.0), Ordering::Release);
+            self.set_head(through.map_or(0, |p| p.0));
         } else {
             w.failed = None;
         }
@@ -2066,6 +2066,22 @@ impl Lake {
     /// read can be answered at.
     pub fn head(&self) -> Position {
         Position(self.head.load(Ordering::Acquire))
+    }
+
+    /// Move the head, and wake whoever waits on it.
+    fn set_head(&self, at: u64) {
+        self.head.store(at, Ordering::Release);
+        self.heads.send_replace(at);
+    }
+
+    /// The head once it is past `after`, or when `within` has passed: what
+    /// a feed's poll reads up to, so a wait wakes when a poll would answer
+    /// more, and never before.
+    pub async fn wait_past(&self, after: Position, within: std::time::Duration) -> Position {
+        let mut heads = self.heads.subscribe();
+        let past = heads.wait_for(|h| *h > after.0);
+        let _ = tokio::time::timeout(within, past).await;
+        self.head()
     }
 
     /// Whether this handle holds the lease.

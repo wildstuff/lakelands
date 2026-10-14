@@ -10,8 +10,8 @@ use lakelands_api::{Access, LakeStore, Outcome, Position, RecordKey, SetOff, Typ
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, field_access, followed, log_events, patch, source_record, sourced, type_of, upsert,
-    write_verb,
+    Caller, Lake, Must, field_access, followed, join_all, log_events, patch, pause, source_record,
+    sourced, type_of, upsert, write_verb,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -91,6 +91,60 @@ async fn a_filtered_poll_answers_the_log_unmasked(store: Store) -> Held {
          answers its whole history to a filter by its key; it answered {kinds:?}"
     );
     the_index_answers_the_log(store.as_ref(), "a restricted and a retired record").await
+}
+
+check!(
+    WAIT_ENDS_AT_THE_NEXT_APPEND = a_wait_ends_at_the_next_append,
+    "004, extended (lakelands#1061): a wait on the feed past the head ends at the next append, while another caller writes, and answers the head a poll then reads up to, never past it: a poll from where the wait began answers that append; a wait past a head that nothing moves ends once its bound has passed and answers that head; a wait behind the head answers at once"
+);
+
+async fn a_wait_ends_at_the_next_append(store: Store) -> Held {
+    use std::time::{Duration, Instant};
+    let (long, short) = (Duration::from_secs(30), Duration::from_millis(300));
+    let l = invoices(store.as_ref()).await?;
+    let feed = store.feed();
+    let head = store.head().await.must("reading the head")?;
+    let t = Instant::now();
+    let behind = feed.wait(Position(head.0 - 1), long).await;
+    let (behind, at_once) = (behind.must("waiting behind the head")?, t.elapsed());
+    let t = Instant::now();
+    let idle = feed.wait(head, short).await;
+    let (idle, idled) = (idle.must("waiting with nothing written")?, t.elapsed());
+    ensure!(
+        behind == head && at_once < long / 3 && idle == head && idled >= short && idled < long / 3,
+        "a wait behind the head {head} answers it at once: {behind} after {at_once:?}; one past \
+         it with nothing written answers it once its bound has passed: {idle} after {idled:?}"
+    );
+    let t = Instant::now();
+    let waiter: Caller<'_, Result<(Position, Duration), Failure>> = Box::pin(async {
+        let woke = feed.wait(head, long).await.must("waiting past the head")?;
+        Ok((woke, t.elapsed()))
+    });
+    let writer: Caller<'_, Result<(Position, Duration), Failure>> = Box::pin(async {
+        pause(Duration::from_millis(100)).await;
+        let written = l.upsert("invoice", "i1", json!({"status": "open"})).await?;
+        Ok((written.position(), t.elapsed()))
+    });
+    let [woke, written]: [_; 2] = join_all(vec![waiter, writer])
+        .await
+        .try_into()
+        .expect("two callers");
+    let ((woke, after), (written, at)) = (woke?, written?);
+    let batch = feed.poll(head.next(), &FeedFilter::default(), 10).await;
+    let batch = batch.must("polling from where the wait began")?;
+    let polled: Vec<_> = batch.events.iter().map(|e| e.position).collect();
+    ensure!(
+        woke == written
+            && after >= Duration::from_millis(100)
+            && after < long / 3
+            && polled == [written]
+            && batch.head == woke,
+        "a wait past {head} ends at the append at {written}, written after a pause of 100 ms \
+         and answered after {at:?}: it answered {woke} after {after:?}, and a poll from {} answers {polled:?} with its head at {}",
+        head.next(),
+        batch.head
+    );
+    Ok(())
 }
 
 async fn invoices(store: &dyn LakeStore) -> Result<Lake, Failure> {
