@@ -529,3 +529,56 @@ fn a_date_field_is_a_string_of_the_format_date() {
         serde_json::json!({"type": "string", "format": "date"})
     );
 }
+
+/// The outcome schema names every member an outcome answers, each member
+/// set, so a member added to `Outcome` is described the same day
+/// (lakelands#1105).
+#[test]
+fn the_outcome_schema_names_every_member_an_outcome_answers() {
+    use crate::write::{DeclarationKind, InForce, Outcome, SetOff};
+    let applied = Outcome::Applied {
+        position: crate::Position(4),
+        version: Some(crate::Version(2)),
+        output: Some(serde_json::json!({})),
+        set_off: SetOff {
+            through: Some(crate::Position(5)),
+            fired: vec!["t".into()],
+            joined: vec!["s".into()],
+            left: vec!["s".into()],
+        },
+        renamed: vec![("a".into(), "b".into())],
+        declared: vec![InForce {
+            kind: DeclarationKind::Type,
+            name: "invoice".into(),
+            version: 1,
+            since: crate::Position(4),
+            appended: true,
+        }],
+    };
+    let proposed = Outcome::Proposed {
+        position: crate::Position(4),
+        proposal: "p".into(),
+        why: "w".into(),
+    };
+    let schema = outcome_schema();
+    let described = schema["properties"].as_object().expect("properties");
+    for outcome in [applied, proposed] {
+        let answered = serde_json::to_value(&outcome).expect("an outcome prints");
+        for member in answered.as_object().expect("an object").keys() {
+            assert!(
+                described.contains_key(member),
+                "the outcome schema lacks `{member}`"
+            );
+        }
+    }
+    let kinds = &described["declared"]["items"]["properties"]["kind"]["enum"];
+    let named: Vec<_> = DeclarationKind::ALL
+        .iter()
+        .map(|k| serde_json::json!(k))
+        .collect();
+    assert_eq!(
+        kinds,
+        &serde_json::json!(named),
+        "the kinds are every kind, as answered"
+    );
+}
