@@ -236,6 +236,26 @@ of the feed never learned of those memberships, and the lake's
 membership disagreed with the filter until each record was written
 again.
 
+### A type's declaration decides the sets of what it computes again
+
+A type declared again with other computed fields, a derived expression
+or a function they name, or a function declared again, has its records
+computed again by the fold. The sets whose filter reads such a field,
+and so a set that names one, are decided in the declaration's own
+append (lakelands#941): one walk of the type's live records, each
+computed as the bundle leaves the lake, appends an `object_set_changed`
+for each membership that moves, caused by the last `declared` of the
+bundle, within the same `max_set_changes`. Past it the declaration is
+refused `too_large`, naming the set. A set the bundle declares, or
+declares again, of such a type is decided in that walk too, by its new
+filter over the records as the bundle computes them. Before, the leaves landed at each
+record's next write, caused by a write that did not move them, and the
+feed and the filter disagreed until then.
+
+A field computed outside the lake, by a backing, comes out of that walk
+as it was: its value lands with its output, and its sets are decided
+where the output lands, as before.
+
 ### A set names a set
 
 `in_set('name')` names a set in a condition. It holds for a record where
@@ -378,6 +398,9 @@ own pace, and adding one changes nothing in the lake.
 - A migration decides the membership of its type's records again, where
   it carried it as it stood, and its ceiling is the last of its refusals
   (lakelands#457).
+- A type declared again with other computed fields decides the sets of
+  what it computes again in its own append, where the leaves landed at
+  each record's next write (lakelands#941).
 - A migration decides every record it changes: also a record of another
   type that holds a reference to a moved key, and a link of a relation
   whose fields it converts. Until then the decision concerned only what
