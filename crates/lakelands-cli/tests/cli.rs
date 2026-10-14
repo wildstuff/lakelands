@@ -354,6 +354,40 @@ fn apply_applies_a_bundle_as_one_set_at_one_position() {
             &sh.run(&["apply", &fixture]),
             "applied 4 declaration(s), in force from position 7:\n  type `invoice`\n  type `partner`\n  verb `approve`\n  verb `pay`\n",
         );
+        // Applied again, it says each is in force already and since when,
+        // and that nothing was appended (lakelands#1106).
+        ok(
+            &sh.run(&["apply", &fixture]),
+            "4 declaration(s) in force already: nothing appended\n  \
+             type `invoice`, in force since position 4\n  \
+             type `partner`, in force since position 5\n  \
+             verb `approve`, in force since position 6\n  \
+             verb `pay`, in force since position 7\n",
+        );
+        // A set of one in force and one new: the new one is appended, and
+        // the other says since when.
+        let note = "name: note\nfields:\n  text: { type: text }\n";
+        let mixed = sh.bundle(
+            "mixed",
+            &[("types/partner.yaml", PARTNER), ("types/note.yaml", note)],
+        );
+        let said = sh.run(&["apply", &mixed]);
+        assert_eq!(
+            (said.code, said.err.as_str()),
+            (0, ""),
+            "stdout: {}",
+            said.out
+        );
+        assert!(
+            said.out
+                .starts_with("applied 2 declaration(s), in force from position 8:\n")
+                && said.out.contains("  type `note`\n")
+                && said
+                    .out
+                    .contains("  type `partner`, in force since position 5\n"),
+            "{backend:?}: {}",
+            said.out
+        );
     }
 }
 

@@ -96,16 +96,31 @@ pub async fn apply(
     }
     match catalog.apply(who, bundle.declarations).await {
         Ok(outcome) => {
-            put(
-                out,
-                format!(
+            // Each declaration as it stands: one already in force says
+            // since when, and a bundle wholly in force says it appended
+            // nothing (lakelands#1106).
+            let declared = match &outcome {
+                lakelands_api::Outcome::Applied { declared, .. } => declared.clone(),
+                lakelands_api::Outcome::Proposed { .. } => Vec::new(),
+            };
+            let held = |i: usize| declared.get(i).filter(|d| !d.appended).map(|d| d.since);
+            let header = match (0..what.len()).all(|i| held(i).is_some()) {
+                true => format!(
+                    "{} declaration(s) in force already: nothing appended",
+                    what.len()
+                ),
+                false => format!(
                     "applied {} declaration(s), in force from position {}:",
                     what.len(),
                     outcome.position()
                 ),
-            )?;
-            for w in what {
-                put(out, format!("  {w}"))?;
+            };
+            put(out, header)?;
+            for (i, w) in what.into_iter().enumerate() {
+                match held(i) {
+                    Some(since) => put(out, format!("  {w}, in force since position {since}"))?,
+                    None => put(out, format!("  {w}"))?,
+                }
             }
         }
         Err(e) => {
