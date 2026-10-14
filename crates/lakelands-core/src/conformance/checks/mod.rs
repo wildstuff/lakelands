@@ -50,6 +50,7 @@ mod latest;
 mod link_paths;
 mod link_triggers;
 mod links;
+mod logged_ids;
 mod made_of;
 mod masking;
 mod migrate;
@@ -196,6 +197,7 @@ pub const ALL: &[Check] = &[
     ingest::FOREIGN_FIELD_REFUSED,
     ingest::UPSTREAM_PER_FIELD,
     ingest::UPSERT_REFUSES_SOURCE_FIELD,
+    logged_ids::NO_NUL_IN_A_LOGGED_ID,
     rebuild::REBUILD_ANSWERS_AS_BEFORE,
     rebuild::REBUILD_REPRODUCES_THE_CHAIN,
     rebuild::REBUILD_FOLDS_OVER_RECORDS,

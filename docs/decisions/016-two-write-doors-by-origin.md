@@ -264,3 +264,4 @@ is just another caller later, not a change to the contract.
   once, a retired key included, and an author's fields stay writable
   (lakelands#1044).
 - One ingest may carry many sources: a record may name its own `source`, which its event and its id take in place of the call's (lakelands#1041).
+- A source id is formed as a key is, not empty and holding no NUL, and a source record with a member it does not have is refused, never read without it (lakelands#1081).

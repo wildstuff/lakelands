@@ -493,6 +493,7 @@ What a refusal is about.
 | `field_exists` | `type` (TypeName), `field` (FieldName) | `{type}` already has a field `{field}` | A field added that the type has. |
 | `field_name_kept` | `type` (TypeName), `field` (FieldName) | a new field of `{type}` may not begin with `_`: the lake keeps such names for its own columns of a pattern's rows (`<name>._depth`, `<name>._type`); name it `{field}` without the `_` | A new field whose name begins with `_`, which the lake keeps for its own columns. |
 | `field_read_elsewhere` | `field` (FieldName), `type` (TypeName) | `{field}` is read by another part of `{type}` and cannot be removed | A field taken away that another part of the type reads. |
+| `idempotency_key_nul` | — | an idempotency key holds no NUL character | An idempotency key holding a NUL. |
 | `is_a_view` | `type` (TypeName) | `{type}` is a view; it is computed, never written | A view at a door that writes or holds a record. |
 | `key_component_kind` | `part` (String), `kind` (StorageKind), `field` (FieldName) | the key component `{part}` is not a {kind} for `{field}` | A key component of a kind its field cannot read it as. |
 | `key_components` | `type` (TypeName), `fields` (usize), `key` (RecordKey), `parts` (usize) | `{type}` is keyed by {fields} field(s), and the key `{key}` has {parts} component(s) | A key with another number of components than the type's key fields. |
@@ -515,6 +516,7 @@ What a refusal is about.
 | `set_declares_twice` | — | the set declares it more than once | A set of declarations that names one twice. |
 | `set_empty` | — | nothing to apply: the set holds no declaration | A set of no declarations. |
 | `set_refused` | `count` (usize), `problems` (list of Error) | the set of `declarations` is refused whole, with {count} problems: {problems} | A set of declarations with several problems. |
+| `source_id_form` | — | a source id is not empty and holds no NUL character | A source id that is empty or holds a NUL. |
 | `trigger_too_deep` | `depth` (u32), `max` (u32) | its `max_depth` {depth} is above the lake's `max_reactive_depth` {max} | A trigger's ceiling above the lake's. |
 | `unanswered` | `position` (Position), `accepted` (bool) | [{?accepted}the acceptance\|the call] is in the log at position {position}, and no answer of the verb's executor is recorded for it, so this retry runs nothing; if the call is still running, or its answer is held, its answer will be recorded and a retry then answers it, unless the handle that ran it is dropped or loses its lease first; if its first answer said that the verb's executor was not handed the call, [{?accepted}propose the call again\|call the verb again under another key or with none] | A retry that finds no answer of the verb's executor recorded. |
 | `unclaimed_link_type` | `type` (TypeName) | `{type}` is the link type of no relation: its relation was renamed or removed | A link type no relation carries. |
@@ -528,6 +530,7 @@ What a refusal is about.
 | `window_links_already` | `from` (RecordKey), `to` (RecordKey), `relation` (RelationName), `cardinality` (Cardinality) | the window links `{from}` to `{to}` over `{relation}` already, and it allows one ({cardinality}) | A link one ingest window made already where one is allowed. |
 | `written_once` | `type` (TypeName), `key` (RecordKey) | `{type}` `{key}` is written once: its type is insert-only, and a record stands at the key, live or retired | An ingest of a record an insert-only type holds already. |
 | `write_changed_since_proposed` | `type` (TypeName), `key` (RecordKey, optional) | `{type}`[ `{key}`] changed since this write was proposed; propose it again | A pinned proposal's accept after its record or type changed. |
+| `writer_nul` | — | a principal's id holds no NUL character | A principal whose id holds a NUL. |
 | `aging_authority` | `type` (TypeName), `field` (FieldName) | `{type}`.`{field}` is not `authored` or `shared`; aging writes it as `upsert` does | An aging rule's field that its door does not write. |
 | `aging_key` | `type` (TypeName), `field` (FieldName) | `{type}`.`{field}` is part of the key; aging never moves a key | An aging rule on a key field. |
 | `aging_no_value` | `member` (FieldName) | an aging rule's `{member}` holds a value | An aging rule's member with no value. |
