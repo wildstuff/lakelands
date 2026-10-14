@@ -516,6 +516,9 @@ interface types {
         /// mirror's): that lake and the position of the state they
         /// reflect.
         upstream: option<upstream>,
+        /// The source this record comes from, where it is not the
+        /// call's.
+        source: option<source-id>,
     }
 
     // ------------------------------------------------------------------

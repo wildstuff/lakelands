@@ -191,6 +191,7 @@ pub const ALL: &[Check] = &[
     views::MEASURE_BY_NAME_DESCRIBED,
     views::VIEW_FIELDS_DECLARED,
     ingest::SAME_CONTENT_TWICE,
+    ingest::A_SOURCE_PER_RECORD,
     ingest::SAME_KEY_TWICE,
     ingest::FOREIGN_FIELD_REFUSED,
     ingest::UPSTREAM_PER_FIELD,

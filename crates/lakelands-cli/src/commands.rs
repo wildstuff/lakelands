@@ -459,6 +459,7 @@ async fn csv(
             _ => None,
         };
         out.push(SourceRecord {
+            source: None,
             upstream: None,
             ty: map.ty.clone(),
             key: RecordKey::from(cell(key_col)),

@@ -1026,6 +1026,7 @@ pub fn dec(s: &str) -> Decimal {
 /// One record from a source.
 pub fn source_record(ty: &str, key: &str, fields: Value) -> SourceRecord {
     SourceRecord {
+        source: None,
         upstream: None,
         ty: TypeName::from(ty),
         key: RecordKey::from(key),

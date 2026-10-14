@@ -736,6 +736,7 @@ impl Desk {
                 let records: Vec<SourceRecord> = rows
                     .iter()
                     .map(|(ty, key, fields)| SourceRecord {
+                        source: None,
                         upstream: None,
                         ty: ty.as_str().into(),
                         key: key.as_str().into(),

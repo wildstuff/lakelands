@@ -156,6 +156,10 @@ pub struct SourceRecord {
     /// the ingesting principal states, as `seen_at` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<Upstream>,
+    /// The source this record comes from, where it is not the call's: one
+    /// ingest may carry many sources, each record stamped with its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceId>,
 }
 
 /// Where values read from another lake's log came from: that lake, and

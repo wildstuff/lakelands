@@ -1106,6 +1106,7 @@ impl Mirror {
                     records.push((
                         s.clone(),
                         SourceRecord {
+                            source: None,
                             upstream: Some(Upstream {
                                 lake: self.source.lake().clone(),
                                 position: head,
@@ -1212,6 +1213,7 @@ impl Mirror {
             records.push((
                 s.clone(),
                 SourceRecord {
+                    source: None,
                     upstream: Some(Upstream {
                         lake: self.source.lake().clone(),
                         position,

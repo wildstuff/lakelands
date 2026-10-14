@@ -134,6 +134,7 @@ async fn ingest(
     rs: Vec<(&str, String, Value)>,
 ) -> u32 {
     let records = rs.into_iter().map(|(ty, key, fields)| SourceRecord {
+        source: None,
         upstream: None,
         ty: ty.into(),
         key: key.as_str().into(),

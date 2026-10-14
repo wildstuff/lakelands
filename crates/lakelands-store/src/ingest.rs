@@ -1,4 +1,5 @@
-//! `ingest`: a source's stream of records, in group-commit windows.
+//! `ingest`: a stream of records, each from the call's source or its
+//! own, in group-commit windows.
 //!
 //! Records are taken from the stream into a window until it holds the
 //! lake's `commit_window_events` records or 2 ms have passed since its first
@@ -71,7 +72,6 @@ pub fn window(
     let now = lake.clock(&mut w);
     let mut d = call.decide(&w, view.as_ref(), now, 0);
     (d.door, d.envelope.origin) = (Door::Source, Origin::Source);
-    d.envelope.source = Some(source.clone());
     let sees = lakelands_core::sight::Sight::held(who, &w.ontology);
     let mut seen: BTreeSet<EventId> = BTreeSet::new();
     let mut drafts = Vec::new();
@@ -117,6 +117,9 @@ pub fn window(
             }
             let other = t.own().is_none() && t.before.is_some();
             let version_before = t.before.as_ref().map_or(0, |b| b.version.0);
+            // The record's own source, else the call's: its event and its id.
+            let source = r.source.as_ref().unwrap_or(source);
+            d.envelope.source = Some(source.clone());
             let id = log::ingest_id(source, &r.ty, &r.key, version_before, &patch);
             let unchanged = t.live().is_some_and(|b| {
                 patch.iter().all(|(f, v)| match b.fields.get(f) {

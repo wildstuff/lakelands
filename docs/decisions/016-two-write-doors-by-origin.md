@@ -4,8 +4,9 @@
 
 ### A lake is written through two doors, and they stay two
 
-`ingest` is how a source feeds the lake. It takes a stream of records for
-one source and chunks it into group-commit windows, answering one
+`ingest` is how a source feeds the lake. It takes a stream of records,
+each from the call's source or from the source the record names, and
+chunks it into group-commit windows, answering one
 acknowledgement per window with the position it is durable at. It writes
 only fields whose authority is `source` or `shared`. It is
 content-addressed: an event's id is a hash of the source, the type, the
@@ -262,3 +263,4 @@ is just another caller later, not a change to the contract.
 - A type may be marked `insert_only`: its source writes each record
   once, a retired key included, and an author's fields stay writable
   (lakelands#1044).
+- One ingest may carry many sources: a record may name its own `source`, which its event and its id take in place of the call's (lakelands#1041).

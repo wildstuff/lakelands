@@ -5440,6 +5440,7 @@ pub async fn a_retired_record_leaves_reads_but_not_its_past(store: Arc<dyn LakeS
 pub async fn ingest_is_content_addressed(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let rec = || SourceRecord {
+        source: None,
         upstream: None,
         ty: ty(INVOICE),
         key: key("INV-1"),
@@ -5492,6 +5493,7 @@ pub async fn an_ingested_upstream_is_answered_per_field(store: Arc<dyn LakeStore
         position: Position(42),
     };
     let rec = SourceRecord {
+        source: None,
         upstream: Some(from.clone()),
         ty: ty(INVOICE),
         key: key("INV-9"),
@@ -6644,6 +6646,7 @@ pub async fn a_feed_poll_examines_at_most_the_bound(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let from = f.head().await.next();
     let records = (0..4200).map(|i| SourceRecord {
+        source: None,
         upstream: None,
         ty: ty(INVOICE),
         key: key(&format!("B-{i}")),
@@ -6998,6 +7001,7 @@ pub async fn ingest_judges_a_record_around_its_duplicate_test(store: Arc<dyn Lak
         let (who, ty, k) = (who.clone(), ty.to_owned(), k.to_owned());
         async move {
             let r = SourceRecord {
+                source: None,
                 upstream: None,
                 ty: ty.into(),
                 key: k.into(),
@@ -7751,6 +7755,7 @@ pub async fn key_components_and_source_ids_use_each_values_one_form(store: Arc<d
         let (cat, owner) = (f.catalog.clone(), f.cast.owner.clone());
         async move {
             let record = SourceRecord {
+                source: None,
                 upstream: None,
                 ty: ty("reading"),
                 key: key(canonical_key),
@@ -8215,6 +8220,7 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
     // way no two links of `d1` are live.
     let window = vec![
         SourceRecord {
+            source: None,
             upstream: None,
             ty: ty("sys.link.doc.witnessed_by"),
             key: key("d1:p1"),
@@ -8222,6 +8228,7 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
             seen_at: None,
         },
         SourceRecord {
+            source: None,
             upstream: None,
             ty: ty("sys.link.doc.witnessed_by"),
             key: key("d1:p2"),
@@ -8291,6 +8298,7 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
     // refused for the reference: an ingested link's cardinality is judged
     // last.
     let witness = |to: &str| SourceRecord {
+        source: None,
         upstream: None,
         ty: ty("sys.link.doc.witnessed_by"),
         key: key(&format!("d1:{to}")),
@@ -8930,6 +8938,7 @@ pub async fn a_purge_preflight_names_what_the_purge_strands_and_its_id_goes_stal
             .unwrap();
     }
     let p1 = SourceRecord {
+        source: None,
         upstream: None,
         ty: ty("partner"),
         key: key("p1"),
@@ -9040,6 +9049,7 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
             let records = keys
                 .iter()
                 .map(|k| SourceRecord {
+                    source: None,
                     upstream: None,
                     ty: ty("partner"),
                     key: key(k),
@@ -9103,6 +9113,7 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
     assert!(live("p5").await);
     // A record the source left no value in is not its any more.
     let clear = SourceRecord {
+        source: None,
         upstream: None,
         ty: ty("partner"),
         key: key("p5"),
@@ -9130,6 +9141,7 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
         let own = own.clone();
         async move {
             let rec = SourceRecord {
+                source: None,
                 upstream: None,
                 ty: ty("partner"),
                 key: key("p7"),
@@ -9185,6 +9197,7 @@ async fn purge_lake(store: &Arc<dyn LakeStore>) -> (Arc<dyn Catalog>, Principal)
         ),
     ] {
         let record = SourceRecord {
+            source: None,
             upstream: None,
             ty: ty(t),
             key: key(k),
@@ -10220,6 +10233,7 @@ async fn write_doors(
             break;
         }
         let rec = SourceRecord {
+            source: None,
             upstream: None,
             ty: t.clone(),
             key: key("v3"),
@@ -10706,6 +10720,7 @@ pub async fn a_record_event_says_whether_it_made_the_record(store: Arc<dyn LakeS
         accepted.expect("the reviewer accepts");
     }
     let twice = ["1.00", "2.00"].map(|amount| SourceRecord {
+        source: None,
         upstream: None,
         ty: ty(INVOICE),
         key: key("INV-3"),
@@ -10806,6 +10821,7 @@ pub async fn a_required_field_is_judged_over_the_record_whole(store: Arc<dyn Lak
     assert!(applied.is_err(), "`initial` would not fit: {applied:?}");
     let ingest = async |t: &str, k: &str| {
         let record = SourceRecord {
+            source: None,
             upstream: None,
             ty: ty(t),
             key: key(k),
@@ -10897,6 +10913,7 @@ pub async fn a_field_that_declares_initial_makes_no_owner(store: Arc<dyn LakeSto
     for k in ["t1", "t2"] {
         let fields = patch(&[("total", json!(1))]);
         let record = SourceRecord {
+            source: None,
             upstream: None,
             ty: ty("ticket"),
             key: key(k),
@@ -12905,6 +12922,7 @@ pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
         .await
         .expect("the owner retires `s3`");
     let fed = SourceRecord {
+        source: None,
         upstream: None,
         ty: slip.clone(),
         key: key("s3"),
