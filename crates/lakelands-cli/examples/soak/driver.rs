@@ -1397,8 +1397,8 @@ async fn drive(plan: &Plan, dir: &Path, report: &mut Report) -> Result<(), Strin
         // A dropped connection once an hour on PostgreSQL, a clean stop
         // once an hour, and the killer's `SIGKILL` at its moment.
         let hourly = Duration::from_secs(3600).min(plan.length / 2);
-        let dead = !server.alive();
-        let clean = !dead && !ending && last_clean.elapsed() >= hourly;
+        let mut dead = !server.alive();
+        let mut clean = !dead && !ending && last_clean.elapsed() >= hourly;
         if let (Engine::Postgres { url, .. }, false, false) = (&plan.engine, dead, ending)
             && last_drop.elapsed() >= hourly
         {
@@ -1449,6 +1449,12 @@ async fn drive(plan: &Plan, dir: &Path, report: &mut Report) -> Result<(), Strin
             report.line("recovered", json!({"after_ms": ms}));
             killer = arm(&server, &mut rng);
             continue;
+        }
+        // A clean stop pauses the killer first. A kill whose moment came
+        // as the stop began, sent or reaped after `alive` answered, is this
+        // turn's kill, not a server that ended badly when its client closed.
+        if clean && !paused(&mut killer, &mut server).await {
+            (dead, clean) = (true, false);
         }
         if dead || clean {
             killer.abort();
