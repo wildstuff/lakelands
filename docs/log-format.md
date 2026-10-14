@@ -1,6 +1,6 @@
 # The log format
 
-**Format version 15.** Reviewed so that a verifier can be written from
+**Format version 16.** Reviewed so that a verifier can be written from
 this document alone (lakelands#14). A release reads and writes one
 format version, this one: every event of a lake carries it, from
 position 0, and a lake written in another is refused by name and never
@@ -819,8 +819,10 @@ the first release with real installations
   Format 15 lets a verb's path read across a reference or a relation's
   link (`docs/decisions/055-a-path-steps-through-a-reference.md`), and a
   log of format 14 holds no declaration that does; a value type may
-  carry `annotations`, which no value type of format 14 holds. The step changes no
-  fold, so the projection stays. A step that changes how an event folds
+  carry `annotations`, which no value type of format 14 holds. 15 → 16:
+  none either. Format 16 is 0.15.0's one step; each form it adds is
+  said here by the change that adds it, and a log of format 15 holds
+  none of them. Neither step changes a fold, so the projection stays. A step that changes how an event folds
   says so here, and a writer's open then rebuilds the projection.
 - **A writer's open upgrades.** Where the newest event, read under the
   writer's lease, is in an older format the release reads, the open
@@ -1088,7 +1090,7 @@ the record's type, and no set through itself.
   `m` 60 s, `s` 1 s) in microseconds, which must come out whole: `1.5h`
   is `5400000000`, and `30d` is `2592000000000`.
 
-`docs/log-format/vectors/15/schema-hash.json` shows a view whose conditions
+`docs/log-format/vectors/16/schema-hash.json` shows a view whose conditions
 are written as text, its shape object with those conditions in typed
 form, and the resulting hash. A shape's `key` is the key the type's
 records carry, so a grouped view hashes alike whether its declaration

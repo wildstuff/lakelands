@@ -80,6 +80,10 @@ then part of the change, and the suite proves it on a lake the release
 before wrote. Upgrading is then a commitment of the first rank, not an
 option a release may leave out. The operator named 0.14.0 that release,
 and its format 15 the first step: 0.14.0 reads 14 and 15 and writes 15.
+0.15.0 takes the second, to 16, once, by a step of its own before any
+change that writes a form 15 does not hold: it reads 14 to 16 and writes
+16, so a 0.14.0 binary refuses its lakes by their number
+(lakelands#1096).
 
 **How a lake is upgraded** (`docs/log-format.md` §6):
 
@@ -106,7 +110,9 @@ and its format 15 the first step: 0.14.0 reads 14 and 15 and writes 15.
   doors, with what that release answered of it, is imported, upgraded
   and read the same on every engine. `docs/log-format/lakes/15/`, the
   lake v0.14.0 made, is held the same way from that release on, read
-  in its own format until a later one upgrades it.
+  in its own format until a later one upgrades it, as 0.15.0 does. The
+  vectors of each older format are imported and upgraded on every engine
+  too.
 
 At 100 000 events a step that changes no fold costs one append, and
 about 5 µs an event at each later read of an older event; one that
