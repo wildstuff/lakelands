@@ -1392,11 +1392,7 @@ pub async fn a_field_built_from_a_hidden_one_is_hidden_too(store: Arc<dyn LakeSt
     let declared = c.declare(owner, Declaration::Type(memo("memo", false)));
     declared.await.expect("the owner declares `memo`");
     let migrate = ProposedWrite::Migrate {
-        migration: Box::new(lakelands_api::write::Migration {
-            to: memo("memo", true),
-            renames: vec![],
-            relation_renames: Vec::new(),
-        }),
+        migration: Box::new(lakelands_api::write::Migration::to(memo("memo", true))),
         report: Default::default(),
     };
     let declare = ProposedWrite::Declare {
@@ -1439,9 +1435,8 @@ pub async fn a_grant_holds_a_field_through_its_rename(store: Arc<dyn LakeStore>)
     let wrote = c.upsert(owner, &doc_ty, &one, fields, WriteOpts::default());
     let before = applied(&wrote.await.expect("the owner writes a `doc`")).0;
     let m = lakelands_api::write::Migration {
-        to: doc("text"),
         renames: vec![("body".into(), "text".into())],
-        relation_renames: Vec::new(),
+        ..Migration::to(doc("text"))
     };
     let report = c.migrate(owner, m.clone()).await.expect("the preflight");
     let answer = c
@@ -1492,11 +1487,7 @@ pub async fn a_type_its_proposer_is_not_shown_is_a_type_that_is_not_declared(
         let (c, who) = (c.clone(), stranger.clone());
         let trigger = json!({"declare": "trigger", "name": "t", "on": name});
         let trigger = serde_json::from_value(trigger).expect("a trigger");
-        let migration = Box::new(lakelands_api::write::Migration {
-            to: shape(name),
-            renames: vec![],
-            relation_renames: Vec::new(),
-        });
+        let migration = Box::new(lakelands_api::write::Migration::to(shape(name)));
         let writes = [
             ProposedWrite::Declare {
                 declarations: vec![trigger],
@@ -2320,11 +2311,7 @@ pub async fn a_type_made_of_another_is_shown_only_with_it(store: Arc<dyn LakeSto
     let blind = principal(lake, PrincipalKind::Agent, "blind", g);
     let to: TypeDecl =
         serde_json::from_value(json!({"name": "pay", "fields": [t("code")]})).expect("a type");
-    let m = Migration {
-        to,
-        renames: Vec::new(),
-        relation_renames: Vec::new(),
-    };
+    let m = Migration::to(to);
     let said = c.migrate(&blind, m).await.map(drop);
     let case = Case::MigrationTakesRead {
         unnamed: true,
@@ -2499,11 +2486,7 @@ pub async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) {
         ("tally", view("tally")),
         ("partner_totals", stored("partner_totals")),
     ] {
-        let m = lakelands_api::write::Migration {
-            to,
-            renames: vec![],
-            relation_renames: Vec::new(),
-        };
+        let m = lakelands_api::write::Migration::to(to);
         let e = f
             .catalog
             .migrate(owner, m)
@@ -2600,9 +2583,8 @@ pub async fn a_migration_keeps_what_a_view_reads(store: Arc<dyn LakeStore>) {
             .migrate(
                 owner,
                 lakelands_api::write::Migration {
-                    to,
                     renames,
-                    relation_renames: Vec::new(),
+                    ..Migration::to(to)
                 },
             )
             .await
@@ -2632,11 +2614,7 @@ pub async fn a_migration_keeps_what_a_view_reads(store: Arc<dyn LakeStore>) {
         .await
         .expect("the second view");
     let proposed = ProposedWrite::Migrate {
-        migration: Box::new(lakelands_api::write::Migration {
-            to: without_amount,
-            renames: vec![],
-            relation_renames: Vec::new(),
-        }),
+        migration: Box::new(lakelands_api::write::Migration::to(without_amount)),
         report: Default::default(),
     };
     let e = (f.catalog)
@@ -3404,9 +3382,8 @@ pub async fn a_renamed_relation_keeps_its_edges(store: Arc<dyn LakeStore>) {
     let linked = (f.catalog).link(owner, &ty, &a, &cites, &b, Default::default(), opts);
     linked.await.expect("linking over `cites`");
     let m = Migration {
-        to: memo("quotes"),
-        renames: Vec::new(),
         relation_renames: vec![("cites".into(), "quotes".into())],
+        ..Migration::to(memo("quotes"))
     };
     let report = f.catalog.migrate(owner, m.clone()).await;
     let report = report.expect("the preflight").data;
@@ -3430,9 +3407,8 @@ pub async fn a_renamed_relation_keeps_its_edges(store: Arc<dyn LakeStore>) {
         .declare(owner, Declaration::Type(shelf("held_by")));
     declared.await.expect("declaring `shelf`");
     let via = Migration {
-        to: shelf("kept_by"),
-        renames: Vec::new(),
         relation_renames: vec![("held_by".into(), "kept_by".into())],
+        ..Migration::to(shelf("kept_by"))
     };
     let report = f.catalog.migrate(owner, via.clone()).await;
     let id = report.expect("the preflight").data.report_id;
@@ -3473,9 +3449,8 @@ pub async fn a_renamed_relation_keeps_its_edges(store: Arc<dyn LakeStore>) {
         .declare(owner, Declaration::Type(gloss.expect("a type")));
     declared.await.expect("declaring `gloss`");
     let back = Migration {
-        to: memo("cites"),
-        renames: Vec::new(),
         relation_renames: vec![("quotes".into(), "cites".into())],
+        ..Migration::to(memo("cites"))
     };
     let e = f.catalog.migrate(owner, back).await;
     let e = e.expect_err("a rename of a relation whose link type is referred to");
@@ -3513,13 +3488,13 @@ pub async fn a_proposal_that_waited_hides_by_the_names_in_force(store: Arc<dyn L
         .declare(owner, Declaration::Type(pad("memo", "cites", "aside")));
     declared.await.expect("declaring `pad`");
     let renames = |field: &str, relation: &str, aside: &str| Migration {
-        to: pad(field, relation, aside),
         renames: [("memo", field), ("aside", aside)]
             .into_iter()
             .filter(|(old, new)| old != new)
             .map(|(old, new)| (old.into(), new.into()))
             .collect(),
         relation_renames: vec![("cites".into(), relation.into())],
+        ..Migration::to(pad(field, relation, aside))
     };
     // The proposal also retypes `aside`, so its report converts it.
     let mut proposal = renames("note", "quotes", "aside");
@@ -4257,12 +4232,11 @@ pub async fn a_migration_keeps_what_a_declaration_reads(store: Arc<dyn LakeStore
     let without =
         |gone: &str| -> Vec<&str> { all.iter().copied().filter(|n| *n != gone).collect() };
     let migration = |to: TypeDecl, renames: &[(&str, &str)]| lakelands_api::write::Migration {
-        to,
         renames: renames
             .iter()
             .map(|(a, b)| ((*a).into(), (*b).into()))
             .collect(),
-        relation_renames: Vec::new(),
+        ..Migration::to(to)
     };
     // The refusal of a migration of `of` taking away `field` of `on`,
     // which `reader` reads, said after the migration at the reader.
@@ -4857,11 +4831,7 @@ pub async fn an_accepts_refusal_names_only_what_its_reviewer_is_listed(store: Ar
     let Declaration::Type(to) = de(inv(json!({"kind": "text", "value_type": "grade"}))) else {
         unreachable!("a type");
     };
-    let m = Migration {
-        to,
-        renames: Vec::new(),
-        relation_renames: Vec::new(),
-    };
+    let m = Migration::to(to);
     let report = c.migrate(own, m.clone()).await.unwrap().data;
     c.migrate_apply(own, m, &report.report_id).await.unwrap();
     let not_granted = Err(Error::Refused {
@@ -5042,10 +5012,10 @@ pub async fn a_reviewer_not_shown_a_type_finds_no_proposal_on_it(store: Arc<dyn 
             .declare(&f.cast.owner, serde_json::from_value(d).unwrap());
         declared.await.expect("the owner declares");
     }
-    let xx = |fields: serde_json::Value| Migration {
-        to: serde_json::from_value(json!({"name": "xx", "key": ["f"], "fields": fields})).unwrap(),
-        renames: Vec::new(),
-        relation_renames: Vec::new(),
+    let xx = |fields: serde_json::Value| {
+        Migration::to(
+            serde_json::from_value(json!({"name": "xx", "key": ["f"], "fields": fields})).unwrap(),
+        )
     };
     let migration = Box::new(xx(keyed("vv")));
     let write = ProposedWrite::Migrate {
@@ -5132,11 +5102,9 @@ pub async fn a_reviewer_not_shown_a_type_finds_no_proposal_on_it(store: Arc<dyn 
             declarations: vec![serde_json::from_value(again).unwrap()],
         },
         ProposedWrite::Migrate {
-            migration: Box::new(Migration {
-                to: serde_json::from_value(fare(Some("more"))).unwrap(),
-                renames: Vec::new(),
-                relation_renames: Vec::new(),
-            }),
+            migration: Box::new(Migration::to(
+                serde_json::from_value(fare(Some("more"))).unwrap(),
+            )),
             report: Default::default(),
         },
     ];
@@ -6033,11 +6001,7 @@ pub async fn a_schema_proposal_is_refused_by_kind_at_propose_and_at_accept(
         .propose(
             &f.cast.clerk,
             ProposedWrite::Migrate {
-                migration: Box::new(Migration {
-                    to,
-                    renames: vec![],
-                    relation_renames: Vec::new(),
-                }),
+                migration: Box::new(Migration::to(to)),
                 report: Default::default(),
             },
             "pages are numbers".into(),
@@ -7090,9 +7054,8 @@ pub async fn ingest_judges_a_record_around_its_duplicate_test(store: Arc<dyn Lak
         .await
         .expect("a link over `in_box`");
     let m = Migration {
-        to: bag("inside"),
-        renames: Vec::new(),
         relation_renames: vec![("in_box".into(), "inside".into())],
+        ..Migration::to(bag("inside"))
     };
     let report = c.migrate(own, m.clone()).await.expect("the preflight").data;
     c.migrate_apply(own, m, &report.report_id)
@@ -7913,11 +7876,7 @@ pub async fn schema_hashes_and_proposal_ids_have_the_stores_form(store: Arc<dyn 
         .catalog
         .declare(owner, Declaration::Type(tally(vec![text("n")])));
     declared.await.expect("the owner declares a type");
-    let m = Migration {
-        to: tally(vec![text("n"), text("note")]),
-        renames: Vec::new(),
-        relation_renames: Vec::new(),
-    };
+    let m = Migration::to(tally(vec![text("n"), text("note")]));
     let preview = f.catalog.migrate(owner, m).await.expect("a preview");
     let report = MigrationReport {
         report_id: String::new(),
@@ -8035,11 +7994,7 @@ pub async fn a_reader_is_answered_the_hash_of_the_shape_it_is_described(store: A
     );
     // Its preview of the shape it is described: both hashes are that one's,
     // and its id is not the owner's.
-    let to = Migration {
-        to: seen[1].1.clone(),
-        renames: Vec::new(),
-        relation_renames: Vec::new(),
-    };
+    let to = Migration::to(seen[1].1.clone());
     // The owner's is the same migration, `secret` as the architect's is put back.
     let mut whole = to.clone();
     let secret = seen[0]
@@ -8401,11 +8356,7 @@ pub async fn a_migration_keeps_a_field_its_author_may_not_know_of(store: Arc<dyn
     .await
     .unwrap();
     let write = ProposedWrite::Migrate {
-        migration: Box::new(lakelands_api::write::Migration {
-            to: invoice(&["status"]),
-            renames: vec![],
-            relation_renames: Vec::new(),
-        }),
+        migration: Box::new(lakelands_api::write::Migration::to(invoice(&["status"]))),
         report: Default::default(),
     };
     let proposed = c.propose(clerk, write, "no memos".into()).await.unwrap();
@@ -8491,11 +8442,7 @@ pub async fn a_relation_declared_again_with_another_target_reshapes_its_links(
     let Declaration::Type(without) = doc(json!([])) else {
         unreachable!()
     };
-    let m = lakelands_api::write::Migration {
-        to: without,
-        renames: vec![],
-        relation_renames: Vec::new(),
-    };
+    let m = lakelands_api::write::Migration::to(without);
     let report = c.migrate(own, m.clone()).await.unwrap();
     assert_eq!(
         report.data.dropped,
@@ -8548,9 +8495,8 @@ pub async fn a_migration_restates_what_its_to_states_otherwise(store: Arc<dyn La
     let mut to = badge(json!([text("secret"), text("alias")]), json!([]));
     to.as_object_mut().unwrap().remove("declare");
     let bare = lakelands_api::write::Migration {
-        to: serde_json::from_value(to).unwrap(),
         renames: vec![("nick".into(), "alias".into())],
-        relation_renames: Vec::new(),
+        ..Migration::to(serde_json::from_value(to).unwrap())
     };
     let report = c.migrate(own, bare.clone()).await.unwrap().data;
     let entry = |field: &str, member: &str, was: Value, to: Value| json!({"field": field, "member": member, "was": was, "to": to});
@@ -8597,11 +8543,7 @@ pub async fn a_migration_shows_a_field_by_its_shape_to_one_who_does_not_read_it(
     // `secret` loses its mark and takes another label; `nick` would not convert.
     let hidden = field("secret", "text", "Hidden", false);
     let to = badge(json!([hidden, field("nick", "number", "Nick", false)]));
-    let m = lakelands_api::write::Migration {
-        to: serde_json::from_value(to).unwrap(),
-        renames: vec![],
-        relation_renames: Vec::new(),
-    };
+    let m = lakelands_api::write::Migration::to(serde_json::from_value(to).unwrap());
     let more = json!({"name": "more", "type": {"kind": "text"}});
     declared["fields"].as_array_mut().unwrap().push(more);
     let mut ids = Vec::new();
@@ -8711,14 +8653,10 @@ pub async fn a_migration_migrates_and_declares_its_link_types_in_its_append(
         .await
         .unwrap();
     }
-    let m = lakelands_api::write::Migration {
-        to: doc(json!([
+    let m = lakelands_api::write::Migration::to(doc(json!([
             {"name": "signed_by", "target": "person",
              "fields": [{"name": "at", "type": {"kind": "text"}}]},
-            {"name": "witnessed_by", "target": "person"}])),
-        renames: vec![],
-        relation_renames: Vec::new(),
-    };
+            {"name": "witnessed_by", "target": "person"}])));
     let report = c.migrate(own, m.clone()).await.unwrap();
     let from = store.head().await.unwrap().next();
     c.migrate_apply(own, m, &report.data.report_id)
@@ -10926,11 +10864,7 @@ pub async fn a_required_field_is_judged_over_the_record_whole(store: Arc<dyn Lak
         .await
         .expect("writing `k1`");
     let to = json!({"name": "task", "fields": [note, state]});
-    let m = lakelands_api::write::Migration {
-        to: serde_json::from_value(to).expect("a type"),
-        renames: Vec::new(),
-        relation_renames: Vec::new(),
-    };
+    let m = lakelands_api::write::Migration::to(serde_json::from_value(to).expect("a type"));
     let report = c
         .migrate(&own, m.clone())
         .await
@@ -11961,11 +11895,7 @@ pub async fn a_vector_ranking_reads_a_vector_field(store: Arc<dyn LakeStore>) {
     let wrote = c.upsert(own, &late_ty, &key, a, WriteOpts::default());
     wrote.await.expect("the owner writes `a`");
     let p = store.head().await.expect("the lake has a head");
-    let m = Migration {
-        to: late("text", 3, false),
-        renames: Vec::new(),
-        relation_renames: Vec::new(),
-    };
+    let m = Migration::to(late("text", 3, false));
     let report = c.migrate(own, m.clone()).await.expect("the preflight");
     let applied = c.migrate_apply(own, m, &report.data.report_id).await;
     applied.expect("the migration applies");
@@ -13365,9 +13295,9 @@ pub async fn a_migrations_faults_come_in_one_order_for_a_hidden_name_and_an_abse
             unreachable!("a type")
         };
         Migration {
-            to,
             renames: (renames.iter().map(|(a, b)| ((*a).into(), (*b).into()))).collect(),
             relation_renames: (relations.iter().map(|(a, b)| ((*a).into(), (*b).into()))).collect(),
+            ..Migration::to(to)
         }
     };
     // `numbered`, shown to the author, reads `no`, which nothing hidden
@@ -13657,9 +13587,8 @@ pub async fn a_shape_names_no_field_its_author_may_not_know_of(store: Arc<dyn La
     }
     let migration = |d, relation_renames| match d {
         Declaration::Type(to) => Migration {
-            to,
-            renames: Vec::new(),
             relation_renames,
+            ..Migration::to(to)
         },
         _ => unreachable!("a type"),
     };
@@ -13975,11 +13904,7 @@ pub async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not
     else {
         unreachable!("a type")
     };
-    let migration = Migration {
-        to: to_ticket,
-        renames: Vec::new(),
-        relation_renames: Vec::new(),
-    };
+    let migration = Migration::to(to_ticket);
     for (write, why) in [
         (
             ProposedWrite::Declare {
@@ -14073,11 +13998,7 @@ pub async fn a_valid_time_names_a_date_time_field(store: Arc<dyn LakeStore>) {
     let Declaration::Type(to) = text.clone() else {
         unreachable!("a type")
     };
-    let m = Migration {
-        to,
-        renames: Vec::new(),
-        relation_renames: Vec::new(),
-    };
+    let m = Migration::to(to);
     let declarations = vec![text.clone()];
     let proposed = lakelands_api::write::ProposedWrite::Declare { declarations };
     for (door, answer) in [
@@ -14145,11 +14066,7 @@ pub async fn a_date_is_kept_as_its_day(store: Arc<dyn LakeStore>) {
     let Declaration::Type(to) = ev(["date_time", "date", "date_time"]) else {
         unreachable!("a type")
     };
-    let m = Migration {
-        to,
-        renames: Vec::new(),
-        relation_renames: Vec::new(),
-    };
+    let m = Migration::to(to);
     let report = c.migrate(own, m.clone()).await.unwrap();
     c.migrate_apply(own, m, &report.data.report_id)
         .await
@@ -14167,11 +14084,7 @@ pub async fn a_date_is_kept_as_its_day(store: Arc<dyn LakeStore>) {
     let Declaration::Type(to) = ev(["date", "date", "date_time"]) else {
         unreachable!("a type")
     };
-    let m = Migration {
-        to,
-        renames: Vec::new(),
-        relation_renames: Vec::new(),
-    };
+    let m = Migration::to(to);
     let report = c.migrate(own, m).await.unwrap().data;
     let on = report.fields.iter().find(|f| f.field.as_str() == "on");
     if report.lossless || on.is_none_or(|f| f.sample_keys != [key("e3")]) {

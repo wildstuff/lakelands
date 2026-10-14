@@ -247,6 +247,7 @@ pub const ALL: &[Check] = &[
     schema::SYS_RESERVED,
     migrate::APPLY_NEEDS_ITS_REPORT,
     migrate::LOSSY_REFUSED,
+    migrate::FILLED,
     migrate::CONVERSIONS_AND_RENAMES,
     made_of::SHOWN_WITH_WHAT_IT_IS_MADE_OF,
     made_of::KEPT_AT_EVERY_DOOR,

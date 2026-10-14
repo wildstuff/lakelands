@@ -62,11 +62,10 @@ fn item(key: &str, [n, flag, rank]: [&str; 3], peer: &str) -> serde_json::Value 
 
 fn migration(to: serde_json::Value, renames: &[(&str, &str)]) -> Migration {
     Migration {
-        to: serde_json::from_value(to).expect("a type"),
         renames: (renames.iter())
             .map(|(from, to)| ((*from).into(), (*to).into()))
             .collect(),
-        relation_renames: Vec::new(),
+        ..Migration::to(serde_json::from_value(to).expect("a type"))
     }
 }
 

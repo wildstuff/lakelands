@@ -209,6 +209,7 @@ pub fn preflight(
         relations: Vec::new(),
         carried: Vec::new(),
         restated: Vec::new(),
+        filled: Vec::new(),
     };
     report.report_id = canonical::sha256_hex(
         &serde_json::to_value(&report).expect("a migration report serialises to JSON"),
@@ -257,6 +258,10 @@ struct Step<'a> {
     /// Whether the report lists it: its type changes, or it becomes
     /// required.
     checked: bool,
+    /// Whether the migration fills it (`Migration::fill`): a record that
+    /// holds no value for it takes its `initial` in the fold, or, retired,
+    /// is left as it was.
+    fill: bool,
 }
 
 impl<'a> Plan<'a> {
@@ -290,6 +295,7 @@ impl<'a> Plan<'a> {
                     to,
                     from,
                     checked: retyped || tightened,
+                    fill: migration.fill.contains(&to.name),
                 }
             })
             .collect();
@@ -318,7 +324,7 @@ impl Step<'_> {
                 Conversion::Exact(v) => Some(Some(v)),
                 Conversion::Lossy => None,
             },
-            _ if self.to.required => None,
+            _ if self.to.required && !self.fill => None,
             _ => Some(None),
         }
     }

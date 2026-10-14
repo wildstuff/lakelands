@@ -517,9 +517,8 @@ async fn a_link_type_renamed_between_the_head_and_the_rankings_is_asked_again() 
         pause(&probe, 1, &store, |s| async move {
             let l = Lake::of(s.as_ref());
             let m = Migration {
-                to: keyed_with(Vec::new(), "beside"),
-                renames: Vec::new(),
                 relation_renames: vec![("near".into(), "beside".into())],
+                ..Migration::to(keyed_with(Vec::new(), "beside"))
             };
             let report = l.cat.migrate(&l.own, m.clone()).await.unwrap();
             let id = report.data.report_id;

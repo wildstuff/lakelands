@@ -84,11 +84,7 @@ async fn verify_py_verifies_an_export_with_a_checkpoint_and_a_rekey() {
     let store = lake("export-python").await;
     store.checkpoint().await.unwrap();
     let (cat, who) = (store.catalog(WriteContext::default()), owner(store.lake()));
-    let to = Migration {
-        to: serde_json::from_value(account("iban")).unwrap(),
-        renames: vec![],
-        relation_renames: Vec::new(),
-    };
+    let to = Migration::to(serde_json::from_value(account("iban")).unwrap());
     let report = cat.migrate(&who, to.clone()).await.unwrap().data;
     assert!(report.lossless, "{report:?}");
     cat.migrate_apply(&who, to, &report.report_id)

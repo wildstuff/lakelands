@@ -82,11 +82,7 @@ fn boxed(key: &str, since: &str) -> Value {
 
 fn migrate_to(to: Value) -> Migration {
     let to = serde_json::from_value(to).expect("a type");
-    Migration {
-        to,
-        renames: vec![],
-        relation_renames: Vec::new(),
-    }
+    Migration::to(to)
 }
 
 fn text(n: &str) -> Value {

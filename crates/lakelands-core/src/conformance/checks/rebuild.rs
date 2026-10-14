@@ -154,11 +154,7 @@ async fn migrations(store: &dyn LakeStore) -> Result<Vec<Position>, Failure> {
             f.ty = FieldType::kind(StorageKind::Text);
         }
     }
-    let m = Migration {
-        to,
-        renames: Vec::new(),
-        relation_renames: Vec::new(),
-    };
+    let m = Migration::to(to);
     let report = cat.migrate(own, m.clone());
     let report = report.await.must("the preflight of retyping `pages`")?.data;
     let retyped = cat

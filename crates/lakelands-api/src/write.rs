@@ -718,9 +718,25 @@ pub struct Migration {
     /// its edges, however it is carried.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relation_renames: Vec<(RelationName, RelationName)>,
+    /// Fields whose `initial`, declared in `to`, each live record that
+    /// holds no value for them takes at the migration
+    /// (`docs/decisions/050-a-field-declares-its-initial-value.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fill: Vec<FieldName>,
 }
 
 impl Migration {
+    /// A migration to `to` that renames nothing and fills nothing.
+    pub fn to(to: TypeDecl) -> Migration {
+        let (renames, relation_renames, fill) = (Vec::new(), Vec::new(), Vec::new());
+        Migration {
+            to,
+            renames,
+            relation_renames,
+            fill,
+        }
+    }
+
     /// The fields the migration renames, as pairs of the old name and the
     /// new. A pair names a field of `before` and one of the new shape, each
     /// once, and no new name is a field `before` keeps. Otherwise the case
@@ -753,6 +769,28 @@ impl Migration {
             Some(to) => Err(Case::RenameCollides { to: to.clone() }),
             None => Ok(out),
         }
+    }
+
+    /// Whether `fill` names fields the migration may fill: each one `to`
+    /// declares with an `initial`, once. A name `to` no longer has that a
+    /// rename took away is told its new name. Otherwise the case that says
+    /// why.
+    pub fn fills(&self) -> Result<(), Case> {
+        for (i, f) in self.fill.iter().enumerate() {
+            let (field, declared) = (f.clone(), self.to.fields.iter().find(|d| &d.name == f));
+            let case = match (declared, self.renames.iter().find(|(from, _)| from == f)) {
+                (None, Some((_, to))) => Case::FillRenamed {
+                    field,
+                    to: to.clone(),
+                },
+                (None, None) => Case::FillUnknown { field },
+                (Some(d), _) if d.initial.is_none() => Case::FillNoInitial { field },
+                (Some(_), _) if self.fill[..i].contains(f) => Case::FillRepeated { field },
+                (Some(_), _) => continue,
+            };
+            return Err(case);
+        }
+        Ok(())
     }
 
     /// The relations the migration renames, each as it stood on `before`
@@ -1075,6 +1113,10 @@ pub struct MigrationReport {
     /// member by member, from null.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub restated: Vec<Restated>,
+    /// Per field the migration fills (`Migration::fill`): the live records
+    /// that hold no value for it and take its `initial`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filled: Vec<FieldFill>,
     /// True when every stored value converts without loss, and every
     /// record a re-key moves takes a new key of its own. It speaks of
     /// stored values: a migration that only restates is lossless. It says
@@ -1099,6 +1141,17 @@ impl MigrationReport {
     pub fn discards(&self) -> u64 {
         self.dropped.iter().map(|(_, n)| n).sum()
     }
+}
+
+/// The live records a migration fills a field's `initial` into.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldFill {
+    /// The field.
+    pub field: FieldName,
+    /// How many live records hold no value for it.
+    pub records: u64,
+    /// Up to five of their keys, the smallest its reader is answered.
+    pub sample_keys: Vec<RecordKey>,
 }
 
 /// How the values of one field convert to its new type.

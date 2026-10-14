@@ -55,11 +55,10 @@ async fn migrate(l: &Lake, fields: &[&str], renames: &[(&str, &str)]) -> Result<
 /// The owner migrates a type to the shape `to` with `renames`.
 async fn migrate_to(l: &Lake, to: Value, renames: &[(&str, &str)]) -> Result<Outcome, Failure> {
     let m = Migration {
-        to: serde_json::from_value(to).expect("a type"),
         renames: (renames.iter())
             .map(|(a, b)| ((*a).into(), (*b).into()))
             .collect(),
-        relation_renames: Vec::new(),
+        ..Migration::to(serde_json::from_value(to).expect("a type"))
     };
     let report = l.cat.migrate(&l.own, m.clone());
     let report = report.await.must("the preflight")?;
@@ -298,11 +297,12 @@ async fn a_grant_holds_a_field_under_every_name_it_has_borne(store: Store, given
         .await?;
     l.upsert("pair", "1", json!({"a": "A", "b": "B"})).await?;
     let swap = Migration {
-        to: serde_json::from_value(json!({"name": "pair", "fields": [
-            {"name": "a", "type": {"kind": "text"}}, {"name": "b", "type": {"kind": "text"}}]}))
-        .expect("a type"),
         renames: vec![("a".into(), "b".into()), ("b".into(), "a".into())],
-        relation_renames: Vec::new(),
+        ..Migration::to(
+            serde_json::from_value(json!({"name": "pair", "fields": [
+            {"name": "a", "type": {"kind": "text"}}, {"name": "b", "type": {"kind": "text"}}]}))
+            .expect("a type"),
+        )
     };
     let report = l.cat.migrate(&l.own, swap.clone());
     let report = report.await.must("the swap's preflight")?;
@@ -375,9 +375,8 @@ async fn a_grant_holds_a_field_under_every_name_it_has_borne(store: Store, given
     let to = serde_json::from_value(account(&["a", "d", "owner", "holder"])).expect("a type");
     let write = ProposedWrite::Migrate {
         migration: Box::new(Migration {
-            to,
             renames: vec![("c".into(), "d".into())],
-            relation_renames: Vec::new(),
+            ..Migration::to(to)
         }),
         report: Default::default(),
     };

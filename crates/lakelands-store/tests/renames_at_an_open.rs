@@ -96,9 +96,8 @@ async fn a_renaming_migration_is_read_back_at_an_open_in_every_mode() {
     .expect("writing the record");
     for (from, to) in [("holder", "keeper"), ("keeper", "owner")] {
         let m = Migration {
-            to: serde_json::from_value(account(&["a", to])).expect("a type"),
             renames: vec![(from.into(), to.into())],
-            relation_renames: Vec::new(),
+            ..Migration::to(serde_json::from_value(account(&["a", to])).expect("a type"))
         };
         let report = cat.migrate(&owner, m.clone()).await;
         let report = report.expect("the migration's preflight").data;

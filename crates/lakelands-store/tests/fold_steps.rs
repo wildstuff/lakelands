@@ -108,11 +108,10 @@ fn migrated(to: TypeDecl, renames: &[(&str, &str)], moves: &[(&str, &str, &str)]
     EventBody::Migrated {
         schema_hash: lakelands_core::shape::schema_hash(&to).expect("a schema hash"),
         migration: Migration {
-            to,
             renames: (renames.iter())
                 .map(|(from, to)| ((*from).into(), (*to).into()))
                 .collect(),
-            relation_renames: Vec::new(),
+            ..Migration::to(to)
         },
         version: 2,
         report_id: "by hand".into(),

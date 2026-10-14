@@ -1426,6 +1426,14 @@ catalog! {
         RenameReferredLinks { #[serde(rename = "type")] ty: Option<TypeName>, links: TypeName } => "[`{ty}`|a declaration] refers to its link type `{links}`, whose records would move; retarget it first",
         /// A field renamed from or to twice.
         RenameRepeated { field: FieldName } => "the field `{field}` is renamed more than once",
+        /// A field a migration fills that its new declaration does not declare.
+        FillUnknown { field: FieldName } => "the migration fills `{field}`, which the new declaration does not declare",
+        /// A field a migration fills that declares no initial value.
+        FillNoInitial { field: FieldName } => "the migration fills `{field}`, which declares no `initial` to fill it with",
+        /// A field a migration fills more than once.
+        FillRepeated { field: FieldName } => "the migration fills `{field}` more than once",
+        /// A field a migration fills by the name a rename takes away.
+        FillRenamed { field: FieldName, to: FieldName } => "the migration renames `{field}` to `{to}`; fill it as `{to}`",
         /// A field renamed to one the new declaration does not have.
         RenameToUnknown { to: FieldName } => "rename to `{to}`: no such field after the migration",
         /// A relation rename in a migration that re-keys.

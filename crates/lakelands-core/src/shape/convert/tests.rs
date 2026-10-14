@@ -334,11 +334,7 @@ fn record(n: &str, amount: Value) -> (RecordKey, BTreeMap<FieldName, Value>) {
 }
 
 fn retype() -> Migration {
-    Migration {
-        to: invoice(StorageKind::Decimal),
-        renames: vec![],
-        relation_renames: Vec::new(),
-    }
+    Migration::to(invoice(StorageKind::Decimal))
 }
 
 #[test]
@@ -422,9 +418,8 @@ fn renames_move_values_to_the_new_name() {
     let mut to = invoice(StorageKind::Number);
     to.fields[1].name = "total".into();
     let migration = Migration {
-        to,
         renames: vec![("amount".into(), "total".into())],
-        relation_renames: Vec::new(),
+        ..Migration::to(to)
     };
     let records = vec![record("a", json!("42")), record("b", json!("x"))];
     let report = preflight(&before, &migration, records.clone(), &|_| true).unwrap();
@@ -448,9 +443,8 @@ fn a_rename_without_a_retype_is_not_reported_but_still_moves() {
     let mut to = invoice(StorageKind::Text);
     to.fields[2].name = "remark".into();
     let migration = Migration {
-        to,
         renames: vec![("note".into(), "remark".into())],
-        relation_renames: Vec::new(),
+        ..Migration::to(to)
     };
     let report = preflight(&before, &migration, vec![record("a", json!("1"))], &|_| {
         true
@@ -468,12 +462,11 @@ fn a_rename_without_a_retype_is_not_reported_but_still_moves() {
 fn two_fields_may_swap_names() {
     let before = invoice(StorageKind::Text);
     let migration = Migration {
-        to: invoice(StorageKind::Text),
         renames: vec![
             ("amount".into(), "note".into()),
             ("note".into(), "amount".into()),
         ],
-        relation_renames: Vec::new(),
+        ..Migration::to(invoice(StorageKind::Text))
     };
     let out = migrate_record(&before, &migration, &record("a", json!("1")).1)
         .unwrap()
@@ -487,11 +480,7 @@ fn a_field_that_becomes_required_counts_records_without_it() {
     let before = invoice(StorageKind::Number);
     let mut to = invoice(StorageKind::Number);
     to.fields[1].required = true;
-    let migration = Migration {
-        to,
-        renames: vec![],
-        relation_renames: Vec::new(),
-    };
+    let migration = Migration::to(to);
     let records = vec![record("a", json!(1)), record("b", Value::Null)];
     let report = preflight(&before, &migration, records, &|_| true).unwrap();
     let [amount] = &report.fields[..] else {
@@ -507,11 +496,7 @@ fn a_removed_field_is_dropped_from_the_record() {
     let before = invoice(StorageKind::Number);
     let mut to = invoice(StorageKind::Number);
     to.fields.retain(|f| f.name.as_str() != "note");
-    let migration = Migration {
-        to,
-        renames: vec![],
-        relation_renames: Vec::new(),
-    };
+    let migration = Migration::to(to);
     let out = migrate_record(&before, &migration, &record("a", json!(1)).1)
         .unwrap()
         .unwrap();
@@ -525,9 +510,8 @@ fn a_malformed_migration_is_refused() {
         let mut decl = invoice(StorageKind::Text);
         decl.fields[1].name = name.into();
         Migration {
-            to: decl,
             renames: vec![(from.into(), to.into())],
-            relation_renames: Vec::new(),
+            ..Migration::to(decl)
         }
     };
     let err = |m: Migration| preflight(&before, &m, vec![], &|_| true).unwrap_err().case;

@@ -182,11 +182,7 @@ fn account_to(key: &str) -> Migration {
     let mut to: serde_json::Map<String, Value> =
         account(key, true).as_object().cloned().unwrap_or_default();
     to.remove("declare");
-    Migration {
-        to: serde_json::from_value(Value::Object(to)).expect("a type"),
-        renames: vec![],
-        relation_renames: Vec::new(),
-    }
+    Migration::to(serde_json::from_value(Value::Object(to)).expect("a type"))
 }
 
 pub(super) fn to_iban() -> Migration {

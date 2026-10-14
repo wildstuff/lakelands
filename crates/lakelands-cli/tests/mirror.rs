@@ -536,11 +536,7 @@ async fn settle(m: &mut Mirror) {
 async fn migrate(lake: &dyn LakeStore, to: Value) {
     let cat = doors(lake);
     let who = owner(lake);
-    let migration = Migration {
-        to: serde_json::from_value(to).unwrap(),
-        renames: vec![],
-        relation_renames: Vec::new(),
-    };
+    let migration = Migration::to(serde_json::from_value(to).unwrap());
     let report = cat.migrate(&who, migration.clone()).await.unwrap().data;
     assert!(report.lossless, "{report:?}");
     cat.migrate_apply(&who, migration, &report.report_id)
@@ -1123,6 +1119,54 @@ async fn a_value_renamed_in_the_source_is_copied_again() {
             );
             let kept = &m.kept().types[&TypeName::from("customer")];
             assert!(kept.stopped.is_none(), "{start:?}: {kept:?}");
+        }
+    }
+}
+
+/// A migration's fill writes values and no record event: the mirror copies
+/// the type again, and the copy names the source's state after the fill,
+/// whose value is of origin `initial` there.
+#[tokio::test]
+async fn a_field_filled_in_the_source_is_copied_again() {
+    for engine in engines() {
+        for start in [Start::Snapshot, Start::Head] {
+            let two = Two::new(&format!("filled-{start:?}"), &engine).await;
+            let mut m = two.mirror_from(start).await.unwrap();
+            settle(&mut m).await;
+            two.upsert("customer", "c1", json!({"code": "c1"})).await;
+            settle(&mut m).await;
+            let cat = doors(two.crm.as_ref());
+            let who = owner(two.crm.as_ref());
+            let mut to = serde_json::to_value(&source_types()[1]).unwrap();
+            to["fields"][2]["initial"] = json!("gold");
+            to.as_object_mut().unwrap().remove("declare");
+            let mut migration = Migration::to(serde_json::from_value(to).unwrap());
+            migration.fill = vec!["tier".into()];
+            let report = cat.migrate(&who, migration.clone()).await.unwrap().data;
+            let applied = cat.migrate_apply(&who, migration, &report.report_id);
+            let at = match applied.await.unwrap() {
+                lakelands_api::write::Outcome::Applied { position, .. } => position,
+                other => panic!("{other:?}"),
+            };
+            settle(&mut m).await;
+            let get = Get {
+                key: RecordKey::from("c1"),
+                with_meta: true,
+                at: ReadAt::default(),
+                params: Default::default(),
+            };
+            let source = cat.get(&who, &"customer".into(), get).await.unwrap().data;
+            let filled = &source.meta[&lakelands_api::FieldName::from("tier")];
+            assert_eq!((filled.origin, filled.position), (Origin::Initial, at));
+            let copy = two.copy("customer", "c1").await.expect("copied");
+            assert_eq!(copy.fields.get("tier"), Some(&json!("gold")), "{start:?}");
+            let upstream = copy.meta[&lakelands_api::FieldName::from("tier")]
+                .upstream
+                .clone();
+            assert!(
+                upstream.is_some_and(|u| u.lake.as_str() == "crm" && u.position >= at),
+                "{start:?}: {copy:?}"
+            );
         }
     }
 }

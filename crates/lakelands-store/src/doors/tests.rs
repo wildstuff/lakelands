@@ -86,9 +86,8 @@ async fn a_write_that_waited_behind_a_rename_is_sent_again() {
                 shown: None,
             };
             let m = Migration {
-                to: account("owner"),
                 renames: vec![("holder".into(), "owner".into())],
-                relation_renames: Vec::new(),
+                ..Migration::to(account("owner"))
             };
             let view = lake.engine.view(None).expect("a view");
             let now = lake.clock(&mut w);
@@ -178,9 +177,8 @@ async fn a_link_that_waited_behind_a_relations_rename_is_sent_again() {
                 shown: None,
             };
             let m = Migration {
-                to: doc("quotes"),
-                renames: Vec::new(),
                 relation_renames: vec![("cites".into(), "quotes".into())],
+                ..Migration::to(doc("quotes"))
             };
             let view = lake.engine.view(None).expect("a view");
             let now = lake.clock(&mut w);
@@ -384,11 +382,7 @@ async fn a_write_that_waited_while_the_types_moved_is_sent_again() {
                 followed: None,
                 shown: None,
             };
-            let m = Migration {
-                to: payroll(&["code"]),
-                renames: Vec::new(),
-                relation_renames: Vec::new(),
-            };
+            let m = Migration::to(payroll(&["code"]));
             let view = lake.engine.view(None).expect("a view");
             let now = lake.clock(&mut w);
             let plan = call.preflight_plan(&w, view.as_ref(), (&m, None), Some(now));

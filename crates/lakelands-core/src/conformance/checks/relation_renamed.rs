@@ -32,9 +32,8 @@ fn renaming() -> Migration {
     let mut signed = dated();
     signed.name = "signed_by".into();
     Migration {
-        to: invoice(vec![signed]),
-        renames: Vec::new(),
         relation_renames: vec![("approved_by".into(), "signed_by".into())],
+        ..Migration::to(invoice(vec![signed]))
     }
 }
 
@@ -376,9 +375,8 @@ async fn a_rename_that_would_change_or_lose_edges_is_refused(store: Store) -> He
         let place = json!({"code": "relation_rename", "from": from, "to": to_name});
         let case = json!({"code": code, "at": [place]});
         let m = Migration {
-            to,
-            renames: Vec::new(),
             relation_renames,
+            ..Migration::to(to)
         };
         let got = l.cat.migrate(&l.own, m).await;
         if !invalid_like(&got, &case) {
@@ -394,9 +392,8 @@ async fn a_rename_that_would_change_or_lose_edges_is_refused(store: Store) -> He
     // A relation that targets the link type, or a reference into it, would
     // be left naming keys that ended.
     let m = Migration {
-        to: invoice(vec![named("countersigned_by", true)]),
-        renames: Vec::new(),
         relation_renames: pair("approved_by", "countersigned_by"),
+        ..Migration::to(invoice(vec![named("countersigned_by", true)]))
     };
     let mut minute = type_decl("minute", vec![field("t", StorageKind::Text)]);
     minute.relations.push(RelationDecl {
@@ -588,11 +585,10 @@ async fn every_carrier_keeps_its_edges_through_renames_and_a_rebuild(store: Stor
     l.migrate(shaped(first, true)).await?;
     let before = store.head().await.must("reading the head")?;
     let renamed = |to: [&str; 3], from: [&str; 3]| Migration {
-        to: shaped(to, true),
-        renames: Vec::new(),
         relation_renames: (from.iter().zip(to).filter(|(a, b)| **a != *b))
             .map(|(a, b)| ((*a).into(), b.into()))
             .collect(),
+        ..Migration::to(shaped(to, true))
     };
     let second = ["signed_by", "settled_by", "close_to"];
     let m = renamed(second, first);
@@ -662,9 +658,8 @@ fn named(name: &str) -> RelationDecl {
 /// The migration of `invoice` to `to` that renames relation `old` to `new`.
 fn rename(to: Vec<RelationDecl>, old: &str, new: &str) -> Migration {
     Migration {
-        to: invoice(to),
-        renames: Vec::new(),
         relation_renames: vec![(old.into(), new.into())],
+        ..Migration::to(invoice(to))
     }
 }
 
@@ -831,9 +826,8 @@ async fn a_proposed_rename_is_listed_logged_and_accepted(store: Store) -> Held {
     let slip = |name: &str| type_decl("slip", vec![field(name, StorageKind::Text)]);
     l.declare(slip("memo")).await?;
     let renames = |to: &str| Migration {
-        to: slip(to),
         renames: vec![("memo".into(), to.into())],
-        relation_renames: Vec::new(),
+        ..Migration::to(slip(to))
     };
     let write = ProposedWrite::Migrate {
         migration: Box::new(renames("note")),

@@ -749,6 +749,7 @@ pub fn known_migration<'a>(who: &Principal, was: &TypeDecl, m: &mut Migration, f
     known_fields(who, &mut was, find);
     described_fields(&then, &mut m.to, find);
     (m.renames).retain(|(old, new)| holds(&was, old) && holds(&m.to, new));
+    m.fill.retain(|f| holds(&m.to, f));
 }
 
 /// `who` with its grants held through a migration's own renames, as the
@@ -1056,6 +1057,7 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
         });
     }
     report.rekeyed.retain(|r| sees(&r.ty).is_some());
+    report.filled.retain(|f| holds(&to, &f.field));
     report.references.retain(|r| match r.ty == m.to.name {
         true => holds(&to, &r.field) && sourced(&r.field),
         false => known(&r.ty, &r.field),
@@ -1063,8 +1065,10 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
     let unnamed =
         |c: &lakelands_api::write::FieldConversion| c.not_convertible > c.sample_keys.len() as u64;
     let collide: u64 = report.rekeyed.iter().map(|r| r.collisions).sum();
+    let unfilled = |f: &lakelands_api::write::FieldFill| f.records > f.sample_keys.len() as u64;
     report.more = *report != whole
         || report.fields.iter().any(unnamed)
+        || report.filled.iter().any(unfilled)
         || collide > report.sample_collisions.len() as u64;
 }
 

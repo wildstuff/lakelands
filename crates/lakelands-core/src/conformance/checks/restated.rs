@@ -215,9 +215,8 @@ fn part<'t>(ty: &'t mut Value, thing: &'t str) -> &'t mut Value {
 fn migrate_to(to: Value, renames: &[(&str, &str)]) -> Migration {
     let renames = renames.iter().map(|(a, b)| ((*a).into(), (*b).into()));
     Migration {
-        to: serde_json::from_value(to).expect("a type"),
         renames: renames.collect(),
-        relation_renames: Vec::new(),
+        ..Migration::to(serde_json::from_value(to).expect("a type"))
     }
 }
 

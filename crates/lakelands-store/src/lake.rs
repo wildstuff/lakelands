@@ -1529,21 +1529,8 @@ impl Lake {
                 // A redeclared function, or revised derived expressions,
                 // compute every live record's derived fields again, as of
                 // this event: what that reads is kept as it stands now, and
-                // the records are walked at the flush. No record and no
-                // setting changes before it, so the settings are one map
-                // for all that are pending.
-                if !rederive.is_empty() {
-                    let settings = match staged.pending.last() {
-                        Some(s) => s.settings.clone(),
-                        None => Arc::new(w.settings.clone()),
-                    };
-                    staged.pending.push(Recomputed {
-                        event: e.clone(),
-                        entries: w.ontology.computing(&rederive),
-                        settings,
-                        plans: record::Plans::default(),
-                    });
-                }
+                // the records are walked at the flush.
+                staged.rederive(w, e, &rederive);
             }
             EventBody::Migrated {
                 migration,
@@ -1573,9 +1560,16 @@ impl Lake {
                     // is kept of them.
                     staged.outputs.insert(key, vec![(e.position, list)]);
                 }
-                let step = Migrated::new(&w.ontology, e.position, before, migration, rekeyed);
+                let step = Migrated::new(&w.ontology, e.position, before, migration, rekeyed)
+                    .filling(&w.ontology, e);
                 step.carry(&mut w.owed);
                 self.step(w, view, projection, staged, step)?;
+                // What reads a filled field is computed again, as of this
+                // event, as a create computes it (050): queued as a value's
+                // rename queues it.
+                if !migration.fill.is_empty() && computes(&w.ontology, &migration.to.name) {
+                    staged.rederive(w, e, std::slice::from_ref(&migration.to.name));
+                }
             }
             EventBody::ValueTypeMigrated {
                 declaration,
@@ -1600,29 +1594,12 @@ impl Lake {
                 // function, an embedding, whose calls are owed with this
                 // event as their cause. Queued here, so that a kept view
                 // over such a type is ended at this event.
-                let computes = |t: &TypeName| {
-                    let computed = |f: &lakelands_api::ontology::FieldDecl| {
-                        f.derived.is_some() || f.function.is_some() || f.embed.is_some()
-                    };
-                    w.ontology
-                        .ty(t)
-                        .is_ok_and(|t| t.fields.iter().any(computed))
-                };
-                let rederive: Vec<TypeName> =
-                    types.iter().filter(|t| computes(t)).cloned().collect();
+                let rederive: Vec<TypeName> = (types.iter())
+                    .filter(|t| computes(&w.ontology, t))
+                    .cloned()
+                    .collect();
                 self.step_values(view, projection, staged, step)?;
-                if !rederive.is_empty() {
-                    let settings = match staged.pending.last() {
-                        Some(s) => s.settings.clone(),
-                        None => Arc::new(w.settings.clone()),
-                    };
-                    staged.pending.push(Recomputed {
-                        event: e.clone(),
-                        entries: w.ontology.computing(&rederive),
-                        settings,
-                        plans: record::Plans::default(),
-                    });
-                }
+                staged.rederive(w, e, &rederive);
             }
             EventBody::RecordUpserted { ty, key, .. }
             | EventBody::RecordIngested { ty, key, .. }
@@ -2695,6 +2672,13 @@ pub(crate) fn renamed_fields(o: &Ontology, t: &TypeDecl, vt: &ValueTypeName) -> 
     t.fields.iter().filter(of).map(|f| f.name.clone()).collect()
 }
 
+/// Whether a record of `t` holds a field the lake computes: a derived
+/// field, one computed by a function, an embedding.
+fn computes(o: &Ontology, t: &TypeName) -> bool {
+    let computed = |f: &FieldDecl| f.derived.is_some() || f.function.is_some() || f.embed.is_some();
+    o.ty(t).is_ok_and(|t| t.fields.iter().any(computed))
+}
+
 /// One `migrated` event a transaction folded: what it does to a record,
 /// kept in place of the records it changed. The fold's walk, the records
 /// the transaction wrote and a later read all take a record through
@@ -2716,6 +2700,9 @@ pub(crate) struct Migrated {
     /// every type with moves, and every type, not a view, that has a
     /// reference field to one.
     decls: BTreeMap<TypeName, TypeDecl>,
+    /// What the migration fills (`Migration::fill`): each field's
+    /// `initial` and its provenance at the step, worked out once.
+    fills: Vec<(FieldName, Value, lakelands_api::record::FieldMeta)>,
 }
 
 impl Migrated {
@@ -2753,7 +2740,21 @@ impl Migrated {
             back,
             types,
             decls,
+            fills: Vec::new(),
         }
+    }
+
+    /// The step at `event`, with the values its migration fills, of
+    /// origin `initial`, as a create fills them (050).
+    fn filling(mut self, ontology: &Ontology, event: &Event) -> Migrated {
+        let filled = |f: &&FieldDecl| self.migration.fill.contains(&f.name);
+        let fills = (self.migration.to.fields.iter().filter(filled))
+            .filter_map(|f| Some((f.name.clone(), record::initial_of(ontology, f)?)));
+        let fills = fills
+            .map(|(name, v)| (name, v, record::initial_meta(event)))
+            .collect();
+        self.fills = fills;
+        self
     }
 
     /// A record, not an ended key, after the step. Of the migrated type:
@@ -2782,6 +2783,15 @@ impl Migrated {
                 .collect();
             r.fields = converted;
             r.position = self.at;
+            // A live record takes what the migration fills where it holds
+            // no value; a retired one is history, and takes its `initial`
+            // if it is written again (050).
+            for (name, v, meta) in self.fills.iter().filter(|_| !r.retired) {
+                if !r.fields.contains_key(name) {
+                    r.fields.insert(name.clone(), v.clone());
+                    r.meta.insert(name.clone(), meta.clone());
+                }
+            }
         }
         if let Some(decl) = self.decls.get(&r.ty) {
             let fields = crate::rekey::rewritten(decl, &r.fields, &self.moves);
@@ -2887,6 +2897,25 @@ pub struct Staged {
 }
 
 impl Staged {
+    /// Queue `types`' records to be computed again as of `event`, at the
+    /// flush. No record and no setting changes before it, so the settings
+    /// are one map for all that are pending.
+    fn rederive(&mut self, w: &Writer, event: &Event, types: &[TypeName]) {
+        if types.is_empty() {
+            return;
+        }
+        let settings = match self.pending.last() {
+            Some(s) => s.settings.clone(),
+            None => Arc::new(w.settings.clone()),
+        };
+        self.pending.push(Recomputed {
+            event: event.clone(),
+            entries: w.ontology.computing(types),
+            settings,
+            plans: record::Plans::default(),
+        });
+    }
+
     /// A record as this append leaves it so far: written earlier in it,
     /// or else as the projection holds it, taken through the steps the
     /// append folded: read at the key it had before them, or ended at the

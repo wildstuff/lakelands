@@ -1045,10 +1045,11 @@ impl Mirror {
         self.copied(types, head).await
     }
 
-    /// At a `value_type_migrated` at `p`: each running type it rewrites is
-    /// checked again, as at a declaration, and, still admitted, copied
-    /// again whole, whatever the connection started from: the source
-    /// renamed stored values and wrote no record event for them.
+    /// At a `value_type_migrated` at `p`, or a migration that fills: each
+    /// running type it rewrites is checked again, as at a declaration, and,
+    /// still admitted, copied again whole, whatever the connection started
+    /// from: the source rewrote stored values and wrote no record event
+    /// for them.
     async fn revalued(&mut self, types: &[TypeName], p: Position) -> Result<(), String> {
         let running = |m: &Self, t: &TypeName| {
             let state = m.kept.types.get(t);
@@ -1291,7 +1292,13 @@ impl Mirror {
                 let Some(s) = type_of(&e.body) else {
                     return Ok(());
                 };
-                self.redeclared(s, e.position).await
+                match &e.body {
+                    // A fill writes values and no record event for them.
+                    EventBody::Migrated { migration, .. } if !migration.fill.is_empty() => {
+                        self.revalued(std::slice::from_ref(s), e.position).await
+                    }
+                    _ => self.redeclared(s, e.position).await,
+                }
             }
             _ => Ok(()),
         }

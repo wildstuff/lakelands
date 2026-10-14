@@ -40,10 +40,11 @@ use lakelands_api::query::{
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy};
 use lakelands_api::seam::{FeedBatch, FeedFilter};
 use lakelands_api::write::{
-    AgeReport, Carried, Carrier, CompactReport, Declaration, FieldConversion, FunctionDecl,
-    Migration, MigrationReport, Misfit, ObjectSetDecl, Proposal, ProposalFilter, ProposalState,
-    ProposedWrite, PurgeReport, RecordRef, ReferenceRewrite, Rekeyed, RelationRename, Restated,
-    RuleRun, TypeRetired, ValueRenamed, ValueTypeMigration, ValueTypeReport, ValueTypeUse,
+    AgeReport, Carried, Carrier, CompactReport, Declaration, FieldConversion, FieldFill,
+    FunctionDecl, Migration, MigrationReport, Misfit, ObjectSetDecl, Proposal, ProposalFilter,
+    ProposalState, ProposedWrite, PurgeReport, RecordRef, ReferenceRewrite, Rekeyed,
+    RelationRename, Restated, RuleRun, TypeRetired, ValueRenamed, ValueTypeMigration,
+    ValueTypeReport, ValueTypeUse,
 };
 use lakelands_api::{
     Access, After, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, Missing, Origin,
@@ -468,6 +469,11 @@ fn migration_report() -> MigrationReport {
             was: json!(true),
             to: json!(null),
         }],
+        filled: vec![FieldFill {
+            field: "f".into(),
+            records: 1,
+            sample_keys: vec!["k".into()],
+        }],
         lossless: true,
         report_id: "r".into(),
         more: true,
@@ -741,9 +747,10 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         (
             "migration",
             members(&Migration {
-                to: type_decl(),
                 renames: vec![("a".into(), "b".into())],
                 relation_renames: vec![("r".into(), "s".into())],
+                fill: vec!["c".into()],
+                ..Migration::to(type_decl())
             }),
         ),
         ("migration_report", members(&migration_report())),
@@ -1500,11 +1507,9 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     declarations: vec![],
                 },
                 ProposedWrite::Migrate {
-                    migration: Box::new(lakelands_api::write::Migration {
-                        to: serde_json::from_value(json!({"name": "t"})).unwrap(),
-                        renames: vec![],
-                        relation_renames: Vec::new(),
-                    }),
+                    migration: Box::new(lakelands_api::write::Migration::to(
+                        serde_json::from_value(json!({"name": "t"})).unwrap(),
+                    )),
                     report: Box::new(migration_report()),
                 },
                 ProposedWrite::MigrateValueType {
